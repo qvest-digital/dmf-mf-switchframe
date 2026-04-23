@@ -24,12 +24,12 @@ func TestRegisterMXLSource(t *testing.T) {
 	require.Equal(t, "mxl-cam1", src.Key)
 
 	// MXL sources have no relay or viewer (unlike regular sources).
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	ss := sw.sources["mxl-cam1"]
 	require.NotNil(t, ss)
 	require.Nil(t, ss.relay, "MXL source should have nil relay")
 	require.Nil(t, ss.viewer, "MXL source should have nil viewer")
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 }
 
 func TestRegisterMXLSource_Position(t *testing.T) {
@@ -166,9 +166,9 @@ func TestIngestRawVideo_FTBActiveDropped(t *testing.T) {
 	require.NoError(t, sw.Cut(context.Background(), "mxl-cam1"))
 
 	// Simulate FTB active by setting state directly.
-	sw.mu.Lock()
+	sw.configMu.Lock()
 	sw.state = StateFTB
-	sw.mu.Unlock()
+	sw.configMu.Unlock()
 
 	initialFiltered := sw.routeFiltered.Load()
 
@@ -399,9 +399,9 @@ func TestRegisterRawSource_FrameSyncWiring(t *testing.T) {
 	require.NoError(t, sw.Cut(context.Background(), "srt:cam1"))
 
 	// Verify source was added to frame sync.
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	fs := sw.frameSync
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 	require.NotNil(t, fs)
 
 	fs.mu.Lock()
@@ -442,9 +442,9 @@ func TestRegisterRawSource_FrameSyncWiring_PostEnable(t *testing.T) {
 	// Enable frame sync AFTER the source is registered.
 	sw.SetFrameSync(true, 10*time.Millisecond)
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	fs := sw.frameSync
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 	require.NotNil(t, fs)
 
 	fs.mu.Lock()

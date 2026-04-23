@@ -790,9 +790,9 @@ func TestFrameStatsUpdatedOnVideoFrames(t *testing.T) {
 	}
 
 	// Check that stats have been updated
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	ss := sw.sources["cam1"]
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 	avgFrameSize := ss.getAvgFrameSize()
 	avgFPS := ss.getAvgFPS()
 	frameCount := ss.getFrameCount()
@@ -1359,9 +1359,9 @@ func TestCloseWithFrameSyncActive(t *testing.T) {
 				PTS:        int64(j * 3000),
 				IsKeyframe: j == 0,
 			}
-			sw.mu.RLock()
+			sw.configMu.RLock()
 			fs := sw.frameSync
-			sw.mu.RUnlock()
+			sw.configMu.RUnlock()
 			if fs != nil {
 				fs.IngestRawVideo("camera1", pf)
 			}

@@ -342,9 +342,9 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 	}
 	mockDec.avgFrameSizeBits.Store(math.Float64bits(5000)) // ~5KB per frame
 	mockDec.avgFPSBits.Store(math.Float64bits(30))         // 30fps
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	ss := sw.sources["cam1"]
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 	ss.viewer.srcDecoder.Store(mockDec)
 	// Clear the mock decoder before sw.Close() runs to avoid panic.
 	// This defer runs AFTER the earlier `defer sw.Close()` because defers
@@ -365,9 +365,9 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 	}
 
 	// Verify that updateSourceStats was called by inspecting the pipeCodecs directly.
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	pc := sw.pipeCodecs
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	pc.mu.Lock()
 	require.Greater(t, pc.sourceBitrate, 0, "source bitrate should be propagated")
@@ -747,9 +747,9 @@ func TestSetGPUPipeline(t *testing.T) {
 	mockGPU := &mockGPUPipelineRunner{onRun: func() { called.Store(true) }}
 	sw.SetGPUPipeline(mockGPU)
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	nodes := sw.buildNodeList()
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	// CPU nodes are unchanged — GPU pipeline is a separate path.
 	require.Len(t, nodes, 7)

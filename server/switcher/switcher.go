@@ -257,7 +257,7 @@ func (ss *sourceState) getFrameCount() int {
 // and routes frames from the program source to the program Relay.
 type Switcher struct {
 	log                 *slog.Logger
-	mu                  sync.RWMutex
+	configMu            sync.RWMutex // writer-serialization for legacy COLD/WARM fields; phase 6 retypes to sync.Mutex
 	sources             map[string]*sourceState
 	builtinSources      map[string]*builtinSource       // always-registered virtual sources (source:black, source:colorbars)
 	builtinProducerStop chan struct{}                   // closed by Close() to shut down the built-in producer goroutine
@@ -645,8 +645,8 @@ func New(programRelay *distribution.Relay) *Switcher {
 // audioCutHandler, crossfade and AFV program changes are triggered automatically
 // on Cut().
 func (s *Switcher) SetMixer(m audioStateProvider) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.mixer = m
 	if handler, ok := m.(audioCutHandler); ok {
 		s.audioCut = handler
@@ -667,8 +667,8 @@ func (s *Switcher) ThumbnailCache() *ThumbnailCache {
 // observability. When set, the switcher increments counters for cuts,
 // transitions, and IDR gate events alongside the existing atomic debug counters.
 func (s *Switcher) SetMetrics(m *metrics.Metrics) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.promMetrics = m
 }
 
@@ -676,8 +676,8 @@ func (s *Switcher) SetMetrics(m *metrics.Metrics) {
 // whether hardware acceleration is active. Called once during init after
 // codec.ProbeEncoders(). Values are exposed in DebugSnapshot() under "codec".
 func (s *Switcher) SetCodecInfo(encoder, decoder string, hwAccel bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.codecEncoder = encoder
 	s.codecDecoder = decoder
 	s.codecHWAccel = hwAccel
@@ -688,8 +688,8 @@ func (s *Switcher) SetCodecInfo(encoder, decoder string, hwAccel bool) {
 // pre-computes the internal.EncoderInfo conversion to avoid per-broadcast
 // allocations in state enrichment.
 func (s *Switcher) SetAvailableEncoders(encoders []codec.EncoderInfo) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.availableEncoders = encoders
 	s.availableEncodersInternal = make([]internal.EncoderInfo, len(encoders))
 	for i, e := range encoders {
@@ -703,8 +703,8 @@ func (s *Switcher) SetAvailableEncoders(encoders []codec.EncoderInfo) {
 
 // AvailableEncoders returns the list of encoders available on this system.
 func (s *Switcher) AvailableEncoders() []codec.EncoderInfo {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
 	out := make([]codec.EncoderInfo, len(s.availableEncoders))
 	copy(out, s.availableEncoders)
 	return out
@@ -712,16 +712,16 @@ func (s *Switcher) AvailableEncoders() []codec.EncoderInfo {
 
 // EncoderName returns the name of the currently active encoder.
 func (s *Switcher) EncoderName() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
 	return s.codecEncoder
 }
 
 // AvailableEncodersInternal returns the pre-computed internal.EncoderInfo
 // slice for state broadcast enrichment. The returned slice must not be modified.
 func (s *Switcher) AvailableEncodersInternal() []internal.EncoderInfo {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
 	return s.availableEncodersInternal
 }
 
@@ -730,10 +730,10 @@ func (s *Switcher) AvailableEncodersInternal() []internal.EncoderInfo {
 // a transition is in progress. The new encoder takes effect on the next
 // encoded frame (the current encoder is invalidated).
 func (s *Switcher) SetEncoder(name string) error {
-	s.mu.Lock()
+	s.configMu.Lock()
 
 	if s.state.isInTransition() {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return ErrFormatDuringTransition
 	}
 
@@ -746,7 +746,7 @@ func (s *Switcher) SetEncoder(name string) error {
 		}
 	}
 	if !found {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("switcher: encoder %q: %w", name, ErrEncoderNotAvailable)
 	}
 
@@ -779,9 +779,9 @@ func (s *Switcher) SetEncoder(name string) error {
 
 	// Capture pipeCodecs ref before releasing lock.
 	pc := s.pipeCodecs
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
-	// Swap factory outside s.mu to avoid holding both s.mu and pipeCodecs.mu.
+	// Swap factory outside s.configMu to avoid holding both s.configMu and pipeCodecs.mu.
 	if pc != nil {
 		pc.SetEncoderFactory(factory)
 	}
@@ -794,9 +794,9 @@ func (s *Switcher) SetEncoder(name string) error {
 
 	// Broadcast updated state to all connected clients.
 	atomic.AddUint64(&s.seq, 1)
-	s.mu.RLock()
+	s.configMu.RLock()
 	snapshot := s.buildStateLocked()
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 	s.notifyStateChange(snapshot)
 
 	return nil
@@ -806,8 +806,8 @@ func (s *Switcher) SetEncoder(name string) error {
 // by SetEncoder() when rebuilding the encoder factory at runtime, so the
 // user's bitrate/GOP/preset preferences are preserved across encoder switches.
 func (s *Switcher) SetEncoderOpts(opts *codec.EncoderOptions) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.encoderOpts = opts
 }
 
@@ -890,11 +890,11 @@ func (s *Switcher) Close() {
 		//
 		// We grab the pointer under the lock but call Stop() outside the lock,
 		// because Stop() waits for the tick loop goroutine to exit, and that
-		// goroutine's delivery callbacks acquire s.mu.RLock() — holding s.mu.Lock()
+		// goroutine's delivery callbacks acquire s.configMu.RLock() — holding s.configMu.Lock()
 		// here would deadlock.
-		s.mu.Lock()
+		s.configMu.Lock()
 		fs := s.frameSync
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		if fs != nil {
 			fs.Stop()
 		}
@@ -915,18 +915,18 @@ func (s *Switcher) Close() {
 		// Wait for any background drain goroutines from previous swaps
 		// before closing pipeCodecs (prevents use-after-close on encoder).
 		s.drainWg.Wait()
-		s.mu.Lock()
+		s.configMu.Lock()
 		pipeCodecs := s.pipeCodecs
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		if pipeCodecs != nil {
 			pipeCodecs.close()
 		}
-		s.mu.Lock()
+		s.configMu.Lock()
 		keys := make([]string, 0, len(s.sources))
 		for k := range s.sources {
 			keys = append(keys, k)
 		}
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		for _, k := range keys {
 			s.UnregisterSource(k)
 		}
@@ -938,8 +938,8 @@ func (s *Switcher) Close() {
 // Callbacks are called outside the lock so they may safely perform slow
 // operations (JSON marshal, network I/O).
 func (s *Switcher) OnStateChange(cb func(internal.ControlRoomState)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.stateCallbacks = append(s.stateCallbacks, cb)
 }
 
@@ -948,23 +948,23 @@ func (s *Switcher) OnStateChange(cb func(internal.ControlRoomState)) {
 // for deciding which audio reaches the program output. When no handler is
 // set, the original behavior (only program source audio forwarded) is used.
 func (s *Switcher) SetAudioHandler(handler func(sourceKey string, frame *media.AudioFrame)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.audioHandler = handler
 	s.updateAudioHandlers(func(ah *audioHandlers) { ah.audioHandler = handler })
 }
 
 // SetTransitionConfig stores the transition codec configuration under lock.
 func (s *Switcher) SetTransitionConfig(config TransitionConfig) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.transConfig = &config
 }
 
 // SetAudioTransition attaches an audio transition handler for dissolve sync.
 func (s *Switcher) SetAudioTransition(handler audioTransitionHandler) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.audioTransition = handler
 	s.updateAudioHandlers(func(ah *audioHandlers) { ah.audioTransition = handler })
 }
@@ -973,8 +973,8 @@ func (s *Switcher) SetAudioTransition(handler audioTransitionHandler) {
 // program video frame enters the pipeline. Used to seed the audio mixer's
 // PTS epoch so audio and video start from the same wall-clock moment.
 func (s *Switcher) SetOnFirstVideoPTS(fn func(pts int64)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	if s.useRefClock.Load() {
 		return // reference clock handles PTS — no seeding needed
 	}
@@ -1003,28 +1003,28 @@ func (s *Switcher) SetOnKeyframeBroadcast(fn func()) {
 // SetCompositor attaches the DSK graphics compositor. The compositor's
 // ProcessYUV method is called in the video processing pipeline when active.
 func (s *Switcher) SetCompositor(c *graphics.Compositor) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.compositorRef = c
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	s.rebuildPipeline()
 }
 
 // SetKeyBridge attaches the upstream key bridge for chroma/luma keying.
 // The bridge's ProcessYUV method is called in the video processing pipeline.
 func (s *Switcher) SetKeyBridge(kb *graphics.KeyProcessorBridge) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.keyBridge = kb
 	s.updateGraphicsHandlers(func(gh *graphicsHandlers) { gh.keyBridge = kb })
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	s.rebuildPipeline()
 }
 
 // SetDVECompositor sets the DVE compositor for DVE-transformed PIP layouts.
 func (s *Switcher) SetDVECompositor(dc *dve.Compositor) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.dveCompositor = dc
 	s.updateGraphicsHandlers(func(gh *graphicsHandlers) { gh.dveCompositor = dc })
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	if dc != nil {
 		dc.OnActiveChange = func() { s.rebuildPipeline() }
 	}
@@ -1035,17 +1035,17 @@ func (s *Switcher) SetDVECompositor(dc *dve.Compositor) {
 // When set, each source decoder applies the assigned ST map warp after
 // decode and resolution normalization, before fan-out to all consumers.
 func (s *Switcher) SetSTMapRegistry(r *stmap.Registry) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.stmapRegistry = r
-	s.mu.Unlock()
+	s.configMu.Unlock()
 }
 
 // SetWipeMapStore sets the wipe map store used to resolve gradient maps for
 // gradient-map-based wipe transitions.
 func (s *Switcher) SetWipeMapStore(store *wipemap.WipeMapStore) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.wipeMapStore = store
-	s.mu.Unlock()
+	s.configMu.Unlock()
 }
 
 // gpuRunnerHolder wraps a GPUPipelineRunner for atomic pointer storage.
@@ -1090,9 +1090,9 @@ func (s *Switcher) SetGPUSourceManager(mgr GPUSourceManagerIface) {
 // rebuilds the CPU pipeline. Used by the app layer to tear down and recreate
 // the GPU pipeline at the new dimensions.
 func (s *Switcher) SetOnFormatChange(fn func(width, height, fpsNum, fpsDen int)) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.onFormatChange = fn
-	s.mu.Unlock()
+	s.configMu.Unlock()
 }
 
 // SetSourceDecoderFactory enables always-decode mode. When set, RegisterSource
@@ -1100,8 +1100,8 @@ func (s *Switcher) SetOnFormatChange(fn func(width, height, fpsNum, fpsDen int))
 // eliminating keyframe waits on cuts and transitions. Must be called before
 // any sources are registered.
 func (s *Switcher) SetSourceDecoderFactory(factory transition.DecoderFactory) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.sourceDecoderFactory = factory
 	s.log.Info("always-decode mode enabled")
 }
@@ -1111,8 +1111,8 @@ func (s *Switcher) SetSourceDecoderFactory(factory transition.DecoderFactory) {
 // The pipelineCodec parameter determines wire format (AVC vs HEVC) and
 // parameter set extraction (SPS/PPS vs VPS/SPS/PPS).
 func (s *Switcher) SetPipelineCodecs(encoderFactory transition.EncoderFactory, pipelineCodec ...PipelineCodec) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	pc := CodecAVC
 	if len(pipelineCodec) > 0 {
 		pc = pipelineCodec[0]
@@ -1130,8 +1130,8 @@ func (s *Switcher) SetPipelineCodecs(encoderFactory transition.EncoderFactory, p
 // encoder produces a keyframe with new VPS/SPS/PPS parameters.
 // For AVC pipelines, vps is always nil.
 func (s *Switcher) SetPipelineVideoInfoCallback(cb func(vps, sps, pps []byte, width, height int)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	if s.pipeCodecs != nil {
 		s.pipeCodecs.onVideoInfoChange = cb
 	}
@@ -1186,14 +1186,14 @@ func newAsyncEncodeNode(s *Switcher) *encodeNode {
 // Must be called after SetCompositor, SetKeyBridge, and SetPipelineCodecs.
 // Safe to call multiple times — each call rebuilds from scratch.
 func (s *Switcher) BuildPipeline() error {
-	s.mu.RLock()
+	s.configMu.RLock()
 	hasPipeCodecs := s.pipeCodecs != nil
 	prom := s.promMetrics
 	var nodes []PipelineNode
 	if hasPipeCodecs {
 		nodes = s.buildNodeList()
 	}
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	if !hasPipeCodecs {
 		return nil // no encoder configured yet
@@ -1241,14 +1241,14 @@ func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
 // This is the runtime reconfiguration path — SetCompositor, SetKeyBridge,
 // SetRawVideoSink, and external callbacks all use this.
 func (s *Switcher) rebuildPipeline() {
-	s.mu.RLock()
+	s.configMu.RLock()
 	hasPipeCodecs := s.pipeCodecs != nil
 	prom := s.promMetrics
 	var nodes []PipelineNode
 	if hasPipeCodecs {
 		nodes = s.buildNodeList()
 	}
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	if !hasPipeCodecs {
 		return
@@ -1293,8 +1293,8 @@ func (s *Switcher) RebuildPipeline() {
 // When enabled, existing source viewers are re-wired to route through the
 // FrameSynchronizer. When disabled, they revert to the delay buffer.
 func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 
 	if enabled == s.frameSyncActive {
 		return
@@ -1363,8 +1363,8 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 // output timing from source jitter. Adds up to one frame of latency (~33ms)
 // but produces rock-steady output timing like a hardware TBC/frame sync.
 func (s *Switcher) SetClockDrivenSync(enabled bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	if s.frameSync != nil {
 		s.frameSync.SetClockDriven(enabled)
 	}
@@ -1377,8 +1377,8 @@ func (s *Switcher) SetClockDrivenSync(enabled bool) {
 // over the same buffers. Must be called before the frame sync is started
 // (i.e., before SetFrameSync enables it, or immediately after).
 func (s *Switcher) SetFrameSyncBufferOnly(enabled bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	if s.frameSync != nil {
 		s.frameSync.SetBufferOnly(enabled)
 	}
@@ -1387,8 +1387,8 @@ func (s *Switcher) SetFrameSyncBufferOnly(enabled bool) {
 // SetFRCQuality sets the frame rate conversion quality for all sources.
 // Only effective when frame sync is enabled.
 func (s *Switcher) SetFRCQuality(q FRCQuality) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	if s.frameSync != nil {
 		s.frameSync.SetFRCQuality(q)
 	}
@@ -1421,10 +1421,10 @@ func (s *Switcher) GetFramePool() *FramePool {
 // Returns error if a transition is currently active.
 // Propagates change to: frame budget, frame sync tick rate, encoder.
 func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
-	s.mu.Lock()
+	s.configMu.Lock()
 
 	if s.state.isInTransition() {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return ErrFormatDuringTransition
 	}
 
@@ -1456,7 +1456,7 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	if hasPipeCodecs {
 		nodes = s.buildNodeList()
 	}
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	if hasPipeCodecs {
 		p := &Pipeline{}
@@ -1481,9 +1481,9 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 		"fps", fmt.Sprintf("%d/%d", f.FPSNum, f.FPSDen))
 
 	atomic.AddUint64(&s.seq, 1)
-	s.mu.RLock()
+	s.configMu.RLock()
 	snapshot := s.buildStateLocked()
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	s.notifyStateChange(snapshot)
 	return nil
@@ -1498,8 +1498,8 @@ func (s *Switcher) LastBroadcastVideoPTS() int64 {
 
 // ProgramSource returns the key of the current program source.
 func (s *Switcher) ProgramSource() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
 	return s.programSource
 }
 
@@ -1516,11 +1516,11 @@ func (s *Switcher) trackBroadcastInterval() {
 	atomicutil.UpdateMax(&s.maxBroadcastIntervalNano, gap)
 	// Log when gap exceeds 100ms (>2 frame times at 24fps) to pinpoint stalls
 	if gap > 100_000_000 { // 100ms in nanoseconds
-		s.mu.RLock()
+		s.configMu.RLock()
 		programSrc := s.programSource
 		hasEngine := s.transEngine != nil
 		state := s.state
-		s.mu.RUnlock()
+		s.configMu.RUnlock()
 		s.log.Warn("program broadcast gap",
 			"gap_ms", float64(gap)/1e6,
 			"state", state.String(),
@@ -1570,8 +1570,8 @@ func (s *Switcher) measureTransSeam() {
 // wall-clock audio PTS, keeping A/V aligned after source cuts.
 // No-op when the reference clock is active (PTS comes from the clock).
 func (s *Switcher) EnableWallClockVideoPTS() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	if s.useRefClock.Load() {
 		return // reference clock handles PTS
 	}
@@ -1698,8 +1698,8 @@ func (s *Switcher) ProgramRelay() *distribution.Relay {
 
 // SetCaptionManager attaches a caption manager for CEA-608/708 SEI injection.
 func (s *Switcher) SetCaptionManager(cm captionManager) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.captionMgr = cm
 }
 
@@ -1810,9 +1810,9 @@ func (s *Switcher) BroadcastToProgramFunc() func(*media.VideoFrame) {
 // before broadcasting to the program relay. This is the post-encode callback
 // used by the pipeline's encodeNode when captions are enabled.
 func (s *Switcher) broadcastWithCaptions(frame *media.VideoFrame) {
-	s.mu.RLock()
+	s.configMu.RLock()
 	cm := s.captionMgr
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	if cm == nil {
 		s.broadcastOwnedToProgram(frame)
@@ -2072,12 +2072,12 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 		return
 	}
 
-	s.mu.RLock()
+	s.configMu.RLock()
 	var groupID uint32
 	if ss, ok := s.sources[s.programSource]; ok {
 		groupID = ss.lastGroupID.Load()
 	}
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	// Use the pipeline's color format for frame sizing and codec metadata.
 	pf := s.pipelineFormat.Load()
@@ -2210,35 +2210,35 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// Phase 1: Validate and read state under write lock. Set state to
 	// StateTransitioning to prevent concurrent starts, then release the lock
 	// so warmup can proceed without blocking frame routing.
-	s.mu.Lock()
+	s.configMu.Lock()
 
 	if s.transConfig == nil {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return errTransitionNotConfigured
 	}
 	if s.state.isInTransition() {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("transition: %w", transition.ErrActive)
 	}
 	if s.state.isFTBActive() {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("cannot start transition: %w", transition.ErrFTBActive)
 	}
 	if s.programSource == "" {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return errNoProgramSource
 	}
 	if sourceKey == "" {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return errNoTargetSource
 	}
 	if _, ok := s.sources[sourceKey]; !ok {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 
 	if s.programSource == sourceKey {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("source %q: %w", sourceKey, ErrAlreadyOnProgram)
 	}
 
@@ -2251,7 +2251,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	tt := transition.Type(transType)
 	isDVE := dve.IsDVETransition(transType)
 	if !isDVE && tt != transition.Mix && tt != transition.Dip && tt != transition.Wipe && tt != transition.Stinger {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("unsupported transition type: %q", transType)
 	}
 	// DVE transitions use mix as the underlying engine type — the DVE compositor
@@ -2262,7 +2262,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	}
 
 	if tt == transition.Stinger && topts.stingerData == nil {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return errStingerDataRequired
 	}
 
@@ -2273,7 +2273,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	if tt == transition.Wipe && topts.wipeConfig == nil {
 		wipeDir = transition.WipeDirection(wipeDirection)
 		if !transition.ValidWipeDirections[wipeDir] {
-			s.mu.Unlock()
+			s.configMu.Unlock()
 			return fmt.Errorf("invalid wipe direction: %q", wipeDirection)
 		}
 	}
@@ -2291,7 +2291,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// StateTransitioning without transEngine is safe — frames won't route to
 	// the engine and normal frame processing continues for the current program source.
 	s.transitionState(StateTransitioning)
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	// Capture decoder factory — still needed for virtual/legacy sources
 	// that may send H.264 via IngestFrame during transitions.
@@ -2304,9 +2304,9 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 	// Check for cancellation before engine creation.
 	if err := ctx.Err(); err != nil {
-		s.mu.Lock()
+		s.configMu.Lock()
 		s.transitionState(StateIdle)
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("start transition: %w", err)
 	}
 
@@ -2355,9 +2355,9 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		engine.StartSync(fromSource, sourceKey, engineType, durationMs)
 	} else if err := engine.Start(fromSource, sourceKey, engineType, durationMs); err != nil {
 		// Roll back state since we failed to start.
-		s.mu.Lock()
+		s.configMu.Lock()
 		s.transitionState(StateIdle)
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("start transition: %w", err)
 	}
 
@@ -2384,9 +2384,9 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// This eliminates a race where video frames see the engine and call
 	// OnTransitionPosition before the mixer receives OnTransitionStart,
 	// causing a gain discontinuity (audible pop).
-	s.mu.Lock()
+	s.configMu.Lock()
 	audioHandler := s.audioTransition
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	if audioHandler != nil {
 		audioMode := audio.Crossfade
@@ -2403,7 +2403,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 	// Now publish the engine — audio crossfade is already active, so the
 	// first OnTransitionPosition from a video frame will be handled.
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.transEngine = engine
 	s.transTypeOrig = transType // preserve original type string for GPU DVE dispatch
 	s.transitionMaxForward = 0  // fresh transition: reset T-bar pull-back gate
@@ -2431,7 +2431,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	s.log.Info("transition started",
 		"type", string(tt), "from", fromSource, "to", sourceKey, "duration_ms", durationMs)
@@ -2451,7 +2451,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 // The ctx parameter is accepted for API compatibility and future use (e.g.
 // tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) SetTransitionPosition(ctx context.Context, position float64) error {
-	s.mu.Lock()
+	s.configMu.Lock()
 	engine := s.transEngine
 	inTrans := s.state.isInTransition()
 	audioHandler := s.audioTransition
@@ -2461,7 +2461,7 @@ func (s *Switcher) SetTransitionPosition(ctx context.Context, position float64) 
 		s.updateHotState(func(hs *hotState) { hs.transitionMaxForward = position })
 	}
 	maxForward := s.transitionMaxForward
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	if !inTrans || engine == nil {
 		return ErrNoTransition
@@ -2483,8 +2483,8 @@ func (s *Switcher) SetTransitionPosition(ctx context.Context, position float64) 
 // TransitionAbortThreshold returns the configured T-bar pull-back abort
 // threshold in (0.05, 0.5].
 func (s *Switcher) TransitionAbortThreshold() float64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
 	return s.transitionAbortThreshold
 }
 
@@ -2496,12 +2496,12 @@ func (s *Switcher) SetTransitionAbortThreshold(threshold float64) error {
 	if threshold < minTransitionAbortThreshold || threshold > maxTransitionAbortThreshold {
 		return ErrInvalidTransitionAbortThreshold
 	}
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.transitionAbortThreshold = threshold
 	s.storeTransitionAbortThresholdAtomic(threshold)
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	s.notifyStateChange(snapshot)
 	return nil
 }
@@ -2513,16 +2513,16 @@ func (s *Switcher) SetTransitionAbortThreshold(threshold float64) error {
 // The ctx parameter is accepted for API compatibility and future use (e.g.
 // tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) FadeToBlack(ctx context.Context) error {
-	s.mu.Lock()
+	s.configMu.Lock()
 
 	if s.transConfig == nil {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return errTransitionNotConfigured
 	}
 
 	// Reject if a non-FTB transition is active (mix/dip/wipe)
 	if s.state == StateTransitioning {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("cannot FTB while mix/dip transition is active: %w", transition.ErrActive)
 	}
 
@@ -2530,7 +2530,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	// Start a reverse FTB transition to fade back from black.
 	if s.state == StateFTB {
 		if s.programSource == "" {
-			s.mu.Unlock()
+			s.configMu.Unlock()
 			return errNoProgramSource
 		}
 
@@ -2542,7 +2542,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 		// Mark transition as starting, then release lock.
 		s.transitionState(StateFTBReversing)
-		s.mu.Unlock()
+		s.configMu.Unlock()
 
 		// No decoder warmup needed — sources provide raw YUV.
 		ftbRevGPUActive := false
@@ -2572,30 +2572,30 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		}
 
 		if err := engine.Start(fromSource, "", transition.FTBReverse, ftbRevDurMs); err != nil {
-			s.mu.Lock()
+			s.configMu.Lock()
 			s.transitionState(StateFTB) // Roll back to StateFTB
-			s.mu.Unlock()
+			s.configMu.Unlock()
 			return fmt.Errorf("start FTB reverse: %w", err)
 		}
 
 		// Start audio BEFORE publishing engine (prevents position race).
-		s.mu.RLock()
+		s.configMu.RLock()
 		audioHandler := s.audioTransition
-		s.mu.RUnlock()
+		s.configMu.RUnlock()
 		if audioHandler != nil {
 			audioHandler.SetProgramMute(false)
 			audioHandler.OnTransitionStart(fromSource, "", audio.FadeIn, ftbRevDurMs)
 		}
 
 		// Now publish the engine.
-		s.mu.Lock()
+		s.configMu.Lock()
 		s.transEngine = engine
 		s.updateHotState(func(hs *hotState) { hs.transEngine = engine })
 		s.transitionsStarted.Add(1)
 
 		atomic.AddUint64(&s.seq, 1)
 		snapshot := s.buildStateLocked()
-		s.mu.Unlock()
+		s.configMu.Unlock()
 
 		s.log.Info("transition started",
 			"type", "ftb_reverse", "from", fromSource, "to", "", "duration_ms", ftbRevDurMs)
@@ -2605,7 +2605,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	}
 
 	if s.programSource == "" {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return errNoProgramSource
 	}
 
@@ -2617,7 +2617,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 	// Mark transition as starting, then release lock.
 	s.transitionState(StateFTBTransitioning)
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	// No decoder warmup needed — sources provide raw YUV.
 	ftbFwdGPUActive := false
@@ -2647,29 +2647,29 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	}
 
 	if err := engine.Start(fromSource, "", transition.FTB, ftbFwdDurMs); err != nil {
-		s.mu.Lock()
+		s.configMu.Lock()
 		s.transitionState(StateIdle)
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("start FTB: %w", err)
 	}
 
 	// Start audio BEFORE publishing engine (prevents position race).
-	s.mu.RLock()
+	s.configMu.RLock()
 	audioHandler := s.audioTransition
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 	if audioHandler != nil {
 		audioHandler.OnTransitionStart(fromSource, "", audio.FadeOut, ftbFwdDurMs)
 	}
 
 	// Now publish the engine.
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.transEngine = engine
 	s.updateHotState(func(hs *hotState) { hs.transEngine = engine })
 	s.transitionsStarted.Add(1)
 
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	s.log.Info("transition started",
 		"type", "ftb", "from", fromSource, "to", "", "duration_ms", ftbFwdDurMs)
@@ -2679,8 +2679,8 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 }
 
 func (s *Switcher) FTBDurationMs() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
 	return s.ftbDurationMs
 }
 
@@ -2691,19 +2691,19 @@ func (s *Switcher) SetFTBDuration(durationMs int) error {
 	if durationMs < minFTBDurationMs || durationMs > maxFTBDurationMs {
 		return ErrInvalidFTBDuration
 	}
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.ftbDurationMs = durationMs
 	s.ftbDurationMsAtomic.Store(int64(durationMs))
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	s.notifyStateChange(snapshot)
 	return nil
 }
 
 // AbortTransition stops any active transition and restores normal frame routing.
 func (s *Switcher) AbortTransition() {
-	s.mu.Lock()
+	s.configMu.Lock()
 	engine := s.transEngine
 	wasActive := s.state.isInTransition()
 	audioHandler := s.audioTransition
@@ -2725,7 +2725,7 @@ func (s *Switcher) AbortTransition() {
 		atomic.AddUint64(&s.seq, 1)
 	}
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	if engine != nil {
 		engine.Stop()
@@ -2768,9 +2768,9 @@ func (s *Switcher) transitionWipeDirToGPU(dir transition.WipeDirection) int {
 func (s *Switcher) handleTransitionComplete(aborted bool) {
 	completeStart := time.Now()
 
-	s.mu.Lock()
+	s.configMu.Lock()
 	if !s.state.isInTransition() {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return
 	}
 
@@ -2826,7 +2826,7 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	programAfterTransition := s.programSource
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	// Release GPU gradient map buffer now that the transition is done.
 	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
@@ -2866,9 +2866,9 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 // handleFTBComplete is called by the transition engine when an FTB transition
 // finishes. FTB stays active (screen is black) unless aborted.
 func (s *Switcher) handleFTBComplete(aborted bool) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	if !s.state.isInTransition() {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return
 	}
 
@@ -2886,7 +2886,7 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 	}
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	if aborted {
 		s.log.Warn("transition aborted", "type", "ftb", "reason", "engine aborted")
@@ -2912,9 +2912,9 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 // StateFTB (screen stays black). All sources use the raw pipeline
 // (always-decode), so no GOP replay or IDR gating is needed.
 func (s *Switcher) handleFTBReverseComplete(aborted bool) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	if !s.state.isInTransition() {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return
 	}
 
@@ -2936,7 +2936,7 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	if aborted {
 		s.log.Warn("transition aborted", "type", "ftb_reverse", "reason", "engine aborted")
@@ -2963,7 +2963,7 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 // FrameSynchronizer; otherwise the delay buffer is attached for per-source
 // lip-sync compensation.
 func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	viewer := newSourceViewer(key, s)
 	useRaw := false
 
@@ -2996,7 +2996,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 			decoderCount++
 		}
 	}
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	s.log.Info("source registered", "source_key", key, "raw_pipeline", useRaw)
 
@@ -3016,9 +3016,9 @@ func (s *Switcher) makeDecoderCallback(key string) func(string, *ProcessingFrame
 	return func(sourceKey string, pf *ProcessingFrame) {
 		// Route through frame sync or delay buffer (same as SendVideo
 		// would for the legacy path, but for decoded YUV).
-		s.mu.RLock()
+		s.configMu.RLock()
 		ss := s.sources[sourceKey]
-		s.mu.RUnlock()
+		s.configMu.RUnlock()
 		if ss == nil || ss.viewer == nil {
 			pf.ReleaseYUV()
 			return
@@ -3050,7 +3050,7 @@ func (s *Switcher) makeDecoderCallback(key string) func(string, *ProcessingFrame
 // Virtual sources skip delay buffer, frame sync, and replay buffering.
 // Safe to call if the key already exists — cleans up the old viewer first.
 func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	// Clean up existing registration to prevent viewer leak on rapid re-register.
 	if old, exists := s.sources[key]; exists {
 		old.relay.RemoveViewer(old.viewer.ID())
@@ -3071,7 +3071,7 @@ func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) 
 	s.health.registerSource(key)
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	s.log.Info("virtual source registered", "source_key", key)
 	s.notifyStateChange(snapshot)
 }
@@ -3082,7 +3082,7 @@ func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) 
 // When frame sync is active, the source is added to the synchronizer so that
 // IngestRawVideo routes through the ring buffer for steady-rate release.
 func (s *Switcher) registerRawSource(key, label string, mxl bool) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.sources[key] = &sourceState{
 		key:      key,
 		label:    label,
@@ -3096,7 +3096,7 @@ func (s *Switcher) registerRawSource(key, label string, mxl bool) {
 	}
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	s.log.Info("raw source registered", "source_key", key, "mxl", mxl)
 	s.notifyStateChange(snapshot)
 }
@@ -3120,7 +3120,7 @@ func (s *Switcher) RegisterSRTSource(key string) {
 // the ref clock sync loop can read their frames.
 // Safe to call if the key already exists — cleans up the old registration.
 func (s *Switcher) RegisterReplaySource(key string) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	if old, exists := s.sources[key]; exists {
 		if old.relay != nil && old.viewer != nil {
 			old.relay.RemoveViewer(old.viewer.ID())
@@ -3141,7 +3141,7 @@ func (s *Switcher) RegisterReplaySource(key string) {
 	}
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	s.log.Info("replay source registered", "source_key", key)
 	s.notifyStateChange(snapshot)
 }
@@ -3174,9 +3174,9 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 		h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 	}
 
-	s.mu.RLock()
+	s.configMu.RLock()
 	fs := s.frameSync
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 	if fs != nil {
 		fs.IngestRawVideo(sourceKey, pf)
 		return
@@ -3188,10 +3188,10 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 // viewer from the source Relay. If the removed source was on program or
 // preview, those fields are cleared.
 func (s *Switcher) UnregisterSource(key string) {
-	s.mu.Lock()
+	s.configMu.Lock()
 	ss, ok := s.sources[key]
 	if !ok {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return
 	}
 	// Close per-source decoder if present (always-decode mode).
@@ -3228,7 +3228,7 @@ func (s *Switcher) UnregisterSource(key string) {
 	})
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	// Close decoder outside the lock (may take time to drain).
 	if srcDec != nil {
@@ -3255,9 +3255,9 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	var abortAudioHandler audioTransitionHandler
 	changed := false
 
-	s.mu.Lock()
+	s.configMu.Lock()
 	if _, ok := s.sources[sourceKey]; !ok {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	if s.programSource != sourceKey {
@@ -3302,7 +3302,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		snapshot = s.buildStateLocked()
 		changed = true
 	}
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	// Stop the aborted transition engine outside the lock.
 	if abortEngine != nil {
@@ -3320,9 +3320,9 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		s.transSeamStartNano.Store(time.Now().UnixNano())
 
 		// Auto-dissolve any PIP slot showing the new program source.
-		s.mu.RLock()
+		s.configMu.RLock()
 		dveComp := s.dveCompositor
-		s.mu.RUnlock()
+		s.configMu.RUnlock()
 		if dveComp != nil {
 			dveComp.AutoDissolveSource(sourceKey)
 		}
@@ -3344,16 +3344,16 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 // The ctx parameter is accepted for API compatibility and future use (e.g.
 // tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) SetPreview(ctx context.Context, sourceKey string) error {
-	s.mu.Lock()
+	s.configMu.Lock()
 	if _, ok := s.sources[sourceKey]; !ok {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	s.previewSource = sourceKey
 	s.updateHotState(func(hs *hotState) { hs.previewSource = sourceKey })
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	s.notifyStateChange(snapshot)
 	return nil
@@ -3364,16 +3364,16 @@ func (s *Switcher) SetPreview(ctx context.Context, sourceKey string) error {
 // The ctx parameter is accepted for API compatibility and future use (e.g.
 // tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) SetLabel(ctx context.Context, sourceKey, label string) error {
-	s.mu.Lock()
+	s.configMu.Lock()
 	ss, ok := s.sources[sourceKey]
 	if !ok {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	ss.label = label
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	s.notifyStateChange(snapshot)
 	return nil
@@ -3386,10 +3386,10 @@ func (s *Switcher) SetSourcePosition(sourceKey string, position int) error {
 	if position < 1 {
 		return fmt.Errorf("position %d: %w", position, ErrInvalidPosition)
 	}
-	s.mu.Lock()
+	s.configMu.Lock()
 	ss, ok := s.sources[sourceKey]
 	if !ok {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	// Swap with any source already at the target position
@@ -3402,7 +3402,7 @@ func (s *Switcher) SetSourcePosition(sourceKey string, position int) error {
 	ss.position = position
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	s.notifyStateChange(snapshot)
 	return nil
@@ -3416,21 +3416,21 @@ func (s *Switcher) SetSourceDelay(sourceKey string, delayMs int) error {
 	if delayMs < 0 || delayMs > maxDelayMs {
 		return ErrInvalidDelay
 	}
-	s.mu.Lock()
+	s.configMu.Lock()
 	if _, ok := s.sources[sourceKey]; !ok {
-		s.mu.Unlock()
+		s.configMu.Unlock()
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	s.delayBuffer.SetDelay(sourceKey, time.Duration(delayMs)*time.Millisecond)
 
 	s.log.Info("source delay set", "source_key", sourceKey, "delay_ms", delayMs)
 
-	s.mu.Lock()
+	s.configMu.Lock()
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	s.notifyStateChange(snapshot)
 	return nil
@@ -3454,15 +3454,15 @@ func (s *Switcher) StartHealthMonitor(interval time.Duration) {
 
 // State returns a snapshot of the current control room state.
 func (s *Switcher) State() internal.ControlRoomState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
 	return s.buildStateLocked()
 }
 
 // DebugSnapshot returns a map of debug instrumentation data for diagnostics.
 func (s *Switcher) DebugSnapshot() map[string]any {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
 
 	sources := make(map[string]any, len(s.sources))
 	activeDecoders := 0
@@ -3620,8 +3620,8 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 
 // SourceKeys returns the keys of all registered sources.
 func (s *Switcher) SourceKeys() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
 	keys := make([]string, 0, len(s.sources))
 	for k := range s.sources {
 		keys = append(keys, k)
@@ -3646,14 +3646,14 @@ func (s *Switcher) PipelineSnapshot() map[string]any {
 	}
 
 	// Source info with health status.
-	s.mu.RLock()
+	s.configMu.RLock()
 	sources := make(map[string]map[string]any, len(s.sources))
 	for key := range s.sources {
 		sources[key] = map[string]any{
 			"health": string(s.health.rawStatus(key)),
 		}
 	}
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 	result["sources"] = sources
 
 	return result
@@ -3696,7 +3696,7 @@ func isNodeNotFoundError(err error) bool {
 }
 
 // buildStateLocked constructs a ControlRoomState snapshot. Caller must hold
-// at least s.mu.RLock().
+// at least s.configMu.RLock().
 func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	tally := make(map[string]string, len(s.sources))
 	sources := make(map[string]internal.SourceInfo, len(s.sources))
@@ -3842,9 +3842,9 @@ func clampLUFS(v float64) float64 {
 // notifyStateChange calls all registered state callbacks.
 // Must be called WITHOUT holding s.mu to avoid blocking frame handlers.
 func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
-	s.mu.RLock()
+	s.configMu.RLock()
 	cbs := s.stateCallbacks
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 	for _, cb := range cbs {
 		cb(snapshot)
 	}
@@ -3903,14 +3903,14 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.health.recordFrame(sourceKey, time.Now())
 
 	// Single RLock to snapshot all state needed for this frame.
-	s.mu.RLock()
+	s.configMu.RLock()
 	ss := s.sources[sourceKey]
 	isProgramSource := sourceKey == s.programSource
 	engine := s.transEngine
 	inTrans := s.state.isInTransition()
 	isFTB := s.state.isFTBActive()
 	audioHandler := s.audioTransition
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	// Update per-source frame statistics (single-writer per source viewer).
 	if ss != nil {
@@ -3962,12 +3962,12 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 	s.health.recordFrame(sourceKey, time.Now())
 
-	s.mu.RLock()
+	s.configMu.RLock()
 	handler := s.audioHandler
 	_, ok := s.sources[sourceKey]
 	isProgram := ok && s.programSource == sourceKey
 	fs := s.frameSync
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	// Apply PTS correction from FrameSynchronizer. Audio bypasses the frame
 	// sync entirely (to avoid bursty tick-quantized delivery), but video PTS
@@ -4010,7 +4010,7 @@ func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	s.health.recordFrame(sourceKey, time.Now())
 
-	s.mu.RLock()
+	s.configMu.RLock()
 	ss, ok := s.sources[sourceKey]
 	if ok && ss != nil {
 		ss.rawFrameCount.Add(1)
@@ -4022,7 +4022,7 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	audioHandler := s.audioTransition
 	keyBridge := s.keyBridge
 	dveComp := s.dveCompositor
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	if !ok {
 		s.routeFiltered.Add(1)
@@ -4036,9 +4036,9 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 			if dec := ss.viewer.srcDecoder.Load(); dec != nil {
 				avgSize, avgFPS := dec.Stats()
 				if sourceKey == programSource {
-					s.mu.RLock()
+					s.configMu.RLock()
 					pipeCodecs := s.pipeCodecs
-					s.mu.RUnlock()
+					s.configMu.RUnlock()
 					if pipeCodecs != nil {
 						pipeCodecs.updateSourceStats(avgSize, avgFPS)
 					}
@@ -4205,11 +4205,11 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 // When a caption manager is attached, the caption text is re-encoded
 // as CEA-608 pairs for SEI injection into the encoded video output.
 func (s *Switcher) handleCaptionFrame(sourceKey string, frame *ccx.CaptionFrame) {
-	s.mu.RLock()
+	s.configMu.RLock()
 	_, ok := s.sources[sourceKey]
 	isProgram := ok && s.programSource == sourceKey
 	cm := s.captionMgr
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	// Notify caption manager that this source has captions.
 	if cm != nil {

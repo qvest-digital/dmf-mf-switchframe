@@ -96,18 +96,18 @@ func TestStateTransitions_MixCycle(t *testing.T) {
 	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
 	require.NoError(t, err)
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateTransitioning, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	// Complete transition -> StateIdle
 	err = sw.SetTransitionPosition(context.Background(), 1.0)
 	require.NoError(t, err)
 	time.Sleep(20 * time.Millisecond)
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateIdle, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	state := sw.State()
 	require.False(t, state.InTransition)
@@ -122,15 +122,15 @@ func TestStateTransitions_MixAbort(t *testing.T) {
 	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
 	require.NoError(t, err)
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateTransitioning, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	sw.AbortTransition()
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateIdle, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 }
 
 func TestStateTransitions_FTBCycle(t *testing.T) {
@@ -142,9 +142,9 @@ func TestStateTransitions_FTBCycle(t *testing.T) {
 	err := sw.FadeToBlack(context.Background())
 	require.NoError(t, err)
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateFTBTransitioning, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	// API should report inTransition=true, ftbActive=true
 	state := sw.State()
@@ -156,9 +156,9 @@ func TestStateTransitions_FTBCycle(t *testing.T) {
 	require.NoError(t, err)
 	time.Sleep(20 * time.Millisecond)
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateFTB, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	// API should report inTransition=false, ftbActive=true
 	state = sw.State()
@@ -169,9 +169,9 @@ func TestStateTransitions_FTBCycle(t *testing.T) {
 	err = sw.FadeToBlack(context.Background())
 	require.NoError(t, err)
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateFTBReversing, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	// API should report inTransition=true, ftbActive=true
 	state = sw.State()
@@ -183,9 +183,9 @@ func TestStateTransitions_FTBCycle(t *testing.T) {
 	require.NoError(t, err)
 	time.Sleep(20 * time.Millisecond)
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateIdle, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	state = sw.State()
 	require.False(t, state.InTransition)
@@ -200,15 +200,15 @@ func TestStateTransitions_FTBAbort(t *testing.T) {
 	err := sw.FadeToBlack(context.Background())
 	require.NoError(t, err)
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateFTBTransitioning, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	sw.AbortTransition()
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateIdle, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	state := sw.State()
 	require.False(t, state.InTransition)
@@ -227,24 +227,24 @@ func TestStateTransitions_FTBReverseAbort(t *testing.T) {
 	require.NoError(t, err)
 	time.Sleep(20 * time.Millisecond)
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateFTB, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	// Start reverse FTB
 	err = sw.FadeToBlack(context.Background())
 	require.NoError(t, err)
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateFTBReversing, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	// Abort reverse — should go back to StateFTB
 	sw.AbortTransition()
 
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateFTB, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 
 	state := sw.State()
 	require.False(t, state.InTransition)
@@ -268,9 +268,9 @@ func TestStateRejectsTransitionDuringFTB(t *testing.T) {
 	require.Contains(t, err.Error(), "FTB is active")
 
 	// State should still be StateFTB
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	require.Equal(t, StateFTB, sw.state)
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 }
 
 func TestStateRejectsFTBDuringTransition(t *testing.T) {

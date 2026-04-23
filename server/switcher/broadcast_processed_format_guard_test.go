@@ -59,9 +59,9 @@ func TestBroadcastProcessedGuard_10bit_SentinelSurvivesPipeline(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	sw.RegisterSource("cam1", cam1Relay)
-	sw.mu.Lock()
+	sw.configMu.Lock()
 	sw.programSource = "cam1"
-	sw.mu.Unlock()
+	sw.configMu.Unlock()
 
 	// Build a 10-bit frame with sentinel in the last quarter (Cr plane tail).
 	frameSize := ColorYUV422_10bit.FrameSize(w, h)
@@ -146,9 +146,9 @@ func TestBroadcastProcessedGuard_10bit_CodecMatchesPipeline(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	sw.RegisterSource("cam1", cam1Relay)
-	sw.mu.Lock()
+	sw.configMu.Lock()
 	sw.programSource = "cam1"
-	sw.mu.Unlock()
+	sw.configMu.Unlock()
 
 	frameSize := ColorYUV422_10bit.FrameSize(w, h)
 	yuv := make([]byte, frameSize)
@@ -211,9 +211,9 @@ func TestBroadcastProcessedGuard_10bit_NotSilentlyDropped(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	sw.RegisterSource("cam1", cam1Relay)
-	sw.mu.Lock()
+	sw.configMu.Lock()
 	sw.programSource = "cam1"
-	sw.mu.Unlock()
+	sw.configMu.Unlock()
 
 	frameSize := ColorYUV422_10bit.FrameSize(w, h)
 	yuv := make([]byte, frameSize)

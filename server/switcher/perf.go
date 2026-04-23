@@ -53,7 +53,7 @@ type PerfSourceSample struct {
 // PerfSample returns a performance snapshot of the switcher's current state.
 // Safe for concurrent access from any goroutine.
 func (s *Switcher) PerfSample() PerfSwitcherSample {
-	s.mu.RLock()
+	s.configMu.RLock()
 	sources := make(map[string]PerfSourceSample, len(s.sources))
 	for key, ss := range s.sources {
 		sample := PerfSourceSample{Health: string(s.health.rawStatus(key))}
@@ -82,7 +82,7 @@ func (s *Switcher) PerfSample() PerfSwitcherSample {
 		frameSyncSourceCount = fs.SourceCount()
 	}
 
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	// Read pipeline node timings
 	nodeTimings := make(map[string]int64)

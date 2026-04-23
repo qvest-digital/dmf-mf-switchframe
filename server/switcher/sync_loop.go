@@ -40,9 +40,9 @@ func (s *Switcher) synchronousProcessingLoop() {
 // flushAACBuffer delivers any remaining partial PCM as a padded AAC frame
 // on shutdown (Issue 12).
 func (s *Switcher) flushAACBuffer() {
-	s.mu.RLock()
+	s.configMu.RLock()
 	aacBuf := s.aacBuffer
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	if aacBuf == nil {
 		return
@@ -103,10 +103,10 @@ func (s *Switcher) processTick(tick clock.Tick) {
 
 // processAudioTick produces mixed PCM samples and feeds them to the AAC frame buffer.
 func (s *Switcher) processAudioTick(tick clock.Tick) {
-	s.mu.RLock()
+	s.configMu.RLock()
 	mixer := s.syncMixer
 	aacBuf := s.aacBuffer
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	if mixer == nil || aacBuf == nil {
 		return
@@ -157,13 +157,13 @@ func (s *Switcher) processAudioTick(tick clock.Tick) {
 // the sync loop broadcasts the raw frame data directly — useful for tests
 // and configurations without an H.264 encoder.
 func (s *Switcher) processVideoTick(tick clock.Tick) {
-	s.mu.RLock()
+	s.configMu.RLock()
 	fs := s.frameSync
 	programSource := s.programSource
 	previewSource := s.previewSource
 	engine := s.transEngine
 	inTrans := s.state.isInTransition()
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	if fs == nil || programSource == "" {
 		return
@@ -578,9 +578,9 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, vide
 
 // programSourceAtomic reads the program source under RLock.
 func (s *Switcher) programSourceAtomic() string {
-	s.mu.RLock()
+	s.configMu.RLock()
 	ps := s.programSource
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 	return ps
 }
 
@@ -680,10 +680,10 @@ func (s *Switcher) feedSourceSubsystems(sourceKey string, pf *ProcessingFrame) {
 		return
 	}
 
-	s.mu.RLock()
+	s.configMu.RLock()
 	keyBridge := s.keyBridge
 	dveComp := s.dveCompositor
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	if pf.Format == ColorYUV422_10bit {
 		if keyBridge != nil {
@@ -724,8 +724,8 @@ func (s *Switcher) logGPUErrorOnce(msg string, args ...any) {
 // processing frames. When set, the synchronous processing loop is used
 // instead of the async videoProcessingLoop.
 func (s *Switcher) SetReferenceClock(rc *clock.ReferenceClock) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.refClock = rc
 	s.useRefClock.Store(true)
 }
@@ -734,23 +734,23 @@ func (s *Switcher) SetReferenceClock(rc *clock.ReferenceClock) {
 // When set, program source frame arrivals are tracked and the reference
 // clock rate is adjusted if a rate change is detected.
 func (s *Switcher) SetClockRecovery(cr *clock.ClockRecovery) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.clockRecovery = cr
 }
 
 // SetAACBuffer attaches an AAC frame buffer for the synchronous audio path.
 func (s *Switcher) SetAACBuffer(buf *clock.AACFrameBuffer) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.aacBuffer = buf
 }
 
 // SetSyncMixer attaches an audio mixer for the synchronous processing loop.
 // This is the mixer whose ProduceSamples method is called on each tick.
 func (s *Switcher) SetSyncMixer(m syncMixerInterface) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.syncMixer = m
 }
 

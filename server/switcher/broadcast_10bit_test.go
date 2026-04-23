@@ -45,9 +45,9 @@ func TestBroadcastProcessed_10bit_FrameNotDropped(t *testing.T) {
 	// Register a source so broadcastProcessed can look up groupID.
 	cam1Relay := distribution.NewRelay()
 	sw.RegisterSource("cam1", cam1Relay)
-	sw.mu.Lock()
+	sw.configMu.Lock()
 	sw.programSource = "cam1"
-	sw.mu.Unlock()
+	sw.configMu.Unlock()
 
 	w, h := 16, 16
 	frame10Size := ColorYUV422_10bit.FrameSize(w, h)
@@ -125,9 +125,9 @@ func TestBroadcastProcessed_10bit_CorrectCodecAndFormat(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	sw.RegisterSource("cam1", cam1Relay)
-	sw.mu.Lock()
+	sw.configMu.Lock()
 	sw.programSource = "cam1"
-	sw.mu.Unlock()
+	sw.configMu.Unlock()
 
 	w, h := 16, 16
 	frame10Size := ColorYUV422_10bit.FrameSize(w, h)
@@ -181,9 +181,9 @@ func TestBroadcastProcessed_8bit_StillWorks(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	sw.RegisterSource("cam1", cam1Relay)
-	sw.mu.Lock()
+	sw.configMu.Lock()
 	sw.programSource = "cam1"
-	sw.mu.Unlock()
+	sw.configMu.Unlock()
 
 	w, h := 320, 240
 	frame8Size := ColorYUV420_8bit.FrameSize(w, h)
@@ -251,9 +251,9 @@ func TestTransitionEngine_10bit_SetColorFormat(t *testing.T) {
 	require.NoError(t, err)
 
 	// Get the engine and verify it can handle 10-bit frames.
-	sw.mu.RLock()
+	sw.configMu.RLock()
 	engine := sw.transEngine
-	sw.mu.RUnlock()
+	sw.configMu.RUnlock()
 	require.NotNil(t, engine, "transition engine should be created")
 
 	// Feed 10-bit frames to the engine. If SetColorFormat was NOT called,

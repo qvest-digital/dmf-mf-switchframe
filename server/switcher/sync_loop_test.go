@@ -128,10 +128,10 @@ func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
 	fs.framePool = s.framePool
 	fs.SetClockDriven(true)
 
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync = fs
 	s.frameSyncActive = true
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	return s, rc
 }
@@ -163,9 +163,9 @@ func TestSyncLoopProducesVideoOutput(t *testing.T) {
 	// Register and cut to a source.
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Set up a viewer to capture program output.
@@ -243,9 +243,9 @@ func TestSyncLoopProducesAudioOutput(t *testing.T) {
 	// Register a source and cut to it (needed for video path to not return early).
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Capture audio output from program relay.
@@ -305,9 +305,9 @@ func TestSyncLoopAVAligned(t *testing.T) {
 	// Register source, cut to it, and feed frames.
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Feed many frames.
@@ -382,9 +382,9 @@ func TestSyncLoopOverload(t *testing.T) {
 	// Register source and cut.
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// First, process one frame WITHOUT the slow node to establish
@@ -504,9 +504,9 @@ func TestSyncLoopProcessTickDirect(t *testing.T) {
 	// Register source and cut.
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Set up mixer.
@@ -638,9 +638,9 @@ func TestSyncLoopNoMixerNoAAC(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Feed a frame.
@@ -705,9 +705,9 @@ func TestSyncLoopVideoFramesGetRefClockPTS(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Build a capturing pipeline to see what PTS reaches the pipeline.
@@ -822,9 +822,9 @@ func TestWallClockPTSStillWorksWithoutRefClock(t *testing.T) {
 	require.NotNil(t, s.onFirstVideoPTS)
 
 	// Invoke it to verify it was stored.
-	s.mu.RLock()
+	s.configMu.RLock()
 	fn := s.onFirstVideoPTS
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 	fn(0)
 	require.True(t, called)
 }
@@ -839,9 +839,9 @@ func TestSyncLoopOverloadProducesBlackOnStartup(t *testing.T) {
 	// Register source and cut to it, but don't feed any frames.
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Set up viewer to capture output.
@@ -905,9 +905,9 @@ func TestSyncLoopSourceLossFreeze(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	viewer := newMockProgramViewer("freeze-viewer")
@@ -983,9 +983,9 @@ func TestSyncLoopSourceLossToBlack(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	viewer := newMockProgramViewer("black-viewer")
@@ -1055,9 +1055,9 @@ func TestSyncLoopSourceRecovery(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	viewer := newMockProgramViewer("recovery-viewer")
@@ -1139,15 +1139,15 @@ func TestSyncLoopTransitionDissolve(t *testing.T) {
 	// Register two sources.
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	cam2Relay := distribution.NewRelay()
 	s.RegisterSource("cam2", cam2Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam2")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 	_ = s.SetPreview(context.Background(), "cam2")
@@ -1181,11 +1181,11 @@ func TestSyncLoopTransitionDissolve(t *testing.T) {
 	engine := transition.NewEngine(transition.EngineConfig{})
 	engine.StartSync("cam1", "cam2", transition.Mix, 300) // 300ms dissolve
 
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.transConfig = &TransitionConfig{}
 	s.transEngine = engine
 	s.transitionState(StateTransitioning)
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	// Feed frames before each tick.
 	var firstY, lastY byte
@@ -1220,15 +1220,15 @@ func TestSyncLoopTransitionComplete(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	cam2Relay := distribution.NewRelay()
 	s.RegisterSource("cam2", cam2Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam2")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 	_ = s.SetPreview(context.Background(), "cam2")
@@ -1256,11 +1256,11 @@ func TestSyncLoopTransitionComplete(t *testing.T) {
 	engine := transition.NewEngine(transition.EngineConfig{})
 	engine.StartSync("cam1", "cam2", transition.Mix, 100)
 
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.transConfig = &TransitionConfig{}
 	s.transEngine = engine
 	s.transitionState(StateTransitioning)
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	// Feed frames and process enough ticks to complete the transition.
 	// 100ms / 33.33ms = 3 ticks needed, process a few more to be safe.
@@ -1295,9 +1295,9 @@ func TestSyncLoopClockRecovery(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	pool := s.framePool
@@ -1360,9 +1360,9 @@ func TestSyncLoopClockRecoveryNoMutation(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Record initial rate.
@@ -1419,9 +1419,9 @@ func TestSyncLoopFlushesAACOnShutdown(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Capture audio output.
@@ -1517,9 +1517,9 @@ func TestFTBTransitionCallsCorrectHandler(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Feed frames for the source.
@@ -1547,10 +1547,10 @@ func TestFTBTransitionCallsCorrectHandler(t *testing.T) {
 	})
 	require.NoError(t, engine.Start("cam1", "", transition.FTB, 100))
 
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.transEngine = engine
 	s.transitionState(StateFTBTransitioning)
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	// Process enough ticks to complete the transition.
 	for i := 0; i < 20; i++ {
@@ -1563,18 +1563,18 @@ func TestFTBTransitionCallsCorrectHandler(t *testing.T) {
 		s.processVideoTick(tick)
 
 		// Check if transition completed.
-		s.mu.RLock()
+		s.configMu.RLock()
 		st := s.state
-		s.mu.RUnlock()
+		s.configMu.RUnlock()
 		if !st.isInTransition() {
 			break
 		}
 	}
 
 	// After FTB completion, state should be StateFTB (holding black), not StateIdle.
-	s.mu.RLock()
+	s.configMu.RLock()
 	finalState := s.state
-	s.mu.RUnlock()
+	s.configMu.RUnlock()
 
 	require.Equal(t, StateFTB, finalState,
 		"FTB completion should leave state as StateFTB (holding black), not %s", finalState)
@@ -1587,9 +1587,9 @@ func TestStartSyncLoopDoubleStartGuard(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Feed some frames.
@@ -1641,9 +1641,9 @@ func TestSyncLoopNoRaceWithAsyncPath(t *testing.T) {
 	// Register source and cut to it.
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Build a counting pipeline node that records how many frames pass through.
@@ -1735,9 +1735,9 @@ func TestSyncLoopChecksGPURunner(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Set a mock GPU runner that tracks calls.
@@ -1813,9 +1813,9 @@ func TestSyncLoopGPUFallbackToCPU(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// GPU mock that always fails.
@@ -1960,10 +1960,10 @@ func newSyncTestSwitcherBufferOnly(t *testing.T) (*Switcher, *clock.ReferenceClo
 	fs.SetBufferOnly(true)
 	fs.Start() // should NOT launch tickLoop
 
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync = fs
 	s.frameSyncActive = true
-	s.mu.Unlock()
+	s.configMu.Unlock()
 
 	return s, rc
 }
@@ -1979,9 +1979,9 @@ func TestSyncLoopWithBufferOnlyFrameSync(t *testing.T) {
 	// Register and cut to a source.
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Capture program output.
@@ -2043,9 +2043,9 @@ func TestSyncLoopBufferOnlyNoTimerRace(t *testing.T) {
 
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	viewer := newMockProgramViewer("race-viewer")
@@ -2100,9 +2100,9 @@ func TestSyncLoopProcessTickDrainsCommandQueue(t *testing.T) {
 	// Register source and cut so processTick has something to work with.
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
-	s.mu.Lock()
+	s.configMu.Lock()
 	s.frameSync.AddSource("cam1")
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Create a command queue with a clock that always returns "now".

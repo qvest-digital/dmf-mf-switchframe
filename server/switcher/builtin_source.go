@@ -143,7 +143,7 @@ func (s *Switcher) BuiltinSourceFrame(key string) ([]byte, int, int, error) {
 
 // registerBuiltinSourcesLocked wires source:black and source:colorbars into
 // the switcher's source map with isVirtual=true. Called from Switcher.New
-// under s.mu.Lock; no broadcast here — New's caller is responsible. The
+// under s.configMu.Lock; no broadcast here — New's caller is responsible. The
 // builtinSources map is initialized once and never mutated afterward, so
 // subsequent lock-free reads (BuiltinSourceFrame, builtinProducerLoop) are
 // safe.
@@ -183,7 +183,7 @@ func isBuiltinSource(key string) bool {
 
 // invalidateBuiltinSources forces every built-in to regenerate its static
 // layer on the next Frame call. Called from SetPipelineFormat after the
-// new format is stored. Caller holds s.mu.
+// new format is stored. Caller holds s.configMu.
 func (s *Switcher) invalidateBuiltinSources() {
 	for _, bs := range s.builtinSources {
 		bs.mu.Lock()

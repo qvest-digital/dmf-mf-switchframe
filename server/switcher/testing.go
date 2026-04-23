@@ -109,9 +109,9 @@ func (s *Switcher) closeDirect() {
 		_ = p.Close()
 	}
 	s.drainWg.Wait()
-	s.mu.Lock()
+	s.configMu.Lock()
 	pipeCodecs := s.pipeCodecs
-	s.mu.Unlock()
+	s.configMu.Unlock()
 	if pipeCodecs != nil {
 		pipeCodecs.close()
 	}
@@ -149,8 +149,8 @@ func (s *Switcher) runPipelineDirect(t *testing.T) *ProcessingFrame {
 // testing the synchronous (ref clock) transition path from external packages.
 // This bypasses the async StartTransition flow which spawns goroutines.
 func (s *Switcher) SetTransitionEngine(engine *transition.Engine) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.transConfig = &TransitionConfig{}
 	s.transEngine = engine
 	s.transitionState(StateTransitioning)
