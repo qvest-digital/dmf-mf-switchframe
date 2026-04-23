@@ -118,7 +118,7 @@ var validTransitions = map[State][]State{
 
 // transitionState changes the switcher state, logging a warning if the transition
 // is not in the valid transitions map. Never panics in production.
-// Caller must hold s.mu (write lock).
+// Caller must hold s.configMu (write lock).
 func (s *Switcher) transitionState(to State) {
 	from := s.state
 	if from == to {
@@ -267,7 +267,7 @@ type Switcher struct {
 	programSource       string
 	previewSource       string
 	programRelay        *distribution.Relay
-	seq             uint64 // always use atomic ops, even under s.mu, to prevent races on lock-free read paths
+	seq             uint64 // always use atomic ops, even under s.configMu, to prevent races on lock-free read paths
 	stateCallbacks  []func(internal.ControlRoomState)
 	health          *healthMonitor
 	audioHandler    func(sourceKey string, frame *media.AudioFrame)
@@ -344,7 +344,7 @@ type Switcher struct {
 
 	// onFormatChange — called after SetPipelineFormat rebuilds the CPU pipeline.
 	// Used by the app layer to tear down and recreate the GPU pipeline at the
-	// new dimensions. Protected by s.mu (set during init, read during format change).
+	// new dimensions. Protected by s.configMu (set during init, read during format change).
 	onFormatChange func(width, height, fpsNum, fpsDen int)
 
 	// Per-source decoder factory — when set, RegisterSource creates a
@@ -1138,7 +1138,7 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(vps, sps, pps []byte, wi
 }
 
 // buildNodeList constructs the ordered list of CPU pipeline nodes.
-// Must be called with s.mu held (RLock or Lock) since it reads
+// Must be called with s.configMu held (RLock or Lock) since it reads
 // s.keyBridge, s.compositorRef, s.pipeCodecs, and s.promMetrics.
 //
 // When a GPU pipeline is active (via SetGPUPipeline), the CPU pipeline is
@@ -1160,7 +1160,7 @@ func (s *Switcher) buildNodeList() []PipelineNode {
 }
 
 // newAsyncEncodeNode creates an encodeNode with its async goroutine started.
-// Must be called with s.mu held (reads pipeCodecs, promMetrics, etc.).
+// Must be called with s.configMu held (reads pipeCodecs, promMetrics, etc.).
 func newAsyncEncodeNode(s *Switcher) *encodeNode {
 	// Determine if the encoder is 10-bit capable (professional pipeline with
 	// HEVC codec and YUV422P10LE color format). When true, 10-bit frames
@@ -3840,7 +3840,7 @@ func clampLUFS(v float64) float64 {
 }
 
 // notifyStateChange calls all registered state callbacks.
-// Must be called WITHOUT holding s.mu to avoid blocking frame handlers.
+// Must be called WITHOUT holding s.configMu to avoid blocking frame handlers.
 func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
 	s.configMu.RLock()
 	cbs := s.stateCallbacks

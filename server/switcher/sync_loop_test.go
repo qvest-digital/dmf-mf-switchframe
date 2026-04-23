@@ -103,6 +103,7 @@ func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
 	s.recentCmdErrors = newRecentErrors(8)
 	s.delayBuffer = NewDelayBuffer(s)
 	s.initAtomicSlots()
+	s.registerBuiltinSourcesLocked()
 	s.publishSourcesSnapshot()
 
 	// Create non-realtime reference clock at 30fps.
@@ -1940,6 +1941,7 @@ func newSyncTestSwitcherBufferOnly(t *testing.T) (*Switcher, *clock.ReferenceClo
 	s.recentCmdErrors = newRecentErrors(8)
 	s.delayBuffer = NewDelayBuffer(s)
 	s.initAtomicSlots()
+	s.registerBuiltinSourcesLocked()
 	s.publishSourcesSnapshot()
 
 	rc := clock.NewReferenceClock(30, 1, 48000, 0, false)

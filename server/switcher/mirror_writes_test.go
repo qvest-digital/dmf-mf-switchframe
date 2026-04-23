@@ -62,6 +62,53 @@ func TestMirrorWrites_GraphicsAndAudioHandlers(t *testing.T) {
 	require.NotNil(t, ah.audioHandler, "SetAudioHandler did not publish to audioHandlers")
 }
 
+func TestMirrorWrites_TransitionLifecycle_MirrorsProgramAndEngine(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+
+	// StartTransition → hotState.transEngine and transTypeOrig published, preview swaps.
+	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 60000, ""))
+	hs := sw.hotState.Load()
+	require.Equal(t, sw.transEngine, hs.transEngine, "StartTransition: transEngine mirror divergence")
+	require.Equal(t, sw.transTypeOrig, hs.transTypeOrig, "StartTransition: transTypeOrig mirror divergence")
+	require.Equal(t, sw.previewSource, hs.previewSource, "StartTransition: previewSource mirror divergence")
+	require.Equal(t, sw.state, hs.state, "StartTransition: state mirror divergence")
+
+	// handleTransitionComplete(false) → programSource advances, transEngine cleared.
+	sw.handleTransitionComplete(false)
+	hs = sw.hotState.Load()
+	require.Equal(t, sw.programSource, hs.programSource, "handleTransitionComplete: programSource mirror divergence")
+	require.Nil(t, hs.transEngine, "handleTransitionComplete: transEngine should be nil")
+	require.Empty(t, hs.transTypeOrig, "handleTransitionComplete: transTypeOrig should be cleared")
+	require.Equal(t, sw.state, hs.state, "handleTransitionComplete: state mirror divergence")
+}
+
+func TestMirrorWrites_AbortTransition_MirrorsEngineNil(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+
+	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 60000, ""))
+	require.NotNil(t, sw.hotState.Load().transEngine)
+
+	sw.AbortTransition()
+	hs := sw.hotState.Load()
+	require.Nil(t, hs.transEngine, "AbortTransition: transEngine should be nil in hotState")
+	require.Equal(t, sw.transEngine, hs.transEngine, "AbortTransition: transEngine mirror divergence")
+	require.Equal(t, sw.state, hs.state, "AbortTransition: state mirror divergence")
+}
+
+func TestMirrorWrites_FTBLifecycle_MirrorsEngine(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+
+	require.NoError(t, sw.FadeToBlack(context.Background()))
+	hs := sw.hotState.Load()
+	require.Equal(t, sw.transEngine, hs.transEngine, "FadeToBlack forward: transEngine mirror divergence")
+	require.Equal(t, sw.state, hs.state, "FadeToBlack forward: state mirror divergence")
+
+	sw.handleFTBComplete(false)
+	hs = sw.hotState.Load()
+	require.Nil(t, hs.transEngine, "handleFTBComplete: transEngine should be nil")
+	require.Equal(t, sw.state, hs.state, "handleFTBComplete: state mirror divergence")
+}
+
 func TestMirrorWrites_SourcesMap_SnapshotMatchesLegacy(t *testing.T) {
 	relay := newTestRelay()
 	sw := newTestSwitcher(t, relay)
