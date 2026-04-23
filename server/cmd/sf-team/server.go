@@ -27,6 +27,7 @@ func newServer(d db, cfg serverConfig) *server {
 func (s *server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/agents", s.handleAgents)
 	return s.authMiddleware(mux)
 }
 
@@ -45,6 +46,15 @@ func (s *server) authMiddleware(next http.Handler) http.Handler {
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *server) handleAgents(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.d.whoList(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
