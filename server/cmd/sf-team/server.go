@@ -1,13 +1,18 @@
 package main
 
 import (
+	"embed"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 )
+
+//go:embed web/*
+var webFS embed.FS
 
 type serverConfig struct {
 	Token    string
@@ -61,6 +66,18 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST /api/progress", s.handleProgressPost)
 	mux.HandleFunc("POST /api/reassign", s.handleReassign)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
+
+	webSub, _ := fs.Sub(webFS, "web")
+	fileServer := http.FileServer(http.FS(webSub))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Allow", "GET")
+			writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	})
+
 	return s.authMiddleware(mux)
 }
 

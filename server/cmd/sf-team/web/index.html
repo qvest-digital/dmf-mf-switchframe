@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Switchframe Team</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Switchframe Team</h1>
+    <div id="user">—</div>
+  </header>
+  <main>
+    <aside id="agents"><h2>Agents</h2><ul id="agents-list"></ul></aside>
+    <section id="board">
+      <h2>Board</h2>
+      <div id="in-progress"></div>
+      <div id="ready"></div>
+      <div id="blocked"></div>
+    </section>
+    <aside id="chat">
+      <h2>Chat</h2>
+      <select id="thread-select"><option value="global">#global</option></select>
+      <ul id="messages"></ul>
+      <form id="compose"><input id="compose-input" placeholder="Type a message..."/><button>Send</button></form>
+    </aside>
+  </main>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
