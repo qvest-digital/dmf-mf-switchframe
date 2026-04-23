@@ -3,10 +3,23 @@ package cmdqueue
 import (
 	"bufio"
 	"encoding/json"
+	"io"
 	"os"
 	"sync"
 	"time"
 )
+
+// walFile is the subset of *os.File operations the WAL uses.  Extracted
+// as an interface so tests can inject a wrapper that counts Sync() calls
+// to verify durability invariants (the production WAL passes a real
+// *os.File).
+type walFile interface {
+	io.Writer
+	io.Seeker
+	io.Closer
+	Truncate(size int64) error
+	Sync() error
+}
 
 // WAL provides crash-recovery for enqueued commands via an append-only
 // JSON-lines file. Commands are appended on Enqueue and marked executed
@@ -15,7 +28,7 @@ import (
 type WAL struct {
 	path string
 	mu   sync.Mutex
-	file *os.File
+	file walFile
 }
 
 // walEntry is a single line in the WAL file.
@@ -121,11 +134,54 @@ func (w *WAL) ReplayExecutedSeqs() ([]uint64, error) {
 	return seqs, nil
 }
 
-// Truncate clears the WAL file (called when all entries are executed).
+// Truncate clears the WAL file.  Dangerous: it also wipes the executed
+// entries the dedup map is seeded from, so a restart immediately after
+// Truncate cannot dedup retransmitted commands.  Use only for admin
+// compaction, never from the Drain hot path.  Fsync'd before return so a
+// crash cannot leave the on-disk file showing the pre-Truncate content.
 func (w *WAL) Truncate() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.file.Truncate(0)
+	if err := w.file.Truncate(0); err != nil {
+		return err
+	}
+	return w.file.Sync()
+}
+
+// CompactExecuted rewrites the WAL keeping every un-executed entry (for
+// crash-replay) plus the most recent keepRecent executed tombstones (for
+// dedup-map seeding at restart).  Executed tombstones drop the command
+// payload since dedup only needs the Seq — saves disk and makes the
+// per-Drain rewrite cost O(keepRecent) instead of O(uptime).
+//
+// Designed to be called at end-of-Drain in place of the old Truncate
+// path: bounded file size prevents MarkExecuted's rewriteLocked (which is
+// O(file size) per call) from degrading over long uptime.  Fsync'd via
+// rewriteLocked.
+func (w *WAL) CompactExecuted(keepRecent int) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	entries, err := w.readEntriesLocked()
+	if err != nil {
+		return err
+	}
+	pending := entries[:0:0]
+	executedTomb := make([]walEntry, 0, keepRecent)
+	for _, e := range entries {
+		if e.Executed {
+			executedTomb = append(executedTomb, walEntry{
+				Command:  Command{Seq: e.Command.Seq},
+				Executed: true,
+			})
+		} else {
+			pending = append(pending, e)
+		}
+	}
+	if keepRecent >= 0 && len(executedTomb) > keepRecent {
+		executedTomb = executedTomb[len(executedTomb)-keepRecent:]
+	}
+	compacted := append(pending, executedTomb...)
+	return w.rewriteLocked(compacted)
 }
 
 // Close closes the underlying file.

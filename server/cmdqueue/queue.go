@@ -240,14 +240,29 @@ func (q *Queue) Drain() []Command {
 		out = append(out, top)
 	}
 
-	// Mark drained commands as executed in WAL.
+	// Mark drained commands as executed in WAL.  The executed entries are
+	// the sole source of dedup state at restart (Queue.New seeds the
+	// `seen` map from ReplayExecutedSeqs), so we do NOT Truncate — a
+	// crash-retransmit between Drain and client retry would otherwise
+	// re-dispatch the command.
+	//
+	// To keep the file bounded and the per-call rewriteLocked cost
+	// bounded, CompactExecuted runs on drain-to-empty (same trigger the
+	// old Truncate had) keeping only the last maxSeen executed tombstones
+	// — matches the in-memory seen-map watermark so on-disk dedup state
+	// tracks the in-memory state.
 	if q.wal != nil && len(out) > 0 {
 		for _, cmd := range out {
-			_ = q.wal.MarkExecuted(cmd.Seq)
+			if err := q.wal.MarkExecuted(cmd.Seq); err != nil {
+				slog.Warn("cmdqueue: WAL MarkExecuted failed — crash here can replay this command",
+					"seq", cmd.Seq, "err", err)
+			}
 		}
-		// Truncate WAL when heap is empty (all commands executed).
 		if q.h.Len() == 0 {
-			_ = q.wal.Truncate()
+			if err := q.wal.CompactExecuted(maxSeen); err != nil {
+				slog.Warn("cmdqueue: WAL compact failed — file will continue growing until next successful compact",
+					"err", err)
+			}
 		}
 	}
 
