@@ -15,9 +15,10 @@ type serverConfig struct {
 }
 
 type server struct {
-	d   db
-	cfg serverConfig
-	bus *eventBus
+	d           db
+	cfg         serverConfig
+	bus         *eventBus
+	callerAgent string
 }
 
 func newServer(d db, cfg serverConfig) *server {
@@ -26,7 +27,15 @@ func newServer(d db, cfg serverConfig) *server {
 	}
 	bus := newEventBus()
 	d.publisher = bus
-	return &server{d: d, cfg: cfg, bus: bus}
+	agent, _ := agentID(detectWorktree())
+	return &server{d: d, cfg: cfg, bus: bus, callerAgent: agent}
+}
+
+func (s *server) actingAgent(r *http.Request) string {
+	if h := r.Header.Get("X-SF-Agent"); h != "" {
+		return h
+	}
+	return s.callerAgent
 }
 
 func (s *server) handler() http.Handler {
@@ -39,6 +48,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /api/items", s.handleItemsList)
 	mux.HandleFunc("GET /api/items/{id}", s.handleItemDetail)
 	mux.HandleFunc("GET /api/progress/{id}", s.handleProgress)
+	mux.HandleFunc("POST /api/say", s.handleSay)
 	return s.authMiddleware(mux)
 }
 
@@ -247,6 +257,35 @@ func (s *server) handleProgress(w http.ResponseWriter, r *http.Request) {
 		out = append(out, p)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) handleSay(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Thread   string   `json:"thread"`
+		Body     string   `json:"body"`
+		Mentions []string `json:"mentions"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Thread == "" {
+		req.Thread = "global"
+	}
+	if req.Body == "" {
+		writeErr(w, http.StatusBadRequest, "body required")
+		return
+	}
+	agent := s.actingAgent(r)
+	mentions := req.Mentions
+	if mentions == nil {
+		mentions = parseMentions(req.Body)
+	}
+	if err := s.d.say(r.Context(), agent, req.Thread, "say", req.Body, mentions, "normal"); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *server) handleTouches(w http.ResponseWriter, r *http.Request) {
