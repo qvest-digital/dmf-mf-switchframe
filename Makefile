@@ -257,6 +257,14 @@ install-sf-team: sf-team
 sf-team-test:
 	cd server && go test ./cmd/sf-team/ -race
 
-.PHONY: sf-team-serve
-sf-team-serve: sf-team
-	./bin/sf-team serve
+.PHONY: sf-team-serve agent-ui
+# Boot the sf-team agent board/chat UI (compiles then runs).
+# Prints its URL + auth token on startup. Default port 7890; override with PORT=...
+PORT ?= 7890
+sf-team-serve agent-ui: sf-team
+	@echo ""
+	@echo "  sf-team agent UI — board, claims, chat"
+	@echo "  Appending ?token=<token> once (printed below) stores it in localStorage."
+	@echo "  Ctrl+C to stop."
+	@echo ""
+	./bin/sf-team serve --port $(PORT)
