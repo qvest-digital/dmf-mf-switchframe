@@ -372,6 +372,16 @@ type Switcher struct {
 	// and s.sources is removed. Never nil after New().
 	sourcesAtomic atomic.Pointer[map[string]*sourceState]
 
+	// ftbDurationMsAtomic / transitionAbortThresholdAtomic — scalar mirrors
+	// of the corresponding s.mu-guarded fields. Float64 packed as uint64
+	// bit-pattern via math.Float64bits. Phase 1 mirror only.
+	ftbDurationMsAtomic            atomic.Int64
+	transitionAbortThresholdAtomic atomic.Uint64
+
+	// pipeCodecsAtomic — atomic mirror of s.pipeCodecs pointer for lock-free
+	// hot-path reads in broadcastProcessed* and the encode node.
+	pipeCodecsAtomic atomic.Pointer[pipelineCodecs]
+
 	// Pipeline codec pool — shared decoder/encoder for the video processing chain.
 	// Used when any YUV processor (compositor, key bridge) is active or when
 	// the transition engine outputs raw YUV.
@@ -624,6 +634,8 @@ func New(programRelay *distribution.Relay) *Switcher {
 	s.frameSyncBundle.Store(&frameSyncBundle{})
 	emptySources := map[string]*sourceState{}
 	s.sourcesAtomic.Store(&emptySources)
+	s.ftbDurationMsAtomic.Store(int64(defaultFTBDurationMs))
+	s.transitionAbortThresholdAtomic.Store(math.Float64bits(defaultTransitionAbortThreshold))
 	s.recentCmdErrors = newRecentErrors(8)
 	s.delayBuffer = NewDelayBuffer(s)
 	s.registerBuiltinSourcesLocked()
