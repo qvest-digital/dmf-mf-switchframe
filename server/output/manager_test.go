@@ -2,7 +2,9 @@ package output
 
 import (
 	"context"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -961,4 +963,86 @@ func TestManager_SRTStats_NilManagerSafe(t *testing.T) {
 	// Should work fine without stats manager.
 	require.NoError(t, mgr.StartSRTOutput(SRTConfig{Mode: "caller", Address: "127.0.0.1", Port: 9000}))
 	require.NoError(t, mgr.StopSRTOutput())
+}
+
+func lipSyncTestFrame(pts int64) *media.VideoFrame {
+	return &media.VideoFrame{
+		PTS:        pts,
+		DTS:        pts,
+		IsKeyframe: true,
+		SPS:        []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:        []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData:   []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:      "h264",
+	}
+}
+
+func TestManager_DirectWriteVideo_RaceWithLatchLipSync(t *testing.T) {
+	prev := runtime.GOMAXPROCS(4)
+	defer runtime.GOMAXPROCS(prev)
+
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: t.TempDir()}))
+
+	var rawOffset atomic.Int64
+	rawOffset.Store(1000)
+	mgr.SetLipSyncSource(func() int64 { return rawOffset.Load() })
+
+	const hotWriters = 4
+	const framesPerWriter = 30
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+
+	for i := 0; i < hotWriters; i++ {
+		done.Add(1)
+		go func(id int) {
+			defer done.Done()
+			start.Wait()
+			pts := int64(90000 * (id + 1))
+			for j := 0; j < framesPerWriter; j++ {
+				rawOffset.Add(1000)
+				mgr.DirectWriteVideo(lipSyncTestFrame(pts))
+				pts += 1500
+				runtime.Gosched()
+			}
+		}(i)
+	}
+
+	done.Add(1)
+	go func() {
+		defer done.Done()
+		start.Wait()
+		time.Sleep(10 * time.Millisecond)
+		mgr.LatchLipSync(5000)
+	}()
+
+	start.Done()
+	done.Wait()
+}
+
+func TestManager_LipSyncLatchedObservableFromHotPath(t *testing.T) {
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: t.TempDir()}))
+
+	var raw atomic.Int64
+	raw.Store(100)
+	mgr.SetLipSyncSource(func() int64 { return raw.Load() })
+
+	const latched int64 = 7777
+	mgr.LatchLipSync(latched)
+	require.Equal(t, latched, mgr.LipSyncOffset(), "LipSyncOffset must return latched value immediately")
+
+	pts := int64(90000)
+	for i := 0; i < 1000; i++ {
+		raw.Add(9999)
+		mgr.DirectWriteVideo(lipSyncTestFrame(pts))
+		pts += 1500
+	}
+
+	require.Equal(t, latched, mgr.LipSyncOffset(), "latched value must survive 1000 hot-path frames")
 }

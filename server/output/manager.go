@@ -91,16 +91,21 @@ type Manager struct {
 	scte35PID uint16
 
 	// Lip-sync for SRT/recording output: reads ring buffer depth from mixer.
+	// smoothedLipSync and lipSyncLatched are atomic so the DirectWriteVideo
+	// hot path reads and the LatchLipSync writer don't race.
 	lipSyncSource   func() int64
-	smoothedLipSync int64
-	lipSyncLatched  bool // true after LatchLipSync — no further updates
+	smoothedLipSync atomic.Int64
+	lipSyncLatched  atomic.Bool
 
 	// Video resolution for SDT service_type in TS output.
 	videoWidth  int
 	videoHeight int
 
 	// PTS delta diagnostic: detect jitter at DirectWriteVideo stage.
-	lastDirectVideoPTS int64
+	// Atomic so the hot-path read/write doesn't race if DirectWriteVideo
+	// is ever driven from more than one goroutine (single-writer in
+	// production; the race-stress test intentionally exercises multi-writer).
+	lastDirectVideoPTS atomic.Int64
 
 	// SRT stats manager for tracking per-output SRT connection metrics.
 	// When set, ConnStats entries are created/removed with SRT adapter lifecycle.
@@ -180,15 +185,19 @@ func (m *Manager) SetLipSyncSource(fn func() int64) {
 
 // LipSyncOffset returns the current smoothed lip-sync offset.
 func (m *Manager) LipSyncOffset() int64 {
-	return m.smoothedLipSync
+	return m.smoothedLipSync.Load()
 }
 
 // LatchLipSync permanently sets the lip-sync offset to a fixed value
 // and disables further updates from the lip-sync source function.
 // Used in ref clock mode to freeze the offset after initial measurement.
 func (m *Manager) LatchLipSync(offset int64) {
-	m.smoothedLipSync = offset
-	m.lipSyncLatched = true
+	// Write the offset before setting latched=true so any reader that
+	// observes latched=true also observes the committed offset. Go's
+	// atomic operations are sequentially consistent, so this order is
+	// also visible to all observers.
+	m.smoothedLipSync.Store(offset)
+	m.lipSyncLatched.Store(true)
 	if muxer := m.directMuxer.Load(); muxer != nil {
 		muxer.SetLipSyncOffset90k(offset)
 	}
@@ -1212,8 +1221,10 @@ func (m *Manager) ensureMuxerLocked() bool {
 	// Propagate latched lip-sync offset to the new muxer. LatchLipSync
 	// is called at startup before the muxer exists, so the offset must
 	// be applied here when the muxer is first created.
-	if m.lipSyncLatched && m.smoothedLipSync != 0 {
-		muxer.SetLipSyncOffset90k(m.smoothedLipSync)
+	if m.lipSyncLatched.Load() {
+		if smoothed := m.smoothedLipSync.Load(); smoothed != 0 {
+			muxer.SetLipSyncOffset90k(smoothed)
+		}
 	}
 
 	m.muxer = muxer
@@ -1452,30 +1463,33 @@ type CBRPacerStatus struct {
 func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 	// TS-based outputs (SRT, recording).
 	if muxer := m.directMuxer.Load(); muxer != nil {
-		if m.lipSyncSource != nil && !m.lipSyncLatched {
+		if m.lipSyncSource != nil && !m.lipSyncLatched.Load() {
 			raw := m.lipSyncSource()
-			if m.smoothedLipSync == 0 {
-				m.smoothedLipSync = raw
-				muxer.SetLipSyncOffset90k(m.smoothedLipSync)
-			}
-			// Only update if drift exceeds threshold. Once latched
-			// (ref clock mode), this block is skipped entirely.
-			if delta := raw - m.smoothedLipSync; delta > 450 || delta < -450 {
-				m.smoothedLipSync = (m.smoothedLipSync*15 + raw) / 16
-				muxer.SetLipSyncOffset90k(m.smoothedLipSync)
+			cur := m.smoothedLipSync.Load()
+			if cur == 0 {
+				m.smoothedLipSync.Store(raw)
+				muxer.SetLipSyncOffset90k(raw)
+			} else if delta := raw - cur; delta > 450 || delta < -450 {
+				// Smoothed EMA update. In production this RMW is
+				// single-writer (encode goroutine); LatchLipSync sets
+				// latched=true, which short-circuits this block on the
+				// next frame. A plain Store is safe.
+				next := (cur*15 + raw) / 16
+				m.smoothedLipSync.Store(next)
+				muxer.SetLipSyncOffset90k(next)
 			}
 		}
 		// Diagnostic: verify upstream PTS deltas at DirectWriteVideo
 		// stage. Uses the shared nominal-delta helper so non-NTSC
 		// pipelines (24/25/30/50/60 fps) don't produce false warnings.
-		if prev := m.lastDirectVideoPTS; prev != 0 {
+		if prev := m.lastDirectVideoPTS.Load(); prev != 0 {
 			delta := frame.PTS - prev
 			if !video.IsNominalPTSDelta(delta) {
 				slog.Warn("DirectWriteVideo: non-nominal PTS delta",
 					"delta", delta, "pts", frame.PTS, "prevPts", prev)
 			}
 		}
-		m.lastDirectVideoPTS = frame.PTS
+		m.lastDirectVideoPTS.Store(frame.PTS)
 		if err := muxer.WriteVideo(frame); err != nil {
 			m.log.Error("direct video write error", "err", err)
 		}
