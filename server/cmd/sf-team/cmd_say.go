@@ -24,6 +24,7 @@ func (d db) say(ctx context.Context, agentID, thread, kind, body string, mention
 }
 
 func runSay(args []string) int {
+	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("say", flag.ExitOnError)
 	to := fs.String("to", "global", "thread: 'global' or '<ITEM-ID>'")
 	mention := fs.String("mention", "", "comma-separated @ids")

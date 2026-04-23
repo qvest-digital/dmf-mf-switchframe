@@ -65,6 +65,7 @@ func (d db) untouch(ctx context.Context, agentID, path string) error {
 }
 
 func runTouch(args []string) int {
+	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("touch", flag.ExitOnError)
 	item := fs.String("item", "", "item id to associate")
 	fs.Parse(args)
@@ -96,6 +97,7 @@ func runTouch(args []string) int {
 }
 
 func runUntouch(args []string) int {
+	args = reorderFlags(args, nil)
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: sf-team untouch <path>")
 		return 4

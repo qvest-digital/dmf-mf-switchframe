@@ -29,6 +29,7 @@ func (d db) latestProgress(ctx context.Context, itemID string) (int, string) {
 }
 
 func runProgress(args []string) int {
+	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("progress", flag.ExitOnError)
 	note := fs.String("note", "", "optional note")
 	fs.Parse(args)

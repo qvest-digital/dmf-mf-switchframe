@@ -110,6 +110,7 @@ func walkItems(dir string) ([]item, error) {
 }
 
 func runDumpStatus(args []string) int {
+	args = reorderFlags(args, nil)
 	fset := flag.NewFlagSet("dump-status", flag.ExitOnError)
 	items := fset.String("items", "docs/backlog/items", "path to items directory")
 	out := fset.String("out", "-", "output path ('-' for stdout)")

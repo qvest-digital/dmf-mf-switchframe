@@ -9,15 +9,16 @@ import (
 )
 
 func (d db) reassign(ctx context.Context, itemID, byAgent, toAgent string) error {
-	if err := d.release(ctx, itemID, byAgent, "released"); err != nil {
-		return err
-	}
 	now := d.nowUnix()
 	tx, err := d.sqldb.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+
+	if err := d.releaseInTx(ctx, tx, itemID, byAgent, "released"); err != nil {
+		return err
+	}
 	body := fmt.Sprintf("@%s reassigning %s to you", toAgent, itemID)
 	if err := d.postMessage(ctx, tx, now, byAgent, "global", "say", body, []string{toAgent}, "normal"); err != nil {
 		return err
@@ -26,6 +27,7 @@ func (d db) reassign(ctx context.Context, itemID, byAgent, toAgent string) error
 }
 
 func runReassign(args []string) int {
+	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("reassign", flag.ExitOnError)
 	to := fs.String("to", "", "target agent id (optionally prefixed with @)")
 	fs.Parse(args)

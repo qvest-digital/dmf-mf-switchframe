@@ -35,6 +35,7 @@ func (d db) historyFor(ctx context.Context, itemID string) ([]historyEntry, erro
 }
 
 func runHistory(args []string) int {
+	args = reorderFlags(args, nil)
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: sf-team history <ITEM-ID>")
 		return 4

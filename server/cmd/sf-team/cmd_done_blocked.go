@@ -57,6 +57,7 @@ func (d db) blocked(ctx context.Context, itemID, agentID, reason string) error {
 }
 
 func runDone(args []string) int {
+	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("done", flag.ExitOnError)
 	summary := fs.String("summary", "", "one-line summary")
 	fs.Parse(args)
@@ -90,6 +91,7 @@ func runDone(args []string) int {
 }
 
 func runBlocked(args []string) int {
+	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("blocked", flag.ExitOnError)
 	reason := fs.String("reason", "", "blocker description")
 	fs.Parse(args)

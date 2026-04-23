@@ -41,6 +41,7 @@ func (d db) writeItemStatus(ctx context.Context, w io.Writer, itemID string) err
 }
 
 func runStatus(args []string) int {
+	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	item := fs.String("item", "", "scope to a single item")
 	fs.Parse(args)

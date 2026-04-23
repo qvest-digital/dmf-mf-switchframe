@@ -50,6 +50,7 @@ func (d db) tick(ctx context.Context, agentID string) (digest, error) {
 }
 
 func runTick(args []string) int {
+	args = reorderFlags(args, map[string]bool{"json": true})
 	fs := flag.NewFlagSet("tick", flag.ExitOnError)
 	jsonFlag := fs.Bool("json", false, "machine-readable output")
 	fs.Parse(args)

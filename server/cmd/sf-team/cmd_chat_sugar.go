@@ -79,6 +79,7 @@ func runAnswer(args []string) int {
 }
 
 func runReviewRequest(args []string) int {
+	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("review-request", flag.ExitOnError)
 	mention := fs.String("mention", "", "reviewer agent id (without @)")
 	fs.Parse(args)

@@ -64,6 +64,7 @@ func parseSince(s string) (int64, error) {
 }
 
 func runTail(args []string) int {
+	args = reorderFlags(args, map[string]bool{"follow": true})
 	fs := flag.NewFlagSet("tail", flag.ExitOnError)
 	thread := fs.String("thread", "all", "'global', '<ITEM>', or 'all'")
 	follow := fs.Bool("follow", false, "stream new messages")

@@ -75,6 +75,7 @@ func (d db) archive(ctx context.Context, beforeUnix int64) (int, string, error) 
 }
 
 func runArchive(args []string) int {
+	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("archive", flag.ExitOnError)
 	before := fs.String("before", "30d", "cut-off duration (e.g., 30d, 720h)")
 	fs.Parse(args)

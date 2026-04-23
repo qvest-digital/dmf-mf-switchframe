@@ -51,6 +51,7 @@ func (d db) whoList(ctx context.Context) ([]whoRow, error) {
 }
 
 func runWho(args []string) int {
+	args = reorderFlags(args, map[string]bool{"json": true})
 	fs := flag.NewFlagSet("who", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "emit JSON")
 	fs.Parse(args)

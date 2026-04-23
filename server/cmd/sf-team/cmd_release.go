@@ -73,6 +73,7 @@ func (d db) releaseInTx(ctx context.Context, tx *sql.Tx, itemID, agentID, outcom
 }
 
 func runRelease(args []string) int {
+	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("release", flag.ExitOnError)
 	outcome := fs.String("outcome", "released", "done | blocked | released")
 	fs.Parse(args)

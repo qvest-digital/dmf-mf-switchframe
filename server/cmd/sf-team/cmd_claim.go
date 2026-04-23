@@ -76,6 +76,7 @@ func isPKConflict(err error) bool {
 }
 
 func runClaim(args []string) int {
+	args = reorderFlags(args, map[string]bool{"long": true})
 	fs := flag.NewFlagSet("claim", flag.ExitOnError)
 	intent := fs.String("intent", "", "short sentence describing intent")
 	touches := fs.String("touches", "", "comma-separated file paths you'll touch")

@@ -53,6 +53,10 @@ func runRegister(args []string) int {
 
 	if *asFlag != "" {
 		id = *asFlag
+		if err := writePersistedAgentID(id); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 4
+		}
 	}
 	name := *nameFlag
 	if name == "" {
