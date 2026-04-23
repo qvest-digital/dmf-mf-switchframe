@@ -10,20 +10,29 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type ACItem struct {
+	Text    string `json:"text"`
+	Checked bool   `json:"checked"`
+}
+
 type item struct {
-	ID       string `yaml:"id"`
-	Title    string `yaml:"title"`
-	Type     string `yaml:"type"`
-	Priority string `yaml:"priority"`
-	Area     string `yaml:"area"`
-	Status   string `yaml:"status"`
-	Estimate string `yaml:"estimate"`
-	Risk     string `yaml:"risk"`
-	Created  string `yaml:"created"`
-	Updated  string `yaml:"updated"`
+	ID        string   `yaml:"id"`
+	Title     string   `yaml:"title"`
+	Type      string   `yaml:"type"`
+	Priority  string   `yaml:"priority"`
+	Area      string   `yaml:"area"`
+	Status    string   `yaml:"status"`
+	Estimate  string   `yaml:"estimate"`
+	Risk      string   `yaml:"risk"`
+	Created   string   `yaml:"created"`
+	Updated   string   `yaml:"updated"`
+	BlockedBy []string `yaml:"blocked-by"`
+	RelatesTo []string `yaml:"relates-to"`
 
 	ACTotal   int
 	ACChecked int
+	ACItems   []ACItem
+	Body      string
 	BodyPath  string
 }
 
@@ -32,6 +41,7 @@ var (
 	acHeaderRe    = regexp.MustCompile(`(?m)^##\s+Acceptance\s+criteria\s*$`)
 	nextHeaderRe  = regexp.MustCompile(`(?m)^##\s+`)
 	checkboxRe    = regexp.MustCompile(`^\s*[-*]\s*\[([ xX])\]\s+`)
+	subBulletRe   = regexp.MustCompile(`^\s{2,}[-*]\s+`)
 )
 
 func parseItemFile(path string) (item, error) {
@@ -51,6 +61,7 @@ func parseItemFile(path string) (item, error) {
 	it.BodyPath = path
 
 	rest := data[len(match[0]):]
+	it.Body = string(rest)
 	hdr := acHeaderRe.FindIndex(rest)
 	if hdr != nil {
 		start := hdr[1]
@@ -61,15 +72,25 @@ func parseItemFile(path string) (item, error) {
 			end = len(rest)
 		}
 		scanner := bufio.NewScanner(strings.NewReader(string(rest[start:end])))
+		var cur *ACItem
 		for scanner.Scan() {
 			line := scanner.Text()
-			m := checkboxRe.FindStringSubmatch(line)
-			if m == nil {
+			if m := checkboxRe.FindStringSubmatch(line); m != nil {
+				trimmed := strings.TrimSpace(checkboxRe.ReplaceAllString(line, ""))
+				it.ACTotal++
+				checked := strings.EqualFold(m[1], "x")
+				if checked {
+					it.ACChecked++
+				}
+				it.ACItems = append(it.ACItems, ACItem{Text: trimmed, Checked: checked})
+				cur = &it.ACItems[len(it.ACItems)-1]
 				continue
 			}
-			it.ACTotal++
-			if strings.EqualFold(m[1], "x") {
-				it.ACChecked++
+			if cur != nil && subBulletRe.MatchString(line) {
+				sub := strings.TrimSpace(subBulletRe.ReplaceAllString(line, ""))
+				if sub != "" {
+					cur.Text += "\n" + sub
+				}
 			}
 		}
 	}
