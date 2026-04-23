@@ -35,7 +35,7 @@ func (d db) whoList(ctx context.Context) ([]whoRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []whoRow
+	out := []whoRow{}
 	for rows.Next() {
 		var r whoRow
 		var item, intent sql.NullString

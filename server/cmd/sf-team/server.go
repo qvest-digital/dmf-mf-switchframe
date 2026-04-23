@@ -142,7 +142,7 @@ func (s *server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		ClaimedAt int64  `json:"claimed_at"`
 		LastTouch int64  `json:"last_touch"`
 	}
-	var out []claimRow
+	out := []claimRow{}
 	for rows.Next() {
 		var c claimRow
 		if err := rows.Scan(&c.ItemID, &c.AgentID, &c.Intent, &c.ClaimedAt, &c.LastTouch); err != nil {
@@ -203,7 +203,7 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Mentions json.RawMessage `json:"mentions"`
 		Priority string          `json:"priority"`
 	}
-	var out []msgRow
+	out := []msgRow{}
 	for rows.Next() {
 		var m msgRow
 		var ment string
@@ -402,7 +402,7 @@ func (s *server) handleProgress(w http.ResponseWriter, r *http.Request) {
 		ReportedBy string `json:"reported_by"`
 		Note       string `json:"note"`
 	}
-	var out []pRow
+	out := []pRow{}
 	for rows.Next() {
 		var p pRow
 		if err := rows.Scan(&p.Pct, &p.ReportedAt, &p.ReportedBy, &p.Note); err != nil {
@@ -618,7 +618,7 @@ func (s *server) handleTouches(w http.ResponseWriter, r *http.Request) {
 		StartedAt  int64  `json:"started_at"`
 		ReleasedAt int64  `json:"released_at"`
 	}
-	var out []tRow
+	out := []tRow{}
 	for rows.Next() {
 		var t tRow
 		if err := rows.Scan(&t.AgentID, &t.ItemID, &t.Path, &t.StartedAt, &t.ReleasedAt); err != nil {
