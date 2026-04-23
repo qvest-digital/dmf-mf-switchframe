@@ -66,12 +66,17 @@ func (s *server) handler() http.Handler {
 
 func (s *server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.Token != "" {
-			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if got != s.cfg.Token {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
+		if s.cfg.Token == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got == "" && r.URL.Path == "/api/events" {
+			got = r.URL.Query().Get("token")
+		}
+		if got != s.cfg.Token {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
