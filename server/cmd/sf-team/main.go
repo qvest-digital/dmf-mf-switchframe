@@ -52,6 +52,8 @@ func main() {
 		os.Exit(runUntouch(args))
 	case "tick":
 		os.Exit(runTick(args))
+	case "who":
+		os.Exit(runWho(args))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		usage()
