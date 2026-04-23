@@ -42,6 +42,8 @@ func main() {
 		os.Exit(runAnswer(args))
 	case "review-request":
 		os.Exit(runReviewRequest(args))
+	case "knock":
+		os.Exit(runKnock(args))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		usage()
