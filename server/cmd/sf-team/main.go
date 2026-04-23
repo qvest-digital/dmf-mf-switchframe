@@ -46,6 +46,10 @@ func main() {
 		os.Exit(runKnock(args))
 	case "progress":
 		os.Exit(runProgress(args))
+	case "touch":
+		os.Exit(runTouch(args))
+	case "untouch":
+		os.Exit(runUntouch(args))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		usage()
