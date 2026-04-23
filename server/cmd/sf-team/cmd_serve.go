@@ -19,6 +19,7 @@ func runServe(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	port := fs.Int("port", 7890, "port")
 	host := fs.String("host", "127.0.0.1", "bind host")
+	itemsDir := fs.String("items-dir", "docs/backlog/items", "items directory to watch")
 	fs.Parse(args)
 
 	if err := ensureHome(); err != nil {
@@ -43,13 +44,17 @@ func runServe(args []string) int {
 	defer sqldb.Close()
 
 	d := newDB(sqldb)
-	srv := newServer(d, serverConfig{Token: cfg.Token, Host: *host, Port: *port})
+	srv := newServer(d, serverConfig{Token: cfg.Token, Host: *host, Port: *port, ItemsDir: *itemsDir})
 
 	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
 	httpSrv := &http.Server{Addr: addr, Handler: srv.handler(), ReadHeaderTimeout: 5 * time.Second}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if st, err := os.Stat(srv.cfg.ItemsDir); err == nil && st.IsDir() {
+		go watchItems(ctx, srv.cfg.ItemsDir, srv.bus)
+	}
 
 	go func() {
 		<-ctx.Done()
