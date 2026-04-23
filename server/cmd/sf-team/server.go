@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -59,6 +60,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /api/messages", s.handleMessages)
 	mux.HandleFunc("GET /api/items", s.handleItemsList)
 	mux.HandleFunc("GET /api/items/{id}", s.handleItemDetail)
+	mux.HandleFunc("GET /api/items/{id}/activity", s.handleItemActivity)
 	mux.HandleFunc("GET /api/progress/{id}", s.handleProgress)
 	mux.HandleFunc("POST /api/say", s.handleSay)
 	mux.HandleFunc("POST /api/knock", s.handleKnock)
@@ -302,6 +304,85 @@ func (s *server) handleItemDetail(w http.ResponseWriter, r *http.Request) {
 		"relates_to":    it.RelatesTo,
 		"current_claim": currentClaim,
 	})
+}
+
+func (s *server) handleItemActivity(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	limit := 100
+	if lv := r.URL.Query().Get("limit"); lv != "" {
+		if n, err := strconv.Atoi(lv); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	var before int64 = math.MaxInt64
+	if bv := r.URL.Query().Get("before"); bv != "" {
+		if n, err := strconv.ParseInt(bv, 10, 64); err == nil && n > 0 {
+			before = n
+		}
+	}
+
+	const q = `
+		SELECT 'claim'    AS kind, claimed_at AS ts, agent_id, COALESCE(intent,'') AS detail, 0 AS pct, ''  AS path, ''  AS outcome, '' AS body
+		  FROM claims         WHERE item_id = ?  AND claimed_at < ?
+		UNION ALL
+		SELECT 'claim',        claimed_at,     agent_id, '',                 0,            '',         '',              ''
+		  FROM claim_history  WHERE item_id = ?  AND claimed_at < ?
+		UNION ALL
+		SELECT 'release',      released_at,    agent_id, '',                 0,            '',         COALESCE(outcome,''), ''
+		  FROM claim_history  WHERE item_id = ?  AND released_at < ?
+		UNION ALL
+		SELECT 'progress',     reported_at,    reported_by, COALESCE(note,''), pct,         '',         '',              ''
+		  FROM progress       WHERE item_id = ?  AND reported_at < ?
+		UNION ALL
+		SELECT 'touch',        started_at,     agent_id, '',                 0,            path,       '',              ''
+		  FROM touches        WHERE item_id = ?  AND started_at < ?
+		UNION ALL
+		SELECT 'untouch',      released_at,    agent_id, '',                 0,            path,       '',              ''
+		  FROM touches        WHERE item_id = ?  AND released_at IS NOT NULL AND released_at < ?
+		UNION ALL
+		SELECT kind,           ts,             agent_id, '',                 0,            '',         '',              COALESCE(body,'')
+		  FROM messages
+		  WHERE thread = ? AND ts < ?
+		    AND kind IN ('knock','ask','answer','heads_up','say','done','blocked','review_req')
+		ORDER BY ts DESC
+		LIMIT ?
+	`
+	rows, err := s.d.sqldb.QueryContext(r.Context(), q,
+		id, before,
+		id, before,
+		id, before,
+		id, before,
+		id, before,
+		id, before,
+		id, before,
+		limit,
+	)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type activityEvent struct {
+		Kind    string `json:"kind"`
+		TS      int64  `json:"ts"`
+		AgentID string `json:"agent_id"`
+		Detail  string `json:"detail,omitempty"`
+		Pct     int    `json:"pct,omitempty"`
+		Path    string `json:"path,omitempty"`
+		Outcome string `json:"outcome,omitempty"`
+		Body    string `json:"body,omitempty"`
+	}
+	out := []activityEvent{}
+	for rows.Next() {
+		var e activityEvent
+		if err := rows.Scan(&e.Kind, &e.TS, &e.AgentID, &e.Detail, &e.Pct, &e.Path, &e.Outcome, &e.Body); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		out = append(out, e)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *server) handleProgress(w http.ResponseWriter, r *http.Request) {
