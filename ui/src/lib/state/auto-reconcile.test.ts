@@ -827,44 +827,59 @@ describe('createAutoReconcile', () => {
 	// ── Reconcile lock ──
 
 	describe('reconcile lock', () => {
-		it('skips push when lock cannot be acquired', async () => {
+		it('skips push when first lock (A) cannot be acquired', async () => {
 			const config = makeConfig({
 				acquireLock: vi.fn().mockResolvedValue({ acquired: false }),
 				releaseLock: vi.fn().mockResolvedValue(undefined),
+				onReconcileBusy: vi.fn(),
 			});
 			const reconcile = createAutoReconcile(config);
 
 			reconcile.onSyncStatusChange('mismatch', 'A');
 			await vi.advanceTimersByTimeAsync(0);
 
-			expect(config.acquireLock).toHaveBeenCalledWith('B');
+			// Lexical acquisition order: 'A' first, 'B' second. First failure aborts.
+			expect(config.acquireLock).toHaveBeenCalledWith('A');
+			expect(config.acquireLock).not.toHaveBeenCalledWith('B');
+			expect(config.onReconcileBusy).toHaveBeenCalledWith('A');
 			expect(config.getSnapshot).not.toHaveBeenCalled();
 
 			reconcile.destroy();
 		});
 
-		it('acquires and releases lock around push', async () => {
+		it('releases first lock and aborts if second lock cannot be acquired', async () => {
+			let call = 0;
 			const config = makeConfig({
-				acquireLock: vi.fn().mockResolvedValue({ acquired: true, lockId: 'lock-123' }),
+				acquireLock: vi.fn().mockImplementation(() => {
+					call++;
+					if (call === 1) return Promise.resolve({ acquired: true, lockId: 'lock-A' });
+					return Promise.resolve({ acquired: false });
+				}),
 				releaseLock: vi.fn().mockResolvedValue(undefined),
+				onReconcileBusy: vi.fn(),
 			});
 			const reconcile = createAutoReconcile(config);
 
 			reconcile.onSyncStatusChange('mismatch', 'A');
 			await vi.advanceTimersByTimeAsync(0);
 
-			expect(config.acquireLock).toHaveBeenCalledWith('B');
-			expect(config.getSnapshot).toHaveBeenCalledWith('A');
-			expect(config.pushSnapshot).toHaveBeenCalledWith('B', expect.anything());
-			expect(config.releaseLock).toHaveBeenCalledWith('B', 'lock-123');
+			expect(config.acquireLock).toHaveBeenNthCalledWith(1, 'A');
+			expect(config.acquireLock).toHaveBeenNthCalledWith(2, 'B');
+			expect(config.releaseLock).toHaveBeenCalledWith('A', 'lock-A');
+			expect(config.onReconcileBusy).toHaveBeenCalledWith('B');
+			expect(config.getSnapshot).not.toHaveBeenCalled();
 
 			reconcile.destroy();
 		});
 
-		it('releases lock even on push failure', async () => {
+		it('acquires both engine locks in lexical order and passes source lockId to getSnapshot', async () => {
+			let call = 0;
 			const config = makeConfig({
-				pushSnapshot: vi.fn().mockRejectedValue(new Error('push failed')),
-				acquireLock: vi.fn().mockResolvedValue({ acquired: true, lockId: 'lock-456' }),
+				acquireLock: vi.fn().mockImplementation(() => {
+					call++;
+					const lockId = call === 1 ? 'lock-A' : 'lock-B';
+					return Promise.resolve({ acquired: true, lockId });
+				}),
 				releaseLock: vi.fn().mockResolvedValue(undefined),
 			});
 			const reconcile = createAutoReconcile(config);
@@ -872,9 +887,93 @@ describe('createAutoReconcile', () => {
 			reconcile.onSyncStatusChange('mismatch', 'A');
 			await vi.advanceTimersByTimeAsync(0);
 
-			expect(config.releaseLock).toHaveBeenCalledWith('B', 'lock-456');
+			expect(config.acquireLock).toHaveBeenNthCalledWith(1, 'A');
+			expect(config.acquireLock).toHaveBeenNthCalledWith(2, 'B');
+			// authoritative is 'A', so the source lockId is 'A''s = 'lock-A'.
+			expect(config.getSnapshot).toHaveBeenCalledWith('A', 'lock-A');
+			expect(config.pushSnapshot).toHaveBeenCalledWith('B', expect.anything());
+			// Release in reverse: B first, then A.
+			expect(config.releaseLock).toHaveBeenNthCalledWith(1, 'B', 'lock-B');
+			expect(config.releaseLock).toHaveBeenNthCalledWith(2, 'A', 'lock-A');
 
 			reconcile.destroy();
+		});
+
+		it('releases both locks even on push failure', async () => {
+			let call = 0;
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockRejectedValue(new Error('push failed')),
+				acquireLock: vi.fn().mockImplementation(() => {
+					call++;
+					const lockId = call === 1 ? 'lock-A' : 'lock-B';
+					return Promise.resolve({ acquired: true, lockId });
+				}),
+				releaseLock: vi.fn().mockResolvedValue(undefined),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.releaseLock).toHaveBeenCalledWith('A', 'lock-A');
+			expect(config.releaseLock).toHaveBeenCalledWith('B', 'lock-B');
+
+			reconcile.destroy();
+		});
+
+		it('dual-browser stampede: two reconcile instances on the same lock server, only one completes', async () => {
+			// Shared mock lock server — mirrors the real server's per-engine
+			// reconcileLockState semantics. Two browsers compete for the same
+			// pair of engine locks; the one that loses the race aborts.
+			const held = new Map<string, string>(); // engine -> lockId held
+			let counter = 0;
+			const mkLockServer = () => ({
+				acquireLock: vi.fn(async (engine: string) => {
+					if (held.has(engine)) return { acquired: false };
+					const lockId = `lock-${engine}-${++counter}`;
+					held.set(engine, lockId);
+					return { acquired: true, lockId };
+				}),
+				releaseLock: vi.fn(async (engine: string, lockId: string) => {
+					if (held.get(engine) === lockId) held.delete(engine);
+				}),
+			});
+
+			const busyX = vi.fn();
+			const busyY = vi.fn();
+			const pushX = vi.fn().mockResolvedValue({ warnings: [] });
+			const pushY = vi.fn().mockResolvedValue({ warnings: [] });
+
+			// Browser X: authoritative=A. Browser Y: authoritative=B. Same lock server.
+			const lockServer = mkLockServer();
+			const configX: AutoReconcileConfig = {
+				...makeConfig(),
+				...lockServer,
+				pushSnapshot: pushX,
+				onReconcileBusy: busyX,
+			};
+			const configY: AutoReconcileConfig = {
+				...makeConfig(),
+				...lockServer,
+				pushSnapshot: pushY,
+				onReconcileBusy: busyY,
+			};
+			const X = createAutoReconcile(configX);
+			const Y = createAutoReconcile(configY);
+
+			// Fire both in the same synchronous tick so they race for 'A' first.
+			X.onSyncStatusChange('mismatch', 'A');
+			Y.onSyncStatusChange('mismatch', 'B');
+			await vi.advanceTimersByTimeAsync(0);
+
+			const completed = (pushX.mock.calls.length > 0 ? 1 : 0) + (pushY.mock.calls.length > 0 ? 1 : 0);
+			const busied = busyX.mock.calls.length + busyY.mock.calls.length;
+
+			expect(completed).toBe(1);
+			expect(busied).toBeGreaterThanOrEqual(1);
+
+			X.destroy();
+			Y.destroy();
 		});
 
 		it('proceeds without lock when acquireLock not provided', async () => {

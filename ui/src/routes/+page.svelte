@@ -279,7 +279,7 @@
 
 	// Auto-reconcile: watches sync status and triggers snapshot push when engines diverge
 	const autoReconcile = createAutoReconcile({
-		getSnapshot: (engine) => dualApi.getStateSnapshot(engine),
+		getSnapshot: (engine, lockId) => dualApi.getStateSnapshot(engine, lockId),
 		pushSnapshot: (engine, snapshot) => dualApi.pushStateSnapshot(engine, snapshot),
 		acquireLock: (engine) => dualApi.acquireReconcileLock(engine),
 		releaseLock: (engine, lockId) => dualApi.releaseReconcileLock(engine, lockId),
@@ -310,6 +310,12 @@
 			const msg = `Multi-region sync degraded — manually reconcile or restart engine (${target}: snapshot seq ${snapshotSeq} < engine seq ${currentSeq})`;
 			divergenceLog.add({ type: 'diverged', message: msg });
 			notify('error', msg);
+		},
+		onReconcileBusy: (engine) => {
+			divergenceLog.add({
+				type: 'snapshot',
+				message: `peer browser holds reconcile lock on engine ${engine} — backing off`,
+			});
 		},
 	});
 

@@ -17,7 +17,7 @@ export class SnapshotStaleError extends Error {
 }
 
 export interface AutoReconcileConfig {
-	getSnapshot: (engine: EngineId) => Promise<unknown>;
+	getSnapshot: (engine: EngineId, lockId?: string) => Promise<unknown>;
 	pushSnapshot: (engine: EngineId, snapshot: unknown) => Promise<{ warnings: string[] }>;
 	getAuthoritativeState?: () => { inTransition?: boolean } | null;
 	checkCriticalDivergence?: () => boolean;
@@ -31,6 +31,11 @@ export interface AutoReconcileConfig {
 	/** Called when two consecutive pushes to the same target return 409 stale.
 	 * Signals that engines can't be reconciled automatically — operator action needed. */
 	onStaleConflict?: (target: EngineId, snapshotSeq: number, currentSeq: number) => void;
+	/** Called when either the source or target lock acquisition failed because
+	 * another browser holds it — the peer is reconciling; this browser backs off.
+	 * Prevents the AB-vs-BA snapshot stampede that would otherwise silently swap
+	 * engine states. */
+	onReconcileBusy?: (engine: EngineId) => void;
 }
 
 const DIVERGE_DELAY_MS = 2000;
@@ -137,38 +142,70 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			return;
 		}
 
-		// Acquire lock before push (with timeout)
-		let lockId: string | undefined;
+		// Acquire BOTH engine locks in a fixed lexical order (A before B) to
+		// avoid AB-vs-BA deadlock when two browsers try to reconcile in
+		// opposite directions simultaneously. Without the source-side lock
+		// the GET /sync/state-snapshot capture is unauthenticated — a peer
+		// could pull a contradictory snapshot from the other engine and both
+		// reconciles would silently swap engine states.
+		const first: EngineId = 'A';
+		const second: EngineId = 'B';
+		let firstLockId: string | undefined;
+		let secondLockId: string | undefined;
 		if (config.acquireLock) {
 			try {
-				const lockPromise = config.acquireLock(target);
-				const lock = await Promise.race([
-					lockPromise,
-					new Promise<{ acquired: false }>((resolve) =>
-						setTimeout(() => resolve({ acquired: false }), LOCK_ACQUIRE_TIMEOUT_MS)
-					),
-				]);
-				if (!lock.acquired) {
+				const acquireWithTimeout = (engine: EngineId) =>
+					Promise.race([
+						config.acquireLock!(engine),
+						new Promise<{ acquired: false }>((resolve) =>
+							setTimeout(() => resolve({ acquired: false }), LOCK_ACQUIRE_TIMEOUT_MS),
+						),
+					]);
+
+				const lock1 = await acquireWithTimeout(first);
+				if (!lock1.acquired) {
+					config.onReconcileBusy?.(first);
 					return;
 				}
-				lockId = lock.lockId;
+				firstLockId = lock1.lockId;
+
+				const lock2 = await acquireWithTimeout(second);
+				if (!lock2.acquired) {
+					if (firstLockId && config.releaseLock) {
+						config.releaseLock(first, firstLockId).catch(() => {});
+					}
+					config.onReconcileBusy?.(second);
+					return;
+				}
+				secondLockId = lock2.lockId;
 			} catch {
-				// Lock acquisition failed (engine unreachable) — skip this cycle.
-				// The next sync status change will retry.
+				if (firstLockId && config.releaseLock) {
+					config.releaseLock(first, firstLockId).catch(() => {});
+				}
 				return;
 			}
 		}
 
+		// Select the lockId for the source engine so it can be passed to the
+		// GET. Holding the target lock simultaneously is what prevents a peer
+		// browser from starting a reverse-direction reconcile.
+		const sourceLockId = authoritative === first ? firstLockId : secondLockId;
+
 		pushInFlight = true;
 		pushTotal++;
 
-		// Start periodic lock refresh to prevent expiry during long operations
+		// Start periodic lock refresh to prevent expiry during long operations.
+		// Refresh both held locks — losing the source lock mid-push would let
+		// a peer open a new reconcile window and race our apply.
 		let lockRefreshInterval: ReturnType<typeof setInterval> | null = null;
-		if (lockId && config.refreshLock) {
+		if (config.refreshLock && (firstLockId || secondLockId)) {
 			lockRefreshInterval = setInterval(() => {
-				config.refreshLock!(target, lockId!).catch(() => {
-					// Lock lost — abort will happen via timeout
-				});
+				if (firstLockId) {
+					config.refreshLock!(first, firstLockId).catch(() => {});
+				}
+				if (secondLockId) {
+					config.refreshLock!(second, secondLockId).catch(() => {});
+				}
 			}, LOCK_REFRESH_INTERVAL_MS);
 		}
 
@@ -184,7 +221,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 				}),
 			]);
 
-			let snapshot = await timeoutRace(config.getSnapshot(authoritative));
+			let snapshot = await timeoutRace((sourceLockId ? config.getSnapshot(authoritative, sourceLockId) : config.getSnapshot(authoritative)));
 			let result: { warnings: string[] };
 			try {
 				result = await timeoutRace(config.pushSnapshot(target, snapshot));
@@ -192,7 +229,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 				if (pushErr instanceof SnapshotStaleError) {
 					// Target advanced past our snapshot. Pull fresh from source and retry.
 					const firstGap = pushErr.currentSeq - pushErr.snapshotSeq;
-					snapshot = await timeoutRace(config.getSnapshot(authoritative));
+					snapshot = await timeoutRace((sourceLockId ? config.getSnapshot(authoritative, sourceLockId) : config.getSnapshot(authoritative)));
 					try {
 						result = await timeoutRace(config.pushSnapshot(target, snapshot));
 					} catch (retryErr) {
@@ -258,8 +295,13 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			}
 			pushInFlight = false;
 			lastPushTimes.set(target, Date.now());
-			if (lockId && config.releaseLock) {
-				config.releaseLock(target, lockId);
+			if (config.releaseLock) {
+				if (secondLockId) {
+					config.releaseLock(second, secondLockId).catch(() => {});
+				}
+				if (firstLockId) {
+					config.releaseLock(first, firstLockId).catch(() => {});
+				}
 			}
 		}
 	}

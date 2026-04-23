@@ -60,9 +60,13 @@ export class DualApiClient {
 	// State snapshot methods (target specific engine)
 	// =============================================
 
-	async getStateSnapshot(engineId: EngineId): Promise<unknown> {
+	async getStateSnapshot(engineId: EngineId, lockId?: string): Promise<unknown> {
 		const engine = this.findEngine(engineId);
-		const res = await fetch(`${engine.url}/api/sync/state-snapshot`, {
+		const url = new URL(`${engine.url}/api/sync/state-snapshot`);
+		if (lockId) {
+			url.searchParams.set('lockId', lockId);
+		}
+		const res = await fetch(url.toString(), {
 			method: 'GET',
 			headers: {
 				...this.authHeaders(),

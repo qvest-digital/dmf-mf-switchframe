@@ -83,6 +83,19 @@ func (l *reconcileLockState) refresh(lockID string) bool {
 	return true
 }
 
+// isHeldBy reports whether lockID is the currently-held, unexpired lock.
+// Used by the snapshot GET handler to verify the caller already acquired
+// the lock — prevents unauthenticated browsers from racing a reconcile in
+// the opposite direction on the peer engine.
+func (l *reconcileLockState) isHeldBy(lockID string) bool {
+	if lockID == "" {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.lockID != "" && l.lockID == lockID && time.Now().Before(l.deadline)
+}
+
 // SnapshotProvider captures and applies full engine state snapshots for
 // multi-region active-active redundancy. A browser detecting sustained state
 // divergence pulls a snapshot from the authoritative engine and pushes it
@@ -143,7 +156,26 @@ type snapshotEnvelope struct {
 // handleGetStateSnapshot returns the full restorable engine state wrapped
 // in a snapshotEnvelope with staleness metadata. Used by browsers to pull
 // a snapshot from the authoritative engine during redundancy reconciliation.
+//
+// Callers must supply a ?lockId= query matching a currently-held reconcile
+// lock on this engine, or ?admin=true for break-glass access. Without a
+// matching lock the handler returns 409. Gating the capture side (not just
+// apply) prevents two browsers from pulling opposing snapshots and
+// reconciling each other's engines in contradictory directions.
 func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
+	admin := r.URL.Query().Get("admin") == "true"
+	if !admin {
+		lockID := r.URL.Query().Get("lockId")
+		if !a.reconcileLock.isHeldBy(lockID) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": "no active reconcile lock",
+			})
+			return
+		}
+	}
+
 	// Capture seq FIRST, before the snapshot. A command could execute between
 	// these two calls — by reading enrichedState first, the envelope seq is
 	// guaranteed to be <= the snapshot's actual state. The receiving engine

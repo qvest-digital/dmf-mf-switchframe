@@ -200,7 +200,7 @@ func TestGetStateSnapshot_ReturnsSnapshot(t *testing.T) {
 	}
 	api := setupTestAPIWithSnapshot(t, provider)
 
-	req := httptest.NewRequest("GET", "/api/sync/state-snapshot", nil)
+	req := httptest.NewRequest("GET", "/api/sync/state-snapshot?admin=true", nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
@@ -231,7 +231,7 @@ func TestGetStateSnapshot_IncludesMetadata(t *testing.T) {
 	}
 	api := setupTestAPIWithSnapshot(t, provider)
 
-	req := httptest.NewRequest("GET", "/api/sync/state-snapshot", nil)
+	req := httptest.NewRequest("GET", "/api/sync/state-snapshot?admin=true", nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
@@ -635,7 +635,7 @@ func TestGetStateSnapshot_SeqCapturedBeforeSnapshot(t *testing.T) {
 	}
 	api := NewAPI(sw, WithSnapshotProvider(provider))
 
-	req := httptest.NewRequest("GET", "/api/sync/state-snapshot", nil)
+	req := httptest.NewRequest("GET", "/api/sync/state-snapshot?admin=true", nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
@@ -650,6 +650,78 @@ func TestGetStateSnapshot_SeqCapturedBeforeSnapshot(t *testing.T) {
 	// proving enrichedState() was called BEFORE CaptureFullSnapshot().
 	require.Less(t, env.Seq, seqAtSnapshotTime,
 		"envelope seq should be captured BEFORE CaptureFullSnapshot (seq race fix)")
+}
+
+// TestStateSnapshot_GetRequiresLock covers the lockId gate on the GET capture
+// handler. Without the gate, two browsers could pull opposing snapshots
+// simultaneously and reconcile each other's engines in contradictory
+// directions (the AB-swap failure mode).
+func TestStateSnapshot_GetRequiresLock(t *testing.T) {
+	provider := &mockSnapshotProvider{snapshot: internal.FullStateSnapshot{Version: "1"}}
+	api := setupTestAPIWithSnapshot(t, provider)
+
+	t.Run("no lockId returns 409", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/sync/state-snapshot", nil)
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusConflict, rec.Code)
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.Equal(t, "no active reconcile lock", body["error"])
+	})
+
+	t.Run("matching lockId returns envelope", func(t *testing.T) {
+		lockID, _, ok := api.reconcileLock.tryAcquire("browser-X")
+		require.True(t, ok)
+		defer api.reconcileLock.release(lockID)
+
+		req := httptest.NewRequest("GET", "/api/sync/state-snapshot?lockId="+lockID, nil)
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("stale lockId returns 409", func(t *testing.T) {
+		lockID, _, ok := api.reconcileLock.tryAcquire("browser-X")
+		require.True(t, ok)
+		api.reconcileLock.release(lockID)
+
+		req := httptest.NewRequest("GET", "/api/sync/state-snapshot?lockId="+lockID, nil)
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusConflict, rec.Code)
+	})
+
+	t.Run("wrong lockId returns 409", func(t *testing.T) {
+		_, _, ok := api.reconcileLock.tryAcquire("browser-X")
+		require.True(t, ok)
+
+		req := httptest.NewRequest("GET", "/api/sync/state-snapshot?lockId=deadbeef", nil)
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusConflict, rec.Code)
+	})
+
+	t.Run("admin bypass returns envelope without lockId", func(t *testing.T) {
+		api2 := setupTestAPIWithSnapshot(t, provider)
+		req := httptest.NewRequest("GET", "/api/sync/state-snapshot?admin=true", nil)
+		rec := httptest.NewRecorder()
+		api2.Mux().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("expired lockId returns 409", func(t *testing.T) {
+		api2 := setupTestAPIWithSnapshot(t, provider)
+		api2.reconcileLock.expiry = 20 * time.Millisecond
+		lockID, _, ok := api2.reconcileLock.tryAcquire("browser-X")
+		require.True(t, ok)
+		time.Sleep(40 * time.Millisecond)
+
+		req := httptest.NewRequest("GET", "/api/sync/state-snapshot?lockId="+lockID, nil)
+		rec := httptest.NewRecorder()
+		api2.Mux().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusConflict, rec.Code)
+	})
 }
 
 // seqTrackingSnapshotProvider calls onCapture during CaptureFullSnapshot.
