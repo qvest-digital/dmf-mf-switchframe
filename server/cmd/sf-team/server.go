@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -30,6 +31,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /api/agents", s.handleAgents)
 	mux.HandleFunc("GET /api/claims", s.handleClaims)
 	mux.HandleFunc("GET /api/touches", s.handleTouches)
+	mux.HandleFunc("GET /api/messages", s.handleMessages)
 	return s.authMiddleware(mux)
 }
 
@@ -94,6 +96,69 @@ func (s *server) handleClaims(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out = append(out, c)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	thread := q.Get("thread")
+	limit := 100
+	if lv := q.Get("limit"); lv != "" {
+		if n, err := strconv.Atoi(lv); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	var beforeID int64
+	if bv := q.Get("before"); bv != "" {
+		if n, err := strconv.ParseInt(bv, 10, 64); err == nil {
+			beforeID = n
+		}
+	}
+
+	sqlq := `SELECT id, ts, agent_id, thread, kind, COALESCE(body, ''), COALESCE(mentions, '[]'), priority FROM messages`
+	var conds []string
+	var args []any
+	if thread != "" {
+		conds = append(conds, "thread = ?")
+		args = append(args, thread)
+	}
+	if beforeID > 0 {
+		conds = append(conds, "id < ?")
+		args = append(args, beforeID)
+	}
+	if len(conds) > 0 {
+		sqlq += " WHERE " + strings.Join(conds, " AND ")
+	}
+	sqlq += " ORDER BY id DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.d.sqldb.QueryContext(r.Context(), sqlq, args...)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+	type msgRow struct {
+		ID       int64           `json:"id"`
+		TS       int64           `json:"ts"`
+		AgentID  string          `json:"agent_id"`
+		Thread   string          `json:"thread"`
+		Kind     string          `json:"kind"`
+		Body     string          `json:"body"`
+		Mentions json.RawMessage `json:"mentions"`
+		Priority string          `json:"priority"`
+	}
+	var out []msgRow
+	for rows.Next() {
+		var m msgRow
+		var ment string
+		if err := rows.Scan(&m.ID, &m.TS, &m.AgentID, &m.Thread, &m.Kind, &m.Body, &ment, &m.Priority); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		m.Mentions = json.RawMessage(ment)
+		out = append(out, m)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
