@@ -141,3 +141,5 @@ drainLoop:
 		t.Fatal("no claim event")
 	}
 }
+
+var _ publisherIface = (*eventBus)(nil)
