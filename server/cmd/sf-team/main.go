@@ -50,6 +50,8 @@ func main() {
 		os.Exit(runTouch(args))
 	case "untouch":
 		os.Exit(runUntouch(args))
+	case "tick":
+		os.Exit(runTick(args))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		usage()
