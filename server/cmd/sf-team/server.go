@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -251,17 +252,56 @@ func (s *server) handleItemDetail(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	for _, it := range items {
-		if it.ID == id {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"id": it.ID, "title": it.Title, "type": it.Type, "priority": it.Priority,
-				"area": it.Area, "status": it.Status, "estimate": it.Estimate, "risk": it.Risk,
-				"ac_total": it.ACTotal, "ac_checked": it.ACChecked, "progress_pct": it.ProgressPct(),
-			})
-			return
+	var it *item
+	for i := range items {
+		if items[i].ID == id {
+			it = &items[i]
+			break
 		}
 	}
-	writeErr(w, http.StatusNotFound, "item not found: "+id)
+	if it == nil {
+		writeErr(w, http.StatusNotFound, "item not found: "+id)
+		return
+	}
+
+	var currentClaim any
+	row := s.d.sqldb.QueryRowContext(r.Context(),
+		`SELECT agent_id, COALESCE(intent, ''), claimed_at FROM claims WHERE item_id=?`, id)
+	var cc struct {
+		AgentID   string `json:"agent_id"`
+		Intent    string `json:"intent"`
+		ClaimedAt int64  `json:"claimed_at"`
+	}
+	switch err := row.Scan(&cc.AgentID, &cc.Intent, &cc.ClaimedAt); {
+	case err == nil:
+		currentClaim = cc
+	case errors.Is(err, sql.ErrNoRows):
+		// leave nil — no active claim
+	default:
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if it.ACItems == nil {
+		it.ACItems = []ACItem{}
+	}
+	if it.BlockedBy == nil {
+		it.BlockedBy = []string{}
+	}
+	if it.RelatesTo == nil {
+		it.RelatesTo = []string{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": it.ID, "title": it.Title, "type": it.Type, "priority": it.Priority,
+		"area": it.Area, "status": it.Status, "estimate": it.Estimate, "risk": it.Risk,
+		"ac_total": it.ACTotal, "ac_checked": it.ACChecked, "progress_pct": it.ProgressPct(),
+		"body_markdown": it.Body,
+		"ac":            it.ACItems,
+		"blocked_by":    it.BlockedBy,
+		"relates_to":    it.RelatesTo,
+		"current_claim": currentClaim,
+	})
 }
 
 func (s *server) handleProgress(w http.ResponseWriter, r *http.Request) {
