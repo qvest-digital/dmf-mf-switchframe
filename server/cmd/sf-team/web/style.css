@@ -36,3 +36,6 @@ ul { list-style: none; padding: 0; margin: 0; }
 #drawer .knock-form { margin-top: 12px; display: flex; gap: 6px; }
 #drawer .knock-form input { flex: 1; padding: 6px; background: #0b1020; color: #e8ecf5; border: 1px solid #1e2744; border-radius: 4px; }
 #drawer .knock-form button { padding: 6px 12px; background: #ef4444; color: white; border: 0; border-radius: 4px; cursor: pointer; }
+#drawer .claim-form { margin-top: 12px; display: flex; gap: 6px; }
+#drawer .claim-form input { flex: 1; padding: 6px; background: #0b1020; color: #e8ecf5; border: 1px solid #1e2744; border-radius: 4px; }
+#drawer .claim-form button { padding: 6px 12px; background: #4ade80; color: #0b1020; border: 0; border-radius: 4px; cursor: pointer; font-weight: 600; }

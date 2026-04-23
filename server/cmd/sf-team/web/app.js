@@ -47,6 +47,11 @@ async function refreshBoard() {
     ).join('')
   ).join('');
 
+  ready.querySelectorAll('.card').forEach(el => {
+    const id = el.querySelector('.id').textContent;
+    el.addEventListener('click', () => openItemDrawer(id));
+  });
+
   const blocked = document.getElementById('blocked');
   const blockedItems = items.filter(i => i.status === 'blocked');
   blocked.innerHTML = blockedItems.length
@@ -97,6 +102,41 @@ function openAgentDrawer(agent) {
     input.value = '';
     document.getElementById('drawer').hidden = true;
   });
+}
+
+async function openItemDrawer(itemID) {
+  const body = document.getElementById('drawer-body');
+  try {
+    const it = await fetchJSON('/api/items/' + encodeURIComponent(itemID));
+    body.innerHTML = `
+      <h3>${it.id} · ${it.priority}</h3>
+      <p>${it.title}</p>
+      <p><strong>Area:</strong> ${it.area} · <strong>Type:</strong> ${it.type} · <strong>Risk:</strong> ${it.risk}</p>
+      <p><strong>Estimate:</strong> ${it.estimate}</p>
+      <p><strong>Progress:</strong> ${it.progress_pct}% (AC ${it.ac_checked}/${it.ac_total})</p>
+      <form class="claim-form" data-item="${it.id}">
+        <input placeholder="Intent..." />
+        <button>Claim</button>
+      </form>
+    `;
+    document.getElementById('drawer').hidden = false;
+    body.querySelector('form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const intent = e.target.querySelector('input').value;
+      const r = await fetch('/api/claim', {
+        method: 'POST',
+        headers: { ...authHeader, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item: it.id, intent }),
+      });
+      if (!r.ok) {
+        alert('claim failed: ' + r.status);
+      } else {
+        document.getElementById('drawer').hidden = true;
+      }
+    });
+  } catch (err) {
+    body.innerHTML = '<p>Error: ' + err.message + '</p>';
+  }
 }
 
 document.getElementById('drawer-close').addEventListener('click', () => {
