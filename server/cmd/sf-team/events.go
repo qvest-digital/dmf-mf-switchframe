@@ -20,8 +20,12 @@ func newEventBus() *eventBus {
 func (b *eventBus) Subscribe() chan event {
 	ch := make(chan event, 32)
 	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		close(ch)
+		return ch
+	}
 	b.subs[ch] = struct{}{}
-	b.mu.Unlock()
 	return ch
 }
 

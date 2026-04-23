@@ -65,14 +65,42 @@ func TestEventBus_DoesNotBlockOnSlowSubscriber(t *testing.T) {
 	defer bus.Unsubscribe(slow)
 	defer bus.Unsubscribe(fast)
 
-	for i := 0; i < 100; i++ {
+	const n = 100
+	done := make(chan struct{})
+	received := 0
+	go func() {
+		for range fast {
+			received++
+			if received == n {
+				close(done)
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < n; i++ {
 		bus.Publish(event{Kind: "spam"})
 	}
 
 	select {
-	case <-fast:
-		// good
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("fast subscriber blocked by slow one")
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("fast sub only got %d/%d — slow sub starved it", received, n)
+	}
+
+	if got := len(slow); got != 32 {
+		t.Fatalf("slow sub len=%d want 32 (should have saturated at buffer cap)", got)
+	}
+}
+
+func TestEventBus_SubscribeAfterClose_ReturnsClosedChannel(t *testing.T) {
+	bus := newEventBus()
+	bus.Close()
+
+	ch := bus.Subscribe()
+
+	_, ok := <-ch
+	if ok {
+		t.Fatal("expected closed channel after Subscribe post-Close")
 	}
 }
