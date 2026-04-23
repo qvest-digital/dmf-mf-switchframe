@@ -44,6 +44,8 @@ func main() {
 		os.Exit(runReviewRequest(args))
 	case "knock":
 		os.Exit(runKnock(args))
+	case "progress":
+		os.Exit(runProgress(args))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		usage()
