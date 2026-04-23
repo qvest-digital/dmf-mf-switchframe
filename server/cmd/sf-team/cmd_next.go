@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 )
 
 var errNoUnclaimed = errors.New("no unclaimed items")
@@ -36,8 +37,12 @@ func (d db) nextUnclaimed(ctx context.Context, itemsDir string) (item, error) {
 	bestScore := 999
 	var best item
 	found := false
+	now := time.Now().UTC()
 	for _, it := range items {
 		if claimed[it.ID] || it.Status == "done" || it.Status == "blocked" {
+			continue
+		}
+		if gatedUntil(it, now) {
 			continue
 		}
 		s, ok := priorityScore[it.Priority]
@@ -54,6 +59,20 @@ func (d db) nextUnclaimed(ctx context.Context, itemsDir string) (item, error) {
 		return item{}, errNoUnclaimed
 	}
 	return best, nil
+}
+
+// gatedUntil reports whether the item has a `not-before:` frontmatter value
+// that is still in the future. An unset or unparseable value is not a gate —
+// silent no-op rather than hiding items due to a bad date string.
+func gatedUntil(it item, now time.Time) bool {
+	if it.NotBefore == "" {
+		return false
+	}
+	t, err := time.Parse("2006-01-02", it.NotBefore)
+	if err != nil {
+		return false
+	}
+	return now.Before(t)
 }
 
 func runNext(args []string) int {

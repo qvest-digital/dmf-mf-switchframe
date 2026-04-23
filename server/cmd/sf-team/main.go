@@ -68,6 +68,8 @@ func main() {
 		os.Exit(runDumpStatus(args))
 	case "next":
 		os.Exit(runNext(args))
+	case "whoami":
+		os.Exit(runWhoami(args))
 	case "serve":
 		os.Exit(runServe(args))
 	default:

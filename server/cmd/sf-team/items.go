@@ -26,6 +26,7 @@ type item struct {
 	Risk      string   `yaml:"risk"`
 	Created   string   `yaml:"created"`
 	Updated   string   `yaml:"updated"`
+	NotBefore string   `yaml:"not-before"`
 	BlockedBy []string `yaml:"blocked-by"`
 	RelatesTo []string `yaml:"relates-to"`
 
