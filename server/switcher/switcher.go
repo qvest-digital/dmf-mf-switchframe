@@ -355,6 +355,11 @@ type Switcher struct {
 	// lock-free reads on the hot path (frame budget check, encoder FPS).
 	pipelineFormat atomic.Pointer[PipelineFormat]
 
+	// hotState bundles per-frame-hot fields for lock-free snapshot reads.
+	// Publication pattern: load, copy, mutate copy, Store. See
+	// docs/concepts/locking-and-concurrency.md.
+	hotState atomic.Pointer[hotState]
+
 	// Pipeline codec pool — shared decoder/encoder for the video processing chain.
 	// Used when any YUV processor (compositor, key bridge) is active or when
 	// the transition engine outputs raw YUV.
@@ -601,6 +606,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 	}
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
+	s.hotState.Store(&hotState{state: StateIdle})
 	s.recentCmdErrors = newRecentErrors(8)
 	s.delayBuffer = NewDelayBuffer(s)
 	s.registerBuiltinSourcesLocked()
