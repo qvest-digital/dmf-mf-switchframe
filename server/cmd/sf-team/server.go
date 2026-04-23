@@ -52,6 +52,9 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST /api/say", s.handleSay)
 	mux.HandleFunc("POST /api/knock", s.handleKnock)
 	mux.HandleFunc("POST /api/claim", s.handleClaim)
+	mux.HandleFunc("POST /api/release", s.handleRelease)
+	mux.HandleFunc("POST /api/progress", s.handleProgressPost)
+	mux.HandleFunc("POST /api/reassign", s.handleReassign)
 	return s.authMiddleware(mux)
 }
 
@@ -332,6 +335,76 @@ func (s *server) handleClaim(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, "item already claimed")
 			return
 		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *server) handleRelease(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Item    string `json:"item"`
+		Outcome string `json:"outcome"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Item == "" {
+		writeErr(w, http.StatusBadRequest, "item required")
+		return
+	}
+	err := s.d.release(r.Context(), req.Item, s.actingAgent(r), req.Outcome)
+	if err != nil {
+		if errors.Is(err, errNotYours) {
+			writeErr(w, http.StatusForbidden, "not your claim")
+			return
+		}
+		if errors.Is(err, errNotClaimed) {
+			writeErr(w, http.StatusNotFound, "no active claim")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *server) handleProgressPost(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Item string `json:"item"`
+		Pct  int    `json:"pct"`
+		Note string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Item == "" {
+		writeErr(w, http.StatusBadRequest, "item required")
+		return
+	}
+	if err := s.d.reportProgress(r.Context(), s.actingAgent(r), req.Item, req.Pct, req.Note); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *server) handleReassign(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Item    string `json:"item"`
+		ToAgent string `json:"to_agent"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Item == "" || req.ToAgent == "" {
+		writeErr(w, http.StatusBadRequest, "item and to_agent required")
+		return
+	}
+	if err := s.d.reassign(r.Context(), req.Item, s.actingAgent(r), req.ToAgent); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
