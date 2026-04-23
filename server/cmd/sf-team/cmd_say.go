@@ -20,7 +20,11 @@ func (d db) say(ctx context.Context, agentID, thread, kind, body string, mention
 	if err := d.postMessage(ctx, tx, d.nowUnix(), agentID, thread, kind, body, mentions, priority); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	d.publish("message", map[string]any{"thread": thread, "kind": kind, "agent_id": agentID, "body": body})
+	return nil
 }
 
 func runSay(args []string) int {

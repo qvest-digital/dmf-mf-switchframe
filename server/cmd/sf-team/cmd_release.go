@@ -27,7 +27,11 @@ func (d db) release(ctx context.Context, itemID, agentID, outcome string) error 
 	if err := d.releaseInTx(ctx, tx, itemID, agentID, outcome); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	d.publish("release", map[string]any{"item_id": itemID, "agent_id": agentID, "outcome": outcome})
+	return nil
 }
 
 func (d db) releaseInTx(ctx context.Context, tx *sql.Tx, itemID, agentID, outcome string) error {

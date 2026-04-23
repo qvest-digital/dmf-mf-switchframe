@@ -29,7 +29,11 @@ func (d db) done(ctx context.Context, itemID, agentID, summary string) error {
 	if err := d.releaseInTx(ctx, tx, itemID, agentID, "done"); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	d.publish("done", map[string]any{"item_id": itemID, "agent_id": agentID, "summary": summary})
+	return nil
 }
 
 func (d db) blocked(ctx context.Context, itemID, agentID, reason string) error {
@@ -53,7 +57,11 @@ func (d db) blocked(ctx context.Context, itemID, agentID, reason string) error {
 	if err := d.releaseInTx(ctx, tx, itemID, agentID, "blocked"); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	d.publish("blocked", map[string]any{"item_id": itemID, "agent_id": agentID, "reason": reason})
+	return nil
 }
 
 func runDone(args []string) int {

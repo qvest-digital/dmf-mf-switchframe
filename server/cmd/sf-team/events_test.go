@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -102,5 +103,41 @@ func TestEventBus_SubscribeAfterClose_ReturnsClosedChannel(t *testing.T) {
 	_, ok := <-ch
 	if ok {
 		t.Fatal("expected closed channel after Subscribe post-Close")
+	}
+}
+
+func TestPublish_EmitsAfterCommit(t *testing.T) {
+	bus := newEventBus()
+	d, _ := newTestDB(t)
+	d.publisher = bus
+
+	sub := bus.Subscribe()
+	defer bus.Unsubscribe(sub)
+
+	ctx := context.Background()
+	_ = d.register(ctx, "agent-a", "A", "/tmp/a", 1)
+
+	// drain any register events
+drainLoop:
+	for {
+		select {
+		case <-sub:
+		case <-time.After(10 * time.Millisecond):
+			break drainLoop
+		}
+	}
+
+	_ = d.claim(ctx, "BUG-PUB", "agent-a", "pub test", nil, false)
+
+	select {
+	case e := <-sub:
+		if e.Kind != "claim" {
+			t.Fatalf("kind=%q", e.Kind)
+		}
+		if e.Payload["item_id"] != "BUG-PUB" {
+			t.Fatalf("item_id=%v", e.Payload["item_id"])
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no claim event")
 	}
 }

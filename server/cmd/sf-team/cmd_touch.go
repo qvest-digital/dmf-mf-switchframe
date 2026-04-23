@@ -53,6 +53,7 @@ func (d db) touch(ctx context.Context, agentID, path, itemID string) (conflicts 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	d.publish("touch", map[string]any{"agent_id": agentID, "path": path, "item_id": itemID})
 	return conflicts, nil
 }
 
@@ -61,7 +62,11 @@ func (d db) untouch(ctx context.Context, agentID, path string) error {
 		UPDATE touches SET released_at = ?
 		WHERE agent_id = ? AND path = ? AND released_at IS NULL
 	`, d.nowUnix(), agentID, path)
-	return err
+	if err != nil {
+		return err
+	}
+	d.publish("untouch", map[string]any{"agent_id": agentID, "path": path})
+	return nil
 }
 
 func runTouch(args []string) int {

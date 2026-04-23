@@ -34,7 +34,11 @@ func (d db) register(ctx context.Context, id, name, worktree string, pid int) er
 		return fmt.Errorf("emit join msg: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	d.publish("agent", map[string]any{"agent_id": id, "kind": "joined"})
+	return nil
 }
 
 func runRegister(args []string) int {

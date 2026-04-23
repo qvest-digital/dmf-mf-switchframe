@@ -63,7 +63,11 @@ func (d db) claim(ctx context.Context, itemID, agentID, intent string, touches [
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	d.publish("claim", map[string]any{"item_id": itemID, "agent_id": agentID, "intent": intent})
+	return nil
 }
 
 func isPKConflict(err error) bool {

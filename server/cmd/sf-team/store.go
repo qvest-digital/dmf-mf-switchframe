@@ -8,8 +8,13 @@ import (
 )
 
 type db struct {
-	sqldb *sql.DB
-	now   func() time.Time
+	sqldb     *sql.DB
+	now       func() time.Time
+	publisher publisherIface
+}
+
+type publisherIface interface {
+	Publish(e event)
 }
 
 func newDB(sqldb *sql.DB) db {

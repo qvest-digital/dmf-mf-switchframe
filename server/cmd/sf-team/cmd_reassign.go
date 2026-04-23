@@ -23,7 +23,11 @@ func (d db) reassign(ctx context.Context, itemID, byAgent, toAgent string) error
 	if err := d.postMessage(ctx, tx, now, byAgent, "global", "say", body, []string{toAgent}, "normal"); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	d.publish("reassign", map[string]any{"item_id": itemID, "from": byAgent, "to": toAgent})
+	return nil
 }
 
 func runReassign(args []string) int {

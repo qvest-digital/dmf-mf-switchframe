@@ -78,5 +78,8 @@ func (d db) reclaimStale(ctx context.Context) ([]string, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	for _, id := range ids {
+		d.publish("reclaim", map[string]any{"item_id": id})
+	}
 	return ids, nil
 }

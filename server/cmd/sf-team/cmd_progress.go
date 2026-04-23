@@ -15,7 +15,11 @@ func (d db) reportProgress(ctx context.Context, agentID, itemID string, pct int,
 		INSERT INTO progress (item_id, pct, reported_at, reported_by, note)
 		VALUES (?, ?, ?, ?, ?)
 	`, itemID, pct, d.nowUnix(), agentID, note)
-	return err
+	if err != nil {
+		return err
+	}
+	d.publish("progress", map[string]any{"item_id": itemID, "agent_id": agentID, "pct": pct, "note": note})
+	return nil
 }
 
 func (d db) latestProgress(ctx context.Context, itemID string) (int, string) {
