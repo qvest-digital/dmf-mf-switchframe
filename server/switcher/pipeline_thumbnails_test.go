@@ -1,7 +1,9 @@
 package switcher
 
 import (
+	"bytes"
 	"fmt"
+	imgjpeg "image/jpeg"
 	"sync"
 	"testing"
 	"time"
@@ -494,6 +496,90 @@ func TestProgramOutputThumbnailNotCapturedWhenNotRequested(t *testing.T) {
 	_, ok := tc.Get("program_output")
 	if ok {
 		t.Fatal("program output thumbnail should NOT be captured when ShouldCapture() is false")
+	}
+}
+
+// TestScaleAndEncodeJPEG_UsesLimitedRangeForBT709 pins the colorimetry
+// contract for ScaleAndEncodeJPEG. Every call site feeds limited-range
+// BT.709 YUV420 (the format produced by FFmpegDecoder + video.NewBlackFrame
+// + the built-in RP 219 generators), so legal black Y=16/Cb=Cr=128 must
+// round-trip through JPEG as decoded RGB ≈ (0, 0, 0). The full-range
+// converter maps Y=16 to RGB≈(16,16,16) — crushed blacks — which is what
+// this test reproduces as RED on the pre-fix main.
+//
+// Both range tests use neutral chroma (Cb=Cr=128) deliberately: Go's
+// image/jpeg decode applies the BT.601 JFIF inverse matrix, which agrees
+// with BT.709 only where chroma contributions are zero. A non-neutral
+// chroma assertion here would conflate our BT.709-Limited encode step
+// with the stdlib decoder's BT.601 step.
+func TestScaleAndEncodeJPEG_UsesLimitedRangeForBT709(t *testing.T) {
+	srcW, srcH := 320, 180
+	ySize := srcW * srcH
+	uvSize := (srcW / 2) * (srcH / 2)
+	yuv := make([]byte, ySize+2*uvSize)
+	for i := 0; i < ySize; i++ {
+		yuv[i] = 16 // limited-range legal black
+	}
+	for i := ySize; i < len(yuv); i++ {
+		yuv[i] = 128 // neutral chroma
+	}
+
+	jpegBytes, err := ScaleAndEncodeJPEG(yuv, srcW, srcH, thumbnailWidth, thumbnailHeight)
+	if err != nil {
+		t.Fatalf("ScaleAndEncodeJPEG error: %v", err)
+	}
+
+	img, err := imgjpeg.Decode(bytes.NewReader(jpegBytes))
+	if err != nil {
+		t.Fatalf("decode JPEG: %v", err)
+	}
+
+	cx, cy := thumbnailWidth/2, thumbnailHeight/2
+	r16, g16, b16, _ := img.At(cx, cy).RGBA()
+	r, g, b := uint8(r16>>8), uint8(g16>>8), uint8(b16>>8)
+
+	const tolerance = 4 // JPEG Q=60 + 4:2:0 chroma subsampling
+	if r > tolerance || g > tolerance || b > tolerance {
+		t.Fatalf("legal-black Y=16 Cb=Cr=128 should decode to RGB≈(0,0,0); got (%d,%d,%d) [tolerance %d]",
+			r, g, b, tolerance)
+	}
+}
+
+// TestScaleAndEncodeJPEG_WhiteClipsToFull pins the upper end of the same
+// invariant: legal white Y=235/Cb=Cr=128 must round-trip to RGB near
+// (255,255,255). The full-range converter maps Y=235 to RGB≈(235,235,235)
+// — dull whites — which this test also reproduces as RED on the pre-fix
+// main.
+func TestScaleAndEncodeJPEG_WhiteClipsToFull(t *testing.T) {
+	srcW, srcH := 320, 180
+	ySize := srcW * srcH
+	uvSize := (srcW / 2) * (srcH / 2)
+	yuv := make([]byte, ySize+2*uvSize)
+	for i := 0; i < ySize; i++ {
+		yuv[i] = 235 // limited-range legal white
+	}
+	for i := ySize; i < len(yuv); i++ {
+		yuv[i] = 128 // neutral chroma
+	}
+
+	jpegBytes, err := ScaleAndEncodeJPEG(yuv, srcW, srcH, thumbnailWidth, thumbnailHeight)
+	if err != nil {
+		t.Fatalf("ScaleAndEncodeJPEG error: %v", err)
+	}
+
+	img, err := imgjpeg.Decode(bytes.NewReader(jpegBytes))
+	if err != nil {
+		t.Fatalf("decode JPEG: %v", err)
+	}
+
+	cx, cy := thumbnailWidth/2, thumbnailHeight/2
+	r16, g16, b16, _ := img.At(cx, cy).RGBA()
+	r, g, b := uint8(r16>>8), uint8(g16>>8), uint8(b16>>8)
+
+	const minLuma = 250 // JPEG Q=60 quantization of (255,255,255)
+	if r < minLuma || g < minLuma || b < minLuma {
+		t.Fatalf("legal-white Y=235 Cb=Cr=128 should decode to RGB≈(255,255,255); got (%d,%d,%d) [min %d]",
+			r, g, b, minLuma)
 	}
 }
 

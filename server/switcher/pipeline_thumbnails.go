@@ -136,10 +136,15 @@ func ScaleAndEncodeJPEG(yuv []byte, srcW, srcH, dstW, dstH int) ([]byte, error) 
 		transition.ScaleYUV420(yuv, srcW, srcH, scaledYUV, dstW, dstH)
 	}
 
-	// Convert YUV420 to RGB
+	// Convert YUV420 to RGB. All production callers (pipeline + per-source
+	// thumbnails) feed limited-range BT.709 content, matching the format
+	// produced by FFmpegDecoder, video.NewBlackFrame, and the built-in
+	// RP 219 generators. The limited-range converter maps legal black
+	// Y=16 → RGB=0 and legal white Y=235 → RGB=255; the full-range
+	// sibling would crush blacks to 16 and cap whites at 235.
 	rgbSize := dstW * dstH * 3
 	rgb := make([]byte, rgbSize)
-	transition.YUV420ToRGB(scaledYUV, dstW, dstH, rgb)
+	transition.YUV420ToRGBLimited(scaledYUV, dstW, dstH, rgb)
 
 	// Build RGBA image via direct Pix access (avoids per-pixel bounds checks)
 	img := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
