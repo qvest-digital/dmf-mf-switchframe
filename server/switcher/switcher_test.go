@@ -16,6 +16,7 @@ import (
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
@@ -2015,6 +2016,36 @@ func TestSwitcher_TrackCommandSeq_PersistsViaDebounce(t *testing.T) {
 	mu.Unlock()
 	if after != mark {
 		t.Errorf("persist fired %d extra times with no advances — dirty flag not cleared", after-mark)
+	}
+}
+
+// TestClockSyncState_BroadcastInControlRoomState — BUG-057 AC#8. State
+// broadcast must carry a real ClockSync reading through to subscribers so
+// the UI can surface PTP/NTP discipline failures; pre-BUG-057 the field
+// did not exist and the raw clock.GetSyncState response was hardcoded.
+// Install a test fixture via the clock.SetGetSyncStateFn seam that reports
+// unsynchronized and assert it reaches ControlRoomState unchanged.
+func TestClockSyncState_BroadcastInControlRoomState(t *testing.T) {
+	prev := clock.SetGetSyncStateFn(func() clock.SyncState {
+		return clock.SyncState{
+			Synchronized:  false,
+			WindowDriftUs: 12345,
+			Source:        "test-unsynced",
+		}
+	})
+	defer clock.SetGetSyncStateFn(prev)
+
+	sw := newTestSwitcher(t, newTestRelay())
+
+	got := sw.State().ClockSync
+	if got.Synchronized {
+		t.Errorf("ClockSync.Synchronized = true; mock returned false")
+	}
+	if got.WindowDriftUs != 12345 {
+		t.Errorf("ClockSync.WindowDriftUs = %d, want 12345", got.WindowDriftUs)
+	}
+	if got.Source != "test-unsynced" {
+		t.Errorf("ClockSync.Source = %q, want test-unsynced", got.Source)
 	}
 }
 

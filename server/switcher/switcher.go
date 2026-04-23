@@ -3617,8 +3617,13 @@ func (s *Switcher) StartHealthMonitor(interval time.Duration) {
 // State returns a snapshot of the current control room state.
 func (s *Switcher) State() internal.ControlRoomState {
 	s.configMu.RLock()
-	defer s.configMu.RUnlock()
-	return s.buildStateLocked()
+	state := s.buildStateLocked()
+	s.configMu.RUnlock()
+	// Publish clock-sync metrics outside the lock so prom's internal
+	// GaugeVec mutex does not serialize with the broadcast hot path —
+	// relevant for DEBT-001's lock-split direction.
+	s.publishClockSyncMetrics(state.ClockSync)
+	return state
 }
 
 // DebugSnapshot returns a map of debug instrumentation data for diagnostics.
@@ -3859,6 +3864,54 @@ func isNodeNotFoundError(err error) bool {
 
 // buildStateLocked constructs a ControlRoomState snapshot. Caller must hold
 // at least s.configMu.RLock().
+// clockSyncAsInfo translates clock.SyncState into the ControlRoomState-
+// facing type. The two structs are field-wise identical by design (see
+// internal.ClockSyncInfo doc) so a straight copy keeps the JSON shape
+// stable across refactors.
+func clockSyncAsInfo(s clock.SyncState) internal.ClockSyncInfo {
+	return internal.ClockSyncInfo{
+		Synchronized:  s.Synchronized,
+		WindowDriftUs: s.WindowDriftUs,
+		Source:        s.Source,
+	}
+}
+
+// clockSyncSourceLabels enumerates every valid Source string so
+// publishClockSyncMetrics can zero the inactive-source gauges each tick.
+// Keeping the enum here (not exported) avoids churn in the clock
+// package's public API for what is strictly a metric-labels concern.
+var clockSyncSourceLabels = []string{
+	"systemclock-initializing",
+	"systemclock-monitored",
+	"unknown",
+	"ptp",
+	"ntp",
+}
+
+// publishClockSyncMetrics updates the clock-sync Prometheus gauges from
+// the just-built ControlRoomState.ClockSync. Runs OUTSIDE configMu (call
+// site in State() fires post-RUnlock) so the broadcast hot path isn't
+// serialized on the prom GaugeVec internal mutex — relevant for DEBT-001's
+// lock-split direction.
+func (s *Switcher) publishClockSyncMetrics(info internal.ClockSyncInfo) {
+	if s.promMetrics == nil {
+		return
+	}
+	if info.Synchronized {
+		s.promMetrics.ClockSyncSynchronized.Set(1)
+	} else {
+		s.promMetrics.ClockSyncSynchronized.Set(0)
+	}
+	s.promMetrics.ClockSyncWindowDriftNs.Set(float64(info.WindowDriftUs) * 1000)
+	for _, label := range clockSyncSourceLabels {
+		if label == info.Source {
+			s.promMetrics.ClockSyncSource.WithLabelValues(label).Set(1)
+		} else {
+			s.promMetrics.ClockSyncSource.WithLabelValues(label).Set(0)
+		}
+	}
+}
+
 func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	srcMap := *s.sourcesAtomic.Load()
 	tally := make(map[string]string, len(srcMap))
@@ -3939,6 +3992,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		Timestamp:       time.Now().UnixMilli(),
 		LastCommandSeq:  s.lastCommandSeq.Load(),
 		LastExecutedSeq: s.lastExecutedSeq.Load(),
+		ClockSync:       clockSyncAsInfo(clock.GetSyncState()),
 	}
 	if errPtr := s.lastExecutedErr.Load(); errPtr != nil {
 		state.LastExecutedErr = *errPtr

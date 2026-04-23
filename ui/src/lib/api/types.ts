@@ -777,7 +777,24 @@ export interface ControlRoomState {
 	lastExecutedErr?: string;
 	lateCommands?: number;
 	recentCommandErrors?: CommandError[];
+	clockSync?: ClockSyncInfo;
 	timestamp: number;
+}
+
+// ClockSyncInfo reports whether the engine's local clock is currently
+// synchronized to a reference source (NTP/PTP) so the operator bar can
+// surface discipline failures — pre-BUG-057 this was hardcoded
+// "synchronized=true" on the server and the browser had no way to know
+// the grandmaster had gone away.
+//
+// Consumer contract: check `source` alongside `synchronized`. When
+// `source === "systemclock-initializing"`, `synchronized=true` is a
+// conservative default (the sampler has not yet produced a verdict) —
+// treat it as "unknown, do not alarm."
+export interface ClockSyncInfo {
+	synchronized: boolean;
+	windowDriftUs: number;
+	source: string;
 }
 
 // ── AI Segmentation Types ──

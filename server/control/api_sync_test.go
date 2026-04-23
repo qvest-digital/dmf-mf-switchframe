@@ -41,10 +41,15 @@ func TestSyncHealth_ReturnsFields(t *testing.T) {
 	err := json.NewDecoder(rec.Body).Decode(&resp)
 	require.NoError(t, err)
 	require.True(t, resp.UptimeMS >= 0, "uptime should be non-negative")
-	// Clock sync should report NTP-disciplined system clock.
-	require.True(t, resp.ClockSync.Synchronized, "clock should be synchronized")
-	require.Equal(t, "ntp", resp.ClockSync.Source)
-	require.Equal(t, int64(0), resp.ClockSync.OffsetUs)
+	// Clock sync should populate Source with the real detection mechanism
+	// (pre-BUG-057 this was hardcoded "ntp" regardless of reality). Accept
+	// either the initializing placeholder or the running sampler verdict;
+	// both are legitimate depending on test ordering. The distinct-source
+	// contract matters more than the exact value.
+	require.Contains(t,
+		[]string{"systemclock-initializing", "systemclock-monitored"},
+		resp.ClockSync.Source,
+		"ClockSync.Source must name the real detection mechanism")
 	// Seq fields should be present (zero-valued for fresh state).
 	require.Equal(t, uint64(0), resp.LastExecSeq)
 	require.Equal(t, "", resp.LastExecErr)

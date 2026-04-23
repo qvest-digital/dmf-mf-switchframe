@@ -36,18 +36,49 @@ func TestNow_Monotonic(t *testing.T) {
 	}
 }
 
-// TestGetSyncState_DefaultNTP verifies that the default sync state reports
-// NTP-disciplined system clock.
-func TestGetSyncState_DefaultNTP(t *testing.T) {
+// TestGetSyncState_InitialStateOrMonitored verifies that the default sync
+// state is either the conservative initializing default (before the
+// sampler has collected a full window) or a monitored reading. Both must
+// populate Source with a non-empty string so downstream consumers can
+// switch on it — a hardcoded "ntp" was the pre-BUG-057 bug.
+func TestGetSyncState_InitialStateOrMonitored(t *testing.T) {
 	state := GetSyncState()
-	if !state.Synchronized {
-		t.Error("GetSyncState().Synchronized = false, want true")
+	if state.Source == "" {
+		t.Error("GetSyncState().Source is empty — must identify the detection mechanism")
 	}
-	if state.Source != "ntp" {
-		t.Errorf("GetSyncState().Source = %q, want %q", state.Source, "ntp")
+	switch state.Source {
+	case "systemclock-initializing", "systemclock-monitored":
+		// ok
+	default:
+		t.Errorf("GetSyncState().Source = %q, want one of systemclock-initializing | systemclock-monitored",
+			state.Source)
 	}
-	if state.OffsetUs != 0 {
-		t.Errorf("GetSyncState().OffsetUs = %d, want 0", state.OffsetUs)
+}
+
+// TestGetSyncState_MockableForTests confirms the test seam — tests can
+// install a fixture result via SetGetSyncStateFn without poking atomic
+// package state. Essential for downstream tests that assert broadcast
+// behavior on specific (Synchronized, Source, WindowDriftUs) triples.
+func TestGetSyncState_MockableForTests(t *testing.T) {
+	want := SyncState{Synchronized: false, WindowDriftUs: 123456, Source: "test-mock"}
+	prev := SetGetSyncStateFn(func() SyncState { return want })
+	defer SetGetSyncStateFn(prev)
+
+	got := GetSyncState()
+	if got != want {
+		t.Errorf("GetSyncState() after mock install = %+v, want %+v", got, want)
+	}
+}
+
+// TestClockSyncState_DegradedOnPmcAbsent — AC#7. pmc-based detection is
+// deferred to Phase B (the Resolution section of the item tracks this).
+// In Phase A the fallback detector is always used; Source MUST NOT claim
+// "ptp" because we have no positive PTP evidence.
+func TestClockSyncState_DegradedOnPmcAbsent(t *testing.T) {
+	state := GetSyncState()
+	if state.Source == "ptp" {
+		t.Errorf("GetSyncState().Source = %q; pmc integration is Phase B, Source must not claim ptp yet",
+			state.Source)
 	}
 }
 
@@ -55,9 +86,9 @@ func TestGetSyncState_DefaultNTP(t *testing.T) {
 // expected JSON field names and round-trips correctly.
 func TestSyncState_JSONRoundTrip(t *testing.T) {
 	original := SyncState{
-		Synchronized: true,
-		OffsetUs:     -42,
-		Source:       "ptp",
+		Synchronized:  true,
+		WindowDriftUs: -42,
+		Source:        "ptp",
 	}
 
 	data, err := json.Marshal(original)
@@ -67,7 +98,7 @@ func TestSyncState_JSONRoundTrip(t *testing.T) {
 
 	// Verify field names in JSON.
 	jsonStr := string(data)
-	for _, field := range []string{`"synchronized"`, `"offsetUs"`, `"source"`} {
+	for _, field := range []string{`"synchronized"`, `"windowDriftUs"`, `"source"`} {
 		if !strings.Contains(jsonStr, field) {
 			t.Errorf("JSON %q missing expected field %s", jsonStr, field)
 		}

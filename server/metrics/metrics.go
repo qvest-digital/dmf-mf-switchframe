@@ -111,6 +111,11 @@ type Metrics struct {
 
 	// Force-leader (operator-triggered epoch bump during partition)
 	ForceLeaderTotal *prometheus.CounterVec // labels: operator, reason_class
+
+	// Clock synchronization (BUG-057 engine-side PTP / system-clock detection)
+	ClockSyncSynchronized  prometheus.Gauge     // 1 when clock is synchronized per the current detector, 0 otherwise
+	ClockSyncWindowDriftNs prometheus.Gauge     // signed wall-vs-monotonic drift in nanoseconds over the sampler window (NOT a servo instantaneous)
+	ClockSyncSource        *prometheus.GaugeVec // labels: source — 1 on the currently-active source, 0 on others
 }
 
 // NewMetrics creates and registers all Switchframe metrics on the given
@@ -333,6 +338,22 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name:      "force_leader_total",
 			Help:      "Operator-triggered force-leader epoch bumps. 'operator' is the proxied browser-side attribution (or 'control-plane' for direct SRE calls); 'reason_class' is a closed enum (partition|recovery|maintenance|test|drill|unspecified|other) for coarse-grained ops dashboards — free-text reasons land in slog, not Prometheus labels.",
 		}, []string{"operator", "reason_class"}),
+
+		ClockSyncSynchronized: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "switchframe",
+			Name:      "clock_sync_synchronized",
+			Help:      "1 if the local clock is synchronized per the active detector (systemclock-monitored drift below threshold, or PTP when pmc integration lands), 0 otherwise. Pre-BUG-057 this was always 1 regardless of reality.",
+		}),
+		ClockSyncWindowDriftNs: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "switchframe",
+			Name:      "clock_sync_window_drift_ns",
+			Help:      "Signed wall-vs-monotonic drift accumulated over the sampler window, in nanoseconds. NOT a servo instantaneous offset — it is an integral of the window. Negative if the wall clock ran slower than monotonic. Phase B's pmc-based detector will report a real instantaneous offset under a separate metric when it lands.",
+		}),
+		ClockSyncSource: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "switchframe",
+			Name:      "clock_sync_source",
+			Help:      "Labeled gauge, 1 on the currently-active clock-sync detection source (systemclock-initializing | systemclock-monitored | ptp), 0 on inactive sources. Lets dashboards pivot without re-encoding the source in label cardinality of other metrics.",
+		}, []string{"source"}),
 	}
 
 	reg.MustRegister(
@@ -369,6 +390,9 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.SnapshotApplyDuration,
 		m.SnapshotSizeBytes,
 		m.ForceLeaderTotal,
+		m.ClockSyncSynchronized,
+		m.ClockSyncWindowDriftNs,
+		m.ClockSyncSource,
 	)
 
 	return m

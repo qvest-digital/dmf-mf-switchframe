@@ -387,7 +387,24 @@ type ControlRoomState struct {
 	LastExecutedErr      string                  `json:"lastExecutedErr,omitempty"`
 	LateCommands         int64                   `json:"lateCommands,omitempty"`
 	RecentCommandErrors  []CommandError          `json:"recentCommandErrors,omitempty"`
+	ClockSync            ClockSyncInfo           `json:"clockSync"`
 	Timestamp            int64                   `json:"timestamp"`
+}
+
+// ClockSyncInfo reports clock-synchronization status to the browser so
+// the operator bar can surface PTP / NTP discipline failures — pre-
+// BUG-057 this was silently hardcoded synchronized=true, masking
+// grandmaster faults in active-active deployments. Mirrors
+// clock.SyncState; kept here to avoid an internal→clock dep cycle.
+//
+// Consumer contract: check Source alongside Synchronized. When Source ==
+// "systemclock-initializing", Synchronized=true is a conservative default
+// (the sampler has not yet produced a verdict) — do NOT red-alarm. Treat
+// it as "unknown, don't trust, don't alert."
+type ClockSyncInfo struct {
+	Synchronized  bool   `json:"synchronized"`
+	WindowDriftUs int64  `json:"windowDriftUs"`
+	Source        string `json:"source"`
 }
 
 // CommandError records a single failed command execution (sequence + error string).
