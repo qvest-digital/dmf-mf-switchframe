@@ -29,3 +29,10 @@ ul { list-style: none; padding: 0; margin: 0; }
 #compose { display: flex; gap: 6px; margin-top: 8px; }
 #compose input { flex: 1; padding: 6px 8px; background: #0b1020; color: #e8ecf5; border: 1px solid #1e2744; border-radius: 4px; }
 #compose button { padding: 6px 14px; background: #3b82f6; color: white; border: 0; border-radius: 4px; cursor: pointer; }
+#drawer { position: fixed; top: 48px; right: 0; width: 400px; height: calc(100vh - 48px); background: #0f1528; border-left: 1px solid #1e2744; padding: 16px; overflow: auto; z-index: 10; }
+#drawer[hidden] { display: none; }
+#drawer-close { float: right; background: transparent; color: #e8ecf5; border: 0; font-size: 20px; cursor: pointer; }
+#drawer h3 { margin-top: 0; }
+#drawer .knock-form { margin-top: 12px; display: flex; gap: 6px; }
+#drawer .knock-form input { flex: 1; padding: 6px; background: #0b1020; color: #e8ecf5; border: 1px solid #1e2744; border-radius: 4px; }
+#drawer .knock-form button { padding: 6px 12px; background: #ef4444; color: white; border: 0; border-radius: 4px; cursor: pointer; }

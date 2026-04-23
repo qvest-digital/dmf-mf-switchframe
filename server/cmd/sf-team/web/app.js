@@ -11,10 +11,14 @@ async function fetchJSON(path) {
 async function refreshAgents() {
   const list = document.getElementById('agents-list');
   const agents = await fetchJSON('/api/agents');
-  list.innerHTML = agents.map(a => {
+  list.innerHTML = '';
+  for (const a of agents) {
+    const li = document.createElement('li');
     const dot = a.Status === 'active' ? 'active' : 'stopped';
-    return `<li><span class="agent-dot ${dot}"></span>${a.DisplayName || a.AgentID}${a.ClaimItem ? ' → ' + a.ClaimItem : ''}</li>`;
-  }).join('');
+    li.innerHTML = `<span class="agent-dot ${dot}"></span>${a.DisplayName || a.AgentID}${a.ClaimItem ? ' → ' + a.ClaimItem : ''}`;
+    li.addEventListener('click', () => openAgentDrawer(a));
+    list.appendChild(li);
+  }
 }
 
 async function refreshBoard() {
@@ -67,6 +71,37 @@ async function refreshMessages() {
   ul.innerHTML = '';
   for (const m of messages.reverse()) appendMessage(m);
 }
+
+function openAgentDrawer(agent) {
+  const body = document.getElementById('drawer-body');
+  body.innerHTML = `
+    <h3>${agent.DisplayName || agent.AgentID}</h3>
+    <p>Status: ${agent.Status}</p>
+    <p>Claim: ${agent.ClaimItem || '(none)'}</p>
+    <p>Intent: ${agent.Intent || '—'}</p>
+    <p>Files touched: ${agent.TouchCount}</p>
+    <form class="knock-form" data-agent="${agent.AgentID}">
+      <input placeholder="Knock message..."/>
+      <button>Knock</button>
+    </form>
+  `;
+  document.getElementById('drawer').hidden = false;
+  body.querySelector('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const input = e.target.querySelector('input');
+    await fetch('/api/knock', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to_agent: agent.AgentID, body: input.value }),
+    });
+    input.value = '';
+    document.getElementById('drawer').hidden = true;
+  });
+}
+
+document.getElementById('drawer-close').addEventListener('click', () => {
+  document.getElementById('drawer').hidden = true;
+});
 
 function connectSSE() {
   const tokenParam = token ? '?token=' + encodeURIComponent(token) : '';
