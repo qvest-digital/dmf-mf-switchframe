@@ -292,18 +292,94 @@ document.getElementById('drawer-close').addEventListener('click', () => {
 function connectSSE() {
   const tokenParam = token ? '?token=' + encodeURIComponent(token) : '';
   const es = new EventSource('/api/events' + tokenParam);
-  es.addEventListener('claim', () => { refreshBoard(); refreshAgents(); });
-  es.addEventListener('release', () => { refreshBoard(); refreshAgents(); });
-  es.addEventListener('done', () => { refreshBoard(); refreshAgents(); });
-  es.addEventListener('blocked', () => { refreshBoard(); });
-  es.addEventListener('message', e => {
-    const data = JSON.parse(e.data);
-    const thread = document.getElementById('thread-select').value;
-    if (data.payload.thread === thread) appendMessage(data.payload);
+
+  function refreshHeader() {
+    clearTimeout(state.headerRefetchTimer);
+    state.headerRefetchTimer = setTimeout(async () => {
+      if (!state.drawerItem) return;
+      try {
+        const it = await fetchJSON('/api/items/' + encodeURIComponent(state.drawerItem));
+        const body = document.getElementById('drawer-body');
+        const banner = body.querySelector('.claim-banner');
+        const bar = body.querySelector('.progress-bar');
+        if (banner) {
+          banner.innerHTML = it.current_claim
+            ? `● <strong>${escapeHtml(it.current_claim.agent_id)}</strong> — ${escapeHtml(it.current_claim.intent || '(no intent)')}`
+            : 'unclaimed';
+          banner.style.opacity = it.current_claim ? '1' : '0.6';
+        }
+        if (bar) bar.style.width = (it.progress_pct || 0) + '%';
+      } catch { /* ignore transient errors */ }
+    }, 250);
+  }
+
+  function appendIfMatches(payload, kind) {
+    if (!state.drawerItem) return false;
+    const target = payload.item_id || payload.thread;
+    if (target !== state.drawerItem) return false;
+    const list = document.getElementById('drawer-activity');
+    if (!list) return false;
+    const e = {
+      kind,
+      ts: payload.ts || Math.floor(Date.now() / 1000),
+      agent_id: payload.agent_id || '',
+      detail: payload.intent || payload.note || '',
+      outcome: payload.outcome || '',
+      pct: payload.pct,
+      path: payload.path || '',
+      body: payload.body || '',
+    };
+    list.insertBefore(activityRow(e), list.firstChild);
+    return true;
+  }
+
+  es.addEventListener('claim', e => {
+    const d = JSON.parse(e.data);
+    appendIfMatches(d.payload, 'claim');
+    refreshBoard(); refreshAgents();
+    if (state.drawerItem === d.payload.item_id) refreshHeader();
   });
-  es.addEventListener('touch', () => { refreshAgents(); });
-  es.addEventListener('progress', () => { refreshBoard(); });
-  es.addEventListener('item', () => { refreshBoard(); });
+  es.addEventListener('release', e => {
+    const d = JSON.parse(e.data);
+    appendIfMatches(d.payload, 'release');
+    refreshBoard(); refreshAgents();
+    if (state.drawerItem === d.payload.item_id) refreshHeader();
+  });
+  es.addEventListener('done', e => {
+    const d = JSON.parse(e.data);
+    appendIfMatches(d.payload, 'done');
+    refreshBoard(); refreshAgents();
+    if (state.drawerItem === d.payload.item_id) refreshHeader();
+  });
+  es.addEventListener('blocked', e => {
+    const d = JSON.parse(e.data);
+    appendIfMatches(d.payload, 'blocked');
+    refreshBoard();
+    if (state.drawerItem === d.payload.item_id) refreshHeader();
+  });
+  es.addEventListener('progress', e => {
+    const d = JSON.parse(e.data);
+    appendIfMatches(d.payload, 'progress');
+    refreshBoard();
+    if (state.drawerItem === d.payload.item_id) refreshHeader();
+  });
+  es.addEventListener('touch', e => {
+    const d = JSON.parse(e.data);
+    appendIfMatches(d.payload, 'touch');
+    refreshAgents();
+  });
+  es.addEventListener('reassign', e => {
+    const d = JSON.parse(e.data);
+    refreshBoard(); refreshAgents();
+    if (state.drawerItem === d.payload.item_id) refreshHeader();
+  });
+  es.addEventListener('message', e => {
+    const d = JSON.parse(e.data);
+    const thread = document.getElementById('thread-select').value;
+    if (d.payload.thread === thread) appendMessage(d.payload);
+    appendIfMatches(d.payload, d.payload.kind || 'say');
+  });
+
   es.onerror = () => console.warn('SSE disconnected; will retry');
 }
 
