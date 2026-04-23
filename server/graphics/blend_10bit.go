@@ -205,24 +205,36 @@ func AlphaBlendRGBARect10(yuv []byte, rgba []byte, frameW, frameH, overlayW, ove
 	cbByteOff := ySize * 2
 	crByteOff := cbByteOff + chromaSize*2
 
-	// Y plane: nearest-neighbor scale overlay and alpha blend per pixel.
+	// Precompute 16.16 fixed-point source X coordinates for every destination
+	// column. Using (dx*(overlayW-1)<<16)/(rectW-1) gives exact corner mapping
+	// (dx=0→srcX=0, dx=rectW-1→srcX=overlayW-1<<16) and — at matched resolution
+	// — fractional part zero for every column, reducing bilinear to identity.
+	dstWm1 := int64(rectW - 1)
+	dstHm1 := int64(rectH - 1)
+	srcWm1 := int64(overlayW - 1)
+	srcHm1 := int64(overlayH - 1)
+
+	xCoords := make([]int64, rectW)
+	if dstWm1 > 0 {
+		for dx := 0; dx < rectW; dx++ {
+			xCoords[dx] = (int64(dx) * srcWm1 << 16) / dstWm1
+		}
+	}
+
+	// Y plane: bilinear-sample RGBA overlay and alpha blend per pixel.
 	for dy := 0; dy < rectH; dy++ {
 		frameRow := rect.Min.Y + dy
-		srcRow := (dy*overlayH + rectH/2) / rectH
-		if srcRow >= overlayH {
-			srcRow = overlayH - 1
+		var srcY int64
+		if dstHm1 > 0 {
+			srcY = (int64(dy) * srcHm1 << 16) / dstHm1
 		}
 
 		for dx := 0; dx < rectW; dx++ {
-			srcCol := (dx*overlayW + rectW/2) / rectW
-			if srcCol >= overlayW {
-				srcCol = overlayW - 1
-			}
-			rgbaIdx := (srcRow*overlayW + srcCol) * 4
-			a := int32(rgba[rgbaIdx+3])
-			if a == 0 {
+			r8, g8, b8, a8 := sampleRGBABilinear(rgba, overlayW, overlayH, xCoords[dx], srcY)
+			if a8 == 0 {
 				continue
 			}
+			a := int32(a8)
 
 			// Apply global alpha scale.
 			a = (a*alphaScale256 + 128) >> 8
@@ -233,9 +245,9 @@ func AlphaBlendRGBARect10(yuv []byte, rgba []byte, frameW, frameH, overlayW, ove
 				a = 255
 			}
 
-			r := int32(rgba[rgbaIdx+0])
-			g := int32(rgba[rgbaIdx+1])
-			b := int32(rgba[rgbaIdx+2])
+			r := int32(r8)
+			g := int32(g8)
+			b := int32(b8)
 
 			// BT.709 8-bit Y, then scale to 10-bit.
 			y8 := int32((66*r+129*g+25*b+128)>>8) + 16
@@ -257,30 +269,25 @@ func AlphaBlendRGBARect10(yuv []byte, rgba []byte, frameW, frameH, overlayW, ove
 	}
 
 	// Chroma planes: half-width, full-height (4:2:2).
-	// Process at chroma resolution: for each chroma sample in the rect,
-	// use the even-column (left) overlay pixel.
+	// Each chroma sample is co-sited with the even (left) Y pixel of the
+	// 2-pixel pair, so reuse xCoords[dxFull] for bilinear source lookup.
 	halfRectW := rectW / 2
 	chromaRectX := rect.Min.X / 2
 
 	for dy := 0; dy < rectH; dy++ {
 		frameRow := rect.Min.Y + dy
-		srcRow := (dy*overlayH + rectH/2) / rectH
-		if srcRow >= overlayH {
-			srcRow = overlayH - 1
+		var srcY int64
+		if dstHm1 > 0 {
+			srcY = (int64(dy) * srcHm1 << 16) / dstHm1
 		}
 
 		for dcx := 0; dcx < halfRectW; dcx++ {
-			// Map chroma sample to overlay pixel (even-column in the rect).
 			dxFull := dcx * 2
-			srcCol := (dxFull*overlayW + rectW/2) / rectW
-			if srcCol >= overlayW {
-				srcCol = overlayW - 1
-			}
-			rgbaIdx := (srcRow*overlayW + srcCol) * 4
-			a := int32(rgba[rgbaIdx+3])
-			if a == 0 {
+			r8, g8, b8, a8 := sampleRGBABilinear(rgba, overlayW, overlayH, xCoords[dxFull], srcY)
+			if a8 == 0 {
 				continue
 			}
+			a := int32(a8)
 
 			a = (a*alphaScale256 + 128) >> 8
 			if a <= 0 {
@@ -290,9 +297,9 @@ func AlphaBlendRGBARect10(yuv []byte, rgba []byte, frameW, frameH, overlayW, ove
 				a = 255
 			}
 
-			r := int32(rgba[rgbaIdx+0])
-			g := int32(rgba[rgbaIdx+1])
-			b := int32(rgba[rgbaIdx+2])
+			r := int32(r8)
+			g := int32(g8)
+			b := int32(b8)
 
 			cb8 := int32((-38*r-74*g+112*b+128)>>8) + 128
 			cr8 := int32((112*r-94*g-18*b+128)>>8) + 128

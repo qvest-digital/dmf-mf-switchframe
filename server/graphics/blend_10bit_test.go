@@ -362,3 +362,110 @@ func TestAlphaBlendRGBARect10_ClipsToFrameBounds(t *testing.T) {
 		t.Errorf("pixel inside clipped rect was NOT modified")
 	}
 }
+
+// TestAlphaBlendRGBARect10_BilinearFilterOnResolutionMismatch pins the bilinear
+// scaler behavior: a one-pixel step edge in the RGBA overlay alpha channel,
+// when scaled 4× into a YUV422P10LE rect, must produce at least one intermediate
+// luma value across the transition. Nearest-neighbor would leave a two-column
+// staircase between pure background and full-blended foreground.
+func TestAlphaBlendRGBARect10_BilinearFilterOnResolutionMismatch(t *testing.T) {
+	overlayW, overlayH := 32, 32
+	rgba := make([]byte, overlayW*overlayH*4)
+	for y := 0; y < overlayH; y++ {
+		for x := 0; x < overlayW; x++ {
+			idx := (y*overlayW + x) * 4
+			rgba[idx+0] = 255
+			rgba[idx+1] = 255
+			rgba[idx+2] = 255
+			if x >= 16 {
+				rgba[idx+3] = 255
+			} else {
+				rgba[idx+3] = 0
+			}
+		}
+	}
+
+	frameW, frameH := 128, 128
+	yuv := make10bitGraphicsFrame(frameW, frameH, 64, 512, 512) // 10-bit limited-range black
+	rect := image.Rect(0, 0, frameW, frameH)                    // 4× upscale
+
+	err := AlphaBlendRGBARect10(yuv, rgba, frameW, frameH, overlayW, overlayH, rect, 1.0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// At row 64, scan the ~4-dst-pixel window where bilinear should spread
+	// the alpha step across multiple columns. NN staircase jumps directly
+	// from Y=64 to Y≈940.
+	row := 64
+	cols := make([]uint16, 0, 20)
+	intermediateFound := false
+	for dx := 55; dx < 75; dx++ {
+		y := readY10g(yuv, dx, row, frameW)
+		cols = append(cols, y)
+		if y > 100 && y < 900 {
+			intermediateFound = true
+		}
+	}
+	if !intermediateFound {
+		t.Errorf("no intermediate Y found across scaled alpha edge — nearest-neighbor staircase. Row 64 cols 55-74: %v", cols)
+	}
+}
+
+// TestAlphaBlendRGBARect10_IdentityAtMatchedResolution asserts that when the
+// overlay dimensions exactly match the target rect, bilinear sampling reduces
+// to exact-pixel fetch (fractional source coordinates are zero). The blended
+// rect region must be byte-equal to the AlphaBlendRGBA10 full-frame result
+// on an equivalently sized reference buffer.
+func TestAlphaBlendRGBARect10_IdentityAtMatchedResolution(t *testing.T) {
+	overlayW, overlayH := 64, 64
+	rgba := make([]byte, overlayW*overlayH*4)
+	for y := 0; y < overlayH; y++ {
+		for x := 0; x < overlayW; x++ {
+			idx := (y*overlayW + x) * 4
+			rgba[idx+0] = byte((x + y) & 0xFF)
+			rgba[idx+1] = byte((x * 3) & 0xFF)
+			rgba[idx+2] = byte((y * 5) & 0xFF)
+			rgba[idx+3] = byte((x + y*2) & 0xFF)
+		}
+	}
+
+	frameW, frameH := 128, 128
+	yuvBilinear := make10bitGraphicsFrame(frameW, frameH, 500, 400, 600)
+	rect := image.Rect(32, 32, 96, 96) // 64×64 matches overlay
+	if err := AlphaBlendRGBARect10(yuvBilinear, rgba, frameW, frameH, overlayW, overlayH, rect, 1.0); err != nil {
+		t.Fatal(err)
+	}
+
+	refYUV := make10bitGraphicsFrame(64, 64, 500, 400, 600)
+	if err := AlphaBlendRGBA10(refYUV, rgba, 64, 64); err != nil {
+		t.Fatal(err)
+	}
+
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			got := readY10g(yuvBilinear, 32+x, 32+y, frameW)
+			want := readY10g(refYUV, x, y, 64)
+			if got != want {
+				t.Errorf("Y mismatch at overlay (%d,%d): got %d want %d", x, y, got, want)
+				return
+			}
+		}
+	}
+	for cy := 0; cy < 64; cy++ {
+		for cx := 0; cx < 32; cx++ {
+			got := readCb10g(yuvBilinear, 16+cx, 32+cy, frameW, frameH)
+			want := readCb10g(refYUV, cx, cy, 64, 64)
+			if got != want {
+				t.Errorf("Cb mismatch at chroma (%d,%d): got %d want %d", cx, cy, got, want)
+				return
+			}
+			gotCr := readCr10g(yuvBilinear, 16+cx, 32+cy, frameW, frameH)
+			wantCr := readCr10g(refYUV, cx, cy, 64, 64)
+			if gotCr != wantCr {
+				t.Errorf("Cr mismatch at chroma (%d,%d): got %d want %d", cx, cy, gotCr, wantCr)
+				return
+			}
+		}
+	}
+}
