@@ -51,7 +51,6 @@ func NewTestSwitcher(t *testing.T, programRelay *distribution.Relay) *Switcher {
 	s.delayBuffer = NewDelayBuffer(s)
 	s.initAtomicSlots()
 	s.registerBuiltinSourcesLocked()
-	s.publishSourcesSnapshot()
 	go s.videoProcessingLoop()
 	s.startBuiltinProducer()
 	t.Cleanup(s.Close)
@@ -89,7 +88,6 @@ func newTestSwitcherDirect(programRelay *distribution.Relay) *Switcher {
 	s.delayBuffer = NewDelayBuffer(s)
 	s.initAtomicSlots()
 	s.registerBuiltinSourcesLocked()
-	s.publishSourcesSnapshot()
 	// No videoProcessingLoop started — caller drains videoProcCh directly.
 	return s
 }

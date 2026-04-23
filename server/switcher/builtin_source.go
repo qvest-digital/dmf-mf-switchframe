@@ -159,17 +159,22 @@ func (s *Switcher) registerBuiltinSourcesLocked() {
 	keys := []string{BuiltinSourceKeyBlack, BuiltinSourceKeyColorbars}
 	s.builtinSources = make(map[string]*builtinSource, len(keys))
 	for _, key := range keys {
-		s.builtinSources[key] = &builtinSource{
-			key:      key,
+		k := key
+		s.builtinSources[k] = &builtinSource{
+			key:      k,
 			renderer: renderer,
 		}
-		s.sources[key] = &sourceState{
-			key:       key,
-			label:     builtinLabel(key),
-			position:  len(s.sources) + 1,
-			isVirtual: true,
-		}
-		s.health.registerSource(key)
+		s.withSourcesMut(func(m map[string]*sourceState) {
+			ss := &sourceState{
+				key:       k,
+				label:     builtinLabel(k),
+				position:  len(m) + 1,
+				isVirtual: true,
+			}
+			ss.initAtomicMirrors()
+			m[k] = ss
+		})
+		s.health.registerSource(k)
 	}
 }
 

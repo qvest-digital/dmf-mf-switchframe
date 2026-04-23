@@ -70,16 +70,29 @@ func (s *Switcher) updateFrameSyncBundle(fn func(*frameSyncBundle)) {
 	s.frameSyncBundle.Store(&next)
 }
 
-// publishSourcesSnapshot mirrors s.sources to s.sourcesAtomic. Caller must
-// hold s.configMu. Phase-1 only — phase 5 moves the map to atomic-primary
-// and this helper goes away.
-func (s *Switcher) publishSourcesSnapshot() {
-	snap := make(map[string]*sourceState, len(s.sources))
-	for k, v := range s.sources {
-		snap[k] = v
+// withSourcesMut CoW-updates the atomic sources map. fn receives a fresh
+// shallow copy of the current map; mutations applied to fn's parameter are
+// published atomically via sourcesAtomic.Store when fn returns. The CoW
+// new-map-pointer swap is the atomic unit of visibility for lock-free
+// readers. The legacy s.sources field is kept as a read-through mirror for
+// Phase 5; Phase 6 deletes it entirely.
+//
+// Caller must hold s.configMu.Lock for writer serialization. Reads via
+// *s.sourcesAtomic.Load() do not take the lock.
+func (s *Switcher) withSourcesMut(fn func(m map[string]*sourceState)) {
+	old := *s.sourcesAtomic.Load()
+	next := make(map[string]*sourceState, len(old)+1)
+	for k, v := range old {
+		next[k] = v
 	}
-	s.sourcesAtomic.Store(&snap)
+	fn(next)
+	s.sourcesAtomic.Store(&next)
+	// Legacy mirror — still read by any sites not yet migrated in this
+	// phase. Writes go here via this assignment so every future read of
+	// s.sources observes the post-fn state. Deleted in Phase 6.
+	s.sources = next
 }
+
 
 // storeTransitionAbortThreshold bit-packs a float64 into the uint64 atomic.
 func (s *Switcher) storeTransitionAbortThresholdAtomic(v float64) {
@@ -95,7 +108,12 @@ func (s *Switcher) initAtomicSlots() {
 	s.graphicsHandlers.Store(&graphicsHandlers{})
 	s.audioHandlers.Store(&audioHandlers{})
 	s.frameSyncBundle.Store(&frameSyncBundle{delayBuffer: s.delayBuffer})
+	// Phase 5: sourcesAtomic is the primary map. s.sources remains a
+	// read-through mirror; withSourcesMut keeps both in sync on every CoW
+	// mutation. Seed both pointers to a fresh empty map so a reader's
+	// *sourcesAtomic.Load() is never nil even before the first Register.
 	empty := map[string]*sourceState{}
+	s.sources = empty
 	s.sourcesAtomic.Store(&empty)
 	s.ftbDurationMsAtomic.Store(int64(s.ftbDurationMs))
 	s.storeTransitionAbortThresholdAtomic(s.transitionAbortThreshold)

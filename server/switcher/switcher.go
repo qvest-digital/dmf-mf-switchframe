@@ -238,6 +238,24 @@ type sourceState struct {
 	// Used to compute per-source ingest FPS in PerfSample(). Atomic for lock-free
 	// writes from frame delivery goroutines.
 	rawFrameCount atomic.Int64
+
+	// Atomic mirrors of label and position. Phase 4 mirror writes from
+	// SetLabel and SetSourcePosition so that Phase 5 (sources map →
+	// atomic.Pointer[map]) can expose these fields to lock-free readers
+	// without tearing. Mutated only under Switcher.configMu.
+	labelAtomic    atomic.Pointer[string]
+	positionAtomic atomic.Int32
+}
+
+// initAtomicMirrors seeds labelAtomic and positionAtomic from the legacy
+// label/position fields. Called once per sourceState right after struct
+// construction while the caller holds Switcher.configMu (Lock). The atomic
+// snapshots allow Phase 5 readers to consume these fields without re-taking
+// configMu once the sources map itself moves to an atomic.Pointer[map].
+func (ss *sourceState) initAtomicMirrors() {
+	label := ss.label
+	ss.labelAtomic.Store(&label)
+	ss.positionAtomic.Store(int32(ss.position))
 }
 
 // getAvgFrameSize returns the rolling average frame size. Safe for concurrent access.
@@ -641,7 +659,6 @@ func New(programRelay *distribution.Relay) *Switcher {
 	s.delayBuffer = NewDelayBuffer(s)
 	s.initAtomicSlots()
 	s.registerBuiltinSourcesLocked()
-	s.publishSourcesSnapshot()
 	go s.videoProcessingLoop()
 	s.startBuiltinProducer()
 	return s
@@ -929,12 +946,11 @@ func (s *Switcher) Close() {
 		if pipeCodecs != nil {
 			pipeCodecs.close()
 		}
-		s.configMu.Lock()
-		keys := make([]string, 0, len(s.sources))
-		for k := range s.sources {
+		sources := *s.sourcesAtomic.Load()
+		keys := make([]string, 0, len(sources))
+		for k := range sources {
 			keys = append(keys, k)
 		}
-		s.configMu.Unlock()
 		for _, k := range keys {
 			s.UnregisterSource(k)
 		}
@@ -1331,7 +1347,7 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 		s.frameSync = fs
 
 		// Wire all existing source viewers to the frame sync.
-		for key, ss := range s.sources {
+		for key, ss := range *s.sourcesAtomic.Load() {
 			if ss.viewer != nil {
 				ss.viewer.frameSync.Store(fs)
 				ss.viewer.delayBuffer.Store(nil) // bypass delay buffer
@@ -1348,7 +1364,7 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 		s.frameSync = nil
 
 		// Revert all source viewers to the delay buffer.
-		for _, ss := range s.sources {
+		for _, ss := range *s.sourcesAtomic.Load() {
 			if ss.viewer != nil {
 				ss.viewer.frameSync.Store(nil)
 				ss.viewer.delayBuffer.Store(s.delayBuffer)
@@ -2243,7 +2259,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		s.configMu.Unlock()
 		return errNoTargetSource
 	}
-	if _, ok := s.sources[sourceKey]; !ok {
+	if _, ok := (*s.sourcesAtomic.Load())[sourceKey]; !ok {
 		s.configMu.Unlock()
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
@@ -3013,16 +3029,18 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 		viewer.delayBuffer.Store(s.delayBuffer)
 	}
 	relay.AddViewer(viewer)
-	s.sources[key] = &sourceState{key: key, relay: relay, viewer: viewer, useRawPipeline: useRaw, position: len(s.sources) + 1}
-	s.publishSourcesSnapshot()
-	s.health.registerSource(key)
-	// Count active decoders for memory warning.
-	decoderCount := 0
-	for _, ss := range s.sources {
-		if ss.viewer != nil && ss.viewer.srcDecoder.Load() != nil {
-			decoderCount++
+	var decoderCount int
+	s.withSourcesMut(func(m map[string]*sourceState) {
+		ss := &sourceState{key: key, relay: relay, viewer: viewer, useRawPipeline: useRaw, position: len(m) + 1}
+		ss.initAtomicMirrors()
+		m[key] = ss
+		for _, other := range m {
+			if other.viewer != nil && other.viewer.srcDecoder.Load() != nil {
+				decoderCount++
+			}
 		}
-	}
+	})
+	s.health.registerSource(key)
 	s.configMu.Unlock()
 
 	s.log.Info("source registered", "source_key", key, "raw_pipeline", useRaw)
@@ -3077,23 +3095,26 @@ func (s *Switcher) makeDecoderCallback(key string) func(string, *ProcessingFrame
 // Safe to call if the key already exists — cleans up the old viewer first.
 func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) {
 	s.configMu.Lock()
-	// Clean up existing registration to prevent viewer leak on rapid re-register.
-	if old, exists := s.sources[key]; exists {
-		old.relay.RemoveViewer(old.viewer.ID())
-		delete(s.sources, key)
-		s.health.removeSource(key)
-	}
 	viewer := newSourceViewer(key, s)
 	relay.AddViewer(viewer)
-	s.sources[key] = &sourceState{
-		key:       key,
-		label:     strings.ToUpper(key),
-		relay:     relay,
-		viewer:    viewer,
-		isVirtual: true,
-		position:  len(s.sources) + 1,
-	}
-	s.publishSourcesSnapshot()
+	s.withSourcesMut(func(m map[string]*sourceState) {
+		// Clean up existing registration to prevent viewer leak on rapid re-register.
+		if old, exists := m[key]; exists {
+			old.relay.RemoveViewer(old.viewer.ID())
+			delete(m, key)
+			s.health.removeSource(key)
+		}
+		ss := &sourceState{
+			key:       key,
+			label:     strings.ToUpper(key),
+			relay:     relay,
+			viewer:    viewer,
+			isVirtual: true,
+			position:  len(m) + 1,
+		}
+		ss.initAtomicMirrors()
+		m[key] = ss
+	})
 	s.health.registerSource(key)
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
@@ -3109,13 +3130,16 @@ func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) 
 // IngestRawVideo routes through the ring buffer for steady-rate release.
 func (s *Switcher) registerRawSource(key, label string, mxl bool) {
 	s.configMu.Lock()
-	s.sources[key] = &sourceState{
-		key:      key,
-		label:    label,
-		position: len(s.sources) + 1,
-		isMXL:    mxl,
-	}
-	s.publishSourcesSnapshot()
+	s.withSourcesMut(func(m map[string]*sourceState) {
+		ss := &sourceState{
+			key:      key,
+			label:    label,
+			position: len(m) + 1,
+			isMXL:    mxl,
+		}
+		ss.initAtomicMirrors()
+		m[key] = ss
+	})
 	s.health.registerSource(key)
 	if s.frameSyncActive && s.frameSync != nil {
 		s.frameSync.AddSource(key)
@@ -3147,20 +3171,23 @@ func (s *Switcher) RegisterSRTSource(key string) {
 // Safe to call if the key already exists — cleans up the old registration.
 func (s *Switcher) RegisterReplaySource(key string) {
 	s.configMu.Lock()
-	if old, exists := s.sources[key]; exists {
-		if old.relay != nil && old.viewer != nil {
-			old.relay.RemoveViewer(old.viewer.ID())
+	s.withSourcesMut(func(m map[string]*sourceState) {
+		if old, exists := m[key]; exists {
+			if old.relay != nil && old.viewer != nil {
+				old.relay.RemoveViewer(old.viewer.ID())
+			}
+			delete(m, key)
+			s.health.removeSource(key)
 		}
-		delete(s.sources, key)
-		s.health.removeSource(key)
-	}
-	s.sources[key] = &sourceState{
-		key:       key,
-		label:     strings.ToUpper(key),
-		position:  len(s.sources) + 1,
-		isVirtual: true,
-	}
-	s.publishSourcesSnapshot()
+		ss := &sourceState{
+			key:       key,
+			label:     strings.ToUpper(key),
+			position:  len(m) + 1,
+			isVirtual: true,
+		}
+		ss.initAtomicMirrors()
+		m[key] = ss
+	})
 	s.health.registerSource(key)
 	if s.frameSyncActive && s.frameSync != nil {
 		s.frameSync.AddSource(key)
@@ -3212,7 +3239,8 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 // preview, those fields are cleared.
 func (s *Switcher) UnregisterSource(key string) {
 	s.configMu.Lock()
-	ss, ok := s.sources[key]
+	current := *s.sourcesAtomic.Load()
+	ss, ok := current[key]
 	if !ok {
 		s.configMu.Unlock()
 		return
@@ -3225,8 +3253,9 @@ func (s *Switcher) UnregisterSource(key string) {
 	if ss.relay != nil && ss.viewer != nil {
 		ss.relay.RemoveViewer(ss.viewer.ID())
 	}
-	delete(s.sources, key)
-	s.publishSourcesSnapshot()
+	s.withSourcesMut(func(m map[string]*sourceState) {
+		delete(m, key)
+	})
 	s.health.removeSource(key)
 	s.delayBuffer.RemoveSource(key)
 	if s.frameSync != nil {
@@ -3279,7 +3308,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	changed := false
 
 	s.configMu.Lock()
-	if _, ok := s.sources[sourceKey]; !ok {
+	if _, ok := (*s.sourcesAtomic.Load())[sourceKey]; !ok {
 		s.configMu.Unlock()
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
@@ -3370,7 +3399,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 // tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) SetPreview(ctx context.Context, sourceKey string) error {
 	s.configMu.Lock()
-	if _, ok := s.sources[sourceKey]; !ok {
+	if _, ok := (*s.sourcesAtomic.Load())[sourceKey]; !ok {
 		s.configMu.Unlock()
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
@@ -3390,12 +3419,14 @@ func (s *Switcher) SetPreview(ctx context.Context, sourceKey string) error {
 // tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) SetLabel(ctx context.Context, sourceKey, label string) error {
 	s.configMu.Lock()
-	ss, ok := s.sources[sourceKey]
+	ss, ok := (*s.sourcesAtomic.Load())[sourceKey]
 	if !ok {
 		s.configMu.Unlock()
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	ss.label = label
+	labelCopy := label
+	ss.labelAtomic.Store(&labelCopy)
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
@@ -3412,19 +3443,22 @@ func (s *Switcher) SetSourcePosition(sourceKey string, position int) error {
 		return fmt.Errorf("position %d: %w", position, ErrInvalidPosition)
 	}
 	s.configMu.Lock()
-	ss, ok := s.sources[sourceKey]
+	sources := *s.sourcesAtomic.Load()
+	ss, ok := sources[sourceKey]
 	if !ok {
 		s.configMu.Unlock()
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	// Swap with any source already at the target position
-	for _, other := range s.sources {
+	for _, other := range sources {
 		if other.key != sourceKey && other.position == position {
 			other.position = ss.position
+			other.positionAtomic.Store(int32(ss.position))
 			break
 		}
 	}
 	ss.position = position
+	ss.positionAtomic.Store(int32(position))
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
@@ -3441,12 +3475,9 @@ func (s *Switcher) SetSourceDelay(sourceKey string, delayMs int) error {
 	if delayMs < 0 || delayMs > maxDelayMs {
 		return ErrInvalidDelay
 	}
-	s.configMu.Lock()
-	if _, ok := s.sources[sourceKey]; !ok {
-		s.configMu.Unlock()
+	if _, ok := (*s.sourcesAtomic.Load())[sourceKey]; !ok {
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
-	s.configMu.Unlock()
 
 	s.delayBuffer.SetDelay(sourceKey, time.Duration(delayMs)*time.Millisecond)
 
@@ -3489,9 +3520,10 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 	s.configMu.RLock()
 	defer s.configMu.RUnlock()
 
-	sources := make(map[string]any, len(s.sources))
+	srcMap := *s.sourcesAtomic.Load()
+	sources := make(map[string]any, len(srcMap))
 	activeDecoders := 0
-	for key, ss := range s.sources {
+	for key, ss := range srcMap {
 		var videoIn, audioIn int64
 		srcInfo := map[string]any{
 			"health_status":     string(s.health.rawStatus(key)),
@@ -3615,7 +3647,7 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 
 	// Per-source relay viewer stats for the same purpose.
 	sourceViewers := make(map[string]any)
-	for key, ss := range s.sources {
+	for key, ss := range *s.sourcesAtomic.Load() {
 		if ss.relay == nil {
 			continue
 		}
@@ -3643,12 +3675,12 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 	return result
 }
 
-// SourceKeys returns the keys of all registered sources.
+// SourceKeys returns the keys of all registered sources. Lock-free via
+// sourcesAtomic — no configMu acquired.
 func (s *Switcher) SourceKeys() []string {
-	s.configMu.RLock()
-	defer s.configMu.RUnlock()
-	keys := make([]string, 0, len(s.sources))
-	for k := range s.sources {
+	sources := *s.sourcesAtomic.Load()
+	keys := make([]string, 0, len(sources))
+	for k := range sources {
 		keys = append(keys, k)
 	}
 	return keys
@@ -3671,14 +3703,13 @@ func (s *Switcher) PipelineSnapshot() map[string]any {
 	}
 
 	// Source info with health status.
-	s.configMu.RLock()
-	sources := make(map[string]map[string]any, len(s.sources))
-	for key := range s.sources {
+	srcMap := *s.sourcesAtomic.Load()
+	sources := make(map[string]map[string]any, len(srcMap))
+	for key := range srcMap {
 		sources[key] = map[string]any{
 			"health": string(s.health.rawStatus(key)),
 		}
 	}
-	s.configMu.RUnlock()
 	result["sources"] = sources
 
 	return result
@@ -3723,9 +3754,10 @@ func isNodeNotFoundError(err error) bool {
 // buildStateLocked constructs a ControlRoomState snapshot. Caller must hold
 // at least s.configMu.RLock().
 func (s *Switcher) buildStateLocked() internal.ControlRoomState {
-	tally := make(map[string]string, len(s.sources))
-	sources := make(map[string]internal.SourceInfo, len(s.sources))
-	for key, ss := range s.sources {
+	srcMap := *s.sourcesAtomic.Load()
+	tally := make(map[string]string, len(srcMap))
+	sources := make(map[string]internal.SourceInfo, len(srcMap))
+	for key, ss := range srcMap {
 		tally[key] = string(TallyIdle)
 		// Built-in reference sources are backed by an internal generator,
 		// not an ingest feed that can go stale — their health is reported
@@ -3752,12 +3784,12 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		kp := s.keyBridge.KeyProcessor()
 		if kp != nil {
 			for _, src := range kp.KeyAlphas() {
-				if _, ok := s.sources[src]; ok {
+				if _, ok := srcMap[src]; ok {
 					tally[src] = string(TallyKeyAlpha)
 				}
 			}
 			for _, src := range kp.KeyFills() {
-				if _, ok := s.sources[src]; ok {
+				if _, ok := srcMap[src]; ok {
 					tally[src] = string(TallyKeyFill)
 				}
 			}
@@ -3778,7 +3810,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	// suppressed above because previewSource == programSource post-swap).
 	if s.state.isInTransition() && s.transEngine != nil {
 		if to := s.transEngine.ToSource(); to != "" {
-			if _, ok := s.sources[to]; ok {
+			if _, ok := srcMap[to]; ok {
 				tally[to] = string(TallyProgram)
 			}
 		}
@@ -4240,9 +4272,10 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 // When a caption manager is attached, the caption text is re-encoded
 // as CEA-608 pairs for SEI injection into the encoded video output.
 func (s *Switcher) handleCaptionFrame(sourceKey string, frame *ccx.CaptionFrame) {
+	_, ok := (*s.sourcesAtomic.Load())[sourceKey]
+	hs := s.hotState.Load()
+	isProgram := ok && hs.programSource == sourceKey
 	s.configMu.RLock()
-	_, ok := s.sources[sourceKey]
-	isProgram := ok && s.programSource == sourceKey
 	cm := s.captionMgr
 	s.configMu.RUnlock()
 

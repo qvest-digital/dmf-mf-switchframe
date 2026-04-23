@@ -109,6 +109,91 @@ func TestMirrorWrites_FTBLifecycle_MirrorsEngine(t *testing.T) {
 	require.Equal(t, sw.state, hs.state, "handleFTBComplete: state mirror divergence")
 }
 
+// TestMirrorWrites_SourceState_AllConstructorsSeedAtomics asserts every
+// sourceState construction path seeds labelAtomic and positionAtomic. The
+// invariant is a Phase-5 prerequisite: once the sources map promotes to
+// atomic-primary, lock-free readers that dereference ss.labelAtomic /
+// ss.positionAtomic must never see nil/zero on a freshly-registered source.
+// If a new constructor sibling is added without calling initAtomicMirrors,
+// this test fails.
+func TestMirrorWrites_SourceState_AllConstructorsSeedAtomics(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+
+	// Built-in sources are seeded in registerBuiltinSourcesLocked, which
+	// runs inside newTestSwitcher. Verify directly.
+	sw.configMu.RLock()
+	builtinBlack := sw.sources[BuiltinSourceKeyBlack]
+	builtinBars := sw.sources[BuiltinSourceKeyColorbars]
+	sw.configMu.RUnlock()
+	for _, bs := range []*sourceState{builtinBlack, builtinBars} {
+		if lbl := bs.labelAtomic.Load(); lbl == nil || *lbl != bs.label {
+			t.Errorf("built-in %q: labelAtomic not seeded (got %v, want %q)", bs.key, lbl, bs.label)
+		}
+		if pos := bs.positionAtomic.Load(); pos != int32(bs.position) {
+			t.Errorf("built-in %q: positionAtomic not seeded (got %d, want %d)", bs.key, pos, bs.position)
+		}
+	}
+
+	// Each production register path.
+	sw.RegisterSource("camA", newTestRelay())
+	sw.RegisterVirtualSource("vReplay", newTestRelay())
+	sw.RegisterMXLSource("mxl-cam")     // calls registerRawSource
+	sw.RegisterSRTSource("srt:srt-cam") // calls registerRawSource
+	sw.RegisterReplaySource("replay-1")
+
+	for _, key := range []string{"camA", "vReplay", "mxl-cam", "srt:srt-cam", "replay-1"} {
+		sw.configMu.RLock()
+		ss, ok := sw.sources[key]
+		sw.configMu.RUnlock()
+		if !ok {
+			t.Errorf("%q: source not registered", key)
+			continue
+		}
+		if lbl := ss.labelAtomic.Load(); lbl == nil || *lbl != ss.label {
+			t.Errorf("%q: labelAtomic not seeded (got %v, want %q)", key, lbl, ss.label)
+		}
+		if pos := ss.positionAtomic.Load(); pos != int32(ss.position) {
+			t.Errorf("%q: positionAtomic not seeded (got %d, want %d)", key, pos, ss.position)
+		}
+	}
+}
+
+func TestMirrorWrites_SourceState_LabelAndPositionAtomics(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+
+	relayA := newTestRelay()
+	sw.RegisterSource("camA", relayA)
+
+	// SetLabel mirrors.
+	require.NoError(t, sw.SetLabel(context.Background(), "camA", "Camera Alpha"))
+	sw.configMu.RLock()
+	ss := sw.sources["camA"]
+	sw.configMu.RUnlock()
+	if got := ss.labelAtomic.Load(); got == nil || *got != "Camera Alpha" || ss.label != *got {
+		t.Errorf("SetLabel mirror divergence: legacy=%q atomic=%v", ss.label, got)
+	}
+
+	// SetSourcePosition mirrors (also swap partner).
+	relayB := newTestRelay()
+	sw.RegisterSource("camB", relayB)
+	sw.configMu.RLock()
+	ssB := sw.sources["camB"]
+	bOriginalPos := ssB.position
+	sw.configMu.RUnlock()
+
+	require.NoError(t, sw.SetSourcePosition("camA", bOriginalPos))
+	sw.configMu.RLock()
+	ssA := sw.sources["camA"]
+	ssB = sw.sources["camB"]
+	sw.configMu.RUnlock()
+	if ssA.positionAtomic.Load() != int32(ssA.position) {
+		t.Errorf("SetSourcePosition: camA atomic divergence legacy=%d atomic=%d", ssA.position, ssA.positionAtomic.Load())
+	}
+	if ssB.positionAtomic.Load() != int32(ssB.position) {
+		t.Errorf("SetSourcePosition: swap-partner camB atomic divergence legacy=%d atomic=%d", ssB.position, ssB.positionAtomic.Load())
+	}
+}
+
 func TestMirrorWrites_SourcesMap_SnapshotMatchesLegacy(t *testing.T) {
 	relay := newTestRelay()
 	sw := newTestSwitcher(t, relay)

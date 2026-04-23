@@ -61,7 +61,6 @@ func newBenchSwitcher(b *testing.B, nSources int) *Switcher {
 	s.delayBuffer = NewDelayBuffer(s)
 	s.initAtomicSlots()
 	s.registerBuiltinSourcesLocked()
-	s.publishSourcesSnapshot()
 	go s.videoProcessingLoop()
 
 	for i := 0; i < nSources; i++ {

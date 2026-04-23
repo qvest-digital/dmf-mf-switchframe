@@ -54,8 +54,9 @@ type PerfSourceSample struct {
 // Safe for concurrent access from any goroutine.
 func (s *Switcher) PerfSample() PerfSwitcherSample {
 	s.configMu.RLock()
-	sources := make(map[string]PerfSourceSample, len(s.sources))
-	for key, ss := range s.sources {
+	srcMap := *s.sourcesAtomic.Load()
+	sources := make(map[string]PerfSourceSample, len(srcMap))
+	for key, ss := range srcMap {
 		sample := PerfSourceSample{Health: string(s.health.rawStatus(key))}
 		if ss.viewer != nil {
 			if sd := ss.viewer.srcDecoder.Load(); sd != nil {
