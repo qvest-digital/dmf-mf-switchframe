@@ -3,6 +3,7 @@ package clip
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -573,4 +574,149 @@ func TestManagerEjectEmptySlot(t *testing.T) {
 
 	// Ejecting an already-empty slot should not error.
 	assert.NoError(t, mgr.Eject(1))
+}
+
+// TestClipManager_ConcurrentLoadSameSlotNoLeak exercises the TOCTOU window
+// between demux (outside m.mu) and the post-demux eject-and-replace (under
+// m.mu in Load). Two assertions:
+//
+//  1. Demux on the same slot serializes — only one DemuxFunc runs at a time
+//     for a given playerID. This is the deterministic RED/GREEN signal: on
+//     current (buggy) main, N concurrent Loads all demux in parallel; with
+//     the per-slot load mutex fix, they run strictly sequentially.
+//  2. No orphan player goroutine after cleanup. On current main, a Play
+//     racing into Load A's eject window can spawn a player on an
+//     intermediate slot that Load A then overwrites unconditionally at
+//     m.players[idx] = &playerSlot{...}, leaving a running goroutine no
+//     Stop/Eject/Close can reach.
+func TestClipManager_ConcurrentLoadSameSlotNoLeak(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir, 1<<30)
+	require.NoError(t, err)
+
+	clips := make([]*Clip, 6)
+	for i := range clips {
+		fname := "clip-" + string(rune('a'+i)) + ".ts"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, fname), []byte("dummy"), 0o644))
+		c := &Clip{
+			Name:       "Clip " + string(rune('A'+i)),
+			Filename:   fname,
+			Source:     SourceUpload,
+			Codec:      "h264",
+			Width:      1920,
+			Height:     1080,
+			FPSNum:     30000,
+			FPSDen:     1001,
+			DurationMs: 5000,
+			ByteSize:   5,
+		}
+		require.NoError(t, store.Add(c))
+		clips[i] = c
+	}
+
+	// Concurrency-counting demux: each in-flight DemuxFunc call bumps a
+	// counter; the max observed is asserted == 1 under the fix.
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
+	slowDemux := func(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
+		n := inFlight.Add(1)
+		for {
+			prev := maxInFlight.Load()
+			if n <= prev {
+				break
+			}
+			if maxInFlight.CompareAndSwap(prev, n) {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+		inFlight.Add(-1)
+		frames := make([]BufferedFrame, 30)
+		for i := range frames {
+			frames[i] = BufferedFrame{
+				wireData:   make([]byte, 100),
+				pts:        int64(i) * 3000,
+				isKeyframe: i == 0,
+			}
+			if i == 0 {
+				frames[i].sps = []byte{0x67, 0x42, 0xC0, 0x1E}
+				frames[i].pps = []byte{0x68, 0xCE, 0x38, 0x80}
+			}
+		}
+		return frames, nil, nil
+	}
+
+	mgr := NewManager(store, ManagerConfig{DemuxFunc: slowDemux})
+	defer mgr.Close()
+
+	runtime.GC()
+	baseline := runtime.NumGoroutine()
+
+	// Pre-Load + Play so the first storm Load enters the eject path on a live
+	// player. Loop=true keeps any orphan goroutine spinning so it remains
+	// visible to NumGoroutine at test end.
+	require.NoError(t, mgr.Load(2, clips[0].ID))
+	require.NoError(t, mgr.Play(2, 1.0, true))
+	time.Sleep(20 * time.Millisecond)
+
+	// Reset the demux counter so the pre-Load isn't counted.
+	maxInFlight.Store(0)
+
+	// Storm: 4 concurrent Loads (distinct clipIDs) on same slot + Play spinner.
+	var loadsWG sync.WaitGroup
+	for i := 1; i <= 4; i++ {
+		loadsWG.Add(1)
+		clipID := clips[i].ID
+		go func() {
+			defer loadsWG.Done()
+			_ = mgr.Load(2, clipID)
+		}()
+	}
+
+	spinnerDone := make(chan struct{})
+	var spinnerWG sync.WaitGroup
+	spinnerWG.Add(1)
+	go func() {
+		defer spinnerWG.Done()
+		for {
+			select {
+			case <-spinnerDone:
+				return
+			default:
+				_ = mgr.Play(2, 1.0, true)
+				time.Sleep(2 * time.Millisecond)
+			}
+		}
+	}()
+
+	loadsWG.Wait()
+	time.Sleep(80 * time.Millisecond)
+	close(spinnerDone)
+	spinnerWG.Wait()
+
+	// Primary RED/GREEN assertion: demux serialization on same slot.
+	if got := maxInFlight.Load(); got != 1 {
+		t.Errorf("max concurrent DemuxFunc on same slot = %d, want 1 (Loads must serialize per-slot)", got)
+	}
+
+	// Cleanup.
+	_ = mgr.Stop(2)
+	_ = mgr.Eject(2)
+	mgr.Close()
+
+	// Orphan players (whose slot was overwritten) have no reachable cancel
+	// func, so Close cannot reach them. Give them time to exit (they won't —
+	// they loop) or for legit goroutines to drain.
+	time.Sleep(300 * time.Millisecond)
+	runtime.GC()
+
+	// Tolerance of +2 for CI-pressure scheduler slack (GC-assist, finalizer,
+	// timer goroutines can transiently push the count up even at rest).
+	final := runtime.NumGoroutine()
+	if final > baseline+2 {
+		buf := make([]byte, 1<<15)
+		n := runtime.Stack(buf, true)
+		t.Fatalf("goroutine leak: baseline=%d, final=%d, delta=%d\n%s",
+			baseline, final, final-baseline, buf[:n])
+	}
 }

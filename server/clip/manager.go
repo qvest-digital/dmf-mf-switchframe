@@ -12,7 +12,15 @@ import (
 // It owns the 4 player slots, handles source registration lifecycle,
 // and provides state for broadcast. Follows the replay.Manager pattern.
 type Manager struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// loadMu[idx] serializes Load calls on the same slot. Load does its slow
+	// work (store.Get + DemuxFunc) outside m.mu and then releases m.mu in the
+	// middle of its eject path to Stop+Wait the prior player — two windows
+	// that would otherwise let concurrent Loads (and a Play racing in)
+	// overwrite m.players[idx], orphaning the Play-spawned player goroutine
+	// that nothing else holds a cancel for. The per-slot lock makes each
+	// Load's demux-plus-eject transactional against other Loads on the slot.
+	loadMu  [MaxPlayers]sync.Mutex
 	store   *Store
 	config  ManagerConfig
 	players [MaxPlayers]*playerSlot
@@ -89,6 +97,15 @@ func (m *Manager) Load(playerID int, clipID string) error {
 		return err
 	}
 
+	idx := playerID - 1
+
+	// Serialize Loads targeting this slot; see loadMu field comment for why.
+	// Held across notifyStateChange at the bottom of the function: any
+	// onStateChange callback must not call back into Manager.Load on the same
+	// slot (current callback is read-only broadcast enrichment).
+	m.loadMu[idx].Lock()
+	defer m.loadMu[idx].Unlock()
+
 	// Look up clip in store (outside main lock — store has its own lock).
 	c, err := m.store.Get(clipID)
 	if err != nil {
@@ -104,8 +121,6 @@ func (m *Manager) Load(playerID int, clipID string) error {
 	if len(frames) == 0 {
 		return ErrNoVideo
 	}
-
-	idx := playerID - 1
 
 	m.mu.Lock()
 
