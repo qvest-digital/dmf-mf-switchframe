@@ -8,9 +8,10 @@ import (
 )
 
 type serverConfig struct {
-	Token string
-	Host  string
-	Port  int
+	Token    string
+	Host     string
+	Port     int
+	ItemsDir string
 }
 
 type server struct {
@@ -20,6 +21,9 @@ type server struct {
 }
 
 func newServer(d db, cfg serverConfig) *server {
+	if cfg.ItemsDir == "" {
+		cfg.ItemsDir = "docs/backlog/items"
+	}
 	bus := newEventBus()
 	d.publisher = bus
 	return &server{d: d, cfg: cfg, bus: bus}
@@ -32,6 +36,8 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /api/claims", s.handleClaims)
 	mux.HandleFunc("GET /api/touches", s.handleTouches)
 	mux.HandleFunc("GET /api/messages", s.handleMessages)
+	mux.HandleFunc("GET /api/items", s.handleItemsList)
+	mux.HandleFunc("GET /api/items/{id}", s.handleItemDetail)
 	return s.authMiddleware(mux)
 }
 
@@ -161,6 +167,56 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		out = append(out, m)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) handleItemsList(w http.ResponseWriter, r *http.Request) {
+	items, err := walkItems(s.cfg.ItemsDir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	type itemOut struct {
+		ID        string `json:"id"`
+		Title     string `json:"title"`
+		Type      string `json:"type"`
+		Priority  string `json:"priority"`
+		Area      string `json:"area"`
+		Status    string `json:"status"`
+		Estimate  string `json:"estimate"`
+		Risk      string `json:"risk"`
+		ACTotal   int    `json:"ac_total"`
+		ACChecked int    `json:"ac_checked"`
+		Progress  int    `json:"progress_pct"`
+	}
+	out := make([]itemOut, 0, len(items))
+	for _, it := range items {
+		out = append(out, itemOut{
+			ID: it.ID, Title: it.Title, Type: it.Type, Priority: it.Priority,
+			Area: it.Area, Status: it.Status, Estimate: it.Estimate, Risk: it.Risk,
+			ACTotal: it.ACTotal, ACChecked: it.ACChecked, Progress: it.ProgressPct(),
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) handleItemDetail(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	items, err := walkItems(s.cfg.ItemsDir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for _, it := range items {
+		if it.ID == id {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"id": it.ID, "title": it.Title, "type": it.Type, "priority": it.Priority,
+				"area": it.Area, "status": it.Status, "estimate": it.Estimate, "risk": it.Risk,
+				"ac_total": it.ACTotal, "ac_checked": it.ACChecked, "progress_pct": it.ProgressPct(),
+			})
+			return
+		}
+	}
+	writeErr(w, http.StatusNotFound, "item not found: "+id)
 }
 
 func (s *server) handleTouches(w http.ResponseWriter, r *http.Request) {
