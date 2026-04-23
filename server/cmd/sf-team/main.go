@@ -28,6 +28,10 @@ func main() {
 		os.Exit(runClaim(args))
 	case "release":
 		os.Exit(runRelease(args))
+	case "done":
+		os.Exit(runDone(args))
+	case "blocked":
+		os.Exit(runBlocked(args))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		usage()
