@@ -399,7 +399,7 @@ func TestMixer_SetLimiterThreshold_ValidRange(t *testing.T) {
 	defer func() { _ = m.Close() }()
 
 	require.NoError(t, m.SetLimiterThreshold(-6.0))
-	threshold, _, _ := m.LimiterSettings()
+	threshold, _, _, _ := m.LimiterSettings()
 	require.InDelta(t, -6.0, threshold, 0.01)
 }
 
@@ -418,7 +418,7 @@ func TestMixer_SetLimiterCeiling_ValidRange(t *testing.T) {
 	defer func() { _ = m.Close() }()
 
 	require.NoError(t, m.SetLimiterCeiling(-1.5))
-	_, ceiling, _ := m.LimiterSettings()
+	_, ceiling, _, _ := m.LimiterSettings()
 	require.InDelta(t, -1.5, ceiling, 0.01)
 }
 
@@ -436,8 +436,11 @@ func TestMixer_LimiterSettings_Defaults(t *testing.T) {
 	m := newTestMixerForLimiter(t)
 	defer func() { _ = m.Close() }()
 
-	threshold, ceiling, gr := m.LimiterSettings()
-	require.InDelta(t, -1.0, threshold, 0.01, "default threshold should be -1 dBFS")
-	require.InDelta(t, 0.0, ceiling, 0.01, "default ceiling should be 0 dBFS")
+	threshold, ceiling, gr, tp := m.LimiterSettings()
+	require.InDelta(t, -1.0, threshold, 0.01, "default threshold should be -1 dBTP")
+	require.InDelta(t, 0.0, ceiling, 0.01, "default ceiling should be 0 dBTP")
 	require.InDelta(t, 0.0, gr, 0.01, "initial GR should be 0")
+	require.False(t, math.IsInf(tp, 0), "TruePeak must be JSON-safe (finite) on cold start, got %v", tp)
+	require.False(t, math.IsNaN(tp), "TruePeak must not be NaN on cold start")
+	require.Less(t, tp, -100.0, "idle TruePeak should report a deep floor, got %v", tp)
 }

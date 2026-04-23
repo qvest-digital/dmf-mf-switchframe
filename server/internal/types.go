@@ -84,10 +84,14 @@ type CompressorSettings struct {
 }
 
 // LimiterSettings describes the master bus limiter state.
+// Threshold and Ceiling are in dBTP (ITU-R BS.1770-4 Annex 2 true-peak).
+// TruePeak is the measured true-peak from the most recent mixer block,
+// in dBTP; math.Inf(-1) when the mixer is idle.
 type LimiterSettings struct {
 	Threshold     float64 `json:"threshold"`
 	Ceiling       float64 `json:"ceiling"`
 	GainReduction float64 `json:"gainReduction"`
+	TruePeak      float64 `json:"truePeak"`
 }
 
 // GateSettings describes the settings for a channel noise gate.

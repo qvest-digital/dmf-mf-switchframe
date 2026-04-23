@@ -509,8 +509,8 @@ func (m *mockMixer) SetLimiterCeiling(ceilingDB float64) error {
 	return nil
 }
 
-func (m *mockMixer) LimiterSettings() (float64, float64, float64) {
-	return -1.0, 0.0, 0.0
+func (m *mockMixer) LimiterSettings() (float64, float64, float64, float64) {
+	return -1.0, 0.0, 0.0, -144.0
 }
 
 func setupAudioTestAPI(t *testing.T) (*API, *mockMixer) {

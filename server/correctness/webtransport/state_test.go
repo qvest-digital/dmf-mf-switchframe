@@ -1106,8 +1106,8 @@ func (m *mockAudioStateProvider) ProgramPeak() [2]float64                       
 func (m *mockAudioStateProvider) ChannelStates() map[string]internal.AudioChannel { return m.channels }
 func (m *mockAudioStateProvider) MasterLevel() float64                            { return m.masterLevel }
 func (m *mockAudioStateProvider) GainReduction() float64                          { return m.gainReduction }
-func (m *mockAudioStateProvider) LimiterSettings() (float64, float64, float64) {
-	return m.limThreshold, m.limCeiling, m.limGR
+func (m *mockAudioStateProvider) LimiterSettings() (float64, float64, float64, float64) {
+	return m.limThreshold, m.limCeiling, m.limGR, -144.0
 }
 func (m *mockAudioStateProvider) MomentaryLUFS() float64  { return m.momentaryLUFS }
 func (m *mockAudioStateProvider) ShortTermLUFS() float64  { return m.shortTermLUFS }

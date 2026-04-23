@@ -883,7 +883,7 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 		snap.AudioMaster.LimiterCeiling = state.Limiter.Ceiling
 	} else {
 		// Fall back to direct mixer query.
-		threshold, ceiling, _ := a.mixer.LimiterSettings()
+		threshold, ceiling, _, _ := a.mixer.LimiterSettings()
 		snap.AudioMaster.LimiterThreshold = threshold
 		snap.AudioMaster.LimiterCeiling = ceiling
 	}

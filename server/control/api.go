@@ -61,7 +61,11 @@ type AudioMixerAPI interface {
 	AudioDelayMs(sourceKey string) int
 	SetLimiterThreshold(thresholdDB float64) error
 	SetLimiterCeiling(ceilingDB float64) error
-	LimiterSettings() (thresholdDB, ceilingDB, gainReduction float64)
+	// LimiterSettings returns threshold, ceiling, GR, and last-block true-peak
+	// (all dBTP except GR which is dB).  The truePeakDBTP return must be
+	// JSON-encodable — implementations must coerce idle/reset sentinels away
+	// from ±Inf and NaN.
+	LimiterSettings() (thresholdDB, ceilingDB, gainReduction, truePeakDBTP float64)
 }
 
 // OutputManagerAPI is the interface for recording and SRT output operations

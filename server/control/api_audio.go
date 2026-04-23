@@ -125,6 +125,7 @@ type limiterResponse struct {
 	Threshold     float64 `json:"threshold"`
 	Ceiling       float64 `json:"ceiling"`
 	GainReduction float64 `json:"gainReduction"`
+	TruePeak      float64 `json:"truePeak"`
 }
 
 // registerAudioRoutes registers audio-related API routes on the given mux.
@@ -651,11 +652,12 @@ func (a *API) handleGetLimiter(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
-	threshold, ceiling, gr := a.mixer.LimiterSettings()
+	threshold, ceiling, gr, tp := a.mixer.LimiterSettings()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(limiterResponse{
 		Threshold:     threshold,
 		Ceiling:       ceiling,
 		GainReduction: gr,
+		TruePeak:      tp,
 	})
 }

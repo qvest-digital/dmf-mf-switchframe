@@ -85,9 +85,10 @@ export interface AudioChannel {
 }
 
 export interface LimiterSettings {
-	threshold: number;
-	ceiling: number;
-	gainReduction: number;
+	threshold: number;         // dBTP (true-peak)
+	ceiling: number;           // dBTP (true-peak)
+	gainReduction: number;     // dB, positive = reducing
+	truePeak: number;          // dBTP, measured peak from last block; -144 when idle
 }
 
 export interface RecordingStatus {

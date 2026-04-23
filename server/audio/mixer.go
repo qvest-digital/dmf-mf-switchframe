@@ -881,10 +881,10 @@ func (m *Mixer) GainReduction() float64 {
 }
 
 // SetLimiterThreshold changes the master limiter threshold.
-// thresholdDB: -12 to 0 dBFS.
+// thresholdDB: -12 to 0 dBTP (true-peak).
 func (m *Mixer) SetLimiterThreshold(thresholdDB float64) error {
 	if thresholdDB < -12 || thresholdDB > 0 {
-		return fmt.Errorf("audio: limiter threshold must be between -12 and 0 dBFS")
+		return fmt.Errorf("audio: limiter threshold must be between -12 and 0 dBTP")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -893,10 +893,11 @@ func (m *Mixer) SetLimiterThreshold(thresholdDB float64) error {
 }
 
 // SetLimiterCeiling changes the master limiter output ceiling.
-// ceilingDB: -3 to 0 dBFS.
+// ceilingDB: -3 to 0 dBTP (true-peak).  -1 dBTP matches EBU R128 s1 for
+// streaming; -2 dBTP matches ATSC A/85 §6.5 for broadcast delivery.
 func (m *Mixer) SetLimiterCeiling(ceilingDB float64) error {
 	if ceilingDB < -3 || ceilingDB > 0 {
-		return fmt.Errorf("audio: limiter ceiling must be between -3 and 0 dBFS")
+		return fmt.Errorf("audio: limiter ceiling must be between -3 and 0 dBTP")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -904,10 +905,19 @@ func (m *Mixer) SetLimiterCeiling(ceilingDB float64) error {
 	return nil
 }
 
-// LimiterSettings returns the current limiter threshold, ceiling (in dBFS),
-// and gain reduction (in dB, positive = reducing).
-func (m *Mixer) LimiterSettings() (thresholdDB, ceilingDB, gainReduction float64) {
-	return m.limiter.ThresholdDB(), m.limiter.CeilingDB(), m.limiter.GainReduction()
+// LimiterSettings returns the current limiter threshold, ceiling (in dBTP,
+// true-peak), gain reduction (in dB, positive = reducing), and the measured
+// true-peak from the last block (in dBTP).  The TruePeak return value is
+// JSON-safe: math.Inf(-1) and math.NaN — possible from the raw detector on
+// cold start or after Reset — are coerced to -144 dBTP (far below any audible
+// signal) so callers can flow the value through encoding/json without
+// encode errors.
+func (m *Mixer) LimiterSettings() (thresholdDB, ceilingDB, gainReduction, truePeakDBTP float64) {
+	tp := m.limiter.TruePeakDBTP()
+	if math.IsInf(tp, -1) || math.IsNaN(tp) {
+		tp = -144.0
+	}
+	return m.limiter.ThresholdDB(), m.limiter.CeilingDB(), m.limiter.GainReduction(), tp
 }
 
 // MasterLevel returns the current master level in dB.
