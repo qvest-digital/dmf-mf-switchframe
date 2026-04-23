@@ -26,6 +26,8 @@ func main() {
 		os.Exit(runRegister(args))
 	case "claim":
 		os.Exit(runClaim(args))
+	case "release":
+		os.Exit(runRelease(args))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		usage()
