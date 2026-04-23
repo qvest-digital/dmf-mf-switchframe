@@ -3042,10 +3042,9 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 func (s *Switcher) makeDecoderCallback(key string) func(string, *ProcessingFrame) {
 	return func(sourceKey string, pf *ProcessingFrame) {
 		// Route through frame sync or delay buffer (same as SendVideo
-		// would for the legacy path, but for decoded YUV).
-		s.configMu.RLock()
-		ss := s.sources[sourceKey]
-		s.configMu.RUnlock()
+		// would for the legacy path, but for decoded YUV). Lock-free lookup.
+		sources := *s.sourcesAtomic.Load()
+		ss := sources[sourceKey]
 		if ss == nil || ss.viewer == nil {
 			pf.ReleaseYUV()
 			return
@@ -3201,10 +3200,7 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 		h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 	}
 
-	s.configMu.RLock()
-	fs := s.frameSync
-	s.configMu.RUnlock()
-	if fs != nil {
+	if fs := s.frameSyncBundle.Load().sync; fs != nil {
 		fs.IngestRawVideo(sourceKey, pf)
 		return
 	}
@@ -3931,15 +3927,19 @@ func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.health.recordFrame(sourceKey, time.Now())
 
-	// Single RLock to snapshot all state needed for this frame.
-	s.configMu.RLock()
-	ss := s.sources[sourceKey]
-	isProgramSource := sourceKey == s.programSource
-	engine := s.transEngine
-	inTrans := s.state.isInTransition()
-	isFTB := s.state.isFTBActive()
-	audioHandler := s.audioTransition
-	s.configMu.RUnlock()
+	// Lock-free hot-path snapshot: three atomic pointer loads replace the
+	// configMu.RLock block. hotState + sources two-load race is benign;
+	// audioHandlers is independent.
+	hs := s.hotState.Load()
+	sources := *s.sourcesAtomic.Load()
+	ah := s.audioHandlers.Load()
+
+	ss := sources[sourceKey]
+	isProgramSource := sourceKey == hs.programSource
+	engine := hs.transEngine
+	inTrans := hs.state.isInTransition()
+	isFTB := hs.state.isFTBActive()
+	audioHandler := ah.audioTransition
 
 	// Update per-source frame statistics (single-writer per source viewer).
 	if ss != nil {
@@ -3991,12 +3991,17 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 	s.health.recordFrame(sourceKey, time.Now())
 
-	s.configMu.RLock()
-	handler := s.audioHandler
-	_, ok := s.sources[sourceKey]
-	isProgram := ok && s.programSource == sourceKey
-	fs := s.frameSync
-	s.configMu.RUnlock()
+	// Lock-free hot-path snapshot: four atomic pointer loads replace the
+	// configMu.RLock block.
+	hs := s.hotState.Load()
+	sources := *s.sourcesAtomic.Load()
+	ah := s.audioHandlers.Load()
+	fsb := s.frameSyncBundle.Load()
+
+	handler := ah.audioHandler
+	_, ok := sources[sourceKey]
+	isProgram := ok && hs.programSource == sourceKey
+	fs := fsb.sync
 
 	// Apply PTS correction from FrameSynchronizer. Audio bypasses the frame
 	// sync entirely (to avoid bursty tick-quantized delivery), but video PTS
