@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type serverConfig struct {
@@ -28,6 +29,10 @@ func newServer(d db, cfg serverConfig) *server {
 	}
 	bus := newEventBus()
 	d.publisher = bus
+	if d.pubRef == nil {
+		d.pubRef = &pubRef{}
+	}
+	d.pubRef.p = bus
 	agent, _ := agentID(detectWorktree())
 	return &server{d: d, cfg: cfg, bus: bus, callerAgent: agent}
 }
@@ -55,6 +60,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST /api/release", s.handleRelease)
 	mux.HandleFunc("POST /api/progress", s.handleProgressPost)
 	mux.HandleFunc("POST /api/reassign", s.handleReassign)
+	mux.HandleFunc("GET /api/events", s.handleEvents)
 	return s.authMiddleware(mux)
 }
 
@@ -409,6 +415,44 @@ func (s *server) handleReassign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	ch := s.bus.Subscribe()
+	defer s.bus.Unsubscribe(ch)
+
+	ping := time.NewTicker(15 * time.Second)
+	defer ping.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ping.C:
+			_, _ = w.Write([]byte(": ping\n\n"))
+			flusher.Flush()
+		case e, ok := <-ch:
+			if !ok {
+				return
+			}
+			payload, _ := json.Marshal(e)
+			_, _ = w.Write([]byte("event: " + e.Kind + "\ndata: "))
+			_, _ = w.Write(payload)
+			_, _ = w.Write([]byte("\n\n"))
+			flusher.Flush()
+		}
+	}
 }
 
 func (s *server) handleTouches(w http.ResponseWriter, r *http.Request) {

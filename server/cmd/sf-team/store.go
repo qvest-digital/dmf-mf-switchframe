@@ -11,14 +11,19 @@ type db struct {
 	sqldb     *sql.DB
 	now       func() time.Time
 	publisher publisherIface
+	pubRef    *pubRef
 }
 
 type publisherIface interface {
 	Publish(e event)
 }
 
+type pubRef struct {
+	p publisherIface
+}
+
 func newDB(sqldb *sql.DB) db {
-	return db{sqldb: sqldb, now: time.Now}
+	return db{sqldb: sqldb, now: time.Now, pubRef: &pubRef{}}
 }
 
 func (d db) nowUnix() int64 {
