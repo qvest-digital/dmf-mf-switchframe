@@ -1023,6 +1023,62 @@ func TestManager_DirectWriteVideo_RaceWithLatchLipSync(t *testing.T) {
 	done.Wait()
 }
 
+func TestManager_DirectWriteVideo_LastPTSRaceWithSnapshot(t *testing.T) {
+	prev := runtime.GOMAXPROCS(4)
+	defer runtime.GOMAXPROCS(prev)
+
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: t.TempDir()}))
+
+	// Revert lastDirectVideoPTS to plain int64 to see this RED under -race.
+	var (
+		stop      atomic.Bool
+		snapshots atomic.Int64
+	)
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+
+	const writers = 4
+	for i := 0; i < writers; i++ {
+		done.Add(1)
+		go func(id int) {
+			defer done.Done()
+			start.Wait()
+			pts := int64(90000 * (id + 1))
+			tick := time.NewTicker(time.Second / 60)
+			defer tick.Stop()
+			for !stop.Load() {
+				mgr.DirectWriteVideo(lipSyncTestFrame(pts))
+				pts += 1500
+				<-tick.C
+			}
+		}(i)
+	}
+
+	// Same-package field access keeps the test contract-free: no production
+	// accessor is exposed just to satisfy a test reader.
+	done.Add(1)
+	go func() {
+		defer done.Done()
+		start.Wait()
+		for !stop.Load() {
+			_ = mgr.lastDirectVideoPTS.Load()
+			snapshots.Add(1)
+		}
+	}()
+
+	start.Done()
+	time.Sleep(200 * time.Millisecond)
+	stop.Store(true)
+	done.Wait()
+
+	require.Greater(t, snapshots.Load(), int64(0),
+		"reader goroutine must have observed lastDirectVideoPTS at least once")
+}
+
 func TestManager_LipSyncLatchedObservableFromHotPath(t *testing.T) {
 	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
