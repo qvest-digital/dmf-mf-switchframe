@@ -1,4 +1,4 @@
-.PHONY: build build-server build-server-mxl build-asr-sidecar build-asr-sidecar-whisper dev demo demo-captions demo-cef cef-sidecar mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker docker-cuda clean sync-prism-ts lint format setup-mkcert metal-shaders asr-eval-fixtures asr-eval
+.PHONY: build build-server build-server-mxl build-asr-sidecar build-asr-sidecar-whisper dev demo demo-captions demo-cef demo-advanced cef-sidecar mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker docker-cuda clean sync-prism-ts lint format setup-mkcert metal-shaders asr-eval-fixtures asr-eval
 
 EMBED_LINK := server/cmd/switchframe/ui
 
@@ -178,6 +178,33 @@ demo-captions: build-server build-asr-sidecar-whisper node_modules_check
 			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$ASR_FLAGS $$CERT_FLAGS & \
 		else \
 			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$ASR_FLAGS $$CERT_FLAGS & \
+		fi; \
+		cd ui && npm run dev & \
+		wait
+
+# Demo with BOTH live AI captions AND HTML5 graphics (CEF sidecar).
+# Combines demo-captions + demo-cef — same switchframe binary, both sets of
+# --asr-sidecar and --cef-binary flags on the command line.
+# Prereqs: whisper.cpp at /opt/whisper.cpp with a ggml-*.bin model, and CEF
+# bootstrapped (auto-runs scripts/setup-cef-mac.sh on first invocation, ~10 min).
+demo-advanced: build-server build-asr-sidecar-whisper cef-sidecar node_modules_check
+	@echo ""
+	@echo "  SwitchFrame Demo + AI Captions + HTML5 Graphics"
+	@echo "  Open http://localhost:5173 in your browser"
+	@echo "  Captions: live ASR via whisper sidecar (Captions tab in bottom panel)"
+	@echo "  HTML5 templates: cef-sidecar/demo-templates/ (Graphics tab)"
+	@echo "  Press Ctrl+C to stop"
+	@echo ""
+	@trap 'kill 0' EXIT; \
+		CERT_FLAGS="--http-fallback"; \
+		ASR_FLAGS="--asr-sidecar ./bin/switchframe-asr --asr-whisper-models-dir $(WHISPER_MODELS_DIR) --asr-default-backend whisper"; \
+		CEF_FLAGS="--cef-binary $(CEF_BIN_REL) --cef-templates-dir cef-sidecar/demo-templates"; \
+		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
+		echo ""; \
+		if [ -d test/clips ]; then \
+			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$ASR_FLAGS $$CEF_FLAGS $$CERT_FLAGS & \
+		else \
+			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$ASR_FLAGS $$CEF_FLAGS $$CERT_FLAGS & \
 		fi; \
 		cd ui && npm run dev & \
 		wait
