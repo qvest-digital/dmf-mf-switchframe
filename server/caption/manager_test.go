@@ -1,8 +1,10 @@
 package caption
 
 import (
+	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/zsiec/ccx"
 )
@@ -645,5 +647,64 @@ func TestManagerAuthorNullPairWhenEmpty(t *testing.T) {
 	pairs := m.ConsumeForFrame()
 	if len(pairs) != 1 || !pairs[0].IsNull() {
 		t.Errorf("expected null pair when author queue empty, got %v", pairs)
+	}
+}
+
+func TestManager_AuthorBufferRuneSafeTruncation(t *testing.T) {
+	m := NewManager()
+	m.SetMode(ModeAuthor)
+
+	// 150 ASCII runes + 100 runes containing a 4-byte emoji at position 50.
+	// Resulting input stream is 250 runes; buffer must trim to the last 200
+	// runes and remain valid UTF-8 — regardless of where the emoji's 4
+	// bytes fall relative to any byte-offset trim boundary.
+	const prefixRunes = 150
+	const suffixRunes = 100
+	const emojiAt = 50
+	const emoji = "🎬" // 4-byte UTF-8 (U+1F3AC)
+
+	prefix := strings.Repeat("a", prefixRunes)
+	suffix := strings.Repeat("b", emojiAt) + emoji + strings.Repeat("c", suffixRunes-emojiAt-1)
+
+	m.IngestText(prefix)
+	m.IngestText(suffix)
+
+	buf := m.State().AuthorBuffer
+	if !utf8.ValidString(buf) {
+		t.Fatalf("authorBuffer not valid UTF-8: %q", buf)
+	}
+	if got := utf8.RuneCountInString(buf); got != 200 {
+		t.Fatalf("authorBuffer rune count = %d, want 200", got)
+	}
+	if !strings.ContainsRune(buf, '🎬') {
+		t.Fatalf("authorBuffer should still contain the emoji (was at rune position %d from end): %q",
+			(prefixRunes+suffixRunes)-(prefixRunes+emojiAt), buf)
+	}
+}
+
+func TestManager_AuthorBufferHandlesMultiByteStartOfChunk(t *testing.T) {
+	m := NewManager()
+	m.SetMode(ModeAuthor)
+
+	// 199 ASCII bytes (= 199 runes) then a single 3-byte character. Under a
+	// byte-wise trim to 200 bytes, bytes 199, 200, 201 would keep 201-byte
+	// input at 200 bytes: the last 200 bytes start mid-codepoint (byte 2 of
+	// the 3-byte char). Rune-aware trim keeps the buffer at exactly 200 runes
+	// with valid UTF-8.
+	prefix := strings.Repeat("a", 199)
+	const threeByte = "€" // 3-byte UTF-8 (U+20AC)
+
+	m.IngestText(prefix)
+	m.IngestText(threeByte)
+
+	buf := m.State().AuthorBuffer
+	if !utf8.ValidString(buf) {
+		t.Fatalf("authorBuffer not valid UTF-8: %q", buf)
+	}
+	if got := utf8.RuneCountInString(buf); got != 200 {
+		t.Fatalf("authorBuffer rune count = %d, want 200 (buffer len = %d bytes)", got, len(buf))
+	}
+	if !strings.HasSuffix(buf, threeByte) {
+		t.Fatalf("authorBuffer should end with euro sign: %q", buf)
 	}
 }

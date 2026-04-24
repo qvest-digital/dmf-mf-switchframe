@@ -3,9 +3,14 @@ package caption
 import (
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/zsiec/ccx"
 )
+
+// authorBufferMaxRunes bounds the UI preview buffer. Counted in runes, not
+// bytes, so the UI never sees a torn multi-byte UTF-8 sequence.
+const authorBufferMaxRunes = 200
 
 // Manager is the central caption state machine. It manages the caption mode
 // (off/passthrough/author), buffers authored text via a CEA-608 encoder,
@@ -89,10 +94,7 @@ func (m *Manager) IngestText(text string) {
 
 	m.encoder.IngestText(text)
 	m.authorBuffer += text
-	// Keep buffer to a reasonable display length.
-	if len(m.authorBuffer) > 200 {
-		m.authorBuffer = m.authorBuffer[len(m.authorBuffer)-200:]
-	}
+	m.trimAuthorBuffer()
 
 	cb := m.onStateChange
 	bc := m.broadcastSink
@@ -121,9 +123,7 @@ func (m *Manager) IngestNewline() {
 
 	m.encoder.IngestNewline()
 	m.authorBuffer += "\n"
-	if len(m.authorBuffer) > 200 {
-		m.authorBuffer = m.authorBuffer[len(m.authorBuffer)-200:]
-	}
+	m.trimAuthorBuffer()
 
 	cb := m.onStateChange
 	bc := m.broadcastSink
@@ -139,6 +139,18 @@ func (m *Manager) IngestNewline() {
 	if bc != nil && frame != nil {
 		bc(frame)
 	}
+}
+
+// trimAuthorBuffer bounds m.authorBuffer to authorBufferMaxRunes runes while
+// preserving codepoint boundaries. A byte-offset slice would tear multi-byte
+// UTF-8 sequences (emoji, CJK, curly quotes) and surface an invalid-UTF-8
+// string to the UI state broadcast. Caller must hold m.mu.
+func (m *Manager) trimAuthorBuffer() {
+	if utf8.RuneCountInString(m.authorBuffer) <= authorBufferMaxRunes {
+		return
+	}
+	runes := []rune(m.authorBuffer)
+	m.authorBuffer = string(runes[len(runes)-authorBufferMaxRunes:])
 }
 
 // Clear queues an erase-display command (author mode).
