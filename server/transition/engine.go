@@ -182,6 +182,18 @@ type Engine struct {
 	// Recreated only when resolution changes.
 	rawBlender *FrameBlender
 
+	// Reusable scratch buffers for BlendRawInto mismatched-resolution paths.
+	// blendRawMu serializes concurrent BlendRawInto callers so the scratch
+	// stays consistent even if a future caller lands on a second goroutine
+	// (today the transition state machine serializes ticks, making this
+	// lock uncontended — cost is ~20 ns per frame).
+	blendRawMu       sync.Mutex
+	rawScaleToBuf    []byte  // scaled toYUV when toW/toH != fromW/fromH
+	rawScaleSBuf     []byte  // scaled stinger YUV when stinger dims != output dims
+	rawAlphaScaleBuf []byte  // scaled stinger alpha ditto
+	rawXCoordsFullW  []int64 // full-width scaler coords (Y plane and alpha)
+	rawXCoordsHalfW  []int64 // half-width scaler coords (UV planes)
+
 	config EngineConfig
 
 	// colorFormat specifies the pipeline pixel format (8-bit or 10-bit).
@@ -1312,13 +1324,42 @@ func (e *Engine) AutoAdvancePosition(frameDurationMs float64) (float64, bool) {
 // If frames have different dimensions, toYUV is scaled to match fromYUV.
 // For FTB transitions, toYUV may be nil.
 //
-// The returned slice is owned by an internal FrameBlender and will be
-// overwritten on the next call. Callers must copy if they need to retain it.
+// The returned slice is freshly allocated per call; two successive calls
+// yield independent slices. This contract is pinned by
+// TestBlendRawReturnsCopy — a future refactor that pools the result into an
+// engine field would break it. Callers on the per-frame hot path should use
+// BlendRawInto with a reusable dst buffer to avoid the ~3 MB per-frame
+// allocation for the result.
 func (e *Engine) BlendRaw(
 	fromYUV []byte, fromW, fromH int,
 	toYUV []byte, toW, toH int,
 	position float64,
 ) ([]byte, int, int) {
+	return e.BlendRawInto(nil, fromYUV, fromW, fromH, toYUV, toW, toH, position)
+}
+
+// BlendRawInto is the scratch-reuse variant of BlendRaw. The blended frame
+// is written into dst (grown if necessary, reslice-preserving any existing
+// capacity) and the grown slice is returned. Pass nil for a freshly allocated
+// result; pass a caller-owned buffer to reuse across frames and avoid the
+// 3–9 MB/frame allocation pattern on resolution-mismatched stinger paths.
+//
+// Single-caller invariant: BlendRawInto uses engine-scoped scratch buffers
+// for the intermediate scaled frames. The transition state machine
+// serializes ticks per engine, so the scratch is safe without additional
+// locking beyond what BlendRaw already takes for the blender cache.
+func (e *Engine) BlendRawInto(
+	dst []byte,
+	fromYUV []byte, fromW, fromH int,
+	toYUV []byte, toW, toH int,
+	position float64,
+) ([]byte, int, int) {
+	// Serialize scratch access across concurrent callers. Today only the
+	// transition state machine calls this (single-threaded per engine),
+	// so the lock is uncontended.
+	e.blendRawMu.Lock()
+	defer e.blendRawMu.Unlock()
+
 	e.mu.Lock()
 	ttype := e.transitionType
 	wipeDir := e.wipeDirection
@@ -1345,13 +1386,15 @@ func (e *Engine) BlendRaw(
 	}
 	e.mu.Unlock()
 
-	// Scale toYUV to match fromYUV dimensions if they differ
-	var scaledTo []byte
+	// Scale toYUV to match fromYUV dimensions if they differ. Scratch buffer
+	// lives on the engine; grown on first use and reused across frames.
 	if toYUV != nil && (toW != fromW || toH != fromH) {
 		targetSize := fromW * fromH * 3 / 2
-		scaledTo = make([]byte, targetSize)
-		ScaleYUV420(toYUV, toW, toH, scaledTo, fromW, fromH)
-		toYUV = scaledTo
+		e.rawScaleToBuf = growBuf(e.rawScaleToBuf, targetSize)
+		e.rawXCoordsFullW = growCoords(e.rawXCoordsFullW, fromW)
+		e.rawXCoordsHalfW = growCoords(e.rawXCoordsHalfW, fromW/2)
+		scaleYUV420WithCoords(toYUV, toW, toH, e.rawScaleToBuf, fromW, fromH, e.rawXCoordsFullW, e.rawXCoordsHalfW)
+		toYUV = e.rawScaleToBuf
 	}
 
 	// Generate broadcast-standard black frame for FTB / missing source B
@@ -1407,16 +1450,23 @@ func (e *Engine) BlendRaw(
 				base = toYUV
 			}
 
-			// Scale stinger frame if needed
+			// Scale stinger frame if needed — reuse engine scratch.
 			sYUV := sf.YUV
 			sAlpha := sf.Alpha
 			if stinger.Width != outW || stinger.Height != outH {
 				scaledYUVSize := outW * outH * 3 / 2
-				sYUV = make([]byte, scaledYUVSize)
-				ScaleYUV420(sf.YUV, stinger.Width, stinger.Height, sYUV, outW, outH)
-				sAlpha = make([]byte, outW*outH)
+				scaledAlphaSize := outW * outH
+				e.rawScaleSBuf = growBuf(e.rawScaleSBuf, scaledYUVSize)
+				e.rawAlphaScaleBuf = growBuf(e.rawAlphaScaleBuf, scaledAlphaSize)
+				e.rawXCoordsFullW = growCoords(e.rawXCoordsFullW, outW)
+				e.rawXCoordsHalfW = growCoords(e.rawXCoordsHalfW, outW/2)
+				scaleYUV420WithCoords(sf.YUV, stinger.Width, stinger.Height, e.rawScaleSBuf, outW, outH, e.rawXCoordsFullW, e.rawXCoordsHalfW)
 				// Bilinear must match the YUV scaler — nearest zippers the alpha edge.
-				scalePlane(sf.Alpha, stinger.Width, stinger.Height, sAlpha, outW, outH)
+				// Reuse rawXCoordsFullW: both Y and alpha use dstW = outW, and
+				// scaleYUV420WithCoords already finished above.
+				scalePlaneWithCoords(sf.Alpha, stinger.Width, stinger.Height, e.rawAlphaScaleBuf, outW, outH, e.rawXCoordsFullW)
+				sYUV = e.rawScaleSBuf
+				sAlpha = e.rawAlphaScaleBuf
 			}
 			blended = blender.BlendStinger(base, sYUV, sAlpha)
 		} else {
@@ -1435,10 +1485,31 @@ func (e *Engine) BlendRaw(
 		return nil, 0, 0
 	}
 
-	// Deep-copy the result since blender reuses its internal buffer
-	result := make([]byte, len(blended))
-	copy(result, blended)
-	return result, outW, outH
+	// Copy the blender's internal-buffer result into the caller's dst so
+	// the slice is stable across the next BlendRaw call. Grow dst if too
+	// small; reuse its capacity otherwise.
+	dst = growBuf(dst, len(blended))
+	copy(dst, blended)
+	return dst, outW, outH
+}
+
+// growBuf returns a slice of at least n bytes, reusing buf's capacity when
+// possible. If cap(buf) >= n it reslices; otherwise allocates a fresh slice
+// of length n. Zero-allocation in steady state once the caller's buffer has
+// grown to the target size.
+func growBuf(buf []byte, n int) []byte {
+	if cap(buf) < n {
+		return make([]byte, n)
+	}
+	return buf[:n]
+}
+
+// growCoords is growBuf for []int64 scaler-coord tables.
+func growCoords(buf []int64, n int) []int64 {
+	if cap(buf) < n {
+		return make([]int64, n)
+	}
+	return buf[:n]
 }
 
 // cleanup releases codec resources and resets state. Caller must hold e.mu.
@@ -1480,4 +1551,14 @@ func (e *Engine) cleanup() {
 	e.blender = nil
 	e.scaleBuf = nil
 	e.stingerScaled = nil
+
+	// Release BlendRawInto scratch so a tear-down at 4K doesn't pin ~12 MB
+	// of retained memory across the next (potentially smaller) transition.
+	e.blendRawMu.Lock()
+	e.rawScaleToBuf = nil
+	e.rawScaleSBuf = nil
+	e.rawAlphaScaleBuf = nil
+	e.rawXCoordsFullW = nil
+	e.rawXCoordsHalfW = nil
+	e.blendRawMu.Unlock()
 }

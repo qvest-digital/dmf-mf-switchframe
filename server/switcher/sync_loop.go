@@ -323,7 +323,8 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 			toW, toH = toFrame.Width, toFrame.Height
 		}
 
-		blended, outW, outH := engine.BlendRaw(fromYUV, fromW, fromH, toYUV, toW, toH, pos)
+		blended, outW, outH := engine.BlendRawInto(s.transitionBlendBuf, fromYUV, fromW, fromH, toYUV, toW, toH, pos)
+		s.transitionBlendBuf = blended
 		if blended != nil {
 			result := &ProcessingFrame{
 				Data:   blended,

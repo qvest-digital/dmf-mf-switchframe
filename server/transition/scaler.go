@@ -11,6 +11,14 @@ package transition
 // mapping, which avoids floating-point per-pixel while maintaining accuracy
 // for broadcast resolutions up to 4K.
 func ScaleYUV420(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
+	scaleYUV420WithCoords(src, srcW, srcH, dst, dstW, dstH, nil, nil)
+}
+
+// scaleYUV420WithCoords is the scratch-reuse variant. Caller provides two
+// int64 scratch slices sized >= dstW (for the Y plane) and >= dstW/2 (for
+// the UV planes). Pass nil to fall back to per-call allocation. Returns no
+// value; grown scratch slices remain in the caller's existing variables.
+func scaleYUV420WithCoords(src []byte, srcW, srcH int, dst []byte, dstW, dstH int, xCoordsY, xCoordsUV []int64) {
 	srcYSize := srcW * srcH
 	srcUVW := srcW / 2
 	srcUVH := srcH / 2
@@ -22,25 +30,28 @@ func ScaleYUV420(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
 	dstUVSize := dstUVW * dstUVH
 
 	// Y plane: full resolution
-	scalePlane(
+	scalePlaneWithCoords(
 		src[:srcYSize], srcW, srcH,
 		dst[:dstYSize], dstW, dstH,
+		xCoordsY,
 	)
 
 	// Cb plane: half resolution
 	srcCbOff := srcYSize
 	dstCbOff := dstYSize
-	scalePlane(
+	scalePlaneWithCoords(
 		src[srcCbOff:srcCbOff+srcUVSize], srcUVW, srcUVH,
 		dst[dstCbOff:dstCbOff+dstUVSize], dstUVW, dstUVH,
+		xCoordsUV,
 	)
 
 	// Cr plane: half resolution
 	srcCrOff := srcYSize + srcUVSize
 	dstCrOff := dstYSize + dstUVSize
-	scalePlane(
+	scalePlaneWithCoords(
 		src[srcCrOff:srcCrOff+srcUVSize], srcUVW, srcUVH,
 		dst[dstCrOff:dstCrOff+dstUVSize], dstUVW, dstUVH,
+		xCoordsUV,
 	)
 }
 
@@ -53,6 +64,15 @@ func ScaleYUV420(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
 // This gives sub-pixel precision of 1/65536 which is more than sufficient
 // for broadcast resolution scaling.
 func scalePlane(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
+	scalePlaneWithCoords(src, srcW, srcH, dst, dstW, dstH, nil)
+}
+
+// scalePlaneWithCoords is the scratch-reuse variant: if xCoordsScratch has
+// at least dstW capacity the coord table is computed into it in place and no
+// allocation is performed. Pass nil (or a too-small slice) to allocate a
+// one-shot table. Useful for tight loops that blend many frames at a stable
+// (srcW, dstW) pair — see server/transition/engine.go BlendRawInto.
+func scalePlaneWithCoords(src []byte, srcW, srcH int, dst []byte, dstW, dstH int, xCoordsScratch []int64) {
 	// Fast path: same dimensions, just copy
 	if srcW == dstW && srcH == dstH {
 		copy(dst, src)
@@ -79,7 +99,13 @@ func scalePlane(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
 	srcHm1 := int64(srcH - 1)
 
 	// xCoords[dx] holds the 16.16 fixed-point source X for destination col dx.
-	xCoords := make([]int64, dstW)
+	// Reuse caller-provided scratch when sized appropriately.
+	var xCoords []int64
+	if cap(xCoordsScratch) >= dstW {
+		xCoords = xCoordsScratch[:dstW]
+	} else {
+		xCoords = make([]int64, dstW)
+	}
 	if dstWm1 > 0 {
 		for dx := 0; dx < dstW; dx++ {
 			xCoords[dx] = (int64(dx) * srcWm1 << 16) / dstWm1

@@ -612,6 +612,11 @@ type Switcher struct {
 	ticksBehind         int
 	syncLoopRunning     atomic.Bool                     // double-start guard (Issue 10)
 	cachedBlackFrame    atomic.Pointer[ProcessingFrame] // cached broadcast black (Issue 11)
+	// transitionBlendBuf is the persistent dst for engine.BlendRawInto on
+	// the sync-loop transition path. Grown on first tick and reused every
+	// tick thereafter — kills the ~3 MB/frame result allocation that
+	// BlendRaw's older copy-out contract forced.
+	transitionBlendBuf []byte
 	overloadDrops       atomic.Int64
 	syncLoopRepeats     atomic.Int64
 	lastEncodedFrame    atomic.Pointer[ProcessingFrame]

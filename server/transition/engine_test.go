@@ -1,6 +1,7 @@
 package transition
 
 import (
+	"bytes"
 	"sync"
 	"testing"
 	"time"
@@ -2418,4 +2419,204 @@ func columnY(yuv []byte, w, h, x int) []byte {
 		col[y] = yuv[y*w+x]
 	}
 	return col
+}
+
+// BenchmarkBlendRawMismatched1080p60Stinger pins the per-frame alloc footprint
+// of BlendRaw on the mismatched-resolution stinger path, which is the worst
+// case enumerated in the DEBT-011 validation: scaledTo + sYUV + sAlpha +
+// result deep-copy, each at 1080p scale.
+func BenchmarkBlendRawMismatched1080p60Stinger(b *testing.B) {
+	outW, outH := 1920, 1080
+	srcW, srcH := 960, 540
+	stingerW, stingerH := 1280, 720
+
+	fromYUV := make([]byte, outW*outH*3/2)
+	toYUV := make([]byte, srcW*srcH*3/2)
+	for i := range fromYUV {
+		fromYUV[i] = byte(i & 0xff)
+	}
+	for i := range toYUV {
+		toYUV[i] = byte((i * 3) & 0xff)
+	}
+
+	stingerYUV := make([]byte, stingerW*stingerH*3/2)
+	stingerAlpha := make([]byte, stingerW*stingerH)
+	for i := range stingerYUV {
+		stingerYUV[i] = byte((i * 5) & 0xff)
+	}
+	for i := range stingerAlpha {
+		stingerAlpha[i] = byte(i & 0xff)
+	}
+	stinger := &StingerData{
+		Frames:   []StingerFrameData{{YUV: stingerYUV, Alpha: stingerAlpha}},
+		Width:    stingerW,
+		Height:   stingerH,
+		CutPoint: 0.5,
+	}
+
+	e := NewEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: outW, height: outH}, nil
+		},
+		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
+		OnComplete: func(aborted bool) {},
+		Stinger:    stinger,
+	})
+	if err := e.Start("from", "to", Stinger, 1000); err != nil {
+		b.Fatalf("Start: %v", err)
+	}
+	defer e.Stop()
+
+	// Warm the blender + scratch bufs so the bench measures steady-state.
+	dst, _, _ := e.BlendRawInto(nil, fromYUV, outW, outH, toYUV, srcW, srcH, 0.5)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dst, _, _ = e.BlendRawInto(dst, fromYUV, outW, outH, toYUV, srcW, srcH, 0.5)
+	}
+}
+
+// TestBlendRawInto_ByteEqualsBlendRaw asserts that BlendRawInto produces
+// byte-identical output to the pre-DEBT-011 BlendRaw reference. Both
+// mismatched-resolution and matched-resolution paths are exercised; the
+// mismatched stinger path is the one carrying all four scratch buffers.
+func TestBlendRawInto_ByteEqualsBlendRaw(t *testing.T) {
+	// Small-but-realistic frame sizes (keeps the test fast).
+	outW, outH := 64, 48
+	srcW, srcH := 32, 24
+	stingerW, stingerH := 40, 30
+
+	fromYUV := make([]byte, outW*outH*3/2)
+	toYUV := make([]byte, srcW*srcH*3/2)
+	for i := range fromYUV {
+		fromYUV[i] = byte(i & 0xff)
+	}
+	for i := range toYUV {
+		toYUV[i] = byte((i * 7) & 0xff)
+	}
+
+	stingerYUV := make([]byte, stingerW*stingerH*3/2)
+	stingerAlpha := make([]byte, stingerW*stingerH)
+	for i := range stingerYUV {
+		stingerYUV[i] = byte((i * 11) & 0xff)
+	}
+	for i := range stingerAlpha {
+		stingerAlpha[i] = byte((i * 13) & 0xff)
+	}
+	stinger := &StingerData{
+		Frames:   []StingerFrameData{{YUV: stingerYUV, Alpha: stingerAlpha}},
+		Width:    stingerW,
+		Height:   stingerH,
+		CutPoint: 0.5,
+	}
+
+	newEngineForTest := func() *Engine {
+		e := NewEngine(EngineConfig{
+			DecoderFactory: func() (VideoDecoder, error) {
+				return &mockDecoder{width: outW, height: outH}, nil
+			},
+			Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
+			OnComplete: func(aborted bool) {},
+			Stinger:    stinger,
+		})
+		if err := e.Start("from", "to", Stinger, 1000); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		return e
+	}
+
+	// Path A: BlendRaw convenience wrapper (uses engine's internal result scratch).
+	eA := newEngineForTest()
+	defer eA.Stop()
+	outA, wA, hA := eA.BlendRaw(fromYUV, outW, outH, toYUV, srcW, srcH, 0.5)
+	require.Equal(t, outW, wA)
+	require.Equal(t, outH, hA)
+	// Snapshot before the next call could overwrite the internal buffer.
+	snapA := make([]byte, len(outA))
+	copy(snapA, outA)
+
+	// Path B: BlendRawInto with caller-owned dst.
+	eB := newEngineForTest()
+	defer eB.Stop()
+	dst := make([]byte, 0)
+	outB, wB, hB := eB.BlendRawInto(dst, fromYUV, outW, outH, toYUV, srcW, srcH, 0.5)
+	require.Equal(t, outW, wB)
+	require.Equal(t, outH, hB)
+
+	require.True(t, bytes.Equal(snapA, outB),
+		"BlendRaw and BlendRawInto must produce byte-identical output")
+
+	// Second BlendRaw call on the same engine must produce the same result
+	// (scratch buffers reused, no state carryover corrupting the output).
+	out2, _, _ := eA.BlendRaw(fromYUV, outW, outH, toYUV, srcW, srcH, 0.5)
+	require.True(t, bytes.Equal(snapA, out2),
+		"consecutive BlendRaw calls with identical inputs must produce identical output")
+}
+
+// TestBlendRawInto_ReusesCallerBackingArray pins the scratch-reuse branch of
+// growBuf: when dst is pre-sized to capacity >= required, BlendRawInto must
+// return a slice aliasing the same backing array across calls, with no heap
+// allocation and identical output on identical inputs.
+func TestBlendRawInto_ReusesCallerBackingArray(t *testing.T) {
+	outW, outH := 64, 48
+	srcW, srcH := 32, 24
+	stingerW, stingerH := 40, 30
+
+	fromYUV := make([]byte, outW*outH*3/2)
+	toYUV := make([]byte, srcW*srcH*3/2)
+	for i := range fromYUV {
+		fromYUV[i] = byte(i & 0xff)
+	}
+	for i := range toYUV {
+		toYUV[i] = byte((i * 7) & 0xff)
+	}
+
+	stingerYUV := make([]byte, stingerW*stingerH*3/2)
+	stingerAlpha := make([]byte, stingerW*stingerH)
+	for i := range stingerYUV {
+		stingerYUV[i] = byte((i * 11) & 0xff)
+	}
+	for i := range stingerAlpha {
+		stingerAlpha[i] = byte((i * 13) & 0xff)
+	}
+	stinger := &StingerData{
+		Frames:   []StingerFrameData{{YUV: stingerYUV, Alpha: stingerAlpha}},
+		Width:    stingerW,
+		Height:   stingerH,
+		CutPoint: 0.5,
+	}
+
+	e := NewEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: outW, height: outH}, nil
+		},
+		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
+		OnComplete: func(aborted bool) {},
+		Stinger:    stinger,
+	})
+	require.NoError(t, e.Start("from", "to", Stinger, 1000))
+	defer e.Stop()
+
+	// Pre-size to final required capacity (outW*outH*3/2) so growBuf takes
+	// its reslice branch on every call.
+	dst := make([]byte, outW*outH*3/2)
+	origArray := &dst[0]
+
+	out1, _, _ := e.BlendRawInto(dst, fromYUV, outW, outH, toYUV, srcW, srcH, 0.5)
+	snap1 := make([]byte, len(out1))
+	copy(snap1, out1)
+
+	out2, _, _ := e.BlendRawInto(out1, fromYUV, outW, outH, toYUV, srcW, srcH, 0.5)
+
+	require.Same(t, origArray, &out1[0], "BlendRawInto must reuse caller-provided backing array")
+	require.Same(t, origArray, &out2[0], "second BlendRawInto must reuse the same backing array")
+	require.True(t, bytes.Equal(snap1, out2),
+		"consecutive BlendRawInto calls with identical inputs must produce identical output")
+
+	// AllocsPerRun gates zero-alloc steady state on the scratch-reuse path.
+	allocs := testing.AllocsPerRun(100, func() {
+		_, _, _ = e.BlendRawInto(dst, fromYUV, outW, outH, toYUV, srcW, srcH, 0.5)
+	})
+	require.Zero(t, allocs, "BlendRawInto steady state must be zero-alloc on the pre-sized-dst path")
 }
