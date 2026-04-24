@@ -13,13 +13,28 @@ type opusEncoderAPI interface {
 	Encode(pcm []int16, frameSize int, buf []byte) (int, error)
 }
 
+// opusDecoderAPI is the narrow interface exposed by the Opus decoder wrapper.
+// Mirrors opusEncoderAPI so tests can inject a tracking decoder that observes
+// post-close call patterns on the ingest path.
+type opusDecoderAPI interface {
+	Decode(data []byte, pcm []int16, frameSize int) (int, error)
+}
+
 // encoderFactory constructs an encoder for a new participant. The Manager
 // holds a factory field so tests can inject tracking encoders; production
 // always uses defaultEncoderFactory → newOpusEncoder.
 type encoderFactory func() (opusEncoderAPI, error)
 
+// decoderFactory constructs a decoder for a new participant. Symmetric to
+// encoderFactory.
+type decoderFactory func() (opusDecoderAPI, error)
+
 func defaultEncoderFactory() (opusEncoderAPI, error) {
 	return newOpusEncoder(SampleRate, Channels)
+}
+
+func defaultDecoderFactory() (opusDecoderAPI, error) {
+	return newOpusDecoder(SampleRate, Channels)
 }
 
 // speakingThresholdRMS is roughly -40 dBFS for int16: 32768 * 10^(-40/20).
@@ -46,7 +61,7 @@ type participant struct {
 	closedAtomic atomic.Bool
 
 	encoder opusEncoderAPI
-	decoder *opusDecoder
+	decoder opusDecoderAPI
 	pcmBuf  []int16      // scratch buffer for Opus decode
 	pcmQ    chan []int16 // queued decoded PCM frames for mix loop
 
@@ -55,18 +70,18 @@ type participant struct {
 
 // newParticipant creates a participant with encoder, decoder, PCM buffer, and send channel.
 func newParticipant(id, name string) (*participant, error) {
-	return newParticipantWithFactory(id, name, defaultEncoderFactory)
+	return newParticipantWithFactory(id, name, defaultEncoderFactory, defaultDecoderFactory)
 }
 
-// newParticipantWithFactory builds a participant using the supplied encoder
-// factory. The Manager uses this form so tests can inject tracking encoders
-// that observe post-close call patterns.
-func newParticipantWithFactory(id, name string, factory encoderFactory) (*participant, error) {
-	enc, err := factory()
+// newParticipantWithFactory builds a participant using the supplied encoder and
+// decoder factories. The Manager uses this form so tests can inject tracking
+// codecs that observe post-close call patterns on both directions.
+func newParticipantWithFactory(id, name string, encFactory encoderFactory, decFactory decoderFactory) (*participant, error) {
+	enc, err := encFactory()
 	if err != nil {
 		return nil, err
 	}
-	dec, err := newOpusDecoder(SampleRate, Channels)
+	dec, err := decFactory()
 	if err != nil {
 		return nil, err
 	}
@@ -82,9 +97,15 @@ func newParticipantWithFactory(id, name string, factory encoderFactory) (*partic
 }
 
 // decodeAudio decodes Opus data into PCM and queues the frame for the mix loop.
-// Returns the decoded samples (for speaking detection).
+// Returns the decoded samples (for speaking detection). Gates on p.closed
+// inside p.mu so the cgo Decode call cannot be dispatched after close() has
+// torn down the participant — matches the trySend idiom.
 func (p *participant) decodeAudio(opusData []byte) ([]int16, error) {
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, nil
+	}
 	n, err := p.decoder.Decode(opusData, p.pcmBuf, FrameSize)
 	if err != nil {
 		p.mu.Unlock()

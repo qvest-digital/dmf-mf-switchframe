@@ -26,10 +26,11 @@ type Manager struct {
 	participants map[string]*participant
 	mixer        *mixer
 	onBroadcast  func()
-	// encFactory constructs the Opus encoder for a new participant. Defaults
-	// to defaultEncoderFactory (real libopus); tests swap in tracking
-	// encoders via newManagerWithEncoderFactory.
+	// encFactory / decFactory construct the Opus codec pair for a new
+	// participant. Defaults to the real libopus factories; tests swap in
+	// tracking mocks via newManagerWithFactories.
 	encFactory encoderFactory
+	decFactory decoderFactory
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -37,20 +38,26 @@ type Manager struct {
 
 // NewManager creates a Manager and starts the mix loop goroutine.
 func NewManager(onBroadcast func()) *Manager {
-	return newManagerWithEncoderFactory(onBroadcast, defaultEncoderFactory)
+	return newManagerWithFactories(onBroadcast, defaultEncoderFactory, defaultDecoderFactory)
 }
 
 // newManagerWithEncoderFactory is the test-facing constructor for injecting
-// a custom encoder factory (e.g. a tracking mock that records post-close
-// call patterns for BUG-049's encode-after-close assertion).
+// a custom encoder factory while keeping the default decoder.
 func newManagerWithEncoderFactory(onBroadcast func(), factory encoderFactory) *Manager {
+	return newManagerWithFactories(onBroadcast, factory, defaultDecoderFactory)
+}
+
+// newManagerWithFactories is the test-facing constructor for injecting both
+// codec factories (tracking mocks that observe post-close call patterns).
+func newManagerWithFactories(onBroadcast func(), enc encoderFactory, dec decoderFactory) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
 		log:          slog.Default().With("component", "comms"),
 		participants: make(map[string]*participant),
 		mixer:        newMixer(),
 		onBroadcast:  onBroadcast,
-		encFactory:   factory,
+		encFactory:   enc,
+		decFactory:   dec,
 		cancel:       cancel,
 		done:         make(chan struct{}),
 	}
@@ -76,7 +83,7 @@ func (m *Manager) Join(operatorID, name string) error {
 		return ErrCommsFull
 	}
 
-	p, err := newParticipantWithFactory(operatorID, name, m.encFactory)
+	p, err := newParticipantWithFactory(operatorID, name, m.encFactory, m.decFactory)
 	if err != nil {
 		m.mu.Unlock()
 		return ErrOpusUnavailable
