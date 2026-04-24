@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { PodStatusBroadcast, PodTemplateDef } from '$lib/api/types';
-	import { podCreate, podArm, podFire, podDump, podHold, podExtend } from '$lib/api/switch-api';
+	import { podCreate, podArm, podFire, podDump, podHold, podExtend, SwitchApiError } from '$lib/api/switch-api';
+	import { notify } from '$lib/state/notifications.svelte';
 
 	interface Props {
 		channel: number;
@@ -31,29 +32,37 @@
 		return Math.min(100, (elapsed / pod.durationMs) * 100);
 	}
 
+	function toastFailure(action: string, e: unknown) {
+		console.error(`pod ${action} failed:`, e);
+		let reason = '';
+		if (e instanceof SwitchApiError) reason = e.message || `HTTP ${e.status}`;
+		else if (e instanceof Error && e.message) reason = e.message;
+		notify('error', reason ? `Pod ${action} failed: ${reason}` : `Pod ${action} failed`);
+	}
+
 	async function handleCreate(template: string) {
 		try {
 			const pod = await podCreate(channel, { template });
 			await podArm(channel, pod.id);
 		} catch (e) {
-			console.error('pod create failed:', e);
+			toastFailure('create', e);
 		}
 	}
 
 	async function handleFire(podId: string) {
-		try { await podFire(channel, podId); } catch (e) { console.error('pod fire failed:', e); }
+		try { await podFire(channel, podId); } catch (e) { toastFailure('fire', e); }
 	}
 
 	async function handleDump(podId: string) {
-		try { await podDump(channel, podId); } catch (e) { console.error('pod dump failed:', e); }
+		try { await podDump(channel, podId); } catch (e) { toastFailure('dump', e); }
 	}
 
 	async function handleHold(podId: string) {
-		try { await podHold(channel, podId); } catch (e) { console.error('pod hold failed:', e); }
+		try { await podHold(channel, podId); } catch (e) { toastFailure('hold', e); }
 	}
 
 	async function handleExtend(podId: string) {
-		try { await podExtend(channel, podId, 30000); } catch (e) { console.error('pod extend failed:', e); }
+		try { await podExtend(channel, podId, 30000); } catch (e) { toastFailure('extend', e); }
 	}
 </script>
 
