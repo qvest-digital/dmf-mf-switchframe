@@ -37,7 +37,6 @@ func NewTestSwitcher(t *testing.T, programRelay *distribution.Relay) *Switcher {
 	}
 	s := &Switcher{
 		log:           slog.With("component", "switcher"),
-		sources:       make(map[string]*sourceState),
 		programRelay:  programRelay,
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),
@@ -74,7 +73,6 @@ func newTestSwitcherDirect(programRelay *distribution.Relay) *Switcher {
 	}
 	s := &Switcher{
 		log:           slog.With("component", "switcher"),
-		sources:       make(map[string]*sourceState),
 		programRelay:  programRelay,
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),

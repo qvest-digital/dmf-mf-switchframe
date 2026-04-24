@@ -96,18 +96,18 @@ func TestStateTransitions_MixCycle(t *testing.T) {
 	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
 	require.NoError(t, err)
 
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateTransitioning, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 
 	// Complete transition -> StateIdle
 	err = sw.SetTransitionPosition(context.Background(), 1.0)
 	require.NoError(t, err)
 	time.Sleep(20 * time.Millisecond)
 
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateIdle, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 
 	state := sw.State()
 	require.False(t, state.InTransition)
@@ -122,15 +122,15 @@ func TestStateTransitions_MixAbort(t *testing.T) {
 	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
 	require.NoError(t, err)
 
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateTransitioning, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 
 	sw.AbortTransition()
 
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateIdle, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 }
 
 func TestStateTransitions_FTBCycle(t *testing.T) {
@@ -142,9 +142,9 @@ func TestStateTransitions_FTBCycle(t *testing.T) {
 	err := sw.FadeToBlack(context.Background())
 	require.NoError(t, err)
 
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateFTBTransitioning, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 
 	// API should report inTransition=true, ftbActive=true
 	state := sw.State()
@@ -156,9 +156,9 @@ func TestStateTransitions_FTBCycle(t *testing.T) {
 	require.NoError(t, err)
 	time.Sleep(20 * time.Millisecond)
 
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateFTB, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 
 	// API should report inTransition=false, ftbActive=true
 	state = sw.State()
@@ -169,9 +169,9 @@ func TestStateTransitions_FTBCycle(t *testing.T) {
 	err = sw.FadeToBlack(context.Background())
 	require.NoError(t, err)
 
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateFTBReversing, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 
 	// API should report inTransition=true, ftbActive=true
 	state = sw.State()
@@ -183,9 +183,9 @@ func TestStateTransitions_FTBCycle(t *testing.T) {
 	require.NoError(t, err)
 	time.Sleep(20 * time.Millisecond)
 
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateIdle, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 
 	state = sw.State()
 	require.False(t, state.InTransition)
@@ -200,15 +200,15 @@ func TestStateTransitions_FTBAbort(t *testing.T) {
 	err := sw.FadeToBlack(context.Background())
 	require.NoError(t, err)
 
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateFTBTransitioning, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 
 	sw.AbortTransition()
 
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateIdle, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 
 	state := sw.State()
 	require.False(t, state.InTransition)
@@ -227,24 +227,24 @@ func TestStateTransitions_FTBReverseAbort(t *testing.T) {
 	require.NoError(t, err)
 	time.Sleep(20 * time.Millisecond)
 
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateFTB, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 
 	// Start reverse FTB
 	err = sw.FadeToBlack(context.Background())
 	require.NoError(t, err)
 
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateFTBReversing, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 
 	// Abort reverse — should go back to StateFTB
 	sw.AbortTransition()
 
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateFTB, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 
 	state := sw.State()
 	require.False(t, state.InTransition)
@@ -268,9 +268,9 @@ func TestStateRejectsTransitionDuringFTB(t *testing.T) {
 	require.Contains(t, err.Error(), "FTB is active")
 
 	// State should still be StateFTB
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	require.Equal(t, StateFTB, sw.state)
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 }
 
 func TestStateRejectsFTBDuringTransition(t *testing.T) {

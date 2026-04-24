@@ -91,7 +91,6 @@ func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
 
 	s := &Switcher{
 		log:           testSyncLogger(),
-		sources:       make(map[string]*sourceState),
 		programRelay:  programRelay,
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),
@@ -131,6 +130,12 @@ func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
 	s.configMu.Lock()
 	s.frameSync = fs
 	s.frameSyncActive = true
+	db := s.delayBuffer
+	s.updateFrameSyncBundle(func(fsb *frameSyncBundle) {
+		fsb.sync = fs
+		fsb.delayBuffer = db
+		fsb.active = true
+	})
 	s.configMu.Unlock()
 
 	return s, rc
@@ -822,9 +827,9 @@ func TestWallClockPTSStillWorksWithoutRefClock(t *testing.T) {
 	require.NotNil(t, s.onFirstVideoPTS)
 
 	// Invoke it to verify it was stored.
-	s.configMu.RLock()
+	s.configMu.Lock()
 	fn := s.onFirstVideoPTS
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 	fn(0)
 	require.True(t, called)
 }
@@ -1185,6 +1190,10 @@ func TestSyncLoopTransitionDissolve(t *testing.T) {
 	s.transConfig = &TransitionConfig{}
 	s.transEngine = engine
 	s.transitionState(StateTransitioning)
+	s.updateHotState(func(hs *hotState) {
+		hs.transEngine = engine
+		hs.state = StateTransitioning
+	})
 	s.configMu.Unlock()
 
 	// Feed frames before each tick.
@@ -1260,6 +1269,10 @@ func TestSyncLoopTransitionComplete(t *testing.T) {
 	s.transConfig = &TransitionConfig{}
 	s.transEngine = engine
 	s.transitionState(StateTransitioning)
+	s.updateHotState(func(hs *hotState) {
+		hs.transEngine = engine
+		hs.state = StateTransitioning
+	})
 	s.configMu.Unlock()
 
 	// Feed frames and process enough ticks to complete the transition.
@@ -1550,6 +1563,10 @@ func TestFTBTransitionCallsCorrectHandler(t *testing.T) {
 	s.configMu.Lock()
 	s.transEngine = engine
 	s.transitionState(StateFTBTransitioning)
+	s.updateHotState(func(hs *hotState) {
+		hs.transEngine = engine
+		hs.state = StateFTBTransitioning
+	})
 	s.configMu.Unlock()
 
 	// Process enough ticks to complete the transition.
@@ -1563,18 +1580,18 @@ func TestFTBTransitionCallsCorrectHandler(t *testing.T) {
 		s.processVideoTick(tick)
 
 		// Check if transition completed.
-		s.configMu.RLock()
+		s.configMu.Lock()
 		st := s.state
-		s.configMu.RUnlock()
+		s.configMu.Unlock()
 		if !st.isInTransition() {
 			break
 		}
 	}
 
 	// After FTB completion, state should be StateFTB (holding black), not StateIdle.
-	s.configMu.RLock()
+	s.configMu.Lock()
 	finalState := s.state
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 
 	require.Equal(t, StateFTB, finalState,
 		"FTB completion should leave state as StateFTB (holding black), not %s", finalState)
@@ -1928,7 +1945,6 @@ func newSyncTestSwitcherBufferOnly(t *testing.T) (*Switcher, *clock.ReferenceClo
 
 	s := &Switcher{
 		log:           testSyncLogger(),
-		sources:       make(map[string]*sourceState),
 		programRelay:  programRelay,
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),
@@ -1963,6 +1979,12 @@ func newSyncTestSwitcherBufferOnly(t *testing.T) (*Switcher, *clock.ReferenceClo
 	s.configMu.Lock()
 	s.frameSync = fs
 	s.frameSyncActive = true
+	db := s.delayBuffer
+	s.updateFrameSyncBundle(func(fsb *frameSyncBundle) {
+		fsb.sync = fs
+		fsb.delayBuffer = db
+		fsb.active = true
+	})
 	s.configMu.Unlock()
 
 	return s, rc

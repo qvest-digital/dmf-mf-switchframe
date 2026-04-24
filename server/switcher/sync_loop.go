@@ -40,9 +40,9 @@ func (s *Switcher) synchronousProcessingLoop() {
 // flushAACBuffer delivers any remaining partial PCM as a padded AAC frame
 // on shutdown (Issue 12).
 func (s *Switcher) flushAACBuffer() {
-	s.configMu.RLock()
+	s.configMu.Lock()
 	aacBuf := s.aacBuffer
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 
 	if aacBuf == nil {
 		return
@@ -103,10 +103,10 @@ func (s *Switcher) processTick(tick clock.Tick) {
 
 // processAudioTick produces mixed PCM samples and feeds them to the AAC frame buffer.
 func (s *Switcher) processAudioTick(tick clock.Tick) {
-	s.configMu.RLock()
+	s.configMu.Lock()
 	mixer := s.syncMixer
 	aacBuf := s.aacBuffer
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 
 	if mixer == nil || aacBuf == nil {
 		return
@@ -157,13 +157,12 @@ func (s *Switcher) processAudioTick(tick clock.Tick) {
 // the sync loop broadcasts the raw frame data directly — useful for tests
 // and configurations without an H.264 encoder.
 func (s *Switcher) processVideoTick(tick clock.Tick) {
-	s.configMu.RLock()
-	fs := s.frameSync
-	programSource := s.programSource
-	previewSource := s.previewSource
-	engine := s.transEngine
-	inTrans := s.state.isInTransition()
-	s.configMu.RUnlock()
+	hs := s.hotState.Load()
+	fs := s.frameSyncBundle.Load().sync
+	programSource := hs.programSource
+	previewSource := hs.previewSource
+	engine := hs.transEngine
+	inTrans := hs.state.isInTransition()
 
 	if fs == nil || programSource == "" {
 		return
@@ -576,12 +575,9 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, vide
 	return s.makeBroadcastBlack(w, h, videoPTS)
 }
 
-// programSourceAtomic reads the program source under RLock.
+// programSourceAtomic reads the program source lock-free via hotState.
 func (s *Switcher) programSourceAtomic() string {
-	s.configMu.RLock()
-	ps := s.programSource
-	s.configMu.RUnlock()
-	return ps
+	return s.hotState.Load().programSource
 }
 
 // makeBroadcastBlack returns a broadcast-standard black frame (BT.709
@@ -680,10 +676,10 @@ func (s *Switcher) feedSourceSubsystems(sourceKey string, pf *ProcessingFrame) {
 		return
 	}
 
-	s.configMu.RLock()
+	s.configMu.Lock()
 	keyBridge := s.keyBridge
 	dveComp := s.dveCompositor
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 
 	if pf.Format == ColorYUV422_10bit {
 		if keyBridge != nil {

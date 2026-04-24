@@ -121,10 +121,10 @@ func TestMirrorWrites_SourceState_AllConstructorsSeedAtomics(t *testing.T) {
 
 	// Built-in sources are seeded in registerBuiltinSourcesLocked, which
 	// runs inside newTestSwitcher. Verify directly.
-	sw.configMu.RLock()
-	builtinBlack := sw.sources[BuiltinSourceKeyBlack]
-	builtinBars := sw.sources[BuiltinSourceKeyColorbars]
-	sw.configMu.RUnlock()
+	sw.configMu.Lock()
+	builtinBlack := (*sw.sourcesAtomic.Load())[BuiltinSourceKeyBlack]
+	builtinBars := (*sw.sourcesAtomic.Load())[BuiltinSourceKeyColorbars]
+	sw.configMu.Unlock()
 	for _, bs := range []*sourceState{builtinBlack, builtinBars} {
 		if lbl := bs.labelAtomic.Load(); lbl == nil || *lbl != bs.label {
 			t.Errorf("built-in %q: labelAtomic not seeded (got %v, want %q)", bs.key, lbl, bs.label)
@@ -142,9 +142,9 @@ func TestMirrorWrites_SourceState_AllConstructorsSeedAtomics(t *testing.T) {
 	sw.RegisterReplaySource("replay-1")
 
 	for _, key := range []string{"camA", "vReplay", "mxl-cam", "srt:srt-cam", "replay-1"} {
-		sw.configMu.RLock()
-		ss, ok := sw.sources[key]
-		sw.configMu.RUnlock()
+		sw.configMu.Lock()
+		ss, ok := (*sw.sourcesAtomic.Load())[key]
+		sw.configMu.Unlock()
 		if !ok {
 			t.Errorf("%q: source not registered", key)
 			continue
@@ -166,9 +166,9 @@ func TestMirrorWrites_SourceState_LabelAndPositionAtomics(t *testing.T) {
 
 	// SetLabel mirrors.
 	require.NoError(t, sw.SetLabel(context.Background(), "camA", "Camera Alpha"))
-	sw.configMu.RLock()
-	ss := sw.sources["camA"]
-	sw.configMu.RUnlock()
+	sw.configMu.Lock()
+	ss := (*sw.sourcesAtomic.Load())["camA"]
+	sw.configMu.Unlock()
 	if got := ss.labelAtomic.Load(); got == nil || *got != "Camera Alpha" || ss.label != *got {
 		t.Errorf("SetLabel mirror divergence: legacy=%q atomic=%v", ss.label, got)
 	}
@@ -176,16 +176,16 @@ func TestMirrorWrites_SourceState_LabelAndPositionAtomics(t *testing.T) {
 	// SetSourcePosition mirrors (also swap partner).
 	relayB := newTestRelay()
 	sw.RegisterSource("camB", relayB)
-	sw.configMu.RLock()
-	ssB := sw.sources["camB"]
+	sw.configMu.Lock()
+	ssB := (*sw.sourcesAtomic.Load())["camB"]
 	bOriginalPos := ssB.position
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 
 	require.NoError(t, sw.SetSourcePosition("camA", bOriginalPos))
-	sw.configMu.RLock()
-	ssA := sw.sources["camA"]
-	ssB = sw.sources["camB"]
-	sw.configMu.RUnlock()
+	sw.configMu.Lock()
+	ssA := (*sw.sourcesAtomic.Load())["camA"]
+	ssB = (*sw.sourcesAtomic.Load())["camB"]
+	sw.configMu.Unlock()
 	if ssA.positionAtomic.Load() != int32(ssA.position) {
 		t.Errorf("SetSourcePosition: camA atomic divergence legacy=%d atomic=%d", ssA.position, ssA.positionAtomic.Load())
 	}
@@ -194,14 +194,17 @@ func TestMirrorWrites_SourceState_LabelAndPositionAtomics(t *testing.T) {
 	}
 }
 
-func TestMirrorWrites_SourcesMap_SnapshotMatchesLegacy(t *testing.T) {
+func TestSourcesMap_RegisterAndUnregisterPublishAtomically(t *testing.T) {
 	relay := newTestRelay()
 	sw := newTestSwitcher(t, relay)
+
+	// Captures built-in source count (black, colorbars) seeded by New().
+	baseline := len(*sw.sourcesAtomic.Load())
 
 	relayA := newTestRelay()
 	sw.RegisterSource("camA", relayA)
 	snap := *sw.sourcesAtomic.Load()
-	require.Len(t, snap, len(sw.sources), "atomic snapshot size mismatch after RegisterSource")
+	require.Len(t, snap, baseline+1, "atomic snapshot should grow by 1 after RegisterSource")
 	_, hasA := snap["camA"]
 	require.True(t, hasA, "atomic snapshot missing camA after RegisterSource")
 
@@ -209,5 +212,5 @@ func TestMirrorWrites_SourcesMap_SnapshotMatchesLegacy(t *testing.T) {
 	snap = *sw.sourcesAtomic.Load()
 	_, hasA = snap["camA"]
 	require.False(t, hasA, "atomic snapshot still has camA after UnregisterSource")
-	require.Len(t, snap, len(sw.sources), "atomic snapshot size mismatch after UnregisterSource")
+	require.Len(t, snap, baseline, "atomic snapshot should return to baseline after UnregisterSource")
 }

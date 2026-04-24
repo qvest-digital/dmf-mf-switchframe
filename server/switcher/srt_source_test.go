@@ -23,12 +23,12 @@ func TestRegisterSRTSource(t *testing.T) {
 	require.Equal(t, "srt:cam1", src.Key)
 
 	// SRT sources have no relay or viewer (raw YUV via IngestRawVideo).
-	sw.configMu.RLock()
-	ss := sw.sources["srt:cam1"]
+	sw.configMu.Lock()
+	ss := (*sw.sourcesAtomic.Load())["srt:cam1"]
 	require.NotNil(t, ss)
 	require.Nil(t, ss.relay, "SRT source should have nil relay")
 	require.Nil(t, ss.viewer, "SRT source should have nil viewer")
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 }
 
 func TestRegisterSRTSource_Label(t *testing.T) {
@@ -38,11 +38,11 @@ func TestRegisterSRTSource_Label(t *testing.T) {
 
 	sw.RegisterSRTSource("srt:my-camera")
 
-	sw.configMu.RLock()
-	ss := sw.sources["srt:my-camera"]
+	sw.configMu.Lock()
+	ss := (*sw.sourcesAtomic.Load())["srt:my-camera"]
 	require.NotNil(t, ss)
 	require.Equal(t, "my-camera", ss.label, "label should strip 'srt:' prefix")
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 }
 
 func TestRegisterSRTSource_Position(t *testing.T) {

@@ -286,8 +286,7 @@ func (ss *sourceState) getFrameCount() int {
 // and routes frames from the program source to the program Relay.
 type Switcher struct {
 	log                 *slog.Logger
-	configMu            sync.RWMutex // writer-serialization for legacy COLD/WARM fields; phase 6 retypes to sync.Mutex
-	sources             map[string]*sourceState
+	configMu            sync.Mutex // writer-serialization for COLD/WARM fields; all hot-path readers use atomic slots
 	builtinSources      map[string]*builtinSource       // always-registered virtual sources (source:black, source:colorbars)
 	builtinProducerStop chan struct{}                   // closed by Close() to shut down the built-in producer goroutine
 	builtinProducerDone chan struct{}                   // closed by the producer loop on exit
@@ -397,9 +396,10 @@ type Switcher struct {
 	audioHandlers    atomic.Pointer[audioHandlers]
 	frameSyncBundle  atomic.Pointer[frameSyncBundle]
 
-	// sourcesAtomic — atomic.Pointer[map] mirror of s.sources for lock-free
-	// hot-path lookup. Phase 1: mirror only; phase 5 promotes to primary
-	// and s.sources is removed. Never nil after New().
+	// sourcesAtomic is the primary sources map, published via atomic
+	// CoW in withSourcesMut. All readers call *sourcesAtomic.Load() — no
+	// lock. Writers hold configMu to serialize publication only.
+	// Never nil after New().
 	sourcesAtomic atomic.Pointer[map[string]*sourceState]
 
 	// ftbDurationMsAtomic / transitionAbortThresholdAtomic — scalar mirrors
@@ -657,7 +657,6 @@ func New(programRelay *distribution.Relay) *Switcher {
 	defaultFmt := DefaultFormat
 	s := &Switcher{
 		log:            slog.With("component", "switcher"),
-		sources:        make(map[string]*sourceState),
 		programRelay:   programRelay,
 		health:         newHealthMonitor(),
 		videoProcCh:    make(chan videoProcWork, 8),
@@ -742,8 +741,8 @@ func (s *Switcher) SetAvailableEncoders(encoders []codec.EncoderInfo) {
 
 // AvailableEncoders returns the list of encoders available on this system.
 func (s *Switcher) AvailableEncoders() []codec.EncoderInfo {
-	s.configMu.RLock()
-	defer s.configMu.RUnlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	out := make([]codec.EncoderInfo, len(s.availableEncoders))
 	copy(out, s.availableEncoders)
 	return out
@@ -751,16 +750,16 @@ func (s *Switcher) AvailableEncoders() []codec.EncoderInfo {
 
 // EncoderName returns the name of the currently active encoder.
 func (s *Switcher) EncoderName() string {
-	s.configMu.RLock()
-	defer s.configMu.RUnlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	return s.codecEncoder
 }
 
 // AvailableEncodersInternal returns the pre-computed internal.EncoderInfo
 // slice for state broadcast enrichment. The returned slice must not be modified.
 func (s *Switcher) AvailableEncodersInternal() []internal.EncoderInfo {
-	s.configMu.RLock()
-	defer s.configMu.RUnlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	return s.availableEncodersInternal
 }
 
@@ -833,9 +832,9 @@ func (s *Switcher) SetEncoder(name string) error {
 
 	// Broadcast updated state to all connected clients.
 	atomic.AddUint64(&s.seq, 1)
-	s.configMu.RLock()
+	s.configMu.Lock()
 	snapshot := s.buildStateLocked()
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 	s.notifyStateChange(snapshot)
 
 	return nil
@@ -929,7 +928,7 @@ func (s *Switcher) Close() {
 		//
 		// We grab the pointer under the lock but call Stop() outside the lock,
 		// because Stop() waits for the tick loop goroutine to exit, and that
-		// goroutine's delivery callbacks acquire s.configMu.RLock() — holding s.configMu.Lock()
+		// goroutine's delivery callbacks acquire s.configMu — holding it
 		// here would deadlock.
 		s.configMu.Lock()
 		fs := s.frameSync
@@ -1190,8 +1189,8 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(vps, sps, pps []byte, wi
 }
 
 // buildNodeList constructs the ordered list of CPU pipeline nodes.
-// Must be called with s.configMu held (RLock or Lock) since it reads
-// s.keyBridge, s.compositorRef, s.pipeCodecs, and s.promMetrics.
+// Must be called with s.configMu held since it reads s.keyBridge,
+// s.compositorRef, s.pipeCodecs, and s.promMetrics.
 //
 // When a GPU pipeline is active (via SetGPUPipeline), the CPU pipeline is
 // only used as fallback. The GPU pipeline runs independently via RunWithUpload.
@@ -1238,14 +1237,14 @@ func newAsyncEncodeNode(s *Switcher) *encodeNode {
 // Must be called after SetCompositor, SetKeyBridge, and SetPipelineCodecs.
 // Safe to call multiple times — each call rebuilds from scratch.
 func (s *Switcher) BuildPipeline() error {
-	s.configMu.RLock()
+	s.configMu.Lock()
 	hasPipeCodecs := s.pipeCodecs != nil
 	prom := s.promMetrics
 	var nodes []PipelineNode
 	if hasPipeCodecs {
 		nodes = s.buildNodeList()
 	}
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 
 	if !hasPipeCodecs {
 		return nil // no encoder configured yet
@@ -1293,14 +1292,14 @@ func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
 // This is the runtime reconfiguration path — SetCompositor, SetKeyBridge,
 // SetRawVideoSink, and external callbacks all use this.
 func (s *Switcher) rebuildPipeline() {
-	s.configMu.RLock()
+	s.configMu.Lock()
 	hasPipeCodecs := s.pipeCodecs != nil
 	prom := s.promMetrics
 	var nodes []PipelineNode
 	if hasPipeCodecs {
 		nodes = s.buildNodeList()
 	}
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 
 	if !hasPipeCodecs {
 		return
@@ -1533,9 +1532,9 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 		"fps", fmt.Sprintf("%d/%d", f.FPSNum, f.FPSDen))
 
 	atomic.AddUint64(&s.seq, 1)
-	s.configMu.RLock()
+	s.configMu.Lock()
 	snapshot := s.buildStateLocked()
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 
 	s.notifyStateChange(snapshot)
 	return nil
@@ -1550,8 +1549,8 @@ func (s *Switcher) LastBroadcastVideoPTS() int64 {
 
 // ProgramSource returns the key of the current program source.
 func (s *Switcher) ProgramSource() string {
-	s.configMu.RLock()
-	defer s.configMu.RUnlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	return s.programSource
 }
 
@@ -1568,11 +1567,11 @@ func (s *Switcher) trackBroadcastInterval() {
 	atomicutil.UpdateMax(&s.maxBroadcastIntervalNano, gap)
 	// Log when gap exceeds 100ms (>2 frame times at 24fps) to pinpoint stalls
 	if gap > 100_000_000 { // 100ms in nanoseconds
-		s.configMu.RLock()
+		s.configMu.Lock()
 		programSrc := s.programSource
 		hasEngine := s.transEngine != nil
 		state := s.state
-		s.configMu.RUnlock()
+		s.configMu.Unlock()
 		s.log.Warn("program broadcast gap",
 			"gap_ms", float64(gap)/1e6,
 			"state", state.String(),
@@ -1949,9 +1948,9 @@ func (s *Switcher) BroadcastToProgramFunc() func(*media.VideoFrame) {
 // before broadcasting to the program relay. This is the post-encode callback
 // used by the pipeline's encodeNode when captions are enabled.
 func (s *Switcher) broadcastWithCaptions(frame *media.VideoFrame) {
-	s.configMu.RLock()
+	s.configMu.Lock()
 	cm := s.captionMgr
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 
 	if cm == nil {
 		s.broadcastOwnedToProgram(frame)
@@ -2617,8 +2616,8 @@ func (s *Switcher) SetTransitionPosition(ctx context.Context, position float64) 
 // TransitionAbortThreshold returns the configured T-bar pull-back abort
 // threshold in (0.05, 0.5].
 func (s *Switcher) TransitionAbortThreshold() float64 {
-	s.configMu.RLock()
-	defer s.configMu.RUnlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	return s.transitionAbortThreshold
 }
 
@@ -2815,8 +2814,8 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 }
 
 func (s *Switcher) FTBDurationMs() int {
-	s.configMu.RLock()
-	defer s.configMu.RUnlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	return s.ftbDurationMs
 }
 
@@ -3480,9 +3479,9 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		s.transSeamStartNano.Store(time.Now().UnixNano())
 
 		// Auto-dissolve any PIP slot showing the new program source.
-		s.configMu.RLock()
+		s.configMu.Lock()
 		dveComp := s.dveCompositor
-		s.configMu.RUnlock()
+		s.configMu.Unlock()
 		if dveComp != nil {
 			dveComp.AutoDissolveSource(sourceKey)
 		}
@@ -3616,9 +3615,9 @@ func (s *Switcher) StartHealthMonitor(interval time.Duration) {
 
 // State returns a snapshot of the current control room state.
 func (s *Switcher) State() internal.ControlRoomState {
-	s.configMu.RLock()
+	s.configMu.Lock()
 	state := s.buildStateLocked()
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 	// Publish clock-sync metrics outside the lock so prom's internal
 	// GaugeVec mutex does not serialize with the broadcast hot path —
 	// relevant for DEBT-001's lock-split direction.
@@ -3628,8 +3627,8 @@ func (s *Switcher) State() internal.ControlRoomState {
 
 // DebugSnapshot returns a map of debug instrumentation data for diagnostics.
 func (s *Switcher) DebugSnapshot() map[string]any {
-	s.configMu.RLock()
-	defer s.configMu.RUnlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 
 	srcMap := *s.sourcesAtomic.Load()
 	sources := make(map[string]any, len(srcMap))
@@ -3863,7 +3862,7 @@ func isNodeNotFoundError(err error) bool {
 }
 
 // buildStateLocked constructs a ControlRoomState snapshot. Caller must hold
-// at least s.configMu.RLock().
+// at least s.configMu.Lock().
 // clockSyncAsInfo translates clock.SyncState into the ControlRoomState-
 // facing type. The two structs are field-wise identical by design (see
 // internal.ClockSyncInfo doc) so a straight copy keeps the JSON shape
@@ -3890,9 +3889,8 @@ var clockSyncSourceLabels = []string{
 
 // publishClockSyncMetrics updates the clock-sync Prometheus gauges from
 // the just-built ControlRoomState.ClockSync. Runs OUTSIDE configMu (call
-// site in State() fires post-RUnlock) so the broadcast hot path isn't
-// serialized on the prom GaugeVec internal mutex — relevant for DEBT-001's
-// lock-split direction.
+// site in State() fires post-Unlock) so the broadcast hot path isn't
+// serialized on the prom GaugeVec internal mutex.
 func (s *Switcher) publishClockSyncMetrics(info internal.ClockSyncInfo) {
 	if s.promMetrics == nil {
 		return
@@ -4060,9 +4058,9 @@ func clampLUFS(v float64) float64 {
 // notifyStateChange calls all registered state callbacks.
 // Must be called WITHOUT holding s.configMu to avoid blocking frame handlers.
 func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
-	s.configMu.RLock()
+	s.configMu.Lock()
 	cbs := s.stateCallbacks
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 	for _, cb := range cbs {
 		cb(snapshot)
 	}
@@ -4120,9 +4118,8 @@ func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.health.recordFrame(sourceKey, time.Now())
 
-	// Lock-free hot-path snapshot: three atomic pointer loads replace the
-	// configMu.RLock block. hotState + sources two-load race is benign;
-	// audioHandlers is independent.
+	// Lock-free hot-path snapshot. hotState + sources two-load race is
+	// benign; audioHandlers is independent.
 	hs := s.hotState.Load()
 	sources := *s.sourcesAtomic.Load()
 	ah := s.audioHandlers.Load()
@@ -4184,8 +4181,7 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 	s.health.recordFrame(sourceKey, time.Now())
 
-	// Lock-free hot-path snapshot: four atomic pointer loads replace the
-	// configMu.RLock block.
+	// Lock-free hot-path snapshot.
 	hs := s.hotState.Load()
 	sources := *s.sourcesAtomic.Load()
 	ah := s.audioHandlers.Load()
@@ -4237,9 +4233,9 @@ func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	s.health.recordFrame(sourceKey, time.Now())
 
-	// Lock-free hot-path snapshot: three atomic pointer loads replace the
-	// configMu.RLock block. The hotState / sources two-load race is benign —
-	// either snapshot routes the frame correctly (see design doc §invariants).
+	// Lock-free hot-path snapshot. The hotState / sources two-load race is
+	// benign — either snapshot routes the frame correctly (see design
+	// doc §invariants).
 	hs := s.hotState.Load()
 	sources := *s.sourcesAtomic.Load()
 	gh := s.graphicsHandlers.Load()
@@ -4436,9 +4432,9 @@ func (s *Switcher) handleCaptionFrame(sourceKey string, frame *ccx.CaptionFrame)
 	_, ok := (*s.sourcesAtomic.Load())[sourceKey]
 	hs := s.hotState.Load()
 	isProgram := ok && hs.programSource == sourceKey
-	s.configMu.RLock()
+	s.configMu.Lock()
 	cm := s.captionMgr
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 
 	// Notify caption manager that this source has captions.
 	if cm != nil {

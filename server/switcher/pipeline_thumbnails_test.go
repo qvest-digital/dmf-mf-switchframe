@@ -382,9 +382,9 @@ func TestSwitcherThumbnailCachePassedToDecoders(t *testing.T) {
 	sw.RegisterSource("cam1", sourceRelay)
 
 	// Verify the decoder got the thumbnail cache
-	sw.configMu.RLock()
-	ss, ok := sw.sources["cam1"]
-	sw.configMu.RUnlock()
+	sw.configMu.Lock()
+	ss, ok := (*sw.sourcesAtomic.Load())["cam1"]
+	sw.configMu.Unlock()
 	if !ok || ss == nil {
 		t.Fatal("source not registered")
 	}

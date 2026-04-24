@@ -68,8 +68,7 @@ func (s *Switcher) updateFrameSyncBundle(fn func(*frameSyncBundle)) {
 // shallow copy of the current map; mutations applied to fn's parameter are
 // published atomically via sourcesAtomic.Store when fn returns. The CoW
 // new-map-pointer swap is the atomic unit of visibility for lock-free
-// readers. The legacy s.sources field is kept as a read-through mirror for
-// Phase 5; Phase 6 deletes it entirely.
+// readers.
 //
 // Caller must hold s.configMu.Lock for writer serialization. Reads via
 // *s.sourcesAtomic.Load() do not take the lock.
@@ -81,10 +80,6 @@ func (s *Switcher) withSourcesMut(fn func(m map[string]*sourceState)) {
 	}
 	fn(next)
 	s.sourcesAtomic.Store(&next)
-	// Legacy mirror — still read by any sites not yet migrated in this
-	// phase. Writes go here via this assignment so every future read of
-	// s.sources observes the post-fn state. Deleted in Phase 6.
-	s.sources = next
 }
 
 
@@ -102,12 +97,9 @@ func (s *Switcher) initAtomicSlots() {
 	s.graphicsHandlers.Store(&graphicsHandlers{})
 	s.audioHandlers.Store(&audioHandlers{})
 	s.frameSyncBundle.Store(&frameSyncBundle{delayBuffer: s.delayBuffer})
-	// Phase 5: sourcesAtomic is the primary map. s.sources remains a
-	// read-through mirror; withSourcesMut keeps both in sync on every CoW
-	// mutation. Seed both pointers to a fresh empty map so a reader's
-	// *sourcesAtomic.Load() is never nil even before the first Register.
+	// Seed sourcesAtomic to an empty map so *sourcesAtomic.Load() is never
+	// nil before the first Register call.
 	empty := map[string]*sourceState{}
-	s.sources = empty
 	s.sourcesAtomic.Store(&empty)
 	s.ftbDurationMsAtomic.Store(int64(s.ftbDurationMs))
 	s.storeTransitionAbortThresholdAtomic(s.transitionAbortThreshold)

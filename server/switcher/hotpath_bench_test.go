@@ -46,7 +46,6 @@ func newBenchSwitcher(b *testing.B, nSources int) *Switcher {
 	}
 	s := &Switcher{
 		log:           benchSilentLogger,
-		sources:       make(map[string]*sourceState),
 		programRelay:  relay,
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),

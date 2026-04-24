@@ -791,9 +791,9 @@ func TestFrameStatsUpdatedOnVideoFrames(t *testing.T) {
 	}
 
 	// Check that stats have been updated
-	sw.configMu.RLock()
-	ss := sw.sources["cam1"]
-	sw.configMu.RUnlock()
+	sw.configMu.Lock()
+	ss := (*sw.sourcesAtomic.Load())["cam1"]
+	sw.configMu.Unlock()
 	avgFrameSize := ss.getAvgFrameSize()
 	avgFPS := ss.getAvgFPS()
 	frameCount := ss.getFrameCount()
@@ -1186,7 +1186,7 @@ func TestSwitcher_LastBroadcastVideoPTS(t *testing.T) {
 
 	// Cut to cam1 and send frames.
 	_ = sw.Cut(context.Background(), "cam1")
-	viewer := sw.sources["cam1"].viewer
+	viewer := (*sw.sourcesAtomic.Load())["cam1"].viewer
 
 	// Send a keyframe, then non-keyframe with known PTS values.
 	viewer.SendVideo(&media.VideoFrame{
@@ -1360,9 +1360,9 @@ func TestCloseWithFrameSyncActive(t *testing.T) {
 				PTS:        int64(j * 3000),
 				IsKeyframe: j == 0,
 			}
-			sw.configMu.RLock()
+			sw.configMu.Lock()
 			fs := sw.frameSync
-			sw.configMu.RUnlock()
+			sw.configMu.Unlock()
 			if fs != nil {
 				fs.IngestRawVideo("camera1", pf)
 			}
@@ -1393,7 +1393,6 @@ func TestEnqueueVideoWork_ReenqueueFailureReleasesNewBuffer(t *testing.T) {
 	pool := NewFramePool(8, 4, 4, ColorYUV420_8bit)
 	programRelay := newTestRelay()
 	sw := &Switcher{
-		sources:      make(map[string]*sourceState),
 		programRelay: programRelay,
 		health:       newHealthMonitor(),
 		// Channel capacity 1 to make it easy to fill.
@@ -1444,7 +1443,6 @@ func TestEnqueueVideoWork_ReenqueueFailureReleasesNewBuffer(t *testing.T) {
 	// then check pool stats.
 	pool2 := NewFramePool(4, 4, 4, ColorYUV420_8bit)
 	sw2 := &Switcher{
-		sources:       make(map[string]*sourceState),
 		programRelay:  programRelay,
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 1),
@@ -1505,7 +1503,6 @@ func TestEnqueueVideoWork_DroppedCountOnlyOnActualLoss(t *testing.T) {
 	pool := NewFramePool(8, 4, 4, ColorYUV420_8bit)
 	programRelay := newTestRelay()
 	sw := &Switcher{
-		sources:       make(map[string]*sourceState),
 		programRelay:  programRelay,
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 1),

@@ -251,9 +251,9 @@ func TestTransitionEngine_10bit_SetColorFormat(t *testing.T) {
 	require.NoError(t, err)
 
 	// Get the engine and verify it can handle 10-bit frames.
-	sw.configMu.RLock()
+	sw.configMu.Lock()
 	engine := sw.transEngine
-	sw.configMu.RUnlock()
+	sw.configMu.Unlock()
 	require.NotNil(t, engine, "transition engine should be created")
 
 	// Feed 10-bit frames to the engine. If SetColorFormat was NOT called,
