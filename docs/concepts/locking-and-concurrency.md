@@ -182,6 +182,25 @@ Every package that touches shared state has a declared mutex. The table below su
 | GPU | [`gpu.SourceManager.mu`](../../server/gpu/source_manager.go) (RWMutex) | per-source GPU cache, segmentation config | microseconds |
 | GPU | [`gpu.SegmentationEngine.mu`](../../server/gpu/segmentation_engine.go) (RWMutex) + [`SegmentationProxy.mu`](../../server/gpu/segmentation_proxy.go) | per-source mask cache, inflight count | microseconds |
 
+### Output Manager + Playout Channel field audit
+
+The `Manager.mu` and `Channel.mu` entries above summarize what each mutex protects. This subsection is the per-field ledger — written after the DEBT-021 audit so future readers know which fields are hot-path-reachable and exactly how each is synchronized. Every field not in `atomic.*` is either strictly covered by the mutex or single-writer-by-goroutine-ownership.
+
+**`output.Manager`** (`server/output/manager.go:37-119`) — 33 fields total:
+
+- **atomic on the hot path (`DirectWriteVideo` / muxer callback):** `directMuxer`, `adapters`, `frameAdapters`, `cbrPacer`, `directAdapters`, `confidence`, `lipSyncSource` (boxed in `atomic.Pointer[lipSyncProvider]`), `smoothedLipSync`, `lipSyncLatched`, `lastDirectVideoPTS`. Hot path takes no locks.
+- **protected by `Manager.mu` (warm paths only — start/stop/reconfigure):** `muxer`, `recorder`, `srtOutput`, `destinations`, `asyncWrappers`, `cbrMuxrate`, `onState`, `onMuxStart`, `closed`, `stopping`, `promMetrics`, `srtConnectFn`, `srtAcceptFn`, `scte35Injector`, `scte35PID`, `videoWidth`, `videoHeight`, `srtStatsManager`, `engineLabel`, `captionMgr`. None are ever read from the `DirectWriteVideo` hot path.
+- **init-once / immutable after `NewManager`:** `log`, `ctx`, `cancel`.
+
+**`playout.Channel`** (`server/playout/channel.go:67-138`) — 40 fields total:
+
+- **atomic counters (read by `Status()` from any goroutine):** `itemProgress`, `itemRemainMs`.
+- **strict single-writer (the `run()` tick goroutine owns them; joined via `<-doneCh` in `Stop()`):** `clipIter`, `clipFPS`, `clipTotal`, `clipFrame`, `clipOutputFrame`, `clipLastFrame`, `outputPTS`, `outputAudioPTS`. No cross-goroutine reader exists today. Promoting these to atomics would be defensive; skipped to avoid churn until a reader actually appears.
+- **protected by `Channel.mu` (all external callers + tick preamble):** `state`, `clipItemID`, `clipStartTime`, `gpuAlias`, `gpuSourceTap`, `lastLiveTapMiss`, `activeLiveSource`, `onLiveAudio`, `rawVideoOutput`, `audioOutput`, `onStateChange`, `onStart`, `onStop`, `ptsProvider`, `secondaryHandler`, `secondaryScheduler`, `secondaryItemID`, `spliceCoordinator`, `asRunLog`, `itemStartTime`, `cancel`, `done`. The tick goroutine grabs callbacks at the top of `tick()` into locals, then releases the lock before emitting the frame.
+- **init-once / immutable after `NewChannel`:** `id`, `config`, `scheduler`, `idleLoop`, `compositor`, `gpuAliasedSentinel`, `slateFrame`, `frameDuration`.
+
+Pattern to follow when adding new fields: if the value is read on the per-frame hot path (`DirectWriteVideo` for output, `emitFrame`/`frameForItem` for playout), it must be `atomic.*`. If it's read only from warm paths, `Manager.mu` / `Channel.mu` is fine. Function-valued fields need `atomic.Pointer` boxing if they're read off-lock — a plain `func` is a fat pointer and an unsynchronized swap races the read even when the race detector happens not to trip.
+
 ### Goroutine ownership
 
 Each long-lived goroutine owns specific data and reads shared state only through the locks or atomics above. The separation means no goroutine ever needs to wait on another to make progress on a frame.

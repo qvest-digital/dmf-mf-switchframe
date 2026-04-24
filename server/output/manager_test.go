@@ -1079,6 +1079,69 @@ func TestManager_DirectWriteVideo_LastPTSRaceWithSnapshot(t *testing.T) {
 		"reader goroutine must have observed lastDirectVideoPTS at least once")
 }
 
+func TestManager_DirectWriteVideo_LipSyncSourceReassignRace(t *testing.T) {
+	prev := runtime.GOMAXPROCS(4)
+	defer runtime.GOMAXPROCS(prev)
+
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: t.TempDir()}))
+
+	require.False(t, mgr.lipSyncLatched.Load(),
+		"test contract: hot path must read lipSyncSource (lipSyncLatched must start false)")
+
+	var (
+		stop       atomic.Bool
+		reassigned atomic.Int64
+		callbacks  atomic.Int64
+	)
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+
+	const writers = 4
+	for i := 0; i < writers; i++ {
+		done.Add(1)
+		go func(id int) {
+			defer done.Done()
+			start.Wait()
+			pts := int64(90000 * (id + 1))
+			tick := time.NewTicker(time.Second / 60)
+			defer tick.Stop()
+			for !stop.Load() {
+				mgr.DirectWriteVideo(lipSyncTestFrame(pts))
+				pts += 1500
+				<-tick.C
+			}
+		}(i)
+	}
+
+	done.Add(1)
+	go func() {
+		defer done.Done()
+		start.Wait()
+		for !stop.Load() {
+			var offset atomic.Int64
+			offset.Store(reassigned.Load() * 1000)
+			mgr.SetLipSyncSource(func() int64 {
+				callbacks.Add(1)
+				return offset.Load()
+			})
+			reassigned.Add(1)
+		}
+	}()
+
+	start.Done()
+	time.Sleep(200 * time.Millisecond)
+	stop.Store(true)
+	done.Wait()
+
+	require.Greater(t, reassigned.Load(), int64(0),
+		"reassign goroutine must have swapped lipSyncSource at least once")
+	require.Greater(t, callbacks.Load(), int64(0),
+		"hot path must have invoked at least one installed callback (otherwise the swap isn't exercising the read path)")
+}
+
 func TestManager_LipSyncLatchedObservableFromHotPath(t *testing.T) {
 	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()

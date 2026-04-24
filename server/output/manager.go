@@ -91,9 +91,10 @@ type Manager struct {
 	scte35PID uint16
 
 	// Lip-sync for SRT/recording output: reads ring buffer depth from mixer.
-	// smoothedLipSync and lipSyncLatched are atomic so the DirectWriteVideo
-	// hot path reads and the LatchLipSync writer don't race.
-	lipSyncSource   func() int64
+	// lipSyncSource is boxed in atomic.Pointer so SetLipSyncSource can swap
+	// the callback without racing the DirectWriteVideo hot path that invokes
+	// it. smoothedLipSync and lipSyncLatched are atomic for the same reason.
+	lipSyncSource   atomic.Pointer[lipSyncProvider]
 	smoothedLipSync atomic.Int64
 	lipSyncLatched  atomic.Bool
 
@@ -174,13 +175,22 @@ func (m *Manager) SetResolution(width, height int) {
 	m.videoHeight = height
 }
 
+// lipSyncProvider boxes a lip-sync offset callback so it can live in
+// atomic.Pointer. The func type can't be stored directly; wrapping in a
+// struct gives atomic.Pointer a concrete type to work with.
+type lipSyncProvider struct {
+	fn func() int64
+}
+
 // SetLipSyncSource registers a function that returns the total lip-sync
 // offset in 90kHz ticks for SRT/recording output. Applied to video PTS
 // in the muxer to delay video relative to audio.
 func (m *Manager) SetLipSyncSource(fn func() int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lipSyncSource = fn
+	if fn == nil {
+		m.lipSyncSource.Store(nil)
+		return
+	}
+	m.lipSyncSource.Store(&lipSyncProvider{fn: fn})
 }
 
 // LipSyncOffset returns the current smoothed lip-sync offset.
@@ -1463,8 +1473,8 @@ type CBRPacerStatus struct {
 func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 	// TS-based outputs (SRT, recording).
 	if muxer := m.directMuxer.Load(); muxer != nil {
-		if m.lipSyncSource != nil && !m.lipSyncLatched.Load() {
-			raw := m.lipSyncSource()
+		if p := m.lipSyncSource.Load(); p != nil && !m.lipSyncLatched.Load() {
+			raw := p.fn()
 			cur := m.smoothedLipSync.Load()
 			if cur == 0 {
 				m.smoothedLipSync.Store(raw)
