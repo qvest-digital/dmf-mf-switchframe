@@ -11,8 +11,7 @@ import (
 
 func TestManager_NewManager(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 	if m == nil {
 		t.Fatal("NewManager returned nil")
 	}
@@ -26,7 +25,7 @@ func TestManager_NewManager(t *testing.T) {
 }
 
 func TestManager_ValidateChannelID(t *testing.T) {
-	m := NewManager(ManagerConfig{})
+	m := NewManager(ManagerConfig{AllowedLocalPrefixes: []string{"/"}})
 
 	tests := []struct {
 		id      int
@@ -53,8 +52,7 @@ func TestManager_ValidateChannelID(t *testing.T) {
 
 func TestManager_LoadAndStart(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	pl := testPlaylist(clipItem("a"), clipItem("b"))
@@ -75,8 +73,7 @@ func TestManager_LoadAndStart(t *testing.T) {
 
 func TestManager_ChannelStates(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 
 	states := m.ChannelStates()
 	if len(states) != MaxChannels {
@@ -95,8 +92,7 @@ func TestManager_ChannelStates(t *testing.T) {
 
 func TestManager_Close(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 
 	// Load and start a channel with a live item (blocks until advance).
 	pl := testPlaylist(liveItem("live-1", "cam"))
@@ -121,8 +117,7 @@ func TestManager_Close(t *testing.T) {
 
 func TestManager_Next(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	// First item holds, second completes.
@@ -150,8 +145,7 @@ func TestManager_Next(t *testing.T) {
 
 func TestManager_TakeManualAndReturnToAuto(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	// Live item (blocks) then a clip item.
@@ -197,8 +191,7 @@ func TestManager_TakeManualAndReturnToAuto(t *testing.T) {
 
 func TestManager_LifecycleCallbacks(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 
 	var startCalled atomic.Int32
 	var stopCalled atomic.Int32
@@ -246,8 +239,7 @@ func TestManager_LifecycleCallbacks(t *testing.T) {
 
 func TestManager_RawVideoOutput(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(5),
-	})
+		AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	var frameCount atomic.Int32
@@ -283,7 +275,7 @@ func TestManager_RawVideoOutput(t *testing.T) {
 }
 
 func TestManager_InvalidChannelID(t *testing.T) {
-	m := NewManager(ManagerConfig{})
+	m := NewManager(ManagerConfig{AllowedLocalPrefixes: []string{"/"}})
 
 	// All operations should reject invalid channel IDs.
 	pl := testPlaylist(clipItem("a"))
@@ -321,8 +313,7 @@ func TestManager_InvalidChannelID(t *testing.T) {
 
 func TestManager_SetSpliceCoordinator(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 
 	inj := &fakeSpliceInjector{}
 	bd := NewBlackDetector(BlackDetectorConfig{})
@@ -358,8 +349,7 @@ func TestManager_SetSpliceCoordinator(t *testing.T) {
 
 func TestManager_SetPTSProvider_PropagatesToPodBoards(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 
 	ptsFn := func() int64 { return 42 }
 	m.SetPTSProvider(ptsFn)
@@ -382,8 +372,7 @@ func TestManager_SetPTSProvider_PropagatesToPodBoards(t *testing.T) {
 
 func TestManager_SetSpliceCoordinator_PropagatesPTSProvider(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 
 	// Set PTS provider first.
 	ptsFn := func() int64 { return 99 }
@@ -417,8 +406,7 @@ func TestManager_SetSpliceCoordinator_PropagatesPTSProvider(t *testing.T) {
 
 func TestManager_Start_WiresSpliceCoordinator(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	inj := &fakeSpliceInjector{}
@@ -452,8 +440,7 @@ func TestManager_Start_WiresSpliceCoordinator(t *testing.T) {
 
 func TestManager_PlaylistItems(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 
 	// No playlist loaded → nil items, no error.
 	items, err := m.PlaylistItems(1)
@@ -500,8 +487,7 @@ func TestManager_SetAudioOutput_PropagatesToChannels(t *testing.T) {
 	provider := NewFakeAssetProvider(frames)
 
 	m := NewManager(ManagerConfig{
-		AssetProvider: provider,
-	})
+		AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 
 	var mu sync.Mutex
 	var audioCalls []struct {
@@ -554,8 +540,7 @@ func TestManager_SetAudioOutput_PropagatesToChannels(t *testing.T) {
 
 func TestManager_SetGPUSourceTap_PropagatesToChannels(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	// Register a GPU source tap.
@@ -588,8 +573,7 @@ func TestManager_SetGPUSourceTap_PropagatesToChannels(t *testing.T) {
 
 func TestManager_SetPipelineFormat(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 
 	m.SetPipelineFormat(1280, 720, 59.94)
 
@@ -612,8 +596,7 @@ func TestManager_SetPipelineFormat(t *testing.T) {
 
 func TestManager_SetPipelineFormat_AffectsNewChannels(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	m.SetPipelineFormat(1280, 720, 59.94)
@@ -649,10 +632,46 @@ func TestManager_SetPipelineFormat_AffectsNewChannels(t *testing.T) {
 	}
 }
 
+func TestManager_SetPipelineFormat_PreservesAllowedLocalPrefixes(t *testing.T) {
+	// SetPipelineFormat recreates stopped channels. It MUST propagate the
+	// AllowedLocalPrefixes from ManagerConfig — otherwise it silently wipes
+	// the allow-list and every subsequent LoadPlaylist with a local-scheme
+	// URI fails ErrPathTraversal. Production calls SetPipelineFormat
+	// immediately after NewManager, so a missing propagation breaks every
+	// real deployment.
+	m := NewManager(ManagerConfig{
+		AssetProvider:        fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/clips"},
+	})
+	defer m.Close()
+
+	m.SetPipelineFormat(1280, 720, 59.94)
+
+	// A playlist with a path inside the allowed prefix must still load.
+	pl := testPlaylist(PlaylistItem{
+		ID:       "c1",
+		Type:     ItemClip,
+		AssetURI: "local:///clips/a.ts",
+	})
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist after SetPipelineFormat: %v "+
+			"(expected pass — /clips is in AllowedLocalPrefixes)", err)
+	}
+
+	// And /etc/passwd must still be rejected after SetPipelineFormat too.
+	bad := testPlaylist(PlaylistItem{
+		ID:       "evil",
+		Type:     ItemClip,
+		AssetURI: "/etc/passwd",
+	})
+	if err := m.LoadPlaylist(2, bad); err == nil {
+		t.Fatal("expected /etc/passwd to be rejected after SetPipelineFormat, got nil")
+	}
+}
+
 func TestManager_LoadPlaylist_IdleAsset(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 
 	// Load a playlist with an idle asset URI.
 	pl := testPlaylist(clipItem("a"))
@@ -677,7 +696,7 @@ func TestManager_LoadPlaylist_IdleAsset(t *testing.T) {
 }
 
 func TestManager_PlaylistHash(t *testing.T) {
-	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(3)})
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	// No playlist loaded — should return empty.
@@ -706,7 +725,7 @@ func TestManager_PlaylistHash(t *testing.T) {
 }
 
 func TestManager_ChannelElapsedMs_Stopped(t *testing.T) {
-	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(3)})
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	// Stopped channel — should return 0.
@@ -721,7 +740,7 @@ func TestManager_ChannelElapsedMs_Stopped(t *testing.T) {
 }
 
 func TestManager_ChannelElapsedMs_Playing(t *testing.T) {
-	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(90)})
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(90), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	pl := testPlaylist(clipItem("a"))
@@ -753,7 +772,7 @@ func TestManager_ChannelElapsedMs_Playing(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestManager_SeekToItem_InvalidChannel(t *testing.T) {
-	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(30)})
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(30), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	err := m.SeekToItem(0, 0, 0)
@@ -768,7 +787,7 @@ func TestManager_SeekToItem_InvalidChannel(t *testing.T) {
 }
 
 func TestManager_SeekToItem_NoPlaylist(t *testing.T) {
-	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(30)})
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(30), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	err := m.SeekToItem(1, 0, 0)
@@ -778,7 +797,7 @@ func TestManager_SeekToItem_NoPlaylist(t *testing.T) {
 }
 
 func TestManager_SeekToItem_MovesSlate(t *testing.T) {
-	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(90)})
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(90), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	pl := testPlaylist(
@@ -816,7 +835,7 @@ func TestManager_SeekToItem_MovesSlate(t *testing.T) {
 }
 
 func TestManager_SeekToItem_InvalidIndex(t *testing.T) {
-	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(30)})
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(30), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	pl := testPlaylist(slateItem("s0", 5000))

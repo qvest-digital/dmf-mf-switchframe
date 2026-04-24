@@ -24,7 +24,7 @@ func TestLocalFetcherCopiesFile(t *testing.T) {
 
 	destPath := filepath.Join(dir, "dest.ts")
 
-	f := &LocalFetcher{}
+	f := &LocalFetcher{AllowedPrefixes: []string{dir}}
 	n, err := f.Fetch(context.Background(), srcPath, destPath)
 	if err != nil {
 		t.Fatalf("Fetch returned error: %v", err)
@@ -46,10 +46,13 @@ func TestLocalFetcherFileNotFound(t *testing.T) {
 	dir := t.TempDir()
 	destPath := filepath.Join(dir, "dest.ts")
 
-	f := &LocalFetcher{}
+	f := &LocalFetcher{AllowedPrefixes: []string{"/no"}}
 	_, err := f.Fetch(context.Background(), "/no/such/file.ts", destPath)
 	if err == nil {
 		t.Fatal("expected error for nonexistent source")
+	}
+	if errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("expected file-not-found error, got ErrPathTraversal: %v", err)
 	}
 }
 
@@ -83,19 +86,32 @@ func TestLocalFetcherPathTraversalAllows(t *testing.T) {
 	}
 }
 
-func TestLocalFetcherNoAllowedPrefixes(t *testing.T) {
+func TestLocalFetcher_RejectsPathWithNilPrefixes(t *testing.T) {
+	// Deny-by-default: nil/empty AllowedPrefixes must reject any local path,
+	// including a readable one. Previously nil meant "allow all," which let
+	// an authenticated operator exfiltrate /etc/passwd.
 	dir := t.TempDir()
-	srcPath := filepath.Join(dir, "any.ts")
-	if err := os.WriteFile(srcPath, []byte("data"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	destPath := filepath.Join(dir, "dest.ts")
 
-	// Empty AllowedPrefixes means no restriction.
-	f := &LocalFetcher{}
-	_, err := f.Fetch(context.Background(), srcPath, destPath)
-	if err != nil {
-		t.Fatalf("Fetch with no AllowedPrefixes should succeed, got: %v", err)
+	cases := []struct {
+		name     string
+		prefixes []string
+	}{
+		{"nil prefixes", nil},
+		{"empty slice", []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &LocalFetcher{AllowedPrefixes: tc.prefixes}
+			_, err := f.Fetch(context.Background(), "/etc/passwd", destPath)
+			if !errors.Is(err, ErrPathTraversal) {
+				t.Fatalf("expected ErrPathTraversal with nil/empty prefixes, got %v", err)
+			}
+			// And destination must not exist — fetch must be refused before open.
+			if _, statErr := os.Stat(destPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("dest file should not exist when fetch rejected, stat err=%v", statErr)
+			}
+		})
 	}
 }
 
@@ -204,7 +220,7 @@ func TestHTTPFetcherCustomClient(t *testing.T) {
 }
 
 func TestResolveAssetFetcher(t *testing.T) {
-	resolver := NewAssetResolver(nil)
+	resolver := NewAssetResolver([]string{"/"})
 
 	tests := []struct {
 		uri      string
@@ -232,7 +248,7 @@ func TestResolveAssetFetcher(t *testing.T) {
 }
 
 func TestResolveAssetFetcherUnsupported(t *testing.T) {
-	resolver := NewAssetResolver(nil)
+	resolver := NewAssetResolver([]string{"/"})
 
 	_, err := resolver.FetcherFor("s3://bucket/clip.ts")
 	if !errors.Is(err, ErrUnsupportedURI) {
@@ -241,7 +257,7 @@ func TestResolveAssetFetcherUnsupported(t *testing.T) {
 }
 
 func TestResolveAssetFetcherUnknownScheme(t *testing.T) {
-	resolver := NewAssetResolver(nil)
+	resolver := NewAssetResolver([]string{"/"})
 
 	_, err := resolver.FetcherFor("ftp://example.com/clip.ts")
 	if !errors.Is(err, ErrUnsupportedURI) {
@@ -250,7 +266,7 @@ func TestResolveAssetFetcherUnknownScheme(t *testing.T) {
 }
 
 func TestAssetResolverSourcePath(t *testing.T) {
-	resolver := NewAssetResolver(nil)
+	resolver := NewAssetResolver([]string{"/"})
 
 	tests := []struct {
 		uri  string

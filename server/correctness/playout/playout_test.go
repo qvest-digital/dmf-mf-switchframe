@@ -157,7 +157,7 @@ func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool
 func TestScheduledItemStartsOnTime(t *testing.T) {
 	provider := playout.NewFakeAssetProvider(makeFrames(10, testWidth, testHeight))
 	ch := playout.NewChannel(1, playout.ChannelConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 		Width:         testWidth,
 		Height:        testHeight,
 	})
@@ -204,7 +204,7 @@ func TestPlaylistAdvancement(t *testing.T) {
 	}
 
 	ch := playout.NewChannel(1, playout.ChannelConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 		Width:         testWidth,
 		Height:        testHeight,
 	})
@@ -538,7 +538,7 @@ func TestWatchdogNoStallWhenFramesFlowing(t *testing.T) {
 
 func TestDualChannelIndependence(t *testing.T) {
 	m := playout.NewManager(playout.ManagerConfig{
-		AssetProvider: playout.NewFakeAssetProvider(makeFrames(10, 1920, 1080)),
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: playout.NewFakeAssetProvider(makeFrames(10, 1920, 1080)),
 	})
 	defer m.Close()
 
@@ -602,7 +602,7 @@ func TestDualChannelIndependence(t *testing.T) {
 
 func TestPlaylistLoadAndState(t *testing.T) {
 	ch := playout.NewChannel(1, playout.ChannelConfig{
-		Width:  testWidth,
+		AllowedLocalPrefixes: []string{"/"}, Width:  testWidth,
 		Height: testHeight,
 	})
 
@@ -652,7 +652,7 @@ func TestPlaylistLoadAndState(t *testing.T) {
 }
 
 func TestPlaylistLoadRejectsInvalid(t *testing.T) {
-	ch := playout.NewChannel(1, playout.ChannelConfig{})
+	ch := playout.NewChannel(1, playout.ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 
 	// Empty playlist.
 	err := ch.LoadPlaylist(&playout.Playlist{ID: "empty", Name: "Empty"})
@@ -676,7 +676,7 @@ func TestPlaylistLoadRejectsInvalid(t *testing.T) {
 func TestChannelStartStop(t *testing.T) {
 	provider := playout.NewFakeAssetProvider(makeFrames(5, testWidth, testHeight))
 	ch := playout.NewChannel(1, playout.ChannelConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 		Width:         testWidth,
 		Height:        testHeight,
 	})
@@ -725,7 +725,7 @@ func TestChannelStartStop(t *testing.T) {
 }
 
 func TestChannelStopFromStopped(t *testing.T) {
-	ch := playout.NewChannel(1, playout.ChannelConfig{})
+	ch := playout.NewChannel(1, playout.ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 
 	// Stop on a stopped channel is a no-op (should not panic).
 	ch.Stop()
@@ -735,7 +735,7 @@ func TestChannelStopFromStopped(t *testing.T) {
 func TestChannelDoubleStop(t *testing.T) {
 	provider := playout.NewFakeAssetProvider(makeFrames(5, testWidth, testHeight))
 	ch := playout.NewChannel(1, playout.ChannelConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 	})
 
 	pl := makePlaylist(makeLiveItem("live-1", "cam"))
@@ -753,7 +753,7 @@ func TestChannelDoubleStop(t *testing.T) {
 func TestChannelRestartAfterStop(t *testing.T) {
 	provider := playout.NewFakeAssetProvider(makeFrames(3, testWidth, testHeight))
 	ch := playout.NewChannel(1, playout.ChannelConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 		Width:         testWidth,
 		Height:        testHeight,
 	})
@@ -787,7 +787,7 @@ func TestChannelRestartAfterStop(t *testing.T) {
 func TestNextPrevious(t *testing.T) {
 	provider := playout.NewFakeAssetProvider(makeFrames(5, 1920, 1080))
 	m := playout.NewManager(playout.ManagerConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 	})
 	defer m.Close()
 
@@ -1253,7 +1253,7 @@ func TestPlaylistValidation(t *testing.T) {
 func TestRawVideoOutputCallback(t *testing.T) {
 	provider := playout.NewFakeAssetProvider(makeFrames(5, testWidth, testHeight))
 	ch := playout.NewChannel(1, playout.ChannelConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 		Width:         testWidth,
 		Height:        testHeight,
 	})
@@ -1315,7 +1315,7 @@ func TestRawVideoOutputCallback(t *testing.T) {
 func TestChannelLifecycleCallbacks(t *testing.T) {
 	provider := playout.NewFakeAssetProvider(makeFrames(3, 1920, 1080))
 	m := playout.NewManager(playout.ManagerConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 	})
 
 	var startCalled atomic.Int32

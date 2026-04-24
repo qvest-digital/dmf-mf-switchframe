@@ -11,6 +11,7 @@ import (
 func TestChannel_Snapshot(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(5),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	pl := testPlaylist(clipItem("a"), clipItem("b"), clipItem("c"))
@@ -50,7 +51,7 @@ func TestChannel_Snapshot(t *testing.T) {
 }
 
 func TestChannel_Snapshot_NoPlaylist(t *testing.T) {
-	ch := NewChannel(2, ChannelConfig{})
+	ch := NewChannel(2, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	snap := ch.Snapshot()
 
 	if snap.ID != 2 {
@@ -66,7 +67,7 @@ func TestChannel_Snapshot_NoPlaylist(t *testing.T) {
 
 func TestManager_Snapshot(t *testing.T) {
 	provider := fakeProvider(5)
-	m := NewManager(ManagerConfig{AssetProvider: provider})
+	m := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 
 	// Load a playlist on channel 1.
 	pl := testPlaylist(clipItem("a"), clipItem("b"))
@@ -115,7 +116,7 @@ func TestManager_Snapshot(t *testing.T) {
 }
 
 func TestManager_Snapshot_IncludesPods(t *testing.T) {
-	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(5)})
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
 
 	// Add a pod to channel 1's board.
 	pb, _ := m.PodBoard(1)
@@ -151,7 +152,7 @@ func TestManager_Snapshot_IncludesPods(t *testing.T) {
 
 func TestStatePersister_SavesOnInterval(t *testing.T) {
 	provider := fakeProvider(5)
-	m := NewManager(ManagerConfig{AssetProvider: provider})
+	m := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 
 	pl := testPlaylist(clipItem("a"))
 	if err := m.LoadPlaylist(1, pl); err != nil {
@@ -194,7 +195,7 @@ func TestStatePersister_SavesOnInterval(t *testing.T) {
 
 func TestStatePersister_FinalSaveOnStop(t *testing.T) {
 	provider := fakeProvider(5)
-	m := NewManager(ManagerConfig{AssetProvider: provider})
+	m := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 
 	pl := testPlaylist(clipItem("a"))
 	if err := m.LoadPlaylist(1, pl); err != nil {
@@ -225,7 +226,7 @@ func TestStatePersister_FinalSaveOnStop(t *testing.T) {
 }
 
 func TestStatePersister_Path(t *testing.T) {
-	m := NewManager(ManagerConfig{})
+	m := NewManager(ManagerConfig{AllowedLocalPrefixes: []string{"/"}})
 	dir := t.TempDir()
 	p := NewStatePersister(m, StatePersisterConfig{
 		Dir: dir,
@@ -238,7 +239,7 @@ func TestStatePersister_Path(t *testing.T) {
 }
 
 func TestStatePersister_CreatesDir(t *testing.T) {
-	m := NewManager(ManagerConfig{})
+	m := NewManager(ManagerConfig{AllowedLocalPrefixes: []string{"/"}})
 	dir := filepath.Join(t.TempDir(), "nested", "state")
 	p := NewStatePersister(m, StatePersisterConfig{
 		Dir:      dir,
@@ -527,7 +528,7 @@ func TestManager_Recover_FromCued(t *testing.T) {
 	provider := fakeProvider(5)
 
 	// Step 1: Create a manager, load a playlist, snapshot, write to disk.
-	m1 := NewManager(ManagerConfig{AssetProvider: provider})
+	m1 := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 	pl := testPlaylist(clipItem("a"), clipItem("b"), clipItem("c"))
 	if err := m1.LoadPlaylist(1, pl); err != nil {
 		t.Fatalf("LoadPlaylist: %v", err)
@@ -541,7 +542,7 @@ func TestManager_Recover_FromCued(t *testing.T) {
 	}
 
 	// Step 2: Create a fresh manager and recover.
-	m2 := NewManager(ManagerConfig{AssetProvider: provider})
+	m2 := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 	if err := m2.Recover(statePath); err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
@@ -595,7 +596,7 @@ func TestManager_Recover_FromOnAir_RecuesAtCurrentItem(t *testing.T) {
 		t.Fatalf("atomicWriteJSON: %v", err)
 	}
 
-	m := NewManager(ManagerConfig{AssetProvider: provider})
+	m := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 	if err := m.Recover(statePath); err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
@@ -662,7 +663,7 @@ func TestManager_Recover_PodElapsedAdjustment(t *testing.T) {
 		t.Fatalf("atomicWriteJSON: %v", err)
 	}
 
-	m := NewManager(ManagerConfig{AssetProvider: provider})
+	m := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 	if err := m.Recover(statePath); err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
@@ -710,7 +711,7 @@ func TestManager_Recover_EmitsAsRunError(t *testing.T) {
 		t.Fatalf("atomicWriteJSON: %v", err)
 	}
 
-	m := NewManager(ManagerConfig{AssetProvider: provider})
+	m := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 
 	asRunDir := t.TempDir()
 	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: asRunDir})
@@ -735,7 +736,7 @@ func TestManager_Recover_EmitsAsRunError(t *testing.T) {
 }
 
 func TestManager_HealthSummary(t *testing.T) {
-	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(5)})
+	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
 
 	// Without watchdog, returns nil.
 	if health := mgr.HealthSummary(); health != nil {
@@ -796,7 +797,7 @@ func TestManager_Recover_SkipsTerminalPods(t *testing.T) {
 		t.Fatalf("atomicWriteJSON: %v", err)
 	}
 
-	m := NewManager(ManagerConfig{AssetProvider: provider})
+	m := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 	if err := m.Recover(statePath); err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
@@ -816,7 +817,7 @@ func TestManager_Recover_SkipsTerminalPods(t *testing.T) {
 }
 
 func TestManager_RecoverChannel(t *testing.T) {
-	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(90)})
+	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(90), AllowedLocalPrefixes: []string{"/"}})
 
 	asRunDir := filepath.Join(t.TempDir(), "asrun")
 	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: asRunDir})
@@ -864,7 +865,7 @@ func TestManager_RecoverChannel(t *testing.T) {
 }
 
 func TestManager_RecoverChannel_InvalidID(t *testing.T) {
-	mgr := NewManager(ManagerConfig{})
+	mgr := NewManager(ManagerConfig{AllowedLocalPrefixes: []string{"/"}})
 	err := mgr.RecoverChannel(99)
 	if err == nil {
 		t.Error("expected error for invalid channel ID")
@@ -872,7 +873,7 @@ func TestManager_RecoverChannel_InvalidID(t *testing.T) {
 }
 
 func TestManager_RecoverChannel_NoPlaylist(t *testing.T) {
-	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(5)})
+	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
 	// Channel has no playlist loaded.
 	err := mgr.RecoverChannel(1)
 	// Should fail because there's nothing to recover — Start will fail with ErrInvalidState.

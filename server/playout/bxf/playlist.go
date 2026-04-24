@@ -27,10 +27,13 @@ func ImportPlaylist(msg BxfMessage, name string) (*playout.Playlist, error) {
 			Type:  itemType,
 		}
 
-		// Clip/slate items require an AssetURI. Use the HouseNumber as a
-		// reference identifier that the asset pipeline can resolve.
+		// Clip/slate items require an AssetURI. Build a placeholder local-scheme
+		// URI under /bxf/<HouseNumber>; production operators must place real
+		// assets at that path (or include /bxf in --playout-allowed-paths and
+		// have an upstream symlink/mount strategy). Stays inside the
+		// playout asset-URI allow-list.
 		if itemType == playout.ItemClip || itemType == playout.ItemSlate {
-			item.AssetURI = "bxf://" + detail.Content.ContentId.HouseNumber
+			item.AssetURI = "local:///bxf/" + detail.Content.ContentId.HouseNumber
 		}
 
 		// Parse duration from ScheduledDuration first, fall back to Content.Duration.

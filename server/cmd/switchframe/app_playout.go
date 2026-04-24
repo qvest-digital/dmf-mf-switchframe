@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -18,6 +19,25 @@ import (
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
+
+// buildPlayoutAllowedPrefixes assembles the deny-by-default allow-list of
+// local filesystem prefixes the playout asset pipeline may read from.
+// Always includes the playout cache and clip store; the env var (CSV)
+// adds operator-configured NFS / shared-media mounts.
+func buildPlayoutAllowedPrefixes(stateDir, cacheDir, envCSV string) []string {
+	out := []string{
+		filepath.Clean(cacheDir),
+		filepath.Clean(filepath.Join(stateDir, "clips")),
+	}
+	for _, p := range strings.Split(envCSV, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, filepath.Clean(p))
+	}
+	return out
+}
 
 // initPlayout creates the playout Manager and wires lifecycle callbacks
 // so playout channels register as switcher sources. Follows the initClips pattern.
@@ -32,8 +52,16 @@ func (a *App) initPlayout() error {
 		return fmt.Errorf("playout cache: %w", err)
 	}
 
-	// Create asset resolver (no path restrictions for now).
-	resolver := playout.NewAssetResolver(nil)
+	// Build the local-asset allow-list: cache + clip store dirs are always
+	// engine-managed and safe; SWITCHFRAME_PLAYOUT_ALLOWED_PATHS lets ops add
+	// NFS / shared-media mounts. Empty list = deny all local-scheme URIs.
+	allowedPrefixes := buildPlayoutAllowedPrefixes(a.cfg.StateDir, cacheDir,
+		os.Getenv("SWITCHFRAME_PLAYOUT_ALLOWED_PATHS"))
+	slog.Warn("playout: local asset allow-list",
+		"prefixes", allowedPrefixes,
+		"env_extra", os.Getenv("SWITCHFRAME_PLAYOUT_ALLOWED_PATHS"))
+
+	resolver := playout.NewAssetResolver(allowedPrefixes)
 
 	// Create transcoder using pipeline format for target dimensions.
 	pf := a.sw.PipelineFormat()
@@ -59,7 +87,8 @@ func (a *App) initPlayout() error {
 	})
 
 	mgr := playout.NewManager(playout.ManagerConfig{
-		AssetProvider: provider,
+		AssetProvider:        provider,
+		AllowedLocalPrefixes: allowedPrefixes,
 	})
 
 	// Set pipeline format on manager so channels get correct dimensions/FPS.

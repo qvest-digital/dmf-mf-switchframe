@@ -17,8 +17,7 @@ func TestIntegration_PlaylistExecution(t *testing.T) {
 	var frameCount atomic.Int64
 
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(10),
-	})
+		AssetProvider: fakeProvider(10), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	m.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
@@ -51,8 +50,7 @@ func TestIntegration_PlaylistExecution(t *testing.T) {
 
 func TestIntegration_ManualOverrideAndReturn(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(10),
-	})
+		AssetProvider: fakeProvider(10), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	// hold item blocks after playback; regular item completes.
@@ -108,7 +106,7 @@ func TestIntegration_ManualOverrideAndReturn(t *testing.T) {
 
 func TestIntegration_NextSkipsItem(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(200), // long clip: 200 frames at 30fps ~ 6.6s
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: fakeProvider(200), // long clip: 200 frames at 30fps ~ 6.6s
 	})
 	defer m.Close()
 
@@ -149,8 +147,7 @@ func TestIntegration_NextSkipsItem(t *testing.T) {
 
 func TestIntegration_JumpToItem(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(5),
-	})
+		AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	pl := testPlaylist(
@@ -206,8 +203,7 @@ func TestIntegration_JumpToItem(t *testing.T) {
 
 func TestIntegration_PreviousItem(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(5),
-	})
+		AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	pl := testPlaylist(
@@ -274,8 +270,7 @@ func TestIntegration_PreviousItem(t *testing.T) {
 
 func TestIntegration_LiveItemHold(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(5),
-	})
+		AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	pl := testPlaylist(
@@ -320,8 +315,7 @@ func TestIntegration_LiveItemHold(t *testing.T) {
 
 func TestIntegration_LifecycleCallbacks(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(5),
-	})
+		AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
 
 	var startCalled atomic.Int32
 	var stopCalled atomic.Int32
@@ -385,8 +379,7 @@ func TestIntegration_LifecycleCallbacks(t *testing.T) {
 
 func TestIntegration_StopMidPlayback(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(5),
-	})
+		AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	// Load a playlist with a hold item that will block.
@@ -431,8 +424,7 @@ func TestIntegration_StopMidPlayback(t *testing.T) {
 
 func TestIntegration_TwoChannels(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(10),
-	})
+		AssetProvider: fakeProvider(10), AllowedLocalPrefixes: []string{"/"}})
 	defer m.Close()
 
 	var ch1Frames atomic.Int64
@@ -533,7 +525,7 @@ func TestIntegration_CacheFetchAndPlay(t *testing.T) {
 	}
 
 	// 3. Set up asset resolver + prefetcher with OnFetched callback.
-	resolver := NewAssetResolver(nil)
+	resolver := NewAssetResolver([]string{"/"})
 
 	var fetched sync.WaitGroup
 	fetched.Add(1)
@@ -581,7 +573,7 @@ func TestIntegration_CacheFetchAndPlay(t *testing.T) {
 	})
 
 	// 8. Create channel with provider, load playlist, play.
-	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider})
 	var outputCount atomic.Int32
 	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		outputCount.Add(1)
@@ -635,7 +627,7 @@ func TestIntegration_PrefetchAdvancesWithCursor(t *testing.T) {
 
 	pl := &Playlist{ID: "test", Name: "Test", Items: items}
 
-	resolver := NewAssetResolver(nil)
+	resolver := NewAssetResolver([]string{"/"})
 
 	var mu sync.Mutex
 	fetchedURIs := map[string]bool{}
@@ -707,7 +699,7 @@ func TestIntegration_HTTPAssetFetch(t *testing.T) {
 	}
 	defer cache.Close()
 
-	resolver := NewAssetResolver(nil)
+	resolver := NewAssetResolver([]string{"/"})
 
 	fetchDone := make(chan struct{})
 	var fetchErr error
@@ -790,7 +782,7 @@ func TestIntegration_CacheEvictionDuringPrefetch(t *testing.T) {
 
 	pl := &Playlist{ID: "test", Name: "Test", Items: items}
 
-	resolver := NewAssetResolver(nil)
+	resolver := NewAssetResolver([]string{"/"})
 	var wg sync.WaitGroup
 	wg.Add(3)
 	prefetcher := NewPrefetcher(PrefetcherConfig{
@@ -823,7 +815,7 @@ func TestIntegration_SecondaryEventsFireInOrder(t *testing.T) {
 	h := &mockHandler{}
 
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(60), // 2 seconds at 30fps
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: fakeProvider(60), // 2 seconds at 30fps
 	})
 	defer m.Close()
 	m.SetSecondaryHandler(h)
@@ -877,7 +869,7 @@ func TestIntegration_SecondaryEventsMultipleItems(t *testing.T) {
 	h := &mockHandler{}
 
 	m := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(30), // 1 second at 30fps
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: fakeProvider(30), // 1 second at 30fps
 	})
 	defer m.Close()
 	m.SetSecondaryHandler(h)

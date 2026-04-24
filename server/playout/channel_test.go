@@ -102,7 +102,7 @@ func slateItem(id string, durationMs int64) PlaylistItem {
 }
 
 func TestChannel_InitialState(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	if ch.State() != StateStopped {
 		t.Errorf("initial state = %v, want StateStopped", ch.State())
 	}
@@ -112,7 +112,7 @@ func TestChannel_InitialState(t *testing.T) {
 }
 
 func TestChannel_LoadPlaylist_TransitionsToCued(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 
 	var stateChanged atomic.Int32
 	ch.SetOnStateChange(func(s ChannelState) {
@@ -134,7 +134,7 @@ func TestChannel_LoadPlaylist_TransitionsToCued(t *testing.T) {
 }
 
 func TestChannel_LoadPlaylist_RejectsEmpty(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	pl := &Playlist{ID: "empty", Name: "Empty"}
 	err := ch.LoadPlaylist(pl)
 	if err == nil {
@@ -143,7 +143,7 @@ func TestChannel_LoadPlaylist_RejectsEmpty(t *testing.T) {
 }
 
 func TestChannel_Start_RequiresPlaylist(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	err := ch.Start()
 	if err != ErrNoPlaylist {
 		t.Fatalf("expected ErrNoPlaylist, got: %v", err)
@@ -151,7 +151,7 @@ func TestChannel_Start_RequiresPlaylist(t *testing.T) {
 }
 
 func TestChannel_Stop_FromStopped(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	// Should be a no-op, not panic.
 	ch.Stop()
 	if ch.State() != StateStopped {
@@ -162,6 +162,7 @@ func TestChannel_Stop_FromStopped(t *testing.T) {
 func TestChannel_Start_TransitionsToOnAir(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(5),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	var startKey string
@@ -188,7 +189,7 @@ func TestChannel_Start_TransitionsToOnAir(t *testing.T) {
 
 func TestChannel_PlaysThroughToCompleted(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(3), // 3 frames = very fast
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: fakeProvider(3), // 3 frames = very fast
 	})
 
 	pl := testPlaylist(clipItem("a"), clipItem("b"))
@@ -207,6 +208,7 @@ func TestChannel_PlaysThroughToCompleted(t *testing.T) {
 func TestChannel_Next_AdvancesItem(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	// First item holds, second completes quickly.
@@ -234,6 +236,7 @@ func TestChannel_Next_AdvancesItem(t *testing.T) {
 func TestChannel_ManualOverride(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	// Use a live item that blocks, so we have time to TakeManual.
@@ -281,6 +284,7 @@ func TestChannel_ManualOverride(t *testing.T) {
 func TestChannel_JumpTo(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	// 3 live items; jump from first to third.
@@ -317,6 +321,7 @@ func TestChannel_JumpTo(t *testing.T) {
 func TestChannel_Previous(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	// Two live items.
@@ -358,6 +363,7 @@ func TestChannel_Previous(t *testing.T) {
 func TestChannel_LiveItem_HoldsUntilAdvance(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	pl := testPlaylist(liveItem("live-1", "camera-1"))
@@ -385,6 +391,7 @@ func TestChannel_LiveItem_HoldsUntilAdvance(t *testing.T) {
 func TestChannel_SlateItem_Duration(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	// Slate with 200ms duration.
@@ -407,6 +414,7 @@ func TestChannel_RawVideoOutput(t *testing.T) {
 
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(5),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		frameCount.Add(1)
@@ -433,12 +441,12 @@ func TestChannel_RawVideoOutput(t *testing.T) {
 }
 
 func TestChannel_Key(t *testing.T) {
-	ch1 := NewChannel(1, ChannelConfig{})
+	ch1 := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	if ch1.Key() != "playout:1" {
 		t.Errorf("Key() = %q, want %q", ch1.Key(), "playout:1")
 	}
 
-	ch2 := NewChannel(2, ChannelConfig{})
+	ch2 := NewChannel(2, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	if ch2.Key() != "playout:2" {
 		t.Errorf("Key() = %q, want %q", ch2.Key(), "playout:2")
 	}
@@ -447,6 +455,7 @@ func TestChannel_Key(t *testing.T) {
 func TestChannel_Status(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	// Status when stopped.
@@ -477,6 +486,7 @@ func TestChannel_Status(t *testing.T) {
 func TestChannel_Status_SchedulerState(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(30),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	// Stopped channel should report scheduler state "idle".
@@ -520,6 +530,7 @@ func TestChannel_Status_SchedulerState(t *testing.T) {
 func TestChannel_StopCallback(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	var stopKey string
@@ -577,6 +588,7 @@ func TestChannel_EstimateFPS(t *testing.T) {
 func TestChannel_DoubleStop(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	pl := testPlaylist(liveItem("live-1", "cam"))
@@ -597,6 +609,7 @@ func TestChannel_DoubleStop(t *testing.T) {
 func TestChannel_Close(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	pl := testPlaylist(liveItem("live-1", "cam"))
@@ -615,6 +628,7 @@ func TestChannel_Close(t *testing.T) {
 func TestChannel_StartRequiresCued(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	// Start without loading should return ErrNoPlaylist.
@@ -638,6 +652,7 @@ func TestChannel_StartRequiresCued(t *testing.T) {
 func TestChannel_JumpTo_NotFound(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	pl := testPlaylist(liveItem("live-1", "cam"))
@@ -653,7 +668,7 @@ func TestChannel_JumpTo_NotFound(t *testing.T) {
 }
 
 func TestChannel_NextWhileStopped(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	err := ch.Next()
 	if err != ErrNotOnAir {
 		t.Fatalf("expected ErrNotOnAir, got %v", err)
@@ -661,7 +676,7 @@ func TestChannel_NextWhileStopped(t *testing.T) {
 }
 
 func TestChannel_PreviousWhileStopped(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	err := ch.Previous()
 	if err != ErrNotOnAir {
 		t.Fatalf("expected ErrNotOnAir, got %v", err)
@@ -671,7 +686,7 @@ func TestChannel_PreviousWhileStopped(t *testing.T) {
 func TestChannel_SecondaryEventsFireDuringPlayback(t *testing.T) {
 	h := &mockHandler{}
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(30), // 30 frames at 30fps = 1 second
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: fakeProvider(30), // 30 frames at 30fps = 1 second
 	})
 	ch.SetSecondaryHandler(h)
 
@@ -717,7 +732,7 @@ func TestChannel_SecondaryEventsFireDuringPlayback(t *testing.T) {
 func TestChannel_EndAnchoredSecondaryEvents(t *testing.T) {
 	h := &mockHandler{}
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(60), // 60 frames at 30fps = 2 seconds
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: fakeProvider(60), // 60 frames at 30fps = 2 seconds
 	})
 	ch.SetSecondaryHandler(h)
 
@@ -754,6 +769,7 @@ func TestChannel_SecondaryEventsOnLiveItem(t *testing.T) {
 	h := &mockHandler{}
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(10),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 	ch.SetSecondaryHandler(h)
 
@@ -799,7 +815,7 @@ func TestChannel_SecondaryEventsOnLiveItem(t *testing.T) {
 
 func TestChannel_FeedsSpliceCoordinator(t *testing.T) {
 	provider := fakeProvider(30) // 1 second at 30fps
-	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider})
 
 	inj := &fakeSpliceInjector{}
 	bd := NewBlackDetector(BlackDetectorConfig{})
@@ -840,6 +856,7 @@ func TestChannel_SecondaryEventsOnSlateItem(t *testing.T) {
 	h := &mockHandler{}
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(10),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 	ch.SetSecondaryHandler(h)
 
@@ -934,6 +951,7 @@ func filterEvents(events []AsRunEvent, typ AsRunEventType) []AsRunEvent {
 func TestChannel_SkipBadAsset_EmitsAsRunError(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: &errorProvider{},
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	var mu sync.Mutex
@@ -973,6 +991,7 @@ func TestChannel_SkipBadAsset_EmitsAsRunError(t *testing.T) {
 func TestChannel_FrameErrorSkipsItem(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: &errorAfterNProvider{goodFrames: 2},
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	var mu sync.Mutex
@@ -1010,7 +1029,7 @@ func TestChannel_FrameErrorSkipsItem(t *testing.T) {
 }
 
 func TestChannel_PlaylistItems(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 
 	// No playlist → nil.
 	items := ch.PlaylistItems()
@@ -1075,6 +1094,7 @@ func TestChannel_AudioOutput(t *testing.T) {
 
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	var mu sync.Mutex
@@ -1140,6 +1160,7 @@ func TestChannel_AudioOutput_NoAudioData(t *testing.T) {
 
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"},
 	})
 
 	var audioCount atomic.Int32
@@ -1165,7 +1186,7 @@ func TestChannel_AudioOutput_NoAudioData(t *testing.T) {
 }
 
 func TestChannel_SlateOutputsBlackFrames(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	// No AssetProvider needed — slate doesn't use it.
 
 	var frameCount atomic.Int32
@@ -1214,6 +1235,7 @@ func TestChannel_AudioOutput_NilCallback(t *testing.T) {
 
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"},
 	})
 	// Do NOT set audio output callback.
 
@@ -1257,7 +1279,7 @@ func TestChannel_ConfigDimensions_UsedByCompositor(t *testing.T) {
 	provider := NewFakeAssetProvider(frames)
 
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 		Width:         w,
 		Height:        h,
 		FPS:           30.0,
@@ -1300,7 +1322,7 @@ func TestChannel_ConfigDimensions_UsedByCompositor(t *testing.T) {
 func TestChannel_ConfigDimensions_SlateMatchesConfig(t *testing.T) {
 	w, h := 640, 480
 	ch := NewChannel(1, ChannelConfig{
-		Width:  w,
+		AllowedLocalPrefixes: []string{"/"}, Width:  w,
 		Height: h,
 		FPS:    25.0,
 	})
@@ -1342,7 +1364,7 @@ func TestChannel_ConfigFPS_AffectsTickRate(t *testing.T) {
 	// At 60fps, frame duration should be ~16.6ms, so a 200ms slate should produce
 	// roughly 12 frames. At 10fps it would be ~2.
 	ch := NewChannel(1, ChannelConfig{
-		Width:  320,
+		AllowedLocalPrefixes: []string{"/"}, Width:  320,
 		Height: 240,
 		FPS:    60.0,
 	})
@@ -1376,7 +1398,7 @@ func TestChannel_IdleLoop_PlaysBetweenItems(t *testing.T) {
 	provider := NewFakeAssetProvider(frames)
 
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 		Width:         320,
 		Height:        240,
 		FPS:           30.0,
@@ -1429,7 +1451,7 @@ func TestChannel_IdleLoop_PlaysBetweenItems(t *testing.T) {
 
 func TestChannel_LiveTap_EmitsFrames(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		Width:  320,
+		AllowedLocalPrefixes: []string{"/"}, Width:  320,
 		Height: 240,
 		FPS:    30.0,
 	})
@@ -1481,7 +1503,7 @@ func TestChannel_Transition_BlendsFrames(t *testing.T) {
 	provider := NewFakeAssetProvider(frames)
 
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 		Width:         320,
 		Height:        240,
 		FPS:           30.0,
@@ -1519,7 +1541,7 @@ func TestChannel_Transition_BlendsFrames(t *testing.T) {
 
 func TestChannel_DefaultDimensions_WhenZero(t *testing.T) {
 	// When Width/Height/FPS are all zero, defaults should be used.
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 
 	// The slate frame should have default dimensions.
 	ch.mu.Lock()
@@ -1567,7 +1589,7 @@ func TestChannel_MakeBlackFrame(t *testing.T) {
 
 func TestChannel_LiveTap_GPUAlias(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		Width:  320,
+		AllowedLocalPrefixes: []string{"/"}, Width:  320,
 		Height: 240,
 		FPS:    30.0,
 	})
@@ -1637,7 +1659,7 @@ func TestChannel_LiveTap_GPUAlias(t *testing.T) {
 
 func TestChannel_LiveTap_GPUAlias_FallbackToCPU(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		Width:  320,
+		AllowedLocalPrefixes: []string{"/"}, Width:  320,
 		Height: 240,
 		FPS:    30.0,
 	})
@@ -1746,7 +1768,7 @@ func TestChannel_TicksAtPipelineRate(t *testing.T) {
 	var outputTimes []time.Time
 
 	ch := NewChannel(1, ChannelConfig{
-		Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width:         320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -1812,7 +1834,7 @@ func TestChannel_FRC_24to30(t *testing.T) {
 	var outputs []byte
 
 	ch := NewChannel(1, ChannelConfig{
-		Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width:         320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -1899,7 +1921,7 @@ func TestChannel_FRC_SameRate(t *testing.T) {
 	var outputs []byte
 
 	ch := NewChannel(1, ChannelConfig{
-		Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width:         320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -1958,7 +1980,7 @@ func TestChannel_FRC_AudioNotDuplicated(t *testing.T) {
 	var audioDeliveries []byte // track which audio tags are delivered
 
 	ch := NewChannel(1, ChannelConfig{
-		Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width:         320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -2031,7 +2053,7 @@ func TestChannel_FRC_HoldModeStripsAudio(t *testing.T) {
 	var videoCount int
 
 	ch := NewChannel(1, ChannelConfig{
-		Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width:         320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -2104,7 +2126,7 @@ func TestChannel_FRC_LoopRewindStripsAudio(t *testing.T) {
 	var audioTags []byte
 
 	ch := NewChannel(1, ChannelConfig{
-		Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width:         320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -2168,7 +2190,7 @@ func TestChannel_FRC_60to30(t *testing.T) {
 	var audioTags []byte
 
 	ch := NewChannel(1, ChannelConfig{
-		Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width:         320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -2261,7 +2283,7 @@ func TestChannel_FRC_FrameMutationSafety(t *testing.T) {
 	provider := NewFakeAssetProvider(frames)
 
 	ch := NewChannel(1, ChannelConfig{
-		Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width:         320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -2302,7 +2324,7 @@ func TestChannel_FRC_FrameMutationSafety(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestChannel_PlaylistHash_NoPlaylist(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	got := ch.PlaylistHash()
 	if got != "" {
 		t.Errorf("PlaylistHash() = %q, want empty string for no playlist", got)
@@ -2310,7 +2332,7 @@ func TestChannel_PlaylistHash_NoPlaylist(t *testing.T) {
 }
 
 func TestChannel_PlaylistHash_Deterministic(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	pl := testPlaylist(clipItem("a"), clipItem("b"))
 	require.NoError(t, ch.LoadPlaylist(pl))
 
@@ -2338,7 +2360,7 @@ func TestChannel_PlaylistHash_Deterministic(t *testing.T) {
 }
 
 func TestChannel_PlaylistHash_DifferentPlaylists(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 
 	pl1 := testPlaylist(clipItem("a"))
 	require.NoError(t, ch.LoadPlaylist(pl1))
@@ -2358,7 +2380,7 @@ func TestChannel_PlaylistHash_DifferentPlaylists(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestChannel_ItemElapsedMs_Stopped(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	got := ch.ItemElapsedMs()
 	if got != 0 {
 		t.Errorf("ItemElapsedMs() = %d, want 0 when stopped", got)
@@ -2367,7 +2389,7 @@ func TestChannel_ItemElapsedMs_Stopped(t *testing.T) {
 
 func TestChannel_ItemElapsedMs_Playing(t *testing.T) {
 	provider := fakeProvider(90) // 3 seconds at 30fps
-	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider})
 	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
 
 	pl := testPlaylist(clipItem("a"))
@@ -2399,7 +2421,7 @@ func TestChannel_ItemElapsedMs_Playing(t *testing.T) {
 
 func TestChannel_SeekToItem_SlatePlaylist(t *testing.T) {
 	provider := fakeProvider(90)
-	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider})
 	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
 
 	pl := testPlaylist(
@@ -2435,7 +2457,7 @@ func TestChannel_SeekToItem_SlatePlaylist(t *testing.T) {
 }
 
 func TestChannel_SeekToItem_NoPlaylist(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 
 	err := ch.SeekToItem(0, 0)
 	if err != ErrNoPlaylist {
@@ -2445,7 +2467,7 @@ func TestChannel_SeekToItem_NoPlaylist(t *testing.T) {
 
 func TestChannel_SeekToItem_InvalidIndex(t *testing.T) {
 	provider := fakeProvider(30)
-	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider})
 	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
 
 	pl := testPlaylist(slateItem("s0", 5000))
@@ -2473,7 +2495,7 @@ func TestChannel_SeekToItem_InvalidIndex(t *testing.T) {
 
 func TestChannel_SeekToItem_LiveItem(t *testing.T) {
 	provider := fakeProvider(30)
-	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider})
 	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
 
 	pl := testPlaylist(
@@ -2504,7 +2526,7 @@ func TestChannel_SeekToItem_LiveItem(t *testing.T) {
 
 func TestChannel_SeekToItem_ClosesExistingIterator(t *testing.T) {
 	provider := fakeProvider(90)
-	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider})
 	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
 
 	pl := testPlaylist(clipItem("a"), slateItem("s1", 5000))

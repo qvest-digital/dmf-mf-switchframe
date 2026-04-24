@@ -1896,13 +1896,15 @@ func (a *App) Run(ctx context.Context) error {
 			}
 		}
 
-		// Load demo playout playlist with synthetic clips.
+		// Load demo playout playlist with synthetic clips. Write the synthetic
+		// clip files into the playout cache dir so they fall inside the asset
+		// allow-list (deny-by-default — see initPlayout).
 		if a.playoutMgr != nil {
-			tmpDir, err := os.MkdirTemp("", "switchframe-demo-playout-*")
-			if err != nil {
-				slog.Warn("demo: failed to create temp dir for playout clips", "error", err)
+			demoClipDir := filepath.Join(a.cfg.StateDir, "playout-cache", "demo")
+			if err := os.MkdirAll(demoClipDir, 0o755); err != nil {
+				slog.Warn("demo: failed to create dir for playout clips", "error", err)
 			} else {
-				playlist, err := demo.GenerateDemoPlaylist(tmpDir, a.playoutSamples)
+				playlist, err := demo.GenerateDemoPlaylist(demoClipDir, a.playoutSamples)
 				if err != nil {
 					slog.Warn("demo: failed to generate playout playlist", "error", err)
 				} else if playlist != nil {

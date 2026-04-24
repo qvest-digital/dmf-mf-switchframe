@@ -29,7 +29,8 @@ func newTestPlayoutManager() *playout.Manager {
 		}
 	}
 	return playout.NewManager(playout.ManagerConfig{
-		AssetProvider: playout.NewFakeAssetProvider(frames),
+		AssetProvider:        playout.NewFakeAssetProvider(frames),
+		AllowedLocalPrefixes: []string{"/"},
 	})
 }
 
@@ -163,6 +164,43 @@ func TestPlayoutRoutes_LoadPlaylist_EmptyPlaylist(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestPlayoutLoad_RejectsEtcPasswdAssetURI(t *testing.T) {
+	// Manager configured with /tmp as the only allowed local prefix —
+	// /etc/passwd is outside it, so loading this playlist must return 400
+	// and the channel must remain in stopped state with no playlist cued.
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(t, programRelay)
+	frames := []playout.DecodedFrame{
+		{
+			YUV:        make([]byte, switcher.ColorYUV420_8bit.FrameSize(1920, 1080)),
+			IsKeyframe: true, Width: 1920, Height: 1080,
+		},
+	}
+	mgr := playout.NewManager(playout.ManagerConfig{
+		AssetProvider:        playout.NewFakeAssetProvider(frames),
+		AllowedLocalPrefixes: []string{"/tmp"},
+	})
+	api := NewAPI(sw, WithPlayoutManager(mgr))
+
+	body := `{"id":"exfil","name":"exfil","items":[{"id":"x","type":"clip","asset_uri":"/etc/passwd","duration_ms":1000}]}`
+	req := httptest.NewRequest("POST", "/api/playout/channels/1/load", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body=%s", rec.Body.String())
+
+	// Channel must remain stopped with no playlist cued.
+	getReq := httptest.NewRequest("GET", "/api/playout/channels/1", nil)
+	getRec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(getRec, getReq)
+	require.Equal(t, http.StatusOK, getRec.Code)
+	var ch playout.ChannelStatus
+	require.NoError(t, json.NewDecoder(getRec.Body).Decode(&ch))
+	require.Equal(t, "stopped", ch.State)
+	require.Equal(t, 0, ch.ItemCount)
 }
 
 func TestPlayoutRoutes_StartWithoutPlaylist(t *testing.T) {

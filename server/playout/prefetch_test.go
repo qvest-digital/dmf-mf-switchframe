@@ -23,7 +23,7 @@ func TestPrefetcherScanPlaylist(t *testing.T) {
 
 	p := NewPrefetcher(PrefetcherConfig{
 		Cache:          cache,
-		Resolver:       NewAssetResolver(nil),
+		Resolver:       NewAssetResolver([]string{"/"}),
 		LookaheadItems: 5,
 	})
 
@@ -81,7 +81,7 @@ func TestPrefetcherSkipsCachedItems(t *testing.T) {
 
 	p := NewPrefetcher(PrefetcherConfig{
 		Cache:          cache,
-		Resolver:       NewAssetResolver(nil),
+		Resolver:       NewAssetResolver([]string{"/"}),
 		LookaheadItems: 5,
 	})
 
@@ -129,7 +129,7 @@ func TestPrefetcherFetchesLocalAsset(t *testing.T) {
 
 	p := NewPrefetcher(PrefetcherConfig{
 		Cache:          cache,
-		Resolver:       NewAssetResolver(nil),
+		Resolver:       NewAssetResolver([]string{"/"}),
 		LookaheadItems: 5,
 		OnFetched: func(uri string, err error) {
 			fetchedURI = uri
@@ -190,7 +190,7 @@ func TestPrefetcherCursorAdvance(t *testing.T) {
 
 	p := NewPrefetcher(PrefetcherConfig{
 		Cache:          cache,
-		Resolver:       NewAssetResolver(nil),
+		Resolver:       NewAssetResolver([]string{"/"}),
 		LookaheadItems: 2,
 	})
 
@@ -245,7 +245,7 @@ func TestPrefetcherHTTPFetch(t *testing.T) {
 
 	p := NewPrefetcher(PrefetcherConfig{
 		Cache:          cache,
-		Resolver:       NewAssetResolver(nil),
+		Resolver:       NewAssetResolver([]string{"/"}),
 		LookaheadItems: 5,
 		OnFetched: func(uri string, err error) {
 			fetchErr = err
@@ -311,7 +311,7 @@ func TestPrefetcherStopCancelsFetches(t *testing.T) {
 
 	p := NewPrefetcher(PrefetcherConfig{
 		Cache:          cache,
-		Resolver:       NewAssetResolver(nil),
+		Resolver:       NewAssetResolver([]string{"/"}),
 		LookaheadItems: 5,
 		OnFetched: func(uri string, err error) {
 			fetchErr = err
@@ -376,7 +376,7 @@ func TestPrefetcherSkipsInflight(t *testing.T) {
 
 	p := NewPrefetcher(PrefetcherConfig{
 		Cache:          cache,
-		Resolver:       NewAssetResolver(nil),
+		Resolver:       NewAssetResolver([]string{"/"}),
 		LookaheadItems: 5,
 		OnFetched: func(uri string, err error) {
 			mu.Lock()

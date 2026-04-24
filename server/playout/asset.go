@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -16,9 +18,11 @@ type AssetFetcher interface {
 
 // LocalFetcher copies files from local or NFS paths.
 type LocalFetcher struct {
-	// AllowedPrefixes restricts which source paths are permitted.
-	// If non-empty, the source path must start with one of these prefixes.
-	// If empty, all paths are allowed.
+	// AllowedPrefixes is a deny-by-default allow-list of absolute path prefixes
+	// the fetcher may read from. The source path is resolved with filepath.Abs
+	// + Clean and must be inside one of these prefixes (compared with a trailing
+	// separator so /var/foo does not match /var/foo-other). An empty or nil
+	// slice denies every path.
 	AllowedPrefixes []string
 }
 
@@ -29,18 +33,10 @@ func (f *LocalFetcher) Fetch(ctx context.Context, source string, destPath string
 		return 0, fmt.Errorf("asset fetch cancelled: %w", err)
 	}
 
-	// Validate allowed prefixes if configured.
-	if len(f.AllowedPrefixes) > 0 {
-		allowed := false
-		for _, prefix := range f.AllowedPrefixes {
-			if strings.HasPrefix(source, prefix) {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return 0, ErrPathTraversal
-		}
+	if err := IsLocalPathAllowed(source, f.AllowedPrefixes); err != nil {
+		slog.Warn("playout: local asset fetch denied",
+			"source", source, "allowed_prefixes", f.AllowedPrefixes, "error", err)
+		return 0, err
 	}
 
 	src, err := os.Open(source)
@@ -158,6 +154,45 @@ func (r *AssetResolver) FetcherFor(uri string) (AssetFetcher, error) {
 	default:
 		return nil, fmt.Errorf("scheme %q: %w", scheme, ErrUnsupportedURI)
 	}
+}
+
+// IsLocalPathAllowed returns nil if path resolves (after filepath.Abs +
+// Clean) inside one of the allowed prefixes. The check uses a trailing
+// separator on both sides so a configured prefix /var/foo does not match
+// /var/foo-bar. A nil or empty allowedPrefixes slice rejects every path
+// (deny by default).
+func IsLocalPathAllowed(path string, allowedPrefixes []string) error {
+	if len(allowedPrefixes) == 0 {
+		return ErrPathTraversal
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve absolute path %q: %w", path, err)
+	}
+	abs = filepath.Clean(abs)
+	sep := string(os.PathSeparator)
+	for _, prefix := range allowedPrefixes {
+		if prefix == "" {
+			continue
+		}
+		cleanPrefix := filepath.Clean(prefix)
+		if !filepath.IsAbs(cleanPrefix) {
+			// Refuse to compare against a relative prefix — operator
+			// configuration mistake.
+			continue
+		}
+		// Root prefix matches every absolute path.
+		if cleanPrefix == sep {
+			return nil
+		}
+		// Either the path equals the prefix exactly, or it's strictly inside
+		// the prefix directory. The trailing-separator form prevents
+		// /var/foo from matching /var/foo-bar.
+		if abs == cleanPrefix || strings.HasPrefix(abs, cleanPrefix+sep) {
+			return nil
+		}
+	}
+	return ErrPathTraversal
 }
 
 // SourcePath returns the source-specific path for the given asset URI.

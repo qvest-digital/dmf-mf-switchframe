@@ -10,8 +10,7 @@ import (
 
 func TestManager_Watchdog_Integration(t *testing.T) {
 	mgr := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 
 	var stallCount atomic.Int32
 	wd := NewWatchdog(WatchdogConfig{
@@ -49,7 +48,7 @@ func TestManager_Watchdog_Integration(t *testing.T) {
 
 func TestManager_Watchdog_FrameReporting(t *testing.T) {
 	mgr := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(30), // 1 second of content
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: fakeProvider(30), // 1 second of content
 	})
 
 	var stallCount atomic.Int32
@@ -89,8 +88,7 @@ func TestManager_Watchdog_NoRawVideoOutput(t *testing.T) {
 	// When no rawVideoOutput is set, the watchdog should still get frames
 	// reported via the fallback path.
 	mgr := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(5),
-	})
+		AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
 
 	var stallCount atomic.Int32
 	wd := NewWatchdog(WatchdogConfig{
@@ -126,8 +124,7 @@ func TestManager_Watchdog_NoRawVideoOutput(t *testing.T) {
 
 func TestManager_Watchdog_UnregistersOnStop(t *testing.T) {
 	mgr := NewManager(ManagerConfig{
-		AssetProvider: fakeProvider(3),
-	})
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
 
 	wd := NewWatchdog(WatchdogConfig{
 		StallThreshold: 5 * time.Second,
@@ -180,7 +177,7 @@ func TestPhase7_FullRecoveryFlow(t *testing.T) {
 
 	// --- Phase A: Run channel, persist state ---
 	provider := fakeProvider(90) // 3 seconds of 30fps content
-	mgr1 := NewManager(ManagerConfig{AssetProvider: provider})
+	mgr1 := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 
 	logger1, err := NewAsRunLogger(AsRunLoggerConfig{Dir: asRunDir, RetentionDays: 30})
 	if err != nil {
@@ -218,7 +215,7 @@ func TestPhase7_FullRecoveryFlow(t *testing.T) {
 	_ = logger1.Close()
 
 	// --- Phase B: Simulate crash recovery ---
-	mgr2 := NewManager(ManagerConfig{AssetProvider: provider})
+	mgr2 := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 
 	logger2, err := NewAsRunLogger(AsRunLoggerConfig{Dir: asRunDir, RetentionDays: 30})
 	if err != nil {

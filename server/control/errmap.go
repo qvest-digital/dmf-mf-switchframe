@@ -154,6 +154,8 @@ var errorMappings = []errorMapping{
 	{playout.ErrAlreadyCued, http.StatusConflict},
 	{playout.ErrInvalidState, http.StatusBadRequest},
 	{playout.ErrInvalidItem, http.StatusBadRequest},
+	{playout.ErrPathTraversal, http.StatusBadRequest},
+	{playout.ErrUnsupportedURI, http.StatusBadRequest},
 
 	// Playout pods
 	{playout.ErrPodNotFound, http.StatusNotFound},

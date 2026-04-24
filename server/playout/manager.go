@@ -52,6 +52,11 @@ type ManagerConfig struct {
 	// AssetProvider opens asset URIs and returns streaming frame iterators.
 	// If nil, channels will have no AssetProvider configured.
 	AssetProvider AssetProvider
+
+	// AllowedLocalPrefixes constrains which local-scheme asset URIs are
+	// accepted by LoadPlaylist. Propagated to every Channel; nil/empty
+	// rejects every local-scheme URI (deny by default).
+	AllowedLocalPrefixes []string
 }
 
 // NewManager creates a playout Manager and pre-creates all channels.
@@ -63,7 +68,8 @@ func NewManager(config ManagerConfig) *Manager {
 
 	for i := 0; i < MaxChannels; i++ {
 		m.channels[i] = NewChannel(i+1, ChannelConfig{
-			AssetProvider: config.AssetProvider,
+			AssetProvider:        config.AssetProvider,
+			AllowedLocalPrefixes: config.AllowedLocalPrefixes,
 		})
 		m.podBoards[i] = NewPodBoard(i + 1)
 	}
@@ -663,14 +669,17 @@ func (m *Manager) SetPipelineFormat(width, height int, fps float64) {
 	m.pipelineFPS = fps
 
 	// Recreate all stopped channels with the new format so that subsequent
-	// LoadPlaylist + Start picks up the dimensions immediately.
+	// LoadPlaylist + Start picks up the dimensions immediately. The
+	// AllowedLocalPrefixes must be propagated; otherwise SetPipelineFormat
+	// silently wipes the allow-list and every local-scheme playlist load fails.
 	for i := 0; i < MaxChannels; i++ {
 		if m.channels[i].State() == StateStopped {
 			m.channels[i] = NewChannel(i+1, ChannelConfig{
-				AssetProvider: m.config.AssetProvider,
-				Width:         width,
-				Height:        height,
-				FPS:           fps,
+				AssetProvider:        m.config.AssetProvider,
+				Width:                width,
+				Height:               height,
+				FPS:                  fps,
+				AllowedLocalPrefixes: m.config.AllowedLocalPrefixes,
 			})
 		}
 	}

@@ -205,6 +205,53 @@ func TestImportPlaylistTypeMapping(t *testing.T) {
 	}
 }
 
+func TestImportPlaylist_AssetURIIsLocalScheme(t *testing.T) {
+	// Pin the placeholder URI shape: BXF clip imports must produce a
+	// local-scheme URI under /bxf/<HouseNumber> so they pass the playout
+	// asset-URI scheme allow-list. Any change away from local:/// silently
+	// breaks every BXF import in production.
+	msg := BxfMessage{
+		BxfData: BxfData{
+			Schedule: &Schedule{
+				Details: []ScheduleDetail{
+					{
+						Content: Content{
+							ContentId: ContentId{HouseNumber: "SHOW-100"},
+							Name:      "Test",
+							Duration:  "PT10S",
+						},
+						Type: "Program",
+					},
+					{
+						Content: Content{
+							ContentId: ContentId{HouseNumber: "SLATE-1"},
+							Name:      "Slate",
+							Duration:  "PT5S",
+						},
+						Type: "Slate",
+					},
+				},
+			},
+		},
+	}
+
+	pl, err := ImportPlaylist(msg, "scheme-test")
+	if err != nil {
+		t.Fatalf("ImportPlaylist: %v", err)
+	}
+	if len(pl.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(pl.Items))
+	}
+
+	wants := []string{"local:///bxf/SHOW-100", "local:///bxf/SLATE-1"}
+	for i, want := range wants {
+		if pl.Items[i].AssetURI != want {
+			t.Errorf("item[%d].AssetURI = %q, want %q",
+				i, pl.Items[i].AssetURI, want)
+		}
+	}
+}
+
 func TestParseBxfDuration(t *testing.T) {
 	tests := []struct {
 		input string

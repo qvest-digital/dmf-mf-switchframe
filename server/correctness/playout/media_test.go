@@ -143,7 +143,7 @@ func TestPlayoutWithGeneratedClips(t *testing.T) {
 	provider.addAsset("local:///clips/blue.ts", clip3Path)
 
 	ch := playout.NewChannel(1, playout.ChannelConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 		Width:         320,
 		Height:        240,
 		FPS:           30.0,
@@ -304,7 +304,7 @@ func TestPlayoutLoopMode(t *testing.T) {
 	provider.addAsset("local:///clips/loop.ts", clipPath)
 
 	ch := playout.NewChannel(1, playout.ChannelConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 		Width:         320,
 		Height:        240,
 		FPS:           30.0,
@@ -447,7 +447,7 @@ func TestPlayoutItemTransition(t *testing.T) {
 	provider.addAsset("local:///clips/trans-blue.ts", clip2Path)
 
 	ch := playout.NewChannel(1, playout.ChannelConfig{
-		AssetProvider: provider,
+		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
 		Width:         320,
 		Height:        240,
 		FPS:           30.0,

@@ -560,7 +560,7 @@ func TestPodBoard_DumpOutNoActivePod(t *testing.T) {
 }
 
 func TestPodBoard_ChannelModeBreakIntegration(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{AssetProvider: fakeProvider(90)})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: fakeProvider(90)})
 	pb := NewPodBoard(1)
 	inj := &fakeSCTE35Injector{}
 	pb.SetSCTE35Injector(inj)
@@ -839,7 +839,7 @@ func TestPodBoard_DumpOut_CancelsSplice(t *testing.T) {
 }
 
 func TestManager_ChannelStatesIncludePods(t *testing.T) {
-	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(30)})
+	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(30), AllowedLocalPrefixes: []string{"/"}})
 	defer mgr.Close()
 
 	pb, _ := mgr.PodBoard(1)

@@ -133,6 +133,36 @@ func ValidatePlaylist(pl *Playlist) error {
 	return nil
 }
 
+// ValidateAssetURIs enforces the asset-URI security policy on a playlist:
+//   - clip items must use a scheme in {http, https, local}
+//   - local-scheme paths must resolve (filepath.Abs + Clean) inside one of
+//     allowedLocalPrefixes (deny-by-default if the slice is nil/empty)
+//
+// Run this on every operator-supplied playlist after structural validation
+// to keep an authenticated operator from posting asset_uri "/etc/passwd"
+// and having the prefetcher copy that file into the asset cache.
+func ValidateAssetURIs(pl *Playlist, allowedLocalPrefixes []string) error {
+	for i, item := range pl.Items {
+		if item.Type != ItemClip || item.AssetURI == "" {
+			continue
+		}
+		scheme, path := ParseAssetURI(item.AssetURI)
+		switch scheme {
+		case "http", "https":
+			// Network fetch — out of scope for the local-path allow-list.
+		case "local":
+			if err := IsLocalPathAllowed(path, allowedLocalPrefixes); err != nil {
+				return fmt.Errorf("item[%d] (%s): asset_uri %q: %w",
+					i, item.ID, item.AssetURI, err)
+			}
+		default:
+			return fmt.Errorf("item[%d] (%s): asset_uri scheme %q not allowed (must be http, https, or local)",
+				i, item.ID, scheme)
+		}
+	}
+	return nil
+}
+
 // LoadPlaylist reads a JSON playlist file from disk, unmarshals it,
 // and validates the result.
 func LoadPlaylist(path string) (*Playlist, error) {

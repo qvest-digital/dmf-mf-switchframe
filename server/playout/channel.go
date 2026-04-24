@@ -56,6 +56,11 @@ type ChannelConfig struct {
 
 	// FPS is the pipeline frame rate (e.g., 29.97, 30.0, 59.94). Zero means use default (30.0).
 	FPS float64
+
+	// AllowedLocalPrefixes constrains which local-scheme asset URIs LoadPlaylist
+	// will accept. Paths must resolve inside one of these prefixes; nil/empty
+	// rejects every local-scheme URI (deny by default).
+	AllowedLocalPrefixes []string
 }
 
 // Channel is a tick-driven frame router that registers as a switcher source
@@ -315,6 +320,9 @@ func (c *Channel) schedulerPlaylist() *Playlist {
 // LoadPlaylist validates and loads a playlist, transitioning the channel to Cued.
 func (c *Channel) LoadPlaylist(pl *Playlist) error {
 	if err := ValidatePlaylist(pl); err != nil {
+		return err
+	}
+	if err := ValidateAssetURIs(pl, c.config.AllowedLocalPrefixes); err != nil {
 		return err
 	}
 

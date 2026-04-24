@@ -1,6 +1,7 @@
 package playout
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -473,5 +474,81 @@ func TestValidatePodTemplates_ZeroDuration(t *testing.T) {
 	}
 	if err := ValidatePodTemplates(defs); err != nil {
 		t.Fatalf("expected zero duration to be valid, got: %v", err)
+	}
+}
+
+func TestLoadPlaylist_RejectsLocalPathOutsideAllowedPrefix(t *testing.T) {
+	// Asset URI validation: local-scheme paths must resolve inside one of the
+	// configured allowed prefixes. Without this, an authenticated operator can
+	// post a playlist with asset_uri: "/etc/passwd" and the prefetcher will
+	// copy that file into the asset cache.
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a playlist on disk so we can also exercise LoadPlaylist's
+	// JSON+structural path before feeding the result to ValidateAssetURIs.
+	plPath := filepath.Join(dir, "exfil.json")
+	js := `{
+		"id": "exfil",
+		"name": "exfil",
+		"items": [{"id": "x", "type": "clip", "asset_uri": "/etc/passwd", "duration_ms": 1000}]
+	}`
+	if err := os.WriteFile(plPath, []byte(js), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pl, err := LoadPlaylist(plPath)
+	if err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+
+	// Bare /etc/passwd → reject.
+	if err := ValidateAssetURIs(pl, []string{cacheDir}); !errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("bare /etc/passwd: expected ErrPathTraversal, got %v", err)
+	}
+
+	// file:// and local:// aliases must reject the same way.
+	for _, uri := range []string{"file:///etc/passwd", "local:///etc/passwd"} {
+		pl.Items[0].AssetURI = uri
+		if err := ValidateAssetURIs(pl, []string{cacheDir}); !errors.Is(err, ErrPathTraversal) {
+			t.Fatalf("scheme %q: expected ErrPathTraversal, got %v", uri, err)
+		}
+	}
+
+	// Sibling-prefix attack: /var/switchframe-evil/x must NOT match prefix
+	// /var/switchframe (HasPrefix without trailing separator would let it slip).
+	pl.Items[0].AssetURI = "/var/switchframe-evil/x.ts"
+	if err := ValidateAssetURIs(pl, []string{"/var/switchframe"}); !errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("sibling-prefix attack: expected ErrPathTraversal, got %v", err)
+	}
+
+	// ../ traversal escape: clean-then-prefix-check must catch it.
+	pl.Items[0].AssetURI = filepath.Join(cacheDir, "..", "..", "etc", "passwd")
+	if err := ValidateAssetURIs(pl, []string{cacheDir}); !errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("../ escape: expected ErrPathTraversal, got %v", err)
+	}
+
+	// Sanity: a path inside the allowed prefix passes.
+	pl.Items[0].AssetURI = filepath.Join(cacheDir, "asset.ts")
+	if err := ValidateAssetURIs(pl, []string{cacheDir}); err != nil {
+		t.Fatalf("path inside allowed prefix should pass, got %v", err)
+	}
+
+	// HTTP/HTTPS schemes pass without prefix check.
+	for _, uri := range []string{"http://media.example/clip.ts", "https://cdn.example/clip.ts"} {
+		pl.Items[0].AssetURI = uri
+		if err := ValidateAssetURIs(pl, nil); err != nil {
+			t.Fatalf("scheme %q: expected pass, got %v", uri, err)
+		}
+	}
+
+	// Other schemes (ftp, s3, asset, etc.) are not in the allow-list.
+	for _, uri := range []string{"ftp://server/x.ts", "s3://bucket/x.ts", "asset://A"} {
+		pl.Items[0].AssetURI = uri
+		if err := ValidateAssetURIs(pl, []string{cacheDir}); err == nil {
+			t.Fatalf("scheme %q: expected rejection, got nil", uri)
+		}
 	}
 }

@@ -795,7 +795,7 @@ func TestAsRunQuery_LimitZeroMeansUnlimited(t *testing.T) {
 
 func TestChannelEmitsAsRunEvents(t *testing.T) {
 	provider := fakeProvider(10)
-	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider})
 
 	dir := t.TempDir()
 	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
@@ -998,7 +998,7 @@ func TestManagerPropagatesAsRunLogger(t *testing.T) {
 	defer func() { _ = logger.Close() }()
 
 	provider := fakeProvider(5)
-	mgr := NewManager(ManagerConfig{AssetProvider: provider})
+	mgr := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 	mgr.SetAsRunLogger(logger)
 
 	pl := testPlaylist(clipItem("clip-1"))
@@ -1069,7 +1069,7 @@ func TestSecondaryEventFireAsRun(t *testing.T) {
 
 func TestManualOverrideAsRunEvents(t *testing.T) {
 	provider := fakeProvider(90) // ~3 seconds at 30fps
-	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider})
 
 	dir := t.TempDir()
 	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
@@ -1136,7 +1136,7 @@ func TestAsRunTimingDelta(t *testing.T) {
 
 func TestAsRunItemDuration(t *testing.T) {
 	provider := fakeProvider(30) // 30 frames = ~1 second at 30fps
-	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider})
 
 	dir := t.TempDir()
 	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
@@ -1177,7 +1177,7 @@ func TestAsRunFullIntegration(t *testing.T) {
 	defer func() { _ = logger.Close() }()
 
 	provider := fakeProvider(10)
-	mgr := NewManager(ManagerConfig{AssetProvider: provider})
+	mgr := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
 	mgr.SetAsRunLogger(logger)
 
 	pl := testPlaylist(
@@ -1230,7 +1230,7 @@ func TestAsRunFullIntegration(t *testing.T) {
 // --- Gap 1: Live/Slate items emit as-run events ---
 
 func TestLiveItemEmitsAsRunEvents(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{AssetProvider: fakeProvider(10)})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: fakeProvider(10)})
 
 	dir := t.TempDir()
 	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
@@ -1271,7 +1271,7 @@ func TestLiveItemEmitsAsRunEvents(t *testing.T) {
 }
 
 func TestSlateItemEmitsAsRunEvents(t *testing.T) {
-	ch := NewChannel(1, ChannelConfig{AssetProvider: fakeProvider(10)})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: fakeProvider(10)})
 
 	dir := t.TempDir()
 	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
@@ -1312,7 +1312,7 @@ func TestSlateItemEmitsAsRunEvents(t *testing.T) {
 
 func TestAsRunScheduledTSPopulated(t *testing.T) {
 	provider := fakeProvider(10)
-	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider})
 
 	dir := t.TempDir()
 	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
