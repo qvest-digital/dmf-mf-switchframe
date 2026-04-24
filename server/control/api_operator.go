@@ -1,6 +1,7 @@
 package control
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 
@@ -45,13 +46,13 @@ func (a *API) handleOperatorRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If invite tokens are configured, validate and override role from token.
-	// Skip this check if the caller authenticated with the session API token
-	// (session owner registering via the normal UI, not an invite link).
-	if len(a.inviteTokens) > 0 {
-		bearerToken := operator.ExtractBearerToken(r)
-		isSessionOwner := a.sessionAPIToken != "" && bearerToken == a.sessionAPIToken
+	bearerToken := operator.ExtractBearerToken(r)
+	isSessionOwner := a.sessionAPIToken != "" &&
+		subtle.ConstantTimeCompare([]byte(bearerToken), []byte(a.sessionAPIToken)) == 1
 
+	switch {
+	case a.demoMode:
+	case len(a.inviteTokens) > 0:
 		if !isSessionOwner {
 			if req.InviteToken == "" {
 				httperr.Write(w, http.StatusForbidden, "invite token required")
@@ -63,6 +64,12 @@ func (a *API) handleOperatorRegister(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			req.Role = operator.Role(role)
+		}
+	default:
+		if !isSessionOwner {
+			httperr.Write(w, http.StatusForbidden,
+				"operator registration requires invite token or session token")
+			return
 		}
 	}
 

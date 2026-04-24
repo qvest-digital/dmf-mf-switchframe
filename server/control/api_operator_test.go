@@ -14,7 +14,11 @@ import (
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
-// setupOperatorTestAPI creates a test API with operator store and session manager.
+// setupOperatorTestAPI creates a test API with operator store and session manager
+// in demo mode. Demo mode bypasses the operator-register auth gate so these
+// tests can exercise handler internals (name validation, role validation,
+// session wiring) via unauthenticated POSTs. The auth gate itself is covered
+// by setupOperatorTestAPIBare + setupOperatorTestAPIWithSessionToken.
 // The switcher is minimal (no sources) but non-nil to avoid panics in NewAPI.
 func setupOperatorTestAPI(t *testing.T) (*API, *http.ServeMux) {
 	t.Helper()
@@ -29,7 +33,11 @@ func setupOperatorTestAPI(t *testing.T) (*API, *http.ServeMux) {
 	programRelay := distribution.NewRelay()
 	sw := switcher.NewTestSwitcher(t, programRelay)
 
-	api := NewAPI(sw, WithOperatorStore(store), WithSessionManager(sm))
+	api := NewAPI(sw,
+		WithOperatorStore(store),
+		WithSessionManager(sm),
+		WithDemoMode(true),
+	)
 
 	mux := http.NewServeMux()
 	api.RegisterOnMux(mux)
@@ -384,7 +392,16 @@ func TestOperatorDelete_Forbidden(t *testing.T) {
 	require.Contains(t, resp, "error")
 }
 
+// inviteTokenSessionAPIToken is the session API token wired into
+// setupOperatorTestAPIWithInviteTokens, so tests can exercise the
+// session-owner bypass that production deploys (app.go wires the session token
+// unconditionally).
+const inviteTokenSessionAPIToken = "session-token-invite-helper-0123456789"
+
 // setupOperatorTestAPIWithInviteTokens creates a test API with invite tokens configured.
+// The session API token is also wired to match production (app.go always passes
+// WithSessionAPIToken alongside WithInviteTokens) so the session-owner bypass
+// can be exercised.
 func setupOperatorTestAPIWithInviteTokens(t *testing.T, tokens map[string]string) (*API, *http.ServeMux) {
 	t.Helper()
 
@@ -398,7 +415,64 @@ func setupOperatorTestAPIWithInviteTokens(t *testing.T, tokens map[string]string
 	programRelay := distribution.NewRelay()
 	sw := switcher.NewTestSwitcher(t, programRelay)
 
-	api := NewAPI(sw, WithOperatorStore(store), WithSessionManager(sm), WithInviteTokens(tokens))
+	api := NewAPI(sw,
+		WithOperatorStore(store),
+		WithSessionManager(sm),
+		WithInviteTokens(tokens),
+		WithSessionAPIToken(inviteTokenSessionAPIToken),
+	)
+
+	mux := http.NewServeMux()
+	api.RegisterOnMux(mux)
+
+	return api, mux
+}
+
+// setupOperatorTestAPIBare creates a test API without invite tokens, without a
+// session API token, and without demo mode — the production-like configuration
+// where unauthenticated register must be rejected.
+func setupOperatorTestAPIBare(t *testing.T) (*API, *http.ServeMux) {
+	t.Helper()
+
+	storePath := filepath.Join(t.TempDir(), "operators.json")
+	store, err := operator.NewStore(storePath)
+	require.NoError(t, err)
+
+	sm := operator.NewSessionManager()
+	t.Cleanup(sm.Close)
+
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(t, programRelay)
+
+	api := NewAPI(sw, WithOperatorStore(store), WithSessionManager(sm))
+
+	mux := http.NewServeMux()
+	api.RegisterOnMux(mux)
+
+	return api, mux
+}
+
+// setupOperatorTestAPIWithSessionToken creates a test API with a session API
+// token but no invite tokens and not in demo mode — the production "owner can
+// bootstrap themselves" configuration.
+func setupOperatorTestAPIWithSessionToken(t *testing.T, sessionToken string) (*API, *http.ServeMux) {
+	t.Helper()
+
+	storePath := filepath.Join(t.TempDir(), "operators.json")
+	store, err := operator.NewStore(storePath)
+	require.NoError(t, err)
+
+	sm := operator.NewSessionManager()
+	t.Cleanup(sm.Close)
+
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(t, programRelay)
+
+	api := NewAPI(sw,
+		WithOperatorStore(store),
+		WithSessionManager(sm),
+		WithSessionAPIToken(sessionToken),
+	)
 
 	mux := http.NewServeMux()
 	api.RegisterOnMux(mux)
@@ -507,12 +581,31 @@ func TestOperatorRegister_InviteToken_MissingWhenRequired(t *testing.T) {
 	require.Equal(t, "invite token required", resp["error"])
 }
 
-func TestOperatorRegister_NoInviteTokens_BackwardCompat(t *testing.T) {
-	// No invite tokens configured — should work like before.
+func TestOperatorRegister_NoInviteTokens_DemoMode(t *testing.T) {
+	// Demo mode with no invite tokens: register is open, role from body.
 	_, mux := setupOperatorTestAPI(t)
 
 	resp := registerOperatorHelper(t, mux, "Alice", "director")
 	require.Equal(t, "director", resp["role"])
+}
+
+func TestOperatorRegister_InviteTokens_SessionOwnerBypass(t *testing.T) {
+	tokens := map[string]string{
+		"aud-tok-456": "audio",
+	}
+	_, mux := setupOperatorTestAPIWithInviteTokens(t, tokens)
+
+	body := map[string]string{"name": "Owner", "role": "director"}
+	req := bearerRequest("POST", "/api/operator/register", body, inviteTokenSessionAPIToken)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var resp map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	require.Equal(t, "director", resp["role"],
+		"session owner should register with the role in the body, bypassing invite-token role override")
 }
 
 // --- Invite tokens endpoint tests ---
@@ -634,6 +727,68 @@ func TestOperatorRegister_WithoutClientID_BackwardCompat(t *testing.T) {
 	resp := registerOperatorHelper(t, mux, "Alice", "director")
 	require.Contains(t, resp, "id")
 	require.NotEmpty(t, resp["id"])
+}
+
+// --- Unauthenticated-register hardening (BUG-085) ---
+
+func TestOperatorRegister_RejectsUnauthenticatedWhenNoInviteTokens(t *testing.T) {
+	api, mux := setupOperatorTestAPIBare(t)
+
+	body := map[string]string{"name": "evil", "role": "director"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/operator/register", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	require.Equal(t,
+		"operator registration requires invite token or session token",
+		resp["error"])
+
+	require.Equal(t, 0, api.operatorStore.Count(),
+		"no operator should be persisted when register is rejected")
+}
+
+func TestOperatorRegister_AcceptsSessionOwnerWhenNoInviteTokens(t *testing.T) {
+	const sessionToken = "session-token-abcdef0123456789"
+	api, mux := setupOperatorTestAPIWithSessionToken(t, sessionToken)
+
+	body := map[string]string{"name": "Owner", "role": "director"}
+	req := bearerRequest("POST", "/api/operator/register", body, sessionToken)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var resp map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	require.Equal(t, "Owner", resp["name"])
+	require.Equal(t, "director", resp["role"])
+	require.Contains(t, resp, "token")
+
+	require.Equal(t, 1, api.operatorStore.Count(),
+		"operator should be persisted when authenticated as session owner")
+}
+
+func TestOperatorRegister_RejectsInvalidRoleEvenWhenAuthed(t *testing.T) {
+	const sessionToken = "session-token-abcdef0123456789"
+	_, mux := setupOperatorTestAPIWithSessionToken(t, sessionToken)
+
+	body := map[string]string{"name": "Bob", "role": "system"}
+	req := bearerRequest("POST", "/api/operator/register", body, sessionToken)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	require.Contains(t, resp, "error")
 }
 
 func TestOperatorRegister_DuplicateClientID_Idempotent(t *testing.T) {

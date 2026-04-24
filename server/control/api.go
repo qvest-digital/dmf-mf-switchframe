@@ -494,6 +494,14 @@ func WithSessionAPIToken(token string) APIOption {
 	return func(a *API) { a.sessionAPIToken = token }
 }
 
+// WithDemoMode marks the API as running in demo mode, which relaxes the
+// operator-register auth gate so unauthenticated clients can self-register
+// with any role. Must be wired from the same flag that selects
+// NoopAuthMiddleware at the transport layer; see cmd/switchframe/app.go.
+func WithDemoMode(demo bool) APIOption {
+	return func(a *API) { a.demoMode = demo }
+}
+
 // WithAllowedOutputPorts constrains SRT listener output to the given ports.
 func WithAllowedOutputPorts(ports []int) APIOption {
 	return func(a *API) {
@@ -567,6 +575,7 @@ type API struct {
 	htmlGfxMgr         HTMLGfxManager
 	inviteTokens       map[string]string // token -> role; nil = no invite gating
 	sessionAPIToken    string            // used to bypass invite token requirement for session owner
+	demoMode           bool              // relaxes operator-register auth gate; must match NoopAuthMiddleware at transport
 	allowedOutputPorts map[int]bool      // nil = unconstrained
 	thumbnailCache     *switcher.ThumbnailCache
 	snapshotProvider   SnapshotProvider

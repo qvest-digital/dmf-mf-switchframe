@@ -1756,10 +1756,19 @@ func (a *App) initAPI() error {
 		slog.Info("sequence engine initialized")
 	}
 
-	// Pass invite tokens if cloud provided them.
+	// Pass invite tokens if cloud provided them. The session API token is
+	// always wired through so handleOperatorRegister can recognize the
+	// session owner even when no invite tokens are configured; demo-mode
+	// flag likewise relaxes the register gate only when Demo is on.
 	if len(a.cfg.InviteTokens) > 0 {
 		apiOpts = append(apiOpts, control.WithInviteTokens(a.cfg.InviteTokens))
-		apiOpts = append(apiOpts, control.WithSessionAPIToken(a.cfg.APIToken))
+	}
+	apiOpts = append(apiOpts,
+		control.WithSessionAPIToken(a.cfg.APIToken),
+		control.WithDemoMode(a.cfg.Demo),
+	)
+	if !a.cfg.Demo && len(a.cfg.InviteTokens) == 0 && a.operatorStore != nil {
+		slog.Warn("operator registration locked to session API token holder (no invite tokens configured); set SWITCHFRAME_INVITE_TOKENS to enable role-based invite links")
 	}
 
 	// Constrain SRT listener output ports if cloud provided a range.
