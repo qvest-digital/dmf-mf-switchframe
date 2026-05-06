@@ -720,7 +720,7 @@ func TestMetricsCallbacks_NilCallbacksSafe(t *testing.T) {
 // TestQueue_WALReplayInvokesSeqTracker verifies that the WAL-replay path in
 // New() invokes WithReplaySeqTracker per un-executed command. Without this,
 // a restarted engine's lastCommandSeq stays at 0 until fresh HTTP traffic
-// arrives, letting the peer read the restart as divergence (BUG-054).
+// arrives, letting the peer read the restart as divergence on seq.
 func TestQueue_WALReplayInvokesSeqTracker(t *testing.T) {
 	dir := t.TempDir()
 	walPath := filepath.Join(dir, "test.wal")
@@ -758,7 +758,7 @@ func TestQueue_WALReplayInvokesSeqTracker(t *testing.T) {
 	// All three WAL seqs advance the tracker: 10 via ReplayExecutedSeqs
 	// (tombstone → dedup seed + tracker, closes the drain-after-last-persist
 	// blind spot); 11 and 12 via Replay (un-executed commands replayed into
-	// the heap). The max-seq invariant is what matters for the BUG-054 fix;
+	// the heap). The max-seq invariant is what matters for correctness;
 	// sub-check on order is belt-and-braces.
 	if len(tracked) != 3 {
 		t.Fatalf("tracker invoked %d times, want 3 (seqs 10, 11, 12); got %v", len(tracked), tracked)
@@ -782,7 +782,7 @@ func TestQueue_WALReplayInvokesSeqTracker(t *testing.T) {
 }
 
 // TestQueue_WALReplayTrackerSeesExecutedTombstones closes the last blind
-// spot in the BUG-054 restart high-water mark: commands that were drained
+// spot in the restart high-water mark: commands that were drained
 // (MarkExecuted'd) after the last seqPersist flush but before a crash leave
 // tombstones in the WAL with no un-executed replay entries above them. The
 // tracker must still observe them via ReplayExecutedSeqs so lastCommandSeq
@@ -831,7 +831,7 @@ func TestQueue_WALReplayTrackerSeesExecutedTombstones(t *testing.T) {
 
 // TestQueue_WALReplayTrackerOptional verifies that replay still works when
 // no tracker is configured (backward compat for callers that don't need
-// the BUG-054 seed path — e.g. tests without a switcher).
+// the seed path — e.g. tests without a switcher).
 func TestQueue_WALReplayTrackerOptional(t *testing.T) {
 	dir := t.TempDir()
 	walPath := filepath.Join(dir, "test.wal")

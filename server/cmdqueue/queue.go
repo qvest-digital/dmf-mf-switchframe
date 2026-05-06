@@ -78,8 +78,7 @@ func WithMetrics(cb *MetricsCallbacks) Option {
 // WithReplaySeqTracker registers a callback invoked once per WAL-replayed
 // command during New() (after the replay Enqueue succeeds). The caller uses
 // this to advance an external high-water mark (switcher.lastCommandSeq) so
-// a process restart does not expose seq=0 on /api/peer/health while the
-// WAL-replayed commands drain — see BUG-054.
+// a restart does not report seq=0 on /api/peer/health during WAL replay.
 //
 // The callback runs synchronously inside New(); it must not block or
 // acquire the Queue's internal lock.

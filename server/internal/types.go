@@ -392,8 +392,8 @@ type ControlRoomState struct {
 }
 
 // ClockSyncInfo reports clock-synchronization status to the browser so
-// the operator bar can surface PTP / NTP discipline failures — pre-
-// BUG-057 this was silently hardcoded synchronized=true, masking
+// the operator bar can surface PTP / NTP discipline failures.
+// Older builds silently hardcoded synchronized=true, masking
 // grandmaster faults in active-active deployments. Mirrors
 // clock.SyncState; kept here to avoid an internal→clock dep cycle.
 //

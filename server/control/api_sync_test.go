@@ -42,7 +42,7 @@ func TestSyncHealth_ReturnsFields(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, resp.UptimeMS >= 0, "uptime should be non-negative")
 	// Clock sync should populate Source with the real detection mechanism
-	// (pre-BUG-057 this was hardcoded "ntp" regardless of reality). Accept
+	// Older builds hardcoded "ntp" regardless of detector output. Accept
 	// either the initializing placeholder or the running sampler verdict;
 	// both are legitimate depending on test ordering. The distinct-source
 	// contract matters more than the exact value.

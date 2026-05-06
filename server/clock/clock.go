@@ -1,10 +1,10 @@
 // Package clock provides PTP-microsecond time + sync-state detection.
 //
 // Now() is the ordering clock used by the multi-region cmdqueue; swapping
-// it for a real PTP-disciplined source is a separate (OPS-003) effort. This
+// it for a real PTP-disciplined source needs tighter integration. This
 // file's concern is the detection channel: GetSyncState reports whether
-// the local clock can be trusted as a time reference. Before BUG-057 that
-// function was a hardcoded stub that always said "synchronized" — which
+// the local clock can be trusted as a time reference. Older builds treated this
+// as a hardcoded stub that always said "synchronized" — which
 // actively lied to the browser's /api/peer/health polling and left PTP
 // faults invisible to operators. The replacement keeps the return shape
 // identical but populates it from a background sampler that compares the

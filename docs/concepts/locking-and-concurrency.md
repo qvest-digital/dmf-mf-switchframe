@@ -184,7 +184,7 @@ Every package that touches shared state has a declared mutex. The table below su
 
 ### Output Manager + Playout Channel field audit
 
-The `Manager.mu` and `Channel.mu` entries above summarize what each mutex protects. This subsection is the per-field ledger — written after the DEBT-021 audit so future readers know which fields are hot-path-reachable and exactly how each is synchronized. Every field not in `atomic.*` is either strictly covered by the mutex or single-writer-by-goroutine-ownership.
+The `Manager.mu` and `Channel.mu` entries above summarize what each mutex protects. This subsection is the per-field ledger so future readers know which fields are hot-path-reachable and exactly how each is synchronized. Every field not in `atomic.*` is either strictly covered by the mutex or single-writer-by-goroutine-ownership.
 
 **`output.Manager`** (`server/output/manager.go:37-119`) — 33 fields total:
 

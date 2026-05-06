@@ -29,7 +29,7 @@ func TestGate_LeaderAllows(t *testing.T) {
 
 func TestGate_FollowerHealthyAllows(t *testing.T) {
 	// During healthy active-active both engines run commands; dedup at
-	// the output layer via BUG-001's engine-label guard.
+	// the output layer via per-engine labeling.
 	p := NewHealthPoller("http://peer", WithLocalIdentity("b"))
 	p.SetPeerStateForTest(true, "a", 0)
 	if err := p.Gate(); err != nil {

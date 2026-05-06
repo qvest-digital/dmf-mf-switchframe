@@ -649,7 +649,7 @@ func (m *Mixer) SetProgramMute(muted bool) {
 // m.numChannels (BS.775-3 Lo/Ro downmix for surround sources, AES3 §6.3
 // duplicate for mono upmix). Channels outside [1, 6] are rejected — the
 // historical log-and-drop path now applies only to that invalid range and
-// to the unsupported stereo→surround upmix case (deferred to STD-002).
+// to the unsupported stereo→surround upmix case (deferred: layout-aware matrix).
 func (m *Mixer) SetStingerAudio(audio []float32, sampleRate, channels int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1070,7 +1070,7 @@ const (
 // 0.707·Rs, LFE dropped — matching the consumer-delivery reference. For any
 // other srcChannels > m.numChannels combination the fallback keeps only the
 // first m.numChannels source channels; this is non-corrupting but lossy (a
-// real layout-aware mix matrix is a future item — see STD-002). The returned
+// real layout-aware mix matrix is a future item). The returned
 // downmixResult lets callers log which model ran. buf is a reusable output
 // slice owned by the caller; it is regrown as needed and the returned slice
 // aliases *buf. Caller must hold m.mu (write lock): *buf is mutated.

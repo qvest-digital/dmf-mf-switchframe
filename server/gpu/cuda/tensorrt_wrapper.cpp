@@ -68,10 +68,10 @@ struct TRTEngineWrapper {
     std::unique_ptr<nvinfer1::IRuntime> runtime;
     std::unique_ptr<nvinfer1::ICudaEngine> engine;
 
-    // Scratch buffer for unused output tensors. u2netp has 7 outputs but we
-    // only need the first one. TensorRT requires all outputs to be bound, so
-    // we allocate a single scratch buffer large enough for the largest unused
-    // output and bind all extra outputs there.
+    // Scratch buffer for unused output tensors. Some models expose many
+    // outputs but the caller only consumes a subset. TensorRT requires all
+    // outputs to be bound, so we allocate a scratch buffer sized for the
+    // largest unused output and bind all extra outputs there.
     void* scratchOutputDev = nullptr;
     size_t scratchOutputBytes = 0;
 };
@@ -248,7 +248,7 @@ int trt_infer(void* contextHandle, void* inputDevPtr, void* outputDevPtr,
     // Set input/output tensor addresses using the modern enqueueV3 API.
     // TensorRT 10 uses named tensors — iterate through I/O tensors.
     //
-    // u2netp has 7 output tensors but we only need the first one. TensorRT
+    // Multi-output models may declare tensors we do not consume. TensorRT
     // requires ALL outputs to be bound. We bind the first output to the
     // caller's buffer and all subsequent outputs to a shared scratch buffer.
     int numIO = engine->getNbIOTensors();

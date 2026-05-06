@@ -729,7 +729,7 @@ func TestOperatorRegister_WithoutClientID_BackwardCompat(t *testing.T) {
 	require.NotEmpty(t, resp["id"])
 }
 
-// --- Unauthenticated-register hardening (BUG-085) ---
+// --- Unauthenticated-register hardening ---
 
 func TestOperatorRegister_RejectsUnauthenticatedWhenNoInviteTokens(t *testing.T) {
 	api, mux := setupOperatorTestAPIBare(t)

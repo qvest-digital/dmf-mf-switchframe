@@ -18,7 +18,7 @@ var ErrGatedByFollower = errors.New("peer: action gated — local engine is part
 //
 // Only the *partitioned* follower is blocked — healthy active-active
 // commands run on both engines because the output-layer engine-label
-// guard (BUG-001) deduplicates what reaches downstream receivers.
+// guard deduplicates what reaches downstream receivers.
 //
 // A nil receiver returns nil — tests and single-engine deployments that
 // never construct a poller do not gate.

@@ -2423,7 +2423,7 @@ func columnY(yuv []byte, w, h, x int) []byte {
 
 // BenchmarkBlendRawMismatched1080p60Stinger pins the per-frame alloc footprint
 // of BlendRaw on the mismatched-resolution stinger path, which is the worst
-// case enumerated in the DEBT-011 validation: scaledTo + sYUV + sAlpha +
+// case enumerated in BlendRaw validation: scaledTo + sYUV + sAlpha +
 // result deep-copy, each at 1080p scale.
 func BenchmarkBlendRawMismatched1080p60Stinger(b *testing.B) {
 	outW, outH := 1920, 1080
@@ -2478,7 +2478,7 @@ func BenchmarkBlendRawMismatched1080p60Stinger(b *testing.B) {
 }
 
 // TestBlendRawInto_ByteEqualsBlendRaw asserts that BlendRawInto produces
-// byte-identical output to the pre-DEBT-011 BlendRaw reference. Both
+// byte-identical output to the pre-refactor BlendRaw reference. Both
 // mismatched-resolution and matched-resolution paths are exercised; the
 // mismatched stinger path is the one carrying all four scratch buffers.
 func TestBlendRawInto_ByteEqualsBlendRaw(t *testing.T) {

@@ -70,7 +70,7 @@ func TestWAL_MarkExecutedCallsSync(t *testing.T) {
 		"MarkExecuted must fsync the rewrite before returning")
 }
 
-// TestWAL_TruncateCallsSync is the RED/GREEN gate for the BUG-053 fix.
+// TestWAL_TruncateCallsSync gates crash-recovery durability.
 // Prior to the fix, Truncate() called file.Truncate(0) without fsync —
 // a crash between Drain's last MarkExecuted and the filesystem's lazy
 // flush would resurrect already-dispatched commands at replay time.

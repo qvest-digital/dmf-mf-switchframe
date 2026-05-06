@@ -62,7 +62,7 @@ func TestSwitcher_TBarPullbackBelowThresholdAborts(t *testing.T) {
 	state := sw.State()
 	require.False(t, state.InTransition, "pullback below threshold should abort the transition")
 	require.Equal(t, "cam1", state.ProgramSource, "program reverts to from-source on abort")
-	require.Equal(t, "cam1", state.PreviewSource, "preview remains swapped to from-source (BUG-015)")
+	require.Equal(t, "cam1", state.PreviewSource, "preview remains swapped to from-source after abort")
 
 	audioTrans.mu.Lock()
 	require.Equal(t, 1, audioTrans.abortCount, "audio handler must see a single abort")

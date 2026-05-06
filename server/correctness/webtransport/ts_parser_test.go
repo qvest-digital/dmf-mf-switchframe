@@ -174,7 +174,7 @@ func TestParseTSInterfaceFields_ErrorsOnMissingInterface(t *testing.T) {
 }
 
 // Regression: parser must find the real ControlRoomState in the checked-in
-// types.ts and include fields that triggered DEBT-008 in the first place.
+// types.ts and include fields that can desync TS parsing from Go structs.
 func TestParseTSInterfaceFields_RealTypesFile_CoversDriftFields(t *testing.T) {
 	path := findRepoTypesTS(t)
 
@@ -183,7 +183,7 @@ func TestParseTSInterfaceFields_RealTypesFile_CoversDriftFields(t *testing.T) {
 		t.Fatalf("parseTSInterfaceFields(%s): %v", path, err)
 	}
 
-	// These fields were added to the Go struct during BUG-014/020 and the
+	// These fields were added alongside the structured Go wire types and
 	// captions/DSK fade / FTB duration / transition-abort threshold work; all
 	// are declared in types.ts today and must be picked up by the parser.
 	driftFields := []string{

@@ -48,3 +48,4 @@ DocsPlans/*
 # Claude Code project instructions (local only)
 CLAUDE.md
 .claude/commands/work.md
+.claude/worktrees/

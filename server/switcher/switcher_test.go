@@ -2016,9 +2016,9 @@ func TestSwitcher_TrackCommandSeq_PersistsViaDebounce(t *testing.T) {
 	}
 }
 
-// TestClockSyncState_BroadcastInControlRoomState — BUG-057 AC#8. State
+// TestClockSyncState_BroadcastInControlRoomState — discipline source and flag
 // broadcast must carry a real ClockSync reading through to subscribers so
-// the UI can surface PTP/NTP discipline failures; pre-BUG-057 the field
+// the UI can surface PTP/NTP discipline failures; historically the field
 // did not exist and the raw clock.GetSyncState response was hardcoded.
 // Install a test fixture via the clock.SetGetSyncStateFn seam that reports
 // unsynchronized and assert it reaches ControlRoomState unchanged.

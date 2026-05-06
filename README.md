@@ -36,7 +36,7 @@ Every source is continuously decoded to raw YUV420. Cuts are instant. All video 
 
 **AI Captions** — Live speech-to-text via whisper.cpp with Silero VAD for neural speech detection. Per-word confidence scoring. Transcripts feed into the CEA-608 caption encoder for real-time closed captioning on program output. CUDA GPU acceleration supported.
 
-**AI Background Removal** — TensorRT-accelerated U2-Net person segmentation. Removes backgrounds without a green screen. Temporal smoothing (EMA), edge refinement (3x3 erosion), and GPU-resident mask pipeline. Runs as a pipeline node alongside keying and compositing.
+**AI Background Removal** — TensorRT-accelerated person segmentation (RobustVideoMatting / RVM ONNX at runtime — see [`server/models/README.md`](server/models/README.md)). Removes backgrounds without a green screen. Temporal smoothing (EMA), edge refinement (3x3 erosion), and GPU-resident mask pipeline. Runs as a pipeline node alongside keying and compositing.
 
 **Color Grading** — GPU-accelerated 3D LUT color grading with 6 built-in broadcast looks (cinematic, warm natural, cool drama, broadcast news, vivid, log-to-Rec.709). Industry-standard .cube file import. LUT uploaded to GPU memory with generation-counter caching for zero-overhead steady state.
 
@@ -159,4 +159,4 @@ make test-all      # Go + Vitest + Playwright
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). ONNX weights and some test fixtures are third-party — see [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).

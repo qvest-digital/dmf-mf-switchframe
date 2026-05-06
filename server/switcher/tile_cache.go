@@ -11,7 +11,7 @@ import (
 
 // TileCache holds the latest downsampled YUV420 tile for each registered
 // source, keyed by source key. It is the server-side backing store for the
-// multiview mosaic compositor (DEBT-002).
+// multiview mosaic compositor (infrastructure only until wired into the switcher).
 //
 // Thread model:
 //   - The `slots` map is written under `mu` (writer-serialized) and read

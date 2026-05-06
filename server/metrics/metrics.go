@@ -112,7 +112,7 @@ type Metrics struct {
 	// Force-leader (operator-triggered epoch bump during partition)
 	ForceLeaderTotal *prometheus.CounterVec // labels: operator, reason_class
 
-	// Clock synchronization (BUG-057 engine-side PTP / system-clock detection)
+	// Clock synchronization (engine-side PTP / system-clock detection)
 	ClockSyncSynchronized  prometheus.Gauge     // 1 when clock is synchronized per the current detector, 0 otherwise
 	ClockSyncWindowDriftNs prometheus.Gauge     // signed wall-vs-monotonic drift in nanoseconds over the sampler window (NOT a servo instantaneous)
 	ClockSyncSource        *prometheus.GaugeVec // labels: source — 1 on the currently-active source, 0 on others
@@ -342,7 +342,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		ClockSyncSynchronized: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "switchframe",
 			Name:      "clock_sync_synchronized",
-			Help:      "1 if the local clock is synchronized per the active detector (systemclock-monitored drift below threshold, or PTP when pmc integration lands), 0 otherwise. Pre-BUG-057 this was always 1 regardless of reality.",
+			Help:      "1 if the local clock is synchronized per the active detector (systemclock-monitored drift below threshold, or PTP when pmc integration lands), 0 otherwise. Older builds always reported 1.",
 		}),
 		ClockSyncWindowDriftNs: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "switchframe",

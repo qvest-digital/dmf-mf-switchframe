@@ -66,12 +66,6 @@ How to deploy, configure, and run the engine in production.
 
 - **[operations/deployment.md](operations/deployment.md)** — build chain, dev quick start, HTTPS / HTTP/3 cert story, GPU setup, ports, system tuning, Docker, systemd unit, dual-engine active-active.
 
-## Beyond the technical docs
+## Maintainer-only docs
 
-Three durable documents outside this tree describe the project's why, where it's going, and how agents collaborate on it:
-
-- **docs/VISION.md** — the product north star: what Switchframe is, who it's for, the moats, the principles, what we won't do.
-- **docs/ROADMAP.md** — the phased plan: what's in Now, Next, and Later.
-- **docs/AGENTS.md** — the operating manual for agents working in this codebase: how to pick an item, how to work it, how to commit, how to hand off.
-
-Work-in-progress tracking lives in `docs/backlog/` (file-per-item, gitignored in some checkouts). Implementation plans for in-flight work live in `docs/plans/` (gitignored).
+Some checkouts keep additional planning material under `docs/` (vision, roadmap, agent workflow, backlog) that is **not** part of the default published doc set. If those files are missing in your tree, they were omitted from this repository on purpose. Public technical documentation is the index above plus [architecture.md](architecture.md).

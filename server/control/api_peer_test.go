@@ -185,7 +185,7 @@ func TestTimedRoutes_AdvanceLastCommandSeq(t *testing.T) {
 	}
 }
 
-// TestPeerHealth_SeqSurvivesRestart asserts BUG-054 AC#5: after a simulated
+// TestPeerHealth_SeqSurvivesRestart asserts seq persists after a simulated
 // restart, /api/peer/health reports the pre-restart lastCommandSeq BEFORE
 // any new HTTP traffic arrives. Exercises the post-persist startup path —
 // Switcher.SetInitialCommandSeq must seed the tracker such that the first

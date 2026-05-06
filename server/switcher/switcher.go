@@ -466,8 +466,8 @@ type Switcher struct {
 
 	// lastCommandSeq persistence primitives. Writes-through to disk so a
 	// process restart can re-seed lastCommandSeq and avoid the peer reading
-	// the fresh engine as regressed-to-0 (BUG-054). SetSeqPersistFn installs
-	// the callback + starts seqPersistLoop (which captures fn by parameter,
+	// the fresh engine as regressed-to-0 when the peer last saw a higher seq.
+	// SetSeqPersistFn installs the callback + starts seqPersistLoop (which captures fn by parameter,
 	// not by field read). The three fields here are atomic-only / channel-
 	// only so TrackCommandSeq stays lock-free on the hot path; configMu
 	// gates setup + teardown transitions.
@@ -1852,7 +1852,7 @@ func (s *Switcher) TrackCommandSeq(seq uint64) {
 // SetInitialCommandSeq seeds lastCommandSeq from the persisted on-disk
 // value before the HTTP listener and peer poller start. Only advances the
 // tracker — never regresses — so a later wire-up that reads a stale file
-// cannot undo a higher in-memory value. Called from app init (BUG-054).
+// cannot undo a higher in-memory value. Called from app init.
 func (s *Switcher) SetInitialCommandSeq(seq uint64) {
 	s.TrackCommandSeq(seq)
 	// Clear the dirty flag that TrackCommandSeq sets: the value we just
@@ -3624,8 +3624,7 @@ func (s *Switcher) State() internal.ControlRoomState {
 	state := s.buildStateLocked()
 	s.configMu.Unlock()
 	// Publish clock-sync metrics outside the lock so prom's internal
-	// GaugeVec mutex does not serialize with the broadcast hot path —
-	// relevant for DEBT-001's lock-split direction.
+	// GaugeVec mutex does not serialize with the broadcast hot path.
 	s.publishClockSyncMetrics(state.ClockSync)
 	return state
 }

@@ -551,7 +551,7 @@ func (a *App) initSwitcherCommon() error {
 	a.sw.SetMetrics(a.appMetrics)
 
 	// Persist + seed lastCommandSeq so /api/peer/health survives a restart
-	// without the peer interpreting seq=0 as divergence (BUG-054). Wire
+	// without the peer interpreting seq=0 as divergence. Wire
 	// BEFORE initCommandQueue so the WAL-replay seq tracker (installed in
 	// app_cmdqueue) can push any post-persist seqs through the now-active
 	// persist pipeline.

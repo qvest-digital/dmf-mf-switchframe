@@ -40,7 +40,7 @@ func TestNow_Monotonic(t *testing.T) {
 // state is either the conservative initializing default (before the
 // sampler has collected a full window) or a monitored reading. Both must
 // populate Source with a non-empty string so downstream consumers can
-// switch on it — a hardcoded "ntp" was the pre-BUG-057 bug.
+// switch on it — a hardcoded "ntp" masked real detector output.
 func TestGetSyncState_InitialStateOrMonitored(t *testing.T) {
 	state := GetSyncState()
 	if state.Source == "" {

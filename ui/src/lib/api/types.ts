@@ -783,7 +783,7 @@ export interface ControlRoomState {
 
 // ClockSyncInfo reports whether the engine's local clock is currently
 // synchronized to a reference source (NTP/PTP) so the operator bar can
-// surface discipline failures — pre-BUG-057 this was hardcoded
+// surface discipline failures — historically this was hardcoded
 // "synchronized=true" on the server and the browser had no way to know
 // the grandmaster had gone away.
 //
