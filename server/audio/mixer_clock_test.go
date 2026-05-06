@@ -268,8 +268,10 @@ func TestClockDrivenMixer_TickerStartedByNewMixer(t *testing.T) {
 		},
 	})
 
-	// Wait ~100ms for ticker to fire (~4-5 ticks at ~21.3ms)
-	time.Sleep(100 * time.Millisecond)
+	// Wait ~300ms for ticker to fire (~14 ticks at ~21.3ms). 300ms gives
+	// shared CI runners enough slack to schedule the goroutine even under
+	// load while still bounding the test wall-clock.
+	time.Sleep(300 * time.Millisecond)
 	_ = m.Close()
 
 	mu.Lock()
@@ -278,7 +280,7 @@ func TestClockDrivenMixer_TickerStartedByNewMixer(t *testing.T) {
 
 	// The ticker should have produced frames even without any IngestPCM/IngestFrame calls
 	assert.GreaterOrEqual(t, count, 2, "outputTicker should produce frames autonomously")
-	assert.LessOrEqual(t, count, 10, "should not produce excessive frames in 100ms")
+	assert.LessOrEqual(t, count, 30, "should not produce excessive frames in 300ms")
 }
 
 // stubDecoder is a mock AAC decoder that always returns the same PCM.
