@@ -49,3 +49,4 @@ DocsPlans/*
 CLAUDE.md
 .claude/commands/work.md
 .claude/worktrees/
+.claude/scheduled_tasks.lock
