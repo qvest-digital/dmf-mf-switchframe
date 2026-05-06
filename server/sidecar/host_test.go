@@ -557,7 +557,7 @@ func TestHostConcurrentSend(t *testing.T) {
 	var (
 		mu       sync.Mutex
 		received []*Message
-		done     = make(chan struct{})
+		done     = make(chan struct{}, 1)
 	)
 
 	h := NewHost(Config{
