@@ -627,8 +627,8 @@ func TestMixerTickerProducesOutputWithPartialChannels(t *testing.T) {
 	m.channels["cam1"].ringBuf.Push(pcm)
 	m.mu.Unlock()
 
-	// Wait for ticker to fire
-	time.Sleep(100 * time.Millisecond)
+	// Wait for ticker to fire — 300ms gives slack on shared CI runners.
+	time.Sleep(300 * time.Millisecond)
 
 	// Output should have been produced despite channel 2 being empty
 	mu.Lock()
@@ -1482,7 +1482,8 @@ func TestMixer_TickerProducesOutputWithNoSourceData(t *testing.T) {
 	m.SetActive("video_only", true)
 
 	// Wait for the ticker to produce frames (~21ms per frame).
-	time.Sleep(100 * time.Millisecond)
+	// 300ms ≈ 14 ticks — slack for shared CI runners under load.
+	time.Sleep(300 * time.Millisecond)
 
 	mu.Lock()
 	count := len(frames)

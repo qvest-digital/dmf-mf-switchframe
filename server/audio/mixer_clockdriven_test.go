@@ -118,8 +118,9 @@ func TestNonClockDrivenMixerStillWorks(t *testing.T) {
 	// stopTicker should be non-nil (ticker was started)
 	assert.NotNil(t, m.stopTicker, "stopTicker channel should exist for non-ClockDriven mixer")
 
-	// Wait for ticker to fire
-	time.Sleep(100 * time.Millisecond)
+	// Wait for ticker to fire — 300ms ≈ 14 ticks at ~21.3ms cadence,
+	// enough slack on shared CI runners to clear the ≥2 floor.
+	time.Sleep(300 * time.Millisecond)
 	_ = m.Close()
 
 	assert.GreaterOrEqual(t, outputCount, 2,

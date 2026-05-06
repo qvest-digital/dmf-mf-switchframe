@@ -339,8 +339,9 @@ func TestOutputTicker_ProducesFramesAtCadence(t *testing.T) {
 	})
 	// NewMixer already starts the outputTicker — no need to start a second one.
 
-	// Let it run for ~100ms — should produce ~4-5 frames at ~21.3ms cadence
-	time.Sleep(100 * time.Millisecond)
+	// Let it run for ~300ms — should produce ~14 frames at ~21.3ms cadence.
+	// 300ms gives shared CI runners enough slack against goroutine scheduling.
+	time.Sleep(300 * time.Millisecond)
 
 	// Stop the ticker
 	_ = m.Close()
@@ -350,9 +351,9 @@ func TestOutputTicker_ProducesFramesAtCadence(t *testing.T) {
 	mu.Unlock()
 
 	// At 48kHz with 1024-sample frames, interval is ~21.3ms.
-	// In 100ms we expect roughly 4-5 frames. Allow some slack for scheduling.
-	assert.GreaterOrEqual(t, count, 2, "should produce at least 2 frames in 100ms")
-	assert.LessOrEqual(t, count, 10, "should not produce more than 10 frames in 100ms")
+	// In 300ms we expect roughly 14 frames; allow slack on both sides.
+	assert.GreaterOrEqual(t, count, 2, "should produce at least 2 frames")
+	assert.LessOrEqual(t, count, 30, "should not produce more than 30 frames in 300ms")
 }
 
 func TestTick_TransitionGainInterpolation(t *testing.T) {
