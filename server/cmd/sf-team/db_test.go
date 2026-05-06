@@ -13,7 +13,7 @@ func TestOpenDB_CreatesSchemaOnFirstRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	tables := []string{"agents", "claims", "claim_history", "messages", "touches", "reads", "progress"}
 	for _, table := range tables {
@@ -34,7 +34,7 @@ func TestOpenDB_IsIdempotent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("openDB iteration %d: %v", i, err)
 		}
-		db.Close()
+		_ = db.Close()
 	}
 }
 
@@ -46,7 +46,7 @@ func TestOpenDB_EnablesWAL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	var mode string
 	if err := db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {

@@ -15,7 +15,7 @@ func TestSay_DefaultsToGlobal(t *testing.T) {
 	}
 
 	var c int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='say' AND thread='global'`).Scan(&c)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='say' AND thread='global'`).Scan(&c)
 	if c != 1 {
 		t.Fatalf("count=%d", c)
 	}
@@ -31,7 +31,7 @@ func TestSay_PersistsMentions(t *testing.T) {
 	}
 
 	var mentions string
-	d.sqldb.QueryRow(`SELECT mentions FROM messages WHERE thread='global' AND kind='say'`).Scan(&mentions)
+	_ = d.sqldb.QueryRow(`SELECT mentions FROM messages WHERE thread='global' AND kind='say'`).Scan(&mentions)
 	if mentions != `["agent-b"]` {
 		t.Fatalf("mentions=%q", mentions)
 	}

@@ -368,11 +368,9 @@ func fillYUVRect(buf []byte, f video.Format, width, height, x0, y0, x1, y1 int, 
 	cbOff := f.CbOffset(width, height)
 	crOff := f.CrOffset(width, height)
 	chromaW := f.ChromaWidth(width)  // w/2 for both 420 and 422
-	chromaStep := 1
+	chromaStep := 2                  // 4:2:0: chroma row every 2 luma rows
 	if f == video.YUV422_10bit {
 		chromaStep = 1 // 4:2:2: chroma row == luma row
-	} else {
-		chromaStep = 2 // 4:2:0: chroma row every 2 luma rows
 	}
 
 	if f == video.YUV422_10bit {

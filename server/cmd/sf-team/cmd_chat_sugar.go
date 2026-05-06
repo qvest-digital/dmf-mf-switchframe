@@ -31,7 +31,7 @@ func (d db) reviewRequest(ctx context.Context, agentID, itemID, reviewer string)
 func runAsk(args []string) int {
 	fs := flag.NewFlagSet("ask", flag.ExitOnError)
 	to := fs.String("to", "global", "thread")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 	if fs.NArg() < 2 {
 		fmt.Fprintln(os.Stderr, "usage: sf-team ask @<agent> [--to ITEM|global] <message>")
 		return 4
@@ -60,7 +60,7 @@ func runAnswer(args []string) int {
 		return 4
 	}
 	var ref int64
-	fmt.Sscanf(args[0], "%d", &ref)
+	_, _ = fmt.Sscanf(args[0], "%d", &ref)
 	body := strings.Join(args[1:], " ")
 
 	ctx, sqldb, id, cleanup, code := setupDBAndIdentity()
@@ -82,7 +82,7 @@ func runReviewRequest(args []string) int {
 	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("review-request", flag.ExitOnError)
 	mention := fs.String("mention", "", "reviewer agent id (without @)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: sf-team review-request <ITEM-ID> [--mention @<agent>]")
 		return 4

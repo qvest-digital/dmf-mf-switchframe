@@ -26,11 +26,11 @@ func TestReclaim_ExpiresAfter30Min(t *testing.T) {
 	}
 
 	var c int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM claims WHERE item_id='BUG-200'`).Scan(&c)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM claims WHERE item_id='BUG-200'`).Scan(&c)
 	if c != 0 {
 		t.Fatalf("claim still present")
 	}
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM claim_history WHERE item_id='BUG-200' AND outcome='reclaimed'`).Scan(&c)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM claim_history WHERE item_id='BUG-200' AND outcome='reclaimed'`).Scan(&c)
 	if c != 1 {
 		t.Fatalf("history missing")
 	}

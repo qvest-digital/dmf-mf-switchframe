@@ -28,12 +28,12 @@ func (d db) tailOneShot(ctx context.Context, w io.Writer, thread string, sinceUn
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id, ts int64
 		var agent, th, kind, body string
 		_ = rows.Scan(&id, &ts, &agent, &th, &kind, &body)
-		fmt.Fprintf(w, "%s  %-10s  %-10s  %s  %s\n",
+		_, _ = fmt.Fprintf(w, "%s  %-10s  %-10s  %s  %s\n",
 			time.Unix(ts, 0).Format("15:04:05"), agent, kind, threadLabel(th), body)
 	}
 	return nil
@@ -70,7 +70,7 @@ func runTail(args []string) int {
 	follow := fs.Bool("follow", false, "stream new messages")
 	since := fs.String("since", "30m", "only messages newer than duration")
 	kindsFlag := fs.String("kind", "", "comma-separated kinds to filter")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	sinceUnix, err := parseSince(*since)
 	if err != nil {
@@ -132,7 +132,7 @@ func runTail(args []string) int {
 				lastID = id
 			}
 		}
-		rows.Close()
+		_ = rows.Close()
 	}
 	return 0
 }

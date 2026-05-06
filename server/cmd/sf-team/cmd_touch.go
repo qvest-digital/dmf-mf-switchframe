@@ -14,7 +14,7 @@ func (d db) touch(ctx context.Context, agentID, path, itemID string) (conflicts 
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT DISTINCT agent_id FROM touches
@@ -26,12 +26,12 @@ func (d db) touch(ctx context.Context, agentID, path, itemID string) (conflicts 
 	for rows.Next() {
 		var a string
 		if err := rows.Scan(&a); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		conflicts = append(conflicts, a)
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	var itemSQL sql.NullString
 	if itemID != "" {
@@ -73,7 +73,7 @@ func runTouch(args []string) int {
 	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("touch", flag.ExitOnError)
 	item := fs.String("item", "", "item id to associate")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: sf-team touch <path> [--item ITEM]")
 		return 4

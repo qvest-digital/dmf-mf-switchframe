@@ -42,7 +42,7 @@ func (d db) digestFor(ctx context.Context, agentID string) (digest, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		var out []digestMessage
 		for rows.Next() {
 			var m digestMessage
@@ -79,12 +79,12 @@ func (d db) digestFor(ctx context.Context, agentID string) (digest, error) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return dg, err
 		}
 		myItems = append(myItems, id)
 	}
-	rows.Close()
+	_ = rows.Close()
 	for _, item := range myItems {
 		msgs, err := unread(item)
 		if err != nil {
@@ -102,14 +102,14 @@ func (d db) digestFor(ctx context.Context, agentID string) (digest, error) {
 		var m digestMessage
 		var intent string
 		if err := claimRows.Scan(&m.Thread, &m.Agent, &m.TS, &intent); err != nil {
-			claimRows.Close()
+			_ = claimRows.Close()
 			return dg, err
 		}
 		m.Body = intent
 		m.Kind = "claim"
 		dg.ActiveClaims = append(dg.ActiveClaims, m)
 	}
-	claimRows.Close()
+	_ = claimRows.Close()
 
 	confRows, err := d.sqldb.QueryContext(ctx, `
 		SELECT path FROM touches WHERE released_at IS NULL
@@ -120,12 +120,12 @@ func (d db) digestFor(ctx context.Context, agentID string) (digest, error) {
 	for confRows.Next() {
 		var p string
 		if err := confRows.Scan(&p); err != nil {
-			confRows.Close()
+			_ = confRows.Close()
 			return dg, err
 		}
 		dg.FileConflicts = append(dg.FileConflicts, p)
 	}
-	confRows.Close()
+	_ = confRows.Close()
 
 	return dg, nil
 }

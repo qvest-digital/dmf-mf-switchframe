@@ -21,7 +21,7 @@ func (d db) archive(ctx context.Context, beforeUnix int64) (int, string, error) 
 	if err != nil {
 		return 0, "", fmt.Errorf("open archive: %w", err)
 	}
-	defer adb.Close()
+	defer func() { _ = adb.Close() }()
 
 	rows, err := d.sqldb.QueryContext(ctx, `
 		SELECT id, ts, agent_id, thread, kind, COALESCE(body, ''), COALESCE(mentions, '[]'), priority
@@ -44,12 +44,12 @@ func (d db) archive(ctx context.Context, beforeUnix int64) (int, string, error) 
 	for rows.Next() {
 		var r row
 		if err := rows.Scan(&r.ID, &r.TS, &r.Agent, &r.Thread, &r.Kind, &r.Body, &r.Mentions, &r.Priority); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, "", err
 		}
 		batch = append(batch, r)
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	tx, err := adb.BeginTx(ctx, nil)
 	if err != nil {
@@ -60,7 +60,7 @@ func (d db) archive(ctx context.Context, beforeUnix int64) (int, string, error) 
 			INSERT INTO messages (ts, agent_id, thread, kind, body, mentions, priority)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
 		`, r.TS, r.Agent, r.Thread, r.Kind, r.Body, r.Mentions, r.Priority); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return 0, "", err
 		}
 	}
@@ -78,7 +78,7 @@ func runArchive(args []string) int {
 	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("archive", flag.ExitOnError)
 	before := fs.String("before", "30d", "cut-off duration (e.g., 30d, 720h)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	var dur time.Duration
 	var err error

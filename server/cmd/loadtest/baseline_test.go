@@ -83,7 +83,7 @@ func TestLoadtest_32Sources_1080p60_BaselinePinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stderrFile.Close()
+	defer func() { _ = stderrFile.Close() }()
 
 	if err := runWithConfig(cfg, stderrFile, stderrFile); err != nil {
 		t.Fatalf("runWithConfig: %v", err)

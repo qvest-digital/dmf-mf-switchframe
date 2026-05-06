@@ -36,7 +36,7 @@ func runProgress(args []string) int {
 	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("progress", flag.ExitOnError)
 	note := fs.String("note", "", "optional note")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 	if fs.NArg() != 2 {
 		fmt.Fprintln(os.Stderr, "usage: sf-team progress <ITEM-ID> <pct 0..100> [--note ...]")
 		return 4

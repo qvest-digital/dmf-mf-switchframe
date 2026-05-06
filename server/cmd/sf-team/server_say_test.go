@@ -26,7 +26,7 @@ func TestSay_InsertsMessage(t *testing.T) {
 	}
 
 	var c int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='say' AND body='from UI'`).Scan(&c)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='say' AND body='from UI'`).Scan(&c)
 	if c != 1 {
 		t.Fatalf("message not persisted")
 	}

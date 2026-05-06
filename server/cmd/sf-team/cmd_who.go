@@ -34,7 +34,7 @@ func (d db) whoList(ctx context.Context) ([]whoRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []whoRow{}
 	for rows.Next() {
 		var r whoRow
@@ -54,7 +54,7 @@ func runWho(args []string) int {
 	args = reorderFlags(args, map[string]bool{"json": true})
 	fs := flag.NewFlagSet("who", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "emit JSON")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	ctx, sqldb, _, cleanup, code := setupDBAndIdentity()
 	if cleanup != nil {
@@ -78,15 +78,15 @@ func runWho(args []string) int {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	defer w.Flush()
-	fmt.Fprintln(w, "AGENT\tNAME\tCLAIM\tINTENT\tFILES\tTICK\tSTATUS")
+	defer func() { _ = w.Flush() }()
+	_, _ = fmt.Fprintln(w, "AGENT\tNAME\tCLAIM\tINTENT\tFILES\tTICK\tSTATUS")
 	for _, r := range rows {
 		tick := time.Unix(r.LastTick, 0).Format("15:04")
 		intent := r.Intent
 		if len(intent) > 40 {
 			intent = intent[:40]
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
 			r.AgentID, r.DisplayName, r.ClaimItem, intent, r.TouchCount, tick, r.Status)
 	}
 	return 0

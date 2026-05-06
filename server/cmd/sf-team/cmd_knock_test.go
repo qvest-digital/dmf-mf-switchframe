@@ -16,7 +16,7 @@ func TestKnock_Priority(t *testing.T) {
 	}
 
 	var kind, priority, mentions string
-	d.sqldb.QueryRow(`SELECT kind, priority, mentions FROM messages WHERE thread='global' AND kind='knock'`).Scan(&kind, &priority, &mentions)
+	_ = d.sqldb.QueryRow(`SELECT kind, priority, mentions FROM messages WHERE thread='global' AND kind='knock'`).Scan(&kind, &priority, &mentions)
 	if kind != "knock" || priority != "high" {
 		t.Fatalf("kind=%q priority=%q", kind, priority)
 	}

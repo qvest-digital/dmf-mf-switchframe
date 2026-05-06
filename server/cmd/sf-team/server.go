@@ -153,7 +153,7 @@ func (s *server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	type claimRow struct {
 		ItemID    string `json:"item_id"`
 		AgentID   string `json:"agent_id"`
@@ -211,7 +211,7 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	type msgRow struct {
 		ID       int64           `json:"id"`
 		TS       int64           `json:"ts"`
@@ -380,7 +380,7 @@ func (s *server) handleItemActivity(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type activityEvent struct {
 		Kind    string `json:"kind"`
@@ -414,7 +414,7 @@ func (s *server) handleProgress(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	type pRow struct {
 		Pct        int    `json:"pct"`
 		ReportedAt int64  `json:"reported_at"`
@@ -629,7 +629,7 @@ func (s *server) handleTouches(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	type tRow struct {
 		AgentID    string `json:"agent_id"`
 		ItemID     string `json:"item_id"`

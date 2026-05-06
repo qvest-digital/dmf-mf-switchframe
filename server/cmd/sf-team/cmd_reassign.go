@@ -14,7 +14,7 @@ func (d db) reassign(ctx context.Context, itemID, byAgent, toAgent string) error
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if err := d.releaseInTx(ctx, tx, itemID, byAgent, "released"); err != nil {
 		return err
@@ -34,7 +34,7 @@ func runReassign(args []string) int {
 	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("reassign", flag.ExitOnError)
 	to := fs.String("to", "", "target agent id (optionally prefixed with @)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 	if fs.NArg() != 1 || *to == "" {
 		fmt.Fprintln(os.Stderr, "usage: sf-team reassign <ITEM-ID> --to <agent-id>")
 		return 4

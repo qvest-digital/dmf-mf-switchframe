@@ -32,7 +32,7 @@ func TestSSE_StreamsEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	reader := bufio.NewReader(resp.Body)
 	deadline := time.Now().Add(3 * time.Second)

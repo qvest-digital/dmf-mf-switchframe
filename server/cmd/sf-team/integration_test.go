@@ -48,16 +48,16 @@ func TestIntegration_RegisterClaimTouchSayReleaseDone(t *testing.T) {
 	}
 
 	var c int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM claims WHERE item_id='BUG-INT'`).Scan(&c)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM claims WHERE item_id='BUG-INT'`).Scan(&c)
 	if c != 0 {
 		t.Fatalf("claim still active")
 	}
 	var outcome string
-	d.sqldb.QueryRow(`SELECT outcome FROM claim_history WHERE item_id='BUG-INT'`).Scan(&outcome)
+	_ = d.sqldb.QueryRow(`SELECT outcome FROM claim_history WHERE item_id='BUG-INT'`).Scan(&outcome)
 	if outcome != "done" {
 		t.Fatalf("outcome=%q", outcome)
 	}
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM touches WHERE item_id='BUG-INT' AND released_at IS NULL`).Scan(&c)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM touches WHERE item_id='BUG-INT' AND released_at IS NULL`).Scan(&c)
 	if c != 0 {
 		t.Fatalf("touches still open: %d", c)
 	}

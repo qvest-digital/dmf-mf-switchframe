@@ -16,13 +16,13 @@ func TestDone_EmitsDoneMessageAndReleases(t *testing.T) {
 	}
 
 	var c int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='done' AND thread='BUG-090'`).Scan(&c)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='done' AND thread='BUG-090'`).Scan(&c)
 	if c != 1 {
 		t.Fatalf("expected 1 done msg, got %d", c)
 	}
 
 	var outcome string
-	d.sqldb.QueryRow(`SELECT outcome FROM claim_history WHERE item_id='BUG-090'`).Scan(&outcome)
+	_ = d.sqldb.QueryRow(`SELECT outcome FROM claim_history WHERE item_id='BUG-090'`).Scan(&outcome)
 	if outcome != "done" {
 		t.Fatalf("outcome=%q", outcome)
 	}
@@ -39,7 +39,7 @@ func TestBlocked_EmitsBlockedMessageAndReleases(t *testing.T) {
 	}
 
 	var c int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='blocked' AND thread='BUG-091'`).Scan(&c)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='blocked' AND thread='BUG-091'`).Scan(&c)
 	if c != 1 {
 		t.Fatalf("expected 1 blocked msg, got %d", c)
 	}
@@ -55,7 +55,7 @@ func TestDone_AtomicOnReleaseFailure(t *testing.T) {
 	}
 
 	var c int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='done' AND thread='BUG-092'`).Scan(&c)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='done' AND thread='BUG-092'`).Scan(&c)
 	if c != 0 {
 		t.Fatalf("done message leaked despite release failure: count=%d", c)
 	}

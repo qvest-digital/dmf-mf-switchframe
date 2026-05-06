@@ -102,10 +102,10 @@ func setupDBAndIdentity() (context.Context, *sql.DB, string, func(), int) {
 	wt := detectWorktree()
 	id, err := agentID(wt)
 	if err != nil {
-		sqldb.Close()
+		_ = sqldb.Close()
 		fmt.Fprintln(os.Stderr, err)
 		return nil, nil, "", nil, 4
 	}
-	cleanup := func() { sqldb.Close() }
+	cleanup := func() { _ = sqldb.Close() }
 	return context.Background(), sqldb, id, cleanup, 0
 }

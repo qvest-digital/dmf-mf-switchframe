@@ -21,7 +21,7 @@ func TestReassign_PostsDirectiveAndReleases(t *testing.T) {
 	}
 
 	var mentions string
-	d.sqldb.QueryRow(`SELECT mentions FROM messages WHERE kind='say' AND thread='global' ORDER BY id DESC LIMIT 1`).Scan(&mentions)
+	_ = d.sqldb.QueryRow(`SELECT mentions FROM messages WHERE kind='say' AND thread='global' ORDER BY id DESC LIMIT 1`).Scan(&mentions)
 	if mentions != `["agent-b"]` {
 		t.Fatalf("mentions=%q want [\"agent-b\"]", mentions)
 	}

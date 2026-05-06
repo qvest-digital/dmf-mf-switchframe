@@ -14,7 +14,7 @@ func (d db) done(ctx context.Context, itemID, agentID, summary string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	body := fmt.Sprintf("done %s", itemID)
 	if summary != "" {
@@ -42,7 +42,7 @@ func (d db) blocked(ctx context.Context, itemID, agentID, reason string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	body := fmt.Sprintf("blocked on %s", itemID)
 	if reason != "" {
@@ -68,7 +68,7 @@ func runDone(args []string) int {
 	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("done", flag.ExitOnError)
 	summary := fs.String("summary", "", "one-line summary")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: sf-team done <ITEM-ID> [--summary ...]")
 		return 4
@@ -102,7 +102,7 @@ func runBlocked(args []string) int {
 	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("blocked", flag.ExitOnError)
 	reason := fs.String("reason", "", "blocker description")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: sf-team blocked <ITEM-ID> [--reason ...]")
 		return 4

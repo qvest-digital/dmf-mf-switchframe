@@ -26,7 +26,7 @@ func (d db) claim(ctx context.Context, itemID, agentID, intent string, touches [
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO claims (item_id, agent_id, claimed_at, last_touch, intent, long)
@@ -85,7 +85,7 @@ func runClaim(args []string) int {
 	intent := fs.String("intent", "", "short sentence describing intent")
 	touches := fs.String("touches", "", "comma-separated file paths you'll touch")
 	long := fs.Bool("long", false, "extended stale threshold (2h)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	if fs.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: sf-team claim <ITEM-ID> [--intent ...] [--touches a,b] [--long]")

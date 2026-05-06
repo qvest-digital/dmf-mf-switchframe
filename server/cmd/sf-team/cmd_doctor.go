@@ -25,7 +25,7 @@ func (d db) doctor(ctx context.Context) ([]string, error) {
 		findings = append(findings, fmt.Sprintf("stale claim: %s (agent=%s, last_touch=%s)",
 			item, agent, time.Unix(lt, 0).Format("15:04")))
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	orphRows, err := d.sqldb.QueryContext(ctx, `
 		SELECT t.agent_id, t.path, t.item_id FROM touches t
@@ -40,7 +40,7 @@ func (d db) doctor(ctx context.Context) ([]string, error) {
 		_ = orphRows.Scan(&a, &p, &i)
 		findings = append(findings, fmt.Sprintf("orphan touch: %s by %s (item %s not claimed)", p, a, i))
 	}
-	orphRows.Close()
+	_ = orphRows.Close()
 
 	staleAg, err := d.sqldb.QueryContext(ctx,
 		`SELECT id, last_tick_at FROM agents WHERE status='active' AND last_tick_at < ?`, now-3600)
@@ -54,7 +54,7 @@ func (d db) doctor(ctx context.Context) ([]string, error) {
 		findings = append(findings, fmt.Sprintf("ghost agent: %s (last tick %s, marked active)",
 			id, time.Unix(ts, 0).Format("15:04")))
 	}
-	staleAg.Close()
+	_ = staleAg.Close()
 
 	var ic string
 	if err := d.sqldb.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&ic); err != nil {

@@ -14,12 +14,12 @@ func (d db) heartbeat(ctx context.Context, agentID string) (lost []string, err e
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		lost = append(lost, id)
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	if _, err := d.sqldb.ExecContext(ctx, `
 		UPDATE agents SET last_tick_at = ?, status = 'active' WHERE id = ?

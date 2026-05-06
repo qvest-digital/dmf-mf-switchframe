@@ -25,8 +25,8 @@ func TestHeartbeat_BumpsAgentAndOwnClaims(t *testing.T) {
 	}
 
 	var agentTick, claimTouch int64
-	d.sqldb.QueryRow(`SELECT last_tick_at FROM agents WHERE id='agent-a'`).Scan(&agentTick)
-	d.sqldb.QueryRow(`SELECT last_touch FROM claims WHERE item_id='BUG-500'`).Scan(&claimTouch)
+	_ = d.sqldb.QueryRow(`SELECT last_tick_at FROM agents WHERE id='agent-a'`).Scan(&agentTick)
+	_ = d.sqldb.QueryRow(`SELECT last_touch FROM claims WHERE item_id='BUG-500'`).Scan(&claimTouch)
 	if agentTick != t1.Unix() || claimTouch != t1.Unix() {
 		t.Fatalf("tick=%d claim=%d want %d", agentTick, claimTouch, t1.Unix())
 	}

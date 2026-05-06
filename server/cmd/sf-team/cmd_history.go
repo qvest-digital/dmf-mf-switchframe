@@ -22,7 +22,7 @@ func (d db) historyFor(ctx context.Context, itemID string) ([]historyEntry, erro
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []historyEntry
 	for rows.Next() {
 		var e historyEntry

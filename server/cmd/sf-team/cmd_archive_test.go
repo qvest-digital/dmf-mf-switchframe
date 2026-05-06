@@ -15,7 +15,7 @@ func TestArchive_MovesOldMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sqldb.Close()
+	defer func() { _ = sqldb.Close() }()
 	d := newDB(sqldb)
 	ctx := context.Background()
 
@@ -43,7 +43,7 @@ func TestArchive_MovesOldMessages(t *testing.T) {
 	}
 
 	var c int
-	sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE body='old msg'`).Scan(&c)
+	_ = sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE body='old msg'`).Scan(&c)
 	if c != 0 {
 		t.Fatalf("old messages still present")
 	}

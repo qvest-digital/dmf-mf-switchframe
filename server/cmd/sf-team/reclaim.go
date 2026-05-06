@@ -16,7 +16,7 @@ func (d db) reclaimStale(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT item_id, agent_id, claimed_at, last_touch FROM claims
@@ -35,12 +35,12 @@ func (d db) reclaimStale(ctx context.Context) ([]string, error) {
 	for rows.Next() {
 		var s staleClaim
 		if err := rows.Scan(&s.item, &s.agent, &s.claimedAt, &s.lastTouch); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		stales = append(stales, s)
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	ids := make([]string, 0, len(stales))
 	for _, s := range stales {

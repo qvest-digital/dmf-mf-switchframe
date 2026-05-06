@@ -229,7 +229,7 @@ func parseFlags(argv []string, stderr *os.File) (config, error) {
 		return cfg, fmt.Errorf("--profile must be one of: none, cpu, mem, both (got %q)", cfg.profile)
 	}
 	if (cfg.profile == "mem" || cfg.profile == "both") && cfg.sources > 16 {
-		fmt.Fprintf(stderr, "loadtest: warning: --profile %s with --sources %d adds significant heap pressure\n", cfg.profile, cfg.sources)
+		_, _ = fmt.Fprintf(stderr, "loadtest: warning: --profile %s with --sources %d adds significant heap pressure\n", cfg.profile, cfg.sources)
 	}
 	return cfg, nil
 }
@@ -259,7 +259,7 @@ func runWithConfig(cfg config, stdout, stderr *os.File) error {
 		if err != nil {
 			return fmt.Errorf("cpu profile: %w", err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		if err := pprof.StartCPUProfile(f); err != nil {
 			return fmt.Errorf("cpu profile start: %w", err)
 		}
@@ -314,7 +314,7 @@ func runWithConfig(cfg config, stdout, stderr *os.File) error {
 		if err != nil {
 			return fmt.Errorf("mem profile: %w", err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		runtime.GC()
 		if err := pprof.WriteHeapProfile(f); err != nil {
 			return fmt.Errorf("mem profile write: %w", err)

@@ -18,7 +18,7 @@ func (d db) dumpStatus(ctx context.Context, itemsDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer claimRows.Close()
+	defer func() { _ = claimRows.Close() }()
 	type cl struct {
 		ID, Agent, Intent string
 		TS                int64

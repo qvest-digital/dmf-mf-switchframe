@@ -36,7 +36,7 @@ func TestUntouch_MarksReleased(t *testing.T) {
 		t.Fatal(err)
 	}
 	var active int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM touches WHERE path='server/y.go' AND released_at IS NULL`).Scan(&active)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM touches WHERE path='server/y.go' AND released_at IS NULL`).Scan(&active)
 	if active != 0 {
 		t.Fatalf("still active=%d", active)
 	}

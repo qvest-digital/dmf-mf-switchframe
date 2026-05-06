@@ -13,7 +13,7 @@ func (d db) register(ctx context.Context, id, name, worktree string, pid int) er
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO agents (id, display_name, worktree, pid, started_at, last_tick_at, status)
@@ -45,7 +45,7 @@ func runRegister(args []string) int {
 	fs := flag.NewFlagSet("register", flag.ExitOnError)
 	asFlag := fs.String("as", "", "agent id override")
 	nameFlag := fs.String("name", "", "display name")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	ctx, sqldb, id, cleanup, code := setupDBAndIdentity()
 	if cleanup != nil {

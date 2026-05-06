@@ -14,7 +14,7 @@ func newTestDB(t *testing.T) (db, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { sqldb.Close() })
+	t.Cleanup(func() { _ = sqldb.Close() })
 	return newDB(sqldb), path
 }
 
@@ -92,7 +92,7 @@ func TestRegister_RollbackLeavesNoTraces(t *testing.T) {
 	d, _ := newTestDB(t)
 	ctx := context.Background()
 
-	d.sqldb.Close()
+	_ = d.sqldb.Close()
 
 	if err := d.register(ctx, "agent-a", "A", "/tmp/a", 1); err == nil {
 		t.Fatal("expected register to fail against a closed DB")

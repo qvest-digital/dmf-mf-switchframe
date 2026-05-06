@@ -16,7 +16,7 @@ func TestAsk_RequiresMention(t *testing.T) {
 	}
 
 	var kind, mentions string
-	d.sqldb.QueryRow(`SELECT kind, mentions FROM messages WHERE thread='global' AND kind='ask'`).Scan(&kind, &mentions)
+	_ = d.sqldb.QueryRow(`SELECT kind, mentions FROM messages WHERE thread='global' AND kind='ask'`).Scan(&kind, &mentions)
 	if kind != "ask" {
 		t.Fatalf("kind=%q", kind)
 	}
@@ -36,7 +36,7 @@ func TestAnswer_PrependsReRef(t *testing.T) {
 	}
 
 	var body string
-	d.sqldb.QueryRow(`SELECT body FROM messages WHERE kind='answer'`).Scan(&body)
+	_ = d.sqldb.QueryRow(`SELECT body FROM messages WHERE kind='answer'`).Scan(&body)
 	if !strings.HasPrefix(body, "re:1 ") {
 		t.Fatalf("body=%q expected prefix re:1", body)
 	}
@@ -52,7 +52,7 @@ func TestReviewRequest_Kind(t *testing.T) {
 	}
 
 	var kind, mentions string
-	d.sqldb.QueryRow(`SELECT kind, mentions FROM messages WHERE thread='BUG-300'`).Scan(&kind, &mentions)
+	_ = d.sqldb.QueryRow(`SELECT kind, mentions FROM messages WHERE thread='BUG-300'`).Scan(&kind, &mentions)
 	if kind != "review_req" {
 		t.Fatalf("kind=%q", kind)
 	}

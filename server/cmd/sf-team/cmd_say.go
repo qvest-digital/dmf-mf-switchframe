@@ -13,7 +13,7 @@ func (d db) say(ctx context.Context, agentID, thread, kind, body string, mention
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if mentions == nil {
 		mentions = parseMentions(body)
 	}
@@ -32,7 +32,7 @@ func runSay(args []string) int {
 	fs := flag.NewFlagSet("say", flag.ExitOnError)
 	to := fs.String("to", "global", "thread: 'global' or '<ITEM-ID>'")
 	mention := fs.String("mention", "", "comma-separated @ids")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	body := strings.Join(fs.Args(), " ")
 	if body == "" {

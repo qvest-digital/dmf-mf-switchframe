@@ -26,12 +26,12 @@ func (d db) nextUnclaimed(ctx context.Context, itemsDir string) (item, error) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return item{}, err
 		}
 		claimed[id] = true
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	priorityScore := map[string]int{"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 	bestScore := 999
@@ -81,7 +81,7 @@ func runNext(args []string) int {
 	itemsDir := fs.String("items", "docs/backlog/items", "items directory")
 	idOnly := fs.Bool("id-only", false, "print only the ID (for scripts)")
 	jsonOut := fs.Bool("json", false, "emit JSON")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	ctx, sqldb, _, cleanup, code := setupDBAndIdentity()
 	if cleanup != nil {

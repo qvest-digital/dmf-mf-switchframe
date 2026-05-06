@@ -13,7 +13,7 @@ func watchItems(ctx context.Context, dir string, bus *eventBus) {
 	if err != nil {
 		return
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	if err := w.Add(dir); err != nil {
 		return
 	}

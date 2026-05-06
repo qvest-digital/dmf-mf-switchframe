@@ -99,7 +99,7 @@ jobs:
         run: docker build -t switchframe:ci .
       - name: Smoke test Docker image
         run: |
-          docker run -d --name sf-smoke -p 9090:9090 switchframe:ci --demo
+          docker run -d --name sf-smoke -p 9090:9090 switchframe:ci --demo --admin-addr 0.0.0.0:9090
           for i in $(seq 1 30); do
             if curl -sf http://localhost:9090/health > /dev/null 2>&1; then
               echo "Health check passed after ${i}s"

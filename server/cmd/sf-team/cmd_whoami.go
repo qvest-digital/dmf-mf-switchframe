@@ -12,7 +12,7 @@ import (
 // isolation) legacy ~/.switchframe-team/agent-id.txt file directly.
 func runWhoami(args []string) int {
 	fs := flag.NewFlagSet("whoami", flag.ExitOnError)
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	if err := ensureHome(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

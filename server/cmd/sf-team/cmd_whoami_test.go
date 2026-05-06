@@ -29,7 +29,7 @@ func captureStdout(t *testing.T, fn func()) string {
 	if _, err := io.Copy(&buf, r); err != nil {
 		t.Fatalf("copy: %v", err)
 	}
-	r.Close()
+	_ = r.Close()
 	return buf.String()
 }
 

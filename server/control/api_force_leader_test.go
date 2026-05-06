@@ -211,12 +211,12 @@ func TestForceLeader_SanitizeStripsUnicodeCardinalityVectors(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"zero-width space", "al​ice", "alice"},
-		{"zero-width joiner", "al‍ice", "alice"},
-		{"line separator", "al ice", "alice"},
-		{"paragraph separator", "al ice", "alice"},
-		{"C1 next-line", "alice", "alice"},
-		{"bidi override rejected", "al‮ice", "alice"},
+		{"zero-width space", "al\u200bice", "alice"},
+		{"zero-width joiner", "al\u200dice", "alice"},
+		{"line separator", "al\u2028ice", "alice"},
+		{"paragraph separator", "al\u2029ice", "alice"},
+		{"C1 next-line", "al\u0085ice", "alice"},
+		{"bidi override rejected", "al\u202eice", "alice"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

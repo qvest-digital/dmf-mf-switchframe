@@ -16,13 +16,13 @@ func (d db) writeItemStatus(ctx context.Context, w io.Writer, itemID string) err
 		`SELECT agent_id, COALESCE(intent, ''), claimed_at FROM claims WHERE item_id=?`, itemID).
 		Scan(&holder, &intent, &claimedAt)
 	if err != nil {
-		fmt.Fprintf(w, "item %s: not currently claimed\n", itemID)
+		_, _ = fmt.Fprintf(w, "item %s: not currently claimed\n", itemID)
 	} else {
-		fmt.Fprintf(w, "item %s: claimed by %s since %s\n  intent: %s\n",
+		_, _ = fmt.Fprintf(w, "item %s: claimed by %s since %s\n  intent: %s\n",
 			itemID, holder, time.Unix(claimedAt, 0).Format("15:04"), intent)
 	}
 
-	fmt.Fprintf(w, "\nrecent chat in #%s:\n", itemID)
+	_, _ = fmt.Fprintf(w, "\nrecent chat in #%s:\n", itemID)
 	rows, err := d.sqldb.QueryContext(ctx, `
 		SELECT ts, agent_id, kind, COALESCE(body, '') FROM messages
 		WHERE thread = ? ORDER BY id DESC LIMIT 20
@@ -30,12 +30,12 @@ func (d db) writeItemStatus(ctx context.Context, w io.Writer, itemID string) err
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var ts int64
 		var agent, kind, body string
 		_ = rows.Scan(&ts, &agent, &kind, &body)
-		fmt.Fprintf(w, "  [%s] %s (%s): %s\n", time.Unix(ts, 0).Format("15:04"), agent, kind, body)
+		_, _ = fmt.Fprintf(w, "  [%s] %s (%s): %s\n", time.Unix(ts, 0).Format("15:04"), agent, kind, body)
 	}
 	return nil
 }
@@ -44,7 +44,7 @@ func runStatus(args []string) int {
 	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	item := fs.String("item", "", "scope to a single item")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	ctx, sqldb, _, cleanup, code := setupDBAndIdentity()
 	if cleanup != nil {
@@ -74,7 +74,7 @@ func runStatus(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 4
 	}
-	defer mrows.Close()
+	defer func() { _ = mrows.Close() }()
 	for mrows.Next() {
 		var ts int64
 		var agent, kind, body string

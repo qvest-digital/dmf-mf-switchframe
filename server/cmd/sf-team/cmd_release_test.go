@@ -17,13 +17,13 @@ func TestRelease_MovesToHistory(t *testing.T) {
 	}
 
 	var c int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM claims WHERE item_id='BUG-050'`).Scan(&c)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM claims WHERE item_id='BUG-050'`).Scan(&c)
 	if c != 0 {
 		t.Fatalf("claim still active, count=%d", c)
 	}
 
 	var outcome string
-	d.sqldb.QueryRow(`SELECT outcome FROM claim_history WHERE item_id='BUG-050'`).Scan(&outcome)
+	_ = d.sqldb.QueryRow(`SELECT outcome FROM claim_history WHERE item_id='BUG-050'`).Scan(&outcome)
 	if outcome != "done" {
 		t.Fatalf("outcome=%q want done", outcome)
 	}
@@ -53,7 +53,7 @@ func TestRelease_UntouchesAllForItem(t *testing.T) {
 	}
 
 	var active int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM touches WHERE item_id='BUG-052' AND released_at IS NULL`).Scan(&active)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM touches WHERE item_id='BUG-052' AND released_at IS NULL`).Scan(&active)
 	if active != 0 {
 		t.Fatalf("active touches=%d want 0", active)
 	}
@@ -76,7 +76,7 @@ func TestRelease_RollbackOnClosedDB(t *testing.T) {
 	_ = d.register(ctx, "agent-a", "A", "/tmp/a", 1)
 	_ = d.claim(ctx, "BUG-099", "agent-a", "", nil, false)
 
-	d.sqldb.Close()
+	_ = d.sqldb.Close()
 	if err := d.release(ctx, "BUG-099", "agent-a", "done"); err == nil {
 		t.Fatal("expected release to fail against a closed DB")
 	}

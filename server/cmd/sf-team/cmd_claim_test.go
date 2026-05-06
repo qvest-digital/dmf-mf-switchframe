@@ -60,8 +60,8 @@ func TestClaim_EmitsClaimMessages(t *testing.T) {
 	}
 
 	var gCount, iCount int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='claim' AND thread='global'`).Scan(&gCount)
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='claim' AND thread='BUG-031'`).Scan(&iCount)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='claim' AND thread='global'`).Scan(&gCount)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='claim' AND thread='BUG-031'`).Scan(&iCount)
 
 	if gCount != 1 || iCount != 1 {
 		t.Fatalf("claim msgs: global=%d item=%d (want 1/1)", gCount, iCount)
@@ -79,7 +79,7 @@ func TestClaim_WithTouchesInsertsRows(t *testing.T) {
 	}
 
 	var count int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM touches WHERE agent_id='agent-a' AND item_id='BUG-032' AND released_at IS NULL`).Scan(&count)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM touches WHERE agent_id='agent-a' AND item_id='BUG-032' AND released_at IS NULL`).Scan(&count)
 	if count != 2 {
 		t.Fatalf("expected 2 touches, got %d", count)
 	}

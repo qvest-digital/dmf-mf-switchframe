@@ -20,7 +20,7 @@ func runServe(args []string) int {
 	port := fs.Int("port", 7890, "port")
 	host := fs.String("host", "127.0.0.1", "bind host")
 	itemsDir := fs.String("items-dir", "docs/backlog/items", "items directory to watch")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	if err := ensureHome(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -41,7 +41,7 @@ func runServe(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 4
 	}
-	defer sqldb.Close()
+	defer func() { _ = sqldb.Close() }()
 
 	d := newDB(sqldb)
 	srv := newServer(d, serverConfig{Token: cfg.Token, Host: *host, Port: *port, ItemsDir: *itemsDir})

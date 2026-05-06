@@ -19,8 +19,7 @@ func reorderFlags(args []string, boolFlags map[string]bool) []string {
 		}
 		if strings.HasPrefix(a, "-") {
 			name := strings.TrimLeft(a, "-")
-			if eq := strings.Index(name, "="); eq >= 0 {
-				name = name[:eq]
+			if strings.Contains(name, "=") {
 				flags = append(flags, a)
 				continue
 			}

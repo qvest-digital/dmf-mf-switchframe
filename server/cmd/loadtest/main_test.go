@@ -35,7 +35,7 @@ func TestLoadtest_SmokeRunLowSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stderrFile.Close()
+	defer func() { _ = stderrFile.Close() }()
 
 	if err := runWithConfig(cfg, stderrFile, stderrFile); err != nil {
 		_, _ = stderrFile.Seek(0, 0)
@@ -160,7 +160,7 @@ func TestParseFlags_ProfileAndOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stderr.Close()
+	defer func() { _ = stderr.Close() }()
 
 	cases := []struct {
 		name    string

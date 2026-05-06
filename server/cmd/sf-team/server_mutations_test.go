@@ -25,7 +25,7 @@ func TestKnock_Posts(t *testing.T) {
 		t.Fatalf("code=%d", rec.Code)
 	}
 	var c int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='knock'`).Scan(&c)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='knock'`).Scan(&c)
 	if c != 1 {
 		t.Fatalf("no knock persisted")
 	}
@@ -47,7 +47,7 @@ func TestClaim_InsertsViaHTTP(t *testing.T) {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var id string
-	d.sqldb.QueryRow(`SELECT item_id FROM claims WHERE agent_id='thomas'`).Scan(&id)
+	_ = d.sqldb.QueryRow(`SELECT item_id FROM claims WHERE agent_id='thomas'`).Scan(&id)
 	if id != "BUG-HTTP" {
 		t.Fatalf("claim missing")
 	}
@@ -89,7 +89,7 @@ func TestRelease_ViaHTTP(t *testing.T) {
 		t.Fatalf("code=%d", rec.Code)
 	}
 	var c int
-	d.sqldb.QueryRow(`SELECT COUNT(*) FROM claims WHERE item_id='BUG-REL'`).Scan(&c)
+	_ = d.sqldb.QueryRow(`SELECT COUNT(*) FROM claims WHERE item_id='BUG-REL'`).Scan(&c)
 	if c != 0 {
 		t.Fatalf("claim still active")
 	}

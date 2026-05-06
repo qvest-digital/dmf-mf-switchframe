@@ -22,7 +22,7 @@ func (d db) release(ctx context.Context, itemID, agentID, outcome string) error 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if err := d.releaseInTx(ctx, tx, itemID, agentID, outcome); err != nil {
 		return err
@@ -80,7 +80,7 @@ func runRelease(args []string) int {
 	args = reorderFlags(args, nil)
 	fs := flag.NewFlagSet("release", flag.ExitOnError)
 	outcome := fs.String("outcome", "released", "done | blocked | released")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	if fs.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: sf-team release <ITEM-ID> [--outcome ...]")

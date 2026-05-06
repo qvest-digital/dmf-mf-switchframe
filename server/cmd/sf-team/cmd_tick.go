@@ -53,7 +53,7 @@ func runTick(args []string) int {
 	args = reorderFlags(args, map[string]bool{"json": true})
 	fs := flag.NewFlagSet("tick", flag.ExitOnError)
 	jsonFlag := fs.Bool("json", false, "machine-readable output")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	ctx, sqldb, id, cleanup, code := setupDBAndIdentity()
 	if cleanup != nil {
