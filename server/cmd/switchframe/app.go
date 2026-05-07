@@ -1865,63 +1865,74 @@ func (a *App) Run(ctx context.Context) error {
 			}
 		}
 
-		// Load demo stingers if none exist yet.
-		if len(a.stingerStore.List()) == 0 {
-			vi := a.programRelay.VideoInfo()
-			w, h := vi.Width, vi.Height
-			if w == 0 || h == 0 {
-				w, h = 320, 240
-			}
-			numFrames := 30 // 1 second at 30fps
+		// Load demo stingers and playout playlist asynchronously. Stinger
+		// PNG-sequence + audio synthesis takes ~5-8s per clip and demo
+		// playlist generation runs ffmpeg on synthetic sources — together
+		// they easily blow past the container health-check budget if run
+		// inline. None of this is required for the engine to be healthy:
+		// the UI just gains stingers and a playlist a few seconds late.
+		a.bgWG.Add(1)
+		go func() {
+			defer a.bgWG.Done()
 
-			demoStingers := []struct {
-				name string
-				gen  func(int, int, int) ([]byte, error)
-			}{
-				{"whoosh", demo.GenerateWhooshStingerZip},
-				{"slam", demo.GenerateSlamStingerZip},
-				{"musical", demo.GenerateMusicalStingerZip},
-			}
-			for _, ds := range demoStingers {
-				zipData, err := ds.gen(w, h, numFrames)
-				if err != nil {
-					slog.Warn("failed to generate demo stinger", "name", ds.name, "error", err)
-					continue
+			if len(a.stingerStore.List()) == 0 {
+				vi := a.programRelay.VideoInfo()
+				w, h := vi.Width, vi.Height
+				if w == 0 || h == 0 {
+					w, h = 320, 240
 				}
-				if err := a.stingerStore.Upload(ds.name, zipData); err != nil {
-					slog.Warn("failed to load demo stinger", "name", ds.name, "error", err)
-				} else {
-					slog.Info("demo stinger loaded", "name", ds.name, "resolution", fmt.Sprintf("%dx%d", w, h))
-				}
-			}
-		}
+				numFrames := 30 // 1 second at 30fps
 
-		// Load demo playout playlist with synthetic clips. Write the synthetic
-		// clip files into the playout cache dir so they fall inside the asset
-		// allow-list (deny-by-default — see initPlayout).
-		if a.playoutMgr != nil {
-			demoClipDir := filepath.Join(a.cfg.StateDir, "playout-cache", "demo")
-			if err := os.MkdirAll(demoClipDir, 0o755); err != nil {
-				slog.Warn("demo: failed to create dir for playout clips", "error", err)
-			} else {
-				playlist, err := demo.GenerateDemoPlaylist(demoClipDir, a.playoutSamples)
-				if err != nil {
-					slog.Warn("demo: failed to generate playout playlist", "error", err)
-				} else if playlist != nil {
-					if err := a.playoutMgr.LoadPlaylist(1, playlist); err != nil {
-						slog.Warn("demo: failed to load playout playlist", "error", err)
+				demoStingers := []struct {
+					name string
+					gen  func(int, int, int) ([]byte, error)
+				}{
+					{"whoosh", demo.GenerateWhooshStingerZip},
+					{"slam", demo.GenerateSlamStingerZip},
+					{"musical", demo.GenerateMusicalStingerZip},
+				}
+				for _, ds := range demoStingers {
+					if ctx.Err() != nil {
+						return
+					}
+					zipData, err := ds.gen(w, h, numFrames)
+					if err != nil {
+						slog.Warn("failed to generate demo stinger", "name", ds.name, "error", err)
+						continue
+					}
+					if err := a.stingerStore.Upload(ds.name, zipData); err != nil {
+						slog.Warn("failed to load demo stinger", "name", ds.name, "error", err)
 					} else {
-						slog.Info("demo: playout playlist loaded", "items", len(playlist.Items), "channel", 1)
-						// Notify prefetcher so it can start caching assets.
-						if a.playoutPrefetcher != nil {
-							a.playoutPrefetcher.UpdatePlaylist(playlist, 0)
-						}
-						// Set up demo pods (armed ad break pods).
-						demo.SetupDemoPods(a.playoutMgr, 1)
+						slog.Info("demo stinger loaded", "name", ds.name, "resolution", fmt.Sprintf("%dx%d", w, h))
 					}
 				}
 			}
-		}
+
+			if a.playoutMgr != nil {
+				demoClipDir := filepath.Join(a.cfg.StateDir, "playout-cache", "demo")
+				if err := os.MkdirAll(demoClipDir, 0o755); err != nil {
+					slog.Warn("demo: failed to create dir for playout clips", "error", err)
+					return
+				}
+				playlist, err := demo.GenerateDemoPlaylist(demoClipDir, a.playoutSamples)
+				if err != nil {
+					slog.Warn("demo: failed to generate playout playlist", "error", err)
+					return
+				}
+				if playlist == nil {
+					return
+				}
+				if err := a.playoutMgr.LoadPlaylist(1, playlist); err != nil {
+					slog.Warn("demo: failed to load playout playlist", "error", err)
+					return
+				}
+				slog.Info("demo: playout playlist loaded", "items", len(playlist.Items), "channel", 1)
+				if a.playoutPrefetcher != nil {
+					a.playoutPrefetcher.UpdatePlaylist(playlist, 0)
+				}
+				demo.SetupDemoPods(a.playoutMgr, 1)
+			}
+		}()
 	}
 
 	// Program preview encoder — low-bitrate H.264 for browser program monitor.
