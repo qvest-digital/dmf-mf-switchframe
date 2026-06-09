@@ -120,11 +120,11 @@ func (a *App) initPlayout() error {
 			// This replaces the full-quality relay encode with low-bitrate preview,
 			// matching the clip/SRT source preview proxy path.
 			idx := channelID - 1
-			if idx >= 0 && idx < playout.MaxChannels && a.cfg.PreviewProxy && a.gpuState != nil && a.gpuState.sourceManager != nil {
+			if gs := a.gpu(); idx >= 0 && idx < playout.MaxChannels && a.cfg.PreviewProxy && gs != nil && gs.sourceManager != nil {
 				pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
 				curPF := a.sw.PipelineFormat()
 				relay := a.playoutRelays[idx]
-				a.gpuState.sourceManager.RegisterSource(key, curPF.Width, curPF.Height, &gpu.PreviewConfig{
+				gs.sourceManager.RegisterSource(key, curPF.Width, curPF.Height, &gpu.PreviewConfig{
 					Width:   pw,
 					Height:  ph,
 					Bitrate: a.cfg.PreviewBitrate,
@@ -172,8 +172,8 @@ func (a *App) initPlayout() error {
 				playoutPreviewGroupID[idx].Store(0)
 			}
 			// Release GPU preview encoder and cached frames.
-			if a.gpuState != nil && a.gpuState.sourceManager != nil {
-				a.gpuState.sourceManager.RemoveSource(key)
+			if gs := a.gpu(); gs != nil && gs.sourceManager != nil {
+				gs.sourceManager.RemoveSource(key)
 			}
 			a.sw.UnregisterSource(key)
 			a.mixer.RemoveChannel(key)
@@ -185,19 +185,21 @@ func (a *App) initPlayout() error {
 	// channel's GPU frame to the live source's GPU frame — no CPU download
 	// or re-upload needed (saves ~3MB/frame round-trip at 30fps).
 	mgr.SetGPUAlias(func(channelKey, liveSourceKey string) bool {
-		if a.gpuState == nil || a.gpuState.sourceManager == nil {
+		gs := a.gpu()
+		if gs == nil || gs.sourceManager == nil {
 			return false
 		}
-		return a.gpuState.sourceManager.AliasSource(channelKey, liveSourceKey)
+		return gs.sourceManager.AliasSource(channelKey, liveSourceKey)
 	})
 
 	// CPU fallback tap for live playlist items. Used when GPU aliasing is
 	// unavailable (non-GPU builds or when the source has no GPU frame yet).
 	mgr.SetGPUSourceTap(func(channelKey, sourceKey string) *playout.DecodedFrame {
-		if a.gpuState == nil || a.gpuState.sourceManager == nil {
+		gs := a.gpu()
+		if gs == nil || gs.sourceManager == nil {
 			return nil
 		}
-		yuv, w, h, pts := a.gpuState.sourceManager.ReadCachedFrame(sourceKey)
+		yuv, w, h, pts := gs.sourceManager.ReadCachedFrame(sourceKey)
 		if yuv == nil {
 			return nil
 		}

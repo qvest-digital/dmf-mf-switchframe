@@ -1,6 +1,7 @@
 package graphics
 
 import (
+	"encoding/binary"
 	"image"
 
 	"github.com/zsiec/switchframe/server/internal/video"
@@ -62,15 +63,34 @@ func AlphaBlendRGBA(yuv []byte, rgba []byte, width, height int, alphaScale float
 	}
 }
 
-// isOverlayTransparent performs a fast sparse check of the overlay's alpha
-// channel. Samples every 64th pixel. Returns true if all sampled alphas are 0.
-// This catches fully transparent overlays (empty layers, cleared graphics)
-// at ~1.5% of the full scan cost.
+// isOverlayTransparent reports whether every pixel of the overlay is fully
+// transparent (alpha == 0). The result is used as a hard render gate by the
+// compositor, so the check must be exact: the previous sparse sampling
+// (every 64th pixel by linear index) never inspected most columns at widths
+// divisible by 64 — i.e. every standard resolution — and silently dropped
+// narrow graphics that fell between sampled columns.
+//
+// The scan reads the alpha channel word-at-a-time (two pixels per uint64)
+// and exits on the first non-zero alpha, so overlays with visible content
+// return quickly while fully transparent overlays cost a single linear pass —
+// still far cheaper than dispatching the blend kernels.
 func isOverlayTransparent(rgba []byte, pixelCount int) bool {
-	// Check alpha byte (offset 3) of every 64th pixel.
-	stride := 64 * 4
-	for i := 3; i < len(rgba); i += stride {
-		if rgba[i] != 0 {
+	n := pixelCount * 4
+	if n > len(rgba) {
+		n = len(rgba)
+	}
+	// Alpha is byte 3 of each 4-byte pixel: bits 24-31 and 56-63 of a
+	// little-endian uint64 covering two pixels.
+	const alphaMask = 0xFF000000_FF000000
+	i := 0
+	for ; i+8 <= n; i += 8 {
+		if binary.LittleEndian.Uint64(rgba[i:])&alphaMask != 0 {
+			return false
+		}
+	}
+	// Trailing pixel when the pixel count is odd.
+	for ; i+4 <= n; i += 4 {
+		if rgba[i+3] != 0 {
 			return false
 		}
 	}

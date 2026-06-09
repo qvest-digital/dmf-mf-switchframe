@@ -546,6 +546,36 @@ func TestTSMuxer_Close_AfterInit(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestTSMuxer_WriteAfterClose_NoOutputCallback verifies that a late write
+// arriving after Close() does not invoke the (now-stale) output callback,
+// even when the write is a keyframe that re-runs init(). This models the
+// Manager use-after-close window: a DirectWriteVideo loads the muxer pointer
+// just before the Manager stores nil and calls Close, then blocks on the
+// muxer mutex until Close returns. Close clears m.output so the late write
+// cannot emit TS data into a torn-down Manager.
+func TestTSMuxer_WriteAfterClose_NoOutputCallback(t *testing.T) {
+	m := NewTSMuxer()
+
+	var outputCalls int
+	m.SetOutput(func(data []byte) { outputCalls++ })
+
+	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
+	require.Positive(t, outputCalls, "sanity: output should fire while open")
+
+	require.NoError(t, m.Close())
+
+	outputCalls = 0
+	// A keyframe after Close re-runs init() (the muxer is reusable), but the
+	// output callback must stay cleared so nothing reaches freed adapters.
+	require.NoError(t, m.WriteVideo(makeTestKeyframe2(93000)))
+	require.NoError(t, m.WriteAudio(&media.AudioFrame{
+		PTS: 93000, Data: []byte{0xDE, 0xAD}, SampleRate: 48000, Channels: 2,
+	}))
+	require.Zero(t, outputCalls,
+		"write after Close must not invoke the stale output callback")
+	require.Nil(t, m.output, "Close must clear m.output")
+}
+
 func TestTSMuxer_WriteVideo_NoOutput(t *testing.T) {
 	m := NewTSMuxer()
 	// No SetOutput called — should not panic.

@@ -82,11 +82,11 @@ func (a *App) initClips() error {
 			// This replaces the full-quality relay encode with 480p preview,
 			// matching the SRT source preview proxy path.
 			idx := playerID - 1
-			if idx >= 0 && idx < clip.MaxPlayers && a.cfg.PreviewProxy && a.gpuState != nil && a.gpuState.sourceManager != nil {
+			if gs := a.gpu(); idx >= 0 && idx < clip.MaxPlayers && a.cfg.PreviewProxy && gs != nil && gs.sourceManager != nil {
 				pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
 				pf := a.sw.PipelineFormat()
 				relay := a.clipRelays[idx]
-				a.gpuState.sourceManager.RegisterSource(key, pf.Width, pf.Height, &gpu.PreviewConfig{
+				gs.sourceManager.RegisterSource(key, pf.Width, pf.Height, &gpu.PreviewConfig{
 					Width:   pw,
 					Height:  ph,
 					Bitrate: a.cfg.PreviewBitrate,
@@ -138,8 +138,8 @@ func (a *App) initClips() error {
 				clipPreviewGroupID[idx].Store(0)
 			}
 			// Release GPU preview encoder and cached frames.
-			if a.gpuState != nil && a.gpuState.sourceManager != nil {
-				a.gpuState.sourceManager.RemoveSource(key)
+			if gs := a.gpu(); gs != nil && gs.sourceManager != nil {
+				gs.sourceManager.RemoveSource(key)
 			}
 		},
 	)
@@ -148,7 +148,10 @@ func (a *App) initClips() error {
 	// Clips may be any resolution; scale to pipeline format before ingest
 	// (same pattern as MXL/SRT sources which scale before IngestRawVideo).
 	var clipRawFrameCount [clip.MaxPlayers]int64
-	var clipScaleBuf []byte // persistent scale buffer, reused across frames
+	// Per-player persistent scale buffers, reused across frames. Indexed by
+	// player slot because each player invokes this callback from its own
+	// decode goroutine — see scaleClipFrame.
+	var clipScaleBufs [clip.MaxPlayers][]byte
 	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		idx := clipPlayerIDFromKey(key) - 1
 		if idx >= 0 && idx < clip.MaxPlayers {
@@ -171,13 +174,8 @@ func (a *App) initClips() error {
 		pf := a.sw.PipelineFormat()
 		outYUV, outW, outH := yuv, w, h
 		if w != pf.Width || h != pf.Height {
-			targetSize := switcher.ColorYUV420_8bit.FrameSize(pf.Width, pf.Height)
-			if cap(clipScaleBuf) < targetSize {
-				clipScaleBuf = make([]byte, targetSize)
-			}
-			clipScaleBuf = clipScaleBuf[:targetSize]
-			transition.ScaleYUV420(yuv, w, h, clipScaleBuf, pf.Width, pf.Height)
-			outYUV, outW, outH = clipScaleBuf, pf.Width, pf.Height
+			outYUV = scaleClipFrame(&clipScaleBufs, idx, yuv, w, h, pf.Width, pf.Height)
+			outW, outH = pf.Width, pf.Height
 		}
 
 		frame := &switcher.ProcessingFrame{
@@ -321,6 +319,33 @@ func (a *App) initClips() error {
 	}
 
 	return nil
+}
+
+// scaleClipFrame scales a decoded clip frame to the target dimensions using
+// the persistent scale buffer for player idx, growing it as needed, and
+// returns the scaled frame.
+//
+// The buffers MUST be per-player: the raw-video callback runs on each clip
+// player's own decode goroutine (clip.MaxPlayers of them, `go p.run(ctx)`),
+// so a single shared buffer would be concurrently reallocated and written by
+// multiple players, racing and corrupting frames across players (same reason
+// the SRT path allocates per-source buffers in app_srt.go). An out-of-range
+// idx (unparseable key) gets a fresh throwaway buffer.
+func scaleClipFrame(bufs *[clip.MaxPlayers][]byte, idx int, yuv []byte, w, h, targetW, targetH int) []byte {
+	targetSize := switcher.ColorYUV420_8bit.FrameSize(targetW, targetH)
+	if idx < 0 || idx >= clip.MaxPlayers {
+		buf := make([]byte, targetSize)
+		transition.ScaleYUV420(yuv, w, h, buf, targetW, targetH)
+		return buf
+	}
+	buf := bufs[idx]
+	if cap(buf) < targetSize {
+		buf = make([]byte, targetSize)
+	}
+	buf = buf[:targetSize]
+	bufs[idx] = buf
+	transition.ScaleYUV420(yuv, w, h, buf, targetW, targetH)
+	return buf
 }
 
 // clipPlayerIDFromKey extracts the player ID from a "clip:N" key.

@@ -499,3 +499,49 @@ func TestSRTListener_StatsPollingWithNonStatterConn(t *testing.T) {
 
 	l.RemoveConnection("plain")
 }
+
+// TestSRTListener_AcceptLoopErrorSetsErrorState verifies that a failed
+// accept loop (e.g., the bind fails because the port is already in use)
+// surfaces as StateError with the error message, instead of the listener
+// reporting StateActive forever while no client can ever connect.
+func TestSRTListener_AcceptLoopErrorSetsErrorState(t *testing.T) {
+	t.Parallel()
+	l := NewSRTListener(SRTListenerConfig{Port: 9999})
+	l.acceptFn = func(ctx context.Context, config SRTListenerConfig) error {
+		return fmt.Errorf("srt listen :9999: address already in use")
+	}
+
+	require.NoError(t, l.Start(context.Background()))
+	defer func() { _ = l.Close() }()
+
+	require.Eventually(t, func() bool {
+		return l.Status().State == StateError
+	}, 2*time.Second, 10*time.Millisecond,
+		"listener must report StateError after the accept loop fails to bind")
+	require.Contains(t, l.Status().Error, "address already in use")
+
+	snap := l.SRTStatusSnapshot()
+	require.False(t, snap.Active, "failed listener must not report Active")
+}
+
+// TestSRTListener_AcceptLoopErrorAfterCloseKeepsStopped verifies that an
+// accept-loop error that loses the race with Close does not overwrite the
+// terminal StateStopped.
+func TestSRTListener_AcceptLoopErrorAfterCloseKeepsStopped(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	l := NewSRTListener(SRTListenerConfig{Port: 9999})
+	l.acceptFn = func(ctx context.Context, config SRTListenerConfig) error {
+		<-release
+		return fmt.Errorf("late accept error")
+	}
+
+	require.NoError(t, l.Start(context.Background()))
+	require.NoError(t, l.Close())
+	close(release)
+
+	// Give the accept goroutine time to observe the error path.
+	time.Sleep(50 * time.Millisecond)
+	require.Equal(t, StateStopped, l.Status().State,
+		"a late accept error must not overwrite StateStopped")
+}

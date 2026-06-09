@@ -93,6 +93,15 @@ func (n *gpuColorGradeNode) ProcessGPU(frame *GPUFrame) error {
 			return nil
 		}
 
+		// Fail closed if the declared cube dimension disagrees with the data
+		// length — otherwise the kernel would index past the device buffer.
+		size := n.state.GradingLUTSize()
+		if err := validateLUT3D(data, size); err != nil {
+			n.lastErr.Store(err)
+			slog.Warn("gpu_colorgrade: invalid LUT, skipping", "error", err)
+			return nil
+		}
+
 		devPtr, err := UploadLUT3D(data)
 		if err != nil {
 			n.lastErr.Store(err)
@@ -101,7 +110,7 @@ func (n *gpuColorGradeNode) ProcessGPU(frame *GPUFrame) error {
 		}
 		n.lutDev = devPtr
 		n.lutGen = gen
-		n.lutSize = n.state.GradingLUTSize()
+		n.lutSize = size
 	}
 
 	// Dispatch to the correct kernel based on frame format.

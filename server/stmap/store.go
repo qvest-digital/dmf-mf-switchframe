@@ -84,6 +84,12 @@ func (s *Store) LoadStatic(name string) (*STMap, error) {
 
 	width := int(binary.BigEndian.Uint32(data[0:4]))
 	height := int(binary.BigEndian.Uint32(data[4:8]))
+	// Bound dimensions before computing n: a corrupt/crafted header can
+	// otherwise overflow the expected-size computation below, bypassing the
+	// length check and panicking in make (same pattern as ReadRaw).
+	if width <= 0 || height <= 0 || width > maxRawDimension || height > maxRawDimension {
+		return nil, fmt.Errorf("stmap store: %s: invalid dimensions %dx%d", name, width, height)
+	}
 	n := width * height
 
 	expectedSize := 8 + n*4*2

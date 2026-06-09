@@ -55,6 +55,27 @@ type scte35TemplateRequest struct {
 	Name string `json:"name"`
 }
 
+// maxSCTE35DurationMs bounds operator-supplied pre-roll and break durations.
+// The SCTE-35 PTS clock is 33 bits at 90 kHz; auto-return compares PTS values
+// within half that period (~13.25h), so a longer break/pre-roll cannot be timed
+// unambiguously. Capping at 12h stays safely inside that window and keeps
+// splice-time and auto-return arithmetic (ms*90 and ms*90000) well within int64,
+// preventing overflow from producing a garbage (often instantly-reached)
+// scheduled return PTS. 12h is still far beyond any real ad break or pre-roll.
+const maxSCTE35DurationMs = int64(12 * time.Hour / time.Millisecond)
+
+// validateDurationMs rejects negative or absurdly large millisecond durations
+// supplied by the operator. The field name is used only for the error message.
+func validateDurationMs(field string, ms int64) error {
+	if ms < 0 {
+		return fmt.Errorf("%s must be non-negative, got %d", field, ms)
+	}
+	if ms > maxSCTE35DurationMs {
+		return fmt.Errorf("%s must be <= %d ms (12h), got %d", field, maxSCTE35DurationMs, ms)
+	}
+	return nil
+}
+
 // registerSCTE35Routes registers SCTE-35 API routes on the given mux.
 func (a *API) registerSCTE35Routes(mux *http.ServeMux) {
 	if a.scte35 != nil {
@@ -110,6 +131,10 @@ func (a *API) handleSCTE35Cue(w http.ResponseWriter, r *http.Request) {
 
 	var eventID uint32
 	if req.PreRollMs != nil && *req.PreRollMs > 0 {
+		if err := validateDurationMs("preRollMs", *req.PreRollMs); err != nil {
+			httperr.Write(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		eventID, err = a.scte35.ScheduleCue(msg, *req.PreRollMs)
 	} else {
 		eventID, err = a.scte35.InjectCue(msg)
@@ -610,6 +635,9 @@ func buildCueMessage(req scte35CueRequest) (*scte35.CueMessage, error) {
 		msg.AvailsExpected = *req.AvailsExpected
 	}
 	if req.DurationMs != nil {
+		if err := validateDurationMs("durationMs", *req.DurationMs); err != nil {
+			return nil, err
+		}
 		dur := time.Duration(*req.DurationMs) * time.Millisecond
 		msg.BreakDuration = &dur
 	}
@@ -633,8 +661,8 @@ func buildCueMessage(req scte35CueRequest) (*scte35.CueMessage, error) {
 			desc.SegEventID = *d.SegEventID
 		}
 		if d.DurationMs != nil {
-			if *d.DurationMs < 0 {
-				return nil, fmt.Errorf("descriptor duration_ms must be non-negative, got %d", *d.DurationMs)
+			if err := validateDurationMs("descriptor duration_ms", *d.DurationMs); err != nil {
+				return nil, err
 			}
 			// Convert milliseconds to 90 kHz ticks.
 			ticks := uint64(*d.DurationMs) * 90

@@ -548,8 +548,26 @@ type decodedFrame struct {
 	PTS    int64
 }
 
+// maxDecodeFailureRatio bounds how many of the frames we actually attempt to
+// decode are allowed to fail (decoder rejects them or returns nil). Silently
+// dropping decode failures would let an encoder that emits corrupt/undecodable
+// frames pass tests that only check the count of survivors, hiding exactly the
+// encode bugs this harness exists to catch. We tolerate a small fraction (one
+// transient hiccup in a tiny batch) but fail the test if corruption is
+// widespread. Only enforced once there are enough attempts to be meaningful.
+const (
+	maxDecodeFailureRatio   = 0.10
+	minDecodeAttemptsToGate = 10
+)
+
 // decodeCapturedFrames decodes captured video frames from the capture viewer
 // by feeding them through an FFmpeg decoder.
+//
+// Frames with no WireData carry nothing to decode and are skipped without
+// penalty. Frames that DO carry data but the decoder rejects are counted as
+// decode failures: if their ratio among attempted decodes exceeds
+// maxDecodeFailureRatio the test fails, so corrupt/undecodable output cannot
+// silently vanish from the returned slice.
 func decodeCapturedFrames(t *testing.T, videos []*media.VideoFrame) []decodedFrame {
 	t.Helper()
 
@@ -558,13 +576,17 @@ func decodeCapturedFrames(t *testing.T, videos []*media.VideoFrame) []decodedFra
 	defer dec.Close()
 
 	var decoded []decodedFrame
+	attempts := 0 // frames that carried data we tried to decode
+	failures := 0 // attempted decodes the decoder rejected
 	for _, vf := range videos {
 		if len(vf.WireData) == 0 {
 			continue
 		}
+		attempts++
 		annexB := codec.AVC1ToAnnexB(vf.WireData)
 		yuv, w, h, decErr := dec.Decode(annexB)
 		if decErr != nil || yuv == nil {
+			failures++
 			continue
 		}
 		decoded = append(decoded, decodedFrame{
@@ -573,6 +595,17 @@ func decodeCapturedFrames(t *testing.T, videos []*media.VideoFrame) []decodedFra
 			Height: h,
 			PTS:    vf.PTS,
 		})
+	}
+
+	if failures > 0 {
+		t.Logf("MEASURE: decode failures = %d / %d attempted frames (%.1f%%)",
+			failures, attempts, 100*float64(failures)/float64(attempts))
+	}
+	if attempts >= minDecodeAttemptsToGate {
+		ratio := float64(failures) / float64(attempts)
+		require.LessOrEqualf(t, ratio, maxDecodeFailureRatio,
+			"decoder rejected %d of %d frames (%.1f%% > %.0f%%) — encoder may be emitting corrupt/undecodable output",
+			failures, attempts, 100*ratio, 100*maxDecodeFailureRatio)
 	}
 
 	return decoded

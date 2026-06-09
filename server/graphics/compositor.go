@@ -547,6 +547,8 @@ func (c *Compositor) AutoOn(id int, duration time.Duration) error {
 	layer.fadePosition = 0.0
 	layer.fadeDone = make(chan struct{})
 	layer.fadeCancel = make(chan struct{})
+	cancelCh := layer.fadeCancel
+	doneCh := layer.fadeDone
 	state := c.buildStateLocked()
 	cb := c.onStateChange
 	c.mu.Unlock()
@@ -554,7 +556,7 @@ func (c *Compositor) AutoOn(id int, duration time.Duration) error {
 	if cb != nil {
 		cb(state)
 	}
-	go c.runFade(id, 0.0, 1.0, duration)
+	go c.runFade(id, 0.0, 1.0, duration, cancelCh, doneCh)
 	return nil
 }
 
@@ -589,6 +591,8 @@ func (c *Compositor) AutoOff(id int, duration time.Duration) error {
 
 	layer.fadeDone = make(chan struct{})
 	layer.fadeCancel = make(chan struct{})
+	cancelCh := layer.fadeCancel
+	doneCh := layer.fadeDone
 	state := c.buildStateLocked()
 	cb := c.onStateChange
 	c.mu.Unlock()
@@ -596,7 +600,7 @@ func (c *Compositor) AutoOff(id int, duration time.Duration) error {
 	if cb != nil {
 		cb(state)
 	}
-	go c.runFade(id, 1.0, 0.0, duration)
+	go c.runFade(id, 1.0, 0.0, duration, cancelCh, doneCh)
 	return nil
 }
 
@@ -624,6 +628,8 @@ func (c *Compositor) Animate(id int, cfg AnimationConfig) error {
 	layer.animConfig = &cfg
 	layer.animCancel = make(chan struct{})
 	layer.animDone = make(chan struct{})
+	cancelCh := layer.animCancel
+	doneCh := layer.animDone
 	state := c.buildStateLocked()
 	cb := c.onStateChange
 	c.mu.Unlock()
@@ -634,9 +640,9 @@ func (c *Compositor) Animate(id int, cfg AnimationConfig) error {
 
 	switch cfg.Mode {
 	case "transition":
-		go c.runTransitionAnimation(id)
+		go c.runTransitionAnimation(id, cancelCh, doneCh)
 	default:
-		go c.runPulseAnimation(id)
+		go c.runPulseAnimation(id, cancelCh, doneCh)
 	}
 	return nil
 }
@@ -743,7 +749,18 @@ func (c *Compositor) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closed = true
+	// Snapshot the layer pointers before cancelling. cancelLayerFadeLocked /
+	// cancelLayerAnimationLocked drop c.mu while waiting on the goroutine done
+	// channel, so ranging c.layers directly would iterate the map across an
+	// unlocked window — a concurrent in-flight mutator (e.g. RemoveLayer/AddLayer
+	// that passed its c.closed check before we set closed=true) could write the
+	// map during that window, causing a concurrent map iteration/write fatal.
+	// The helpers operate on *graphicsLayer, so iterating a local snapshot is safe.
+	layers := make([]*graphicsLayer, 0, len(c.layers))
 	for _, layer := range c.layers {
+		layers = append(layers, layer)
+	}
+	for _, layer := range layers {
 		c.cancelLayerFadeLocked(layer)
 		c.cancelLayerAnimationLocked(layer)
 	}
@@ -997,40 +1014,28 @@ func (c *Compositor) ProcessYUV10(yuv []byte, width, height int) []byte {
 		if isOverlayTransparent(layer.overlay, layer.overlayWidth*layer.overlayHeight) {
 			continue
 		}
-		overlay := layer.overlay
-		if layer.fadePosition < 1.0 {
-			overlay = applyFadeAlpha(overlay, layer.overlayWidth*layer.overlayHeight, layer.fadePosition)
-		}
-
 		fullFrame := fullFrameRect(width, height)
 		if (layer.rect == image.Rectangle{} || layer.rect == fullFrame) &&
 			layer.overlayWidth == width && layer.overlayHeight == height {
 			// Fast path: full-frame overlay at matching dimensions.
-			_ = AlphaBlendRGBA10(yuv, overlay, width, height)
+			// Fold fadePosition into the blend kernel (AlphaBlendRGBA10Scaled),
+			// mirroring the 8-bit AlphaBlendRGBA path, to avoid allocating a
+			// faded copy of the overlay RGBA every frame.
+			_ = AlphaBlendRGBA10Scaled(yuv, layer.overlay, width, height, layer.fadePosition)
 		} else {
-			// Sub-frame: blend overlay into rect region.
+			// Sub-frame: blend overlay into rect region. AlphaBlendRGBARect10
+			// applies fadePosition as alphaScale itself, so pass the unmodified
+			// overlay — pre-fading here would square the fade (fadePosition^2).
 			rect := layer.rect
 			if (rect == image.Rectangle{}) {
 				rect = fullFrame
 			}
-			_ = AlphaBlendRGBARect10(yuv, overlay, width, height,
+			_ = AlphaBlendRGBARect10(yuv, layer.overlay, width, height,
 				layer.overlayWidth, layer.overlayHeight,
 				rect, layer.fadePosition)
 		}
 	}
 	return yuv
-}
-
-// applyFadeAlpha creates a copy of RGBA data with alpha scaled by fadePosition.
-func applyFadeAlpha(rgba []byte, pixelCount int, fadePosition float64) []byte {
-	scaled := make([]byte, len(rgba))
-	copy(scaled, rgba)
-	fade := int32(fadePosition * 255.0)
-	for i := 0; i < pixelCount; i++ {
-		a := int32(scaled[i*4+3])
-		scaled[i*4+3] = byte((a*fade + 128) >> 8)
-	}
-	return scaled
 }
 
 // IsActive returns whether any layer is currently active.
@@ -1244,8 +1249,11 @@ func fullFrameRect(w, h int) image.Rectangle {
 }
 
 // runFade drives a fade from startAlpha to endAlpha over the given duration
-// for a specific layer.
-func (c *Compositor) runFade(layerID int, startAlpha, endAlpha float64, duration time.Duration) {
+// for a specific layer. fadeDone is the completion channel this goroutine owns
+// and is responsible for closing exactly once on exit (passed explicitly so it
+// is closed even if the layer is removed mid-fade, unblocking any canceller
+// waiting in cancelLayerFadeLocked).
+func (c *Compositor) runFade(layerID int, startAlpha, endAlpha float64, duration time.Duration, cancelCh <-chan struct{}, fadeDone chan struct{}) {
 	const tickRate = 60
 	tickDur := duration / time.Duration(tickRate)
 	if tickDur < time.Millisecond {
@@ -1254,41 +1262,36 @@ func (c *Compositor) runFade(layerID int, startAlpha, endAlpha float64, duration
 	ticker := time.NewTicker(tickDur)
 	defer ticker.Stop()
 
-	// Grab the cancel channel under lock so we know which one to select on.
-	c.mu.RLock()
-	layer, ok := c.layers[layerID]
-	if !ok {
-		c.mu.RUnlock()
-		return
-	}
-	cancelCh := layer.fadeCancel
-	c.mu.RUnlock()
-
 	start := time.Now()
 	cancelled := false
 
 	defer func() {
 		c.mu.Lock()
+		// Clear the layer's fade fields if it still exists. The fadeDone channel
+		// is owned by this goroutine (passed in at spawn) and is always closed
+		// below — even when the layer was removed (RemoveLayer) mid-fade — so a
+		// canceller blocked on <-done in cancelLayerFadeLocked never deadlocks.
+		// When the layer survives, layer.fadeDone is this same channel; nilling
+		// it prevents a later AutoOn from observing a stale, closed channel. The
+		// cancel helpers only read done to wait, never close it, so this is the
+		// sole close site (exactly once per goroutine).
 		layer, ok := c.layers[layerID]
 		if ok {
-			done := layer.fadeDone
 			layer.fadeDone = nil
 			layer.fadeCancel = nil
-			var state State
-			var cb func(State)
-			if !cancelled {
-				state = c.buildStateLocked()
-				cb = c.onStateChange
-			}
-			c.mu.Unlock()
-			if cb != nil {
-				cb(state)
-			}
-			if done != nil {
-				close(done)
-			}
-		} else {
-			c.mu.Unlock()
+		}
+		var state State
+		var cb func(State)
+		if ok && !cancelled {
+			state = c.buildStateLocked()
+			cb = c.onStateChange
+		}
+		c.mu.Unlock()
+		if cb != nil {
+			cb(state)
+		}
+		if fadeDone != nil {
+			close(fadeDone)
 		}
 	}()
 
@@ -1334,8 +1337,17 @@ func (c *Compositor) runFade(layerID int, startAlpha, endAlpha float64, duration
 // Must be called with mu held.
 func (c *Compositor) cancelLayerFadeLocked(layer *graphicsLayer) {
 	if layer.fadeCancel != nil {
-		close(layer.fadeCancel)
+		// Capture the cancel channel locally and nil the field BEFORE dropping
+		// the lock. This prevents a second goroutine that acquires c.mu during
+		// the <-done wait below from observing a still-non-nil fadeCancel and
+		// closing it a second time (panic: close of closed channel); it will
+		// see nil and skip the whole block. fadeDone is intentionally left set
+		// so the fade goroutine's deferred cleanup still closes it; we only
+		// read a local copy to wait on.
+		cancel := layer.fadeCancel
 		done := layer.fadeDone
+		layer.fadeCancel = nil
+		close(cancel)
 		c.mu.Unlock()
 		if done != nil {
 			<-done
@@ -1348,8 +1360,14 @@ func (c *Compositor) cancelLayerFadeLocked(layer *graphicsLayer) {
 // Must be called with mu held.
 func (c *Compositor) cancelLayerAnimationLocked(layer *graphicsLayer) {
 	if layer.animCancel != nil {
-		close(layer.animCancel)
+		// Capture the cancel channel locally and nil the field before unlocking
+		// so a concurrent caller sees nil and cannot double-close animCancel
+		// during the <-done wait. animDone is left set so the animation
+		// goroutine's deferred cleanup still closes it.
+		cancel := layer.animCancel
 		done := layer.animDone
+		layer.animCancel = nil
+		close(cancel)
 		c.mu.Unlock()
 		if done != nil {
 			<-done
@@ -1359,10 +1377,18 @@ func (c *Compositor) cancelLayerAnimationLocked(layer *graphicsLayer) {
 }
 
 // runPulseAnimation drives a sinusoidal alpha oscillation at ~60fps for a layer.
-func (c *Compositor) runPulseAnimation(layerID int) {
+// animDone is the completion channel this goroutine owns and always closes on
+// exit (even if the layer is removed mid-animation), unblocking any canceller
+// waiting in cancelLayerAnimationLocked.
+func (c *Compositor) runPulseAnimation(layerID int, cancelCh <-chan struct{}, animDone chan struct{}) {
 	const tickRate = 60
 	ticker := time.NewTicker(time.Second / tickRate)
 	defer ticker.Stop()
+	defer func() {
+		if animDone != nil {
+			close(animDone)
+		}
+	}()
 
 	c.mu.RLock()
 	layer, ok := c.layers[layerID]
@@ -1371,27 +1397,21 @@ func (c *Compositor) runPulseAnimation(layerID int) {
 		return
 	}
 	cfg := *layer.animConfig
-	cancelCh := layer.animCancel
 	c.mu.RUnlock()
 
 	start := time.Now()
 	var tickCount int
 
+	// Clear the layer's animation fields on exit (the outer defer closes
+	// animDone afterwards). No-op if the layer was already removed.
 	defer func() {
 		c.mu.Lock()
-		layer, ok := c.layers[layerID]
-		if ok {
-			done := layer.animDone
+		if layer, ok := c.layers[layerID]; ok {
 			layer.animConfig = nil
 			layer.animCancel = nil
 			layer.animDone = nil
-			c.mu.Unlock()
-			if done != nil {
-				close(done)
-			}
-		} else {
-			c.mu.Unlock()
 		}
+		c.mu.Unlock()
 	}()
 
 	for {
@@ -1426,11 +1446,19 @@ func (c *Compositor) runPulseAnimation(layerID int) {
 }
 
 // runTransitionAnimation interpolates rect and/or alpha from current values
-// to target over duration with easing for a specific layer.
-func (c *Compositor) runTransitionAnimation(layerID int) {
+// to target over duration with easing for a specific layer. animDone is the
+// completion channel this goroutine owns and always closes on exit (even if the
+// layer is removed mid-animation), unblocking any canceller waiting in
+// cancelLayerAnimationLocked.
+func (c *Compositor) runTransitionAnimation(layerID int, cancelCh <-chan struct{}, animDone chan struct{}) {
 	const tickRate = 60
 	ticker := time.NewTicker(time.Second / tickRate)
 	defer ticker.Stop()
+	defer func() {
+		if animDone != nil {
+			close(animDone)
+		}
+	}()
 
 	c.mu.RLock()
 	layer, ok := c.layers[layerID]
@@ -1439,7 +1467,6 @@ func (c *Compositor) runTransitionAnimation(layerID int) {
 		return
 	}
 	cfg := *layer.animConfig
-	cancelCh := layer.animCancel
 	fromRect := layer.rect
 	fromAlpha := layer.fadePosition
 	c.mu.RUnlock()
@@ -1451,30 +1478,27 @@ func (c *Compositor) runTransitionAnimation(layerID int) {
 	start := time.Now()
 	var tickCount int
 
+	// Clear the layer's animation fields on exit (the outer defer closes
+	// animDone afterwards). No-op if the layer was already removed.
 	defer func() {
 		c.mu.Lock()
 		layer, ok := c.layers[layerID]
-		if ok {
-			deactivate := cfg.DeactivateOnComplete
-			done := layer.animDone
-			layer.animConfig = nil
-			layer.animCancel = nil
-			layer.animDone = nil
-			if deactivate {
-				layer.active = false
-				layer.fadePosition = 0
-			}
-			state := c.buildStateLocked()
-			cb := c.onStateChange
+		if !ok {
 			c.mu.Unlock()
-			if done != nil {
-				close(done)
-			}
-			if cb != nil {
-				cb(state)
-			}
-		} else {
-			c.mu.Unlock()
+			return
+		}
+		layer.animConfig = nil
+		layer.animCancel = nil
+		layer.animDone = nil
+		if cfg.DeactivateOnComplete {
+			layer.active = false
+			layer.fadePosition = 0
+		}
+		state := c.buildStateLocked()
+		cb := c.onStateChange
+		c.mu.Unlock()
+		if cb != nil {
+			cb(state)
 		}
 	}()
 
@@ -1569,6 +1593,8 @@ func (c *Compositor) FlyIn(id int, from string, durationMs int) error {
 	layer.animConfig = &cfg
 	layer.animCancel = make(chan struct{})
 	layer.animDone = make(chan struct{})
+	cancelCh := layer.animCancel
+	doneCh := layer.animDone
 	state := c.buildStateLocked()
 	cb := c.onStateChange
 	c.mu.Unlock()
@@ -1576,7 +1602,7 @@ func (c *Compositor) FlyIn(id int, from string, durationMs int) error {
 	if cb != nil {
 		cb(state)
 	}
-	go c.runTransitionAnimation(id)
+	go c.runTransitionAnimation(id, cancelCh, doneCh)
 	return nil
 }
 
@@ -1632,6 +1658,8 @@ func (c *Compositor) FlyOn(id int, from string, durationMs int) error {
 	layer.animConfig = &cfg
 	layer.animCancel = make(chan struct{})
 	layer.animDone = make(chan struct{})
+	cancelCh := layer.animCancel
+	doneCh := layer.animDone
 	state := c.buildStateLocked()
 	cb := c.onStateChange
 	c.mu.Unlock()
@@ -1639,7 +1667,7 @@ func (c *Compositor) FlyOn(id int, from string, durationMs int) error {
 	if cb != nil {
 		cb(state)
 	}
-	go c.runTransitionAnimation(id)
+	go c.runTransitionAnimation(id, cancelCh, doneCh)
 	return nil
 }
 
@@ -1685,6 +1713,8 @@ func (c *Compositor) FlyOut(id int, to string, durationMs int) error {
 	layer.animConfig = &cfg
 	layer.animCancel = make(chan struct{})
 	layer.animDone = make(chan struct{})
+	cancelCh := layer.animCancel
+	doneCh := layer.animDone
 	state := c.buildStateLocked()
 	cb := c.onStateChange
 	c.mu.Unlock()
@@ -1692,7 +1722,7 @@ func (c *Compositor) FlyOut(id int, to string, durationMs int) error {
 	if cb != nil {
 		cb(state)
 	}
-	go c.runTransitionAnimation(id)
+	go c.runTransitionAnimation(id, cancelCh, doneCh)
 	return nil
 }
 

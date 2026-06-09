@@ -36,9 +36,10 @@ type DemoVideoReader struct {
 	index  uint64
 	closed bool
 
-	// Reusable buffers (avoids per-frame allocations).
-	yuvBuf  []byte // YUV420p pattern buffer
-	v210Buf []byte // V210 output buffer
+	// Reusable YUV420p scratch buffer (internal only — never returned, so
+	// safe to reuse across calls). The V210 output is allocated fresh per
+	// grain in ReadGrain to satisfy the DiscreteReader copy contract.
+	yuvBuf []byte
 }
 
 // NewDemoVideoReader creates a video reader that generates colored test
@@ -88,19 +89,20 @@ func (d *DemoVideoReader) ReadGrain(_ uint64, _ uint64) ([]byte, GrainInfo, erro
 		generateDemoYUV420pInto(d.yuvBuf, d.width, d.height, d.colorIdx, idx)
 	}
 	yuv := d.yuvBuf
-	// Reuse V210 buffer to avoid per-frame allocation.
+	// Allocate a fresh V210 output per grain. The DiscreteReader contract
+	// requires returned data to be a copy safe to retain: videoLoop wraps this
+	// slice in a VideoGrain and pushes it onto a buffered channel (size 4), so
+	// a reused buffer would be overwritten in place by the next ReadGrain while
+	// earlier grains are still queued, producing torn V210 frames downstream.
 	v210Size := V210BufSize(d.width, d.height)
-	if cap(d.v210Buf) < v210Size {
-		d.v210Buf = make([]byte, v210Size)
-	}
-	d.v210Buf = d.v210Buf[:v210Size]
-	if err := YUV420pToV210Into(yuv, d.v210Buf, d.width, d.height); err != nil {
+	v210 := make([]byte, v210Size)
+	if err := YUV420pToV210Into(yuv, v210, d.width, d.height); err != nil {
 		return nil, GrainInfo{}, fmt.Errorf("mxl: demo V210 conversion: %w", err)
 	}
 
-	return d.v210Buf, GrainInfo{
+	return v210, GrainInfo{
 		Index:       idx,
-		GrainSize:   uint32(len(d.v210Buf)),
+		GrainSize:   uint32(len(v210)),
 		TotalSlices: 1,
 		ValidSlices: 1,
 	}, nil

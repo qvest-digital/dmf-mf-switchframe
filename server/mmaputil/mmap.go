@@ -2,6 +2,13 @@
 // Returned byte slices live outside the Go heap (via mmap), so the garbage
 // collector never scans them. Callers must call Free on every returned slice
 // when it is no longer needed.
+//
+// IMPORTANT: Free unmaps using the slice's base pointer and length, which must
+// match the original mapping exactly. Callers MUST retain the exact slice
+// returned by Alloc/WriteFile/MapFile and pass it unmodified to Free. Passing a
+// reslice (e.g. buf[:n] or buf[off:]) to Free is a bug: depending on the
+// platform it may unmap only part of the region or fail, silently leaking the
+// mapping. Reslice freely for reads/writes, but free the original.
 package mmaputil
 
 import (
@@ -30,6 +37,10 @@ func Alloc(size int) ([]byte, error) {
 
 // Free releases a memory-mapped region previously returned by Alloc,
 // WriteFile, or MapFile. It is a no-op for nil or empty slices.
+//
+// The slice passed MUST be the exact slice returned by the allocating call,
+// not a reslice of it: munmap requires the original base pointer and length.
+// Passing a reslice may partially unmap or fail and leak the mapping.
 func Free(b []byte) error {
 	if len(b) == 0 {
 		return nil

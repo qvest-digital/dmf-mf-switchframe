@@ -111,12 +111,18 @@ func (n *gpuAISegmentNode) ProcessGPU(frame *GPUFrame) error {
 		return nil
 	}
 
-	// Get the pre-computed mask for the program source.
+	// Get the pre-computed mask for the program source. MaskForSource
+	// returns the frame with a reference taken, which keeps the mask's
+	// device memory alive even if DisableSource destroys the session while
+	// we are compositing with it. applyBackground synchronizes the stream
+	// (BlendStinger ends with ctx.Sync), so by the time we Release, no
+	// kernel is still reading the mask.
 	mask := n.state.MaskForSource(programKey)
 	if mask == nil {
 		// No mask produced yet (inference hasn't completed), pass through.
 		return nil
 	}
+	defer mask.Release()
 
 	// Get the configuration for this source.
 	config := n.state.ConfigForSource(programKey)

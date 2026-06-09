@@ -111,6 +111,37 @@ func TestMockHandler_SatisfiesInterface(t *testing.T) {
 	}
 }
 
+// TestScheduler_SetAsRunLogConcurrentWithTick verifies that reassigning the
+// as-run callback via SetAsRunLog while Tick fires events does not data-race.
+// Run under -race; the asRunLog field is guarded by the scheduler's mutex.
+func TestScheduler_SetAsRunLogConcurrentWithTick(t *testing.T) {
+	h := &mockHandler{}
+	s := NewSecondaryEventScheduler(h)
+
+	events := []SecondaryEvent{
+		{Type: "graphics_on", Layer: 1, Template: "a", OffsetMs: 0, Anchor: "start"},
+		{Type: "graphics_off", Layer: 1, OffsetMs: 0, Anchor: "start"},
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	// Writer: continuously (re)assign the as-run callback.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			i := i
+			s.SetAsRunLog(func(AsRunEvent) { _ = i })
+		}
+	}()
+
+	// Reader: re-arm and Tick repeatedly so Tick reads asRunLog concurrently.
+	for i := 0; i < 1000; i++ {
+		s.BeginItem(events, 1000)
+		s.Tick(0)
+	}
+	wg.Wait()
+}
+
 func TestScheduler_StartAnchoredEvents(t *testing.T) {
 	h := &mockHandler{}
 	s := NewSecondaryEventScheduler(h)

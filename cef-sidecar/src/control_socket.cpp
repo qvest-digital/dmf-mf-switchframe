@@ -42,7 +42,8 @@ void ControlSocket::Start() {
 
 void ControlSocket::SendResponse(const std::string& json_line) {
     std::lock_guard<std::mutex> lock(write_mutex_);
-    if (conn_fd_ < 0) {
+    int fd = conn_fd_.load();
+    if (fd < 0) {
         return;
     }
 
@@ -50,7 +51,7 @@ void ControlSocket::SendResponse(const std::string& json_line) {
     size_t remaining = json_line.size();
 
     while (remaining > 0) {
-        ssize_t n = write(conn_fd_, data, remaining);
+        ssize_t n = write(fd, data, remaining);
         if (n <= 0) {
             std::cerr << "ControlSocket: write failed: " << strerror(errno)
                       << std::endl;
@@ -64,14 +65,17 @@ void ControlSocket::SendResponse(const std::string& json_line) {
 void ControlSocket::Stop() {
     running_ = false;
 
-    // Close connection to unblock any pending read/accept.
-    if (conn_fd_ >= 0) {
-        shutdown(conn_fd_, SHUT_RDWR);
-        close(conn_fd_);
-        conn_fd_ = -1;
+    // Unblock a reader parked in read() (and any in-flight SendResponse)
+    // with shutdown() only: the fd must stay open while other threads may
+    // still be inside read()/write() on it, otherwise the kernel can hand
+    // the same fd number to an unrelated open() and the parked syscall
+    // lands on the wrong descriptor. The close() happens after the join.
+    int conn = conn_fd_.load();
+    if (conn >= 0) {
+        shutdown(conn, SHUT_RDWR);
     }
 
-    // Close the listener to unblock accept().
+    // Shut down the listener to unblock accept().
     if (listen_fd_ >= 0) {
         shutdown(listen_fd_, SHUT_RDWR);
     }
@@ -79,16 +83,33 @@ void ControlSocket::Stop() {
     if (thread_.joinable()) {
         thread_.join();
     }
+
+    // The reader thread is gone. Re-read conn_fd_ (accept() may have
+    // completed concurrently with Stop) and close exactly once, under
+    // write_mutex_ so a racing SendResponse either sees the fd still open
+    // (and finishes before we close it) or sees -1 and returns.
+    std::lock_guard<std::mutex> lock(write_mutex_);
+    conn = conn_fd_.exchange(-1);
+    if (conn >= 0) {
+        close(conn);
+    }
 }
 
 void ControlSocket::readLoop() {
     // Accept one connection from the Go server.
-    conn_fd_ = accept(listen_fd_, nullptr, nullptr);
-    if (conn_fd_ < 0) {
+    int fd = accept(listen_fd_, nullptr, nullptr);
+    if (fd < 0) {
         if (running_) {
             std::cerr << "ControlSocket: accept() failed: " << strerror(errno)
                       << std::endl;
         }
+        return;
+    }
+    // Publish for SendResponse/Stop. If Stop() already ran, its post-join
+    // cleanup (after this thread exits) closes this fd, so a connection
+    // accepted concurrently with Stop is not leaked.
+    conn_fd_.store(fd);
+    if (!running_) {
         return;
     }
 
@@ -97,7 +118,7 @@ void ControlSocket::readLoop() {
     char chunk[4096];
 
     while (running_) {
-        ssize_t n = read(conn_fd_, chunk, sizeof(chunk));
+        ssize_t n = read(fd, chunk, sizeof(chunk));
         if (n <= 0) {
             if (n < 0 && running_) {
                 std::cerr << "ControlSocket: read() failed: "

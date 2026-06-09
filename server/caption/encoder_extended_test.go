@@ -165,11 +165,19 @@ func TestEncoder_LatinExtendedMappedToCEA608Extended(t *testing.T) {
 
 func TestEncoder_ExtendedSequenceInsideText(t *testing.T) {
 	// "Hüt" — H basic, ü extended (0x12 0x25), t basic.
-	// Per CEA-608-E §8.5.4–5.6, the 2-byte extended code must occupy a
-	// single transmitted pair with 0x12 in byte[0]. Because 'H' is a
-	// single basic byte (odd position), the encoder must pad it with 0x80
-	// before emitting the extended pair, otherwise the 0x12 prefix would
-	// land in byte[1] and conformant decoders would drop/garble the 'ü'.
+	//
+	// Per CEA-608-E §8.4 an extended (0x12/0x13) code triggers an automatic
+	// decoder backspace: the decoder deletes the last on-screen character and
+	// writes the extended glyph. The encoder must therefore transmit a standard
+	// fallback char ('u', the closest ASCII for 'ü') immediately before the
+	// extended pair so the backspace consumes the fallback — not the preceding
+	// legitimate 'H'. The 2-byte code still occupies a single pair with 0x12 in
+	// byte[0] (CEA-608-E §8.5.4–5.6).
+	//
+	// Sent: {H, u} then {0x12, 0x25} then {t, pad}. An extended-capable decoder
+	// renders "Hü" (backspacing over 'u'), then 't' → "Hüt". A non-extended
+	// decoder shows "Hut", a sensible degradation. Without the fallback the
+	// extended ü would backspace over 'H', corrupting the caption.
 	enc := NewEncoder(2)
 	enc.IngestText("Hüt")
 
@@ -177,13 +185,82 @@ func TestEncoder_ExtendedSequenceInsideText(t *testing.T) {
 	got := flattenPairs(pairs)
 
 	want := []byte{
-		oddParity('H'), 0x80,
+		oddParity('H'), oddParity('u'),
 		oddParity(0x12), oddParity(0x25),
 		oddParity('t'), 0x80,
 	}
 
 	if !bytes.Equal(got, want) {
 		t.Fatalf("Hüt bytes = % 02X, want % 02X", got, want)
+	}
+}
+
+func TestEncoder_ExtendedEmitsFallbackBeforeCode(t *testing.T) {
+	// Regression for the CEA-608-E §8.4 auto-backspace bug: every 0x12/0x13
+	// extended code must be preceded in the transmitted byte stream by its
+	// standard ASCII fallback so the decoder's automatic backspace consumes the
+	// fallback rather than the previous character. (A lone extended char yields
+	// {fallback, 0x80} then {prefix, data}; the 0x80 is a benign null pad that
+	// realigns the extended code into byte[0].)
+	cases := []struct {
+		name     string
+		input    string
+		prefix   byte
+		data     byte
+		fallback byte
+	}{
+		{"u-umlaut", "ü", 0x12, 0x25, 'u'},
+		{"E-acute", "É", 0x12, 0x21, 'E'},
+		{"a-tilde", "ã", 0x13, 0x21, 'a'},
+		{"sharp-s", "ß", 0x13, 0x34, 's'},
+		{"copyright", "©", 0x12, 0x2B, 'C'},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			enc := NewEncoder(2)
+			enc.IngestText(tc.input)
+
+			got := flattenPairs(drainEncoder(enc, 3))
+
+			fbIdx := bytes.IndexByte(got, oddParity(tc.fallback))
+			if fbIdx < 0 {
+				t.Fatalf("input %q: fallback byte %02X (%q) not transmitted; bytes = % 02X",
+					tc.input, oddParity(tc.fallback), string(rune(tc.fallback)), got)
+			}
+			// The 2-byte extended code must appear, with its prefix after the
+			// fallback byte.
+			code := []byte{oddParity(tc.prefix), oddParity(tc.data)}
+			codeIdx := bytes.Index(got, code)
+			if codeIdx < 0 {
+				t.Fatalf("input %q: extended code % 02X not found; bytes = % 02X",
+					tc.input, code, got)
+			}
+			if codeIdx <= fbIdx {
+				t.Fatalf("input %q: extended code at %d must come after fallback at %d; bytes = % 02X",
+					tc.input, codeIdx, fbIdx, got)
+			}
+		})
+	}
+}
+
+func TestEncoder_ExtendedPreservesPrecedingChar(t *testing.T) {
+	// "Aü": without the fallback the ü's auto-backspace would consume the 'A'.
+	// With the fix the 'A' is preserved and a fallback 'u' precedes the code,
+	// so the byte before the 0x12 prefix is the fallback (not 'A').
+	enc := NewEncoder(2)
+	enc.IngestText("Aü")
+
+	got := flattenPairs(drainEncoder(enc, 3))
+
+	// 'A' must still be present, and the byte directly before the extended
+	// prefix must be the fallback 'u', proving the backspace target is the
+	// fallback rather than 'A'.
+	want := []byte{
+		oddParity('A'), oddParity('u'),
+		oddParity(0x12), oddParity(0x25),
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Aü bytes = % 02X, want % 02X", got, want)
 	}
 }
 

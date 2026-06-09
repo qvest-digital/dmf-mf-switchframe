@@ -56,6 +56,10 @@ type sequenceState struct {
 // startIn begins playback from the animate-in segment. If there are no in
 // frames, it transitions directly to the loop phase.
 func (s *sequenceState) startIn() {
+	// Reset the fractional accumulator so a (re)start begins on a clean cadence.
+	// Without this, a leftover [0,1) accumulator from a prior run at non-1.0
+	// speed could advance the first frame earlier than the intended cadence.
+	s.frameAccum = 0
 	if len(s.inFrames) > 0 {
 		s.phase = seqPhaseIn
 		s.frameIdx = 0
@@ -68,6 +72,8 @@ func (s *sequenceState) startIn() {
 // cycle. If not, holds the last frame of the in segment (static bug).
 // Also used for "cut on" behaviour.
 func (s *sequenceState) startLoop() {
+	// Reset the fractional accumulator for a clean cadence on (re)start.
+	s.frameAccum = 0
 	if len(s.loopFrames) > 0 {
 		s.phase = seqPhaseLoop
 		s.frameIdx = 0
@@ -79,6 +85,8 @@ func (s *sequenceState) startLoop() {
 // startOut begins playback of the animate-out segment. If there are no out
 // frames, it transitions directly to the done phase.
 func (s *sequenceState) startOut() {
+	// Reset the fractional accumulator for a clean cadence on (re)start.
+	s.frameAccum = 0
 	if len(s.outFrames) > 0 {
 		s.phase = seqPhaseOut
 		s.frameIdx = 0

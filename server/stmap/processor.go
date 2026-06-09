@@ -78,6 +78,16 @@ func (p *Processor) ProcessYUV(dst, src []byte, w, h int) {
 	ch := h / 2
 	cSize := cw * ch
 
+	// The LUTs are sized to the ST map's dimensions (see buildLUT), which may
+	// differ from the frame's dimensions. The warp kernels (including assembly
+	// and unsafe.Slice fallbacks) read exactly w*h LUT entries with no bounds
+	// check, so a frame larger than the map would read past the LUT backing
+	// array (heap over-read, or segfault for mmap-backed LUTs). Require an exact
+	// match and no-op otherwise rather than corrupting memory.
+	if ySize != len(p.lutSX) || cSize != len(p.lutCSX) {
+		return
+	}
+
 	// Y plane (full resolution)
 	warpPlane(dst[:ySize], src[:ySize], w, h, p.lutSX, p.lutSY)
 

@@ -1,6 +1,7 @@
 package cmdqueue
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -250,6 +251,221 @@ func TestDrain_CompactExecutedBoundsFileSize(t *testing.T) {
 	require.Len(t, seqs, 10, "CompactExecuted must trim to keepRecent")
 	require.Equal(t, uint64(91), seqs[0], "must keep the most-recent tombstones")
 	require.Equal(t, uint64(100), seqs[len(seqs)-1])
+}
+
+// TestWAL_MarkExecutedBatch_SingleFsync pins the batching contract:
+// MarkExecutedBatch must fsync exactly once no matter how many seqs it
+// marks. Before batching, the Drain hot path called single-seq
+// MarkExecuted per drained command, costing one full rewrite + one fsync
+// each — O(commands) fsyncs per tick. This guards against a regression
+// back to per-command fsync.
+func TestWAL_MarkExecutedBatch_SingleFsync(t *testing.T) {
+	t.Parallel()
+	wal, counter := openCountingWAL(t)
+
+	const n = 8
+	seqs := make([]uint64, 0, n)
+	for i := uint64(1); i <= n; i++ {
+		require.NoError(t, wal.Append(Command{Seq: i, Action: "cut"}))
+		seqs = append(seqs, i)
+	}
+
+	before := counter.syncs.Load()
+	require.NoError(t, wal.MarkExecutedBatch(seqs))
+	require.Equal(t, before+1, counter.syncs.Load(),
+		"MarkExecutedBatch must fsync exactly once regardless of seq count")
+
+	// All marked seqs must be surfaced as executed for restart-side dedup.
+	executed, err := wal.ReplayExecutedSeqs()
+	require.NoError(t, err)
+	require.ElementsMatch(t, seqs, executed,
+		"every batched seq must be persisted as an executed tombstone")
+}
+
+// TestWAL_MarkExecutedBatch_EmptyIsNoop verifies an empty batch performs
+// no I/O — the Drain hot path skips the call when nothing was drained, but
+// pin the no-op contract so callers can rely on it.
+func TestWAL_MarkExecutedBatch_EmptyIsNoop(t *testing.T) {
+	t.Parallel()
+	wal, counter := openCountingWAL(t)
+	require.NoError(t, wal.Append(Command{Seq: 1, Action: "cut"}))
+
+	before := counter.syncs.Load()
+	require.NoError(t, wal.MarkExecutedBatch(nil))
+	require.Equal(t, before, counter.syncs.Load(),
+		"empty MarkExecutedBatch must not fsync")
+}
+
+// TestDrain_BatchesWALFsyncsAcrossDrainedCommands is the hot-path
+// regression guard for the reviewed finding: Drain marking N drained
+// commands must not issue N fsyncs. With a non-empty residual heap (no
+// drain-to-empty compaction), draining several commands in one tick must
+// cost exactly one fsync from the batched MarkExecuted. Before the fix
+// this was one fsync per drained command, blowing the 30fps frame budget
+// under disk contention.
+func TestDrain_BatchesWALFsyncsAcrossDrainedCommands(t *testing.T) {
+	t.Parallel()
+	wal, counter := openCountingWAL(t)
+
+	clock := func() int64 { return 1_000_000 }
+	q := New(clock, WithWAL(wal))
+
+	// Enqueue several immediately-drainable commands plus one far-future
+	// command so the heap is NOT empty after Drain (suppresses the
+	// drain-to-empty CompactExecuted, isolating the MarkExecuted fsync).
+	const drainable = 6
+	for i := uint64(1); i <= drainable; i++ {
+		require.NoError(t, q.Enqueue(Command{ExecuteAt: 0, Seq: i, Action: "cut"}))
+	}
+	require.NoError(t, q.Enqueue(Command{ExecuteAt: 9_000_000, Seq: 100, Action: "cut"}))
+
+	before := counter.syncs.Load()
+	out := q.Drain()
+	require.Len(t, out, drainable, "all immediate commands must drain in one call")
+	require.Equal(t, before+1, counter.syncs.Load(),
+		"Drain must batch all drained-command WAL marks into a single fsync")
+
+	// Correctness: the drained seqs are persisted as executed tombstones so
+	// a restart dedups retransmits.
+	executed, err := wal.ReplayExecutedSeqs()
+	require.NoError(t, err)
+	for i := uint64(1); i <= drainable; i++ {
+		require.Contains(t, executed, i,
+			"drained seq must be marked executed on disk")
+	}
+}
+
+// TestDrain_ConcurrentEnqueueDuringWALMark is a race-detector guard for the
+// reviewed fix: Drain now performs its WAL marking/compaction AFTER releasing
+// q.mu, so Enqueue's wal.Append can interleave with Drain's MarkExecutedBatch
+// and CompactExecuted. WAL operations are serialized only by the WAL's own
+// mutex. This test hammers Enqueue concurrently with repeated Drain calls and
+// must run clean under -race, and must never lose or double-dispatch a seq.
+func TestDrain_ConcurrentEnqueueDuringWALMark(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "cmd.wal")
+	wal, err := NewWAL(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = wal.Close() })
+
+	clock := func() int64 { return time.Now().UnixMicro() }
+	q := New(clock, WithWAL(wal))
+
+	const total = 200
+	enqueued := make(chan struct{})
+	go func() {
+		defer close(enqueued)
+		for i := uint64(1); i <= total; i++ {
+			// ExecuteAt=0 → immediately drainable, exercising the drain path.
+			_ = q.Enqueue(Command{ExecuteAt: 0, Seq: i, Action: "cut"})
+		}
+	}()
+
+	drained := make(map[uint64]struct{}, total)
+	collect := func(cmds []Command) {
+		for _, c := range cmds {
+			_, dup := drained[c.Seq]
+			require.False(t, dup, "seq %d drained twice", c.Seq)
+			drained[c.Seq] = struct{}{}
+		}
+	}
+
+	for {
+		collect(q.Drain())
+		select {
+		case <-enqueued:
+			// Producer done; flush any remaining queued commands.
+			for q.Pending() > 0 {
+				collect(q.Drain())
+			}
+			collect(q.Drain())
+			require.Len(t, drained, total,
+				"every enqueued command must drain exactly once")
+			return
+		default:
+		}
+	}
+}
+
+// failingAppendFile wraps an *os.File and fails the first Write (simulating a
+// transient disk error: disk full / EIO / fsync failure) so a test can drive
+// Enqueue's wal.Append into the error branch. Subsequent Writes pass through to
+// the real file, modelling the disk recovering before a retransmit.
+type failingAppendFile struct {
+	*os.File
+	failNext atomic.Bool
+}
+
+func (f *failingAppendFile) Write(p []byte) (int, error) {
+	if f.failNext.Swap(false) {
+		return 0, errors.New("simulated WAL write failure")
+	}
+	return f.File.Write(p)
+}
+
+// TestEnqueue_WALAppendFailure_DoesNotMarkSeen verifies that when wal.Append
+// fails, the command's Seq is NOT recorded in the dedup map. Otherwise the
+// command would be neither persisted nor executed, yet its retransmit (the
+// normal recovery after a 5xx/timeout) would be rejected as a duplicate —
+// silently swallowing a cut/transition on a live switcher.
+func TestEnqueue_WALAppendFailure_DoesNotMarkSeen(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "cmd.wal")
+	osFile, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	require.NoError(t, err)
+	ff := &failingAppendFile{File: osFile}
+	wal := &WAL{path: path, file: ff}
+	t.Cleanup(func() { _ = wal.Close() })
+
+	q := New(func() int64 { return 1000 }, WithWAL(wal))
+
+	cmd := Command{ExecuteAt: 0, Seq: 7, Action: "cut"}
+
+	// First attempt: the disk is transiently broken, so Append fails and the
+	// error propagates to the caller.
+	ff.failNext.Store(true)
+	require.Error(t, q.Enqueue(cmd), "Enqueue must surface the WAL append error")
+
+	// The failed command must not have landed on the heap.
+	require.Equal(t, 0, q.Pending(), "failed-WAL command must not be queued")
+
+	// Retransmit of the SAME Seq after the disk recovers must be ACCEPTED,
+	// not rejected as a duplicate — the Seq must not have been marked seen.
+	err = q.Enqueue(cmd)
+	require.NoError(t, err, "retransmit after a failed enqueue must be accepted")
+	require.False(t, errors.Is(err, ErrDuplicateCommand),
+		"retransmit must not be rejected as a duplicate")
+
+	// And it must now be persisted and queued for execution.
+	require.Equal(t, 1, q.Pending(), "retransmitted command must be queued")
+	drained := q.Drain()
+	require.Len(t, drained, 1)
+	require.Equal(t, uint64(7), drained[0].Seq)
+}
+
+// TestEnqueue_WALAppendFailure_PrunedHighWaterUnchanged verifies the failed
+// append does not advance prunedHighWater either: a same-or-lower Seq must not
+// be wrongly rejected after a WAL write failure.
+func TestEnqueue_WALAppendFailure_PrunedHighWaterUnchanged(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "cmd.wal")
+	osFile, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	require.NoError(t, err)
+	ff := &failingAppendFile{File: osFile}
+	wal := &WAL{path: path, file: ff}
+	t.Cleanup(func() { _ = wal.Close() })
+
+	q := New(func() int64 { return 1000 }, WithWAL(wal))
+
+	require.Zero(t, q.prunedHighWater)
+
+	ff.failNext.Store(true)
+	require.Error(t, q.Enqueue(Command{Seq: 5, Action: "cut"}))
+
+	require.Zero(t, q.prunedHighWater,
+		"a failed WAL append must not advance prunedHighWater")
 }
 
 // BenchmarkWAL_Truncate measures the fsync cost of the cleared-WAL path

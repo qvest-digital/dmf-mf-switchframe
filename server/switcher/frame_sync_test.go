@@ -1631,8 +1631,14 @@ func TestFrameSynchronizer_DebugSnapshot(t *testing.T) {
 			yuv2[i] = 200
 		}
 
-		fs.IngestRawVideo("cam1", &ProcessingFrame{Data: yuv1, Width: w, Height: h, PTS: 3000})
-		fs.IngestRawVideo("cam1", &ProcessingFrame{Data: yuv2, Width: w, Height: h, PTS: 6000})
+		// Managed frames (SetRefs) — IngestRawVideo only feeds refcounted
+		// frames to FRC, matching how the source decoder produces them.
+		pf1 := &ProcessingFrame{Data: yuv1, Width: w, Height: h, PTS: 3000}
+		pf1.SetRefs(1)
+		pf2 := &ProcessingFrame{Data: yuv2, Width: w, Height: h, PTS: 6000}
+		pf2.SetRefs(1)
+		fs.IngestRawVideo("cam1", pf1)
+		fs.IngestRawVideo("cam1", pf2)
 
 		snap := fs.DebugSnapshot()
 		sources := snap["sources"].(map[string]any)
@@ -3074,6 +3080,50 @@ func TestFrameSync_DeliveryRefReleasedWithoutDelayBuffer(t *testing.T) {
 		"first frame refs should reach 0 — delivery ref leaked (got %d)", pf1.Refs())
 }
 
+// TestFrameSync_IngestRawVideoSkipsFRCForUnmanagedFrames verifies that
+// IngestRawVideo only feeds managed (refcounted) frames to FRC. FRC retains
+// its buffered prev/curr frames via Ref(), which is a no-op on unmanaged
+// frames (refs == nil, e.g. builtin-source frames). If FRC retained an
+// unmanaged frame, the ring buffer's ReleaseYUV would later nil that struct's
+// Data while FRC still pointed at it (a stale pointer). The guard makes that
+// impossible: unmanaged frames are pushed to the ring buffer but never
+// buffered by FRC.
+func TestFrameSync_IngestRawVideoSkipsFRCForUnmanagedFrames(t *testing.T) {
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	// Use a non-builtin key so SetFRCQuality does not force-disable FRC.
+	fs.AddSource("cam1")
+	fs.SetFRCQuality(FRCBlend)
+
+	ss := fs.sources["cam1"]
+	require.NotNil(t, ss.frc, "FRC should be enabled for cam1")
+
+	// Unmanaged frame (no SetRefs → refs == nil), exactly how builtin sources
+	// build frames.
+	unmanaged := makeTestFrame(64, 64, 100, 3000)
+	require.Nil(t, unmanaged.refs, "test frame should be unmanaged")
+	fs.IngestRawVideo("cam1", unmanaged)
+
+	// FRC must not have retained the unmanaged frame.
+	ss.mu.Lock()
+	frcCurr := ss.frc.currFrame
+	ss.mu.Unlock()
+	require.Nil(t, frcCurr, "FRC must not buffer an unmanaged frame")
+
+	// A managed frame, by contrast, is buffered for interpolation.
+	managed := makeTestFrame(64, 64, 110, 6000)
+	managed.SetRefs(1)
+	fs.IngestRawVideo("cam1", managed)
+
+	ss.mu.Lock()
+	frcCurr = ss.frc.currFrame
+	frcRefs := managed.Refs()
+	ss.mu.Unlock()
+	require.Equal(t, managed, frcCurr, "FRC should buffer a managed frame")
+	require.Equal(t, int32(2), frcRefs,
+		"FRC should take an independent ref on the managed frame (ring + FRC)")
+}
+
 func TestPTSAfter_EqualValuesNotAfter(t *testing.T) {
 	require.False(t, ptsAfter(0, 0))
 	require.False(t, ptsAfter(12345, 12345))
@@ -3122,4 +3172,30 @@ func TestPTSAfter_HalfRangeReversed(t *testing.T) {
 	require.False(t, ptsAfter(0, ptsHalfRange))
 	// a=0, b just past halfRange: a IS after b (b is in the backward half from a).
 	require.True(t, ptsAfter(0, ptsHalfRange+1))
+}
+
+// Finding #98: SetBufferOnly (when the tickLoop was already running) closed
+// fs.done with fs.mu released and without marking stopped; a concurrent
+// Stop() passing its fs.stopped guard then closed the same channel again —
+// panic: close of closed channel. The close/replace now happens atomically
+// under fs.mu so Stop can never observe the stale closed channel.
+func TestFrameSyncSetBufferOnlyConcurrentStopNoDoubleClose(t *testing.T) {
+	for i := 0; i < 500; i++ {
+		handler := &syncTestHandler{}
+		fs := NewFrameSynchronizer(time.Millisecond, handler.onVideo, handler.onAudio)
+		fs.Start() // tickLoop running — SetBufferOnly takes the stop-and-reset path
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			fs.SetBufferOnly(true)
+		}()
+		go func() {
+			defer wg.Done()
+			fs.Stop()
+		}()
+		wg.Wait()
+		fs.Stop() // idempotent
+	}
 }

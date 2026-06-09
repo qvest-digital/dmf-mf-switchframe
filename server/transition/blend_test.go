@@ -744,11 +744,37 @@ func TestBlendNAM_ChromaFollowsLumaWinner(t *testing.T) {
 
 	result := fb.BlendNAM(a, b, 0.5)
 	// A always wins (200*0.5=100 > 50*0.5=25)
-	// Chroma should follow A's contribution at gain_a scale
+	// Chroma should follow A's contribution at gain_a scale. Cb/Cr are
+	// offset-binary centered at 128, so the gain applies about the neutral
+	// point: out = 128 + (C-128)*gain.
 	for i := 0; i < uvSize; i++ {
-		// A's chroma at gain 0.5: 80*0.5 = 40
-		require.InDelta(t, 40, int(result[ySize+i]), 1, "Cb at chroma pixel %d", i)
-		require.InDelta(t, 45, int(result[ySize+uvSize+i]), 1, "Cr at chroma pixel %d", i)
+		// A's Cb at gain 0.5: 128 + (80-128)*0.5 = 104
+		require.InDelta(t, 104, int(result[ySize+i]), 1, "Cb at chroma pixel %d", i)
+		// A's Cr at gain 0.5: 128 + (90-128)*0.5 = 109
+		require.InDelta(t, 109, int(result[ySize+uvSize+i]), 1, "Cr at chroma pixel %d", i)
+	}
+}
+
+// TestBlendNAM_NeutralChromaStaysNeutral pins the offset-binary invariant:
+// neutral gray sources (Cb=Cr=128) must stay neutral at every transition
+// position. Scaling the raw chroma byte by the gain (instead of about the
+// 128 neutral point) drags 128 down to 64 at position 0.5 — a saturated
+// green-yellow cast over the whole frame at mid-transition.
+func TestBlendNAM_NeutralChromaStaysNeutral(t *testing.T) {
+	t.Parallel()
+	fb := mustNewFrameBlender(t, 4, 4)
+	ySize := 4 * 4
+	uvSize := 2 * 2
+
+	a := makeYUVFrame(4, 4, 200, 128, 128)
+	b := makeYUVFrame(4, 4, 50, 128, 128)
+
+	for _, pos := range []float64{0.25, 0.5, 0.75} {
+		result := fb.BlendNAM(a, b, pos)
+		for i := 0; i < uvSize*2; i++ {
+			require.Equal(t, byte(128), result[ySize+i],
+				"neutral chroma plane byte %d at position %v", i, pos)
+		}
 	}
 }
 

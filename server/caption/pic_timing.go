@@ -162,8 +162,9 @@ func buildPicTimingSEIH264(cfg PicTimingConfig, frameNum int64, tc *Timecode) []
 		}
 	}
 
-	// Pad to byte boundary with trailing bits (1 + zeros).
-	bw.byteAlign()
+	// SEI payload trailing: bit_equal_to_one + zero-fill to byte boundary
+	// (ITU-T H.264 7.3.2.3.1). No-op when already byte-aligned.
+	bw.rbspTrailingBits()
 
 	return bw.bytes()
 }
@@ -202,8 +203,9 @@ func buildPicTimingSEIHEVC(cfg PicTimingConfig, frameNum int64, tc *Timecode) []
 		bw.writeBits(0, cfg.DpbOutputDelayLength)
 	}
 
-	// Pad to byte boundary.
-	bw.byteAlign()
+	// SEI payload trailing: bit_equal_to_one + zero-fill to byte boundary
+	// (ITU-T H.265 7.3.2.4). No-op when already byte-aligned.
+	bw.rbspTrailingBits()
 
 	return bw.bytes()
 }
@@ -264,7 +266,9 @@ func buildTimeCodeSEI(tc *Timecode, fpsNum, fpsDen int) []byte {
 	// time_offset_length = 0 (no time_offset).
 	bw.writeBits(0, 5)
 
-	bw.byteAlign()
+	// SEI payload trailing: bit_equal_to_one + zero-fill to byte boundary
+	// (ITU-T H.265 7.3.2.4). No-op when already byte-aligned.
+	bw.rbspTrailingBits()
 	return bw.bytes()
 }
 
@@ -464,6 +468,25 @@ func (w *bitWriter) byteAlign() {
 		w.buf = append(w.buf, w.current)
 		w.current = 0
 		w.bitPos = 0
+	}
+}
+
+// rbspTrailingBits aligns a SEI payload to a byte boundary per the
+// sei_payload() trailing defined in ITU-T H.264 7.3.2.3.1 / H.265 7.3.2.4.
+// When the payload is not byte-aligned it writes bit_equal_to_one (a single 1
+// bit) followed by zero bits up to the byte boundary. When already aligned no
+// trailing bits are written (byte_aligned() is true), matching the spec's
+// conditional more_data_in_payload() handling.
+//
+// Use this instead of byteAlign() for SEI payload builders so strict broadcast
+// conformance validators and decoders that locate the next message via
+// more_data_in_payload() bit parsing accept the stream. byteAlign() (zero-fill)
+// remains for any non-SEI bit-packing use.
+func (w *bitWriter) rbspTrailingBits() {
+	if w.bitPos > 0 {
+		// bit_equal_to_one followed by zero-fill to the byte boundary.
+		w.writeBits(1, 1)
+		w.byteAlign()
 	}
 }
 

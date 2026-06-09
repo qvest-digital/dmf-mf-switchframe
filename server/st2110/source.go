@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -87,10 +88,12 @@ type Source struct {
 	startTime time.Time
 	startOnce sync.Once
 
-	// Frame counters for debug snapshot (updated from single-goroutine fan-outs).
-	videoFrames uint64
-	audioFrames uint64
-	ancFrames   uint64
+	// Frame counters for debug snapshot. Each is written by its own fan-out
+	// goroutine and read concurrently by Stats() (e.g. a debug/metrics
+	// snapshot consumer), so they must be atomic to stay race-free.
+	videoFrames atomic.Uint64
+	audioFrames atomic.Uint64
+	ancFrames   atomic.Uint64
 }
 
 // NewSource creates an ST 2110 source with the given configuration.
@@ -183,7 +186,7 @@ func (s *Source) videoFanOut(ctx context.Context) {
 			pts = int64(now.Sub(s.startTime).Seconds() * 90000)
 		}
 
-		s.videoFrames++
+		s.videoFrames.Add(1)
 		if s.config.OnRawVideo != nil {
 			s.config.OnRawVideo(s.config.Key, yuv, w, h, pts)
 		}
@@ -209,7 +212,7 @@ func (s *Source) audioFanOut(ctx context.Context) {
 		s.startOnce.Do(func() { s.startTime = now })
 		pts := int64(now.Sub(s.startTime).Seconds() * 90000)
 
-		s.audioFrames++
+		s.audioFrames.Add(1)
 		if s.config.OnRawAudio != nil {
 			s.config.OnRawAudio(s.config.Key, pcm, pts, s.config.Channels)
 		}
@@ -235,7 +238,7 @@ func (s *Source) dataFanOut(ctx context.Context) {
 		s.startOnce.Do(func() { s.startTime = now })
 		pts := int64(now.Sub(s.startTime).Seconds() * 90000)
 
-		s.ancFrames++
+		s.ancFrames.Add(1)
 		if s.config.OnDataGrain != nil {
 			s.config.OnDataGrain(s.config.Key, data, pts)
 		}
@@ -243,8 +246,9 @@ func (s *Source) dataFanOut(ctx context.Context) {
 }
 
 // Stats returns the current frame counters for debug reporting.
+// Safe to call concurrently with the fan-out goroutines.
 func (s *Source) Stats() SessionStats {
 	return SessionStats{
-		FramesReceived: s.videoFrames + s.audioFrames + s.ancFrames,
+		FramesReceived: s.videoFrames.Load() + s.audioFrames.Load() + s.ancFrames.Load(),
 	}
 }

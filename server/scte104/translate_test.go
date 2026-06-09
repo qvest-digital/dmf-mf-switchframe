@@ -165,7 +165,7 @@ func TestToCueMessage_TimeSignal_WithDescriptor(t *testing.T) {
 				Data: &SegmentationDescriptorRequest{
 					SegEventID:         500,
 					SegmentationTypeID: 0x34,
-					DurationTicks:      2700000,
+					Duration:           30, // seconds
 					UPIDType:           0x09,
 					UPID:               upid,
 					SegNum:             1,
@@ -509,7 +509,7 @@ func TestFromCueMessage_TimeSignal(t *testing.T) {
 	sd := msg.Operations[1].Data.(*SegmentationDescriptorRequest)
 	require.Equal(t, uint32(500), sd.SegEventID, "SegEventID")
 	require.Equal(t, uint8(0x34), sd.SegmentationTypeID, "SegmentationTypeID")
-	require.Equal(t, uint64(2700000), sd.DurationTicks, "DurationTicks")
+	require.Equal(t, uint16(30), sd.Duration, "Duration (2700000 ticks = 30 s)")
 	require.Equal(t, uint8(0x09), sd.UPIDType, "UPIDType")
 	require.Equal(t, []byte("TEST"), sd.UPID, "UPID")
 }

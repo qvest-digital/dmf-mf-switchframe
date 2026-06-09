@@ -89,6 +89,108 @@ TEST(FindString_EscapedQuote) {
               std::string("hello\"world"));
 }
 
+// The Go peer builds messages with encoding/json, which HTML-escapes by
+// default: '&' -> \u0026, '<' -> \u003c, '>' -> \u003e. URLs with query
+// parameters must round-trip. (Raw string literals below: the backslash
+// escapes are part of the JSON text, not C++ escapes.)
+TEST(FindString_UnicodeEscapeAmpersandInURL) {
+    std::string json = R"({"url":"http://h/p?a=1\u0026b=2"})";
+    ASSERT_EQ(json_parse::detail::FindString(json, "url"),
+              std::string("http://h/p?a=1&b=2"));
+}
+
+TEST(FindString_UnicodeEscapeAngleBrackets) {
+    std::string json = R"({"data":"\u003cb\u003ehi\u003c/b\u003e"})";
+    ASSERT_EQ(json_parse::detail::FindString(json, "data"),
+              std::string("<b>hi</b>"));
+}
+
+TEST(FindString_ControlEscapes) {
+    std::string json = R"({"data":"line1\nline2\ttabbed\r\b\f"})";
+    ASSERT_EQ(json_parse::detail::FindString(json, "data"),
+              std::string("line1\nline2\ttabbed\r\b\f"));
+}
+
+TEST(FindString_EscapedSlash) {
+    std::string json = R"({"url":"http:\/\/example.com\/page"})";
+    ASSERT_EQ(json_parse::detail::FindString(json, "url"),
+              std::string("http://example.com/page"));
+}
+
+TEST(FindString_UnicodeEscapeTwoByteUTF8) {
+    // U+00E9 (e with acute) -> 0xC3 0xA9 in UTF-8.
+    std::string json = R"({"data":"caf\u00e9"})";
+    ASSERT_EQ(json_parse::detail::FindString(json, "data"),
+              std::string("caf\xc3\xa9"));
+}
+
+TEST(FindString_UnicodeEscapeThreeByteUTF8) {
+    // U+20AC (euro sign) -> 0xE2 0x82 0xAC in UTF-8.
+    std::string json = R"({"data":"price: \u20ac5"})";
+    ASSERT_EQ(json_parse::detail::FindString(json, "data"),
+              std::string("price: \xe2\x82\xac" "5"));
+}
+
+TEST(FindString_UnicodeEscapeSurrogatePair) {
+    // U+1F600 (grinning face) as a UTF-16 surrogate pair -> 4-byte UTF-8.
+    std::string json = R"({"data":"\ud83d\ude00"})";
+    ASSERT_EQ(json_parse::detail::FindString(json, "data"),
+              std::string("\xf0\x9f\x98\x80"));
+}
+
+TEST(FindString_UnicodeEscapeUppercaseHex) {
+    std::string json = R"({"data":"\u003C\u003E"})";
+    ASSERT_EQ(json_parse::detail::FindString(json, "data"),
+              std::string("<>"));
+}
+
+TEST(FindString_MalformedUnicodeEscapeIsLenient) {
+    // Bad hex digits: keep the raw text rather than corrupting/failing, and
+    // keep scanning so the closing quote is still found.
+    std::string json = R"({"data":"a\uZZZZb","cmd":"x"})";
+    ASSERT_EQ(json_parse::detail::FindString(json, "data"),
+              std::string("a\\uZZZZb"));
+    ASSERT_EQ(json_parse::detail::FindString(json, "cmd"), std::string("x"));
+}
+
+TEST(FindString_TruncatedUnicodeEscapeIsLenient) {
+    std::string json = "{\"data\":\"a\\u00";
+    // No closing quote: ParseStringAt returns what it accumulated.
+    ASSERT_EQ(json_parse::detail::FindString(json, "data"),
+              std::string("a\\u00"));
+}
+
+TEST(FindString_LoneSurrogateEmitsReplacementChar) {
+    // A high surrogate not followed by a low surrogate cannot be encoded;
+    // emit U+FFFD (replacement character) like Go's encoding/json does.
+    std::string json = R"({"data":"x\ud83dy"})";
+    ASSERT_EQ(json_parse::detail::FindString(json, "data"),
+              std::string("x\xef\xbf\xbdy"));
+}
+
+TEST(ParseCommand_LoadURLWithQueryParams) {
+    // End-to-end: Go's WriteControlCommand (json.Marshal) emits \u0026 for
+    // '&' in a load URL. The parsed URL must contain the real ampersand.
+    std::string json =
+        R"({"cmd":"load","id":1,"url":"http://localhost:8080/g.html?a=1\u0026b=2"})";
+    ControlCommand cmd;
+    ASSERT_TRUE(json_parse::ParseControlCommand(json, cmd));
+    ASSERT_EQ(cmd.url,
+              std::string("http://localhost:8080/g.html?a=1&b=2"));
+}
+
+TEST(ParseCommand_UpdateDataWithHTMLAndNewlines) {
+    std::string json =
+        R"({"cmd":"update","id":0,"data":"{\"html\":\"\u003cb\u003eBreaking\u003c/b\u003e \u0026 more\\nnews\"}"})";
+    ControlCommand cmd;
+    ASSERT_TRUE(json_parse::ParseControlCommand(json, cmd));
+    ASSERT_EQ(cmd.data,
+              // The escaped-backslash + n in the wire text decodes to a literal
+              // backslash-n inside the nested JSON document, as Go would emit
+              // for a marshaled inner JSON string.
+              std::string("{\"html\":\"<b>Breaking</b> & more\\nnews\"}"));
+}
+
 TEST(FindString_MultipleFields) {
     std::string json = R"({"cmd":"custom","action":"fadeIn","payload":"test"})";
     ASSERT_EQ(json_parse::detail::FindString(json, "action"),

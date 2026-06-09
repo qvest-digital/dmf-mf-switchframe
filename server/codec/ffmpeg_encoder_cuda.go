@@ -398,8 +398,13 @@ static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
 
 	// Ensure CUDA context is active on this thread. cgo goroutines may
 	// migrate to threads that haven't called cudaSetDevice(0).
+	// If the push fails, return immediately WITHOUT popping: popping here
+	// would remove whatever context is actually on top of this thread's
+	// stack (potentially another encoder's), corrupting unrelated GPU work.
 	CUcontext prev_ctx;
-	cuCtxPushCurrent((CUcontext)cuda_ctx);
+	if (cuCtxPushCurrent((CUcontext)cuda_ctx) != CUDA_SUCCESS) {
+		return -7;
+	}
 
 	AVFrame* frame = h->hw_frame;
 	int w = h->base.width;
@@ -627,6 +632,9 @@ func (e *FFmpegHWFramesEncoder) EncodeNV12CUDA(yDevPtr, uvDevPtr unsafe.Pointer,
 	}
 
 	if outLen == 0 || outBuf == nil {
+		// A packet was successfully received (rc==0); release it before
+		// returning, mirroring the success path so no buffer is stranded.
+		C.ffenc_unref_packet_hw(&e.handle)
 		return nil, false, errors.New("NVENC hw_frames encoder produced no output")
 	}
 

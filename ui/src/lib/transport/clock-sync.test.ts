@@ -155,14 +155,15 @@ describe('ClockSync', () => {
 
 			const sendPing = vi.fn();
 			sync.startPeriodicSync(['A', 'B'], sendPing, 120_000);
-			// sentAt for both = performance.now() * 1000 = 0 µs (fake timer starts at 0)
 
 			vi.advanceTimersByTime(5);
-			const sentAt = 0; // performance.now() was 0 at ping time
 			const rtt = 5_000; // 5ms = 5_000 µs
+			// serverTimestamp is in the server wall-clock (Unix) epoch — the same
+			// domain as Date.now() — so the offset is serverTs - (Date.now()*1000 - rtt/2).
+			const wallNowUS = Date.now() * 1000;
 			// A offset = 5_000_000, B offset = 3_000_000 (seq 0=A, 1=B from first ping round)
-			sync.handlePong('A', buildPongHelper(0, sentAt + rtt / 2 + 5_000_000));
-			sync.handlePong('B', buildPongHelper(1, sentAt + rtt / 2 + 3_000_000));
+			sync.handlePong('A', buildPongHelper(0, wallNowUS - rtt / 2 + 5_000_000));
+			sync.handlePong('B', buildPongHelper(1, wallNowUS - rtt / 2 + 3_000_000));
 
 			// Average offset = 4_000_000
 			const localUS = Date.now() * 1000;
@@ -323,15 +324,16 @@ describe('ClockSync', () => {
 			// Advance 10ms to simulate network delay
 			vi.advanceTimersByTime(10);
 
-			const sentAt = 0;
 			const rtt = 10_000;
 			const knownOffset = 5_000_000;
-			const serverTs = sentAt + rtt / 2 + knownOffset;
+			// serverTs is in the server wall-clock (Unix) epoch, same as Date.now().
+			const wallNowUS = Date.now() * 1000;
+			const serverTs = wallNowUS - rtt / 2 + knownOffset;
 
 			const pong = buildPong(0, serverTs); // seq 0 = A
 			sync.handlePong('A', pong);
 
-			// offset = serverTs - (sentAt + rtt/2) = knownOffset = 5_000_000
+			// offset = serverTs - (Date.now()*1000 - rtt/2) = knownOffset = 5_000_000
 			expect(sync.getOffset('A')).toBe(knownOffset);
 
 			sync.stopPeriodicSync();
@@ -380,14 +382,59 @@ describe('ClockSync', () => {
 
 			vi.advanceTimersByTime(10);
 
-			const sentAt = 0;
 			const rtt = 10_000;
 			const knownOffset = 1_000;
-			const serverTs = sentAt + rtt / 2 + knownOffset;
+			// serverTs is in the server wall-clock (Unix) epoch, same as Date.now().
+			const wallNowUS = Date.now() * 1000;
+			const serverTs = wallNowUS - rtt / 2 + knownOffset;
 			sync.handlePong('A', buildPong(0, serverTs)); // seq 0 = A
 
 			expect(sync.getOffset('A')).toBe(knownOffset);
 			expect(sync.getRTT('A')).toBe(rtt);
+
+			sync.stopPeriodicSync();
+			vi.useRealTimers();
+		});
+
+		// Regression: the server sends its wall-clock (`time.Now().UnixMicro()`,
+		// ~1.7e15) while the browser's `performance.now()` is small (ms since page
+		// load). The offset and ptpNow MUST stay in the wall-clock epoch — mixing
+		// the two epochs produced offsets the size of navigationStart and a ptpNow
+		// of ~2× wall-clock (~year 2080), which the server's PTP-prefix dispatcher
+		// (strips only 2020-2040) would NOT strip, dropping the datagram.
+		it('keeps ptpNow in the server wall-clock epoch (cross-epoch regression)', () => {
+			// performance.now() starts at 0; Date.now() base is a realistic 2025 epoch.
+			const WALL_BASE_MS = 1_748_000_000_000; // ≈ 2025-05-23 (UnixMicro ~1.748e15)
+			vi.useFakeTimers({ now: WALL_BASE_MS });
+			const sync = new ClockSync();
+
+			const sendPing = vi.fn();
+			sync.startPeriodicSync(['A'], sendPing, 120_000);
+			// pingSentTimes[0] = performance.now()*1000 = 0 µs
+
+			// Cross-region RTT of 40ms; server clock is ~30ms ahead of the client.
+			vi.advanceTimersByTime(40);
+			const rtt = 40_000;
+			const trueSkewUS = 30_000;
+			// Server's wall-clock at the moment it replied (mid-flight), in the
+			// real Unix-micro epoch — completely unrelated to performance.now().
+			const wallNowUS = Date.now() * 1000;
+			const serverWallUS = wallNowUS - rtt / 2 + trueSkewUS;
+			sync.handlePong('A', buildPong(0, serverWallUS));
+
+			// RTT is still measured on the monotonic clock and is exact.
+			expect(sync.getRTT('A')).toBe(rtt);
+			// Offset is the true (small) skew, not a navigationStart-sized value.
+			expect(sync.getOffset('A')).toBe(trueSkewUS);
+
+			// ptpNow ≈ server wall-clock (within half the RTT), NOT ~2× wall-clock.
+			const ptp = sync.ptpNow();
+			expect(Math.abs(ptp - serverWallUS)).toBeLessThanOrEqual(rtt / 2);
+
+			// And it falls inside the dispatcher's PTP-prefix stripping window
+			// (2020-01-01 .. 2040-01-01 in µs) so datagrams are not dropped.
+			expect(ptp).toBeGreaterThan(1_577_836_800_000_000);
+			expect(ptp).toBeLessThan(2_208_988_800_000_000);
 
 			sync.stopPeriodicSync();
 			vi.useRealTimers();
@@ -401,13 +448,13 @@ describe('ClockSync', () => {
 
 			const sendPing = vi.fn();
 			sync.startPeriodicSync(['A'], sendPing, 120_000);
-			// sentAt for A = nowMicros() = performance.now() * 1000 = 0 µs
 
 			// Simulate pong after 5ms (seq 0 = A from first ping round)
 			vi.advanceTimersByTime(5);
-			const sentAt = 0; // performance.now() was 0 at ping time
 			const rtt = 5_000;
-			const pongA = buildPongHelper(0, sentAt + rtt / 2 + 100_000);
+			// serverTimestamp is in the server wall-clock (Unix) epoch, same as Date.now().
+			const wallNowUS = Date.now() * 1000;
+			const pongA = buildPongHelper(0, wallNowUS - rtt / 2 + 100_000);
 			sync.handlePong('A', pongA);
 
 			// Offset is valid, ptpNow should include it
@@ -442,16 +489,16 @@ describe('ClockSync', () => {
 			// Use handlePong to set offsets via the ping/pong flow
 			const sendPing = vi.fn();
 			sync.startPeriodicSync(['A', 'B'], sendPing, 120_000);
-			// sentAt for both = nowMicros() = performance.now() * 1000 = 0 µs
 			// A gets seq 0, B gets seq 1
 
 			vi.advanceTimersByTime(5);
-			const sentAt = 0; // performance.now() was 0 at ping time
 			const rtt = 5_000;
+			// serverTimestamp is in the server wall-clock (Unix) epoch, same as Date.now().
+			const wallNowUS = Date.now() * 1000;
 			// Set offset for A = 100_000 (seq 0)
-			sync.handlePong('A', buildPongHelper(0, sentAt + rtt / 2 + 100_000));
+			sync.handlePong('A', buildPongHelper(0, wallNowUS - rtt / 2 + 100_000));
 			// Set offset for B = 200_000 (seq 1)
-			sync.handlePong('B', buildPongHelper(1, sentAt + rtt / 2 + 200_000));
+			sync.handlePong('B', buildPongHelper(1, wallNowUS - rtt / 2 + 200_000));
 
 			// Both valid: average = 150_000
 			const ptpBoth = sync.ptpNow();
@@ -467,10 +514,10 @@ describe('ClockSync', () => {
 			// B gets seq 2 (pingSeq continues from 2)
 
 			vi.advanceTimersByTime(5);
-			// performance.now() before this advance was 15_005, so sentAt = 15_005_000 µs
-			const newSentAt = 15_005_000;
 			const newRtt = 5_000;
-			sync.handlePong('B', buildPongHelper(2, newSentAt + newRtt / 2 + 200_000));
+			// serverTimestamp is in the server wall-clock (Unix) epoch, same as Date.now().
+			const newWallNowUS = Date.now() * 1000;
+			sync.handlePong('B', buildPongHelper(2, newWallNowUS - newRtt / 2 + 200_000));
 
 			// Now A's age is ~15s (still valid), B's age is fresh
 			// Wait 6 more seconds to push A past 20s

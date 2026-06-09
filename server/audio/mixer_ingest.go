@@ -121,15 +121,6 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 	// Update per-channel peaks (pre-fader, pre-gain)
 	ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
 
-	// Store a copy of last decoded PCM for instant crossfade on future cuts
-	// (only for active channels).
-	// Copy to avoid aliasing if decoder reuses its internal buffer.
-	if ch.active {
-		ch.storedBuf = growBuf(ch.storedBuf, len(pcm))
-		copy(ch.storedBuf, pcm)
-		m.lastDecodedPCM[sourceKey] = ch.storedBuf
-	}
-
 	// Pipeline order: Trim -> Phase -> HPF -> Gate -> EQ -> Compressor -> Balance -> [push to ring buffer]
 	// Fader gain and transition gain are applied by the ticker at read time.
 
@@ -249,13 +240,6 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 
 	// Resample if source rate doesn't match mixer rate.
 	pcm = m.resampleIfNeeded(ch, pcm, 0) // PCM sources don't carry sample rate in-band
-
-	// Store a copy of PCM for instant crossfade on future cuts (only for active channels).
-	if ch.active {
-		ch.storedBuf = growBuf(ch.storedBuf, len(pcm))
-		copy(ch.storedBuf, pcm)
-		m.lastDecodedPCM[sourceKey] = ch.storedBuf
-	}
 
 	// Pipeline order: Trim -> Phase -> HPF -> Gate -> EQ -> Compressor -> Balance -> [push to ring buffer]
 	// Fader gain and transition gain are applied by the ticker at read time.

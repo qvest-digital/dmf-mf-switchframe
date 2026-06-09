@@ -26,6 +26,17 @@ type HealthResponse struct {
 	LastCommandSeq uint64 `json:"lastCommandSeq"`
 	EngineLabel    string `json:"engineLabel,omitempty"`
 	Epoch          uint64 `json:"epoch,omitempty"`
+
+	// InstanceID is a per-process stable identifier (e.g. a UUID minted at
+	// startup). It is the deterministic secondary tiebreak key Role() uses
+	// when two engines are misconfigured with the SAME --engine-label and
+	// equal epochs: without it, the lexical-label branch makes both sides
+	// followers and leadership is silently lost. When both engines report a
+	// distinct InstanceID, the lexically-smaller one is chosen as leader so
+	// authority survives a label typo. Empty preserves the prior fail-safe
+	// (both-follower) behavior, so this is backward compatible with peers
+	// that do not yet populate it.
+	InstanceID string `json:"instanceId,omitempty"`
 }
 
 // PeerStatus holds the current peer health state, safe to read from any
@@ -39,6 +50,7 @@ type PeerStatus struct {
 	UptimeMs       int64
 	PeerLabel      string
 	PeerEpoch      uint64
+	PeerInstanceID string
 }
 
 // Option configures a HealthPoller.
@@ -65,6 +77,16 @@ func WithHTTPClient(c *http.Client) Option {
 // RoleStandalone and Gate() is a no-op).
 func WithLocalIdentity(label string) Option {
 	return func(p *HealthPoller) { p.localLabel = label }
+}
+
+// WithLocalInstanceID sets this engine's per-process stable identifier (e.g. a
+// UUID minted at startup). Role() uses it as the deterministic secondary
+// tiebreak when the local and peer engines share an --engine-label and have
+// equal epochs, so a label typo no longer collapses both sides to follower.
+// Pass "" to keep the prior fail-safe (both-follower) behavior — the tiebreak
+// only engages when both engines report a distinct, non-empty instance ID.
+func WithLocalInstanceID(id string) Option {
+	return func(p *HealthPoller) { p.localInstanceID = id }
 }
 
 // WithInitialEpoch seeds the local epoch at construction. Callers restoring
@@ -94,6 +116,15 @@ type HealthPoller struct {
 	// localLabel is immutable after construction. Empty means standalone.
 	localLabel string
 
+	// localInstanceID is a per-process stable identifier (e.g. a UUID minted
+	// at startup) and is immutable after construction. It is the deterministic
+	// secondary tiebreak Role() applies when two engines are misconfigured with
+	// the SAME --engine-label and equal epochs: without it the lexical-label
+	// branch makes both sides followers and leadership is silently lost. Empty
+	// preserves the prior fail-safe (both-follower) behavior, so this is
+	// backward compatible with peers that do not yet populate InstanceID.
+	localInstanceID string
+
 	// localEpoch is bumped by BumpEpoch and read by Role. Lock-free.
 	localEpoch atomic.Uint64
 
@@ -121,6 +152,7 @@ type HealthPoller struct {
 	uptimeMs       int64
 	peerLabel      string
 	peerEpoch      uint64
+	peerInstanceID string
 
 	cancel  context.CancelFunc
 	stopped atomic.Bool
@@ -193,6 +225,7 @@ func (p *HealthPoller) Status() PeerStatus {
 		UptimeMs:       p.uptimeMs,
 		PeerLabel:      p.peerLabel,
 		PeerEpoch:      p.peerEpoch,
+		PeerInstanceID: p.peerInstanceID,
 	}
 }
 
@@ -202,6 +235,16 @@ func (p *HealthPoller) LocalLabel() string {
 		return ""
 	}
 	return p.localLabel
+}
+
+// LocalInstanceID returns this engine's per-process stable identifier, or ""
+// if none was configured. Nil-safe so the unauthenticated peer-health handler
+// can publish it without a nil check (mirrors LocalLabel).
+func (p *HealthPoller) LocalInstanceID() string {
+	if p == nil {
+		return ""
+	}
+	return p.localInstanceID
 }
 
 // LocalEpoch returns the current local epoch, incremented by each BumpEpoch.
@@ -251,6 +294,7 @@ func (p *HealthPoller) Role() Role {
 	peerReachable := p.reachable
 	peerLabel := p.peerLabel
 	peerEpoch := p.peerEpoch
+	peerInstanceID := p.peerInstanceID
 	// Load localEpoch inside the RLock region so the Role snapshot is
 	// linearizable relative to recordSuccess's write of peerEpoch —
 	// otherwise a concurrent BumpEpoch can cause transient role flicker.
@@ -269,9 +313,11 @@ func (p *HealthPoller) Role() Role {
 		return RoleFollowerPartitioned
 	}
 
-	// Equal epochs: lexical label wins. "a" < "b".
+	// Equal epochs: lexical label wins. "a" < "b". When labels are equal
+	// (a same-label misconfiguration) the instance-ID secondary key breaks
+	// the tie so leadership is never lost to a typo — see localWinsTiebreak.
 	if peerReachable {
-		if p.localLabel < peerLabel {
+		if localWinsTiebreak(p.localLabel, peerLabel, p.localInstanceID, peerInstanceID) {
 			return RoleLeader
 		}
 		return RoleFollowerHealthy
@@ -284,10 +330,33 @@ func (p *HealthPoller) Role() Role {
 	if peerLabel == "" {
 		return RoleFollowerPartitioned
 	}
-	if p.localLabel < peerLabel {
+	if localWinsTiebreak(p.localLabel, peerLabel, p.localInstanceID, peerInstanceID) {
 		return RoleLeader
 	}
 	return RoleFollowerPartitioned
+}
+
+// localWinsTiebreak reports whether the local engine wins the equal-epoch
+// tiebreak against the peer. The primary key is the lexical engine label
+// ("a" < "b"). When the labels are equal — a same-label misconfiguration that
+// would otherwise collapse both engines to follower and silently lose
+// leadership — the per-process instance IDs are used as a deterministic
+// secondary key (lexically-smaller wins) so exactly one engine leads.
+//
+// The instance-ID fallback only engages when both IDs are present and
+// distinct. If either is empty (a peer that does not yet publish InstanceID)
+// or they are identical, the function preserves the prior fail-safe behavior
+// by returning false (local does not win) — both engines stay followers, which
+// is safe (no dual-leader) and backward compatible.
+func localWinsTiebreak(localLabel, peerLabel, localInstanceID, peerInstanceID string) bool {
+	if localLabel != peerLabel {
+		return localLabel < peerLabel
+	}
+	// Same label: fall back to the instance-ID secondary key.
+	if localInstanceID == "" || peerInstanceID == "" || localInstanceID == peerInstanceID {
+		return false
+	}
+	return localInstanceID < peerInstanceID
 }
 
 // SetPeerStateForTest lets tests inject peer-poll results without running
@@ -300,6 +369,15 @@ func (p *HealthPoller) SetPeerStateForTest(reachable bool, label string, epoch u
 	p.reachable = reachable
 	p.peerLabel = label
 	p.peerEpoch = epoch
+}
+
+// SetPeerInstanceIDForTest injects the last-observed peer instance ID without
+// running the HTTP loop. Kept separate from SetPeerStateForTest so that
+// helper's signature stays stable for cross-package callers (control/).
+func (p *HealthPoller) SetPeerInstanceIDForTest(id string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.peerInstanceID = id
 }
 
 func (p *HealthPoller) loop(ctx context.Context) {
@@ -364,6 +442,7 @@ func (p *HealthPoller) recordSuccess(health HealthResponse) {
 	p.uptimeMs = health.UptimeMs
 	p.peerLabel = health.EngineLabel
 	p.peerEpoch = health.Epoch
+	p.peerInstanceID = health.InstanceID
 
 	if wasUnreachable {
 		slog.Info("peer engine recovered",

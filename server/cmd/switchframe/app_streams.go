@@ -28,6 +28,15 @@ func (a *App) onStreamRegistered(key string, relay *distribution.Relay) {
 	if strings.HasPrefix(key, "playout:") {
 		return // Playout sources are manually wired in initPlayout()
 	}
+	if strings.HasPrefix(key, "source:") {
+		// Built-in virtual sources (source:black, source:colorbars) are
+		// registered by the switcher itself; initBuiltinSourcePreview only
+		// creates relays for their preview encode. Wiring them here would
+		// clobber the virtual source registration (label, isVirtual) and
+		// attach a decoder to the relay the preview encoder broadcasts
+		// into — a permanent encode→decode→re-ingest loop.
+		return
+	}
 	if a.sw == nil || a.mixer == nil {
 		slog.Error("BUG: stream registered before switcher/mixer initialized", "key", key)
 		return
@@ -63,6 +72,9 @@ func (a *App) onStreamUnregistered(key string) {
 	}
 	if strings.HasPrefix(key, "srt:") {
 		return // SRT sources are managed by app_srt.go lifecycle
+	}
+	if strings.HasPrefix(key, "source:") {
+		return // Built-in virtual sources are managed by the switcher itself
 	}
 
 	if a.sw == nil || a.mixer == nil {

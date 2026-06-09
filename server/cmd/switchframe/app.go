@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -157,6 +158,13 @@ type App struct {
 
 	// Operator comms
 	commsMgr *comms.Manager
+	// commsStreamsMu guards commsStreams: operatorID → that operator's
+	// active comms bidi stream. A reconnect supersedes (closes) the prior
+	// stream, and only the current stream's teardown may Leave() the comms
+	// session — a stale lingering stream's deferred Leave must not tear
+	// down the reconnected operator's fresh session. See app_comms.go.
+	commsStreamsMu sync.Mutex
+	commsStreams   map[string]io.ReadWriteCloser
 
 	// Clip players
 	clipMgr    *clip.Manager
@@ -171,8 +179,12 @@ type App struct {
 	playoutPlaylistDir string
 	playoutRelays      [playout.MaxChannels]*distribution.Relay
 
-	// GPU pipeline (Metal on macOS, CUDA on Linux)
-	gpuState        *gpuState
+	// GPU pipeline (Metal on macOS, CUDA on Linux). Accessed only via
+	// gpu()/setGPUState (app_gpu.go): the format-change rebuild replaces
+	// the whole state from the SetPipelineFormat caller's goroutine while
+	// decode callbacks and lifecycle hooks read it from their own
+	// goroutines.
+	gpuState        atomic.Pointer[gpuState]
 	gpuRawVideoSink *atomic.Pointer[gpu.RawSinkFunc] // GPU raw sink for MXL output
 
 	// AI sidecar (nil when not using sidecar mode)
@@ -215,8 +227,15 @@ type App struct {
 
 	// MXL integration
 	mxlInstance *mxl.Instance
-	mxlSources  []*mxl.Source
+	mxlSources  []*mxl.Source // configured --mxl-sources; teardown owned by closeSubsystems
 	mxlOutput   *mxl.Output
+
+	// demoMXLSources holds only the synthetic sources created by startMXLDemo.
+	// Tracked separately from mxlSources so stopMXLDemo tears down exactly what
+	// it created and does not stop real configured sources (which closeSubsystems
+	// owns). Kept distinct to avoid conflating demo and production ownership in
+	// one slice, which would misbehave under a partial/restart teardown.
+	demoMXLSources []*mxl.Source
 
 	// ST 2110 integration
 	st2110State *st2110State
@@ -240,6 +259,12 @@ type App struct {
 
 	// Background goroutine tracking for clean shutdown
 	bgWG sync.WaitGroup
+	// bgCtx is cancelled at the start of shutdown so background workers
+	// launched before Run() (e.g. the ST map cache prewarm) can abort their
+	// long-running loops instead of forcing bgWG.Wait() to block until they
+	// finish. Cancelled in closeSubsystems before bgWG.Wait().
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
 }
 
 // statePath joins path components under the state directory.
@@ -382,8 +407,8 @@ func (a *App) initPrismServer() error {
 				if a.sw != nil {
 					a.sw.RequestKeyframe()
 				}
-				if streamKey == "program-preview" && a.gpuState != nil && a.gpuState.previewNode != nil {
-					a.gpuState.previewNode.ForceIDR()
+				if gs := a.gpu(); streamKey == "program-preview" && gs != nil && gs.previewNode != nil {
+					gs.previewNode.ForceIDR()
 				}
 			}
 		},
@@ -750,6 +775,11 @@ func buildHTMLGfxConfig(cfg AppConfig, width, height, fps int) htmlgfx.Config {
 // initSubsystems creates the debug collector, stores, graphics compositor,
 // upstream keyer, and replay manager.
 func (a *App) initSubsystems() error {
+	// Shutdown context for background workers started here (before Run()).
+	// Cancelled at the start of closeSubsystems so long-running prewarm loops
+	// abort promptly instead of blocking bgWG.Wait() until completion.
+	a.bgCtx, a.bgCancel = context.WithCancel(context.Background())
+
 	// Debug collector for pipeline instrumentation.
 	a.debugCollector = debug.NewCollector()
 	a.debugCollector.Register("switcher", a.sw)
@@ -907,7 +937,7 @@ func (a *App) initSubsystems() error {
 	// Background pre-warm: generate mmap-cached LUTs for built-in animated effects.
 	if a.cfg.CacheDir != "" {
 		a.bgWG.Add(1)
-		go a.prewarmSTMapCache()
+		go a.prewarmSTMapCache(a.bgCtx)
 	}
 
 	// Color grading store and controller.
@@ -951,27 +981,15 @@ func (a *App) initSubsystems() error {
 
 	// GPU pipeline auto-detection and wiring.
 	// Must happen after stmap registry is set and before BuildPipeline().
-	a.gpuState = initGPU(a.sw)
-	wireGPUPipeline(a.gpuState, a.sw, a)
+	gs := initGPU(a.sw)
+	a.setGPUState(gs)
+	wireGPUPipeline(gs, a.sw, a)
 
 	// Rebuild GPU pipeline on format change (e.g., 1080p → 720p).
 	// Full teardown + recreate: pool, encoder, pipeline, source manager
 	// all need to match the new dimensions.
-	if a.gpuState != nil {
-		a.sw.SetOnFormatChange(func(w, h, fpsNum, fpsDen int) {
-			slog.Info("rebuilding GPU pipeline for format change",
-				"width", w, "height", h,
-				"fps_num", fpsNum, "fps_den", fpsDen)
-			// Tear down old GPU pipeline (releases all GPU resources).
-			a.sw.SetGPUPipeline(nil)
-			a.sw.SetGPUSourceManager(nil)
-			closeGPU(a.gpuState)
-			// Recreate at new dimensions.
-			a.gpuState = initGPU(a.sw)
-			wireGPUPipeline(a.gpuState, a.sw, a)
-			// Re-wire GPU replay FRUC at the new dimensions.
-			a.wireGPUReplay()
-		})
+	if gs != nil {
+		a.sw.SetOnFormatChange(a.rebuildGPUPipelineForFormat)
 	}
 
 	// Pipeline encoder for the video processing chain.
@@ -1022,11 +1040,11 @@ func (a *App) initSubsystems() error {
 				a.mixer.OnProgramChange(a.sw.ProgramSource())
 
 				// Register replay source with GPU preview encoder.
-				if a.cfg.PreviewProxy && a.gpuState != nil && a.gpuState.sourceManager != nil {
+				if gs := a.gpu(); a.cfg.PreviewProxy && gs != nil && gs.sourceManager != nil {
 					pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
 					curPF := a.sw.PipelineFormat()
 					var replayVideoInfoSent bool
-					a.gpuState.sourceManager.RegisterSource("replay", curPF.Width, curPF.Height, &gpu.PreviewConfig{
+					gs.sourceManager.RegisterSource("replay", curPF.Width, curPF.Height, &gpu.PreviewConfig{
 						Width:   pw,
 						Height:  ph,
 						Bitrate: a.cfg.PreviewBitrate,
@@ -1070,8 +1088,8 @@ func (a *App) initSubsystems() error {
 			},
 			func() {
 				// Release GPU preview encoder and cached frames.
-				if a.gpuState != nil && a.gpuState.sourceManager != nil {
-					a.gpuState.sourceManager.RemoveSource("replay")
+				if gs := a.gpu(); gs != nil && gs.sourceManager != nil {
+					gs.sourceManager.RemoveSource("replay")
 				}
 				replayPreviewGroupID.Store(0)
 				a.sw.UnregisterSource("replay")
@@ -1308,7 +1326,7 @@ func (a *App) initMXL() error {
 			}
 		}
 
-		if a.cfg.PreviewProxy && a.gpuState != nil && a.gpuState.sourceManager != nil {
+		if gs := a.gpu(); a.cfg.PreviewProxy && gs != nil && gs.sourceManager != nil {
 			// GPU preview encoding — register source with GPU source manager.
 			// IngestYUV (triggered by OnRawVideo → IngestRawVideo → handleRawVideoFrame)
 			// handles upload + ST map + cache + preview encode.
@@ -1316,7 +1334,7 @@ func (a *App) initMXL() error {
 			var gpuGroupID atomic.Uint32
 			var gpuVideoInfoSent bool
 			mxlRelay := relay // capture for closure
-			a.gpuState.sourceManager.RegisterSource(flowName, pf.Width, pf.Height, &gpu.PreviewConfig{
+			gs.sourceManager.RegisterSource(flowName, pf.Width, pf.Height, &gpu.PreviewConfig{
 				Width:   pw,
 				Height:  ph,
 				Bitrate: a.cfg.PreviewBitrate,
@@ -1949,10 +1967,10 @@ func (a *App) Run(ctx context.Context) error {
 	if a.programPreviewRelay == nil {
 		a.programPreviewRelay = a.server.RegisterStream("program-preview")
 	}
-	if a.gpuState != nil && a.gpuState.previewNode != nil {
+	if gs := a.gpu(); gs != nil && gs.previewNode != nil {
 		// GPU preview encode is active — wire ForceIDR on source cuts.
 		var lastProgramSource string
-		gpuPreviewNode := a.gpuState.previewNode
+		gpuPreviewNode := gs.previewNode
 		a.sw.OnStateChange(func(state internal.ControlRoomState) {
 			if state.ProgramSource != lastProgramSource {
 				lastProgramSource = state.ProgramSource
@@ -2112,7 +2130,14 @@ func (a *App) closeWithContext(ctx context.Context) {
 
 // closeSubsystems cleans up all subsystems in reverse initialization order.
 func (a *App) closeSubsystems() {
-	// Wait for background goroutines (metering ticker) to exit.
+	// Cancel the background-worker context first so long-running loops
+	// started before Run() (the ST map cache prewarm) abort instead of
+	// blocking bgWG.Wait() until they finish.
+	if a.bgCancel != nil {
+		a.bgCancel()
+	}
+
+	// Wait for background goroutines (metering ticker, prewarm) to exit.
 	a.bgWG.Wait()
 
 	// Tear down built-in source preview encoders. Must happen before the
@@ -2129,6 +2154,12 @@ func (a *App) closeSubsystems() {
 		a.mxlOutput.Stop()
 	}
 	for _, src := range a.mxlSources {
+		src.Stop()
+	}
+	// Demo sources are normally stopped by stopMXLDemo (deferred in Run), but
+	// stop them here too so teardown is complete regardless of defer ordering.
+	// src.Stop() is sync.Once-guarded, so a double-stop is a safe no-op.
+	for _, src := range a.demoMXLSources {
 		src.Stop()
 	}
 	if a.mxlInstance != nil {
@@ -2226,7 +2257,7 @@ func (a *App) closeSubsystems() {
 		_ = a.aiSidecarPool.Close()
 	}
 	// GPU cleanup after switcher (pipeline frames must be released first).
-	closeGPU(a.gpuState)
+	closeGPU(a.gpu())
 	if a.refClockEncoder != nil {
 		_ = a.refClockEncoder.Close()
 	}
@@ -2250,7 +2281,7 @@ func (a *App) handleCertHash(w http.ResponseWriter, _ *http.Request) {
 // animated ST map effects at the current pipeline resolution. This runs in
 // the background so the first use of any effect is instant (mmap load)
 // rather than a multi-second generation pause.
-func (a *App) prewarmSTMapCache() {
+func (a *App) prewarmSTMapCache(ctx context.Context) {
 	defer a.bgWG.Done()
 
 	pf := a.sw.PipelineFormat()
@@ -2262,6 +2293,13 @@ func (a *App) prewarmSTMapCache() {
 	const defaultFrameCount = 90
 
 	for _, info := range stmap.AnimatedGeneratorInfoList() {
+		// Abort promptly on shutdown instead of blocking bgWG.Wait() through
+		// the full ~3-minute / ~28 GB generation of every remaining effect.
+		if ctx.Err() != nil {
+			slog.Info("stmap cache prewarm cancelled", "completed_through", info.Name)
+			return
+		}
+
 		// Compute default params for this generator.
 		params := make(map[string]float64, len(info.Params))
 		for name, p := range info.Params {

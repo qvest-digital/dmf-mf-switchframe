@@ -29,8 +29,10 @@ func demuxMP4(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
 		return nil, nil, fmt.Errorf("empty file: %s", path)
 	}
 
-	// Parse the MP4 box tree to extract track information.
-	tracks, err := parseMP4Tracks(f)
+	// Parse the MP4 box tree to extract track information. The file size bounds
+	// attacker-controlled sample counts so a crafted box cannot force a huge
+	// allocation (see the stsz handler in parseMP4Tracks).
+	tracks, err := parseMP4Tracks(f, info.Size())
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse MP4: %w", err)
 	}
@@ -55,14 +57,14 @@ func demuxMP4(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
 	}
 
 	// Build sample tables and read samples.
-	videoFrames, err := readVideoSamples(f, videoTrack)
+	videoFrames, err := readVideoSamples(f, videoTrack, info.Size())
 	if err != nil {
 		return nil, nil, fmt.Errorf("read video samples: %w", err)
 	}
 
 	var audioFrames []BufferedAudioFrame
 	if audioTrack != nil {
-		audioFrames, err = readAudioSamples(f, audioTrack)
+		audioFrames, err = readAudioSamples(f, audioTrack, info.Size())
 		if err != nil {
 			return nil, nil, fmt.Errorf("read audio samples: %w", err)
 		}
@@ -122,8 +124,11 @@ type mp4Track struct {
 	cttsVersion uint8 // version of ctts box (affects offset interpretation)
 }
 
-// parseMP4Tracks walks the MP4 box tree and extracts track metadata.
-func parseMP4Tracks(r io.ReadSeeker) ([]mp4Track, error) {
+// parseMP4Tracks walks the MP4 box tree and extracts track metadata. fileSize
+// is the on-disk size of the source file; it bounds attacker-controlled sample
+// counts (e.g. the uniform-size stsz branch) so a tiny crafted file cannot
+// force a multi-gigabyte allocation.
+func parseMP4Tracks(r io.ReadSeeker, fileSize int64) ([]mp4Track, error) {
 	var tracks []mp4Track
 	var currentTrack *mp4Track
 
@@ -328,7 +333,18 @@ func parseMP4Tracks(r io.ReadSeeker) ([]mp4Track, error) {
 			}
 			stsz := box.(*mp4.Stsz)
 			if stsz.SampleSize != 0 {
-				// Uniform sample size: expand to per-sample.
+				// Uniform sample size: SampleCount is a fixed scalar read
+				// verbatim from the box (go-mp4 leaves EntrySize empty in this
+				// case), so it is fully attacker-controlled. Bound it by the
+				// file size before allocating: the uniform media occupies
+				// SampleCount*SampleSize bytes, which cannot exceed the file.
+				// Without this guard a ~50-byte box with SampleSize=1,
+				// SampleCount=0xFFFFFFFF would force a ~16 GiB allocation.
+				if uint64(stsz.SampleCount)*uint64(stsz.SampleSize) > uint64(fileSize) {
+					return nil, fmt.Errorf("stsz sample count %d (size %d) exceeds file size %d",
+						stsz.SampleCount, stsz.SampleSize, fileSize)
+				}
+				// Expand to per-sample.
 				sizes := make([]uint32, stsz.SampleCount)
 				for i := range sizes {
 					sizes[i] = stsz.SampleSize
@@ -456,7 +472,12 @@ type sampleTableEntry struct {
 // buildSampleTable resolves sample-to-chunk mapping to produce a flat list
 // of (offset, size) for every sample in the track. Returns an error if the
 // stsc box references chunk indices beyond the stco/co64 chunk offset table.
-func buildSampleTable(track *mp4Track) ([]sampleTableEntry, error) {
+// fileSize is the on-disk size of the source file; per-sample sizes (from the
+// non-uniform stsz branch) and chunk offsets (stco/co64) are attacker
+// controlled, so every sample must fit within the file and the cumulative
+// sample bytes must not exceed the file size (samples cannot legitimately
+// overlap), or a tiny crafted file could force multi-gigabyte allocations.
+func buildSampleTable(track *mp4Track, fileSize int64) ([]sampleTableEntry, error) {
 	if len(track.stsz) == 0 || len(track.stsc) == 0 || len(track.stco) == 0 {
 		return nil, nil
 	}
@@ -475,6 +496,13 @@ func buildSampleTable(track *mp4Track) ([]sampleTableEntry, error) {
 	numSamples := len(track.stsz)
 	entries := make([]sampleTableEntry, 0, numSamples)
 
+	// Cumulative media bytes across all samples. In a well-formed file
+	// samples occupy disjoint byte ranges, so their total size cannot exceed
+	// the file size. Without this bound a crafted file whose stco chunks all
+	// overlap (e.g. every chunk at offset 0 with size==fileSize) would pass
+	// the per-sample check yet retain numSamples*fileSize bytes in memory.
+	var totalBytes uint64
+
 	sampleIdx := 0
 	for chunkIdx := 0; chunkIdx < numChunks && sampleIdx < numSamples; chunkIdx++ {
 		// Find the stsc entry that applies to this chunk (1-based chunk number).
@@ -490,11 +518,24 @@ func buildSampleTable(track *mp4Track) ([]sampleTableEntry, error) {
 		offset := track.stco[chunkIdx]
 		for s := uint32(0); s < samplesInChunk && sampleIdx < numSamples; s++ {
 			size := track.stsz[sampleIdx]
+			// Per-sample bound: the sample must lie entirely within the
+			// file. offset and size are both attacker-controlled, so guard
+			// against uint64 wraparound of offset+size as well.
+			end := offset + uint64(size)
+			if end < offset || end > uint64(fileSize) {
+				return nil, fmt.Errorf("sample %d (offset %d, size %d) extends past file size %d",
+					sampleIdx, offset, size, fileSize)
+			}
+			totalBytes += uint64(size)
+			if totalBytes > uint64(fileSize) {
+				return nil, fmt.Errorf("total sample size %d exceeds file size %d (overlapping samples)",
+					totalBytes, fileSize)
+			}
 			entries = append(entries, sampleTableEntry{
 				offset: offset,
 				size:   size,
 			})
-			offset += uint64(size)
+			offset = end
 			sampleIdx++
 		}
 	}
@@ -559,9 +600,17 @@ func isSyncSample(sampleNum uint32, stss []uint32) bool {
 }
 
 // readVideoSamples reads all video samples from the file, constructing
-// BufferedFrame entries with proper PTS and keyframe markers.
-func readVideoSamples(r io.ReadSeeker, track *mp4Track) ([]BufferedFrame, error) {
-	sampleTable, err := buildSampleTable(track)
+// BufferedFrame entries with proper PTS and keyframe markers. fileSize bounds
+// attacker-controlled sample sizes (see buildSampleTable).
+func readVideoSamples(r io.ReadSeeker, track *mp4Track, fileSize int64) ([]BufferedFrame, error) {
+	// The timescale comes from the (optional) mdhd box; a crafted file can
+	// omit it or carry Timescale=0, which would make the PTS division below
+	// panic with an integer divide-by-zero.
+	if track.timescale == 0 {
+		return nil, fmt.Errorf("video track has missing or zero mdhd timescale")
+	}
+
+	sampleTable, err := buildSampleTable(track, fileSize)
 	if err != nil {
 		return nil, fmt.Errorf("build sample table: %w", err)
 	}
@@ -634,9 +683,16 @@ func readVideoSamples(r io.ReadSeeker, track *mp4Track) ([]BufferedFrame, error)
 // readAudioSamples reads all audio samples from the file, constructing
 // BufferedAudioFrame entries with proper PTS. MP4 stores raw AAC payloads
 // (no ADTS headers), and BufferedAudioFrame.data expects raw AAC, so we
-// use the sample data directly without any ADTS round-trip.
-func readAudioSamples(r io.ReadSeeker, track *mp4Track) ([]BufferedAudioFrame, error) {
-	sampleTable, err := buildSampleTable(track)
+// use the sample data directly without any ADTS round-trip. fileSize bounds
+// attacker-controlled sample sizes (see buildSampleTable).
+func readAudioSamples(r io.ReadSeeker, track *mp4Track, fileSize int64) ([]BufferedAudioFrame, error) {
+	// See readVideoSamples: a missing/zero mdhd timescale would panic the
+	// PTS division below.
+	if track.timescale == 0 {
+		return nil, fmt.Errorf("audio track has missing or zero mdhd timescale")
+	}
+
+	sampleTable, err := buildSampleTable(track, fileSize)
 	if err != nil {
 		return nil, fmt.Errorf("build sample table: %w", err)
 	}

@@ -334,6 +334,7 @@ func (se *SequenceEngine) AutoOff(layerID int) error {
 		// No out frames — deactivate immediately.
 		seq.phase = seqPhaseIdle
 		seq.frameIdx = 0
+		seq.frameAccum = 0
 		layer.active = false
 		layer.fadePosition = 0.0
 	} else {
@@ -382,6 +383,7 @@ func (se *SequenceEngine) CutOff(layerID int) error {
 
 	seq.phase = seqPhaseIdle
 	seq.frameIdx = 0
+	seq.frameAccum = 0
 	layer.active = false
 	layer.fadePosition = 0.0
 

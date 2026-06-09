@@ -974,28 +974,32 @@ describe('DualConnectionManager', () => {
 	});
 
 	describe('Uint8Array decoding in dual mode', () => {
-		it('handles malformed JSON in Uint8Array by throwing', () => {
+		it('drops malformed JSON in Uint8Array without throwing', () => {
 			new DualConnectionManager(makeDualConfig());
 			const instanceA = MockedConnectionManager.mock.results[0].value;
 
-			// Simulate malformed bytes — createEngineManager wraps JSON.parse
-			// which will throw. Verify the error doesn't silently corrupt state.
+			// Simulate malformed bytes from the MoQ control track. createEngineManager
+			// wraps JSON.parse in try/catch and drops just this payload — it must NOT
+			// throw, otherwise the error would unwind into handleDataStream's catch
+			// (outside the per-object loop) and abandon the rest of the subgroup
+			// stream's objects.
 			const garbage = new TextEncoder().encode('not valid json{{{');
-			expect(() => instanceA.simulateStateUpdate(garbage)).toThrow();
+			expect(() => instanceA.simulateStateUpdate(garbage)).not.toThrow();
 		});
 
 		it('does not update reconciler on malformed Uint8Array', () => {
-			new DualConnectionManager(makeDualConfig());
+			const onStateUpdate = vi.fn();
+			new DualConnectionManager(makeDualConfig({ onStateUpdate }));
 			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
 			const instanceA = MockedConnectionManager.mock.results[0].value;
 
 			const garbage = new TextEncoder().encode('}{bad');
-			try {
-				instanceA.simulateStateUpdate(garbage);
-			} catch {
-				// Expected
-			}
+			instanceA.simulateStateUpdate(garbage);
+
+			// Malformed payload dropped: neither the reconciler nor the downstream
+			// onStateUpdate callback sees the corrupt state.
 			expect(reconcilerInstance.ingest).not.toHaveBeenCalled();
+			expect(onStateUpdate).not.toHaveBeenCalled();
 		});
 	});
 
@@ -1260,6 +1264,106 @@ describe('DualConnectionManager', () => {
 
 			expect(onInitialLoadComplete).toHaveBeenCalledOnce();
 			expect(instanceB.start).toHaveBeenCalledOnce();
+		});
+	});
+
+	describe('per-engine initial load error tracking', () => {
+		it('does not report all-engines-failed from repeated retries of a single engine', async () => {
+			const onInitialLoadError = vi.fn();
+			const mgr = new DualConnectionManager(makeDualConfig({ onInitialLoadError }));
+			await mgr.start();
+
+			// Engine A's 3s retry loop fails repeatedly while engine B is still
+			// loading — onInitialLoadError fires per ATTEMPT, not per engine.
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA._config.onInitialLoadError('connection refused', new Error('connection refused'));
+			instanceA._config.onInitialLoadError('connection refused', new Error('connection refused'));
+			instanceA._config.onInitialLoadError('connection refused', new Error('connection refused'));
+
+			// Engine B never failed — the global "all engines failed" report
+			// must not fire.
+			expect(onInitialLoadError).not.toHaveBeenCalled();
+		});
+
+		it('reports the global error once every engine has failed', async () => {
+			const onInitialLoadError = vi.fn();
+			const mgr = new DualConnectionManager(makeDualConfig({ onInitialLoadError }));
+			await mgr.start();
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			instanceA._config.onInitialLoadError('refused A', new Error('refused A'));
+			expect(onInitialLoadError).not.toHaveBeenCalled();
+			instanceB._config.onInitialLoadError('refused B', new Error('refused B'));
+
+			expect(onInitialLoadError).toHaveBeenCalledWith('refused B', expect.any(Error));
+		});
+
+		it('forgets an engine failure once that engine completes its initial load', async () => {
+			const onInitialLoadError = vi.fn();
+			const onInitialLoadComplete = vi.fn();
+			const mgr = new DualConnectionManager(
+				makeDualConfig({ onInitialLoadError, onInitialLoadComplete })
+			);
+			await mgr.start();
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			// A fails transiently, then recovers... but global load is still
+			// gated on _initialLoadDone, so use B's failure to probe the counter:
+			instanceA._config.onInitialLoadError('refused A', new Error('refused A'));
+			instanceA._config.onInitialLoadComplete();
+			expect(onInitialLoadComplete).toHaveBeenCalledOnce();
+
+			// B failing afterwards must not be treated as "all engines failed"
+			// (initial load already completed, and A's stale failure was cleared).
+			instanceB._config.onInitialLoadError('refused B', new Error('refused B'));
+			expect(onInitialLoadError).not.toHaveBeenCalled();
+		});
+
+		it('clears failure tracking on stop() so a restart is not poisoned', async () => {
+			const onInitialLoadError = vi.fn();
+			const mgr = new DualConnectionManager(makeDualConfig({ onInitialLoadError }));
+			await mgr.start();
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA._config.onInitialLoadError('refused A', new Error('refused A'));
+
+			// Restart cycle (e.g. submitToken() after a 401).
+			mgr.stop();
+			await mgr.start();
+
+			// Only engine B fails after the restart — A's pre-stop failure must
+			// not count toward "all engines failed".
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			instanceB._config.onInitialLoadError('refused B', new Error('refused B'));
+			expect(onInitialLoadError).not.toHaveBeenCalled();
+		});
+
+		it('still starts a newly discovered engine immediately when all known engines failed', async () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			await mgr.start();
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA._config.onInitialLoadError('connection refused', new Error('connection refused'));
+			instanceA._config.onInitialLoadError('connection refused', new Error('connection refused'));
+
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			expect(instanceB.start).toHaveBeenCalledOnce();
+		});
+
+		it('defers a newly discovered engine while known engines have not failed', async () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			await mgr.start();
+
+			// Engine A is still loading (no failure, no success yet).
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			expect(instanceB.start).not.toHaveBeenCalled();
 		});
 	});
 });

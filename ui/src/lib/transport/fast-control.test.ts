@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createFastControl, encodeTransitionPosition, encodeDVESlotTransform, type FastControlOptions, type WriteErrorCallback } from './fast-control';
+import { createFastControl, encodeTransitionPosition, encodeDVESlotTransform, encodeGraphicsLayerPosition, type FastControlOptions, type WriteErrorCallback } from './fast-control';
 
 describe('encodeDVESlotTransform', () => {
 	it('encodes DVE slot transform correctly', () => {
@@ -361,5 +361,73 @@ describe('createFastControl', () => {
 		// No timestamp: exactly 5 bytes
 		expect(sent.byteLength).toBe(5);
 		expect(sent[0]).toBe(0x02);
+	});
+});
+
+describe('encodeGraphicsLayerPosition', () => {
+	// Mirrors server/fastctrl/graphics.go ParseGraphicsLayerPosition: x/y/w/h must be
+	// even-aligned, dimensions non-zero, and fit in a uint16. The encoder must clamp and
+	// round-to-even so an invalid drag never silently no-ops on the wire.
+	function decode(buf: Uint8Array) {
+		const view = new DataView(buf.buffer, buf.byteOffset);
+		return {
+			type: view.getUint8(0),
+			layerId: view.getUint16(1),
+			x: view.getUint16(3),
+			y: view.getUint16(5),
+			w: view.getUint16(7),
+			h: view.getUint16(9),
+		};
+	}
+
+	it('encodes a valid even position unchanged', () => {
+		const buf = encodeGraphicsLayerPosition(5, 100, 200, 480, 270);
+		expect(buf.byteLength).toBe(11);
+		const d = decode(buf);
+		expect(d.type).toBe(0x03);
+		expect(d.layerId).toBe(5);
+		expect(d.x).toBe(100);
+		expect(d.y).toBe(200);
+		// 270 is odd -> rounded down to nearest even (270 stays, but verify w too)
+		expect(d.w).toBe(480);
+		expect(d.h).toBe(270 - (270 % 2)); // 270
+	});
+
+	it('rounds odd coordinates to the nearest even value', () => {
+		const d = decode(encodeGraphicsLayerPosition(0, 101, 203, 481, 271));
+		expect(d.x % 2).toBe(0);
+		expect(d.y % 2).toBe(0);
+		expect(d.w % 2).toBe(0);
+		expect(d.h % 2).toBe(0);
+		expect(d.x).toBe(100);
+		expect(d.y).toBe(202);
+		expect(d.w).toBe(480);
+		expect(d.h).toBe(270);
+	});
+
+	it('clamps out-of-range values into a representable even uint16 instead of wrapping', () => {
+		const d = decode(encodeGraphicsLayerPosition(0, 70000, 65535, 100000, 65535));
+		// Without clamping, setUint16(70000) would wrap to 4464; ensure it does not.
+		expect(d.x).toBe(65534);
+		expect(d.y).toBe(65534);
+		expect(d.w).toBe(65534);
+		expect(d.h).toBe(65534);
+	});
+
+	it('clamps negative coordinates to the server minimums (0 for x/y, 2 for w/h)', () => {
+		const d = decode(encodeGraphicsLayerPosition(0, -10, -1, -5, 0));
+		expect(d.x).toBe(0);
+		expect(d.y).toBe(0);
+		// dimensions must never be zero (server rejects), so they floor at 2
+		expect(d.w).toBe(2);
+		expect(d.h).toBe(2);
+	});
+
+	it('floors fractional dimensions to a non-zero even value', () => {
+		const d = decode(encodeGraphicsLayerPosition(0, 0.4, 1.6, 1.2, 0.9));
+		expect(d.x).toBe(0);
+		expect(d.y).toBe(2);
+		expect(d.w).toBe(2);
+		expect(d.h).toBe(2);
 	});
 });

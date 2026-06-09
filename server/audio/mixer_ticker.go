@@ -20,17 +20,53 @@ func (m *Mixer) outputTicker() {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// next is the deadline of the next output frame. time.Ticker's channel
+	// has a capacity of 1, so when a tick overruns the interval (slow cgo
+	// encode, lock convoy with ingest decodes) the missed ticks are silently
+	// coalesced — without explicit deadline accounting each missed tick would
+	// be ~21.3ms of program audio permanently dropped. Tracking the frame
+	// deadline lets a late tick produce the frames it missed (the backlog is
+	// sitting in the per-channel ring buffers).
+	next := time.Now().Add(interval)
 	for {
 		select {
 		case <-m.stopTicker:
 			return
 		case <-ticker.C:
-			frame := m.tick()
-			if frame != nil {
-				m.recordAndOutput(frame)
+			var frames int
+			frames, next = tickerCatchUp(time.Now(), next, interval)
+			for i := 0; i < frames; i++ {
+				frame := m.tick()
+				if frame != nil {
+					m.recordAndOutput(frame)
+				}
 			}
 		}
 	}
+}
+
+// maxTickerCatchUpFrames bounds the catch-up burst after a long stall
+// (~0.5s of output at 48kHz). The per-channel ring buffers hold ~10 frames
+// of input, so far beyond that a burst would only emit silence and flood
+// downstream consumers; instead the backlog is dropped and the deadline
+// realigned to the present.
+const maxTickerCatchUpFrames = 24
+
+// tickerCatchUp returns how many output frames are due for a ticker fire at
+// time now given the next frame deadline, plus the updated deadline. A fire
+// at or past the deadline owes one frame per elapsed interval (minimum one);
+// a buffered tick delivered before the deadline (possible right after a
+// catch-up burst) owes none. Bursts are capped at maxTickerCatchUpFrames,
+// after which the deadline resyncs to now (e.g. system suspend).
+func tickerCatchUp(now, next time.Time, interval time.Duration) (int, time.Time) {
+	if now.Before(next) {
+		return 0, next
+	}
+	frames := 1 + int(now.Sub(next)/interval)
+	if frames > maxTickerCatchUpFrames {
+		return maxTickerCatchUpFrames, now.Add(interval)
+	}
+	return frames, next.Add(time.Duration(frames) * interval)
 }
 
 // tick produces one output frame by reading from all active channel ring buffers.
@@ -211,14 +247,22 @@ func (m *Mixer) advanceCutCrossfade() {
 		m.cutFramesRemaining = 0
 		m.cutTotalFrames = 0
 
-		// Deferred AFV deactivation: the outgoing AFV channel was
-		// kept active during the crossfade ramp so its audio could
-		// fade out smoothly. Now that the ramp is complete, deactivate it.
-		if m.afvDeactivateOnComplete != "" {
-			if ch, ok := m.channels[m.afvDeactivateOnComplete]; ok {
-				ch.active = false
+		// Deferred AFV deactivation: the outgoing AFV channel(s) were
+		// kept active during the crossfade ramp so their audio could
+		// fade out smoothly. Now that the ramp is complete, deactivate them.
+		if len(m.afvDeactivateOnComplete) > 0 {
+			for key := range m.afvDeactivateOnComplete {
+				// Never deactivate the channel currently on program: a
+				// queued channel may have been put back on program (e.g.
+				// re-activated by OnCut) after it was deferred here.
+				if key == m.programAFVSource {
+					continue
+				}
+				if ch, ok := m.channels[key]; ok {
+					ch.active = false
+				}
 			}
-			m.afvDeactivateOnComplete = ""
+			m.afvDeactivateOnComplete = nil
 		}
 	}
 }

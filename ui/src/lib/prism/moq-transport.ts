@@ -25,6 +25,8 @@ import {
 	parseServerSetup,
 	parseExtensions,
 	readVarintFromBuffer,
+	MAX_MEDIA_OBJECT_LEN,
+	MAX_EXTENSION_LEN,
 } from "./moq-constants";
 
 /** Callbacks delivered by MoQTransport to the player. */
@@ -375,7 +377,12 @@ export class MoQTransport {
 			await readVarintFromBuffer(buffer); // object_id
 			const extLen = await readVarintFromBuffer(buffer); // extensions_length
 			if (extLen !== null && extLen > 0) {
-				await buffer.read(extLen); // skip extensions
+				const skipped = await buffer.read(extLen, MAX_EXTENSION_LEN); // skip extensions
+				if (!skipped) {
+					streamReader.releaseLock();
+					reader.releaseLock();
+					return null;
+				}
 			}
 			const payloadLen = await readVarintFromBuffer(buffer);
 			if (payloadLen === null || payloadLen === 0) {
@@ -384,7 +391,7 @@ export class MoQTransport {
 				return null;
 			}
 
-			const payload = await buffer.read(payloadLen);
+			const payload = await buffer.read(payloadLen, MAX_MEDIA_OBJECT_LEN);
 			streamReader.releaseLock();
 			reader.releaseLock();
 			return payload;
@@ -519,7 +526,7 @@ export class MoQTransport {
 
 				let extensions = { captureTimestamp: 0, isKeyframe: false, videoConfig: null as Uint8Array | null };
 				if (extLen > 0) {
-					const extData = await buffer.read(extLen);
+					const extData = await buffer.read(extLen, MAX_EXTENSION_LEN);
 					if (!extData) break;
 					extensions = parseExtensions(extData);
 				}
@@ -529,7 +536,7 @@ export class MoQTransport {
 
 				if (payloadLen === 0) continue;
 
-				const payload = await buffer.read(payloadLen);
+				const payload = await buffer.read(payloadLen, MAX_MEDIA_OBJECT_LEN);
 				if (!payload) break;
 
 				this._diagBytesReceived += payload.byteLength;

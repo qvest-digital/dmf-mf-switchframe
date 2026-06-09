@@ -1165,3 +1165,111 @@ func TestManager_LipSyncLatchedObservableFromHotPath(t *testing.T) {
 
 	require.Equal(t, latched, mgr.LipSyncOffset(), "latched value must survive 1000 hot-path frames")
 }
+
+// TestManager_StartDestinationDialDoesNotBlockControlPlane verifies that the
+// SRT dial performed by StartDestination (which can block up to the 5s SRT
+// ConnTimeout against an unreachable endpoint) does not run while holding
+// Manager.mu/dest.mu. Holding the locks across the dial stalls every other
+// control-plane operation (status queries, recording start/stop, SCTE-35
+// injection) for the duration of the dial.
+func TestManager_StartDestinationDialDoesNotBlockControlPlane(t *testing.T) {
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+	mgr.SetSRTWiring(
+		func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+			close(dialStarted)
+			<-releaseDial // simulate srt.Dial blocking (no ctx cancellation support)
+			return &mockSRTConn{}, nil
+		},
+		nil,
+	)
+
+	id, err := mgr.AddDestination(DestinationConfig{
+		Type:    "srt-caller",
+		Address: "10.255.255.1", // black-holed endpoint
+		Port:    9000,
+	})
+	require.NoError(t, err)
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- mgr.StartDestination(id) }()
+
+	// Wait until StartDestination is blocked inside the dial.
+	select {
+	case <-dialStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("connectFn was never invoked")
+	}
+
+	// While the dial is in flight, control-plane calls must not block.
+	controlDone := make(chan struct{})
+	go func() {
+		_ = mgr.ListDestinations()
+		_ = mgr.RecordingStatus()
+		_ = mgr.SRTOutputStatus()
+		close(controlDone)
+	}()
+	select {
+	case <-controlDone:
+	case <-time.After(1 * time.Second):
+		close(releaseDial)
+		t.Fatal("control plane blocked on Manager.mu while SRT dial was in flight")
+	}
+
+	close(releaseDial)
+	require.NoError(t, <-startDone)
+
+	// The destination must end up active with its adapter published.
+	st, err := mgr.GetDestination(id)
+	require.NoError(t, err)
+	require.Equal(t, string(StateActive), st.State)
+}
+
+// TestManager_StartSRTOutputDialDoesNotBlockControlPlane is the legacy
+// single-output equivalent of the StartDestination test above.
+func TestManager_StartSRTOutputDialDoesNotBlockControlPlane(t *testing.T) {
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+	mgr.SetSRTWiring(
+		func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+			close(dialStarted)
+			<-releaseDial
+			return &mockSRTConn{}, nil
+		},
+		nil,
+	)
+
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- mgr.StartSRTOutput(SRTConfig{Mode: "caller", Address: "10.255.255.1", Port: 9000})
+	}()
+
+	select {
+	case <-dialStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("connectFn was never invoked")
+	}
+
+	controlDone := make(chan struct{})
+	go func() {
+		_ = mgr.ListDestinations()
+		_ = mgr.SRTOutputStatus()
+		close(controlDone)
+	}()
+	select {
+	case <-controlDone:
+	case <-time.After(1 * time.Second):
+		close(releaseDial)
+		t.Fatal("control plane blocked on Manager.mu while SRT dial was in flight")
+	}
+
+	close(releaseDial)
+	require.NoError(t, <-startDone)
+	require.True(t, mgr.SRTOutputStatus().Active)
+}

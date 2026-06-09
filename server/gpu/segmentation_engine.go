@@ -570,25 +570,34 @@ func (se *SegmentationEngine) Segment(key string, frame *GPUFrame) {
 	sess.mask.Store(sess.maskFrame)
 }
 
-// MaskForSource returns the latest segmentation mask for a source.
+// MaskForSource returns the latest segmentation mask for a source with a
+// reference taken; the caller MUST Release() the returned frame when done.
 // Returns nil if segmentation is not enabled or no mask has been produced yet.
 // The returned GPUFrame is a uint8 single-plane mask at source resolution
 // (Width x Height, Pitch = Width). Pixel value 255 = foreground, 0 = background.
 //
-// This is a lock-free atomic read, safe for use from the pipeline goroutine.
+// The Ref is taken under se.mu.RLock, which excludes DisableSource's map
+// delete (under se.mu.Lock). destroySession only drops the session's own
+// reference after the delete, so a reader that found the session here always
+// Refs a frame whose refcount is still alive — the mask device memory cannot
+// be freed out from under a pipeline kernel that is using it.
 func (se *SegmentationEngine) MaskForSource(key string) *GPUFrame {
 	if se == nil {
 		return nil
 	}
 
 	se.mu.RLock()
+	defer se.mu.RUnlock()
 	sess, exists := se.sessions[key]
-	se.mu.RUnlock()
 	if !exists {
 		return nil
 	}
 
-	return sess.mask.Load()
+	mask := sess.mask.Load()
+	if mask != nil {
+		mask.Ref()
+	}
+	return mask
 }
 
 // MaskDevPtrForSource returns the raw device pointer of the mask buffer
@@ -666,16 +675,16 @@ func (se *SegmentationEngine) destroySession(sess *segSession) {
 	sess.r4In = nil
 	sess.r4Out = nil
 
-	// maskU8 is the backing memory for maskFrame.DevPtr — free it directly.
-	if sess.maskU8 != nil {
-		FreeDeviceBytes(sess.maskU8)
-		sess.maskU8 = nil
-	}
-	// Prevent maskFrame from trying to free via pool or cudaFree (already freed above).
+	// maskU8 is the backing memory for maskFrame.DevPtr. Drop the session's
+	// reference instead of freeing directly: a pipeline reader returned by
+	// MaskForSource may still hold a ref, in which case GPUFrame.Release
+	// cudaFrees the buffer only when the last reader releases it. Freeing
+	// here unconditionally would let a keyer kernel read freed VRAM.
 	if sess.maskFrame != nil {
-		sess.maskFrame.DevPtr = 0
+		sess.maskFrame.Release()
 		sess.maskFrame = nil
 	}
+	sess.maskU8 = nil
 
 	if sess.stream != nil {
 		se.ctx.DestroyStream(sess.stream)

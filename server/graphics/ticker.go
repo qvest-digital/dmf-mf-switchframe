@@ -319,21 +319,45 @@ func (te *TickerEngine) runTicker(inst *tickerInstance) {
 
 // extractTickerViewport copies a progW x barH viewport from the strip at the given x offset.
 // Package-level function used by both the ticker engine and ProcessYUV's frame-locked path.
+//
+// The copy is clamped per row: when xOffset+viewW extends past the strip
+// width (looping tickers whose text is narrower than the screen), each
+// viewport row wraps around to the start of the SAME strip row — the gap
+// (background) region for loop tickers — instead of reading the beginning of
+// the next strip row (which broke the top accent line) and leaving stale
+// previous-frame bytes in the reused dst buffer on the last row.
 func extractTickerViewport(strip *image.RGBA, xOffset, viewW, viewH int, dst []byte) {
 	stripStride := strip.Stride
+	stripW := strip.Bounds().Dx()
 	dstStride := viewW * 4
 
+	if xOffset < 0 {
+		xOffset = 0
+	}
+	if xOffset > stripW {
+		xOffset = stripW
+	}
+	// Pixels available in a strip row from xOffset to the row end.
+	copyBytes := (stripW - xOffset) * 4
+	if copyBytes > dstStride {
+		copyBytes = dstStride
+	}
+
 	for y := 0; y < viewH; y++ {
-		srcStart := y*stripStride + xOffset*4
-		srcEnd := srcStart + dstStride
-		if srcEnd > len(strip.Pix) {
-			// Wrap-around safety: fill remaining with background
-			available := len(strip.Pix) - srcStart
-			if available > 0 {
-				copy(dst[y*dstStride:], strip.Pix[srcStart:srcStart+available])
-			}
-			continue
+		rowStart := y * stripStride
+		if rowStart+stripW*4 > len(strip.Pix) {
+			// Defensive: viewport taller than the strip.
+			break
 		}
-		copy(dst[y*dstStride:y*dstStride+dstStride], strip.Pix[srcStart:srcEnd])
+		dstRow := dst[y*dstStride : y*dstStride+dstStride]
+		copied := copy(dstRow[:copyBytes], strip.Pix[rowStart+xOffset*4:])
+		// Wrap: fill the remainder from the start of the same strip row.
+		for copied < dstStride {
+			n := dstStride - copied
+			if n > stripW*4 {
+				n = stripW * 4
+			}
+			copied += copy(dstRow[copied:], strip.Pix[rowStart:rowStart+n])
+		}
 	}
 }

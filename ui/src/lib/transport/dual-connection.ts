@@ -22,7 +22,11 @@ export class DualConnectionManager {
 	private _isDualEngine: boolean;
 	private _started = false;
 	private _initialLoadDone = false;
-	private _initialLoadErrors = 0;
+	/** Engines whose initial load has failed at least once (and not yet
+	 * succeeded). Tracked per engine — ConnectionManager fires
+	 * onInitialLoadError on every 3s retry attempt, so a raw counter would
+	 * inflate from a single unreachable engine. */
+	private _initialLoadFailedEngines = new Set<string>();
 	private _pendingEngineStarts: string[] = [];
 	private _engineALoaded = false;
 	private _engineBLoaded = false;
@@ -102,7 +106,7 @@ export class DualConnectionManager {
 				// Safe to start immediately — initial load is complete
 				const mgr = this.managers.get(id);
 				mgr?.start();
-			} else if (this._initialLoadErrors > 0 && this._initialLoadErrors >= this.managers.size - 1) {
+			} else if (this._initialLoadFailedEngines.size > 0 && this._initialLoadFailedEngines.size >= this.managers.size - 1) {
 				// All previously-known engines have failed initial load.
 				// Start the new engine immediately — it's our best hope.
 				const mgr = this.managers.get(id);
@@ -149,6 +153,9 @@ export class DualConnectionManager {
 		for (const mgr of this.managers.values()) {
 			mgr.stop();
 		}
+		// Don't let stale failures poison the next start() cycle (e.g. the
+		// submitToken() restart after a 401).
+		this._initialLoadFailedEngines.clear();
 	}
 
 	get state(): ControlRoomState {
@@ -294,7 +301,7 @@ export class DualConnectionManager {
 		if (this._started) {
 			if (this._initialLoadDone) {
 				newMgr.start();
-			} else if (this._initialLoadErrors > 0 && this._initialLoadErrors >= this.managers.size - 1) {
+			} else if (this._initialLoadFailedEngines.size > 0 && this._initialLoadFailedEngines.size >= this.managers.size - 1) {
 				newMgr.start();
 			} else {
 				this._pendingEngineStarts.push(engineId);
@@ -310,7 +317,16 @@ export class DualConnectionManager {
 				let state: ControlRoomState;
 				const isBytes = ArrayBuffer.isView(update) || update instanceof ArrayBuffer;
 				if (isBytes) {
-					state = JSON.parse(new TextDecoder().decode(update as Uint8Array));
+					// Control payload from the MoQ control track. A truncated or
+					// malformed payload (realistic during reconnect/relay restart)
+					// must not throw — that would unwind into handleDataStream's
+					// catch and abandon the rest of the subgroup stream's objects.
+					// Drop just this payload, matching the 'stats' track handling.
+					try {
+						state = JSON.parse(new TextDecoder().decode(update as Uint8Array));
+					} catch {
+						return;
+					}
 				} else {
 					state = update as ControlRoomState;
 				}
@@ -361,6 +377,8 @@ export class DualConnectionManager {
 				}
 			},
 			onInitialLoadComplete: () => {
+				// This engine loaded — any earlier failures of it are stale.
+				this._initialLoadFailedEngines.delete(engineId);
 				if (this._initialLoadDone) return;
 				this._initialLoadDone = true;
 				if (this._initialLoadTimeout) {
@@ -376,8 +394,11 @@ export class DualConnectionManager {
 				this._pendingEngineStarts = [];
 			},
 			onInitialLoadError: (error, rawError) => {
-				this._initialLoadErrors++;
-				if (this._initialLoadErrors >= this.managers.size && !this._initialLoadDone) {
+				this._initialLoadFailedEngines.add(engineId);
+				// Only escalate to the page once EVERY engine has failed —
+				// retries of a single unreachable engine must not mask a healthy
+				// engine that is still loading.
+				if (this._initialLoadFailedEngines.size >= this.managers.size && !this._initialLoadDone) {
 					this.config.onInitialLoadError(error, rawError);
 				}
 			},

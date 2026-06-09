@@ -98,6 +98,36 @@ func (e *Encoder) ensureInit() {
 	e.queue = append(e.queue, CCPair{Data: [2]byte{oddParity(cc608Ctrl), oddParity(0x60)}})
 }
 
+// DisplayWidth returns the number of CEA-608 display cells the given UTF-8 text
+// occupies once encoded. This is NOT len(text): the encoder maps each rune to a
+// fixed set of on-screen cells, and a multi-byte UTF-8 rune usually renders as a
+// single cell. Use this (not len) for line-wrap/cursor math so non-English
+// captions (café, señor, …) wrap at the correct column.
+//
+// Per-rune cell counts mirror lookupRune:
+//   - basic / Spanish-basic / special (0x11) / unsupported ('?') -> 1 cell
+//   - extended (0x12/0x13): the fallback ASCII char is auto-backspaced by the
+//     decoder, so the rune occupies 1 cell
+//   - ASCII-sequence runes expand to their literal width (… -> "..." = 3 cells,
+//     em dash -> "--" = 2 cells)
+//   - control/skip runes -> 0 cells
+func DisplayWidth(text string) int {
+	cells := 0
+	for _, r := range text {
+		m := lookupRune(r)
+		switch m.kind {
+		case runeKindAsciiSeq:
+			cells += len(m.asciiSeq)
+		case runeKindSkip:
+			// no display cell
+		default:
+			// basic, special, extended, unsupported all render as one cell.
+			cells++
+		}
+	}
+	return cells
+}
+
 // IngestText queues CEA-608 byte pairs for the given UTF-8 text.
 // Runes are decoded and mapped via lookupRune; unmapped non-Latin runes
 // become '?' and a rate-limited warning is emitted.
@@ -142,7 +172,17 @@ func (e *Encoder) IngestText(text string) {
 			for i := 0; i < len(m.asciiSeq); i++ {
 				emitBasic(m.asciiSeq[i])
 			}
-		case runeKindSpecial, runeKindExtended:
+		case runeKindSpecial:
+			// Special characters (0x11 prefix) do NOT trigger a decoder
+			// backspace — emit the 2-byte code directly.
+			emitTwoByte(m.twoByte[0], m.twoByte[1])
+		case runeKindExtended:
+			// Extended characters (0x12/0x13 prefix) trigger an automatic
+			// decoder backspace per CEA-608-E §8.4. Transmit the closest
+			// standard ASCII char first so the backspace consumes it (and
+			// non-extended decoders show a sensible glyph) instead of deleting
+			// the previous legitimate on-screen character.
+			emitBasic(m.fallback)
 			emitTwoByte(m.twoByte[0], m.twoByte[1])
 		case runeKindUnsupported:
 			emitBasic('?')

@@ -76,13 +76,14 @@ func (b *replayBuffer) recordFrameAt(frame *media.VideoFrame, wallTime time.Time
 	if b.ring != nil {
 		// File-ring path: wireData goes to the file, not the Go heap.
 		if len(frame.WireData) > 0 {
-			offset, err := b.ring.Write(frame.WireData, frame.PTS, wallTime, frame.IsKeyframe)
+			offset, seq, err := b.ring.Write(frame.WireData, frame.PTS, wallTime, frame.IsKeyframe)
 			if err != nil {
 				// Write failed (frame too large, I/O error) — drop frame silently.
 				return
 			}
 			bf.ringOffset = offset
 			bf.ringSize = int32(len(frame.WireData))
+			bf.ringSeq = seq
 			// wireData stays nil — data lives in the file ring.
 		}
 	} else {
@@ -237,6 +238,38 @@ func (b *replayBuffer) trimLocked() {
 		}
 	}
 
+	// Bound a single oversized in-progress GOP. The GOP-trim loop above only
+	// runs with >=2 GOPs, so a source with a long keyframe interval (or a
+	// temporarily missing keyframe) can accumulate one in-progress GOP whose
+	// bytes exceed maxBytes with nothing to trim — unbounded heap growth on
+	// the in-memory path. A partial GOP is not independently decodable (its
+	// remaining frames would have no leading keyframe/SPS-PPS), and tests rely
+	// on the first retained frame being a keyframe, so the only memory bound
+	// that preserves those invariants is to drop the whole oversized GOP.
+	// Subsequent delta frames for the same GOP are then dropped by RecordFrame
+	// (no keyframe seen) until the next keyframe arrives, keeping memory
+	// bounded regardless of keyframe spacing. Only applies to the in-memory
+	// path; the file ring (maxBytes==0) manages its own capacity.
+	if b.ring == nil && b.maxBytes > 0 && len(b.gops) == 1 &&
+		(b.bytesUsed+b.audioBytesUsed) > b.maxBytes {
+		for i := range b.frames {
+			b.bytesUsed -= int64(len(b.frames[i].wireData))
+			b.bytesUsed -= int64(len(b.frames[i].vps))
+			b.bytesUsed -= int64(len(b.frames[i].sps))
+			b.bytesUsed -= int64(len(b.frames[i].pps))
+		}
+		b.frames = b.frames[:0]
+		b.gops = b.gops[:0]
+		trimmed = true
+
+		// All remaining audio predates the (now-gone) video, so drop it too:
+		// audio is only kept relative to buffered video GOPs.
+		if len(b.audioFrames) > 0 {
+			b.audioBytesUsed = 0
+			b.audioFrames = b.audioFrames[:0]
+		}
+	}
+
 	// Guard against negative bytesUsed from rounding or edge cases.
 	if b.bytesUsed < 0 {
 		b.bytesUsed = 0
@@ -265,9 +298,9 @@ func (b *replayBuffer) trimLocked() {
 // or precedes inTime. Returns ErrEmptyClip if no frames fall in the range.
 func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, []bufferedAudioFrame, error) {
 	b.mu.RLock()
-	defer b.mu.RUnlock()
 
 	if len(b.frames) == 0 {
+		b.mu.RUnlock()
 		return nil, nil, ErrEmptyClip
 	}
 
@@ -285,6 +318,7 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 		if len(b.gops) > 0 && !b.gops[0].wallTime.After(outTime) {
 			gopIdx = 0
 		} else {
+			b.mu.RUnlock()
 			return nil, nil, ErrEmptyClip
 		}
 	}
@@ -292,6 +326,7 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 	// Verify the GOP's frames actually overlap with the requested range.
 	// The GOP keyframe must start before or at outTime.
 	if b.gops[gopIdx].wallTime.After(outTime) {
+		b.mu.RUnlock()
 		return nil, nil, ErrEmptyClip
 	}
 
@@ -306,6 +341,7 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 		}
 	}
 	if endIdx < startIdx {
+		b.mu.RUnlock()
 		return nil, nil, ErrEmptyClip
 	}
 
@@ -314,6 +350,7 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 	lastFrameTime := b.frames[endIdx].wallTime
 	if lastFrameTime.Before(inTime) && gopIdx == len(b.gops)-1 {
 		// All frames are before inTime and there's no later GOP
+		b.mu.RUnlock()
 		return nil, nil, ErrEmptyClip
 	}
 	// If there's a later GOP whose keyframe is still before inTime,
@@ -324,7 +361,18 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 	}
 
 	// Deep-copy the video clip frames.
+	//
+	// For ring-backed frames we only snapshot the ring coordinates here
+	// (offset/size/seq) and defer the actual ring reads until AFTER releasing
+	// b.mu. A long clip can span thousands of frames; performing a ReadAt
+	// syscall + allocation for each one while holding the RLock would block
+	// RecordFrame/RecordAudioFrame (which take the write lock) for the entire
+	// extraction, dropping live capture frames. The ring has its own internal
+	// locking and per-slot seq validation, so the reads are safe to run after
+	// b.mu is dropped. In-memory wireData must still be copied under the lock:
+	// its backing array can be freed/reused by a concurrent trim.
 	clip := make([]bufferedFrame, endIdx-startIdx+1)
+	ringBacked := false
 	for i := startIdx; i <= endIdx; i++ {
 		src := &b.frames[i]
 		dst := &clip[i-startIdx]
@@ -333,12 +381,11 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 		dst.wallTime = src.wallTime
 
 		if b.ring != nil && src.ringSize > 0 {
-			// Read wireData from the file ring.
-			data, err := b.ring.Read(src.ringOffset, src.ringSize)
-			if err != nil {
-				return nil, nil, fmt.Errorf("replay: read ring frame: %w", err)
-			}
-			dst.wireData = data
+			// Snapshot ring coordinates; the actual read happens after unlock.
+			dst.ringOffset = src.ringOffset
+			dst.ringSize = src.ringSize
+			dst.ringSeq = src.ringSeq
+			ringBacked = true
 		} else if len(src.wireData) > 0 {
 			dst.wireData = make([]byte, len(src.wireData))
 			copy(dst.wireData, src.wireData)
@@ -395,6 +442,34 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 			copy(dst.data, af.data)
 		}
 		audioClip = append(audioClip, dst)
+	}
+
+	// All buffer-protected work (metadata + in-memory/audio copies) is done.
+	// Release b.mu before issuing the ring read syscalls so the capture writer
+	// is not stalled for the duration of the extraction.
+	b.mu.RUnlock()
+
+	if ringBacked {
+		for i := range clip {
+			dst := &clip[i]
+			if dst.ringSize == 0 {
+				continue
+			}
+			// Read wireData from the file ring. The seq guards against the
+			// ring having wrapped and overwritten this slot since it was
+			// written: such a frame is detected and reported rather than
+			// returned as silently-corrupted bytes.
+			data, err := b.ring.Read(dst.ringOffset, dst.ringSize, dst.ringSeq)
+			if err != nil {
+				return nil, nil, fmt.Errorf("replay: read ring frame: %w", err)
+			}
+			dst.wireData = data
+			// Clear ring coordinates: the returned clip is a self-contained
+			// in-memory copy (matches the non-ring extraction contract).
+			dst.ringOffset = 0
+			dst.ringSize = 0
+			dst.ringSeq = 0
+		}
 	}
 
 	return clip, audioClip, nil

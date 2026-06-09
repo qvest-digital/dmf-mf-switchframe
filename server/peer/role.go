@@ -6,7 +6,11 @@ package peer
 // Tiebreak rules:
 //   - Local epoch > peer epoch: this engine is leader (recently forced).
 //   - Peer epoch > local epoch: peer is leader; this engine follows.
-//   - Equal epochs: lexical label wins ("a" < "b").
+//   - Equal epochs: lexical label wins ("a" < "b"). If the labels are equal
+//     (a same-label misconfiguration) the per-process instance ID is the
+//     deterministic secondary key (lexically-smaller wins) so leadership is
+//     never lost to a typo; if either instance ID is empty the conservative
+//     both-follower fail-safe is preserved.
 //
 // Epoch is bumped by the control-plane-authenticated /api/peer/force-leader
 // endpoint (Phase 3). It persists across restart via WAL.

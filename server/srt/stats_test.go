@@ -608,3 +608,54 @@ func TestUpdateSendConcurrency(t *testing.T) {
 
 	<-done
 }
+
+// TestConnStatsUpdateAccumulatesCounters verifies that packet counters in
+// StatsUpdate are treated as interval deltas and accumulated into lifetime
+// totals, while rate/gauge fields replace the previous window value
+// (finding #58).
+func TestConnStatsUpdateAccumulatesCounters(t *testing.T) {
+	cs := NewConnStats("listener", "live/cam9", 120)
+
+	for i := 0; i < 2; i++ {
+		cs.Update(StatsUpdate{
+			RTTMs:           5.0,
+			RecvRateMbps:    12.5,
+			LossRatePct:     0.01,
+			PacketsReceived: 100,
+			PacketsLost:     7,
+			PacketsDropped:  3,
+			PacketsRetrans:  5,
+			PacketsBelated:  1,
+			RecvBufMs:       45.0,
+			RecvBufPackets:  32,
+			FlightSize:      10,
+		})
+	}
+
+	snap := cs.Snapshot()
+	if snap.PacketsReceived != 200 {
+		t.Errorf("PacketsReceived = %d, want 200", snap.PacketsReceived)
+	}
+	if snap.PacketsLost != 14 {
+		t.Errorf("PacketsLost = %d, want 14", snap.PacketsLost)
+	}
+	if snap.PacketsDropped != 6 {
+		t.Errorf("PacketsDropped = %d, want 6", snap.PacketsDropped)
+	}
+	if snap.PacketsRetransmitted != 10 {
+		t.Errorf("PacketsRetransmitted = %d, want 10", snap.PacketsRetransmitted)
+	}
+	if snap.PacketsBelated != 2 {
+		t.Errorf("PacketsBelated = %d, want 2", snap.PacketsBelated)
+	}
+	// Gauges/rates must not accumulate.
+	if snap.RecvRateMbps != 12.5 {
+		t.Errorf("RecvRateMbps = %f, want 12.5", snap.RecvRateMbps)
+	}
+	if snap.RecvBufPackets != 32 {
+		t.Errorf("RecvBufPackets = %d, want 32", snap.RecvBufPackets)
+	}
+	if snap.FlightSize != 10 {
+		t.Errorf("FlightSize = %d, want 10", snap.FlightSize)
+	}
+}

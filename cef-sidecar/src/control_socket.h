@@ -40,7 +40,12 @@ private:
     void readLoop();
 
     int listen_fd_;
-    int conn_fd_ = -1;
+    // Shared across the reader thread (accept/read), SendResponse callers,
+    // and Stop(); atomic so those accesses are not a data race. The fd is
+    // only close()d by Stop() after the reader thread has been joined, so no
+    // thread can still be using the descriptor when its number is released
+    // for kernel reuse.
+    std::atomic<int> conn_fd_{-1};
     CommandHandler handler_;
     std::thread thread_;
     std::atomic<bool> running_{false};

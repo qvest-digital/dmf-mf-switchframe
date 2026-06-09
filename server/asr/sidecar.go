@@ -168,17 +168,30 @@ func (s *SidecarBackend) Start(onTranscript func([]TranscriptWord, bool)) error 
 	return nil
 }
 
-// IngestAudio feeds raw PCM to the sidecar via shared memory. Lock-free hot path.
+// testHookIngestBeforeShmWrite, when non-nil, is invoked by IngestAudio
+// immediately before the shared-memory write. Test-only seam used to pin an
+// ingest mid-write while Close runs concurrently.
+var testHookIngestBeforeShmWrite func()
+
+// IngestAudio feeds raw PCM to the sidecar via shared memory. Hot path.
+//
+// s.mu is held across the shm write: Close munmaps the segment under the same
+// mutex, so an in-flight write can never touch unmapped memory. The only
+// contention is with Start/Close (the write itself is a microsecond-scale
+// memcpy), so this does not serialize against any other hot path.
 func (s *SidecarBackend) IngestAudio(pcm []float32, pts int64, sampleRate, channels int) {
 	if !s.host.Alive() {
 		return
 	}
 	s.mu.Lock()
-	shm := s.shm
-	s.mu.Unlock()
-	if shm != nil {
-		shm.Write(pcm, pts, sampleRate, channels)
+	defer s.mu.Unlock()
+	if s.shm == nil {
+		return
 	}
+	if h := testHookIngestBeforeShmWrite; h != nil {
+		h()
+	}
+	s.shm.Write(pcm, pts, sampleRate, channels)
 }
 
 // Reset clears audio buffers in the sidecar.

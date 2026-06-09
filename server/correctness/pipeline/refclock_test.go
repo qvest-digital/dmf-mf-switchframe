@@ -308,17 +308,27 @@ func TestRefClockZeroDrift(t *testing.T) {
 // ==========================================================================
 // TestRefClockDeterministic
 //
-// Verifies that the reference clock path produces identical PTS sequences
-// across multiple runs. This proves there is no wall-clock dependency:
-// the same inputs always produce the same outputs.
+// Verifies that the reference clock path is deterministic across runs in two
+// independent senses:
 //
-// Strategy: run the pipeline twice with identical inputs and compare the
-// video and audio PTS sequences. They must be identical.
+//  1. Scheduling determinism (PTS): identical inputs produce identical video
+//     and audio PTS sequences, proving there is no wall-clock dependency in
+//     the tick/sync scheduling.
+//  2. Content determinism: identical inputs produce byte-identical broadcast
+//     frame payloads (and the same frame *count*), proving the pixel/audio
+//     data — not just the timestamps — is reproducible.
 //
-// Uses the no-encode harness (raw YUV broadcast) to isolate clock
-// determinism from H.264 encoder non-determinism (encoder startup
-// buffering and rate control vary across runs, especially on GPU
-// encoders like NVENC).
+// A PTS-only check is insufficient on its own: two runs could emit matching
+// timestamps while carrying byte-different payloads, or could emit different
+// frame counts (itself a nondeterminism) that a common-prefix comparison
+// would silently ignore. We therefore assert equal counts first, then compare
+// both PTS and raw frame bytes.
+//
+// Uses the no-encode harness (raw YUV broadcast in WireData) to isolate clock
+// determinism from H.264 encoder non-determinism (encoder startup buffering
+// and rate control vary across runs, especially on GPU encoders like NVENC).
+// On this path the broadcast frame's WireData is the raw YUV payload, so a
+// byte comparison is a true content-determinism check.
 // ==========================================================================
 
 func TestRefClockDeterministic(t *testing.T) {
@@ -327,8 +337,10 @@ func TestRefClockDeterministic(t *testing.T) {
 	}
 
 	type ptsResult struct {
-		video []int64
-		audio []int64
+		video  []int64
+		audio  []int64
+		vBytes [][]byte // raw YUV payload (WireData) per video frame
+		aBytes [][]byte // raw payload per audio frame
 	}
 
 	const feedCount = 100
@@ -353,14 +365,18 @@ func TestRefClockDeterministic(t *testing.T) {
 		audios := h.capture.audiosCopy()
 
 		vpts := make([]int64, len(videos))
+		vBytes := make([][]byte, len(videos))
 		for i, v := range videos {
 			vpts[i] = v.PTS
+			vBytes[i] = v.WireData // no-encode path carries raw YUV here
 		}
 		apts := make([]int64, len(audios))
+		aBytes := make([][]byte, len(audios))
 		for i, a := range audios {
 			apts[i] = a.PTS
+			aBytes[i] = a.Data
 		}
-		return ptsResult{video: vpts, audio: apts}
+		return ptsResult{video: vpts, audio: apts, vBytes: vBytes, aBytes: aBytes}
 	}
 
 	r1 := runOnce()
@@ -373,6 +389,27 @@ func TestRefClockDeterministic(t *testing.T) {
 	require.Greater(t, len(r1.audio), 5, "run1 should produce >5 audio frames")
 	require.Greater(t, len(r2.audio), 5, "run2 should produce >5 audio frames")
 
+	// Frame counts must be reproducible. We allow a tiny slack (1 frame) because
+	// the no-encode harness reads the capture buffer right after refClock.Stop()
+	// closes the tick channel, and the sync-loop goroutine may emit one more
+	// frame before it observes the close. A larger divergence is real
+	// nondeterminism in how many frames the pipeline produced.
+	const countSlack = 1
+	vDiff := len(r1.video) - len(r2.video)
+	if vDiff < 0 {
+		vDiff = -vDiff
+	}
+	require.LessOrEqualf(t, vDiff, countSlack,
+		"video frame counts diverged: run1=%d run2=%d (nondeterministic output count)",
+		len(r1.video), len(r2.video))
+	aDiff := len(r1.audio) - len(r2.audio)
+	if aDiff < 0 {
+		aDiff = -aDiff
+	}
+	require.LessOrEqualf(t, aDiff, countSlack,
+		"audio frame counts diverged: run1=%d run2=%d (nondeterministic output count)",
+		len(r1.audio), len(r2.audio))
+
 	// Compare video PTS: common prefix must be identical.
 	vLen := len(r1.video)
 	if len(r2.video) < vLen {
@@ -383,6 +420,16 @@ func TestRefClockDeterministic(t *testing.T) {
 	for i := 0; i < vLen; i++ {
 		require.Equal(t, r1.video[i], r2.video[i],
 			"video PTS mismatch at frame %d: run1=%d, run2=%d", i, r1.video[i], r2.video[i])
+	}
+
+	// Content determinism: the raw YUV payload of each broadcast frame must be
+	// byte-identical across runs. This is the assertion that distinguishes true
+	// output determinism from mere timestamp determinism — identical PTS with
+	// byte-different pixels would pass the PTS checks above but fail here.
+	for i := 0; i < vLen; i++ {
+		require.Truef(t, testutil.YUVFrameEqual(r1.vBytes[i], r2.vBytes[i]),
+			"video CONTENT mismatch at frame %d (PTS %d): payload bytes differ between runs (len run1=%d run2=%d)",
+			i, r1.video[i], len(r1.vBytes[i]), len(r2.vBytes[i]))
 	}
 
 	// Verify video PTS starts at 0 and increments by ptsDelta (exact).
@@ -412,7 +459,14 @@ func TestRefClockDeterministic(t *testing.T) {
 			"audio frame %d PTS should be %d, got %d", i, expected, r1.audio[i])
 	}
 
-	t.Logf("Deterministic test passed: %d video + %d audio frames compared, all PTS identical",
+	// Content determinism for audio: encoded AAC payloads must be byte-identical.
+	for i := 0; i < aLen; i++ {
+		require.Equalf(t, r1.aBytes[i], r2.aBytes[i],
+			"audio CONTENT mismatch at frame %d (PTS %d): payload bytes differ between runs",
+			i, r1.audio[i])
+	}
+
+	t.Logf("Deterministic test passed: %d video + %d audio frames compared, PTS and payload bytes identical",
 		vLen, aLen)
 }
 

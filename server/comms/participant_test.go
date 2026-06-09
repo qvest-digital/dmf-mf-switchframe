@@ -80,6 +80,42 @@ func TestParticipantDecodeEncode(t *testing.T) {
 	}
 }
 
+// TestParticipantDecodeOversizedFrame verifies that an Opus frame longer than
+// 20ms (here 40ms = 2*FrameSize) decodes instead of being dropped with
+// OPUS_BUFFER_TOO_SMALL. The pcmBuf is sized to MaxFrameSize (120ms) so any
+// valid Opus frame fits; decodeAudio then clamps the result to FrameSize for
+// the 20ms mix path. Regression for the silently-brittle non-20ms-frame case.
+func TestParticipantDecodeOversizedFrame(t *testing.T) {
+	if !opusAvailable {
+		t.Skip("opus codec not available")
+	}
+
+	p, err := newParticipant("op1", "Alice")
+	if err != nil {
+		t.Fatalf("newParticipant: %v", err)
+	}
+	defer p.close()
+
+	// Encode a 40ms frame. The hraban encoder derives the frame duration from
+	// the number of PCM samples supplied, so 2*FrameSize samples yields a
+	// 40ms Opus frame — a valid duration a browser encoder might negotiate.
+	pcm40ms := make([]int16, 2*FrameSize)
+	buf := make([]byte, 4096)
+	n, err := p.encoder.Encode(pcm40ms, 2*FrameSize, buf)
+	if err != nil {
+		t.Fatalf("Encode 40ms frame: %v", err)
+	}
+
+	out, err := p.decodeAudio(buf[:n])
+	if err != nil {
+		t.Fatalf("decodeAudio of 40ms frame returned error (frame dropped): %v", err)
+	}
+	// Clamped to the canonical 20ms mix frame.
+	if len(out) != FrameSize {
+		t.Errorf("decoded %d samples, want %d (clamped to FrameSize)", len(out), FrameSize)
+	}
+}
+
 func TestParticipantSpeakingDetection(t *testing.T) {
 	if !opusAvailable {
 		t.Skip("opus codec not available")

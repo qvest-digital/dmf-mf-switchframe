@@ -31,9 +31,10 @@ void OffscreenRenderHandler::OnPaint(CefRefPtr<CefBrowser> /*browser*/,
     }
 
     // BGRA: 4 bytes per pixel.
+    // No per-frame logging here: OnPaint runs on the contended CEF UI thread at
+    // up to 60fps per browser, and std::cerr is unbuffered (one syscall per
+    // write), which would add I/O latency directly on the frame-production hot
+    // path. Diagnostics for missing callbacks are handled above (one-shot).
     size_t buffer_size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
-    std::cerr << "[render] OnPaint: browser=" << browser_id_
-              << " size=" << width << "x" << height
-              << " bytes=" << buffer_size << std::endl;
     on_frame_(browser_id_, width, height, buffer, buffer_size);
 }

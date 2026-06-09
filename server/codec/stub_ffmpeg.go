@@ -238,6 +238,9 @@ type TranscodeResult struct {
 	SampleRate  int
 	Channels    int
 	VideoFrames int
+	// AudioSamples is the number of audio samples (at the output sample rate)
+	// accepted by the audio encoder.
+	AudioSamples int64
 }
 
 // TranscodeFile returns an error when FFmpeg is not available.

@@ -32,6 +32,7 @@ type ConfidenceMonitor struct {
 	minInterval    time.Duration
 	decoderFactory transition.DecoderFactory
 	decoder        transition.VideoDecoder
+	decoding       bool // true while a Decode is in flight; blocks concurrent Decode on the shared decoder
 
 	decodeErrors atomic.Int64
 
@@ -72,6 +73,16 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 		cm.mu.Unlock()
 		return
 	}
+	// The `decoding` gate blocks re-entry for the FULL decode duration, not
+	// just minInterval from its start. lastUpdate is stamped at the start of
+	// decode, so a decode that exceeds minInterval would otherwise let a
+	// second IngestVideo pass the rate-limit check and call Decode
+	// concurrently on the shared decoder — which most native decoders do not
+	// support. The gate keeps Decode strictly serialized on one instance.
+	if cm.decoding {
+		cm.mu.Unlock()
+		return
+	}
 	if time.Since(cm.lastUpdate) < cm.minInterval {
 		cm.mu.Unlock()
 		return
@@ -88,23 +99,43 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 	decoder := cm.decoder
 	// Stamp now to prevent re-entry while we decode outside the lock.
 	cm.lastUpdate = time.Now()
+	cm.decoding = true
 	cm.inFlight.Add(1)
 	cm.mu.Unlock()
-	defer cm.inFlight.Done()
 
-	// Decode, scale, and JPEG-encode outside the lock to avoid blocking
-	// the viewer goroutine or LatestThumbnail readers.
+	// Convert to Annex B synchronously — a cheap byte copy that also means
+	// the background goroutine does not retain the caller's frame buffers.
 	// Use codec-agnostic wire format conversion (identical for AVC and HEVC).
 	annexB := codec.WireToAnnexBInto(frame.WireData, nil)
-	if frame.IsKeyframe {
-		if frame.Codec == "h265" {
-			// HEVC: prepend VPS+SPS+PPS.
-			annexB = codec.PrependVPSSPSPPSInto(frame.VPS, frame.SPS, frame.PPS, annexB, nil)
-		} else {
-			// H.264: prepend SPS+PPS only.
-			annexB = codec.PrependSPSPPSInto(frame.SPS, frame.PPS, annexB, nil)
-		}
+	if frame.Codec == "h265" {
+		// HEVC: prepend VPS+SPS+PPS.
+		annexB = codec.PrependVPSSPSPPSInto(frame.VPS, frame.SPS, frame.PPS, annexB, nil)
+	} else {
+		// H.264: prepend SPS+PPS only.
+		annexB = codec.PrependSPSPPSInto(frame.SPS, frame.PPS, annexB, nil)
 	}
+
+	// Decode, scale, and JPEG-encode on a background goroutine. IngestVideo
+	// is invoked synchronously from the program video broadcast path
+	// (Manager.DirectWriteVideo ← switcher sync loop): a 1080p keyframe
+	// decode + JPEG encode can take 10-30ms, exceeding the 16.7-33ms frame
+	// budget and tripping the sync loop's overload logic. The `decoding`
+	// gate (cleared when the worker finishes) keeps Decode serialized on
+	// the shared decoder, and inFlight lets Close join the worker.
+	go cm.generateThumbnail(decoder, annexB)
+}
+
+// generateThumbnail runs the expensive decode → scale → JPEG encode pipeline
+// on a background goroutine. The caller has already set cm.decoding and
+// added to cm.inFlight; both are released here when the work completes.
+func (cm *ConfidenceMonitor) generateThumbnail(decoder transition.VideoDecoder, annexB []byte) {
+	defer func() {
+		cm.mu.Lock()
+		cm.decoding = false
+		cm.mu.Unlock()
+		cm.inFlight.Done()
+	}()
+
 	yuv, w, h, err := decoder.Decode(annexB)
 	if err != nil {
 		cm.decodeErrors.Add(1)

@@ -121,7 +121,9 @@ func encodeSpliceRequest(data any) ([]byte, error) {
 	buf[11] = srd.AvailNum
 	buf[12] = srd.AvailsExpected
 	if srd.AutoReturnFlag {
-		buf[13] = 0x80 // bit 7 per SCTE-104 spec
+		// auto_return_flag is a full 8-bit field with value 1 per SCTE 104
+		// Table 8-5 (not a bit-7 flag).
+		buf[13] = 1
 	}
 
 	return buf, nil
@@ -142,67 +144,52 @@ func encodeTimeSignalRequest(data any) ([]byte, error) {
 
 // encodeSegmentationDescriptor serializes a SegmentationDescriptorRequest.
 //
-// Wire format per SCTE 104 2021 Table 8-29:
+// Wire format per SCTE 104 Table 8-29 (byte-aligned, all fields always
+// present — including for cancel messages):
 //
-//	Cancel:     seg_event_id(4) + flags_byte(1) = 5 bytes
-//	Non-cancel: seg_event_id(4) + flags_byte(1) + duration(5) + upid_type(1) +
-//	            upid_length(1) + upid[N] + type_id(1) + seg_num(1) + segs_expected(1)
+//	segmentation_event_id(4) + cancel_indicator(1) + duration(2, seconds) +
+//	upid_type(1) + upid_length(1) + upid[N] + segmentation_type_id(1) +
+//	segment_num(1) + segments_expected(1) + duration_extension_frames(1) +
+//	delivery_not_restricted_flag(1) + web_delivery_allowed_flag(1) +
+//	no_regional_blackout_flag(1) + archive_allowed_flag(1) +
+//	device_restrictions(1) = 18 + N bytes
 func encodeSegmentationDescriptor(data any) ([]byte, error) {
 	sd, ok := data.(*SegmentationDescriptorRequest)
 	if !ok {
 		return nil, fmt.Errorf("segmentation_descriptor: expected *SegmentationDescriptorRequest, got %T", data)
 	}
 
-	if sd.CancelIndicator {
-		// Cancel: seg_event_id(4) + flags_byte(1) = 5 bytes
-		buf := make([]byte, 5)
-		binary.BigEndian.PutUint32(buf[0:4], sd.SegEventID)
-		buf[4] = 0x80 // cancel=1, reserved=0, program_seg_flag=0
-		return buf, nil
+	upidLen := len(sd.UPID)
+	if upidLen > 255 {
+		return nil, fmt.Errorf("segmentation_descriptor: UPID length %d exceeds 255", upidLen)
 	}
 
-	// Non-cancel: seg_event_id(4) + flags(1) + duration(5) + upid_type(1) +
-	// upid_length(1) + upid[N] + type_id(1) + seg_num(1) + segs_expected(1) = 15 + N
-	// Optionally + sub_segment_num(1) + sub_segments_expected(1) = 17 + N
-	upidLen := len(sd.UPID)
-	baseLen := 15 + upidLen
-	includeSubSeg := hasSubSegmentFields(sd.SegmentationTypeID) &&
-		(sd.SubSegmentNum > 0 || sd.SubSegmentsExpected > 0)
-	if includeSubSeg {
-		baseLen += 2
+	bool01 := func(b bool) byte {
+		if b {
+			return 1
+		}
+		return 0
 	}
-	buf := make([]byte, baseLen)
+
+	buf := make([]byte, 18+upidLen)
 
 	binary.BigEndian.PutUint32(buf[0:4], sd.SegEventID)
-	if !sd.ProgramSegmentationFlag {
-		return nil, errors.New("segmentation_descriptor: component-level encoding not supported")
-	}
-	// flags_byte: cancel=0, reserved=0, program_segmentation_flag=1
-	buf[4] = 0x01
+	buf[4] = bool01(sd.CancelIndicator)
+	binary.BigEndian.PutUint16(buf[5:7], sd.Duration) // seconds
+	buf[7] = sd.UPIDType
+	buf[8] = byte(upidLen)
+	copy(buf[9:9+upidLen], sd.UPID)
 
-	// 5-byte (40-bit) duration in 90kHz ticks, big-endian.
-	if sd.DurationTicks > 0xFFFFFFFFFF {
-		return nil, fmt.Errorf("segmentation_descriptor: DurationTicks 0x%X exceeds 40-bit maximum", sd.DurationTicks)
-	}
-	buf[5] = byte(sd.DurationTicks >> 32)
-	buf[6] = byte(sd.DurationTicks >> 24)
-	buf[7] = byte(sd.DurationTicks >> 16)
-	buf[8] = byte(sd.DurationTicks >> 8)
-	buf[9] = byte(sd.DurationTicks)
-
-	buf[10] = sd.UPIDType
-	buf[11] = byte(upidLen)
-
-	copy(buf[12:12+upidLen], sd.UPID)
-
-	buf[12+upidLen] = sd.SegmentationTypeID
-	buf[12+upidLen+1] = sd.SegNum
-	buf[12+upidLen+2] = sd.SegExpected
-
-	if includeSubSeg {
-		buf[12+upidLen+3] = sd.SubSegmentNum
-		buf[12+upidLen+4] = sd.SubSegmentsExpected
-	}
+	o := 9 + upidLen
+	buf[o] = sd.SegmentationTypeID
+	buf[o+1] = sd.SegNum
+	buf[o+2] = sd.SegExpected
+	buf[o+3] = sd.DurationExtensionFrames
+	buf[o+4] = bool01(sd.DeliveryNotRestricted)
+	buf[o+5] = bool01(sd.WebDeliveryAllowed)
+	buf[o+6] = bool01(sd.NoRegionalBlackout)
+	buf[o+7] = bool01(sd.ArchiveAllowed)
+	buf[o+8] = sd.DeviceRestrictions
 
 	return buf, nil
 }

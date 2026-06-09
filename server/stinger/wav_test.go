@@ -327,6 +327,73 @@ func TestDecodeFloat32PCMPassthroughValid(t *testing.T) {
 	require.Equal(t, float32(0.0), pcm[2])
 }
 
+func TestParseWAV_TruncatedDataChunkRecovered(t *testing.T) {
+	// A valid fmt chunk followed by a data chunk whose *declared* size overruns
+	// the buffer (file truncated mid-chunk). The parser must salvage the bytes
+	// that are actually present rather than aborting with "no data chunk".
+	rawSamples := make([]byte, 4) // 2 int16 samples actually present
+	putInt16LE(rawSamples[0:], 1000)
+	putInt16LE(rawSamples[2:], -1000)
+
+	wav := buildWAV(t, 48000, 1, 16, rawSamples)
+	// data chunk size field is the last uint32 before the sample bytes: offset
+	// 12 (RIFF) + 24 (fmt) + 4 ("data") = 40. Inflate it well past EOF.
+	binary.LittleEndian.PutUint32(wav[40:], 0xFFFF)
+
+	pcm, sr, ch, err := ParseWAV(wav)
+	require.NoError(t, err)
+	require.Equal(t, 48000, sr)
+	require.Equal(t, 1, ch)
+	// Only the 4 bytes actually present decode to 2 samples.
+	require.Len(t, pcm, 2)
+	require.InDelta(t, 1000.0/32768.0, pcm[0], 1e-6)
+	require.InDelta(t, -1000.0/32768.0, pcm[1], 1e-6)
+}
+
+func TestParseWAV_TruncatedFmtChunkRecovered(t *testing.T) {
+	// fmt chunk with a declared size that overruns the buffer but whose 16-byte
+	// body is fully present, followed by EOF. The 16 bytes we need are readable,
+	// so the parser should still extract the format. (No data chunk can follow a
+	// chunk that runs to EOF, so this yields "no data chunk".)
+	buf := make([]byte, 12+24) // RIFF header + fmt chunk (16-byte body present)
+	copy(buf[0:], "RIFF")
+	binary.LittleEndian.PutUint32(buf[4:], uint32(len(buf)-8))
+	copy(buf[8:], "WAVE")
+	copy(buf[12:], "fmt ")
+	binary.LittleEndian.PutUint32(buf[16:], 0xFFFF) // declared size overruns EOF
+	binary.LittleEndian.PutUint16(buf[20:], 1)      // PCM
+	binary.LittleEndian.PutUint16(buf[22:], 2)      // stereo
+	binary.LittleEndian.PutUint32(buf[24:], 48000)
+	binary.LittleEndian.PutUint32(buf[28:], 192000)
+	binary.LittleEndian.PutUint16(buf[32:], 4) // blockAlign
+	binary.LittleEndian.PutUint16(buf[34:], 16)
+
+	// fmt is parsed from the present bytes; failure is the (missing) data chunk,
+	// not "no fmt chunk found".
+	_, _, _, err := ParseWAV(buf)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "data")
+	require.NotContains(t, err.Error(), "fmt")
+}
+
+func TestParseWAV_TruncatedFmtChunkTooSmall(t *testing.T) {
+	// fmt chunk whose declared size overruns EOF AND fewer than 16 body bytes
+	// are actually present must still be rejected as too small (no OOB read).
+	buf := make([]byte, 12+8+8) // RIFF + fmt header + only 8 body bytes present
+	copy(buf[0:], "RIFF")
+	binary.LittleEndian.PutUint32(buf[4:], uint32(len(buf)-8))
+	copy(buf[8:], "WAVE")
+	copy(buf[12:], "fmt ")
+	binary.LittleEndian.PutUint32(buf[16:], 16) // declares 16 but only 8 present
+
+	var err error
+	require.NotPanics(t, func() {
+		_, _, _, err = ParseWAV(buf)
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "too small")
+}
+
 func TestParseWAV_44100Hz(t *testing.T) {
 	// Verify a different sample rate works.
 	rawSamples := make([]byte, 4) // 2 int16 samples

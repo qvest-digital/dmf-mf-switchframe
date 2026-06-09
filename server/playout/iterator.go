@@ -122,6 +122,49 @@ func (t *TrimIterator) Next() (*DecodedFrame, error) {
 	}
 }
 
+// Seek repositions the iterator to targetFrame on the trimmed timeline (frame
+// 0 is the first frame at/after the in-point). It requires the inner iterator
+// to support seeking; otherwise an error is returned. Before the inner seek,
+// the stream's base PTS is established from the very first inner frame so the
+// in/out-point math in Next stays anchored to the true stream start rather
+// than the seek target.
+func (t *TrimIterator) Seek(targetFrame int) error {
+	seeker, ok := t.inner.(interface{ Seek(int) error })
+	if !ok {
+		return fmt.Errorf("playout: trim seek: inner iterator does not support seeking")
+	}
+	if targetFrame < 0 {
+		targetFrame = 0
+	}
+
+	// Anchor basePTS to the stream start. Without this, the first frame Next
+	// sees after the seek would become the base, shifting all relative-PTS
+	// trim math by the seek offset.
+	if !t.started {
+		if err := seeker.Seek(0); err != nil {
+			return fmt.Errorf("playout: trim seek: rewind: %w", err)
+		}
+		first, err := t.inner.Next()
+		if err != nil {
+			return fmt.Errorf("playout: trim seek: read first frame: %w", err)
+		}
+		if first == nil {
+			return fmt.Errorf("playout: trim seek: empty stream")
+		}
+		t.basePTS = first.PTS
+		t.started = true
+	}
+
+	// Translate the trimmed-timeline frame index to the full timeline by
+	// adding the in-point's frame offset.
+	fps := t.inner.EstimateFPS()
+	if fps <= 0 {
+		fps = 30.0
+	}
+	inFrames := int(float64(t.inMs) * fps / 1000.0)
+	return seeker.Seek(targetFrame + inFrames)
+}
+
 // EstimateFPS delegates to the inner iterator.
 func (t *TrimIterator) EstimateFPS() float64 {
 	return t.inner.EstimateFPS()

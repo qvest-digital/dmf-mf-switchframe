@@ -75,8 +75,11 @@ type bufferedFrame struct {
 
 	// File ring fields (only used when replayBuffer.ring != nil).
 	// wireData is nil; actual bytes live in the file ring at ringOffset.
+	// ringSeq identifies the ring slot so a wrap-overwritten frame is
+	// detected on read rather than yielding stale bytes.
 	ringOffset int64
 	ringSize   int32
+	ringSeq    int64
 }
 
 // bufferedAudioFrame stores a single encoded audio frame with wall-clock timestamp.

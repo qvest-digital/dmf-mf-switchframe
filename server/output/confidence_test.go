@@ -2,6 +2,7 @@ package output
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +30,7 @@ func TestConfidenceMonitor_ProducesThumbnail(t *testing.T) {
 	}
 
 	cm.IngestVideo(frame)
+	cm.inFlight.Wait() // join the background decode/encode worker
 
 	// Should have a JPEG thumbnail available
 	jpg := cm.LatestThumbnail()
@@ -78,10 +80,12 @@ func TestConfidenceMonitor_RateLimitsTo1fps(t *testing.T) {
 
 	// First frame should be processed
 	cm.IngestVideo(keyframe)
+	cm.inFlight.Wait() // join the background decode/encode worker
 	require.Equal(t, 1, decodeCount)
 
 	// Immediate second frame should be rate-limited (skipped)
 	cm.IngestVideo(keyframe)
+	cm.inFlight.Wait()
 	require.Equal(t, 1, decodeCount, "should rate-limit and skip second frame")
 
 	// Wait past the interval
@@ -89,6 +93,7 @@ func TestConfidenceMonitor_RateLimitsTo1fps(t *testing.T) {
 
 	// Third frame should be processed
 	cm.IngestVideo(keyframe)
+	cm.inFlight.Wait()
 	require.Equal(t, 2, decodeCount, "should process frame after interval")
 }
 
@@ -123,6 +128,7 @@ func TestConfidenceMonitor_ScalesToThumbnailSize(t *testing.T) {
 	}
 
 	cm.IngestVideo(frame)
+	cm.inFlight.Wait() // join the background decode/encode worker
 
 	jpg := cm.LatestThumbnail()
 	require.NotNil(t, jpg, "should produce thumbnail from large frame")
@@ -154,6 +160,7 @@ func TestConfidenceMonitor_ConvertsAVC1ToAnnexB(t *testing.T) {
 	}
 
 	cm.IngestVideo(frame)
+	cm.inFlight.Wait() // join the background decode/encode worker
 
 	require.NotNil(t, receivedData)
 	// Should start with Annex B start code (0x00 0x00 0x00 0x01), not AVC1 length prefix
@@ -298,4 +305,135 @@ func TestConfidenceMonitor_IngestAfterClose(t *testing.T) {
 	}
 	cm.IngestVideo(keyframe)
 	require.Nil(t, cm.LatestThumbnail())
+}
+
+// concurrencyDecoder records the maximum number of Decode calls that are ever
+// in flight simultaneously. Native (FFmpeg/HW) decoders are not safe for
+// concurrent Decode on one instance, so the monitor must serialize them.
+type concurrencyDecoder struct {
+	delay   time.Duration
+	cur     atomic.Int32
+	maxSeen atomic.Int32
+}
+
+func (d *concurrencyDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	n := d.cur.Add(1)
+	for {
+		m := d.maxSeen.Load()
+		if n <= m || d.maxSeen.CompareAndSwap(m, n) {
+			break
+		}
+	}
+	time.Sleep(d.delay)
+	d.cur.Add(-1)
+	w, h := 320, 180
+	return make([]byte, video.YUV420FrameSize(w, h)), w, h, nil
+}
+
+func (d *concurrencyDecoder) Close() {}
+
+// TestConfidenceMonitor_DecodeNotConcurrent verifies that a decode which
+// outlasts minInterval cannot be entered a second time concurrently. Without
+// the in-flight gate, a slow decode would let a later IngestVideo pass the
+// time.Since(lastUpdate) < minInterval check (lastUpdate is stamped at the
+// START of decode) and call Decode again on the shared decoder.
+func TestConfidenceMonitor_DecodeNotConcurrent(t *testing.T) {
+	dec := &concurrencyDecoder{delay: 60 * time.Millisecond}
+	cm := NewConfidenceMonitor(func() (transition.VideoDecoder, error) {
+		return dec, nil
+	})
+	// minInterval shorter than the decode delay: rate limiting alone would NOT
+	// prevent overlap, so only the in-flight gate can keep Decode serialized.
+	cm.minInterval = 10 * time.Millisecond
+
+	keyframe := &media.VideoFrame{
+		PTS:        1000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x88},
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Stagger so later calls land while the first decode is still
+			// running (delay 60ms >> minInterval 10ms).
+			cm.IngestVideo(keyframe)
+		}()
+		time.Sleep(15 * time.Millisecond)
+	}
+	wg.Wait()
+	cm.inFlight.Wait() // join any still-running background decode
+
+	require.Equal(t, int32(1), dec.maxSeen.Load(),
+		"Decode must never run concurrently on the shared decoder")
+}
+
+// blockingDecoder blocks inside Decode until released, exposing whether the
+// caller of IngestVideo is blocked for the duration of the decode.
+type blockingDecoder struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (d *blockingDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	close(d.started)
+	<-d.release
+	w, h := 320, 180
+	return make([]byte, video.YUV420FrameSize(w, h)), w, h, nil
+}
+
+func (d *blockingDecoder) Close() {}
+
+// TestConfidenceMonitor_IngestVideoDoesNotBlockOnDecode verifies that the
+// expensive decode → scale → JPEG encode pipeline runs on a background
+// goroutine. IngestVideo is invoked synchronously from the program video
+// broadcast path (Manager.DirectWriteVideo ← switcher sync loop), so a
+// 10-30ms 1080p keyframe decode + JPEG encode inline would exceed the
+// 16.7-33ms frame budget and trip the sync loop's overload logic.
+func TestConfidenceMonitor_IngestVideoDoesNotBlockOnDecode(t *testing.T) {
+	dec := &blockingDecoder{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	cm := NewConfidenceMonitor(func() (transition.VideoDecoder, error) {
+		return dec, nil
+	})
+	defer cm.Close()
+
+	frame := &media.VideoFrame{
+		PTS:        1000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x88},
+	}
+
+	returned := make(chan struct{})
+	go func() {
+		cm.IngestVideo(frame)
+		close(returned)
+	}()
+
+	// Wait until the decoder is blocked mid-Decode.
+	select {
+	case <-dec.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Decode was never invoked")
+	}
+
+	// IngestVideo must have returned (or return promptly) while the decode
+	// is still in flight.
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		close(dec.release)
+		t.Fatal("IngestVideo blocked the broadcast path for the duration of the decode")
+	}
+	close(dec.release)
+
+	// The thumbnail must still be produced once the decode completes.
+	require.Eventually(t, func() bool {
+		return cm.LatestThumbnail() != nil
+	}, 2*time.Second, 10*time.Millisecond,
+		"thumbnail should be produced asynchronously")
 }

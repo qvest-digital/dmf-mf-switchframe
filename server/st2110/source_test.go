@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -389,6 +390,82 @@ func TestSource_NilReceivers(t *testing.T) {
 	ctx := context.Background()
 	src.Start(ctx, nil, nil, nil)
 	src.Stop()
+}
+
+// countingVideoReceiver returns total frames (one per GetFrame), pacing each
+// behind a tiny sleep so a concurrent Stats() reader interleaves with the
+// fan-out's counter writes. Then blocks until ctx is cancelled.
+type countingVideoReceiver struct {
+	mu        sync.Mutex
+	remaining int
+}
+
+func (m *countingVideoReceiver) GetFrame(ctx context.Context) ([]byte, int, int, int64, error) {
+	m.mu.Lock()
+	if m.remaining > 0 {
+		m.remaining--
+		m.mu.Unlock()
+		return []byte{0xAB}, 16, 16, 0, nil
+	}
+	m.mu.Unlock()
+	<-ctx.Done()
+	return nil, 0, 0, 0, ctx.Err()
+}
+
+func (m *countingVideoReceiver) Close() error { return nil }
+
+// TestSource_StatsConcurrent exercises Stats() concurrently with the video
+// fan-out goroutine. Under -race this fails if the frame counters are not
+// synchronized; the final count must equal the number of frames delivered.
+func TestSource_StatsConcurrent(t *testing.T) {
+	const total = 500
+	videoRx := &countingVideoReceiver{remaining: total}
+
+	var delivered atomic.Int64
+	src := NewSource(SourceConfig{
+		Key:      "cam-stats",
+		Channels: 2,
+		OnRawVideo: func(string, []byte, int, int, int64) {
+			delivered.Add(1)
+		},
+		Logger: slog.Default(),
+	})
+
+	ctx := context.Background()
+	src.Start(ctx, videoRx, nil, nil)
+
+	// Hammer Stats() while the fan-out increments the counter.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			_ = src.Stats()
+			select {
+			case <-done:
+				return
+			default:
+			}
+			if delivered.Load() >= total {
+				return
+			}
+		}
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for delivered.Load() < total {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out: delivered %d of %d frames", delivered.Load(), total)
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	<-done
+	src.Stop()
+
+	if got := src.Stats().FramesReceived; got != total {
+		t.Errorf("Stats().FramesReceived = %d, want %d", got, total)
+	}
 }
 
 func TestSource_WallClockPTS(t *testing.T) {

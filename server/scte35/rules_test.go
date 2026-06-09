@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	scte35lib "github.com/Comcast/scte35-go/pkg/scte35"
 	"github.com/stretchr/testify/require"
 )
 
@@ -292,6 +293,53 @@ func TestRuleEngine_ReplaceAction(t *testing.T) {
 	require.Equal(t, 15*time.Second, *modified.BreakDuration)
 	// Original should be unmodified.
 	require.Equal(t, uint32(1), msg.EventID)
+}
+
+// TestRuleEngine_ReplaceDuration_TimeSignal verifies that ActionReplace Duration
+// also writes the duration into a time_signal's per-descriptor DurationTicks.
+// Regression: previously applyReplace only set BreakDuration, which Encode never
+// reads for time_signal, so the "Fix missing duration" template matched but the
+// emitted SCTE-35 was unchanged.
+func TestRuleEngine_ReplaceDuration_TimeSignal(t *testing.T) {
+	t.Parallel()
+	newDur := 30 * time.Second
+	re := NewRuleEngine()
+	re.AddRule(Rule{
+		ID:         "r1",
+		Name:       "fix missing duration",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "duration", Operator: "=", Value: "0"}},
+		Action:     ActionReplace,
+		ReplaceWith: &ReplaceParams{
+			Duration: &newDur,
+		},
+	})
+
+	// time_signal with a cue-out descriptor (0x34 = Provider Placement
+	// Opportunity Start) and no duration → DurationTicks is nil.
+	msg := NewTimeSignal(0x34, 0, 0, nil)
+	require.Nil(t, msg.Descriptors[0].DurationTicks)
+
+	action, modified := re.Evaluate(msg, "")
+	require.Equal(t, ActionReplace, action)
+	require.NotNil(t, modified)
+
+	// The descriptor's DurationTicks must now carry the replacement duration.
+	require.Len(t, modified.Descriptors, 1)
+	require.NotNil(t, modified.Descriptors[0].DurationTicks)
+	require.Equal(t, scte35lib.DurationToTicks(newDur), *modified.Descriptors[0].DurationTicks)
+
+	// And the change must be visible on the wire: the encoded bytes differ from
+	// the original zero-duration message.
+	origData, err := msg.Encode(false)
+	require.NoError(t, err)
+	modData, err := modified.Encode(false)
+	require.NoError(t, err)
+	require.NotEqual(t, origData, modData,
+		"replaced duration must change the emitted SCTE-35 for time_signal")
+
+	// Original must be untouched (deep copy).
+	require.Nil(t, msg.Descriptors[0].DurationTicks)
 }
 
 func TestRuleEngine_NotEqualOperator(t *testing.T) {

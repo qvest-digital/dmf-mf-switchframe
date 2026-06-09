@@ -212,7 +212,9 @@ func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	raw, err := io.ReadAll(r.Body)
+	// Bound the read so a missing/incorrect outer body cap cannot translate
+	// into an unbounded allocation when restoring a snapshot.
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxCommandBodySize))
 	if err != nil {
 		httperr.Write(w, http.StatusBadRequest, "could not read body")
 		if a.appMetrics != nil {

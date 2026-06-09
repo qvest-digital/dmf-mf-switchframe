@@ -137,8 +137,6 @@ func translateTimeSignal(data any, segDescs []*SegmentationDescriptorRequest) (*
 			UPIDType:                         sd.UPIDType,
 			SegNum:                           sd.SegNum,
 			SegExpected:                      sd.SegExpected,
-			SubSegmentNum:                    sd.SubSegmentNum,
-			SubSegmentsExpected:              sd.SubSegmentsExpected,
 		}
 
 		if len(sd.UPID) > 0 {
@@ -146,9 +144,22 @@ func translateTimeSignal(data any, segDescs []*SegmentationDescriptorRequest) (*
 			copy(desc.UPID, sd.UPID)
 		}
 
-		if sd.DurationTicks > 0 && !sd.CancelIndicator {
-			ticks := sd.DurationTicks
+		// SCTE 104 carries the duration in seconds (plus an optional frame
+		// extension); SCTE-35 wants 90 kHz ticks. The frame extension cannot
+		// be converted without knowing the video frame rate, so it is
+		// intentionally dropped here.
+		if sd.Duration > 0 && !sd.CancelIndicator {
+			ticks := uint64(sd.Duration) * 90000
 			desc.DurationTicks = &ticks
+		}
+
+		if !sd.DeliveryNotRestricted && !sd.CancelIndicator {
+			desc.DeliveryRestrictions = &scte35.DeliveryRestrictions{
+				WebDeliveryAllowed: sd.WebDeliveryAllowed,
+				NoRegionalBlackout: sd.NoRegionalBlackout,
+				ArchiveAllowed:     sd.ArchiveAllowed,
+				DeviceRestrictions: sd.DeviceRestrictions,
+			}
 		}
 
 		cue.Descriptors = append(cue.Descriptors, desc)
@@ -287,15 +298,22 @@ func fromTimeSignal(cue *scte35.CueMessage) []Operation {
 
 	for _, desc := range cue.Descriptors {
 		sd := &SegmentationDescriptorRequest{
-			SegEventID:              desc.SegEventID,
-			SegmentationTypeID:      desc.SegmentationType,
-			UPIDType:                desc.UPIDType,
-			CancelIndicator:         desc.SegmentationEventCancelIndicator,
-			SegNum:                  desc.SegNum,
-			SegExpected:             desc.SegExpected,
-			SubSegmentNum:           desc.SubSegmentNum,
-			SubSegmentsExpected:     desc.SubSegmentsExpected,
-			ProgramSegmentationFlag: true,
+			SegEventID:         desc.SegEventID,
+			SegmentationTypeID: desc.SegmentationType,
+			UPIDType:           desc.UPIDType,
+			CancelIndicator:    desc.SegmentationEventCancelIndicator,
+			SegNum:             desc.SegNum,
+			SegExpected:        desc.SegExpected,
+			// SCTE-35 sub_segment_num/sub_segments_expected have no SCTE 104
+			// Table 8-29 counterpart and are dropped.
+			DeliveryNotRestricted: desc.DeliveryRestrictions == nil,
+		}
+
+		if desc.DeliveryRestrictions != nil {
+			sd.WebDeliveryAllowed = desc.DeliveryRestrictions.WebDeliveryAllowed
+			sd.NoRegionalBlackout = desc.DeliveryRestrictions.NoRegionalBlackout
+			sd.ArchiveAllowed = desc.DeliveryRestrictions.ArchiveAllowed
+			sd.DeviceRestrictions = desc.DeliveryRestrictions.DeviceRestrictions
 		}
 
 		if len(desc.UPID) > 0 {
@@ -303,8 +321,14 @@ func fromTimeSignal(cue *scte35.CueMessage) []Operation {
 			copy(sd.UPID, desc.UPID)
 		}
 
+		// Convert SCTE-35 90 kHz tick duration to SCTE 104 whole seconds
+		// (rounded), clamped to the 16-bit wire field.
 		if desc.DurationTicks != nil {
-			sd.DurationTicks = *desc.DurationTicks
+			secs := (*desc.DurationTicks + 45000) / 90000
+			if secs > math.MaxUint16 {
+				secs = math.MaxUint16
+			}
+			sd.Duration = uint16(secs)
 		}
 
 		ops = append(ops, Operation{

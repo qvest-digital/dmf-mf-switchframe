@@ -664,6 +664,12 @@ func (m *Manager) frameReadLoop(gen int64) {
 		return
 	}
 
+	// Reusable pixel buffer: frames arrive at 30-60fps per browser (up to 4
+	// browsers), so allocating a fresh multi-MB buffer per frame is pure GC
+	// churn — the pixels are deep-copied by compositor.SetOverlay below and
+	// never retained past one loop iteration.
+	var pixelBuf []byte
+
 	for {
 		select {
 		case <-m.done:
@@ -671,9 +677,12 @@ func (m *Manager) frameReadLoop(gen int64) {
 		default:
 		}
 
-		frame, err := ReadFrame(conn)
-		if err == nil {
-			slog.Info("htmlgfx: frame received", "browser", frame.BrowserID, "size", fmt.Sprintf("%dx%d", frame.Width, frame.Height))
+		frame, err := ReadFrameReuse(conn, pixelBuf)
+		if err == nil && slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+			// Per-frame logging is on the 30-60fps hot path (up to 4 browsers),
+			// so it is gated behind debug level and the fmt.Sprintf is only
+			// evaluated when debug logging is actually enabled.
+			slog.Debug("htmlgfx: frame received", "browser", frame.BrowserID, "size", fmt.Sprintf("%dx%d", frame.Width, frame.Height))
 		}
 		if err != nil {
 			select {
@@ -688,6 +697,9 @@ func (m *Manager) frameReadLoop(gen int64) {
 			}
 			return
 		}
+
+		// Retain the (possibly grown) pixel buffer for the next read.
+		pixelBuf = frame.Pixels
 
 		// Look up the layer ID for this browser.
 		m.mu.Lock()

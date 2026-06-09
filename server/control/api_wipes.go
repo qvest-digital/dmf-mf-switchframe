@@ -2,15 +2,24 @@ package control
 
 import (
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
+
+// maxWipeImageDimension caps the decoded width/height of an uploaded custom
+// wipe PNG. The 10MB body limit alone does not bound the decoded size: a
+// solid-color 50000x50000 PNG compresses to ~2-3MB but decodes to 2.5GB+ and
+// billions of per-pixel calls (a decompression bomb). Wipe gradient maps are
+// resampled to the output resolution anyway, so 4096 is far more than needed.
+const maxWipeImageDimension = 4096
 
 // registerWipeRoutes registers wipe pattern API routes on the given mux.
 func (a *API) registerWipeRoutes(mux *http.ServeMux) {
@@ -111,6 +120,25 @@ func (a *API) handleUploadCustomWipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = file.Close() }()
+
+	// Check the declared dimensions from the PNG header BEFORE decoding any
+	// pixel data: png.Decode allocates the full decoded buffer from the IHDR
+	// dimensions, so a small compressed bomb would otherwise trigger a
+	// multi-GB allocation here.
+	cfg, err := png.DecodeConfig(file)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid PNG: "+err.Error())
+		return
+	}
+	if cfg.Width > maxWipeImageDimension || cfg.Height > maxWipeImageDimension {
+		httperr.Write(w, http.StatusBadRequest, fmt.Sprintf(
+			"image too large (maximum %dx%d)", maxWipeImageDimension, maxWipeImageDimension))
+		return
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		httperr.Write(w, http.StatusInternalServerError, "failed to rewind upload")
+		return
+	}
 
 	// Decode as PNG.
 	img, err := png.Decode(file)

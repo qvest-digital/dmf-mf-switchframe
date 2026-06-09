@@ -350,6 +350,56 @@ func TestReadEXR_UnsupportedCompression(t *testing.T) {
 	require.Contains(t, err.Error(), "compression")
 }
 
+// TestReadEXR_NegativeStartRow guards against a crafted EXR whose per-block
+// y-coordinate (blockY) is smaller than dataWindow yMin, which made
+// startRow = blockY - yMin negative and caused a negative-index panic when
+// writing sData[absY*width+x]. The parser must reject such blocks with an
+// error instead of panicking.
+func TestReadEXR_NegativeStartRow(t *testing.T) {
+	const w, h = 4, 2
+	rVals := []float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8}
+	gVals := []float32{0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2}
+
+	data := buildSyntheticEXR(t, w, h, rVals, gVals, 0) // NO_COMPRESSION
+
+	// Locate the first scanline block via its offset-table entry and overwrite
+	// its blockY field (the leading int32) with a value below yMin (0) so that
+	// startRow becomes negative.
+	blockOff := firstScanlineBlockOffset(t, data, h)
+	badY := int32(-1000)
+	binary.LittleEndian.PutUint32(data[blockOff:blockOff+4], uint32(badY))
+
+	require.NotPanics(t, func() {
+		_, err := ReadEXR(data, "negative-startrow")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "out-of-range")
+	})
+}
+
+// firstScanlineBlockOffset parses the synthetic EXR header just enough to find
+// the offset table and returns the byte offset of the first scanline block.
+func firstScanlineBlockOffset(t *testing.T, data []byte, height int) int {
+	t.Helper()
+	pos := 8 // skip magic + version
+	for {
+		require.Less(t, pos, len(data), "ran off end of header")
+		name, n, err := readNullTermString(data, pos)
+		require.NoError(t, err)
+		pos += n
+		if name == "" {
+			break // end of header
+		}
+		_, tn, err := readNullTermString(data, pos) // type name
+		require.NoError(t, err)
+		pos += tn
+		attrSize := int(binary.LittleEndian.Uint32(data[pos : pos+4]))
+		pos += 4 + attrSize // size field + attr data
+	}
+	// pos now points at the offset table; first entry is block 0's offset.
+	require.LessOrEqual(t, pos+height*8, len(data))
+	return int(binary.LittleEndian.Uint64(data[pos : pos+8]))
+}
+
 // --- Helper builders for special test cases ---
 
 // buildSyntheticEXROddDims builds a minimal EXR with arbitrary (possibly odd) dimensions.
@@ -686,4 +736,78 @@ func exrPreprocess(raw []byte) []byte {
 	}
 
 	return tmp
+}
+
+// offsetTablePos parses the synthetic EXR header just enough to find the
+// byte position of the scanline offset table itself (NOT the value of its
+// first entry — see firstScanlineBlockOffset for that).
+func offsetTablePos(t *testing.T, data []byte) int {
+	t.Helper()
+	pos := 8 // skip magic + version
+	for {
+		require.Less(t, pos, len(data), "ran off end of header")
+		name, n, err := readNullTermString(data, pos)
+		require.NoError(t, err)
+		pos += n
+		if name == "" {
+			break // end of header
+		}
+		_, tn, err := readNullTermString(data, pos) // type name
+		require.NoError(t, err)
+		pos += tn
+		attrSize := int(binary.LittleEndian.Uint32(data[pos : pos+4]))
+		pos += 4 + attrSize // size field + attr data
+	}
+	return pos
+}
+
+// TestReadEXR_NegativeBlockOffset verifies that a scanline block offset that
+// is negative when interpreted as int64 (attacker-controlled offset-table
+// entry) is rejected with an error instead of panicking with a slice bounds
+// violation. The upper-bound-only check `blockOffset+8 > len(data)` passes
+// for negative offsets, so without an explicit lower-bound check the
+// subsequent data[blockOffset:blockOffset+4] slice panics.
+func TestReadEXR_NegativeBlockOffset(t *testing.T) {
+	const w, h = 4, 2
+	rVals := []float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8}
+	gVals := []float32{0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2}
+
+	data := buildSyntheticEXR(t, w, h, rVals, gVals, 0) // NO_COMPRESSION
+
+	// Overwrite block 0's offset-table entry with a negative int64
+	// (0xFFFFFFFFFFFFFF00 == -256).
+	tablePos := offsetTablePos(t, data)
+	binary.LittleEndian.PutUint64(data[tablePos:tablePos+8], 0xFFFFFFFFFFFFFF00)
+
+	require.NotPanics(t, func() {
+		_, err := ReadEXR(data, "negative-block-offset")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "offset out of range")
+	})
+}
+
+// TestReadEXR_MaxInt64BlockOffset verifies that a huge positive scanline block
+// offset (attacker-controlled offset-table entry near math.MaxInt64) is
+// rejected with an error instead of panicking. A check written as
+// `blockOffset+8 > len(data)` overflows for blockOffset == math.MaxInt64
+// (blockOffset+8 wraps negative), so the upper-bound check passes and the
+// subsequent data[blockOffset:blockOffset+4] slice panics with
+// slice-bounds-out-of-range.
+func TestReadEXR_MaxInt64BlockOffset(t *testing.T) {
+	const w, h = 4, 2
+	rVals := []float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8}
+	gVals := []float32{0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2}
+
+	data := buildSyntheticEXR(t, w, h, rVals, gVals, 0) // NO_COMPRESSION
+
+	// Overwrite block 0's offset-table entry with math.MaxInt64 so that
+	// blockOffset+8 wraps negative if computed naively.
+	tablePos := offsetTablePos(t, data)
+	binary.LittleEndian.PutUint64(data[tablePos:tablePos+8], 0x7FFFFFFFFFFFFFFF)
+
+	require.NotPanics(t, func() {
+		_, err := ReadEXR(data, "maxint64-block-offset")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "offset out of range")
+	})
 }

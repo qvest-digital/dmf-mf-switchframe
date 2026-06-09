@@ -38,6 +38,62 @@ type gpuState struct {
 	fruc          *gpu.FRUC                 // FRUC for GPU-accelerated replay motion blur (nil if unavailable)
 }
 
+// gpu returns the current GPU pipeline state, or nil when the GPU subsystem
+// is inactive. All readers must use this accessor (and take a single local
+// snapshot per operation) because the format-change rebuild swaps the whole
+// state wholesale while decode callbacks and lifecycle hooks read it from
+// other goroutines.
+func (a *App) gpu() *gpuState {
+	return a.gpuState.Load()
+}
+
+// setGPUState replaces the GPU pipeline state. Counterpart of gpu().
+func (a *App) setGPUState(gs *gpuState) {
+	a.gpuState.Store(gs)
+}
+
+// rebuildGPUPipelineForFormat is the switcher's OnFormatChange callback: it
+// tears down the GPU pipeline and recreates it at the new dimensions (pool,
+// encoder, pipeline, and source manager are all sized to the pipeline
+// format). It runs on whatever goroutine called SetPipelineFormat (the
+// format_set API handler or the cmdqueue dispatcher).
+//
+// Live SRT sources are stopped FIRST: their decode callbacks captured the
+// old source manager and frame pool at wire time (app_srt.go), so closing
+// the GPU state while their decode threads are running would leave them
+// calling Acquire/IngestGPUFrame against destroyed CUDA resources.
+// stopSRTSources joins each decode goroutine (Stop blocks on wg.Wait) before
+// the teardown; caller-mode sources auto-reconnect via their done channel
+// and re-wire against the new GPU state at the new format, and listener
+// peers reconnect as for any connection drop.
+//
+// The state is published as nil for the duration of the teardown so readers
+// taking a fresh snapshot during the rebuild see "GPU inactive" rather than
+// a half-closed state.
+func (a *App) rebuildGPUPipelineForFormat(w, h, fpsNum, fpsDen int) {
+	slog.Info("rebuilding GPU pipeline for format change",
+		"width", w, "height", h,
+		"fps_num", fpsNum, "fps_den", fpsDen)
+
+	// Stop live SRT sources before destroying the GPU resources their
+	// decode callbacks captured.
+	a.stopSRTSources()
+
+	// Tear down old GPU pipeline (releases all GPU resources).
+	old := a.gpu()
+	a.setGPUState(nil)
+	a.sw.SetGPUPipeline(nil)
+	a.sw.SetGPUSourceManager(nil)
+	closeGPU(old)
+
+	// Recreate at new dimensions.
+	gs := initGPU(a.sw)
+	a.setGPUState(gs)
+	wireGPUPipeline(gs, a.sw, a)
+	// Re-wire GPU replay FRUC at the new dimensions.
+	a.wireGPUReplay()
+}
+
 // initGPU attempts to initialize the GPU pipeline. If the GPU is not
 // available or initialization fails, logs a message and returns nil
 // (CPU fallback). The caller should store the returned state and call
@@ -487,19 +543,20 @@ func (a *App) updateGPURawVideoSink() {
 // manager for GPU-accelerated motion-blur slow-motion. No-op if the GPU
 // is unavailable or the replay manager hasn't been created yet.
 func (a *App) wireGPUReplay() {
-	if a.gpuState == nil || a.gpuState.ctx == nil || a.replayMgr == nil {
+	gs := a.gpu()
+	if gs == nil || gs.ctx == nil || a.replayMgr == nil {
 		return
 	}
 
 	pf := a.sw.PipelineFormat()
-	fruc, err := gpu.NewFRUC(a.gpuState.ctx, pf.Width, pf.Height)
+	fruc, err := gpu.NewFRUC(gs.ctx, pf.Width, pf.Height)
 	if err != nil {
 		slog.Warn("GPU FRUC init failed, replay will use CPU path", "error", err)
 		return
 	}
 
-	a.gpuState.fruc = fruc
-	a.replayMgr.SetGPUReplay(a.gpuState.ctx, fruc, a.gpuState.pool)
+	gs.fruc = fruc
+	a.replayMgr.SetGPUReplay(gs.ctx, fruc, gs.pool)
 	slog.Info("GPU motion-blur replay enabled",
 		"hasNVOFA", fruc.HasNVOFA(),
 		"width", pf.Width,
@@ -827,7 +884,7 @@ func (p *previewRelayDebugProvider) DebugSnapshot() map[string]any {
 	}
 
 	// GPU preview encode node counters.
-	if gs := p.app.gpuState; gs != nil && gs.previewNode != nil {
+	if gs := p.app.gpu(); gs != nil && gs.previewNode != nil {
 		if dn, ok := gs.previewNode.(interface{ DiagSnapshot() map[string]any }); ok {
 			result["gpu_encode"] = dn.DiagSnapshot()
 		}

@@ -1,6 +1,7 @@
 package stinger
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,23 @@ import (
 
 	"github.com/zsiec/switchframe/server/internal/video"
 )
+
+// writeCacheHeader writes a cache file with a valid magic + version but the
+// given raw width/height/frameCount fields, padded to totalLen bytes. Used to
+// exercise LoadCache's bounds checks against corrupt/crafted headers.
+func writeCacheHeader(t *testing.T, path string, w, h, frameCount uint32, totalLen int) {
+	t.Helper()
+	if totalLen < cacheHeaderSize {
+		totalLen = cacheHeaderSize
+	}
+	data := make([]byte, totalLen)
+	copy(data[0:4], cacheMagic)
+	binary.LittleEndian.PutUint32(data[4:8], cacheVersion)
+	binary.LittleEndian.PutUint32(data[8:12], w)
+	binary.LittleEndian.PutUint32(data[12:16], h)
+	binary.LittleEndian.PutUint32(data[16:20], frameCount)
+	require.NoError(t, os.WriteFile(path, data, 0644))
+}
 
 func TestWriteAndLoadCache(t *testing.T) {
 	dir := t.TempDir()
@@ -200,6 +218,60 @@ func TestClipClose_NonMmap(t *testing.T) {
 
 func TestLoadCache_NoFile(t *testing.T) {
 	_, err := LoadCache("/nonexistent/path/test.bin")
+	require.Error(t, err)
+}
+
+func TestLoadCache_OverflowingHeader(t *testing.T) {
+	// Corrupt/crafted headers with absurd dimensions or frame counts must be
+	// rejected with an error, never panic via out-of-bounds frame slicing.
+	// max32 forces w*h, w*h*3, and frameCount*frameSize multiplications to
+	// overflow int64 instead of wrapping to a value that slips past the size
+	// guard.
+	const max32 = uint32(0xFFFFFFFF)
+	tests := []struct {
+		name             string
+		w, h, frameCount uint32
+	}{
+		// w*h overflows int64.
+		{"dimensions overflow", max32, max32, 1},
+		// w*h fits but w*h*3 (inside YUV420FrameSize) overflows.
+		{"yuv numerator overflow", 1 << 16, 1 << 16, 1},
+		// frameSize fits but frameCount*frameSize overflows.
+		{"frame count overflow", 1 << 16, 1 << 16, max32},
+		// Plausible-looking but far larger than the tiny file → size mismatch.
+		{"size larger than file", 1920, 1080, 100},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "overflow.bin")
+			writeCacheHeader(t, path, tt.w, tt.h, tt.frameCount, 64)
+
+			var (
+				clip *Clip
+				err  error
+			)
+			require.NotPanics(t, func() {
+				clip, err = LoadCache(path)
+			})
+			require.Error(t, err)
+			require.Nil(t, clip)
+		})
+	}
+}
+
+func TestLoadCache_ZeroDimensions(t *testing.T) {
+	// w=h=0 yields frameSize 0; a non-zero frameCount then has zero expected
+	// frame bytes. This must not divide-by-zero or panic, just mismatch the file
+	// size (64 bytes != 28-byte header).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "zerodim.bin")
+	writeCacheHeader(t, path, 0, 0, 5, 64)
+
+	var err error
+	require.NotPanics(t, func() {
+		_, err = LoadCache(path)
+	})
 	require.Error(t, err)
 }
 

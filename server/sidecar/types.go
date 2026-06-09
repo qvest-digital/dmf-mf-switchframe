@@ -21,6 +21,12 @@ type Config struct {
 	// Default: 2s.
 	ShutdownTimeout time.Duration
 
+	// WriteTimeout bounds each control-socket write in Send. A wedged
+	// sidecar (process alive but no longer reading) with a full socket send
+	// buffer would otherwise block a writer forever while it holds writeMu,
+	// permanently blocking all subsequent senders. Default: 10s.
+	WriteTimeout time.Duration
+
 	// InitialBackoff is the starting restart delay. Default: 1s.
 	InitialBackoff time.Duration
 
@@ -94,6 +100,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.ShutdownTimeout == 0 {
 		c.ShutdownTimeout = 2 * time.Second
+	}
+	if c.WriteTimeout == 0 {
+		c.WriteTimeout = 10 * time.Second
 	}
 	if c.InitialBackoff == 0 {
 		c.InitialBackoff = 1 * time.Second

@@ -36,20 +36,31 @@ func ParseWAV(data []byte) ([]float32, int, int, error) {
 	pos := 12 // skip RIFF header
 	for pos+8 <= len(data) {
 		chunkID := string(data[pos : pos+4])
-		chunkSize := binary.LittleEndian.Uint32(data[pos+4 : pos+8])
+		// chunkSize is uint32, so it always fits non-negative in a 64-bit int;
+		// no negative check is needed.
+		chunkSize := int(binary.LittleEndian.Uint32(data[pos+4 : pos+8]))
 		chunkDataStart := pos + 8
 
-		if int(chunkSize) < 0 || chunkDataStart+int(chunkSize) > len(data) {
-			// Truncated chunk — stop scanning
-			break
+		// availSize is what actually remains in the buffer for this chunk's body.
+		// A chunk whose declared size overruns the buffer means the file is
+		// truncated mid-chunk: there is no room for any further chunk after it.
+		// We still try to salvage this final chunk if it is one we care about
+		// (a truncated data chunk yields usable audio; a fmt chunk only if at
+		// least its 16-byte body is present), then stop scanning. We never trust
+		// an overrunning declared size to advance past the chunk.
+		availSize := chunkSize
+		truncated := false
+		if chunkDataStart+chunkSize > len(data) {
+			availSize = len(data) - chunkDataStart
+			truncated = true
 		}
 
 		switch chunkID {
 		case "fmt ":
-			if chunkSize < 16 {
-				return nil, 0, 0, fmt.Errorf("wav: fmt chunk too small (%d bytes)", chunkSize)
+			if availSize < 16 {
+				return nil, 0, 0, fmt.Errorf("wav: fmt chunk too small (%d bytes)", availSize)
 			}
-			fmtData := data[chunkDataStart : chunkDataStart+int(chunkSize)]
+			fmtData := data[chunkDataStart : chunkDataStart+availSize]
 			audioFormat = binary.LittleEndian.Uint16(fmtData[0:2])
 			numChannels = binary.LittleEndian.Uint16(fmtData[2:4])
 			sampleRate = binary.LittleEndian.Uint32(fmtData[4:8])
@@ -59,11 +70,15 @@ func ParseWAV(data []byte) ([]float32, int, int, error) {
 			fmtFound = true
 
 		case "data":
-			dataChunk = data[chunkDataStart : chunkDataStart+int(chunkSize)]
+			dataChunk = data[chunkDataStart : chunkDataStart+availSize]
 		}
 
-		// Advance to next chunk (word-aligned)
-		advance := int(chunkSize)
+		if truncated {
+			break
+		}
+
+		// Advance to next chunk (word-aligned).
+		advance := chunkSize
 		if advance%2 != 0 {
 			advance++ // RIFF chunks are word-aligned
 		}

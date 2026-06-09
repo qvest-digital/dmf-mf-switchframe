@@ -115,7 +115,20 @@ const maxFramePixels = 7680 * 4320 * 4
 
 // ReadFrame reads a single length-prefixed binary frame from r.
 // Returns io.EOF if there is no more data to read.
+//
+// ReadFrame allocates a fresh pixel buffer per call. On hot paths use
+// ReadFrameReuse with a retained buffer instead.
 func ReadFrame(r io.Reader) (Frame, error) {
+	return ReadFrameReuse(r, nil)
+}
+
+// ReadFrameReuse is like ReadFrame but reads the pixel data into buf when it
+// has sufficient capacity, avoiding a multi-MB allocation per frame on the
+// 30-60fps sidecar frame-read hot path. If buf is nil or too small, a new
+// buffer is allocated. The returned Frame.Pixels aliases (a prefix of) the
+// possibly-grown buffer; callers should retain Frame.Pixels for the next call
+// and must not hold on to pixel data across calls.
+func ReadFrameReuse(r io.Reader, buf []byte) (Frame, error) {
 	// Read length prefix.
 	var lenBuf [4]byte
 	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
@@ -141,7 +154,12 @@ func ReadFrame(r io.Reader) (Frame, error) {
 	height := binary.BigEndian.Uint16(header[3:5])
 
 	pixelLen := totalLen - uint32(FrameHeaderSize)
-	expectedPixelLen := uint32(width) * uint32(height) * 4
+	// Compute the expected pixel size in 64-bit so it cannot wrap: a uint32
+	// product of width*height*4 overflows for large dimensions (e.g.
+	// 65535x65535) and could wrap to a value that matches a small pixelLen,
+	// bypassing the size check below and delivering a frame whose header
+	// dimensions disagree with its pixel buffer length.
+	expectedPixelLen := uint64(width) * uint64(height) * 4
 
 	// Reject frames exceeding the maximum supported resolution.
 	if pixelLen > maxFramePixels {
@@ -152,7 +170,7 @@ func ReadFrame(r io.Reader) (Frame, error) {
 			pixelLen, maxFramePixels, width, height)
 	}
 
-	if pixelLen != expectedPixelLen {
+	if uint64(pixelLen) != expectedPixelLen {
 		// Drain remaining bytes to keep the stream in sync.
 		if pixelLen > 0 {
 			_, _ = io.CopyN(io.Discard, r, int64(pixelLen))
@@ -161,7 +179,12 @@ func ReadFrame(r io.Reader) (Frame, error) {
 			pixelLen, expectedPixelLen, width, height)
 	}
 
-	pixels := make([]byte, pixelLen)
+	var pixels []byte
+	if uint64(cap(buf)) >= uint64(pixelLen) {
+		pixels = buf[:pixelLen]
+	} else {
+		pixels = make([]byte, pixelLen)
+	}
 	if _, err := io.ReadFull(r, pixels); err != nil {
 		return Frame{}, fmt.Errorf("read frame pixels: %w", err)
 	}

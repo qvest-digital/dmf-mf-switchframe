@@ -313,6 +313,69 @@ func TestCDPFrameRateCodes(t *testing.T) {
 	}
 }
 
+func TestWrapCaptionST291_UDWStartsWithCDP(t *testing.T) {
+	// SMPTE ST 334-1 defines the caption VANC UDW (DID 0x61 / SDID 0x01) as
+	// the CDP itself, starting directly with the 0x96 0x69 cdp_identifier.
+	// There must be no ST 2010-style payload-descriptor byte (that concept
+	// applies only to SCTE-104 VANC, DID 0x41 / SDID 0x07).
+	pairs := []CCPair{{Data: [2]byte{'T', 'V'}}}
+	cdp := BuildCDP(pairs, 9, cdpFrameRate2997)
+
+	packet, err := WrapCaptionST291(cdp)
+	if err != nil {
+		t.Fatalf("WrapCaptionST291: %v", err)
+	}
+
+	// DC must equal the CDP length exactly (no extra descriptor byte).
+	if int(packet[2]) != len(cdp) {
+		t.Errorf("DC = %d, want %d (CDP length, no descriptor byte)", packet[2], len(cdp))
+	}
+
+	// UDW must begin with the cdp_identifier.
+	if packet[3] != cdpMagic0 || packet[4] != cdpMagic1 {
+		t.Errorf("UDW starts with %02X %02X, want %02X %02X (cdp_identifier)",
+			packet[3], packet[4], cdpMagic0, cdpMagic1)
+	}
+
+	// Total packet: DID(1) + SDID(1) + DC(1) + UDW(len(cdp)) + CS(1).
+	if want := 3 + len(cdp) + 1; len(packet) != want {
+		t.Errorf("packet length = %d, want %d", len(packet), want)
+	}
+}
+
+func TestParseCaptionST291_SpecCompliantExternalPacket(t *testing.T) {
+	// A spec-compliant third-party SDI/VANC source emits the CDP directly as
+	// the UDW. ParseCaptionST291 must accept it instead of misreading the
+	// first CDP byte (0x96) as a fragmentation descriptor.
+	pairs := []CCPair{{Data: [2]byte{'H', 'i'}}}
+	cdp := BuildCDP(pairs, 3, cdpFrameRate2997)
+
+	// Hand-build the ST 334-1 packet: [DID][SDID][DC=len(cdp)][cdp...][CS].
+	packet := make([]byte, 3+len(cdp)+1)
+	packet[0] = CaptionDID
+	packet[1] = CaptionSDID
+	packet[2] = byte(len(cdp))
+	copy(packet[3:], cdp)
+	var sum byte
+	for i := 0; i < len(packet)-1; i++ {
+		sum += packet[i]
+	}
+	packet[len(packet)-1] = sum
+
+	got, err := ParseCaptionST291(packet)
+	if err != nil {
+		t.Fatalf("ParseCaptionST291 rejected a spec-compliant ST 334-1 packet: %v", err)
+	}
+	if len(got) != len(cdp) {
+		t.Fatalf("got %d bytes, want %d", len(got), len(cdp))
+	}
+	for i := range got {
+		if got[i] != cdp[i] {
+			t.Fatalf("byte %d = %02X, want %02X", i, got[i], cdp[i])
+		}
+	}
+}
+
 func TestCaptionVANC_CoexistsWithSCTE104(t *testing.T) {
 	// Caption DID/SDID should differ from SCTE-104 DID/SDID.
 	// SCTE-104 uses DID=0x41, SDID=0x07.

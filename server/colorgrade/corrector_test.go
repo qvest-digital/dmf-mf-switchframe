@@ -350,6 +350,59 @@ func TestApplyCurves_Empty(t *testing.T) {
 	}
 }
 
+// TestApplyCurves_SplineSetupHoisted guards against rebuilding the Hermite
+// spline (slice allocations + Fritsch-Carlson tangent computation) for every
+// one of the 35937 LUT entries. The spline setup depends only on the control
+// points, so it must be computed once per curve per ApplyCurves call — this
+// runs lazily under the SourceCorrectorManager lock on the render path, where
+// ~860k allocations per rebuild blow the frame budget.
+func TestApplyCurves_SplineSetupHoisted(t *testing.T) {
+	curve := []CurvePoint{{0, 0}, {0.25, 0.2}, {0.5, 0.5}, {0.75, 0.8}, {1, 1}}
+	lut := GenerateIdentityLUT()
+
+	allocs := testing.AllocsPerRun(2, func() {
+		ApplyCurves(lut, curve, curve, curve, curve)
+	})
+
+	// A handful of allocations per curve (spline setup) is fine; per-sample
+	// allocation is not.
+	if allocs > 64 {
+		t.Fatalf("ApplyCurves allocated %.0f times; spline setup is being rebuilt per LUT sample", allocs)
+	}
+}
+
+// TestApplyCurves_MatchesEvalCurve verifies that the LUT produced by
+// ApplyCurves agrees with per-sample evalCurve composition (master then
+// per-channel), so hoisting the spline setup cannot change the output.
+func TestApplyCurves_MatchesEvalCurve(t *testing.T) {
+	master := []CurvePoint{{0, 0.05}, {0.4, 0.3}, {0.6, 0.7}, {1, 0.95}}
+	curveR := []CurvePoint{{0, 0}, {0.5, 0.6}, {1, 1}}
+	curveG := []CurvePoint{{0, 0.1}, {1, 0.9}}
+
+	lut := GenerateIdentityLUT()
+	original := make([]float32, len(lut.Data))
+	copy(original, lut.Data)
+
+	ApplyCurves(lut, master, curveR, curveG, nil)
+
+	for i := 0; i < len(lut.Data); i += 3 {
+		r := evalCurve(curveR, evalCurve(master, original[i]))
+		g := evalCurve(curveG, evalCurve(master, original[i+1]))
+		b := evalCurve(master, original[i+2])
+
+		wantR := sanitizeCurveOutput(r, original[i])
+		wantG := sanitizeCurveOutput(g, original[i+1])
+		wantB := sanitizeCurveOutput(b, original[i+2])
+
+		if math.Abs(float64(lut.Data[i]-wantR)) > 1e-6 ||
+			math.Abs(float64(lut.Data[i+1]-wantG)) > 1e-6 ||
+			math.Abs(float64(lut.Data[i+2]-wantB)) > 1e-6 {
+			t.Fatalf("entry %d: got [%f %f %f], want [%f %f %f]", i/3,
+				lut.Data[i], lut.Data[i+1], lut.Data[i+2], wantR, wantG, wantB)
+		}
+	}
+}
+
 func TestEvalCurve_Endpoints(t *testing.T) {
 	pts := []CurvePoint{{0.2, 0.3}, {0.8, 0.9}}
 
@@ -471,5 +524,45 @@ func TestLutsEqual(t *testing.T) {
 	b.Data[0] = 0.5
 	if lutsEqual(a, b, 1e-6) {
 		t.Error("different LUTs should not be equal")
+	}
+}
+
+// TestEvalCurve_DuplicateXNoNaN verifies the defensive h==0 guard: a curve with
+// a zero-width segment (duplicate X) must not yield NaN/Inf, which clampf would
+// not remove and would corrupt the GPU-uploaded LUT.
+func TestEvalCurve_DuplicateXNoNaN(t *testing.T) {
+	// Duplicate X at an interior segment that contains the sampled x.
+	pts := []CurvePoint{{0, 0}, {0.5, 0.4}, {0.5, 0.6}, {1, 1}}
+
+	for i := 0; i <= 100; i++ {
+		x := float32(i) / 100.0
+		y := evalCurve(pts, x)
+		if math.IsNaN(float64(y)) || math.IsInf(float64(y), 0) {
+			t.Fatalf("evalCurve(dupX, %f) = %v, want finite value", x, y)
+		}
+	}
+}
+
+// TestApplyCurves_MalformedCurveNoNaN verifies that even if a malformed curve
+// reaches ApplyCurves, the resulting LUT contains no NaN/Inf entries.
+func TestApplyCurves_MalformedCurveNoNaN(t *testing.T) {
+	lut := GenerateIdentityLUT()
+	// Duplicate X (zero-width segment) on the master curve.
+	master := []CurvePoint{{0, 0}, {0.5, 0.2}, {0.5, 0.8}, {1, 1}}
+	ApplyCurves(lut, master, nil, nil, nil)
+
+	for i, v := range lut.Data {
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+			t.Fatalf("LUT entry %d is non-finite: %v", i, v)
+		}
+		if v < 0 || v > 1 {
+			t.Fatalf("LUT entry %d out of [0,1]: %v", i, v)
+		}
+	}
+}
+
+func TestMaxCurvePoints(t *testing.T) {
+	if MaxCurvePoints <= 1 {
+		t.Errorf("MaxCurvePoints must be > 1, got %d", MaxCurvePoints)
 	}
 }

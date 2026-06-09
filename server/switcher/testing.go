@@ -36,15 +36,15 @@ func NewTestSwitcher(t *testing.T, programRelay *distribution.Relay) *Switcher {
 		FPSDen: 1001,
 	}
 	s := &Switcher{
-		log:           slog.With("component", "switcher"),
-		programRelay:  programRelay,
-		health:        newHealthMonitor(),
-		videoProcCh:   make(chan videoProcWork, 8),
-		videoProcDone: make(chan struct{}),
-		framePool:                NewFramePool(4, 320, 240, ColorYUV420_8bit),
+		log:                      slog.With("component", "switcher"),
+		programRelay:             programRelay,
+		health:                   newHealthMonitor(),
+		videoProcCh:              make(chan videoProcWork, 8),
+		videoProcDone:            make(chan struct{}),
 		ftbDurationMs:            defaultFTBDurationMs,
 		transitionAbortThreshold: defaultTransitionAbortThreshold,
 	}
+	s.framePool.Store(NewFramePool(4, 320, 240, ColorYUV420_8bit))
 	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&testFmt)
 	s.delayBuffer = NewDelayBuffer(s)
@@ -72,15 +72,15 @@ func newTestSwitcherDirect(programRelay *distribution.Relay) *Switcher {
 		FPSDen: 1001,
 	}
 	s := &Switcher{
-		log:           slog.With("component", "switcher"),
-		programRelay:  programRelay,
-		health:        newHealthMonitor(),
-		videoProcCh:   make(chan videoProcWork, 8),
-		videoProcDone: make(chan struct{}),
-		framePool:                NewFramePool(4, 320, 240, ColorYUV420_8bit),
+		log:                      slog.With("component", "switcher"),
+		programRelay:             programRelay,
+		health:                   newHealthMonitor(),
+		videoProcCh:              make(chan videoProcWork, 8),
+		videoProcDone:            make(chan struct{}),
 		ftbDurationMs:            defaultFTBDurationMs,
 		transitionAbortThreshold: defaultTransitionAbortThreshold,
 	}
+	s.framePool.Store(NewFramePool(4, 320, 240, ColorYUV420_8bit))
 	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&testFmt)
 	s.delayBuffer = NewDelayBuffer(s)
@@ -97,8 +97,8 @@ func (s *Switcher) closeDirect() {
 	s.stopBuiltinProducer()
 	s.health.stop()
 	s.delayBuffer.Close()
-	if s.framePool != nil {
-		s.framePool.Close()
+	if fp := s.framePool.Load(); fp != nil {
+		fp.Close()
 	}
 	if p := s.pipeline.Swap(nil); p != nil {
 		p.Wait()

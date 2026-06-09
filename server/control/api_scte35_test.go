@@ -970,6 +970,60 @@ func TestBuildCueMessage_NegativeDescriptorDuration(t *testing.T) {
 	require.Contains(t, err.Error(), "non-negative")
 }
 
+func TestBuildCueMessage_NegativeBreakDuration(t *testing.T) {
+	// splice_insert top-level durationMs was previously unchecked for negativity.
+	negDur := int64(-1)
+	req := scte35CueRequest{
+		CommandType: "splice_insert",
+		DurationMs:  &negDur,
+	}
+	_, err := buildCueMessage(req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "non-negative")
+}
+
+func TestBuildCueMessage_OverlargeBreakDuration(t *testing.T) {
+	// Abusive durationMs must be rejected rather than overflowing PTS/auto-return
+	// math in the injector.
+	huge := int64(1) << 60
+	req := scte35CueRequest{
+		CommandType: "splice_insert",
+		DurationMs:  &huge,
+	}
+	_, err := buildCueMessage(req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be <=")
+}
+
+func TestBuildCueMessage_OverlargeDescriptorDuration(t *testing.T) {
+	huge := int64(1) << 60
+	req := scte35CueRequest{
+		CommandType: "time_signal",
+		Descriptors: []scte35DescriptorRequest{
+			{SegmentationType: 0x34, DurationMs: &huge, UPIDType: 0x09, UPID: "test"},
+		},
+	}
+	_, err := buildCueMessage(req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be <=")
+}
+
+func TestHandleSCTE35Cue_RejectsOverlargePreRoll(t *testing.T) {
+	api, _, _ := setupSCTE35TestAPI(t)
+
+	// preRollMs beyond the 24h cap must be rejected at the API boundary.
+	body := fmt.Sprintf(
+		`{"commandType":"splice_insert","isOut":true,"durationMs":30000,"preRollMs":%d}`,
+		int64(1)<<60)
+	req := httptest.NewRequest("POST", "/api/scte35/cue", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "preRollMs")
+}
+
 func TestBuildCueMessage_SegEventID_Wired(t *testing.T) {
 	segID := uint32(12345)
 	req := scte35CueRequest{

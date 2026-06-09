@@ -296,21 +296,29 @@ func (p *SegmentationProxy) Segment(key string, frame *GPUFrame) {
 	p.inFlightMu.Unlock()
 }
 
-// MaskForSource returns the latest segmentation mask for a source.
-// Lock-free atomic read, safe for use from the pipeline goroutine.
+// MaskForSource returns the latest segmentation mask for a source with a
+// reference taken; the caller MUST Release() the returned frame when done
+// (matching the SegmentationEngine contract). Proxy mask frames wrap
+// IPC-imported pointers and are created with one owning reference, so a
+// balanced Ref/Release by callers never frees the imported memory —
+// teardown closes the IPC handle explicitly.
 func (p *SegmentationProxy) MaskForSource(key string) *GPUFrame {
 	if p == nil {
 		return nil
 	}
 
 	p.mu.RLock()
+	defer p.mu.RUnlock()
 	src, exists := p.sources[key]
-	p.mu.RUnlock()
 	if !exists {
 		return nil
 	}
 
-	return src.mask.Load()
+	mask := src.mask.Load()
+	if mask != nil {
+		mask.Ref()
+	}
+	return mask
 }
 
 // MaskDevPtrForSource returns the imported mask device pointer for a source.
@@ -392,6 +400,10 @@ func (p *SegmentationProxy) handleMaskReady(msg *sidecar.Message) {
 		Height: mh.Height,
 		Pitch:  mh.Width, // uint8 mask, stride = width
 	}
+	// One owning reference: MaskForSource callers Ref/Release around it, so
+	// the count never reaches zero (Release at zero would cudaFree, which is
+	// wrong for IPC-imported memory — teardown uses CloseIPCHandle instead).
+	src.maskFrame.refs.Store(1)
 	src.mask.Store(src.maskFrame)
 	p.mu.Unlock()
 

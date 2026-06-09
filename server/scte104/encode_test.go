@@ -110,15 +110,15 @@ func TestEncode_SegmentationDescriptor_RoundTrip(t *testing.T) {
 			{
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
-					SegEventID:              99999,
-					SegmentationTypeID:      0x34,
-					DurationTicks:           2700000,
-					UPIDType:                0x09,
-					UPID:                    upid,
-					SegNum:                  2,
-					SegExpected:             5,
-					ProgramSegmentationFlag: true,
-					CancelIndicator:         false,
+					SegEventID:            99999,
+					SegmentationTypeID:    0x34,
+					Duration:              30, // seconds
+					UPIDType:              0x09,
+					UPID:                  upid,
+					SegNum:                2,
+					SegExpected:           5,
+					CancelIndicator:       false,
+					DeliveryNotRestricted: true,
 				},
 			},
 		},
@@ -135,23 +135,24 @@ func TestEncode_SegmentationDescriptor_RoundTrip(t *testing.T) {
 
 	require.Equal(t, orig.SegEventID, sd.SegEventID)
 	require.Equal(t, orig.SegmentationTypeID, sd.SegmentationTypeID)
-	require.Equal(t, orig.DurationTicks, sd.DurationTicks)
+	require.Equal(t, orig.Duration, sd.Duration)
 	require.Equal(t, orig.UPIDType, sd.UPIDType)
 	require.Equal(t, orig.UPID, sd.UPID)
 	require.Equal(t, orig.SegNum, sd.SegNum)
 	require.Equal(t, orig.SegExpected, sd.SegExpected)
+	require.Equal(t, orig.DeliveryNotRestricted, sd.DeliveryNotRestricted)
 }
 
 func TestEncode_SegmentationDescriptor_Cancel_RoundTrip(t *testing.T) {
-	// Per SCTE 104 2021: cancel format is seg_event_id(4) + flags(1) = 5 bytes.
-	// No type_id in cancel messages.
+	// Per SCTE 104 Table 8-29 all fields remain in place for cancel; only
+	// the cancel byte changes to 1.
 	original := &Message{
 		Operations: []Operation{
 			{
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
 					SegEventID:         555,
-					SegmentationTypeID: 0x35, // will be lost in cancel (not encoded)
+					SegmentationTypeID: 0x35,
 					CancelIndicator:    true,
 				},
 			},
@@ -167,8 +168,7 @@ func TestEncode_SegmentationDescriptor_Cancel_RoundTrip(t *testing.T) {
 	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
 	require.True(t, sd.CancelIndicator, "CancelIndicator should be true")
 	require.Equal(t, uint32(555), sd.SegEventID)
-	// type_id is NOT encoded in cancel format per spec, so it's zero after decode.
-	require.Equal(t, uint8(0), sd.SegmentationTypeID)
+	require.Equal(t, uint8(0x35), sd.SegmentationTypeID)
 }
 
 func TestEncode_MultipleOps_RoundTrip(t *testing.T) {
@@ -185,14 +185,14 @@ func TestEncode_MultipleOps_RoundTrip(t *testing.T) {
 			{
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
-					SegEventID:              1001,
-					SegmentationTypeID:      0x34,
-					DurationTicks:           900000,
-					UPIDType:                0x01,
-					UPID:                    []byte{0xAB, 0xCD},
-					SegNum:                  1,
-					SegExpected:             1,
-					ProgramSegmentationFlag: true,
+					SegEventID:            1001,
+					SegmentationTypeID:    0x34,
+					Duration:              10, // seconds
+					UPIDType:              0x01,
+					UPID:                  []byte{0xAB, 0xCD},
+					SegNum:                1,
+					SegExpected:           1,
+					DeliveryNotRestricted: true,
 				},
 			},
 			{OpID: OpSpliceNull},
@@ -282,14 +282,14 @@ func TestEncode_SegmentationDescriptor_EmptyUPID_RoundTrip(t *testing.T) {
 			{
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
-					SegEventID:              42,
-					SegmentationTypeID:      0x30,
-					DurationTicks:           0,
-					UPIDType:                0x00,
-					UPID:                    nil,
-					SegNum:                  0,
-					SegExpected:             0,
-					ProgramSegmentationFlag: true,
+					SegEventID:            42,
+					SegmentationTypeID:    0x30,
+					Duration:              0,
+					UPIDType:              0x00,
+					UPID:                  nil,
+					SegNum:                0,
+					SegExpected:           0,
+					DeliveryNotRestricted: true,
 				},
 			},
 		},
@@ -317,30 +317,8 @@ func TestEncode_TooManyOperations(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestEncode_DurationTicksExceeds40Bit(t *testing.T) {
-	msg := &Message{
-		Operations: []Operation{
-			{
-				OpID: OpSegmentationDescriptorRequest,
-				Data: &SegmentationDescriptorRequest{
-					SegEventID:              1,
-					SegmentationTypeID:      0x34,
-					DurationTicks:           0x10000000000, // exceeds 40-bit
-					UPIDType:                0,
-					SegNum:                  0,
-					SegExpected:             0,
-					ProgramSegmentationFlag: true,
-				},
-			},
-		},
-	}
-
-	_, err := Encode(msg)
-	require.Error(t, err)
-}
-
 func TestEncode_SegmentationDescriptor_FullTypeRange(t *testing.T) {
-	// Per SCTE 104 2021, type_id is a full 8-bit field (not packed with cancel).
+	// type_id is a full 8-bit field (not packed with cancel).
 	// Verify all values 0x00-0xFF are accepted.
 	for _, typeID := range []uint8{0x00, 0x34, 0x7F, 0x80, 0xFE, 0xFF} {
 		msg := &Message{
@@ -348,12 +326,12 @@ func TestEncode_SegmentationDescriptor_FullTypeRange(t *testing.T) {
 				{
 					OpID: OpSegmentationDescriptorRequest,
 					Data: &SegmentationDescriptorRequest{
-						SegEventID:              1,
-						SegmentationTypeID:      typeID,
-						UPIDType:                0,
-						SegNum:                  0,
-						SegExpected:             0,
-						ProgramSegmentationFlag: true,
+						SegEventID:            1,
+						SegmentationTypeID:    typeID,
+						UPIDType:              0,
+						SegNum:                0,
+						SegExpected:           0,
+						DeliveryNotRestricted: true,
 					},
 				},
 			},
@@ -370,20 +348,20 @@ func TestEncode_SegmentationDescriptor_FullTypeRange(t *testing.T) {
 	}
 }
 
-func TestEncode_LargeDurationTicks(t *testing.T) {
-	// Test a 40-bit duration value close to the maximum.
+func TestEncode_MaxDuration_RoundTrip(t *testing.T) {
+	// duration is a 16-bit seconds field; verify the maximum survives.
 	original := &Message{
 		Operations: []Operation{
 			{
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
-					SegEventID:              1,
-					SegmentationTypeID:      0x34,
-					DurationTicks:           0xFFFFFFFFFF, // max 40-bit value
-					UPIDType:                0,
-					SegNum:                  0,
-					SegExpected:             0,
-					ProgramSegmentationFlag: true,
+					SegEventID:            1,
+					SegmentationTypeID:    0x34,
+					Duration:              0xFFFF, // max 16-bit seconds
+					UPIDType:              0,
+					SegNum:                0,
+					SegExpected:           0,
+					DeliveryNotRestricted: true,
 				},
 			},
 		},
@@ -396,7 +374,65 @@ func TestEncode_LargeDurationTicks(t *testing.T) {
 	require.NoError(t, err)
 
 	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
-	require.Equal(t, uint64(0xFFFFFFFFFF), sd.DurationTicks)
+	require.Equal(t, uint16(0xFFFF), sd.Duration)
+}
+
+func TestEncode_SegmentationDescriptor_UPIDTooLong(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:            1,
+					SegmentationTypeID:    0x34,
+					UPID:                  make([]byte, 256), // exceeds 8-bit length field
+					DeliveryNotRestricted: true,
+				},
+			},
+		},
+	}
+
+	_, err := Encode(msg)
+	require.Error(t, err)
+}
+
+func TestEncode_SegmentationDescriptor_DeliveryRestrictions_RoundTrip(t *testing.T) {
+	original := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:              7,
+					SegmentationTypeID:      0x34,
+					Duration:                60,
+					DurationExtensionFrames: 12,
+					UPIDType:                0x09,
+					UPID:                    []byte("R"),
+					SegNum:                  1,
+					SegExpected:             1,
+					DeliveryNotRestricted:   false,
+					WebDeliveryAllowed:      true,
+					NoRegionalBlackout:      true,
+					ArchiveAllowed:          false,
+					DeviceRestrictions:      3,
+				},
+			},
+		},
+	}
+
+	data, err := Encode(original)
+	require.NoError(t, err)
+
+	decoded, err := Decode(data)
+	require.NoError(t, err)
+
+	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
+	require.Equal(t, uint8(12), sd.DurationExtensionFrames)
+	require.False(t, sd.DeliveryNotRestricted)
+	require.True(t, sd.WebDeliveryAllowed)
+	require.True(t, sd.NoRegionalBlackout)
+	require.False(t, sd.ArchiveAllowed)
+	require.Equal(t, uint8(3), sd.DeviceRestrictions)
 }
 
 func TestEncode_MessageSize_ExcludesSelf(t *testing.T) {
@@ -415,132 +451,4 @@ func TestEncode_MessageSize_ExcludesSelf(t *testing.T) {
 	messageSize := binary.BigEndian.Uint16(data[2:4])
 	expectedSize := uint16(len(data) - 4) // everything after messageSize
 	require.Equal(t, expectedSize, messageSize)
-}
-
-func TestEncode_SegmentationDescriptor_ComponentLevelRejected(t *testing.T) {
-	msg := &Message{
-		Operations: []Operation{
-			{
-				OpID: OpSegmentationDescriptorRequest,
-				Data: &SegmentationDescriptorRequest{
-					SegEventID:              1,
-					SegmentationTypeID:      0x34,
-					ProgramSegmentationFlag: false, // component-level
-				},
-			},
-		},
-	}
-
-	_, err := Encode(msg)
-	require.Error(t, err)
-}
-
-func TestEncode_AutoReturnFlag_Bit7(t *testing.T) {
-	// Per SCTE-104 spec, auto_return_flag is bit 7 (MSB) of byte 13
-	// in splice_request_data. Verify encoding writes 0x80, not 0x01.
-	msg := &Message{
-		Operations: []Operation{
-			{
-				OpID: OpSpliceRequest,
-				Data: &SpliceRequestData{
-					SpliceInsertType: SpliceStartImmediate,
-					SpliceEventID:    1,
-					AutoReturnFlag:   true,
-				},
-			},
-		},
-	}
-
-	data, err := Encode(msg)
-	require.NoError(t, err)
-
-	// MOM wire format: OpID(2) + messageSize(2) + fields(8) + num_ops(1=included in fields)
-	// Then operation: opID(2) + data_length(2) + splice_request_data(14)
-	// splice_request_data starts at offset 16 (after MOM header 12 + op header 4).
-	// auto_return_flag is byte 13 within the 14-byte splice_request_data.
-	spliceDataOffset := 12 + 4 // MOM header(12) + op header(4)
-	autoReturnByte := data[spliceDataOffset+13]
-
-	require.Equal(t, byte(0x80), autoReturnByte)
-
-	// Also verify that when AutoReturnFlag is false, the byte is 0x00.
-	msg.Operations[0].Data.(*SpliceRequestData).AutoReturnFlag = false
-	data2, err := Encode(msg)
-	require.NoError(t, err)
-	require.Equal(t, byte(0x00), data2[spliceDataOffset+13])
-}
-
-func TestEncode_SegmentationDescriptor_SubSegments_RoundTrip(t *testing.T) {
-	original := &Message{
-		Operations: []Operation{
-			{
-				OpID: OpSegmentationDescriptorRequest,
-				Data: &SegmentationDescriptorRequest{
-					SegEventID:              42,
-					SegmentationTypeID:      0x34,
-					DurationTicks:           2700000,
-					UPIDType:                0x09,
-					UPID:                    []byte("TEST"),
-					SegNum:                  1,
-					SegExpected:             4,
-					SubSegmentNum:           2,
-					SubSegmentsExpected:     3,
-					ProgramSegmentationFlag: true,
-				},
-			},
-		},
-	}
-
-	data, err := Encode(original)
-	require.NoError(t, err)
-
-	decoded, err := Decode(data)
-	require.NoError(t, err)
-
-	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
-	require.Equal(t, uint8(2), sd.SubSegmentNum)
-	require.Equal(t, uint8(3), sd.SubSegmentsExpected)
-	// Verify other fields survived.
-	require.Equal(t, uint32(42), sd.SegEventID)
-	require.Equal(t, uint8(1), sd.SegNum)
-	require.Equal(t, uint8(4), sd.SegExpected)
-}
-
-func TestEncode_SegmentationDescriptor_ZeroSubSegments_NotEncoded(t *testing.T) {
-	// When SubSegmentNum and SubSegmentsExpected are both 0,
-	// the extra 2 bytes should NOT be encoded (backward compat).
-	withSub := &Message{
-		Operations: []Operation{
-			{
-				OpID: OpSegmentationDescriptorRequest,
-				Data: &SegmentationDescriptorRequest{
-					SegEventID:              1,
-					SegmentationTypeID:      0x34,
-					SubSegmentNum:           1,
-					SubSegmentsExpected:     2,
-					ProgramSegmentationFlag: true,
-				},
-			},
-		},
-	}
-	withoutSub := &Message{
-		Operations: []Operation{
-			{
-				OpID: OpSegmentationDescriptorRequest,
-				Data: &SegmentationDescriptorRequest{
-					SegEventID:              1,
-					SegmentationTypeID:      0x34,
-					ProgramSegmentationFlag: true,
-				},
-			},
-		},
-	}
-
-	dataWith, err := Encode(withSub)
-	require.NoError(t, err)
-	dataWithout, err := Encode(withoutSub)
-	require.NoError(t, err)
-
-	// With sub-segments should be 2 bytes longer.
-	require.Equal(t, len(dataWithout)+2, len(dataWith))
 }

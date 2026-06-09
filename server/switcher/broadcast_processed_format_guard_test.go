@@ -40,7 +40,7 @@ func TestBroadcastProcessedGuard_10bit_SentinelSurvivesPipeline(t *testing.T) {
 		},
 	}
 	sw.pipelineFormat.Store(&fmt10)
-	sw.framePool = NewFramePool(8, w, h, ColorYUV422_10bit)
+	sw.framePool.Store(NewFramePool(8, w, h, ColorYUV422_10bit))
 
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -126,7 +126,7 @@ func TestBroadcastProcessedGuard_10bit_CodecMatchesPipeline(t *testing.T) {
 		},
 	}
 	sw.pipelineFormat.Store(&fmt10)
-	sw.framePool = NewFramePool(8, w, h, ColorYUV422_10bit)
+	sw.framePool.Store(NewFramePool(8, w, h, ColorYUV422_10bit))
 
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -193,7 +193,7 @@ func TestBroadcastProcessedGuard_10bit_NotSilentlyDropped(t *testing.T) {
 		},
 	}
 	sw.pipelineFormat.Store(&fmt10)
-	sw.framePool = NewFramePool(8, w, h, ColorYUV422_10bit)
+	sw.framePool.Store(NewFramePool(8, w, h, ColorYUV422_10bit))
 
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {

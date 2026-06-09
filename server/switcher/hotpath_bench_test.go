@@ -12,9 +12,9 @@ import (
 )
 
 var (
-	benchSilentLogger       = slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError + 10}))
-	benchSlogSilencedOnce   sync.Once
-	benchPrevDefaultLogger  *slog.Logger
+	benchSilentLogger      = slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError + 10}))
+	benchSlogSilencedOnce  sync.Once
+	benchPrevDefaultLogger *slog.Logger
 )
 
 // silenceSlogForBench replaces the default slog handler with a no-op sink so
@@ -50,11 +50,11 @@ func newBenchSwitcher(b *testing.B, nSources int) *Switcher {
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),
 		videoProcDone: make(chan struct{}),
-		framePool:     NewFramePool(8, 1920, 1080, ColorYUV420_8bit),
 		// Pre-seed legacy defaults so initAtomicSlots mirrors them.
 		ftbDurationMs:            defaultFTBDurationMs,
 		transitionAbortThreshold: defaultTransitionAbortThreshold,
 	}
+	s.framePool.Store(NewFramePool(8, 1920, 1080, ColorYUV420_8bit))
 	s.frameBudgetNs.Store(benchFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&benchFmt)
 	s.recentCmdErrors = newRecentErrors(8)

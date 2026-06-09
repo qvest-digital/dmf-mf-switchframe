@@ -6,6 +6,12 @@ import (
 	"math"
 )
 
+// maxRawDimension bounds the width/height accepted from a raw ST map header.
+// Header dimensions are untrusted uint32 values; without a ceiling, w*h (and
+// the expected-size computation) overflows int64, bypassing the length check
+// and panicking in make. Matches the ReadEXR 16384 ceiling.
+const maxRawDimension = 16384
+
 // ReadRaw reads an ST map from raw float32 binary format.
 // Format: [uint32 BE width][uint32 BE height][float32 LE S[w*h]][float32 LE T[w*h]]
 func ReadRaw(data []byte, name string) (*STMap, error) {
@@ -18,6 +24,10 @@ func ReadRaw(data []byte, name string) (*STMap, error) {
 
 	if w <= 0 || h <= 0 || w%2 != 0 || h%2 != 0 {
 		return nil, ErrInvalidDimensions
+	}
+	if w > maxRawDimension || h > maxRawDimension {
+		return nil, fmt.Errorf("stmap: raw dimensions %dx%d exceed maximum %dx%d",
+			w, h, maxRawDimension, maxRawDimension)
 	}
 
 	n := w * h

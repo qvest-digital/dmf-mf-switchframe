@@ -29,14 +29,26 @@ type CallerConfig struct {
 	Log *slog.Logger
 }
 
+// defaultMinStableUptime is how long a connection must survive before the
+// reconnect backoff is reset. Resetting on dial success alone allows a hot
+// reconnect loop when the remote accepts the SRT handshake but the source
+// fails immediately (decoder open error, instant EOF).
+const defaultMinStableUptime = 10 * time.Second
+
 // Caller manages outbound SRT pull connections. When a pull is configured,
 // the caller dials the remote address and calls OnSource. On disconnect,
-// it auto-reconnects with exponential backoff (1s → 30s cap).
+// it auto-reconnects with exponential backoff (1s → 30s cap). The backoff
+// is only reset after a connection stays up for minStableUptime, so sources
+// that fail right after the handshake are also rate-limited.
 type Caller struct {
 	cfg   CallerConfig
 	log   *slog.Logger
 	mu    sync.Mutex
 	pulls map[string]*activePull
+
+	// minStableUptime is the connection lifetime required before the
+	// reconnect backoff resets. Overridable in tests.
+	minStableUptime time.Duration
 }
 
 // activePull tracks a single outbound pull connection.
@@ -54,9 +66,10 @@ func NewCaller(cfg CallerConfig) *Caller {
 	log = log.With("component", "srt-caller")
 
 	return &Caller{
-		cfg:   cfg,
-		log:   log,
-		pulls: make(map[string]*activePull),
+		cfg:             cfg,
+		log:             log,
+		pulls:           make(map[string]*activePull),
+		minStableUptime: defaultMinStableUptime,
 	}
 }
 
@@ -189,9 +202,8 @@ func (c *Caller) connectLoop(ctx context.Context, config SourceConfig) {
 			continue
 		}
 
-		// Connection succeeded — reset backoff.
-		bo.Reset()
 		c.log.Info("connected", "key", config.Key, "address", config.Address)
+		connectedAt := time.Now()
 
 		// Call OnSource and get a channel that signals when the source stops.
 		doneCh := c.cfg.OnSource(config, conn)
@@ -199,11 +211,29 @@ func (c *Caller) connectLoop(ctx context.Context, config SourceConfig) {
 		// Wait for source to finish or context cancel.
 		select {
 		case <-doneCh:
-			c.log.Info("source disconnected, will reconnect",
+			uptime := time.Since(connectedAt)
+			if uptime >= c.minStableUptime {
+				// Stable connection that dropped — reset backoff and
+				// reconnect immediately.
+				bo.Reset()
+				c.log.Info("source disconnected, will reconnect",
+					"key", config.Key,
+					"address", config.Address,
+				)
+				continue
+			}
+			// The source died almost immediately after the handshake
+			// (e.g. decoder open failure, remote EOF). Re-dialing without
+			// delay would hammer the remote in a hot loop, so apply the
+			// same backoff as a failed dial.
+			c.log.Warn("source failed shortly after connect, backing off",
 				"key", config.Key,
 				"address", config.Address,
+				"uptime", uptime,
 			)
-			// Loop back to reconnect.
+			if bo.Wait(ctx) != nil {
+				return
+			}
 			continue
 		case <-ctx.Done():
 			// Context cancelled — close the connection and exit.

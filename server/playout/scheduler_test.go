@@ -974,3 +974,137 @@ func TestScheduler_SetCursor_ClearsFlags(t *testing.T) {
 		t.Error("idleWaiting should be false after SetCursor")
 	}
 }
+
+// TestScheduler_NextDuringIdleWait_StartsScheduledItem is a regression test:
+// Tick routed to tickIdleWaiting before any advancePend handling, so a Next()
+// pressed during an idle wait (a) had no immediate effect and (b) stayed
+// latched — when the scheduled time finally arrived the item played for one
+// tick and was then skipped by the stale advancePend.
+func TestScheduler_NextDuringIdleWait_StartsScheduledItem(t *testing.T) {
+	s := NewScheduler()
+
+	now := time.Now()
+	futureTime := now.Add(10 * time.Second)
+
+	itemA := schedSlateItem("a", 100)
+	itemB := schedClipItem("b", 5000)
+	itemB.ScheduledTime = &futureTime
+
+	if err := s.LoadPlaylist(schedPlaylist(itemA, itemB)); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	s.Start()
+
+	// Play through slate a into the idle wait before scheduled item b.
+	d := s.Tick(now)
+	if d.Item == nil || d.Item.ID != "a" {
+		t.Fatalf("expected a, got %+v", d.Item)
+	}
+	d = s.Tick(now.Add(101 * time.Millisecond))
+	if !d.IsIdle {
+		t.Fatal("expected idle wait before scheduled item b")
+	}
+
+	// Operator presses Next during the wait: item b must start NOW.
+	if err := s.Next(); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	d = s.Tick(now.Add(200 * time.Millisecond))
+	if d.IsIdle {
+		t.Fatal("Next during idle wait was ignored — still idle")
+	}
+	if d.Item == nil || d.Item.ID != "b" {
+		t.Fatalf("after Next during idle wait: expected item b, got %+v", d.Item)
+	}
+
+	// And the very next tick must NOT skip item b via a stale advancePend.
+	d = s.Tick(now.Add(250 * time.Millisecond))
+	if d.Item == nil || d.Item.ID != "b" {
+		t.Fatalf("tick after scheduled item started: expected item b still playing, got %+v (stale advancePend skipped it)", d.Item)
+	}
+	if got := s.Cursor(); got != 1 {
+		t.Fatalf("cursor = %d, want 1", got)
+	}
+}
+
+// TestScheduler_JumpToDuringIdleWait_OverridesSchedule is a regression test:
+// JumpTo set state=SchedPlaying but never cleared idleWaiting, so the next
+// Tick still routed through tickIdleWaiting and re-entered the wait when the
+// jumped-to item had a future ScheduledTime — silently ignoring the explicit
+// operator action.
+func TestScheduler_JumpToDuringIdleWait_OverridesSchedule(t *testing.T) {
+	s := NewScheduler()
+
+	now := time.Now()
+	futureTime := now.Add(10 * time.Second)
+
+	itemA := schedSlateItem("a", 100)
+	itemB := schedClipItem("b", 5000)
+	itemB.ScheduledTime = &futureTime
+
+	if err := s.LoadPlaylist(schedPlaylist(itemA, itemB)); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	s.Start()
+
+	_ = s.Tick(now)
+	d := s.Tick(now.Add(101 * time.Millisecond))
+	if !d.IsIdle {
+		t.Fatal("expected idle wait before scheduled item b")
+	}
+
+	// Operator explicitly jumps to b: it must play now, not re-enter the wait.
+	if err := s.JumpTo("b"); err != nil {
+		t.Fatalf("JumpTo: %v", err)
+	}
+	d = s.Tick(now.Add(200 * time.Millisecond))
+	if d.IsIdle {
+		t.Fatal("JumpTo during idle wait was ignored — still idle")
+	}
+	if d.Item == nil || d.Item.ID != "b" {
+		t.Fatalf("after JumpTo during idle wait: expected item b, got %+v", d.Item)
+	}
+}
+
+// TestScheduler_PreviousDuringIdleWait_ClearsIdleWait verifies Previous()
+// during an idle wait resumes playback of the previous item immediately.
+func TestScheduler_PreviousDuringIdleWait_ClearsIdleWait(t *testing.T) {
+	s := NewScheduler()
+
+	now := time.Now()
+	futureTime := now.Add(10 * time.Second)
+
+	itemA := schedClipItem("a", 5000)
+	itemB := schedClipItem("b", 5000)
+	itemB.ScheduledTime = &futureTime
+
+	if err := s.LoadPlaylist(schedPlaylist(itemA, itemB)); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	s.Start()
+
+	_ = s.Tick(now)
+	s.SignalItemComplete()
+	d := s.Tick(now.Add(50 * time.Millisecond))
+	if !d.IsIdle {
+		t.Fatal("expected idle wait before scheduled item b")
+	}
+
+	if err := s.Previous(); err != nil {
+		t.Fatalf("Previous: %v", err)
+	}
+	d = s.Tick(now.Add(100 * time.Millisecond))
+	if d.IsIdle {
+		t.Fatal("Previous during idle wait was ignored — still idle")
+	}
+	if d.Item == nil || d.Item.ID != "a" {
+		t.Fatalf("after Previous during idle wait: expected item a, got %+v", d.Item)
+	}
+
+	s.mu.Lock()
+	iw := s.idleWaiting
+	s.mu.Unlock()
+	if iw {
+		t.Error("idleWaiting should be false after Previous")
+	}
+}

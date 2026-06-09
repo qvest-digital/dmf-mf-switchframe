@@ -170,7 +170,7 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 
 	// === TRANSITION PATH ===
 	if inTrans && engine != nil {
-		s.processTransitionTick(tick, fs, programSource, previewSource, engine)
+		s.processTransitionTick(tick, fs, programSource, previewSource, engine, hs.transTypeOrig)
 		return
 	}
 
@@ -228,7 +228,15 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 // processTransitionTick handles a video tick during an active transition.
 // Pops frames from both program and preview sources, blends them, and
 // broadcasts the result. Auto-advances the transition position.
-func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer, programSource, previewSource string, engine *transition.Engine) {
+//
+// transTypeOrig is the original transition type string captured from the
+// hotState snapshot loaded by the caller (processVideoTick). It must be passed
+// in rather than re-read from s.transTypeOrig: that plain field is written
+// under configMu by StartTransition/handleTransitionComplete on API-handler
+// goroutines, so a lockless read here would be a data race (torn string
+// header). The snapshot value is published to hotState by both writers, so it
+// is consistent and lock-free.
+func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer, programSource, previewSource string, engine *transition.Engine, transTypeOrig string) {
 	// Determine the transition's from/to sources.
 	fromSource := engine.FromSource()
 	toSource := engine.ToSource()
@@ -270,7 +278,7 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 	// bypassing CPU blend + upload entirely. RunTransition reads both sources
 	// from the GPU source manager cache and blends them with GPU kernels.
 	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
-		tt := transition.Type(s.transTypeOrig)
+		tt := transition.Type(transTypeOrig)
 		if tt == "" {
 			tt = engine.TransitionType()
 		}
@@ -341,6 +349,14 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 
 transitionDone:
 
+	// Release the popped (or scaled) source frames. popProgramFrame returns
+	// a counted reference; the blend copied the pixels it needed, so the
+	// buffers can go back to lastRawVideo's sole ownership (or the pool).
+	fromFrame.ReleaseYUV()
+	if toFrame != nil {
+		toFrame.ReleaseYUV()
+	}
+
 	// Handle transition completion (Issue 4: dispatch to correct handler by type).
 	if complete {
 		ttype := engine.TransitionType()
@@ -378,11 +394,8 @@ func (s *Switcher) runPipelineAndBroadcastTransition(pf *ProcessingFrame, tick c
 	}
 
 	if !gpuUsed {
-		hasPipeline := false
-		if p := s.pipeline.Load(); p != nil {
-			hasPipeline = true
-			pf = p.Run(pf)
-		}
+		var hasPipeline bool
+		pf, hasPipeline = s.runPipelineGuarded(pf)
 		if !hasPipeline && len(pf.Data) > 0 {
 			dataCopy := make([]byte, len(pf.Data))
 			copy(dataCopy, pf.Data)
@@ -456,11 +469,8 @@ func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick)
 		// When the pipeline includes an encode node, it handles broadcasting
 		// via the onEncoded callback. When no pipeline is configured, we
 		// broadcast the raw YUV data as a video frame directly.
-		hasPipeline := false
-		if p := s.pipeline.Load(); p != nil {
-			hasPipeline = true
-			pf = p.Run(pf)
-		}
+		var hasPipeline bool
+		pf, hasPipeline = s.runPipelineGuarded(pf)
 
 		// When no pipeline is configured (no encoder), broadcast raw frame
 		// data directly. This covers test scenarios and encoder-less configs.
@@ -488,14 +498,22 @@ func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick)
 		s.deadlineViolations.Add(1)
 	}
 
-	// Store for freeze-repeat.
-	s.lastEncodedFrame.Store(pf)
+	// Store for freeze-repeat, taking ownership of the caller's reference.
+	// Release the previously stored frame — it held the reference from its
+	// own tick (popProgramFrame returns counted references). Both the store
+	// and the release happen on the sync-loop goroutine, so no reader can
+	// hold the old frame concurrently.
+	if old := s.lastEncodedFrame.Swap(pf); old != nil && old != pf {
+		old.ReleaseYUV()
+	}
 }
 
 // popProgramFrame extracts the newest raw video frame from the given
 // source's frame sync buffer. Returns a value copy safe for processing.
-// The returned frame's YUV data is valid until the next popProgramFrame call
-// for the same source.
+// For managed (refcounted) frames the copy holds its own reference, shared
+// with ss.lastRawVideo; the caller owns that reference and must release it
+// (directly via ReleaseYUV, through normalizeResolution's scale path, or by
+// transferring ownership, e.g. to lastEncodedFrame).
 //
 // Source loss behavior (Task 14):
 //   - Fresh frame available: clear sourceLostAt, return frame.
@@ -533,9 +551,15 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, vide
 			s.sourceLostAt.Store(nil)
 		}
 
-		// Return a value copy. The underlying YUV buffer is held alive by
-		// ss.lastRawVideo's ref until the next fresh frame replaces it.
+		// Return a value copy holding its OWN reference (the refs pointer is
+		// shared with ss.lastRawVideo). Without it, downstream consumers that
+		// release the frame (normalizeResolution on a resolution mismatch,
+		// the transition tick's cleanup) would drop the shared refcount to 0
+		// and recycle the buffer while lastRawVideo still aliases it, and
+		// Pipeline.Run's MakeWritable would see refs==1 and mutate the
+		// retained freeze-repeat frame in place.
 		cp := *newest
+		cp.Ref()
 		return &cp
 	}
 
@@ -562,8 +586,10 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, vide
 			return s.makeBroadcastBlack(w, h, videoPTS)
 		}
 
-		// Freeze-repeat: use last delivered frame.
+		// Freeze-repeat: use last delivered frame. The copy takes its own
+		// reference (see fresh-frame path above).
 		cp := *ss.lastRawVideo
+		cp.Ref()
 		return &cp
 	}
 

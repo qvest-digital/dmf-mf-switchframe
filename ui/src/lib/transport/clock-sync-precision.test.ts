@@ -174,15 +174,14 @@ describe('ClockSync precision', () => {
 			// Use handlePong to set offset with proper age tracking
 			const sync = new ClockSync();
 			const sendPing = vi.fn();
-			// sentAt is recorded via nowMicros() = Math.round(performance.now() * 1000)
-			// With vi.useFakeTimers(), performance.now() starts at 0, so sentAt = 0 µs
-			const sentAt = Math.round(performance.now() * 1000); // = 0 µs
 			sync.startPeriodicSync(['A'], sendPing, 120_000);
 
 			vi.advanceTimersByTime(5);
-			// rtt = 5_000 µs, desired offset = +5_000_000
+			// rtt = 5_000 µs, desired offset = +5_000_000. handlePong derives
+			// offset = serverTimestamp - (Date.now()*1000 - rtt/2), so a server clock
+			// running +5_000_000 µs ahead sends this wall-clock-domain timestamp:
 			const rtt = 5_000;
-			sync.handlePong('A', buildPongHelper(0, sentAt + rtt / 2 + 5_000_000));
+			sync.handlePong('A', buildPongHelper(0, Date.now() * 1000 - rtt / 2 + 5_000_000));
 
 			const localUS = Date.now() * 1000;
 			const ptp = sync.ptpNow();
@@ -196,16 +195,15 @@ describe('ClockSync precision', () => {
 		it('averages offsets from multiple engines', () => {
 			const sync = new ClockSync();
 			const sendPing = vi.fn();
-			// sentAt is recorded via nowMicros() = Math.round(performance.now() * 1000)
-			// With vi.useFakeTimers(), performance.now() starts at 0, so sentAt = 0 µs
-			const sentAt = Math.round(performance.now() * 1000); // = 0 µs
 			sync.startPeriodicSync(['A', 'B'], sendPing, 120_000);
 
 			vi.advanceTimersByTime(5);
 			const rtt = 5_000;
-			// A offset = 10_000_000, B offset = 20_000_000
-			sync.handlePong('A', buildPongHelper(0, sentAt + rtt / 2 + 10_000_000));
-			sync.handlePong('B', buildPongHelper(1, sentAt + rtt / 2 + 20_000_000));
+			// A offset = 10_000_000, B offset = 20_000_000. Server timestamps are in
+			// the wall-clock domain: Date.now()*1000 - rtt/2 + desiredOffset.
+			const base = Date.now() * 1000 - rtt / 2;
+			sync.handlePong('A', buildPongHelper(0, base + 10_000_000));
+			sync.handlePong('B', buildPongHelper(1, base + 20_000_000));
 
 			const localUS = Date.now() * 1000;
 			const ptp = sync.ptpNow();
@@ -219,18 +217,14 @@ describe('ClockSync precision', () => {
 		it('handles negative offsets (local clock ahead of PTP)', () => {
 			const sync = new ClockSync();
 			const sendPing = vi.fn();
-			// Advance time first so performance.now() is large enough that
-			// sentAt + rtt/2 - 2_000_000 stays positive (avoids pong serializer overflow).
-			vi.advanceTimersByTime(10_000); // performance.now() = 10_000 ms now
-			// sentAt is recorded via nowMicros() = Math.round(performance.now() * 1000)
-			const sentAt = Math.round(performance.now() * 1000); // = 10_000_000 µs
 			sync.startPeriodicSync(['A'], sendPing, 120_000);
 
 			vi.advanceTimersByTime(5);
 			const rtt = 5_000;
-			// We want offset = -2_000_000, so serverTs = sentAt + rtt/2 - 2_000_000
-			// = 10_000_000 + 2_500 - 2_000_000 = 8_002_500 (positive, safe to serialize)
-			sync.handlePong('A', buildPongHelper(0, sentAt + rtt / 2 - 2_000_000));
+			// Desired offset = -2_000_000 (local clock ahead of PTP). Server timestamp
+			// in wall-clock domain: Date.now()*1000 - rtt/2 + desiredOffset.
+			const serverTs = Date.now() * 1000 - rtt / 2 - 2_000_000;
+			sync.handlePong('A', buildPongHelper(0, serverTs));
 
 			const localUS = Date.now() * 1000;
 			const ptp = sync.ptpNow();

@@ -479,6 +479,72 @@ func TestMacroState_ConcurrentAccessRaceFree(t *testing.T) {
 	wg.Wait()
 }
 
+// TestMacroProgressFn_StaleGenerationDoesNotClobber verifies the generation
+// guard in macroProgressFn: a dismissed macro's trailing onProgress callback
+// (which macro.Run fires synchronously on cancellation) must not overwrite or
+// broadcast the state of a newer macro that started after the dismiss.
+func TestMacroProgressFn_StaleGenerationDoesNotClobber(t *testing.T) {
+	api, _ := setupMacroTestAPI(t)
+
+	var broadcastCount atomic.Int32
+	api.SetBroadcastFunc(func() { broadcastCount.Add(1) })
+
+	// --- Macro A starts (gen 1). ---
+	api.macroMu.Lock()
+	api.macroGen++ // gen = 1
+	genA := api.macroGen
+	api.macroState = &internal.MacroExecutionState{Running: true, MacroName: "A"}
+	api.macroMu.Unlock()
+	onProgressA := api.macroProgressFn(genA)
+
+	// --- Dismiss A, then macro B starts (gen 2). ---
+	// Mirrors handleDismissMacro (state=nil) followed by handleRunMacro for B.
+	api.macroMu.Lock()
+	api.macroState = nil
+	api.macroGen++ // gen = 2
+	api.macroState = &internal.MacroExecutionState{Running: true, MacroName: "B"}
+	api.macroMu.Unlock()
+
+	broadcastCount.Store(0)
+
+	// --- A's goroutine, still unwinding, fires its final (cancelled) callback. ---
+	onProgressA(macro.ExecutionState{
+		Running:   false,
+		MacroName: "A",
+		Error:     "context canceled",
+		Steps: []macro.StepState{
+			{Action: macro.ActionWait, Summary: "Wait", Status: macro.StepFailed, Error: "cancelled"},
+		},
+	})
+
+	// B's state must survive untouched, and the stale callback must not broadcast.
+	api.macroMu.Lock()
+	state := api.macroState
+	api.macroMu.Unlock()
+	require.NotNil(t, state)
+	require.Equal(t, "B", state.MacroName, "stale macro A callback must not clobber macro B state")
+	require.True(t, state.Running, "macro B should still be marked running")
+	require.Empty(t, state.Steps, "macro B state must not inherit macro A's cancelled steps")
+	require.Equal(t, int32(0), broadcastCount.Load(), "stale callback must not broadcast")
+
+	// Sanity: the CURRENT generation's callback still updates and broadcasts.
+	api.macroMu.Lock()
+	genB := api.macroGen
+	api.macroMu.Unlock()
+	onProgressB := api.macroProgressFn(genB)
+	onProgressB(macro.ExecutionState{
+		Running:     true,
+		MacroName:   "B",
+		CurrentStep: 1,
+		Steps:       []macro.StepState{{Action: macro.ActionCut, Summary: "Cut", Status: macro.StepDone}},
+	})
+	api.macroMu.Lock()
+	state = api.macroState
+	api.macroMu.Unlock()
+	require.Equal(t, 1, state.CurrentStep, "current-generation callback should update state")
+	require.Equal(t, int32(1), broadcastCount.Load(), "current-generation callback should broadcast")
+}
+
 // TestAPIMacroTarget_WrongTypeParamReturnsError verifies that a macro posted
 // with a mis-typed param (string instead of number, number instead of string,
 // etc.) produces an error that names the offending field, instead of silently
@@ -540,4 +606,67 @@ func TestAPIMacroTarget_WrongTypeParamReturnsError(t *testing.T) {
 			require.Contains(t, err.Error(), tc.fieldName, "error should name the offending field")
 		})
 	}
+}
+
+// TestHandleDismissMacro_RunningMacroNotResurrected verifies that dismissing a
+// RUNNING macro does not let the cancelled run's trailing onProgress callback
+// re-store (resurrect) the dismissed execution state. macro.Run fires a final
+// synchronous onProgress with Running still true on the cancellation path;
+// handleDismissMacro must invalidate the generation so that callback is stale.
+func TestHandleDismissMacro_RunningMacroNotResurrected(t *testing.T) {
+	api, store := setupMacroTestAPI(t)
+	api.SetBroadcastFunc(func() {})
+
+	// Save a macro with a long wait step so the run blocks until cancelled.
+	err := store.Save(macro.Macro{
+		Name: "wait-macro",
+		Steps: []macro.Step{
+			{Action: macro.ActionWait, Params: map[string]any{"ms": float64(30000)}},
+		},
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/api/macros/wait-macro/run", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	api.mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+
+	// Wait until the macro is running (blocked in the wait step).
+	require.Eventually(t, func() bool {
+		ms := api.MacroState()
+		return ms != nil && ms.Running
+	}, 2*time.Second, 5*time.Millisecond, "macro should be running")
+
+	// Dismiss while running. This cancels the run; the run goroutine then
+	// fires its final onProgress and completion block within milliseconds.
+	req = httptest.NewRequest("DELETE", "/api/macros/execution", nil)
+	rec = httptest.NewRecorder()
+	api.mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	// The dismissed state must stay nil while the cancelled run unwinds.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		require.Nil(t, api.MacroState(),
+			"dismissed macro state must not be resurrected by the cancelled run's trailing onProgress")
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// A new run must not get a spurious 409 from the resurrected state.
+	req = httptest.NewRequest("POST", "/api/macros/wait-macro/run", strings.NewReader(`{}`))
+	rec = httptest.NewRecorder()
+	api.mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code, "body: %s", rec.Body.String())
+
+	// Clean up: cancel the second run and wait for it to finish.
+	api.macroMu.Lock()
+	cancel := api.macroCancel
+	api.macroMu.Unlock()
+	require.NotNil(t, cancel)
+	cancel()
+	require.Eventually(t, func() bool {
+		api.macroMu.Lock()
+		defer api.macroMu.Unlock()
+		return api.macroState == nil || !api.macroState.Running
+	}, 5*time.Second, 50*time.Millisecond)
 }

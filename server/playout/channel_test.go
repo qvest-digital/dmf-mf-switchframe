@@ -161,7 +161,7 @@ func TestChannel_Stop_FromStopped(t *testing.T) {
 
 func TestChannel_Start_TransitionsToOnAir(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(5),
+		AssetProvider:        fakeProvider(5),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -207,7 +207,7 @@ func TestChannel_PlaysThroughToCompleted(t *testing.T) {
 
 func TestChannel_Next_AdvancesItem(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(3),
+		AssetProvider:        fakeProvider(3),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -235,7 +235,7 @@ func TestChannel_Next_AdvancesItem(t *testing.T) {
 
 func TestChannel_ManualOverride(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(3),
+		AssetProvider:        fakeProvider(3),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -283,7 +283,7 @@ func TestChannel_ManualOverride(t *testing.T) {
 
 func TestChannel_JumpTo(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(3),
+		AssetProvider:        fakeProvider(3),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -320,7 +320,7 @@ func TestChannel_JumpTo(t *testing.T) {
 
 func TestChannel_Previous(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(3),
+		AssetProvider:        fakeProvider(3),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -362,7 +362,7 @@ func TestChannel_Previous(t *testing.T) {
 
 func TestChannel_LiveItem_HoldsUntilAdvance(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(3),
+		AssetProvider:        fakeProvider(3),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -390,7 +390,7 @@ func TestChannel_LiveItem_HoldsUntilAdvance(t *testing.T) {
 
 func TestChannel_SlateItem_Duration(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(3),
+		AssetProvider:        fakeProvider(3),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -413,7 +413,7 @@ func TestChannel_RawVideoOutput(t *testing.T) {
 	var frameCount atomic.Int32
 
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(5),
+		AssetProvider:        fakeProvider(5),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
@@ -454,7 +454,7 @@ func TestChannel_Key(t *testing.T) {
 
 func TestChannel_Status(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(3),
+		AssetProvider:        fakeProvider(3),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -485,7 +485,7 @@ func TestChannel_Status(t *testing.T) {
 
 func TestChannel_Status_SchedulerState(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(30),
+		AssetProvider:        fakeProvider(30),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -529,7 +529,7 @@ func TestChannel_Status_SchedulerState(t *testing.T) {
 
 func TestChannel_StopCallback(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(3),
+		AssetProvider:        fakeProvider(3),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -587,7 +587,7 @@ func TestChannel_EstimateFPS(t *testing.T) {
 
 func TestChannel_DoubleStop(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(3),
+		AssetProvider:        fakeProvider(3),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -608,7 +608,7 @@ func TestChannel_DoubleStop(t *testing.T) {
 
 func TestChannel_Close(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(3),
+		AssetProvider:        fakeProvider(3),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -627,7 +627,7 @@ func TestChannel_Close(t *testing.T) {
 
 func TestChannel_StartRequiresCued(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(3),
+		AssetProvider:        fakeProvider(3),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -651,7 +651,7 @@ func TestChannel_StartRequiresCued(t *testing.T) {
 
 func TestChannel_JumpTo_NotFound(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(3),
+		AssetProvider:        fakeProvider(3),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -768,7 +768,7 @@ func TestChannel_EndAnchoredSecondaryEvents(t *testing.T) {
 func TestChannel_SecondaryEventsOnLiveItem(t *testing.T) {
 	h := &mockHandler{}
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(10),
+		AssetProvider:        fakeProvider(10),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 	ch.SetSecondaryHandler(h)
@@ -855,7 +855,7 @@ func TestChannel_FeedsSpliceCoordinator(t *testing.T) {
 func TestChannel_SecondaryEventsOnSlateItem(t *testing.T) {
 	h := &mockHandler{}
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: fakeProvider(10),
+		AssetProvider:        fakeProvider(10),
 		AllowedLocalPrefixes: []string{"/"},
 	})
 	ch.SetSecondaryHandler(h)
@@ -950,7 +950,7 @@ func filterEvents(events []AsRunEvent, typ AsRunEventType) []AsRunEvent {
 
 func TestChannel_SkipBadAsset_EmitsAsRunError(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: &errorProvider{},
+		AssetProvider:        &errorProvider{},
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -990,7 +990,7 @@ func TestChannel_SkipBadAsset_EmitsAsRunError(t *testing.T) {
 
 func TestChannel_FrameErrorSkipsItem(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: &errorAfterNProvider{goodFrames: 2},
+		AssetProvider:        &errorAfterNProvider{goodFrames: 2},
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -1093,7 +1093,7 @@ func TestChannel_AudioOutput(t *testing.T) {
 	provider := NewFakeAssetProvider(frames)
 
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: provider,
+		AssetProvider:        provider,
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -1159,7 +1159,7 @@ func TestChannel_AudioOutput_NoAudioData(t *testing.T) {
 	provider := fakeProvider(5)
 
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: provider,
+		AssetProvider:        provider,
 		AllowedLocalPrefixes: []string{"/"},
 	})
 
@@ -1234,7 +1234,7 @@ func TestChannel_AudioOutput_NilCallback(t *testing.T) {
 	provider := NewFakeAssetProvider(frames)
 
 	ch := NewChannel(1, ChannelConfig{
-		AssetProvider: provider,
+		AssetProvider:        provider,
 		AllowedLocalPrefixes: []string{"/"},
 	})
 	// Do NOT set audio output callback.
@@ -1280,9 +1280,9 @@ func TestChannel_ConfigDimensions_UsedByCompositor(t *testing.T) {
 
 	ch := NewChannel(1, ChannelConfig{
 		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
-		Width:         w,
-		Height:        h,
-		FPS:           30.0,
+		Width:  w,
+		Height: h,
+		FPS:    30.0,
 	})
 
 	var mu sync.Mutex
@@ -1322,7 +1322,7 @@ func TestChannel_ConfigDimensions_UsedByCompositor(t *testing.T) {
 func TestChannel_ConfigDimensions_SlateMatchesConfig(t *testing.T) {
 	w, h := 640, 480
 	ch := NewChannel(1, ChannelConfig{
-		AllowedLocalPrefixes: []string{"/"}, Width:  w,
+		AllowedLocalPrefixes: []string{"/"}, Width: w,
 		Height: h,
 		FPS:    25.0,
 	})
@@ -1364,7 +1364,7 @@ func TestChannel_ConfigFPS_AffectsTickRate(t *testing.T) {
 	// At 60fps, frame duration should be ~16.6ms, so a 200ms slate should produce
 	// roughly 12 frames. At 10fps it would be ~2.
 	ch := NewChannel(1, ChannelConfig{
-		AllowedLocalPrefixes: []string{"/"}, Width:  320,
+		AllowedLocalPrefixes: []string{"/"}, Width: 320,
 		Height: 240,
 		FPS:    60.0,
 	})
@@ -1399,9 +1399,9 @@ func TestChannel_IdleLoop_PlaysBetweenItems(t *testing.T) {
 
 	ch := NewChannel(1, ChannelConfig{
 		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
-		Width:         320,
-		Height:        240,
-		FPS:           30.0,
+		Width:  320,
+		Height: 240,
+		FPS:    30.0,
 	})
 
 	// First item completes quickly, second has a future scheduled time.
@@ -1451,7 +1451,7 @@ func TestChannel_IdleLoop_PlaysBetweenItems(t *testing.T) {
 
 func TestChannel_LiveTap_EmitsFrames(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AllowedLocalPrefixes: []string{"/"}, Width:  320,
+		AllowedLocalPrefixes: []string{"/"}, Width: 320,
 		Height: 240,
 		FPS:    30.0,
 	})
@@ -1504,9 +1504,9 @@ func TestChannel_Transition_BlendsFrames(t *testing.T) {
 
 	ch := NewChannel(1, ChannelConfig{
 		AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider,
-		Width:         320,
-		Height:        240,
-		FPS:           30.0,
+		Width:  320,
+		Height: 240,
+		FPS:    30.0,
 	})
 
 	var frameCount atomic.Int32
@@ -1536,6 +1536,148 @@ func TestChannel_Transition_BlendsFrames(t *testing.T) {
 	// Both clips + transition frames should produce a good number of frames.
 	if count < 5 {
 		t.Errorf("transition test frame count = %d, expected >= 5", count)
+	}
+}
+
+// statefulIterator advances frame-by-frame and records how far it got, so a
+// test can detect a clip that is frozen at frame 0 (the symptom of the iterator
+// being reopened every tick). It also records Close() calls.
+type statefulIterator struct {
+	uri      string
+	total    int
+	pos      int
+	provider *trackingAssetProvider
+}
+
+func (it *statefulIterator) Next() (*DecodedFrame, error) {
+	if it.pos >= it.total {
+		return nil, nil
+	}
+	idx := it.pos
+	it.pos++
+	it.provider.recordFrame(it.uri, idx)
+	// PTS encodes the frame index (30fps cadence) so progression is observable.
+	return &DecodedFrame{
+		YUV:        make([]byte, video.YUV420FrameSize(64, 48)),
+		PTS:        int64(idx) * 3000,
+		IsKeyframe: idx == 0,
+		Width:      64,
+		Height:     48,
+	}, nil
+}
+
+func (it *statefulIterator) EstimateFPS() float64 { return 30.0 }
+func (it *statefulIterator) TotalFrames() int     { return it.total }
+func (it *statefulIterator) Close()               { it.provider.recordClose(it.uri) }
+
+// trackingAssetProvider hands out statefulIterators and records, per asset URI,
+// how many times Open() was called, how many Close()s happened, and the highest
+// frame index ever served. This lets a transition test assert that each clip is
+// opened exactly once (not once per tick) and that frames actually advance.
+type trackingAssetProvider struct {
+	mu       sync.Mutex
+	total    int
+	opens    map[string]int
+	closes   map[string]int
+	maxFrame map[string]int
+}
+
+func newTrackingAssetProvider(total int) *trackingAssetProvider {
+	return &trackingAssetProvider{
+		total:    total,
+		opens:    map[string]int{},
+		closes:   map[string]int{},
+		maxFrame: map[string]int{},
+	}
+}
+
+func (p *trackingAssetProvider) Open(assetURI string) (FrameIterator, error) {
+	p.mu.Lock()
+	p.opens[assetURI]++
+	p.mu.Unlock()
+	return &statefulIterator{uri: assetURI, total: p.total, provider: p}, nil
+}
+
+func (p *trackingAssetProvider) recordFrame(uri string, idx int) {
+	p.mu.Lock()
+	if idx > p.maxFrame[uri] {
+		p.maxFrame[uri] = idx
+	}
+	p.mu.Unlock()
+}
+
+func (p *trackingAssetProvider) recordClose(uri string) {
+	p.mu.Lock()
+	p.closes[uri]++
+	p.mu.Unlock()
+}
+
+func (p *trackingAssetProvider) openCount(uri string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.opens[uri]
+}
+
+func (p *trackingAssetProvider) maxFrameSeen(uri string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.maxFrame[uri]
+}
+
+// TestChannel_ClipToClipTransition_AdvancesBothClips is a regression test for
+// the single-clipIter-slot thrashing bug. During a clip→clip transition the
+// channel rendered the outgoing then the incoming item in the same tick, but
+// only had one iterator slot keyed on item ID — so each tick closed one clip
+// and reopened the other from frame 0. Both clips were frozen at frame 0 and
+// the iterator was destroyed/recreated twice per tick.
+//
+// With the dedicated incoming pre-roll slot, each clip is opened exactly once
+// and both clips advance frame-by-frame across the transition.
+func TestChannel_ClipToClipTransition_AdvancesBothClips(t *testing.T) {
+	const framesPerClip = 60 // ~2s @ 30fps — long enough to span the transition
+	provider := newTrackingAssetProvider(framesPerClip)
+
+	ch := NewChannel(1, ChannelConfig{
+		AllowedLocalPrefixes: []string{"/"},
+		AssetProvider:        provider,
+		Width:                64,
+		Height:               48,
+		FPS:                  30.0,
+	})
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
+
+	// Two clips; the second has a dissolve transition that spans many ticks.
+	item1 := clipItem("a")
+	item2 := clipItem("b")
+	item2.Transition = &TransitionConfig{Type: "dissolve", DurationMs: 500}
+
+	pl := testPlaylist(item1, item2)
+	require.NoError(t, ch.LoadPlaylist(pl))
+	require.NoError(t, ch.Start())
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+	ch.Stop()
+
+	uriA := "local:///clips/a.ts"
+	uriB := "local:///clips/b.ts"
+
+	// Core invariant: each clip opened exactly once. With the bug, the incoming
+	// clip is reopened on every transition tick (many opens).
+	if got := provider.openCount(uriA); got != 1 {
+		t.Errorf("clip a Open() count = %d, want 1 (iterator thrashed)", got)
+	}
+	if got := provider.openCount(uriB); got != 1 {
+		t.Errorf("clip b Open() count = %d, want 1 (iterator thrashed)", got)
+	}
+
+	// Both clips must advance past frame 0 — not be frozen at the first frame.
+	if got := provider.maxFrameSeen(uriA); got < 2 {
+		t.Errorf("clip a max frame index = %d, want >= 2 (clip did not advance)", got)
+	}
+	if got := provider.maxFrameSeen(uriB); got < 2 {
+		t.Errorf("clip b max frame index = %d, want >= 2 (incoming clip frozen at frame 0)", got)
 	}
 }
 
@@ -1589,7 +1731,7 @@ func TestChannel_MakeBlackFrame(t *testing.T) {
 
 func TestChannel_LiveTap_GPUAlias(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AllowedLocalPrefixes: []string{"/"}, Width:  320,
+		AllowedLocalPrefixes: []string{"/"}, Width: 320,
 		Height: 240,
 		FPS:    30.0,
 	})
@@ -1659,7 +1801,7 @@ func TestChannel_LiveTap_GPUAlias(t *testing.T) {
 
 func TestChannel_LiveTap_GPUAlias_FallbackToCPU(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		AllowedLocalPrefixes: []string{"/"}, Width:  320,
+		AllowedLocalPrefixes: []string{"/"}, Width: 320,
 		Height: 240,
 		FPS:    30.0,
 	})
@@ -1768,7 +1910,7 @@ func TestChannel_TicksAtPipelineRate(t *testing.T) {
 	var outputTimes []time.Time
 
 	ch := NewChannel(1, ChannelConfig{
-		AllowedLocalPrefixes: []string{"/"}, Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width: 320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -1834,7 +1976,7 @@ func TestChannel_FRC_24to30(t *testing.T) {
 	var outputs []byte
 
 	ch := NewChannel(1, ChannelConfig{
-		AllowedLocalPrefixes: []string{"/"}, Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width: 320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -1921,7 +2063,7 @@ func TestChannel_FRC_SameRate(t *testing.T) {
 	var outputs []byte
 
 	ch := NewChannel(1, ChannelConfig{
-		AllowedLocalPrefixes: []string{"/"}, Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width: 320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -1980,7 +2122,7 @@ func TestChannel_FRC_AudioNotDuplicated(t *testing.T) {
 	var audioDeliveries []byte // track which audio tags are delivered
 
 	ch := NewChannel(1, ChannelConfig{
-		AllowedLocalPrefixes: []string{"/"}, Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width: 320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -2053,7 +2195,7 @@ func TestChannel_FRC_HoldModeStripsAudio(t *testing.T) {
 	var videoCount int
 
 	ch := NewChannel(1, ChannelConfig{
-		AllowedLocalPrefixes: []string{"/"}, Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width: 320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -2126,7 +2268,7 @@ func TestChannel_FRC_LoopRewindStripsAudio(t *testing.T) {
 	var audioTags []byte
 
 	ch := NewChannel(1, ChannelConfig{
-		AllowedLocalPrefixes: []string{"/"}, Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width: 320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -2190,7 +2332,7 @@ func TestChannel_FRC_60to30(t *testing.T) {
 	var audioTags []byte
 
 	ch := NewChannel(1, ChannelConfig{
-		AllowedLocalPrefixes: []string{"/"}, Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width: 320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -2283,7 +2425,7 @@ func TestChannel_FRC_FrameMutationSafety(t *testing.T) {
 	provider := NewFakeAssetProvider(frames)
 
 	ch := NewChannel(1, ChannelConfig{
-		AllowedLocalPrefixes: []string{"/"}, Width:         320,
+		AllowedLocalPrefixes: []string{"/"}, Width: 320,
 		Height:        240,
 		FPS:           30.0,
 		AssetProvider: provider,
@@ -2558,4 +2700,485 @@ func TestChannel_SeekToItem_ClosesExistingIterator(t *testing.T) {
 	}
 
 	ch.Stop()
+}
+
+// TestChannel_SetCursor_ClearsStaleTransition verifies that Channel.SetCursor
+// resets the scheduler out of SchedTransitioning and clears the transition
+// fields. Otherwise, a SetCursor performed while the scheduler is mid-transition
+// (e.g. snapshot restore via Manager.RecoverChannel) would be immediately
+// overwritten: the next Tick routes to tickTransition, computes progress from
+// the stale transStartTime (>= 1.0), and does cursor++ — moving past the
+// restored position and committing to the stale incoming item.
+func TestChannel_SetCursor_ClearsStaleTransition(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider:        fakeProvider(10),
+		AllowedLocalPrefixes: []string{"/"},
+	})
+
+	pl := testPlaylist(clipItem("a"), clipItem("b"), clipItem("c"))
+	require.NoError(t, ch.LoadPlaylist(pl))
+
+	s := ch.scheduler
+	s.Start() // started=true so Tick does not short-circuit as completed
+
+	// Force the scheduler into a stale mid-transition (a->b) with a start time
+	// far in the past so progress would compute as >= 1.0 on the next tick.
+	s.mu.Lock()
+	s.cursor = 0
+	s.state = SchedTransitioning
+	s.transOutgoing = &pl.Items[0]
+	s.transIncoming = &pl.Items[1]
+	s.transConfig = TransitionConfig{Type: "dissolve", DurationMs: 1000}
+	s.transStartTime = time.Now().Add(-10 * time.Second)
+	s.transDurationMs = 1000
+	s.mu.Unlock()
+
+	// Restore the cursor to item 2 (c) as recovery would.
+	ch.SetCursor(2)
+
+	// SetCursor must have reset scheduler state and cleared transition fields.
+	s.mu.Lock()
+	state := s.state
+	outgoing := s.transOutgoing
+	incoming := s.transIncoming
+	cursor := s.cursor
+	s.mu.Unlock()
+
+	if state != SchedPlaying {
+		t.Errorf("scheduler state after SetCursor = %v, want SchedPlaying", state)
+	}
+	if outgoing != nil {
+		t.Errorf("transOutgoing after SetCursor = %v, want nil", outgoing)
+	}
+	if incoming != nil {
+		t.Errorf("transIncoming after SetCursor = %v, want nil", incoming)
+	}
+	if cursor != 2 {
+		t.Errorf("cursor after SetCursor = %d, want 2", cursor)
+	}
+
+	// The next Tick must NOT complete the stale transition. It should keep the
+	// restored cursor and play item c, not advance past it onto the stale
+	// incoming item b.
+	decision := s.Tick(time.Now())
+	if decision.Transition != nil {
+		t.Error("Tick after SetCursor should not be in a transition")
+	}
+	if decision.Item == nil || decision.Item.ID != "c" {
+		var id string
+		if decision.Item != nil {
+			id = decision.Item.ID
+		}
+		t.Errorf("Tick item after SetCursor = %q, want c", id)
+	}
+	s.mu.Lock()
+	cursorAfter := s.cursor
+	s.mu.Unlock()
+	if cursorAfter != 2 {
+		t.Errorf("cursor after Tick = %d, want 2 (stale transition must not have advanced it)", cursorAfter)
+	}
+}
+
+// fakeFramesWithAudioTag returns n 64x48 frames at 30fps, each carrying one
+// AudioFrameData whose payload is tagged with tag (byte 0) and the frame
+// index (byte 1) so tests can attribute emitted audio to a source clip.
+func fakeFramesWithAudioTag(n int, tag byte) []DecodedFrame {
+	frames := make([]DecodedFrame, n)
+	for i := range frames {
+		frames[i] = DecodedFrame{
+			YUV:        make([]byte, video.YUV420FrameSize(64, 48)),
+			PTS:        int64(i) * 3000,
+			IsKeyframe: i == 0,
+			Width:      64,
+			Height:     48,
+			AudioFrames: []AudioFrameData{{
+				Data:       []byte{tag, byte(i)},
+				SampleRate: 48000,
+				Channels:   2,
+			}},
+		}
+	}
+	return frames
+}
+
+// TestChannel_Transition_KeepsAudio is a regression test for transition audio
+// loss: Compositor.Blend returns a video-only frame, so for the full duration
+// of a configured transition (dissolve/dip/wipe) the audio that the incoming
+// (and outgoing) clip iterators kept consuming was silently discarded — every
+// dissolve between items produced an audible dropout.
+func TestChannel_Transition_KeepsAudio(t *testing.T) {
+	provider := &multiAssetProvider{assets: map[string][]DecodedFrame{
+		"local:///clips/a.ts": fakeFramesWithAudioTag(5, 0xAA),
+		"local:///clips/b.ts": fakeFramesWithAudioTag(60, 0xBB),
+	}}
+
+	ch := NewChannel(1, ChannelConfig{
+		AllowedLocalPrefixes: []string{"/"},
+		AssetProvider:        provider,
+		Width:                64,
+		Height:               48,
+		FPS:                  30.0,
+	})
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
+
+	var mu sync.Mutex
+	var audioTags []byte
+	ch.SetAudioOutput(func(data []byte, pts int64, sampleRate, channels int) {
+		mu.Lock()
+		audioTags = append(audioTags, data[0])
+		mu.Unlock()
+	})
+
+	itemA := clipItem("a")
+	itemB := clipItem("b")
+	itemB.Transition = &TransitionConfig{Type: "dissolve", DurationMs: 300}
+
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(itemA, itemB)))
+
+	// Drive ticks manually with synthetic time so transition progress is
+	// deterministic (no real-time ticker).
+	ch.mu.Lock()
+	ch.state = StateOnAir
+	ch.scheduler.Start()
+	ch.mu.Unlock()
+
+	now := time.Now()
+	transitionTicks := 0
+	transitionAudio := 0
+	var transitionTags []byte
+	for i := 0; i < 40; i++ {
+		mu.Lock()
+		before := len(audioTags)
+		mu.Unlock()
+		ch.tick(now)
+		st := ch.scheduler.State()
+		mu.Lock()
+		if st == SchedTransitioning {
+			transitionTicks++
+			transitionAudio += len(audioTags) - before
+			transitionTags = append(transitionTags, audioTags[before:]...)
+		}
+		mu.Unlock()
+		now = now.Add(33 * time.Millisecond)
+	}
+
+	if transitionTicks < 5 {
+		t.Fatalf("transition ticks = %d, want >= 5 (transition never ran)", transitionTicks)
+	}
+	// The incoming clip consumes ~1 frame (with one audio frame) per
+	// transition tick; that audio must reach the audio output, not be
+	// silently dropped by the blend.
+	if transitionAudio < transitionTicks/2 {
+		t.Fatalf("audio frames emitted during transition = %d over %d ticks, want >= %d (transition audio dropped)",
+			transitionAudio, transitionTicks, transitionTicks/2)
+	}
+	for _, tag := range transitionTags {
+		if tag != 0xBB && tag != 0xAA {
+			t.Fatalf("unexpected audio tag 0x%02X during transition", tag)
+		}
+	}
+}
+
+// gatedIterator mimics FileFrameIterator's Close semantics for race tests:
+// Next returns (nil, nil) once closed. The Next call at frame index blockAt
+// parks until release is closed, letting a test deterministically interleave
+// a concurrent SeekToItem with an in-flight decode.
+type gatedIterator struct {
+	mu      sync.Mutex
+	frames  []DecodedFrame
+	pos     int
+	closed  bool
+	blockAt int
+	gateHit bool
+	inNext  chan struct{} // closed when Next parks at the gate
+	release chan struct{} // close to unpark Next
+}
+
+func (g *gatedIterator) Next() (*DecodedFrame, error) {
+	g.mu.Lock()
+	if !g.gateHit && g.pos >= g.blockAt {
+		g.gateHit = true
+		g.mu.Unlock()
+		close(g.inNext)
+		<-g.release
+		g.mu.Lock()
+	}
+	defer g.mu.Unlock()
+	if g.closed || g.pos >= len(g.frames) {
+		return nil, nil
+	}
+	f := &g.frames[g.pos]
+	g.pos++
+	return f, nil
+}
+
+func (g *gatedIterator) EstimateFPS() float64 { return 30.0 }
+func (g *gatedIterator) TotalFrames() int     { return len(g.frames) }
+func (g *gatedIterator) Close() {
+	g.mu.Lock()
+	g.closed = true
+	g.mu.Unlock()
+}
+
+// gatedProvider returns the gated iterator on the first Open and plain
+// SliceIterators afterwards (e.g. for the iterator SeekToItem re-opens).
+type gatedProvider struct {
+	mu     sync.Mutex
+	gated  *gatedIterator
+	handed bool
+	frames []DecodedFrame
+}
+
+func (p *gatedProvider) Open(uri string) (FrameIterator, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.handed {
+		p.handed = true
+		return p.gated, nil
+	}
+	return NewSliceIterator(p.frames), nil
+}
+
+// TestChannel_SeekToItem_ConcurrentWithDecode_NoSpuriousComplete is a
+// regression test for the SeekToItem/run-goroutine race: nextClipFrame
+// captures the clip iterator under lock but uses it unlocked. A concurrent
+// SeekToItem closes that iterator and installs a fresh, seeked one; the stale
+// iterator's Next then returns (nil, nil), which nextClipFrame interpreted as
+// end-of-clip — firing a spurious SignalItemComplete that advanced the
+// scheduler PAST the item the seek had just positioned, and clobbering the
+// seeked frame counters with the old clip's state.
+func TestChannel_SeekToItem_ConcurrentWithDecode_NoSpuriousComplete(t *testing.T) {
+	frames := fakeFramesSized(60, 64, 48, 30.0)
+	gated := &gatedIterator{
+		frames:  frames,
+		blockAt: 1, // first Next (frame 0) passes; the second parks
+		inNext:  make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	provider := &gatedProvider{gated: gated, frames: frames}
+
+	ch := NewChannel(1, ChannelConfig{
+		AllowedLocalPrefixes: []string{"/"},
+		AssetProvider:        provider,
+		Width:                64,
+		Height:               48,
+		FPS:                  30.0,
+	})
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
+
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(clipItem("a"), clipItem("b"))))
+
+	// Drive ticks manually with synthetic time (no run goroutine ticker).
+	ch.mu.Lock()
+	ch.state = StateOnAir
+	ch.scheduler.Start()
+	ch.mu.Unlock()
+
+	now := time.Now()
+	ch.tick(now) // opens the gated iterator, consumes frame 0
+
+	// Second tick parks inside iter.Next() at the gate.
+	tickDone := make(chan struct{})
+	go func() {
+		defer close(tickDone)
+		ch.tick(now.Add(33 * time.Millisecond))
+	}()
+	<-gated.inNext
+
+	// Concurrent seek: closes the gated iterator, installs a fresh one.
+	require.NoError(t, ch.SeekToItem(0, 0))
+
+	// Unpark the stale Next — it returns (nil, nil) from the closed iterator.
+	close(gated.release)
+	<-tickDone
+
+	// The next tick must keep playing item a at the seeked position, not
+	// consume a spurious item-complete and advance to item b.
+	ch.tick(now.Add(66 * time.Millisecond))
+	if cur := ch.scheduler.Cursor(); cur != 0 {
+		t.Fatalf("scheduler cursor = %d, want 0 (stale iterator end-of-clip advanced past the seeked item)", cur)
+	}
+	ch.mu.Lock()
+	itemID := ch.clipItemID
+	ch.mu.Unlock()
+	if itemID != "a" {
+		t.Fatalf("clipItemID = %q, want %q", itemID, "a")
+	}
+}
+
+// seekableSliceIterator is a slice-backed FrameIterator with frame-accurate
+// Seek, for exercising the seek path without a real decoder.
+type seekableSliceIterator struct {
+	frames []DecodedFrame
+	pos    int
+}
+
+func (s *seekableSliceIterator) Next() (*DecodedFrame, error) {
+	if s.pos >= len(s.frames) {
+		return nil, nil
+	}
+	f := &s.frames[s.pos]
+	s.pos++
+	return f, nil
+}
+
+func (s *seekableSliceIterator) EstimateFPS() float64 { return estimateFPS(s.frames) }
+func (s *seekableSliceIterator) TotalFrames() int     { return len(s.frames) }
+func (s *seekableSliceIterator) Close()               {}
+
+func (s *seekableSliceIterator) Seek(target int) error {
+	if target < 0 || target >= len(s.frames) {
+		return fmt.Errorf("seek target %d out of range", target)
+	}
+	s.pos = target
+	return nil
+}
+
+// seekableProvider hands out seekableSliceIterators over a fixed frame set.
+type seekableProvider struct {
+	frames []DecodedFrame
+}
+
+func (p *seekableProvider) Open(uri string) (FrameIterator, error) {
+	return &seekableSliceIterator{frames: p.frames}, nil
+}
+
+// TestChannel_SeekToItem_TrimmedClip_SeeksToOffset is a regression test:
+// clips with in/out points are wrapped in a TrimIterator, which did not
+// implement Seek — so the type assertion in SeekToItem silently failed and
+// trimmed clips always restarted from the in-point during snapshot sync,
+// defeating standby alignment.
+func TestChannel_SeekToItem_TrimmedClip_SeeksToOffset(t *testing.T) {
+	// 120 frames @ 30fps. Trim in=1000ms out=3000ms → trimmed frames 30..89.
+	frames := fakeFramesSized(120, 64, 48, 30.0)
+	provider := &seekableProvider{frames: frames}
+
+	ch := NewChannel(1, ChannelConfig{
+		AllowedLocalPrefixes: []string{"/"},
+		AssetProvider:        provider,
+		Width:                64,
+		Height:               48,
+		FPS:                  30.0,
+	})
+
+	item := clipItem("trimmed")
+	item.InPointMs = 1000
+	item.OutPointMs = 3000
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(item)))
+
+	// Seek 500ms into the trimmed timeline → 1500ms absolute → frame 45.
+	require.NoError(t, ch.SeekToItem(0, 500))
+
+	ch.mu.Lock()
+	iter := ch.clipIter
+	clipFrame := ch.clipFrame
+	ch.mu.Unlock()
+	require.NotNil(t, iter, "clip iterator should be open after SeekToItem")
+
+	if clipFrame != 15 {
+		t.Errorf("clipFrame = %d, want 15 (500ms at 30fps on the trimmed timeline)", clipFrame)
+	}
+
+	f, err := iter.Next()
+	require.NoError(t, err)
+	require.NotNil(t, f, "iterator should produce a frame after seek")
+	if f.PTS != 135000 { // frame 45 * 3000 ticks
+		t.Errorf("first frame after seek PTS = %d, want 135000 (frame 45 = in-point + 500ms)", f.PTS)
+	}
+
+	// The out point must still be honored after seeking: the trimmed stream
+	// ends before relative PTS 3000ms (absolute frame 90).
+	last := f
+	for {
+		n, err := iter.Next()
+		require.NoError(t, err)
+		if n == nil {
+			break
+		}
+		last = n
+	}
+	if last.PTS != 267000 { // frame 89 * 3000 ticks
+		t.Errorf("last frame PTS = %d, want 267000 (out point not honored after seek)", last.PTS)
+	}
+}
+
+// TestChannel_SeekToItem_ZeroDuration_RemainNotNegative guards against
+// itemRemainMs going negative when seeking an item with no DurationMs set.
+func TestChannel_SeekToItem_ZeroDuration_RemainNotNegative(t *testing.T) {
+	frames := fakeFramesSized(120, 64, 48, 30.0)
+	provider := &seekableProvider{frames: frames}
+
+	ch := NewChannel(1, ChannelConfig{
+		AllowedLocalPrefixes: []string{"/"},
+		AssetProvider:        provider,
+		Width:                64,
+		Height:               48,
+		FPS:                  30.0,
+	})
+
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(clipItem("a")))) // DurationMs == 0
+	require.NoError(t, ch.SeekToItem(0, 5000))
+
+	if remain := ch.itemRemainMs.Load(); remain < 0 {
+		t.Errorf("itemRemainMs = %d, want >= 0", remain)
+	}
+}
+
+// TestChannel_EndAnchoredSecondaryEvents_FirstClip_FiresAtClipEnd is a
+// regression test: handleItemChange runs BEFORE the clip iterator opens, so
+// the duration passed to SecondaryEventScheduler.BeginItem came from the
+// PREVIOUS clip's clipTotal/clipFPS (zero for the first clip). An end-anchored
+// cue (e.g. SCTE-35 / graphics-off 500ms before clip end) therefore resolved
+// to fire time 0 and fired immediately at item start instead of near the end.
+func TestChannel_EndAnchoredSecondaryEvents_FirstClip_FiresAtClipEnd(t *testing.T) {
+	h := &mockHandler{}
+	frames := fakeFramesSized(60, 64, 48, 30.0) // 60 frames @ 30fps = 2000ms
+	ch := NewChannel(1, ChannelConfig{
+		AllowedLocalPrefixes: []string{"/"},
+		AssetProvider:        NewFakeAssetProvider(frames),
+		Width:                64,
+		Height:               48,
+		FPS:                  30.0,
+	})
+	ch.SetSecondaryHandler(h)
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
+
+	pl := testPlaylist(PlaylistItem{
+		ID:       "clip-1",
+		Type:     ItemClip,
+		AssetURI: "local:///test.ts",
+		Title:    "First Clip",
+		SecondaryEvents: []SecondaryEvent{
+			// Should fire at 2000ms - 500ms = 1500ms (~tick 45).
+			{Type: "graphics_off", Layer: 2, OffsetMs: -500, Anchor: "end"},
+		},
+	})
+	require.NoError(t, ch.LoadPlaylist(pl))
+
+	// Drive ticks manually with synthetic time for determinism.
+	ch.mu.Lock()
+	ch.state = StateOnAir
+	ch.scheduler.Start()
+	ch.mu.Unlock()
+
+	now := time.Now()
+	firedTick := -1
+	for i := 0; i < 70; i++ {
+		ch.tick(now)
+		if firedTick < 0 && len(h.getCalls()) > 0 {
+			firedTick = i
+		}
+		now = now.Add(33 * time.Millisecond)
+	}
+
+	if firedTick < 0 {
+		t.Fatal("end-anchored event never fired")
+	}
+	// 1500ms at 33ms/tick ≈ tick 45. Pre-fix the event fired at tick 0
+	// (durationMs was the previous clip's — zero for the first clip — so the
+	// fire time clamped to 0).
+	if firedTick < 40 {
+		t.Fatalf("end-anchored event fired at tick %d (~%dms), want ~tick 45 (~1500ms): fired with stale/zero item duration",
+			firedTick, firedTick*33)
+	}
 }

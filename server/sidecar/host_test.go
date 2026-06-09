@@ -2,9 +2,11 @@ package sidecar
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -745,5 +747,54 @@ func TestHostCustomConnectRestartOnCrash(t *testing.T) {
 
 	if !h.Alive() {
 		t.Fatal("expected Alive after restart")
+	}
+}
+
+// TestSidecarLoggerCapsNewlinelessOutput is a regression test for unbounded
+// buffer growth: a sidecar that emits a very long line with no '\n' (crash dump
+// or binary garbage from a wedged child) must not grow sidecarLogger.buf without
+// bound. Write must cap the buffer, emit a truncation marker once, and recover
+// once a newline finally arrives. Not parallel: it swaps the default slog logger.
+func TestSidecarLoggerCapsNewlinelessOutput(t *testing.T) {
+	var out bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&out, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	defer slog.SetDefault(prev)
+
+	l := &sidecarLogger{prefix: "test-sidecar"}
+
+	// Pump far more than the cap with no newline, in many small writes, mimicking
+	// a streaming wedged child. buf must stay bounded throughout.
+	chunk := bytes.Repeat([]byte("A"), 4096)
+	for i := 0; i < 64; i++ { // 256 KiB total, no newline
+		if _, err := l.Write(chunk); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		if len(l.buf) > maxSidecarLogLine {
+			t.Fatalf("buf grew past cap: len=%d, cap=%d", len(l.buf), maxSidecarLogLine)
+		}
+	}
+
+	// A truncation marker should have been emitted exactly once for the over-long
+	// line (subsequent over-cap flushes are silent until the line ends).
+	if got := strings.Count(out.String(), "[line truncated]"); got != 1 {
+		t.Fatalf("expected exactly one truncation marker, got %d:\n%s", got, out.String())
+	}
+
+	// The newline that finally arrives ends the discarded line; the next complete
+	// line must be logged normally, proving the logger recovered.
+	out.Reset()
+	if _, err := l.Write([]byte("tail-of-huge-line\nrecovered-line\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if len(l.buf) != 0 {
+		t.Fatalf("buf not drained after trailing newline: len=%d", len(l.buf))
+	}
+	s := out.String()
+	if strings.Contains(s, "tail-of-huge-line") {
+		t.Errorf("discarded tail of truncated line was logged:\n%s", s)
+	}
+	if !strings.Contains(s, "recovered-line") {
+		t.Errorf("post-truncation line was not logged:\n%s", s)
 	}
 }

@@ -555,6 +555,21 @@ func TestSTMapAPI_Generators(t *testing.T) {
 	require.Contains(t, names, "heat_shimmer")
 }
 
+// TestSTMapAPI_GetAnimatedZeroFrames verifies that GET /api/stmap/{name} for an
+// animated map with no frames returns 500 instead of panicking on Frames[0]
+// (defense-in-depth against a corrupted/edge-case regeneration).
+func TestSTMapAPI_GetAnimatedZeroFrames(t *testing.T) {
+	api, reg := setupSTMapTestAPI(t)
+
+	require.NoError(t, reg.StoreAnimated(&stmap.AnimatedSTMap{Name: "empty"}))
+
+	req := httptest.NewRequest("GET", "/api/stmap/empty", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
 func TestSTMapAPI_NilRegistry(t *testing.T) {
 	// When no registry is configured, all stmap routes should 404 (not registered).
 	programRelay := distribution.NewRelay()
@@ -566,4 +581,39 @@ func TestSTMapAPI_NilRegistry(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 	// Without the registry, routes are not registered, so the mux returns 404 or 405.
 	require.NotEqual(t, http.StatusOK, rec.Code)
+}
+
+// TestSTMapAPI_Generate_Animated_TotalPixelBudget verifies that the joint
+// width*height*frame_count product is bounded. Per-dimension caps alone still
+// admit requests like 16384x16384 x 300 frames (~640GB of float32 frame data),
+// which would OOM-kill the process mid-generation.
+func TestSTMapAPI_Generate_Animated_TotalPixelBudget(t *testing.T) {
+	api, reg := setupSTMapTestAPI(t)
+
+	// Each axis is within stmapMaxDimension, but the aggregate is ~80G pixels.
+	body := `{"type":"heat_shimmer","name":"bomb","width":16384,"height":16384,"frame_count":300}`
+	req := httptest.NewRequest("POST", "/api/stmap/generate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+	require.Contains(t, rec.Body.String(), "frame_count")
+
+	_, ok := reg.GetAnimated("bomb")
+	require.False(t, ok, "oversized animated map must not be stored")
+}
+
+// TestSTMapAPI_Generate_Animated_WithinBudget ensures a typical production
+// request (1080p x 90 frames) is still accepted under the aggregate budget.
+func TestSTMapAPI_Generate_Animated_WithinBudget(t *testing.T) {
+	api, _ := setupSTMapTestAPI(t)
+
+	body := `{"type":"heat_shimmer","name":"ok-anim","width":640,"height":360,"frame_count":90}`
+	req := httptest.NewRequest("POST", "/api/stmap/generate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
 }

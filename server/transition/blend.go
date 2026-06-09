@@ -204,6 +204,11 @@ func (fb *FrameBlender) BlendWipeMap(yuvA, yuvB []byte, position float64, gradie
 
 	borderWidth := config.BorderWidth
 
+	// Sanitize the gradient repeat count once: the raw config.Multiply is decoded
+	// from API/CEF JSON, and an unclamped value can overflow int(g)*Multiply or
+	// (when a multiple of 256) collapse the gradient to a degenerate hard cut.
+	mul := config.Multiplier()
+
 	// Step 1: Convert gradient map to alpha map.
 	// Use integer-domain computation scaled to 16.16 fixed-point to avoid
 	// float64 quantization errors when mapping gradient bytes through the
@@ -226,8 +231,8 @@ func (fb *FrameBlender) BlendWipeMap(yuvA, yuvB []byte, position float64, gradie
 		if config.Reverse {
 			g = 255 - g
 		}
-		if config.Multiply > 1 {
-			g = byte((int(g) * config.Multiply) % 256)
+		if mul > 1 {
+			g = byte((int(g) * mul) % 256)
 		}
 		// Scale gradient to 16.16 fixed-point (same domain as pos16).
 		g16 := int(g) * 65536
@@ -286,8 +291,8 @@ func (fb *FrameBlender) BlendWipeMap(yuvA, yuvB []byte, position float64, gradie
 			if config.Reverse {
 				g = 255 - g
 			}
-			if config.Multiply > 1 {
-				g = byte((int(g) * config.Multiply) % 256)
+			if mul > 1 {
+				g = byte((int(g) * mul) % 256)
 			}
 			dist := int(g) - threshold256
 			if dist < 0 {
@@ -316,8 +321,8 @@ func (fb *FrameBlender) BlendWipeMap(yuvA, yuvB []byte, position float64, gradie
 					if config.Reverse {
 						g = 255 - g
 					}
-					if config.Multiply > 1 {
-						g = byte((int(g) * config.Multiply) % 256)
+					if mul > 1 {
+						g = byte((int(g) * mul) % 256)
 					}
 					dist := int(g) - threshold256
 					if dist < 0 {
@@ -366,14 +371,17 @@ func generateWipeMapAlpha(alphaOut, gradientMap []byte, position float64, config
 		se16 = 1
 	}
 	twoSE16 := 2 * se16
+	// Sanitized repeat count (see WipeConfig.Multiplier): guards against
+	// overflow / degenerate-cut from unvalidated JSON input.
+	mul := config.Multiplier()
 
 	for i := 0; i < n; i++ {
 		g := gradientMap[i]
 		if config.Reverse {
 			g = 255 - g
 		}
-		if config.Multiply > 1 {
-			g = byte((int(g) * config.Multiply) % 256)
+		if mul > 1 {
+			g = byte((int(g) * mul) % 256)
 		}
 		g16 := int(g) * 65536
 		dist := g16 - pos16
@@ -834,15 +842,19 @@ func (fb *FrameBlender) BlendNAM(yuvA, yuvB []byte, position float64) []byte {
 				int(winnerMap[(ly+1)*w+lx]) +
 				int(winnerMap[(ly+1)*w+lx+1])
 
+			// Cb/Cr are offset-binary signals centered at 128, so the
+			// winner's gain must be applied about the neutral point:
+			// out = 128 + (C-128)*gain. Scaling the raw byte would drag
+			// neutral gray toward 0 (a green-yellow cast at mid-mix).
 			ci := cy*chromaW + cx
 			if bCount >= 2 {
 				// B majority: use B's chroma scaled by gainB
-				fb.yuvBufOut[cbOffsetOut+ci] = byte(int(yuvB[cbOffsetA+ci]) * gainB >> 8)
-				fb.yuvBufOut[crOffsetOut+ci] = byte(int(yuvB[crOffsetA+ci]) * gainB >> 8)
+				fb.yuvBufOut[cbOffsetOut+ci] = byte(128 + (int(yuvB[cbOffsetA+ci])-128)*gainB>>8)
+				fb.yuvBufOut[crOffsetOut+ci] = byte(128 + (int(yuvB[crOffsetA+ci])-128)*gainB>>8)
 			} else {
 				// A majority: use A's chroma scaled by gainA
-				fb.yuvBufOut[cbOffsetOut+ci] = byte(int(yuvA[cbOffsetA+ci]) * gainA >> 8)
-				fb.yuvBufOut[crOffsetOut+ci] = byte(int(yuvA[crOffsetA+ci]) * gainA >> 8)
+				fb.yuvBufOut[cbOffsetOut+ci] = byte(128 + (int(yuvA[cbOffsetA+ci])-128)*gainA>>8)
+				fb.yuvBufOut[crOffsetOut+ci] = byte(128 + (int(yuvA[crOffsetA+ci])-128)*gainA>>8)
 			}
 		}
 	}

@@ -36,9 +36,8 @@ func TestNormalizeResolutionGuard_10bit_CorrectBufferSize(t *testing.T) {
 	}
 
 	pool := NewFramePool(4, dstW, dstH, ColorYUV422_10bit)
-	sw := &Switcher{
-		framePool: pool,
-	}
+	sw := &Switcher{}
+	sw.framePool.Store(pool)
 	sw.pipelineFormat.Store(&fmt10)
 
 	// Create a 10-bit source frame at smaller resolution.
@@ -96,9 +95,8 @@ func TestNormalizeResolutionGuard_10bit_FormatPreserved(t *testing.T) {
 	}
 
 	pool := NewFramePool(4, dstW, dstH, ColorYUV422_10bit)
-	sw := &Switcher{
-		framePool: pool,
-	}
+	sw := &Switcher{}
+	sw.framePool.Store(pool)
 	sw.pipelineFormat.Store(&fmt10)
 
 	srcSize := ColorYUV422_10bit.FrameSize(srcW, srcH)
@@ -145,9 +143,8 @@ func TestNormalizeResolutionGuard_10bit_SentinelPreserved(t *testing.T) {
 	}
 
 	pool := NewFramePool(4, dstW, dstH, ColorYUV422_10bit)
-	sw := &Switcher{
-		framePool: pool,
-	}
+	sw := &Switcher{}
+	sw.framePool.Store(pool)
 	sw.pipelineFormat.Store(&fmt10)
 
 	// Source frame: uniform Y=500 (well above 8-bit max of 255).
@@ -205,9 +202,8 @@ func TestNormalizeResolutionGuard_8bit_StillWorks(t *testing.T) {
 	}
 
 	pool := NewFramePool(4, dstW, dstH, ColorYUV420_8bit)
-	sw := &Switcher{
-		framePool: pool,
-	}
+	sw := &Switcher{}
+	sw.framePool.Store(pool)
 	sw.pipelineFormat.Store(&fmt8)
 
 	srcSize := ColorYUV420_8bit.FrameSize(srcW, srcH)

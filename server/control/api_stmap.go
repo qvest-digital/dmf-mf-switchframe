@@ -13,6 +13,19 @@ import (
 	"github.com/zsiec/switchframe/server/stmap"
 )
 
+// stmapMaxDimension caps generated ST map width/height to prevent unbounded
+// allocation / OOM. Matches the ceiling enforced by stmap.ReadEXR.
+const stmapMaxDimension = 16384
+
+// stmapMaxTotalPixels caps the aggregate width*height*frame_count of an
+// animated ST map generation request. Per-dimension caps alone are not enough:
+// every animated frame holds two w*h float32 buffers (8 bytes/pixel) plus the
+// int32 LUT processors built right after, and all frames are held in memory at
+// once, so 16384x16384 x 300 frames would allocate ~640GB and OOM-kill the
+// process. 2^30 pixels bounds the float32 frame data to ~8GB while still
+// allowing e.g. 4K x 90 frames (~746M pixels) or 1080p x 300 frames.
+const stmapMaxTotalPixels = 1 << 30
+
 // generateRequest is the JSON body for the ST map generate endpoint.
 type generateRequest struct {
 	Type          string             `json:"type"`
@@ -94,6 +107,21 @@ func (a *API) handleSTMapGenerate(w http.ResponseWriter, r *http.Request) {
 		req.Height = pf.Height
 	}
 
+	// Bound dimensions before allocating. The generators allocate
+	// make([]float32, w*h) (and up to frame_count of them for animated maps)
+	// without any size check, so an unbounded request would OOM the process.
+	// Enforce the same positive+even constraint as NewSTMap and the same
+	// 16384x16384 ceiling as ReadEXR.
+	if req.Width <= 0 || req.Height <= 0 || req.Width%2 != 0 || req.Height%2 != 0 {
+		httperr.Write(w, http.StatusBadRequest, "width and height must be positive and even")
+		return
+	}
+	if req.Width > stmapMaxDimension || req.Height > stmapMaxDimension {
+		httperr.Write(w, http.StatusBadRequest,
+			fmt.Sprintf("width and height must not exceed %d", stmapMaxDimension))
+		return
+	}
+
 	// Try static generator first, then animated.
 	staticGens := stmap.ListGenerators()
 	isStatic := false
@@ -135,6 +163,13 @@ func (a *API) handleSTMapGenerate(w http.ResponseWriter, r *http.Request) {
 		}
 		if frameCount > 300 {
 			httperr.Write(w, http.StatusBadRequest, "frame_count must be <= 300")
+			return
+		}
+		// Bound the aggregate allocation, not just each axis: all frames are
+		// generated and held simultaneously, so the product is what OOMs.
+		if int64(req.Width)*int64(req.Height)*int64(frameCount) > stmapMaxTotalPixels {
+			httperr.Write(w, http.StatusBadRequest, fmt.Sprintf(
+				"width*height*frame_count must not exceed %d pixels", int64(stmapMaxTotalPixels)))
 			return
 		}
 		am, err := stmap.GenerateAnimated(req.Type, req.Params, req.Width, req.Height, frameCount)
@@ -271,6 +306,13 @@ func (a *API) handleSTMapGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if am, ok := a.stmapRegistry.GetAnimated(name); ok {
+		// Defense-in-depth: a zero-frame animated map (corrupted/edge-case
+		// regeneration from persisted metadata) would otherwise panic on
+		// am.Frames[0] and crash the HTTP serving goroutine.
+		if len(am.Frames) == 0 {
+			httperr.Write(w, http.StatusInternalServerError, "animated map has no frames")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"name":        am.Name,

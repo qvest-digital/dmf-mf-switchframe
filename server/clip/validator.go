@@ -511,7 +511,16 @@ func ParseSPSDimensions(sps []byte) (width, height int) {
 		r.readSE() // offset_for_non_ref_pic
 		r.readSE() // offset_for_top_to_bottom_field
 		numRefFrames := r.readUE()
-		for i := 0; i < int(numRefFrames); i++ {
+		// num_ref_frames_in_pic_order_cnt_cycle is capped at 255 by the
+		// H.264 spec (7.4.2.1.1), but readUE can return up to 2^32-2 from a
+		// crafted SPS. Taking the value verbatim would spin this loop
+		// billions of times (readSE returns immediately once the small SPS
+		// is exhausted, but the iterations still burn seconds of CPU per
+		// upload). Reject out-of-spec values and stop once the reader errors.
+		if numRefFrames > 255 {
+			return 0, 0
+		}
+		for i := 0; i < int(numRefFrames) && !r.err; i++ {
 			r.readSE() // offset_for_ref_frame
 		}
 	}

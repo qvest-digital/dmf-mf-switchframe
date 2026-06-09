@@ -226,6 +226,69 @@ func TestReplayBuffer_ByteLimit(t *testing.T) {
 	buf.mu.RUnlock()
 }
 
+func TestReplayBuffer_SingleOversizedGOPBounded(t *testing.T) {
+	// Regression: a source with a long keyframe interval accumulates a single
+	// in-progress GOP. The GOP-trim loop only runs with >=2 GOPs, so before the
+	// fix bytesUsed grew without bound (real heap growth) regardless of the
+	// configured byte limit. The buffer must bound memory even when only one
+	// GOP has ever been recorded.
+	maxBytes := int64(5000)
+	buf := newReplayBuffer(60, maxBytes)
+	now := time.Now()
+
+	// One keyframe, then many large delta frames — NO second keyframe ever.
+	buf.recordFrameAt(makeVideoFrame(0, true, 1000), now)
+	for j := 1; j <= 50; j++ {
+		df := makeVideoFrame(int64(j)*3003, false, 1000)
+		buf.recordFrameAt(df, now.Add(time.Duration(j)*33*time.Millisecond))
+	}
+
+	// Memory must stay bounded by the configured limit, not grow with the
+	// number of delta frames in the single GOP.
+	buf.mu.RLock()
+	bytesUsed := buf.bytesUsed
+	buf.mu.RUnlock()
+	require.LessOrEqual(t, bytesUsed, maxBytes,
+		"single oversized GOP must be bounded by maxBytes (got %d > %d)", bytesUsed, maxBytes)
+
+	// Whatever frames remain must still start at a keyframe (the buffer never
+	// retains an undecodable partial GOP).
+	buf.mu.RLock()
+	if len(buf.frames) > 0 {
+		require.True(t, buf.frames[0].isKeyframe,
+			"first retained frame must be a keyframe after single-GOP trim")
+	}
+	buf.mu.RUnlock()
+}
+
+func TestReplayBuffer_SingleOversizedGOPBoundedWithAudio(t *testing.T) {
+	// Same as above but with audio interleaved into the single GOP. Audio is
+	// only meaningful relative to buffered video GOPs, so dropping the single
+	// oversized video GOP must also bound (not strand) its audio.
+	maxBytes := int64(5000)
+	buf := newReplayBuffer(60, maxBytes)
+	now := time.Now()
+
+	buf.recordFrameAt(makeVideoFrame(0, true, 1000), now)
+	for j := 1; j <= 40; j++ {
+		ts := now.Add(time.Duration(j) * 33 * time.Millisecond)
+		buf.recordFrameAt(makeVideoFrame(int64(j)*3003, false, 800), ts)
+		af := &media.AudioFrame{
+			PTS:        int64(j) * 3003,
+			Data:       make([]byte, 400),
+			SampleRate: 48000,
+			Channels:   2,
+		}
+		buf.recordAudioFrameAt(af, ts)
+	}
+
+	buf.mu.RLock()
+	total := buf.bytesUsed + buf.audioBytesUsed
+	buf.mu.RUnlock()
+	require.LessOrEqual(t, total, maxBytes,
+		"single oversized GOP (video=%d+audio) must be bounded by maxBytes", total)
+}
+
 func TestReplayBuffer_ExtractClip_AudioIncludesLastFrameDuration(t *testing.T) {
 	// Regression test: audio frames that fall within the last video frame's
 	// display period (up to one frame duration after the last video frame)

@@ -1,11 +1,13 @@
 package control
 
 import (
+	"bytes"
 	"encoding/json"
 	"image"
 	"io"
 	"mime"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -918,20 +920,31 @@ func (a *API) handleGraphicsSequenceSpeed(w http.ResponseWriter, r *http.Request
 }
 
 // clipToStingerData converts a stinger.Clip to transition.StingerData.
+//
+// The frame bytes are deep-copied onto the Go heap. A stinger clip's
+// Frame.YUV/Frame.Alpha may alias an mmap'd cache region that the store
+// munmaps on Delete()/Upload(); the transition reads these slices for its
+// whole duration (including GPU upload after the engine lock is released), so
+// retaining the mmap aliases would be a use-after-free. Copying makes the
+// returned StingerData self-owned and independent of the clip's backing.
 func clipToStingerData(clip *stinger.Clip) *transition.StingerData {
 	frames := make([]transition.StingerFrameData, len(clip.Frames))
 	for i, f := range clip.Frames {
 		frames[i] = transition.StingerFrameData{
-			YUV:   f.YUV,
-			Alpha: f.Alpha,
+			YUV:   bytes.Clone(f.YUV),
+			Alpha: bytes.Clone(f.Alpha),
 		}
+	}
+	var audio []float32
+	if clip.Audio != nil {
+		audio = slices.Clone(clip.Audio)
 	}
 	return &transition.StingerData{
 		Frames:          frames,
 		Width:           clip.Width,
 		Height:          clip.Height,
 		CutPoint:        clip.CutPoint,
-		Audio:           clip.Audio,
+		Audio:           audio,
 		AudioSampleRate: clip.AudioSampleRate,
 		AudioChannels:   clip.AudioChannels,
 	}

@@ -591,10 +591,11 @@ type API struct {
 	uploadMu           sync.Mutex
 	uploadProgress     *internal.ClipUploadProgress
 	uploadStartTime    time.Time
+	uploadGen          uint64     // ownership token: bumped each time the upload guard is acquired
 	asrConfigMu        sync.Mutex // serializes ASR config changes (prevents pile-up)
 	cmdQueue           *cmdqueue.Queue
 	seqTracker         func(uint64)
-	lastPongSentFn     func() int64                       // returns Unix µs of last fast-control pong
+	lastPongSentFn     func() int64                        // returns Unix µs of last fast-control pong
 	connectionCounter  func() (webtransport, srt, moq int) // returns active connection counts by type
 	peerPoller         *peer.HealthPoller                  // local identity + role for /api/peer/health
 	controlPlaneSecret string                              // enables /api/peer/force-leader when non-empty

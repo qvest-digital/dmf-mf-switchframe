@@ -248,6 +248,88 @@ func TestApplySaturation_Zero(t *testing.T) {
 	}
 }
 
+func TestApplyContrast_PositiveIncreasesContrast(t *testing.T) {
+	lut := GenerateIdentityLUT()
+	ApplyContrast(lut, 0.5)
+
+	// Midpoint stays at 0.5.
+	mid := (16*33*33 + 16*33 + 16) * 3
+	if math.Abs(float64(lut.Data[mid]-0.5)) > 1e-5 {
+		t.Errorf("midpoint = %f, want 0.5", lut.Data[mid])
+	}
+
+	// Quarter point should be pushed away from the midpoint (darkened).
+	quarter := (8*33*33 + 8*33 + 8) * 3
+	identityQuarter := float32(8) / 32.0
+	if lut.Data[quarter] >= identityQuarter {
+		t.Errorf("quarter point = %f, want < %f (pushed away from 0.5)",
+			lut.Data[quarter], identityQuarter)
+	}
+}
+
+func TestApplyContrast_NegativeReducesContrast(t *testing.T) {
+	lut := GenerateIdentityLUT()
+	original := make([]float32, len(lut.Data))
+	copy(original, lut.Data)
+
+	// Contrast is documented/validated as -1..+1 (CorrectorState, API,
+	// UI slider). A negative amount must flatten values toward the 0.5
+	// midpoint, not silently no-op.
+	ApplyContrast(lut, -0.5)
+
+	changed := false
+	for i := range lut.Data {
+		v, orig := lut.Data[i], original[i]
+		if v != orig {
+			changed = true
+		}
+		// No value may move away from the midpoint.
+		if math.Abs(float64(v)-0.5) > math.Abs(float64(orig)-0.5)+1e-6 {
+			t.Fatalf("data[%d] = %f moved away from midpoint (orig %f)", i, v, orig)
+		}
+	}
+	if !changed {
+		t.Fatal("negative contrast was a complete no-op on the LUT")
+	}
+
+	// Midpoint unchanged, quarter point pulled up toward 0.5.
+	mid := (16*33*33 + 16*33 + 16) * 3
+	if math.Abs(float64(lut.Data[mid]-0.5)) > 1e-5 {
+		t.Errorf("midpoint = %f, want 0.5", lut.Data[mid])
+	}
+	quarter := (8*33*33 + 8*33 + 8) * 3
+	identityQuarter := float32(8) / 32.0
+	if lut.Data[quarter] <= identityQuarter {
+		t.Errorf("quarter point = %f, want > %f (flattened toward 0.5)",
+			lut.Data[quarter], identityQuarter)
+	}
+}
+
+func TestApplyContrast_MinimumFlattensToGray(t *testing.T) {
+	lut := GenerateIdentityLUT()
+	ApplyContrast(lut, -1)
+
+	for i, v := range lut.Data {
+		if math.Abs(float64(v)-0.5) > 1e-5 {
+			t.Fatalf("data[%d] = %f, want 0.5 (zero contrast at amount=-1)", i, v)
+		}
+	}
+}
+
+func TestApplyContrast_ZeroIsNoOp(t *testing.T) {
+	lut := GenerateIdentityLUT()
+	original := make([]float32, len(lut.Data))
+	copy(original, lut.Data)
+
+	ApplyContrast(lut, 0)
+
+	for i := range lut.Data {
+		if lut.Data[i] != original[i] {
+			t.Fatalf("zero contrast changed data at index %d", i)
+		}
+	}
+}
+
 func TestGenerateLookFiles(t *testing.T) {
 	dir := t.TempDir()
 
@@ -356,6 +438,93 @@ func TestHDRRoundtrip_SDR_HLG_SDR(t *testing.T) {
 	_ = hlgToSDR // used conceptually; we did manual roundtrip above
 	if maxErr > 0.01 {
 		t.Errorf("SDR→HLG→SDR roundtrip max error = %f, want < 0.01", maxErr)
+	}
+}
+
+// builtinLookLUT generates the named built-in look's LUT.
+func builtinLookLUT(t *testing.T, name string) *LUT3D {
+	t.Helper()
+	for _, p := range BuiltinLooks() {
+		if p.Name == name {
+			return GenerateLook(p)
+		}
+	}
+	t.Fatalf("built-in look %q not found", name)
+	return nil
+}
+
+// lutGrayIndex returns the data index of the neutral grid point (g,g,g).
+func lutGrayIndex(g int) int {
+	return (g*33*33 + g*33 + g) * 3
+}
+
+// TestSDRToPQ_ReferenceWhiteLevel verifies luminance normalization in the
+// sdr-to-pq technical look. PQ is an absolute transfer function (linear 1.0 =
+// 10,000 nits) while BT.709 linear is display-relative (1.0 = SDR reference
+// white, 203 nits per BT.2408). SDR peak white must therefore map to
+// pqOETF(203/10000) ≈ 0.58, not PQ code 1.0 (= 10,000 nits).
+func TestSDRToPQ_ReferenceWhiteLevel(t *testing.T) {
+	lut := builtinLookLUT(t, "sdr-to-pq")
+	white := lut.Data[lutGrayIndex(32)]
+	if math.Abs(float64(white)-0.58) > 0.02 {
+		t.Errorf("sdr-to-pq maps SDR white to PQ signal %f, want ~0.58 (203 nits)", white)
+	}
+}
+
+// TestPQToSDR_HighlightsNotCrushed verifies that pq-to-sdr normalizes PQ
+// absolute luminance to SDR-relative before tone mapping. PQ signal 0.75 is
+// ~1000 nits — bright highlight content that must land near SDR white, not
+// at ~0.27 signal (dark midtone).
+func TestPQToSDR_HighlightsNotCrushed(t *testing.T) {
+	lut := builtinLookLUT(t, "pq-to-sdr")
+	// Grid point 24/32 = PQ signal 0.75 ≈ 1000 nits.
+	v := lut.Data[lutGrayIndex(24)]
+	if v < 0.8 {
+		t.Errorf("pq-to-sdr maps ~1000-nit content to SDR signal %f, want >= 0.8", v)
+	}
+}
+
+// TestHLGToPQ_PeakLevel verifies that hlg-to-pq places HLG nominal peak
+// (1000 nits per BT.2100) at the PQ code for 1000 nits (~0.751), not at
+// PQ 1.0 (10,000 nits).
+func TestHLGToPQ_PeakLevel(t *testing.T) {
+	lut := builtinLookLUT(t, "hlg-to-pq")
+	peak := lut.Data[lutGrayIndex(32)]
+	if math.Abs(float64(peak)-0.751) > 0.02 {
+		t.Errorf("hlg-to-pq maps HLG peak to PQ signal %f, want ~0.751 (1000 nits)", peak)
+	}
+}
+
+// TestPQToHLG_HighlightsNotCrushed verifies that pq-to-hlg rescales PQ
+// absolute luminance to the HLG 1000-nit range: ~1000-nit PQ content should
+// land near HLG peak, not in the midtones.
+func TestPQToHLG_HighlightsNotCrushed(t *testing.T) {
+	lut := builtinLookLUT(t, "pq-to-hlg")
+	// Grid point 24/32 = PQ signal 0.75 ≈ 1000 nits.
+	v := lut.Data[lutGrayIndex(24)]
+	if v < 0.8 {
+		t.Errorf("pq-to-hlg maps ~1000-nit content to HLG signal %f, want >= 0.8", v)
+	}
+}
+
+// TestEmbeddedTechnicalLooks_MatchGenerated verifies the embedded .cube files
+// for the PQ technical looks were regenerated with luminance normalization.
+func TestEmbeddedTechnicalLooks_MatchGenerated(t *testing.T) {
+	for _, name := range []string{"sdr-to-pq", "pq-to-sdr", "hlg-to-pq", "pq-to-hlg"} {
+		t.Run(name, func(t *testing.T) {
+			data, err := builtinLooksFS.ReadFile("looks/" + name + ".cube")
+			if err != nil {
+				t.Fatalf("read embedded %s.cube: %v", name, err)
+			}
+			embedded, err := ParseCube(strings.NewReader(string(data)))
+			if err != nil {
+				t.Fatalf("parse embedded %s.cube: %v", name, err)
+			}
+			generated := builtinLookLUT(t, name)
+			if !lutsEqual(embedded, generated, 1e-4) {
+				t.Errorf("embedded %s.cube is stale: does not match GenerateLook output", name)
+			}
+		})
 	}
 }
 

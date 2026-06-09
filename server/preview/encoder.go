@@ -277,12 +277,26 @@ func (e *Encoder) loop() {
 			encoder = enc
 		}
 
+		// origYUV is the caller-owned source buffer that must be returned via
+		// job.release. job.yuv may be rebased onto an encoder-internal buffer
+		// (downconvertBuf) below, but the release callback must always receive
+		// the original owned buffer — never an encoder-internal buffer.
+		origYUV := job.yuv
+
 		// Detect 10-bit YUV422P10LE input by buffer size.
 		// 10-bit frame: w*h*4 bytes; 8-bit frame: w*h*3/2 bytes.
 		// When 10-bit is detected, downconvert to 8-bit for the H.264 encoder.
+		//
+		// Match the 10-bit payload size EXACTLY rather than ">=": SendOwned takes
+		// whatever length the caller passes, and an over-sized 8-bit buffer (e.g. a
+		// pooled buffer whose len was set to capacity) must not be misclassified as
+		// 10-bit and run through Downconvert422_10to420, which would reinterpret 8-bit
+		// YUV420 bytes as 10-bit YUV422 and emit garbage. An exact match keeps valid
+		// 10-bit frames working while letting over-length 8-bit buffers fall through to
+		// the 8-bit path below (which slices job.yuv to encSize).
 		expected10bitSize := encW * encH * 4
 		encSize := video.YUV420FrameSize(encW, encH)
-		if len(job.yuv) >= expected10bitSize && expected10bitSize > encSize {
+		if len(job.yuv) == expected10bitSize && expected10bitSize > encSize {
 			// 10-bit input: downconvert to 8-bit YUV420P.
 			if cap(downconvertBuf) < encSize {
 				downconvertBuf = make([]byte, encSize)
@@ -292,7 +306,7 @@ func (e *Encoder) loop() {
 				slog.Warn("preview: 10-bit downconversion failed",
 					"key", e.cfg.SourceKey, "error", err)
 				if job.release != nil {
-					job.release(job.yuv)
+					job.release(origYUV)
 				}
 				continue
 			}
@@ -306,9 +320,11 @@ func (e *Encoder) loop() {
 		encYUV = encYUV[:encSize]
 		copy(encYUV, job.yuv[:encSize])
 
-		// Release the source buffer now that it's been copied/scaled.
+		// Release the original source buffer now that it's been copied/scaled.
+		// Always release origYUV (the caller-owned buffer), not job.yuv, which
+		// may now point at the encoder-internal downconvertBuf.
 		if job.release != nil {
-			job.release(job.yuv)
+			job.release(origYUV)
 		}
 
 		// Encode. Force IDR if requested (source cut).

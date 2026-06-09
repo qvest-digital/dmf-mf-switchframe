@@ -41,42 +41,39 @@ func Decode(data []byte) (*Message, error) {
 // decodeSOM decodes a Single Operation Message. The opID has already been
 // consumed; payload contains either:
 //   - Abbreviated (VANC) format: the operation data bytes directly.
-//   - Full SOM format: a 12-byte header followed by the operation data.
+//   - Full SOM format: an 11-byte header followed by the operation data.
 //
-// Full SOM header (12 bytes):
+// Full SOM header per SCTE 104 (11 bytes after the opID):
 //
 //	messageSize(2) + result(2) + result_extension(2) +
-//	protocol_version(1) + AS_index(1) + message_number(1) + DPI_PID_index(2) +
-//	SCTE35_protocol_version(1)
+//	protocol_version(1) + AS_index(1) + message_number(1) + DPI_PID_index(2)
 //
-// Detection heuristic: if len(payload) >= 14 (12 header + at least 2 bytes of
-// operation data) and the first 2 bytes (messageSize) match either convention
-// (spec: len-2, or legacy: len), treat as full SOM with the header.
+// Unlike the multiple_operation_message header, the SOM header carries no
+// SCTE35_protocol_version byte; operation data follows DPI_PID_index directly.
+//
+// Detection heuristic: per SCTE 104, messageSize is the size of the COMPLETE
+// message including the 2-byte opID, i.e. len(payload)+2. If the field
+// matches that convention (and the protocol_version byte is plausible),
+// treat the payload as a full SOM with the header; otherwise it is the
+// abbreviated VANC form where the operation data starts immediately.
 func decodeSOM(opID uint16, payload []byte) (*Message, error) {
-	// Check if this is a full SOM with header fields.
-	if len(payload) >= 14 { // 12 header + minimum 2 bytes for operation data
+	// Check if this is a full SOM with header fields. The smallest full SOM
+	// payload is the bare 11-byte header (e.g. splice_null with no op data).
+	if len(payload) >= 11 {
 		messageSize := int(binary.BigEndian.Uint16(payload[0:2]))
-		// Dual-convention heuristic: spec says messageSize counts bytes after
-		// the messageSize field itself. Legacy implementations set it to total length.
-		if messageSize == len(payload)-2 || messageSize == len(payload) {
-			// Additional validation: check protocol version to avoid false
-			// positives when abbreviated payload bytes accidentally match the
-			// length. SCTE-104 protocol versions are small integers (0-3 in
-			// current revisions); anything above 15 is clearly not a SOM header.
-			protocolVersion := payload[6]
-			if protocolVersion > 15 {
-				// Not a valid SOM — fall through to abbreviated format.
-				goto abbreviated
-			}
-			// Full SOM format: parse the 12-byte header, then operation data.
+		// Additional validation: check protocol version to avoid false
+		// positives when abbreviated payload bytes accidentally match the
+		// length. SCTE-104 protocol versions are small integers (0-3 in
+		// current revisions); anything above 15 is clearly not a SOM header.
+		if messageSize == len(payload)+2 && payload[6] <= 15 {
+			// Full SOM format: parse the 11-byte header, then operation data.
 			msg := &Message{
 				ProtocolVersion: payload[6],
 				ASIndex:         payload[7],
 				MessageNumber:   payload[8],
 				DPIPIDIndex:     binary.BigEndian.Uint16(payload[9:11]),
 			}
-			// payload[11] = SCTE35_protocol_version (skip)
-			op, err := decodeOperationData(opID, payload[12:])
+			op, err := decodeOperationData(opID, payload[11:])
 			if err != nil {
 				return nil, fmt.Errorf("scte104 SOM: %w", err)
 			}
@@ -85,7 +82,6 @@ func decodeSOM(opID uint16, payload []byte) (*Message, error) {
 		}
 	}
 
-abbreviated:
 	// Abbreviated format (VANC): payload is directly the operation data.
 	op, err := decodeOperationData(opID, payload)
 	if err != nil {
@@ -216,7 +212,10 @@ func decodeOperationData(opID uint16, data []byte) (Operation, error) {
 			BreakDuration:    binary.BigEndian.Uint16(data[9:11]),
 			AvailNum:         data[11],
 			AvailsExpected:   data[12],
-			AutoReturnFlag:   data[13]&0x80 != 0,
+			// auto_return_flag is a full 8-bit field per SCTE 104 Table 8-5;
+			// spec senders write the value 1. Accept any non-zero value for
+			// tolerance of legacy bit-7 encoders.
+			AutoReturnFlag: data[13] != 0,
 		}
 		op.Data = srd
 
@@ -248,79 +247,56 @@ func decodeOperationData(opID uint16, data []byte) (Operation, error) {
 	return op, nil
 }
 
-// decodeSegmentationDescriptor decodes a segmentation_descriptor_request payload.
+// decodeSegmentationDescriptor decodes an insert_segmentation_descriptor_request
+// payload.
 //
-// Wire format per SCTE 104 2021 Table 8-29:
+// Wire format per SCTE 104 Table 8-29 (byte-aligned; every field is present
+// regardless of the cancel indicator):
 //
-//	seg_event_id                     uint32  (4 bytes)
-//	flags_byte                       uint8   (bit 7 = cancel_indicator, bits 6-1 = reserved, bit 0 = program_segmentation_flag)
-//	[if !cancel && !program_seg: component_count(1) + component_tag(1) * N]
-//	seg_duration                     uint40  (5 bytes, 90kHz ticks) [if !cancel]
-//	upid_type                        uint8   [if !cancel]
-//	upid_length                      uint8   [if !cancel]
-//	upid                             [upid_length]byte [if !cancel]
-//	segmentation_type_id             uint8   [if !cancel]
-//	seg_num                          uint8   [if !cancel]
-//	segs_expected                    uint8   [if !cancel]
+//	segmentation_event_id               uint32  (4 bytes)
+//	segmentation_event_cancel_indicator uint8   (full byte, value 0/1)
+//	duration                            uint16  (2 bytes, in SECONDS)
+//	segmentation_upid_type              uint8
+//	segmentation_upid_length            uint8
+//	segmentation_upid                   [upid_length]byte
+//	segmentation_type_id                uint8
+//	segment_num                         uint8
+//	segments_expected                   uint8
+//	duration_extension_frames           uint8
+//	delivery_not_restricted_flag        uint8
+//	web_delivery_allowed_flag           uint8
+//	no_regional_blackout_flag           uint8
+//	archive_allowed_flag                uint8
+//	device_restrictions                 uint8
+//
+// Note this is NOT the SCTE-35 segmentation_descriptor() bit layout: there is
+// no bit-packed flags byte, no program_segmentation_flag, no component loop
+// and no 40-bit 90 kHz duration in SCTE 104.
+//
+// The six trailing bytes (duration_extension_frames + the five delivery
+// restriction fields) are parsed leniently: some older automation systems
+// omit them, in which case "delivery not restricted" is assumed.
 func decodeSegmentationDescriptor(data []byte) (*SegmentationDescriptorRequest, error) {
-	// Minimum: seg_event_id(4) + flags(1) = 5 bytes
-	if len(data) < 5 {
-		return nil, fmt.Errorf("segmentation_descriptor_request requires at least 5 bytes, got %d", len(data))
+	// Fixed prefix: event_id(4) + cancel(1) + duration(2) + upid_type(1) +
+	// upid_length(1) = 9 bytes.
+	if len(data) < 9 {
+		return nil, fmt.Errorf("segmentation_descriptor_request requires at least 9 bytes, got %d", len(data))
 	}
 
 	sd := &SegmentationDescriptorRequest{
-		SegEventID: binary.BigEndian.Uint32(data[0:4]),
+		SegEventID:      binary.BigEndian.Uint32(data[0:4]),
+		CancelIndicator: data[4] != 0,
+		Duration:        binary.BigEndian.Uint16(data[5:7]),
+		UPIDType:        data[7],
 	}
 
-	flagsByte := data[4]
+	upidLen := int(data[8])
+	offset := 9
 
-	// Check cancel indicator (bit 7).
-	if flagsByte&0x80 != 0 {
-		sd.CancelIndicator = true
-		// Cancel format: just seg_event_id(4) + flags(1) = 5 bytes. No type_id.
-		return sd, nil
-	}
-
-	sd.ProgramSegmentationFlag = (flagsByte & 0x01) != 0
-
-	offset := 5
-
-	// If not program-level segmentation, skip component data.
-	if !sd.ProgramSegmentationFlag {
-		if offset >= len(data) {
-			return nil, fmt.Errorf("segmentation_descriptor_request: truncated at component_count, got %d bytes", len(data))
-		}
-		componentCount := int(data[offset])
-		offset++
-		// Skip component_tag bytes (1 byte per component).
-		offset += componentCount
-		if offset > len(data) {
-			return nil, fmt.Errorf("segmentation_descriptor_request: truncated in component data, got %d bytes", len(data))
-		}
-	}
-
-	// Need: duration(5) + upid_type(1) + upid_length(1) = 7 bytes minimum
-	if offset+7 > len(data) {
-		return nil, fmt.Errorf("segmentation_descriptor_request requires at least %d bytes for non-cancel, got %d", offset+7, len(data))
-	}
-
-	// 5-byte (40-bit) duration in 90kHz ticks, big-endian.
-	sd.DurationTicks = uint64(data[offset])<<32 |
-		uint64(data[offset+1])<<24 |
-		uint64(data[offset+2])<<16 |
-		uint64(data[offset+3])<<8 |
-		uint64(data[offset+4])
-	offset += 5
-
-	sd.UPIDType = data[offset]
-	offset++
-	upidLen := int(data[offset])
-	offset++
-
-	// Need: upid(N) + type_id(1) + seg_num(1) + segs_expected(1) = N+3 bytes
-	expectedEnd := offset + upidLen + 3
-	if expectedEnd > len(data) {
-		return nil, fmt.Errorf("segmentation_descriptor_request requires %d bytes, got %d", expectedEnd, len(data))
+	// Need: upid(N) + type_id(1) + segment_num(1) + segments_expected(1).
+	if offset+upidLen+3 > len(data) {
+		return nil, fmt.Errorf("segmentation_descriptor_request requires %d bytes, got %d",
+			offset+upidLen+3, len(data))
 	}
 
 	if upidLen > 0 {
@@ -330,19 +306,25 @@ func decodeSegmentationDescriptor(data []byte) (*SegmentationDescriptorRequest, 
 	offset += upidLen
 
 	sd.SegmentationTypeID = data[offset]
-	offset++
-	sd.SegNum = data[offset]
-	offset++
-	sd.SegExpected = data[offset]
-	offset++
+	sd.SegNum = data[offset+1]
+	sd.SegExpected = data[offset+2]
+	offset += 3
 
-	// Per SCTE 104 2021 Table 8-29 and SCTE-35 Table 22, sub_segment_num
-	// and sub_segments_expected follow segs_expected only for certain
-	// segmentation types. Parse gracefully only if the type carries
-	// sub-segment fields and bytes remain (older senders may omit them).
-	if hasSubSegmentFields(sd.SegmentationTypeID) && offset+2 <= len(data) {
-		sd.SubSegmentNum = data[offset]
-		sd.SubSegmentsExpected = data[offset+1]
+	// duration_extension_frames (lenient: may be absent in older senders).
+	if offset < len(data) {
+		sd.DurationExtensionFrames = data[offset]
+		offset++
+	}
+
+	// Five delivery restriction bytes (lenient: absent means unrestricted).
+	if offset+5 <= len(data) {
+		sd.DeliveryNotRestricted = data[offset] != 0
+		sd.WebDeliveryAllowed = data[offset+1] != 0
+		sd.NoRegionalBlackout = data[offset+2] != 0
+		sd.ArchiveAllowed = data[offset+3] != 0
+		sd.DeviceRestrictions = data[offset+4]
+	} else {
+		sd.DeliveryNotRestricted = true
 	}
 
 	return sd, nil

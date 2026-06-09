@@ -712,6 +712,15 @@ func (m *TSMuxer) Close() error {
 		m.cancel()
 		m.cancel = nil
 	}
+	// Clear the output callback so a late write that loaded the muxer pointer
+	// just before the Manager stored nil — and is now blocked on m.mu until
+	// Close returns — cannot emit TS data into a torn-down Manager. If that
+	// late write is a keyframe it will re-run init() (the muxer is reusable;
+	// see TestTSMuxer_CloseReinit_*), but flush() is a no-op while m.output is
+	// nil, so no callback fires until SetOutput is called again on a deliberate
+	// reuse. This converts the use-after-close from "writes into freed
+	// adapters" to a benign self-contained re-init that nothing observes.
+	m.output = nil
 	m.muxer = nil
 	m.initialized = false
 	m.videoCodec = ""

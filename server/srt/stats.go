@@ -123,6 +123,9 @@ func (cs *ConnStats) SetDisconnected() {
 }
 
 // StatsUpdate holds a batch of SRT connection metrics for ConnStats.Update.
+// The Packets* fields are per-poll INTERVAL DELTAS (srtgo Stats(true)
+// semantics); ConnStats accumulates them into lifetime totals. Rate and
+// buffer fields are window/gauge values that replace the previous reading.
 type StatsUpdate struct {
 	RTTMs           float64
 	RTTVarMs        float64
@@ -138,7 +141,10 @@ type StatsUpdate struct {
 	FlightSize      int
 }
 
-// Update applies a bulk stats update from srtgo.
+// Update applies a bulk stats update from srtgo. Packet counters are interval
+// deltas accumulated into lifetime totals (the snapshot fields are exposed as
+// cumulative packetsReceived/packetsLost/... totals); rates and gauges
+// replace the previous window value.
 func (cs *ConnStats) Update(u StatsUpdate) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
@@ -146,11 +152,11 @@ func (cs *ConnStats) Update(u StatsUpdate) {
 	cs.rttVarMs = u.RTTVarMs
 	cs.recvRateMbps = u.RecvRateMbps
 	cs.lossRatePct = u.LossRatePct
-	cs.packetsReceived = u.PacketsReceived
-	cs.packetsLost = u.PacketsLost
-	cs.packetsDropped = u.PacketsDropped
-	cs.packetsRetransmitted = u.PacketsRetrans
-	cs.packetsBelated = u.PacketsBelated
+	cs.packetsReceived += u.PacketsReceived
+	cs.packetsLost += u.PacketsLost
+	cs.packetsDropped += u.PacketsDropped
+	cs.packetsRetransmitted += u.PacketsRetrans
+	cs.packetsBelated += u.PacketsBelated
 	cs.recvBufMs = u.RecvBufMs
 	cs.recvBufPackets = u.RecvBufPackets
 	cs.flightSize = u.FlightSize

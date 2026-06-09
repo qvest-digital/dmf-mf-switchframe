@@ -511,6 +511,11 @@ var _ transition.VideoEncoder = (*FFmpegEncoder)(nil)
 //
 // FFmpegEncoder is NOT safe for concurrent use. Callers must synchronize access externally.
 type FFmpegEncoder struct {
+	// mu only serializes concurrent Close calls so that freeing the C context
+	// and setting closed is idempotent. It does NOT make Encode/Extradata safe
+	// to call concurrently with Close (that would be a use-after-free of the
+	// AVCodecContext) — the documented external-synchronization contract above
+	// is what keeps the hot path safe.
 	mu     sync.Mutex
 	handle C.ffenc_t
 	closed bool
@@ -705,10 +710,12 @@ func NewFFmpegPreviewEncoder(width, height, bitrate, fpsNum, fpsDen, gopSecs int
 	defer C.free(unsafe.Pointer(cPreset))
 
 	e := &FFmpegEncoder{}
+	FFmpegOpenMu.Lock()
 	rc := C.ffenc_open_preview(&e.handle,
 		C.int(width), C.int(height), C.int(bitrate),
 		C.int(fpsNum), C.int(fpsDen),
 		C.int(gopSecs), cPreset)
+	FFmpegOpenMu.Unlock()
 	if rc != 0 {
 		desc := map[int]string{
 			-1: "codec not found",
@@ -752,10 +759,22 @@ func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 
 	w := int(e.handle.width)
 	h := int(e.handle.height)
-	expected := video.YUV420FrameSize(w, h)
-	if len(yuv) != expected {
-		return nil, false, fmt.Errorf("YUV buffer must be %d bytes (%dx%d*3/2), got %d",
-			expected, w, h, len(yuv))
+	// The expected input size depends on the encoder's pixel format: the C
+	// side copies w*h*4 bytes for YUV422P10LE (10-bit) and w*h*3/2 bytes for
+	// YUV420P (8-bit). Validating against the wrong size would either reject
+	// every valid frame or let the C side read past the end of the slice.
+	if e.handle.pix_fmt_10bit != 0 {
+		expected := video.YUV422_10bitFrameSize(w, h)
+		if len(yuv) != expected {
+			return nil, false, fmt.Errorf("YUV buffer must be %d bytes (%dx%d*4, YUV422P10LE), got %d",
+				expected, w, h, len(yuv))
+		}
+	} else {
+		expected := video.YUV420FrameSize(w, h)
+		if len(yuv) != expected {
+			return nil, false, fmt.Errorf("YUV buffer must be %d bytes (%dx%d*3/2), got %d",
+				expected, w, h, len(yuv))
+		}
 	}
 
 	forceIDRInt := C.int(0)
@@ -786,6 +805,9 @@ func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 
 	n := int(outLen)
 	if n == 0 || outBuf == nil {
+		// A packet was successfully received (rc==0); release it before
+		// returning, mirroring the success path so no buffer is stranded.
+		C.ffenc_unref_packet(&e.handle)
 		return nil, false, errors.New("encoder produced no output")
 	}
 

@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -212,6 +213,168 @@ func TestReplayBufferWithRing_DeepCopyOnExtract(t *testing.T) {
 	// clip2 should be unaffected (separate reads from ring).
 	require.NotEqual(t, byte(0xFF), clip2[0].wireData[0],
 		"extracted clips should be independent copies")
+}
+
+// TestReplayBufferWithRing_ExtractDoesNotBlockWriter is the regression for the
+// finding that ExtractClip held b.mu.RLock() across thousands of per-frame ring
+// ReadAt syscalls, blocking the capture writer (RecordFrame takes the write
+// lock) for the whole extraction. After the fix, the ring reads happen after
+// b.mu is released, so a concurrent writer keeps making progress during a
+// large extraction. Run under -race to also catch any unsynchronized access
+// introduced by moving the reads outside the lock.
+func TestReplayBufferWithRing_ExtractDoesNotBlockWriter(t *testing.T) {
+	dir := t.TempDir()
+	// Generous ring so nothing wraps/recycles during the test.
+	ring, err := newFileRing(filepath.Join(dir, "test.buf"), 64*1024*1024)
+	require.NoError(t, err)
+	defer func() { _ = ring.CloseAndRemove() }()
+
+	buf := newReplayBufferWithRing(600, ring)
+	base := time.Now().Add(-time.Hour) // keep all frames well inside the window
+
+	// Seed a sizeable clip: one long GOP of many ring-backed frames so a single
+	// ExtractClip performs many ring reads.
+	const seeded = 2000
+	buf.recordFrameAt(makeVideoFrame(0, true, 800), base)
+	for i := 1; i < seeded; i++ {
+		buf.recordFrameAt(makeVideoFrame(int64(i)*3003, false, 400),
+			base.Add(time.Duration(i)*33*time.Millisecond))
+	}
+
+	startFrames := buf.Status().FrameCount
+
+	// Writer keeps appending delta frames to the same GOP concurrently.
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pts := int64(seeded) * 3003
+		wt := base.Add(time.Duration(seeded) * 33 * time.Millisecond)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			buf.recordFrameAt(makeVideoFrame(pts, false, 400), wt)
+			pts += 3003
+			wt = wt.Add(33 * time.Millisecond)
+		}
+	}()
+
+	// Repeatedly extract the full seeded range while the writer runs. Each
+	// extraction issues many ring reads; the writer must not be starved.
+	for r := 0; r < 20; r++ {
+		clip, _, err := buf.ExtractClip(base.Add(-time.Second),
+			base.Add(time.Duration(seeded)*33*time.Millisecond))
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, len(clip), seeded)
+		require.True(t, clip[0].isKeyframe, "extracted clip must start at a keyframe")
+		// wireData must be populated from the ring and ring coords cleared.
+		require.NotNil(t, clip[0].wireData, "ring-backed frame must have wireData after extract")
+		require.Len(t, clip[0].wireData, 800)
+		require.Equal(t, int32(0), clip[0].ringSize, "returned clip must not carry ring coords")
+		require.NotNil(t, clip[len(clip)-1].wireData)
+	}
+
+	close(stop)
+	<-done
+
+	// The writer made forward progress concurrently with the extractions,
+	// proving ExtractClip did not hold the write-blocking lock for its whole
+	// duration.
+	require.Greater(t, buf.Status().FrameCount, startFrames,
+		"capture writer should have appended frames during extraction")
+}
+
+// TestFileRing_ReadRejectsRecycledSlot verifies the seq check: once a frame's
+// slot has been overwritten by a wrap, Read returns ErrFrameRecycled instead
+// of stale bytes, even though the original offset/size still point at valid
+// (but now-foreign) data on disk.
+func TestFileRing_ReadRejectsRecycledSlot(t *testing.T) {
+	dir := t.TempDir()
+	ring, err := newFileRing(filepath.Join(dir, "ring.buf"), 300)
+	require.NoError(t, err)
+	defer func() { _ = ring.CloseAndRemove() }()
+
+	now := time.Now()
+
+	// First frame at offset 0, size 100. Capture its offset+seq.
+	off0, seq0, err := ring.Write(bytes.Repeat([]byte{0xAA}, 100), 0, now, true)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), off0)
+
+	// Reading it immediately works.
+	data, err := ring.Read(off0, 100, seq0)
+	require.NoError(t, err)
+	require.Equal(t, bytes.Repeat([]byte{0xAA}, 100), data)
+
+	// Fill the rest, then write a frame large enough to wrap to offset 0 and
+	// overwrite the first frame's slot.
+	_, _, err = ring.Write(bytes.Repeat([]byte{0xBB}, 100), 3000, now.Add(33*time.Millisecond), false)
+	require.NoError(t, err)
+	_, _, err = ring.Write(bytes.Repeat([]byte{0xCC}, 100), 6000, now.Add(66*time.Millisecond), false)
+	require.NoError(t, err)
+	// 300+ used; next 100-byte write wraps to offset 0, recycling frame 0's slot.
+	_, _, err = ring.Write(bytes.Repeat([]byte{0xDD}, 100), 9000, now.Add(99*time.Millisecond), true)
+	require.NoError(t, err)
+
+	// The disk bytes at off0 are now valid (0xDD) but belong to a DIFFERENT
+	// frame. Reading with the stale seq must be rejected, not return 0xDD.
+	_, err = ring.Read(off0, 100, seq0)
+	require.ErrorIs(t, err, ErrFrameRecycled,
+		"reading a wrap-recycled slot must fail, not return foreign bytes")
+}
+
+// TestReplayBufferWithRing_ExtractDetectsWrapOverwrite is the end-to-end
+// regression for the silent-corruption bug: at bitrates above the ring's
+// per-second budget the ring wraps and overwrites frames whose wall-clock age
+// is still inside maxDuration (so their buffer metadata stays live). Before
+// the seq check, ExtractClip read those recycled bytes as valid H.264. Now it
+// must surface the recycling as an error instead of emitting corrupt frames.
+func TestReplayBufferWithRing_ExtractDetectsWrapOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	// Tiny ring relative to the data we push, but a long (60s) wall-clock
+	// window so trimLocked never drops the early GOPs by time.
+	ring, err := newFileRing(filepath.Join(dir, "test.buf"), 1000)
+	require.NoError(t, err)
+	defer func() { _ = ring.CloseAndRemove() }()
+
+	buf := newReplayBufferWithRing(60, ring)
+	now := time.Now()
+
+	// GOP 1 keyframe at offset 0 (400 bytes), within the window.
+	buf.recordFrameAt(makeVideoFrame(0, true, 400), now)
+	// Capture GOP 1's ring slot before it gets overwritten.
+	buf.mu.RLock()
+	require.Len(t, buf.frames, 1)
+	gop1Off := buf.frames[0].ringOffset
+	gop1Seq := buf.frames[0].ringSeq
+	buf.mu.RUnlock()
+
+	// Push enough additional frames (10ms apart, all inside 60s) to overflow
+	// the 1000-byte ring and wrap back over offset 0, recycling GOP 1.
+	for i := 1; i <= 6; i++ {
+		kf := makeVideoFrame(int64(i)*90000, true, 400)
+		buf.recordFrameAt(kf, now.Add(time.Duration(i)*10*time.Millisecond))
+	}
+
+	// GOP 1's metadata is still resident (not time-trimmed)...
+	buf.mu.RLock()
+	require.True(t, buf.frames[0].wallTime.Equal(now),
+		"GOP 1 metadata should still be live by wall-clock time")
+	require.Equal(t, gop1Seq, buf.frames[0].ringSeq)
+	// ...but its ring slot has been recycled by the wrap.
+	_, ringErr := ring.Read(gop1Off, 400, gop1Seq)
+	buf.mu.RUnlock()
+	require.ErrorIs(t, ringErr, ErrFrameRecycled,
+		"GOP 1's ring slot should have been overwritten by the wrap")
+
+	// Extracting a clip that starts at GOP 1 must now FAIL (detected
+	// corruption) rather than returning silently-corrupt bytes.
+	_, _, err = buf.ExtractClip(now.Add(-1*time.Second), now.Add(5*time.Millisecond))
+	require.Error(t, err, "extracting a clip over a recycled GOP must error, not corrupt")
+	require.ErrorIs(t, err, ErrFrameRecycled)
 }
 
 func TestSanitizeKey(t *testing.T) {

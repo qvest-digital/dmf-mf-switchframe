@@ -5,8 +5,8 @@ package gpu
 // SegmentationProxy (sidecar delegation via CUDA IPC).
 //
 // The source manager calls Segment() on every ingested frame for enabled
-// sources. The pipeline node reads masks via MaskForSource() — a lock-free
-// atomic read that returns the latest GPU-resident segmentation mask.
+// sources. The pipeline node reads masks via MaskForSource(), which returns
+// the latest GPU-resident segmentation mask with a reference taken.
 type Segmenter interface {
 	// EnableSource creates a segmentation session for a source with the
 	// given frame dimensions. The smoothing parameter is accepted for API
@@ -38,9 +38,12 @@ type Segmenter interface {
 	// synchronously (SegmentationEngine) or asynchronously (SegmentationProxy).
 	Segment(key string, frame *GPUFrame)
 
-	// MaskForSource returns the latest GPU-resident segmentation mask.
-	// Returns nil if no mask is available. The returned GPUFrame is a uint8
-	// single-plane mask (255 = foreground, 0 = background). Lock-free.
+	// MaskForSource returns the latest GPU-resident segmentation mask with
+	// a reference taken; callers MUST Release() the returned frame when
+	// done so DisableSource cannot free the mask's device memory while a
+	// pipeline kernel is still reading it. Returns nil if no mask is
+	// available. The returned GPUFrame is a uint8 single-plane mask
+	// (255 = foreground, 0 = background).
 	MaskForSource(key string) *GPUFrame
 
 	// MaskDevPtrForSource returns the raw device pointer of the mask buffer

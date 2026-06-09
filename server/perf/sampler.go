@@ -256,6 +256,8 @@ func NewSampler(sw SwitcherPerf, mx MixerPerf, out OutputPerf) *Sampler {
 
 // SetSRTStats registers an optional function that returns SRT connection
 // stats for a given source key. Called once per srt: source on each tick.
+// The callback is invoked without holding the Sampler lock and must not call
+// back into the Sampler.
 func (s *Sampler) SetSRTStats(fn func(key string) (rttMs, lossRate, recvBufMs float64, ok bool)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -263,7 +265,9 @@ func (s *Sampler) SetSRTStats(fn func(key string) (rttMs, lossRate, recvBufMs fl
 }
 
 // SetPreviewStats registers an optional function that returns preview encoder
-// stats for all active preview encoders. Called once per tick.
+// stats for all active preview encoders. Called once per tick. The callback is
+// invoked without holding the Sampler lock and must not call back into the
+// Sampler.
 func (s *Sampler) SetPreviewStats(fn func() map[string]PreviewEncoderStats) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -304,14 +308,21 @@ func (s *Sampler) tick() {
 	mx := s.mixer.PerfSample()
 	out := s.output.PerfSample()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Snapshot the user-supplied callbacks under the lock, then invoke them
+	// without holding s.mu. Callbacks must not call back into the Sampler;
+	// running them under s.mu would establish a lock-ordering edge from the
+	// hot telemetry lock to whatever locks the callback takes and could stall
+	// Snapshot()/HTTP under contention.
+	s.mu.RLock()
+	srtStats := s.srtStats
+	previewStats := s.previewStats
+	s.mu.RUnlock()
 
-	// Enrich SRT sources with connection stats
-	if s.srtStats != nil {
+	// Enrich SRT sources with connection stats (callback invoked lock-free).
+	if srtStats != nil {
 		for key, src := range sw.Sources {
 			if strings.HasPrefix(key, "srt:") {
-				if rtt, loss, buf, ok := s.srtStats(key); ok {
+				if rtt, loss, buf, ok := srtStats(key); ok {
 					src.SRTRTTMs = rtt
 					src.SRTLossRate = loss
 					src.SRTRecvBufMs = buf
@@ -320,6 +331,15 @@ func (s *Sampler) tick() {
 			}
 		}
 	}
+
+	// Collect preview encoder stats (point-in-time, callback invoked lock-free).
+	var previewSnapshot map[string]PreviewEncoderStats
+	if previewStats != nil {
+		previewSnapshot = previewStats()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	// Compute per-source raw ingest FPS from frame count deltas
 	now := time.Now()
@@ -347,9 +367,9 @@ func (s *Sampler) tick() {
 		}
 	}
 
-	// Collect preview encoder stats (point-in-time)
-	if s.previewStats != nil {
-		s.lastPreviewStats = s.previewStats()
+	// Store preview encoder stats collected above (lock-free) into the cache.
+	if previewStats != nil {
+		s.lastPreviewStats = previewSnapshot
 	}
 
 	s.lastSwitcherSample = sw

@@ -42,8 +42,37 @@ type cpuFrameCache struct {
 
 // gpuSourceEntry holds the GPU state for a single source.
 type gpuSourceEntry struct {
+	// curMu serializes every publish (Swap+Release) of current with every
+	// read-that-takes-a-ref (Load+Ref). A lock-free Load -> Ref -> recheck
+	// loop is NOT safe with a pool that recycles frames at refcount zero:
+	// between the reader's Load and Ref the publisher can Swap and Release
+	// the frame to the pool, after which the reader's Ref resurrects a dead
+	// refcount and its compensating Release double-inserts the frame into
+	// the pool free list (frame aliasing / VRAM corruption). Holding curMu
+	// across Load+Ref guarantees the publisher's reference is still alive
+	// when the reader takes its own. Critical sections are a few
+	// instructions; no GPU work runs under this lock.
+	curMu   sync.Mutex
 	current atomic.Pointer[GPUFrame]      // latest frame for readers
 	lastCPU atomic.Pointer[cpuFrameCache] // cached CPU YUV for playout tap
+
+	// cpuCacheWanted gates population of lastCPU. Set by ReadCachedFrame
+	// (playout live-source tap) and propagated by AliasSource. Without a
+	// reader, IngestYUV skips the per-frame full-frame allocation+copy
+	// (~3.1 MB at 1080p) the cache would otherwise cost.
+	cpuCacheWanted atomic.Bool
+
+	// useMu serializes use of the per-entry GPU resources below (scalePool,
+	// nv12Tmp, stmap, stmapTmp, colorLUT*, scaleBuf) between the ingest
+	// paths and cleanupEntry. Ingest is single-producer per source, so
+	// holding it for the duration of an ingest adds no contention; cleanup
+	// acquires it once to wait out any in-flight ingest before freeing.
+	useMu sync.Mutex
+	// closed is set by cleanupEntry (under useMu) when the entry has been
+	// removed/replaced. Ingest and alias paths drop their frames once set,
+	// so nothing is published into (and leaked with) an orphaned entry and
+	// no freed GPU resource is recreated or reused.
+	closed atomic.Bool
 
 	// Preview encoder (nil if no preview configured).
 	prevEnc   *PreviewEncoder
@@ -76,6 +105,34 @@ type gpuSourceEntry struct {
 	scaleBuf []byte
 
 	width, height int
+}
+
+// refCurrent returns the entry's current frame with an extra reference taken
+// under curMu, or nil if the entry has no frame. The caller must Release the
+// returned frame. See the curMu field comment for why the lock is required.
+func refCurrent(entry *gpuSourceEntry) *GPUFrame {
+	entry.curMu.Lock()
+	frame := entry.current.Load()
+	if frame != nil {
+		frame.Ref()
+	}
+	entry.curMu.Unlock()
+	return frame
+}
+
+// publishCurrent swaps frame into entry.current under curMu and releases the
+// previously published frame. Passing nil drains the entry. Ownership of
+// frame transfers to the entry. The old frame's Release runs outside the
+// lock: any reader that Ref'd it did so under curMu before the swap, while
+// our reference was still alive, so the release here can never free a frame
+// a reader is still acquiring.
+func publishCurrent(entry *gpuSourceEntry, frame *GPUFrame) {
+	entry.curMu.Lock()
+	old := entry.current.Swap(frame)
+	entry.curMu.Unlock()
+	if old != nil {
+		old.Release()
+	}
 }
 
 // NewGPUSourceManager creates a new source manager.
@@ -142,13 +199,20 @@ func (m *GPUSourceManager) RegisterSource(sourceKey string, w, h int, preview *P
 		}
 	}
 
+	// Swap the new entry in under the lock, then clean up the old one OUTSIDE
+	// the lock. cleanupEntry closes prevCh and blocks on <-prevDone to
+	// join the preview goroutine; doing that under m.mu would stall every
+	// concurrent IngestYUV/GetFrame/CurrentFrame (all take m.mu.RLock) for the
+	// duration of the join + encoder Close, and would deadlock if the preview
+	// callback ever re-entered the source manager. Mirror RemoveSource.
 	m.mu.Lock()
-	// Clean up any existing entry with the same key.
-	if old, exists := m.sources[sourceKey]; exists {
-		m.cleanupEntryLocked(old)
-	}
+	old, hadOld := m.sources[sourceKey]
 	m.sources[sourceKey] = entry
 	m.mu.Unlock()
+
+	if hadOld {
+		m.cleanupEntry(old)
+	}
 
 	slog.Info("gpu: source manager: registered source",
 		"source", sourceKey, "size", [2]int{w, h},
@@ -169,13 +233,26 @@ func (m *GPUSourceManager) RemoveSource(sourceKey string) {
 		return
 	}
 
-	m.cleanupEntryLocked(entry)
+	m.cleanupEntry(entry)
 	slog.Info("gpu: source manager: removed source", "source", sourceKey)
 }
 
-// cleanupEntryLocked releases all resources owned by a source entry.
-// The entry must already be removed from (or about to be replaced in) the map.
-func (m *GPUSourceManager) cleanupEntryLocked(entry *gpuSourceEntry) {
+// cleanupEntry releases all resources owned by a source entry. It runs
+// WITHOUT m.mu held (closing the preview goroutine under m.mu would stall
+// all sources and can deadlock on re-entrant preview callbacks). The entry
+// must already be removed from (or replaced in) the map.
+func (m *GPUSourceManager) cleanupEntry(entry *gpuSourceEntry) {
+	// Mark the entry closed and wait for any in-flight ingest to drain.
+	// Ingest paths hold useMu for their full duration, so after this block
+	// no goroutine can touch the GPU resources freed below (previously
+	// cleanup raced with IngestYUV's lock-free use of scalePool/nv12Tmp/
+	// stmap/colorLUT — GPU use-after-free) and any frame the in-flight
+	// ingest published has been swapped into entry.current, where the
+	// publishCurrent(entry, nil) below releases it (no pool-frame leak).
+	entry.useMu.Lock()
+	entry.closed.Store(true)
+	entry.useMu.Unlock()
+
 	// Stop preview goroutine first.
 	if entry.prevCh != nil {
 		close(entry.prevCh)
@@ -188,9 +265,7 @@ func (m *GPUSourceManager) cleanupEntryLocked(entry *gpuSourceEntry) {
 	}
 
 	// Release current frame.
-	if cur := entry.current.Swap(nil); cur != nil {
-		cur.Release()
-	}
+	publishCurrent(entry, nil)
 
 	// Free GPU scale pool.
 	if entry.scalePool != nil {
@@ -250,18 +325,34 @@ func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts
 		}
 	}
 
-	// Cache CPU YUV for ReadCachedFrame (playout live source tap).
+	// Hold the entry's use-lock for the whole ingest: the upload/warp/grade
+	// paths below use per-entry GPU resources (scalePool, nv12Tmp, stmap,
+	// stmapTmp, colorLUT) that cleanupEntry frees. cleanupEntry acquires
+	// useMu before freeing, so an in-flight ingest finishes first; once the
+	// entry is closed the frame is dropped (the source was removed).
+	entry.useMu.Lock()
+	defer entry.useMu.Unlock()
+	if entry.closed.Load() {
+		return
+	}
+
+	// Cache CPU YUV for ReadCachedFrame (playout live source tap) — only
+	// when a reader has shown interest. Unconditionally allocating and
+	// copying a full frame per ingest (~3.1 MB at 1080p) is sustained GC
+	// pressure for a cache that is rarely read.
 	// Done before GPU upload to avoid copying GPU-modified data back.
 	// Always allocate a fresh cpuFrameCache because the previous one may
 	// still be referenced by a concurrent ReadCachedFrame caller.
-	cached := &cpuFrameCache{
-		yuv: make([]byte, len(yuv)),
-		w:   w,
-		h:   h,
-		pts: pts,
+	if entry.cpuCacheWanted.Load() {
+		cached := &cpuFrameCache{
+			yuv: make([]byte, len(yuv)),
+			w:   w,
+			h:   h,
+			pts: pts,
+		}
+		copy(cached.yuv, yuv)
+		entry.lastCPU.Store(cached)
 	}
-	copy(cached.yuv, yuv)
-	entry.lastCPU.Store(cached)
 
 	// Acquire a GPU frame from the pool.
 	frame, err := m.pool.Acquire()
@@ -293,11 +384,8 @@ func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts
 		m.applySourceColorGrade(sourceKey, entry, frame, colorGrade)
 	}
 
-	// Atomic swap: store new frame, release old.
-	old := entry.current.Swap(frame)
-	if old != nil {
-		old.Release()
-	}
+	// Publish: store new frame, release old.
+	publishCurrent(entry, frame)
 
 	// Per-source AI segmentation (if enabled for this source).
 	// Reads segEngine under RLock to avoid holding the lock during inference.
@@ -320,10 +408,10 @@ func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts
 		}
 
 		if segEng.IsEnabled(sourceKey) {
-			gpuFrame := entry.current.Load()
-			if gpuFrame != nil {
+			if gpuFrame := refCurrent(entry); gpuFrame != nil {
 				segEng.Segment(sourceKey, gpuFrame)
 				// Mask cached in session — pipeline node reads it via MaskForSource()
+				gpuFrame.Release()
 			}
 		}
 	}
@@ -628,6 +716,15 @@ func (m *GPUSourceManager) applySourceColorGrade(sourceKey string, entry *gpuSou
 			return
 		}
 
+		// Fail closed if the declared cube dimension disagrees with the data
+		// length — otherwise the kernel would index past the device buffer.
+		size := provider.SourceLUTSize(sourceKey)
+		if err := validateLUT3D(data, size); err != nil {
+			slog.Warn("gpu: source manager: invalid color grade LUT, skipping",
+				"source", sourceKey, "error", err)
+			return
+		}
+
 		devPtr, err := UploadLUT3D(data)
 		if err != nil {
 			slog.Warn("gpu: source manager: color grade LUT upload failed",
@@ -636,7 +733,7 @@ func (m *GPUSourceManager) applySourceColorGrade(sourceKey string, entry *gpuSou
 		}
 		entry.colorLUTDev = devPtr
 		entry.colorLUTGen = gen
-		entry.colorLUTSize = provider.SourceLUTSize(sourceKey)
+		entry.colorLUTSize = size
 	}
 
 	// Apply the LUT at full intensity (per-source correction, no slider).
@@ -709,6 +806,10 @@ func (m *GPUSourceManager) CurrentFrame(sourceKey string) *GPUFrame {
 // source. Used by the playout live source tap to read frames without GPU
 // download. Returns nil values if the source is not found or has no cached
 // frame. The returned []byte is a fresh copy safe for the caller to own.
+//
+// The CPU cache is populated lazily: the first call for a source marks the
+// cache as wanted and may return nil; subsequent ingests populate it. This
+// keeps the per-ingest full-frame copy off sources nothing ever reads.
 func (m *GPUSourceManager) ReadCachedFrame(sourceKey string) (yuv []byte, w, h int, pts int64) {
 	m.mu.RLock()
 	entry, exists := m.sources[sourceKey]
@@ -716,6 +817,9 @@ func (m *GPUSourceManager) ReadCachedFrame(sourceKey string) (yuv []byte, w, h i
 	if !exists || entry == nil {
 		return nil, 0, 0, 0
 	}
+
+	// Mark interest so IngestYUV starts populating the cache.
+	entry.cpuCacheWanted.Store(true)
 
 	cached := entry.lastCPU.Load()
 	if cached == nil {
@@ -732,10 +836,10 @@ func (m *GPUSourceManager) ReadCachedFrame(sourceKey string) (yuv []byte, w, h i
 // reference count. The caller must call Release() when done. Returns nil
 // if the source is not found or has no frame yet.
 //
-// Uses a CAS-like retry loop to prevent a use-after-free race: between
-// Load() and Ref(), IngestYUV can Swap and Release the old frame. The
-// loop verifies the frame is still current after Ref(); if not, it
-// releases and retries with the new frame.
+// The Load+Ref runs under the entry's curMu, shared with every publisher
+// (IngestYUV/IngestGPUFrame/AliasSource/cleanup). A lock-free retry loop is
+// not safe here: a publisher could Swap+Release the loaded frame to the pool
+// between Load and Ref, and the Ref would resurrect a recycled frame.
 func (m *GPUSourceManager) GetFrame(sourceKey string) *GPUFrame {
 	m.mu.RLock()
 	entry, exists := m.sources[sourceKey]
@@ -744,20 +848,7 @@ func (m *GPUSourceManager) GetFrame(sourceKey string) *GPUFrame {
 		return nil
 	}
 
-	for {
-		frame := entry.current.Load()
-		if frame == nil {
-			return nil
-		}
-
-		frame.Ref()
-		// Verify the frame is still the current one (not swapped out).
-		if entry.current.Load() == frame {
-			return frame // Success — we hold a valid ref.
-		}
-		// Frame was swapped between Load and Ref. Release our ref and retry.
-		frame.Release()
-	}
+	return refCurrent(entry)
 }
 
 // Close removes all sources and releases all GPU resources.
@@ -768,7 +859,7 @@ func (m *GPUSourceManager) Close() {
 	m.mu.Unlock()
 
 	for _, entry := range sources {
-		m.cleanupEntryLocked(entry)
+		m.cleanupEntry(entry)
 	}
 }
 
@@ -819,6 +910,15 @@ func (m *GPUSourceManager) AcquireNV12Tmp(sourceKey string, w, h int) (*GPUFrame
 		}
 	}
 
+	// Serialize nv12Tmp pool create/close with cleanupEntry. The returned
+	// frame stays valid after unlock: a closed FramePool frees frames on
+	// their final Release instead of re-pooling them.
+	entry.useMu.Lock()
+	defer entry.useMu.Unlock()
+	if entry.closed.Load() {
+		return nil, fmt.Errorf("gpu: AcquireNV12Tmp: source %s was removed", sourceKey)
+	}
+
 	if entry.nv12Tmp == nil || entry.nv12TmpW != w || entry.nv12TmpH != h {
 		if entry.nv12Tmp != nil {
 			entry.nv12Tmp.Close()
@@ -852,6 +952,14 @@ func (m *GPUSourceManager) IngestGPUFrame(sourceKey string, frame *GPUFrame, pts
 			frame.Release()
 			return
 		}
+	}
+
+	// Serialize with cleanupEntry — see IngestYUV for the rationale.
+	entry.useMu.Lock()
+	defer entry.useMu.Unlock()
+	if entry.closed.Load() {
+		frame.Release()
+		return
 	}
 
 	frame.PTS = pts
@@ -901,11 +1009,12 @@ func (m *GPUSourceManager) IngestGPUFrame(sourceKey string, frame *GPUFrame, pts
 		m.applySourceColorGrade(sourceKey, entry, frame, colorGradeGPU)
 	}
 
-	// Atomic swap: store new frame, release old.
-	old := entry.current.Swap(frame)
-	if old != nil {
-		old.Release()
-	}
+	// Record dimensions before publishing — ownership of frame transfers to
+	// the entry on publish, after which it may be swapped out and released.
+	frameW, frameH := frame.Width, frame.Height
+
+	// Publish: store new frame, release old.
+	publishCurrent(entry, frame)
 
 	// Per-source AI segmentation (if enabled for this source).
 	m.mu.RLock()
@@ -914,27 +1023,27 @@ func (m *GPUSourceManager) IngestGPUFrame(sourceKey string, frame *GPUFrame, pts
 	if segEng != nil {
 		if segEng.HasPendingConfig(sourceKey) {
 			smoothing := segEng.PendingSmoothing(sourceKey)
-			if err := segEng.EnableSource(sourceKey, frame.Width, frame.Height, smoothing); err != nil {
+			if err := segEng.EnableSource(sourceKey, frameW, frameH, smoothing); err != nil {
 				slog.Warn("gpu: source manager: deferred segmentation enable failed",
 					"source", sourceKey, "error", err)
 			} else {
 				segEng.ClearPendingConfig(sourceKey)
 				slog.Info("gpu: source manager: deferred segmentation enabled",
-					"source", sourceKey, "size", [2]int{frame.Width, frame.Height})
+					"source", sourceKey, "size", [2]int{frameW, frameH})
 			}
 		}
 
 		if segEng.IsEnabled(sourceKey) {
-			gpuFrame := entry.current.Load()
-			if gpuFrame != nil {
+			if gpuFrame := refCurrent(entry); gpuFrame != nil {
 				segEng.Segment(sourceKey, gpuFrame)
+				gpuFrame.Release()
 			}
 		}
 	}
 
 	// Queue frame for preview encoding.
 	// nil CPU buffer — CUDA preview path copies from GPU frame (device-to-device).
-	m.queuePreviewFrame(entry, nil, frame.Width, frame.Height, pts)
+	m.queuePreviewFrame(entry, nil, frameW, frameH, pts)
 }
 
 // AliasSource makes dstKey use srcKey's latest GPU frame for this tick.
@@ -956,33 +1065,57 @@ func (m *GPUSourceManager) AliasSource(dstKey, srcKey string) bool {
 		return false
 	}
 
-	// Load the source's current GPU frame.
-	srcFrame := srcEntry.current.Load()
+	if dstEntry == srcEntry {
+		// Self-alias is a no-op; report whether a frame exists.
+		return srcEntry.current.Load() != nil
+	}
+
+	// Take a reference to the source's current GPU frame under its curMu —
+	// the Load+Ref must be atomic with respect to IngestYUV's Swap+Release
+	// or we could resurrect a frame already returned to the pool.
+	srcFrame := refCurrent(srcEntry)
 	if srcFrame == nil {
 		return false
 	}
+	// Read the PTS while we still hold our own reference — after the
+	// publish below, ownership transfers to dst and the frame may be
+	// swapped out, released, and recycled at any time.
+	srcPTS := srcFrame.PTS
 
-	// Ref the source frame before storing it as dst's current.
-	// This prevents the frame from being released if src ingests a new frame
-	// between our Load and the pipeline's read.
-	srcFrame.Ref()
-
-	// Atomic swap into dst's current pointer.
+	// Publish into dst's current pointer; our reference transfers to dst.
+	// Skip if dst was concurrently removed: cleanupEntry has already
+	// drained dst.current, so publishing now would leak the reference into
+	// an orphaned entry. The closed flag is set before cleanup's drain, so
+	// observing it under curMu after the drain is race-free.
+	dstEntry.curMu.Lock()
+	if dstEntry.closed.Load() {
+		dstEntry.curMu.Unlock()
+		srcFrame.Release()
+		return false
+	}
 	old := dstEntry.current.Swap(srcFrame)
+	dstEntry.curMu.Unlock()
 	if old != nil {
 		old.Release()
 	}
 
-	// Also alias the CPU frame cache so preview encoding picks up the frame.
+	// Propagate CPU-cache interest: a tap reading the alias destination
+	// (ReadCachedFrame on dstKey) depends on the source entry populating
+	// its CPU cache on ingest.
+	if dstEntry.cpuCacheWanted.Load() {
+		srcEntry.cpuCacheWanted.Store(true)
+	}
+
+	// Also alias the CPU frame cache so ReadCachedFrame(dstKey) sees it.
 	srcCPU := srcEntry.lastCPU.Load()
 	if srcCPU != nil {
 		dstEntry.lastCPU.Store(srcCPU)
 	}
 
-	// Queue frame for preview encoding so the browser multiview stays current.
-	if srcCPU != nil {
-		m.queuePreviewFrame(dstEntry, srcCPU.yuv, srcCPU.w, srcCPU.h, srcCPU.pts)
-	}
+	// Queue frame for preview encoding so the browser multiview stays
+	// current. The preview path copies from dst's current GPU frame, so it
+	// does not need the CPU cache.
+	m.queuePreviewFrame(dstEntry, nil, 0, 0, srcPTS)
 
 	return true
 }

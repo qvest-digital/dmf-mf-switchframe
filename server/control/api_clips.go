@@ -119,7 +119,11 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 	a.uploadMu.Lock()
 	if a.uploadProgress != nil {
 		if time.Since(a.uploadStartTime) > 10*time.Minute {
-			// Stale upload — clear it and allow the new one.
+			// Stale upload — clear it and allow the new one. The previous
+			// upload's goroutine may still be running (the 10-minute context
+			// deadline only bounds body reads; a transcode can legitimately
+			// run longer): the generation bump below revokes its ownership so
+			// its progress writes and deferred cleanup become no-ops.
 			a.uploadProgress = nil
 		} else {
 			a.uploadMu.Unlock()
@@ -127,12 +131,19 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Take ownership of the progress record. Only the goroutine whose gen
+	// matches a.uploadGen may update or clear it; this prevents a taken-over
+	// (but still running) upload from clobbering its successor's state.
+	a.uploadGen++
+	gen := a.uploadGen
 	a.uploadProgress = &internal.ClipUploadProgress{Stage: "uploading"}
 	a.uploadStartTime = time.Now()
 	a.uploadMu.Unlock()
 	defer func() {
 		a.uploadMu.Lock()
-		a.uploadProgress = nil
+		if a.uploadGen == gen {
+			a.uploadProgress = nil
+		}
 		a.uploadMu.Unlock()
 		a.broadcast()
 	}()
@@ -140,7 +151,7 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 	// Helper to update and broadcast progress.
 	setProgress := func(stage string, percent int) {
 		a.uploadMu.Lock()
-		if a.uploadProgress != nil {
+		if a.uploadGen == gen && a.uploadProgress != nil {
 			a.uploadProgress.Stage = stage
 			a.uploadProgress.Percent = percent
 		}
@@ -150,7 +161,7 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 
 	setProgressFilename := func(stage string, percent int, filename string) {
 		a.uploadMu.Lock()
-		if a.uploadProgress != nil {
+		if a.uploadGen == gen && a.uploadProgress != nil {
 			a.uploadProgress.Stage = stage
 			a.uploadProgress.Percent = percent
 			a.uploadProgress.Filename = filename
@@ -216,7 +227,7 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 		setProgress("transcoding", 0)
 		slog.Info("clip: transcoding upload", "input", header.Filename)
 
-		tsPath, tcErr := a.transcodeWithProgress(tmpPath)
+		tsPath, tcErr := a.transcodeWithProgress(tmpPath, gen)
 		_ = os.Remove(tmpPath) // clean up original
 		if tcErr != nil {
 			_ = os.Remove(tsPath)
@@ -246,7 +257,7 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 
 		setProgress("transcoding", 0)
 
-		tsPath, tcErr := a.transcodeWithProgress(tmpPath)
+		tsPath, tcErr := a.transcodeWithProgress(tmpPath, gen)
 		_ = os.Remove(tmpPath)
 		if tcErr != nil {
 			_ = os.Remove(tsPath)
@@ -330,8 +341,9 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 
 // transcodeWithProgress runs FFmpeg transcode with a progress polling goroutine.
 // Returns the output .ts path and any error. The caller is responsible for
-// cleaning up input/output files on error.
-func (a *API) transcodeWithProgress(inputPath string) (string, error) {
+// cleaning up input/output files on error. gen is the caller's upload
+// ownership token (see handleClipUpload).
+func (a *API) transcodeWithProgress(inputPath string, gen uint64) (string, error) {
 	tsPath := inputPath + ".transcoded.ts"
 	encoderName, _ := codec.ProbeEncoders()
 
@@ -340,7 +352,7 @@ func (a *API) transcodeWithProgress(inputPath string) (string, error) {
 	// Stack allocation ensures the GC cannot relocate it. Do NOT move this to
 	// the heap (e.g., new(int32)) without using runtime.Pinner.
 	var transcodePct int32
-	stopPoll := a.pollTranscodeProgress(&transcodePct)
+	stopPoll := a.pollTranscodeProgress(&transcodePct, gen)
 	_, err := codec.TranscodeFileWithProgress(inputPath, tsPath, encoderName, 0, &transcodePct)
 	stopPoll()
 	return tsPath, err
@@ -348,8 +360,9 @@ func (a *API) transcodeWithProgress(inputPath string) (string, error) {
 
 // pollTranscodeProgress starts a goroutine that reads the atomic transcode
 // progress counter at 4Hz and broadcasts state updates. Returns a stop function
-// that is safe to call multiple times.
-func (a *API) pollTranscodeProgress(pct *int32) func() {
+// that is safe to call multiple times. Updates are dropped once gen is no
+// longer the current upload generation (the upload was taken over).
+func (a *API) pollTranscodeProgress(pct *int32, gen uint64) func() {
 	done := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(250 * time.Millisecond)
@@ -361,7 +374,7 @@ func (a *API) pollTranscodeProgress(pct *int32) func() {
 			case <-ticker.C:
 				p := int(atomic.LoadInt32(pct))
 				a.uploadMu.Lock()
-				if a.uploadProgress != nil {
+				if a.uploadGen == gen && a.uploadProgress != nil {
 					a.uploadProgress.Stage = "transcoding"
 					a.uploadProgress.Percent = p
 				}

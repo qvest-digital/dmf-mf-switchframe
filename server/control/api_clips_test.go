@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -977,4 +978,74 @@ func TestUploadProgressAccessor(t *testing.T) {
 	api.uploadMu.Unlock()
 
 	require.Nil(t, api.UploadProgress())
+}
+
+// TestHandleClipUploadStaleTakeoverOwnership reproduces the takeover race:
+// upload #1 holds the guard past the 10-minute staleness window (e.g. a long
+// transcode) while upload #2 legitimately takes over. When upload #1 finally
+// finishes, its deferred cleanup must NOT clear upload #2's in-flight progress
+// record — only the goroutine that owns the current record may clear it.
+func TestHandleClipUploadStaleTakeoverOwnership(t *testing.T) {
+	api, _, _ := setupTestAPIWithClips(t)
+	api.SetBroadcastFunc(func() {})
+
+	newUploadReq := func(body io.Reader) *http.Request {
+		req := httptest.NewRequest("POST", "/api/clips/upload", body)
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=b")
+		return req
+	}
+
+	// Upload #1: acquires the guard, then blocks reading its body from a pipe.
+	pr1, pw1 := io.Pipe()
+	done1 := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, newUploadReq(pr1))
+		done1 <- rec.Code
+	}()
+
+	// Wait for upload #1 to own the guard.
+	require.Eventually(t, func() bool {
+		return api.UploadProgress() != nil
+	}, 2*time.Second, 5*time.Millisecond, "upload #1 should acquire the guard")
+
+	// Backdate the start time so the guard looks stale (>10 minutes old),
+	// simulating upload #1 outliving the takeover window mid-flight.
+	api.uploadMu.Lock()
+	api.uploadStartTime = time.Now().Add(-11 * time.Minute)
+	api.uploadMu.Unlock()
+
+	// Upload #2: takes over the stale guard, then blocks reading its body.
+	pr2, pw2 := io.Pipe()
+	done2 := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, newUploadReq(pr2))
+		done2 <- rec.Code
+	}()
+
+	// Wait for the takeover (the start time becomes recent again).
+	require.Eventually(t, func() bool {
+		api.uploadMu.Lock()
+		defer api.uploadMu.Unlock()
+		return api.uploadProgress != nil && time.Since(api.uploadStartTime) < time.Minute
+	}, 2*time.Second, 5*time.Millisecond, "upload #2 should take over the stale guard")
+
+	// Upload #1 finishes (its body errors out). Its deferred cleanup must not
+	// wipe upload #2's in-flight progress.
+	pw1.CloseWithError(io.ErrUnexpectedEOF)
+	<-done1
+	require.NotNil(t, api.UploadProgress(),
+		"upload #1's deferred cleanup must not clear upload #2's in-flight progress")
+
+	// And a third upload must still be rejected while #2 is in flight.
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, newUploadReq(strings.NewReader("")))
+	require.Equal(t, http.StatusConflict, rec.Code,
+		"a third upload must be rejected while upload #2 is in flight")
+
+	// Finish upload #2 — it owns the record, so its cleanup clears it.
+	pw2.CloseWithError(io.ErrUnexpectedEOF)
+	<-done2
+	require.Nil(t, api.UploadProgress(), "upload #2's cleanup should clear its own progress")
 }

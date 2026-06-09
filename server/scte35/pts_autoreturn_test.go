@@ -253,3 +253,81 @@ func TestAutoReturn_TimeSignalFiresOnPTSCrossing(t *testing.T) {
 	}, 500*time.Millisecond, 10*time.Millisecond,
 		"time_signal auto-return should fire once PTS crosses the scheduled value")
 }
+
+// TestAutoReturn_AbusiveDurations_ScheduledPTSStaysIn33Bit exercises the
+// overflow regime of the injector PTS time-math: adversarial break durations
+// (including ones that would overflow int64 ticks) must never produce a
+// scheduledReturnPTS outside the valid 33-bit MPEG-TS PTS range, and must not
+// panic. durationToTicksSat clamps to maxPTSTicks and maskPTS33 confines the
+// result, so the scheduled value is always in [0, 2^33).
+func TestAutoReturn_AbusiveDurations_ScheduledPTSStaysIn33Bit(t *testing.T) {
+	t.Parallel()
+
+	const ptsMask = int64(1)<<33 - 1
+
+	cases := []struct {
+		name string
+		dur  time.Duration
+	}{
+		{"oneHour", time.Hour},
+		{"halfPTSPeriod", 13*time.Hour + 15*time.Minute}, // ~13.25h, near maxPTSTicks
+		{"twentySixHours", 26 * time.Hour},               // past the full 33-bit period
+		{"maxDuration", time.Duration(1<<63 - 1)},        // would overflow naive ticks math
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var currentPTS atomic.Int64
+			anchor := int64(7_000_000)
+			currentPTS.Store(anchor)
+			ptsFn := func() int64 { return currentPTS.Load() }
+
+			inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, func([]byte) {}, ptsFn)
+			defer inj.Close()
+
+			// splice_insert cue-out.
+			id, err := inj.InjectCue(NewSpliceInsert(0, tc.dur, true, true))
+			require.NoError(t, err)
+
+			inj.mu.Lock()
+			ae, ok := inj.activeEvents[id]
+			require.True(t, ok, "active event should be tracked")
+			sched := ae.scheduledReturnPTS
+			inj.mu.Unlock()
+
+			require.GreaterOrEqual(t, sched, int64(0),
+				"scheduledReturnPTS must be non-negative")
+			require.LessOrEqual(t, sched, ptsMask,
+				"scheduledReturnPTS must stay within the 33-bit PTS range")
+			require.Equal(t, sched, maskPTS33(sched),
+				"scheduledReturnPTS must already be masked to 33 bits")
+
+			// time_signal cue-out with the same abusive duration.
+			ticks := durationToTicksSat(tc.dur)
+			uticks := uint64(ticks)
+			tsID, err := inj.InjectCue(&CueMessage{
+				CommandType: CommandTimeSignal,
+				Timing:      "immediate",
+				Descriptors: []SegmentationDescriptor{{
+					SegEventID:       0,
+					SegmentationType: 0x34,
+					DurationTicks:    &uticks,
+				}},
+			})
+			require.NoError(t, err)
+
+			inj.mu.Lock()
+			tsAE, ok := inj.activeEvents[tsID]
+			require.True(t, ok, "time_signal active event should be tracked")
+			tsSched := tsAE.scheduledReturnPTS
+			inj.mu.Unlock()
+
+			require.GreaterOrEqual(t, tsSched, int64(0))
+			require.LessOrEqual(t, tsSched, ptsMask,
+				"time_signal scheduledReturnPTS must stay within the 33-bit PTS range")
+		})
+	}
+}

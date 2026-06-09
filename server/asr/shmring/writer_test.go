@@ -277,6 +277,69 @@ func TestWriterWriteSeqMonotonic(t *testing.T) {
 	}
 }
 
+// TestWriterWriteLargerThanCapacity is the regression test for the
+// out-of-bounds-write finding: a single Write larger than the ring capacity
+// must not write past the end of the mmap'd segment and must leave the ring
+// holding exactly the newest capacity samples (the older samples would have
+// been overwritten anyway), with WritePos advanced by the full logical amount.
+func TestWriterWriteLargerThanCapacity(t *testing.T) {
+	const capSamples = 1024
+
+	cases := []struct {
+		name     string
+		nsamples int // > capSamples
+	}{
+		// Self-overlapping single copy: fits the tail span but exceeds capacity.
+		{"1.5x capacity", capSamples + capSamples/2},
+		// Wrap branch where the second copy would run past the mapped segment.
+		{"3x capacity", capSamples * 3},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			name := testShmName(t)
+			w, err := NewWriter(name, capSamples)
+			if err != nil {
+				skipIfNoShm(t, err)
+				t.Fatalf("NewWriter: %v", err)
+			}
+			defer func() { _ = w.Close() }()
+
+			r, err := NewReader(name)
+			if err != nil {
+				skipIfNoShm(t, err)
+				t.Fatalf("NewReader: %v", err)
+			}
+			defer func() { _ = r.Close() }()
+
+			pcm := make([]float32, tc.nsamples)
+			for i := range pcm {
+				pcm[i] = float32(i)
+			}
+			w.Write(pcm, 0, 48000, 1)
+
+			// WritePos advances by the full logical amount so a lapped reader
+			// fast-forwards correctly.
+			wantPos := uint64(tc.nsamples * 4)
+			if snap := w.Header(); snap.WritePos != wantPos {
+				t.Errorf("WritePos = %d, want %d", snap.WritePos, wantPos)
+			}
+
+			// The reader must observe exactly the newest capSamples values.
+			got := r.Read()
+			if len(got) != capSamples {
+				t.Fatalf("Read() = %d samples, want %d (latest capacity)", len(got), capSamples)
+			}
+			for i, v := range got {
+				want := float32(tc.nsamples - capSamples + i)
+				if v != want {
+					t.Fatalf("sample[%d] = %v, want %v (newest capacity samples)", i, v, want)
+				}
+			}
+		})
+	}
+}
+
 func TestWriterAtomicVisibility(t *testing.T) {
 	name := testShmName(t)
 	w, err := NewWriter(name, 4096)

@@ -779,5 +779,111 @@ describe('ConnectionManager', () => {
 			// Should not throw
 			manager.stop();
 		});
+
+		it('does not re-arm the retry loop when stop() races an in-flight initial fetch', async () => {
+			setupMocks();
+			let rejectFetch!: (e: Error) => void;
+			const mockFetch = vi.fn(
+				() =>
+					new Promise((_, reject) => {
+						rejectFetch = reject;
+					})
+			);
+			vi.stubGlobal('fetch', mockFetch);
+
+			const onInitialLoadError = vi.fn();
+			const onStateUpdate = vi.fn();
+			const manager = new ConnectionManager({
+				url: 'https://localhost:8080',
+				onStateUpdate,
+				onConnectionStateChange: vi.fn(),
+				onInitialLoadComplete: vi.fn(),
+				onInitialLoadError,
+			});
+
+			// start() suspends on the in-flight initial fetch.
+			const starting = manager.start();
+			// Teardown while the fetch is still in flight (e.g. engine replaced
+			// at a new URL, or page destroy).
+			manager.stop();
+
+			rejectFetch(new Error('network down'));
+			await starting;
+
+			// The torn-down manager must not report errors or keep retrying.
+			expect(onInitialLoadError).not.toHaveBeenCalled();
+
+			mockFetch.mockClear();
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(mockFetch).not.toHaveBeenCalled();
+			expect(onStateUpdate).not.toHaveBeenCalled();
+		});
+
+		it('does not push state from an in-flight initial fetch that resolves after stop()', async () => {
+			setupMocks();
+			let resolveFetch!: (r: unknown) => void;
+			const mockFetch = vi.fn(
+				() =>
+					new Promise((resolve) => {
+						resolveFetch = resolve;
+					})
+			);
+			vi.stubGlobal('fetch', mockFetch);
+
+			const onStateUpdate = vi.fn();
+			const onInitialLoadComplete = vi.fn();
+			const manager = new ConnectionManager({
+				url: 'https://localhost:8080',
+				onStateUpdate,
+				onConnectionStateChange: vi.fn(),
+				onInitialLoadComplete,
+				onInitialLoadError: vi.fn(),
+			});
+
+			const starting = manager.start();
+			manager.stop();
+
+			const state = makeState();
+			resolveFetch({
+				ok: true,
+				json: () => Promise.resolve(state),
+				text: () => Promise.resolve(''),
+			});
+			await starting;
+
+			// Stale state must not be pushed into torn-down consumers, and
+			// polling must not start after stop().
+			expect(onStateUpdate).not.toHaveBeenCalled();
+			expect(onInitialLoadComplete).not.toHaveBeenCalled();
+
+			mockFetch.mockClear();
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(mockFetch).not.toHaveBeenCalled();
+		});
+
+		it('can be restarted after a raced stop()', async () => {
+			setupMocks();
+			const state = makeState();
+			const mockFetch = makeOkFetch(state);
+			vi.stubGlobal('fetch', mockFetch);
+
+			const onStateUpdate = vi.fn();
+			const manager = new ConnectionManager({
+				url: 'https://localhost:8080',
+				onStateUpdate,
+				onConnectionStateChange: vi.fn(),
+				onInitialLoadComplete: vi.fn(),
+				onInitialLoadError: vi.fn(),
+			});
+
+			const starting = manager.start();
+			manager.stop();
+			await starting;
+			onStateUpdate.mockClear();
+
+			// A fresh start() must work normally.
+			await manager.start();
+			expect(onStateUpdate).toHaveBeenCalledWith(state);
+		});
 	});
 });

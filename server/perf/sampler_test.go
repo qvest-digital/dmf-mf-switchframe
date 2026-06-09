@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -600,6 +601,57 @@ func TestSampler_SRTStats_AppearsInJSON(t *testing.T) {
 	require.InDelta(t, 8.0, srt["rtt_ms"].(float64), 0.001)
 	require.InDelta(t, 1.5, srt["loss_rate_pct"].(float64), 0.001)
 	require.InDelta(t, 20.0, srt["recv_buf_ms"].(float64), 0.001)
+}
+
+// TestSampler_CallbacksInvokedWithoutLock verifies that tick() does not hold
+// s.mu while invoking the user-supplied previewStats/srtStats callbacks. If the
+// callbacks ran under s.mu.Lock(), a callback that re-enters the Sampler via
+// Snapshot() (which takes s.mu.RLock()) would deadlock — sync.RWMutex is not
+// reentrant, so an RLock on the goroutine already holding the write lock blocks
+// forever. We assert tick() completes within a timeout to prove it released the
+// lock before calling out.
+func TestSampler_CallbacksInvokedWithoutLock(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources: map[string]SourceSample{
+			"srt:cam1": {DecodeLastNs: 3000, Health: "active"},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings:    map[string]int64{},
+		FrameBudgetNs:  33333,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+
+	var previewReentered, srtReentered bool
+	s.SetPreviewStats(func() map[string]PreviewEncoderStats {
+		// Re-enter the Sampler: this only returns if tick() is NOT holding s.mu.
+		_ = s.Snapshot("")
+		previewReentered = true
+		return map[string]PreviewEncoderStats{}
+	})
+	s.SetSRTStats(func(key string) (rttMs, lossRate, recvBufMs float64, ok bool) {
+		_ = s.Snapshot("")
+		srtReentered = true
+		return 1, 2, 3, true
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.tick()
+	}()
+
+	select {
+	case <-done:
+		// tick completed: callbacks ran lock-free.
+	case <-time.After(2 * time.Second):
+		t.Fatal("tick() deadlocked — callbacks were invoked while holding s.mu")
+	}
+
+	require.True(t, srtReentered, "srtStats callback should have run and re-entered Snapshot")
+	require.True(t, previewReentered, "previewStats callback should have run and re-entered Snapshot")
 }
 
 func TestSampler_PreviewEncoderStats(t *testing.T) {

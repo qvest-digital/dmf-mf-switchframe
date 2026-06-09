@@ -358,6 +358,9 @@ func TestHandleCorrectorSet_ValidationFails(t *testing.T) {
 		{"lift out of range", `{"lift":[2,0,0],"gamma":[1,1,1],"gain":[1,1,1],"saturation":1}`},
 		{"contrast out of range", `{"lift":[0,0,0],"gamma":[1,1,1],"gain":[1,1,1],"saturation":1,"contrast":2}`},
 		{"sharpness out of range", `{"lift":[0,0,0],"gamma":[1,1,1],"gain":[1,1,1],"saturation":1,"sharpness":5}`},
+		{"curve point out of range", `{"lift":[0,0,0],"gamma":[1,1,1],"gain":[1,1,1],"saturation":1,"curveMaster":[{"x":0,"y":0},{"x":1.5,"y":1}]}`},
+		{"curve duplicate x", `{"lift":[0,0,0],"gamma":[1,1,1],"gain":[1,1,1],"saturation":1,"curveMaster":[{"x":0,"y":0},{"x":0.5,"y":0.4},{"x":0.5,"y":0.6},{"x":1,"y":1}]}`},
+		{"curve unsorted x", `{"lift":[0,0,0],"gamma":[1,1,1],"gain":[1,1,1],"saturation":1,"curveMaster":[{"x":0,"y":0},{"x":0.7,"y":0.6},{"x":0.3,"y":0.4},{"x":1,"y":1}]}`},
 	}
 
 	for _, tt := range tests {
@@ -370,6 +373,57 @@ func TestHandleCorrectorSet_ValidationFails(t *testing.T) {
 				t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// TestHandleCorrectorSet_TooManyCurvePoints rejects a curve that exceeds the
+// MaxCurvePoints cap (allocation-amplification DoS guard).
+func TestHandleCorrectorSet_TooManyCurvePoints(t *testing.T) {
+	api, _ := setupColorGradeAPI(t)
+
+	n := colorgrade.MaxCurvePoints + 1
+	pts := make([]colorgrade.CurvePoint, n)
+	for i := range pts {
+		x := float32(i) / float32(n-1) // strictly increasing, in [0,1]
+		pts[i] = colorgrade.CurvePoint{X: x, Y: x}
+	}
+	state := colorgrade.DefaultCorrectorState()
+	state.CurveMaster = pts
+	body, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("PUT", "/api/colorgrade/corrector", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+// TestHandleCorrectorSet_ValidCurveAccepted confirms a well-formed multi-point
+// curve (strictly increasing X, within the cap) is still accepted.
+func TestHandleCorrectorSet_ValidCurveAccepted(t *testing.T) {
+	api, mgr := setupColorGradeAPI(t)
+
+	state := colorgrade.DefaultCorrectorState()
+	state.CurveMaster = []colorgrade.CurvePoint{{X: 0, Y: 0}, {X: 0.5, Y: 0.6}, {X: 1, Y: 1}}
+	body, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("PUT", "/api/colorgrade/corrector", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	if len(mgr.corrector.CurveMaster) != 3 {
+		t.Errorf("curveMaster len = %d, want 3", len(mgr.corrector.CurveMaster))
 	}
 }
 

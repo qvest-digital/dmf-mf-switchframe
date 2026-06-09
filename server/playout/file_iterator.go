@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/codec"
@@ -60,6 +61,13 @@ func DefaultDecoderFactory() (VideoDecoder, error) {
 //
 // Audio is interleaved lazily in Next() using PTS matching.
 type FileFrameIterator struct {
+	// mu guards the decode state and the closed flag so that Close() (which may
+	// run on a different goroutine, e.g. snapshot-sync SeekToItem) is mutually
+	// exclusive with an in-flight Next()/Seek(). Without this, Close() could free
+	// the cgo/FFmpeg decoder while Next() is inside decoder.Decode() — a
+	// use-after-free — and the plain bool `closed` would be a data race.
+	mu sync.Mutex
+
 	// Encoded frames (small -- kept in memory).
 	encodedFrames []encodedFrame
 	audioFrames   []audioFrameInfo
@@ -202,6 +210,11 @@ func NewFileFrameIteratorWithDecoder(path string, factory DecoderFactory) (*File
 // audio frame whose PTS falls within the video frame's time window
 // [currentPTS, nextVideoPTS). The last video frame's window extends to MaxInt64.
 func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
+	// Hold the lock for the whole decode so a concurrent Close() cannot free the
+	// decoder out from under decoder.Decode()/ReceiveFrame() (use-after-free).
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	if f.closed {
 		return nil, nil
 	}
@@ -343,6 +356,8 @@ func (f *FileFrameIterator) TotalFrames() int {
 
 // FrameIndex returns the current position in the encoded frame list.
 func (f *FileFrameIterator) FrameIndex() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.frameIndex
 }
 
@@ -350,6 +365,9 @@ func (f *FileFrameIterator) FrameIndex() int {
 // The old decoder is closed and a fresh one is created so decoding restarts
 // cleanly from the keyframe's SPS/PPS headers.
 func (f *FileFrameIterator) Seek(targetFrame int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	if f.closed {
 		return fmt.Errorf("iterator closed")
 	}
@@ -394,8 +412,13 @@ func (f *FileFrameIterator) Seek(targetFrame int) error {
 	return nil
 }
 
-// Close releases the decoder resources.
+// Close releases the decoder resources. It is idempotent and safe to call
+// concurrently with Next()/Seek(): the lock ensures Close() blocks until any
+// in-flight decode completes before freeing the decoder.
 func (f *FileFrameIterator) Close() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	if f.closed {
 		return
 	}

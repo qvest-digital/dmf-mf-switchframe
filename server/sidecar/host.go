@@ -3,6 +3,7 @@ package sidecar
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -36,13 +37,22 @@ type Host struct {
 	spawnGen   atomic.Int64
 	restartCnt atomic.Int64
 
-	doneCh    chan struct{} // closed by Close()
-	restartCh chan string   // buffered cap 1
+	doneCh    chan struct{}       // closed by Close()
+	restartCh chan restartRequest // buffered cap 1
 	closeOnce sync.Once
 
 	// OnMessage is called for each message received from the sidecar.
 	// It is called from the readLoop goroutine — callers must not block.
 	OnMessage func(*Message)
+}
+
+// restartRequest is a restart signal tagged with the spawn generation that
+// produced it, so restartLoop can tell stale signals from the generation it
+// just replaced apart from a legitimate crash signal of the generation it
+// just spawned.
+type restartRequest struct {
+	gen    int64
+	reason string
 }
 
 // NewHost creates a Host with the given configuration. Call Start to spawn
@@ -51,7 +61,7 @@ func NewHost(cfg Config) *Host {
 	return &Host{
 		cfg:       cfg.withDefaults(),
 		doneCh:    make(chan struct{}),
-		restartCh: make(chan string, 1),
+		restartCh: make(chan restartRequest, 1),
 	}
 }
 
@@ -126,7 +136,24 @@ func (h *Host) Send(msg *Message) error {
 	h.writeMu.Lock()
 	defer h.writeMu.Unlock()
 
-	return WriteMessage(conn, msg)
+	// Bound the write: a wedged sidecar (alive but no longer reading) with a
+	// full socket send buffer would otherwise block here forever while
+	// holding writeMu, permanently blocking every subsequent sender with no
+	// recovery until the process exits.
+	_ = conn.SetWriteDeadline(time.Now().Add(h.cfg.WriteTimeout))
+	err := WriteMessage(conn, msg)
+	_ = conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			// A timed-out control write means the sidecar is wedged; process
+			// exit is not coming, so trigger recovery explicitly. The stream
+			// may also be desynced by a partial write.
+			h.triggerRestart(fmt.Sprintf("control write timeout: %v", err))
+		}
+		return err
+	}
+	return nil
 }
 
 // Close performs a graceful shutdown of the sidecar. Safe to call multiple times.
@@ -143,7 +170,21 @@ func (h *Host) Close() error {
 		// Send shutdown command best-effort. Skip when the caller handles
 		// shutdown via a different protocol (e.g. CEF's newline-delimited JSON).
 		if h.conn != nil && !h.cfg.DisableShutdownMessage {
+			// Bound the write: a wedged sidecar (alive but not reading) with
+			// a full socket send buffer would otherwise block this write
+			// forever while h.mu is held, hanging the caller's shutdown and
+			// deadlocking every other Host method behind the mutex. Setting
+			// the deadline first also unblocks an in-flight Send stuck
+			// writing to the wedged sidecar, so writeMu is acquired promptly.
+			_ = h.conn.SetWriteDeadline(time.Now().Add(h.cfg.ShutdownTimeout))
+			h.writeMu.Lock()
+			// Re-arm the deadline after acquiring writeMu: an in-flight Send
+			// that just timed out clears the deadline in its epilogue before
+			// releasing writeMu, which would otherwise leave the shutdown
+			// write below unbounded on a wedged conn.
+			_ = h.conn.SetWriteDeadline(time.Now().Add(h.cfg.ShutdownTimeout))
 			_ = WriteMessage(h.conn, &Message{Cmd: "shutdown"})
+			h.writeMu.Unlock()
 		}
 
 		// Wait for the process to exit gracefully, then force-kill.
@@ -338,7 +379,7 @@ func (h *Host) readLoop(gen int64) {
 	defer func() {
 		// If this generation is still current, trigger a restart.
 		if h.spawnGen.Load() == gen {
-			h.triggerRestart("read loop ended")
+			h.triggerRestartForGen(gen, "read loop ended")
 		}
 	}()
 
@@ -394,7 +435,7 @@ func (h *Host) watchProcess(cmd *exec.Cmd, gen int64, waitDone chan struct{}) {
 			reason = fmt.Sprintf("process exited: %v", err)
 		}
 		slog.Warn("sidecar: process exited unexpectedly", "err", err)
-		h.triggerRestart(reason)
+		h.triggerRestartForGen(gen, reason)
 	}
 }
 
@@ -410,14 +451,61 @@ func (h *Host) notifyStatus(lastErr string) {
 	}
 }
 
-// triggerRestart sends a non-blocking restart signal.
+// triggerRestart sends a non-blocking restart signal attributed to the
+// current spawn generation.
 func (h *Host) triggerRestart(reason string) {
+	h.triggerRestartForGen(h.spawnGen.Load(), reason)
+}
+
+// triggerRestartForGen sends a non-blocking restart signal attributed to the
+// given spawn generation.
+func (h *Host) triggerRestartForGen(gen int64, reason string) {
 	h.alive.Store(false)
 	h.notifyStatus(reason)
 	select {
-	case h.restartCh <- reason:
+	case h.restartCh <- restartRequest{gen: gen, reason: reason}:
 	default:
 		// Already a restart pending.
+	}
+}
+
+// drainStaleRestartSignal removes a buffered restart signal left over from
+// an old generation after a successful respawn. A signal from the current
+// (just-spawned) generation is a legitimate crash report — e.g. a
+// crash-looping binary that exits between spawnLocked returning and this
+// drain — and must be kept, or the host would stay dead forever with no
+// further restarts (the companion notifier's send was dropped while the
+// buffer was full, so no second signal is coming).
+func (h *Host) drainStaleRestartSignal() {
+	select {
+	case req := <-h.restartCh:
+		if req.gen >= h.spawnGen.Load() {
+			// Not stale: put it back. The channel has capacity 1 and this is
+			// the only consumer, so the send only fails if a newer signal
+			// just arrived — in which case dropping req still leaves a
+			// restart pending.
+			select {
+			case h.restartCh <- req:
+			default:
+			}
+		} else if !h.alive.Load() {
+			// Stale signal discarded, but the current generation has already
+			// failed: its triggerRestartForGen set alive=false yet dropped
+			// its channel send because the stale signal filled the cap-1
+			// buffer. spawnLocked set alive=true on success, so !alive here
+			// means a post-spawn failure was signaled — recover it, or the
+			// host would stay dead forever. A spurious recovered signal
+			// racing Close is harmless: restartLoop's backoff select
+			// observes doneCh and returns before respawning.
+			select {
+			case h.restartCh <- restartRequest{
+				gen:    h.spawnGen.Load(),
+				reason: "restart signal recovered after drain",
+			}:
+			default:
+			}
+		}
+	default:
 	}
 }
 
@@ -429,8 +517,8 @@ func (h *Host) restartLoop() {
 		select {
 		case <-h.doneCh:
 			return
-		case reason := <-h.restartCh:
-			slog.Info("sidecar: restarting", "reason", reason)
+		case req := <-h.restartCh:
+			slog.Info("sidecar: restarting", "reason", req.reason)
 
 			h.alive.Store(false)
 
@@ -462,13 +550,10 @@ func (h *Host) restartLoop() {
 				bo.Reset()
 				h.restartCnt.Add(1)
 
-				// Drain any stale restart signals from the old generation's
+				// Drain any stale restart signal from the old generation's
 				// readLoop/watchProcess that arrived after restartLoop consumed
 				// the original signal but before the new generation started.
-				select {
-				case <-h.restartCh:
-				default:
-				}
+				h.drainStaleRestartSignal()
 
 				if h.cfg.OnRestart != nil {
 					h.cfg.OnRestart(h.spawnGen.Load())
@@ -523,13 +608,20 @@ func (h *Host) cleanupLocked() error {
 	return firstErr
 }
 
+// maxSidecarLogLine caps how many bytes of a single newline-less stderr line
+// sidecarLogger will buffer. A wedged or crashing CEF/ASR child can emit a huge
+// line (crash dump, binary garbage) with no '\n'; without a cap l.buf would grow
+// without bound, consuming host memory proportional to untrusted child output.
+const maxSidecarLogLine = 8 << 10 // 8 KiB
+
 // sidecarLogger forwards sidecar stderr lines to slog.
 // Write is serialized by a mutex since exec.Cmd does not guarantee
 // single-writer semantics for Stderr.
 type sidecarLogger struct {
-	prefix string
-	mu     sync.Mutex
-	buf    []byte
+	prefix    string
+	mu        sync.Mutex
+	buf       []byte
+	truncated bool // dropping bytes of an over-long line until the next newline
 }
 
 func (l *sidecarLogger) Write(p []byte) (int, error) {
@@ -546,7 +638,29 @@ func (l *sidecarLogger) Write(p []byte) (int, error) {
 			}
 		}
 		if idx < 0 {
+			// No newline yet. If the buffered line has grown past the cap, flush
+			// what we have with a truncation marker and discard the rest of the
+			// line as it arrives, so an endless newline-less child cannot grow
+			// l.buf without bound.
+			if len(l.buf) > maxSidecarLogLine {
+				if !l.truncated {
+					line := strings.TrimSpace(string(l.buf[:maxSidecarLogLine]))
+					if line != "" {
+						slog.Info(l.prefix, "msg", line+" [line truncated]")
+					}
+				}
+				l.buf = l.buf[:0]
+				l.truncated = true
+			}
 			break
+		}
+		// Reached a newline. If we were mid-truncation, the remaining bytes up to
+		// the newline are the tail of the discarded over-long line; drop them and
+		// resume normal line handling on the next iteration.
+		if l.truncated {
+			l.buf = l.buf[idx+1:]
+			l.truncated = false
+			continue
 		}
 		line := strings.TrimSpace(string(l.buf[:idx]))
 		l.buf = l.buf[idx+1:]

@@ -313,20 +313,53 @@ func (m *LoudnessMeter) integratedUpdateInterval() int {
 	}
 }
 
-// computeIntegratedLUFS performs BS.1770-4 gated integration.
+// gatingBlockSubBlocks is the number of cached 100ms sub-blocks that make up
+// one BS.1770-4 gating block (400ms). Consecutive gating blocks slide by one
+// sub-block, giving the 75% overlap (100ms hop) mandated by the standard.
+const gatingBlockSubBlocks = 4
+
+// computeIntegratedLUFS performs BS.1770-4 / EBU Tech 3341 gated integration.
+//
+// The standard defines gating over 400ms gating blocks with 75% overlap, not
+// over the 100ms sub-blocks we accumulate on the hot path. We therefore build
+// 400ms gating-block energies from gatingBlockSubBlocks consecutive 100ms
+// sub-block energies (every cached block represents exactly stepSize samples,
+// so the unweighted mean of 4 mean-square energies is the exact 400ms
+// mean-square) and slide the window by one sub-block for the 75% overlap. The
+// absolute (-70 LUFS) and relative (-10 LU) gates are then applied to those
+// gating blocks. This matters near the gate thresholds, where 100ms-granular
+// gating would include/exclude different energy than a compliant meter.
+//
 // Called from updateCachedLUFS() under single-writer context.
 func (m *LoudnessMeter) computeIntegratedLUFS() float64 {
-	if len(m.integratedBlocks) == 0 {
+	// A full 400ms gating block requires at least gatingBlockSubBlocks
+	// sub-blocks; integrated loudness is undefined before then.
+	if len(m.integratedBlocks) < gatingBlockSubBlocks {
 		return -math.MaxFloat64
+	}
+
+	// nGatingBlocks overlapping 400ms blocks, hopping by one 100ms sub-block.
+	nGatingBlocks := len(m.integratedBlocks) - gatingBlockSubBlocks + 1
+
+	// gatingBlockEnergy returns the mean-square energy of the 400ms gating
+	// block starting at sub-block index i (direct sum of 4 — no running-sum
+	// drift over very long measurements).
+	gatingBlockEnergy := func(i int) float64 {
+		var sum float64
+		for k := 0; k < gatingBlockSubBlocks; k++ {
+			sum += m.integratedBlocks[i+k]
+		}
+		return sum / float64(gatingBlockSubBlocks)
 	}
 
 	const absGateThreshold = -70.0
 	absGateEnergy := math.Pow(10, (absGateThreshold+0.691)/10.0)
 
+	// First pass: absolute gate over the 400ms gating blocks.
 	var ungatedSum float64
 	var ungatedCount int
-	for _, e := range m.integratedBlocks {
-		if e >= absGateEnergy {
+	for i := 0; i < nGatingBlocks; i++ {
+		if e := gatingBlockEnergy(i); e >= absGateEnergy {
 			ungatedSum += e
 			ungatedCount++
 		}
@@ -341,10 +374,11 @@ func (m *LoudnessMeter) computeIntegratedLUFS() float64 {
 	relGateThreshold := ungatedLUFS - 10.0
 	relGateEnergy := math.Pow(10, (relGateThreshold+0.691)/10.0)
 
+	// Second pass: relative gate over the same 400ms gating blocks.
 	var gatedSum float64
 	var gatedCount int
-	for _, e := range m.integratedBlocks {
-		if e >= relGateEnergy {
+	for i := 0; i < nGatingBlocks; i++ {
+		if e := gatingBlockEnergy(i); e >= relGateEnergy {
 			gatedSum += e
 			gatedCount++
 		}

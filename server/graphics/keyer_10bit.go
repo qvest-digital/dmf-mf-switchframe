@@ -21,6 +21,13 @@ import (
 //
 // Returns an alpha mask with one byte per pixel (0 = opaque/keep, 255 = transparent/keyed).
 func ChromaKey10(yuv []byte, w, h int, targetCb, targetCr uint16, tolerance, softness int) []byte {
+	return ChromaKey10Into(nil, yuv, w, h, targetCb, targetCr, tolerance, softness)
+}
+
+// ChromaKey10Into is like ChromaKey10 but writes into a pre-allocated mask
+// buffer to avoid per-frame allocation. If mask is nil or too small, a new
+// buffer is allocated. The returned slice is the buffer actually used.
+func ChromaKey10Into(mask, yuv []byte, w, h int, targetCb, targetCr uint16, tolerance, softness int) []byte {
 	pixelCount := w * h
 	if pixelCount == 0 {
 		return nil
@@ -38,7 +45,14 @@ func ChromaKey10(yuv []byte, w, h int, targetCb, targetCr uint16, tolerance, sof
 		return nil
 	}
 
-	mask := make([]byte, pixelCount)
+	if cap(mask) >= pixelCount {
+		// No clear needed: the chroma loop below writes every luma pixel
+		// (each of the w/2 chroma columns writes its 2 covered pixels, w even),
+		// so a reused buffer is fully overwritten.
+		mask = mask[:pixelCount]
+	} else {
+		mask = make([]byte, pixelCount)
+	}
 
 	cbByteOff := ySize * 2
 	crByteOff := cbByteOff + chromaSize*2
@@ -113,6 +127,13 @@ func ChromaKey10(yuv []byte, w, h int, targetCb, targetCr uint16, tolerance, sof
 //
 // Returns an alpha mask with one byte per pixel (0 = transparent/keyed, 255 = opaque/keep).
 func LumaKey10(yuv []byte, w, h int, lowThresh, highThresh uint16) []byte {
+	return LumaKey10Into(nil, yuv, w, h, lowThresh, highThresh)
+}
+
+// LumaKey10Into is like LumaKey10 but writes into a pre-allocated mask buffer
+// to avoid per-frame allocation. If mask is nil or too small, a new buffer is
+// allocated. The returned slice is the buffer actually used.
+func LumaKey10Into(mask, yuv []byte, w, h int, lowThresh, highThresh uint16) []byte {
 	pixelCount := w * h
 	if pixelCount == 0 {
 		return nil
@@ -123,14 +144,19 @@ func LumaKey10(yuv []byte, w, h int, lowThresh, highThresh uint16) []byte {
 		return nil
 	}
 
-	mask := make([]byte, pixelCount)
+	if cap(mask) >= pixelCount {
+		mask = mask[:pixelCount]
+	} else {
+		mask = make([]byte, pixelCount)
+	}
 
 	for i := 0; i < pixelCount; i++ {
 		y := binary.LittleEndian.Uint16(yuv[i*2:])
 		if y >= lowThresh && y <= highThresh {
 			mask[i] = 255 // opaque (in range, keep)
+		} else {
+			mask[i] = 0 // transparent, keyed out (explicit for reused buffers)
 		}
-		// else: mask[i] = 0 (transparent, keyed out)
 	}
 
 	return mask

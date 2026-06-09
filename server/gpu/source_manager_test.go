@@ -338,8 +338,13 @@ func TestGPUSourceManager_ReadCachedFrame(t *testing.T) {
 	assert.Equal(t, 0, rh)
 	assert.Equal(t, int64(0), rpts)
 
-	// Ingest a frame.
+	// Ingest a frame (creates the entry). The cache is populated lazily:
+	// the first read marks it wanted and may return nil.
 	inputYUV := createTestYUV420p(w, h, 200, 100, 150)
+	mgr.IngestYUV("cam1", inputYUV, w, h, 21000)
+	mgr.ReadCachedFrame("cam1") // enable the cache
+
+	// The next ingest populates the cache.
 	mgr.IngestYUV("cam1", inputYUV, w, h, 42000)
 
 	// ReadCachedFrame should now return the cached CPU copy.
@@ -381,8 +386,11 @@ func TestGPUSourceManager_ReadCachedFrame_NilYUV(t *testing.T) {
 	mgr := NewGPUSourceManager(ctx, pool, nil)
 	defer mgr.Close()
 
-	// Ingest a real frame first.
+	// Ingest a real frame first (creates the entry), enable the lazy cache,
+	// then ingest again so the cache is populated.
 	inputYUV := createTestYUV420p(w, h, 200, 100, 150)
+	mgr.IngestYUV("cam1", inputYUV, w, h, 21000)
+	mgr.ReadCachedFrame("cam1") // enable the cache
 	mgr.IngestYUV("cam1", inputYUV, w, h, 42000)
 
 	// Ingest nil YUV (no-op path) — cache should remain from previous ingest.
@@ -402,9 +410,12 @@ func TestGPUSourceManager_ReadCachedFrame_ConcurrentAccess(t *testing.T) {
 	mgr := NewGPUSourceManager(ctx, pool, nil)
 	defer mgr.Close()
 
-	// Seed with an initial frame.
+	// Seed with an initial frame, enable the lazy cache, and ingest again
+	// so readers see a populated cache from the start.
 	inputYUV := createTestYUV420p(w, h, 128, 128, 128)
 	mgr.IngestYUV("cam1", inputYUV, w, h, 1000)
+	mgr.ReadCachedFrame("cam1") // enable the cache
+	mgr.IngestYUV("cam1", inputYUV, w, h, 2000)
 
 	var wg sync.WaitGroup
 	const iterations = 100
@@ -474,6 +485,9 @@ func TestGPUSourceManager_AliasSource(t *testing.T) {
 	// Register both sources.
 	mgr.RegisterSource("cam1", w, h, nil)
 	mgr.RegisterSource("playout:1", w, h, nil)
+
+	// Enable cam1's lazy CPU cache (a tap reads the alias destination).
+	mgr.ReadCachedFrame("cam1")
 
 	// Ingest a frame into cam1.
 	yuv := createTestYUV420p(w, h, 200, 100, 150)
@@ -579,6 +593,129 @@ func TestGPUSourceManager_AliasSource_RefCounting(t *testing.T) {
 	require.NotNil(t, f)
 	assert.Equal(t, int64(84000), f.PTS)
 	f.Release()
+}
+
+// TestGPUSourceManager_ReRegisterWithReentrantPreview verifies that
+// re-registering a source key (e.g., on a resolution change) joins the old
+// entry's preview goroutine OUTSIDE the source-manager write lock.
+//
+// The old implementation called cleanupEntryLocked — which closes prevCh and
+// blocks on <-prevDone to join the preview goroutine — while holding
+// m.mu.Lock(). The preview goroutine invokes the OnPreview callback before it
+// can drain prevCh and exit. If that callback re-enters the source manager
+// (taking m.mu.RLock), the buggy join deadlocks: the writer holds m.mu.Lock and
+// waits for prevDone, while the preview goroutine is stuck in the callback
+// waiting for the RLock the writer will never release. This test makes the
+// callback re-enter via CurrentFrame, so the buggy code deadlocks (caught by
+// the deadline) and the fixed code (unlocked join) completes promptly.
+func TestGPUSourceManager_ReRegisterWithReentrantPreview(t *testing.T) {
+	const w, h = 64, 64
+	ctx, pool := setupGPU(t, w, h, 16)
+	defer func() { _ = ctx.Close() }()
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	// enteredCallback is closed the first time OnPreview runs, so the test can
+	// guarantee the preview goroutine is inside the (re-entrant) callback —
+	// repeatedly taking m.mu.RLock — at the moment the re-register attempts its
+	// goroutine join.
+	enteredCallback := make(chan struct{})
+	var enterOnce sync.Once
+	stopCallback := make(chan struct{})
+
+	preview := &PreviewConfig{
+		Width:   32,
+		Height:  32,
+		Bitrate: 200_000,
+		FPSNum:  30,
+		FPSDen:  1,
+		OnPreview: func(data []byte, isIDR bool, pts int64) {
+			enterOnce.Do(func() { close(enteredCallback) })
+			// Re-enter the source manager (RLock) repeatedly while still inside
+			// the callback. Under the buggy lock-held join this is the deadlock.
+			for {
+				select {
+				case <-stopCallback:
+					return
+				default:
+					_ = mgr.CurrentFrame("cam1")
+				}
+			}
+		},
+	}
+
+	// Initial registration + a steady stream of ingests so the preview
+	// goroutine produces a frame and enters OnPreview.
+	mgr.RegisterSource("cam1", w, h, preview)
+	yuv := createTestYUV420p(w, h, 180, 100, 200)
+
+	ingestStop := make(chan struct{})
+	ingestDone := make(chan struct{})
+	go func() {
+		defer close(ingestDone)
+		i := 0
+		for {
+			select {
+			case <-ingestStop:
+				return
+			default:
+				i++
+				mgr.IngestYUV("cam1", yuv, w, h, int64(i*1000))
+			}
+		}
+	}()
+
+	// Wait until the preview callback is actively re-entering the manager, then
+	// stop the ingest loop. The callback keeps spinning (it only exits on
+	// stopCallback), so the preview goroutine is still inside the re-entrant
+	// callback for the join below. Stopping ingest first avoids entangling this
+	// test with the separate prevCh close/send interleaving on the old entry.
+	select {
+	case <-enteredCallback:
+	case <-time.After(10 * time.Second):
+		close(stopCallback)
+		close(ingestStop)
+		<-ingestDone
+		t.Fatal("preview callback never fired; cannot exercise re-register join")
+	}
+	close(ingestStop)
+	<-ingestDone
+
+	// Re-register the same key. This must join the previous entry's preview
+	// goroutine — which is currently spinning inside the re-entrant callback.
+	// The fixed code joins with the lock released, so the callback's RLock
+	// succeeds; the buggy code (join under m.mu.Lock) deadlocks.
+	reRegistered := make(chan struct{})
+	go func() {
+		// Let the re-register reach (and, in the buggy version, block inside)
+		// the join, then release the callback so the goroutine can exit. With
+		// the fix the join is unlocked and completes regardless of ordering.
+		time.Sleep(100 * time.Millisecond)
+		close(stopCallback)
+	}()
+	go func() {
+		mgr.RegisterSource("cam1", w, h, &PreviewConfig{
+			Width: 32, Height: 32, Bitrate: 200_000, FPSNum: 30, FPSDen: 1,
+			OnPreview: func([]byte, bool, int64) {},
+		})
+		close(reRegistered)
+	}()
+
+	select {
+	case <-reRegistered:
+		// Join completed without deadlock — the fix works.
+	case <-time.After(10 * time.Second):
+		t.Fatal("RegisterSource deadlocked joining the preview goroutine under the write lock")
+	}
+
+	// Source is still usable after the churn: the new entry is empty until the
+	// next ingest, so push one frame and confirm it is readable.
+	mgr.IngestYUV("cam1", yuv, w, h, 999000)
+	frame := mgr.GetFrame("cam1")
+	require.NotNil(t, frame, "source should remain accessible after re-registration")
+	frame.Release()
 }
 
 // --- Mock SourceSTMapProvider ---

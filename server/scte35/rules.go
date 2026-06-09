@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	scte35lib "github.com/Comcast/scte35-go/pkg/scte35"
 )
 
 // RuleAction is the action a rule engine returns after evaluation.
@@ -173,6 +175,20 @@ func applyReplace(msg *CueMessage, params *ReplaceParams) *CueMessage {
 	if params.Duration != nil {
 		d := *params.Duration
 		cp.BreakDuration = &d
+		// For time_signal cues the on-wire duration is carried per-descriptor
+		// in DurationTicks; Encode never reads BreakDuration. Without this the
+		// "Fix missing duration" template would match (duration==0) and report
+		// ActionReplace yet emit unchanged SCTE-35. Write the duration into each
+		// cue-out descriptor so the replacement actually takes effect.
+		if cp.CommandType == CommandTimeSignal {
+			ticks := scte35lib.DurationToTicks(d)
+			for i := range cp.Descriptors {
+				if isSegCueOut(cp.Descriptors[i].SegmentationType) {
+					t := ticks
+					cp.Descriptors[i].DurationTicks = &t
+				}
+			}
+		}
 	}
 	if params.EventID != nil {
 		cp.EventID = *params.EventID
@@ -321,8 +337,14 @@ func extractFieldValues(field string, msg *CueMessage) []string {
 }
 
 // ticksToMillis converts 90 kHz PTS ticks to milliseconds.
+//
+// The arithmetic is ordered to avoid overflowing uint64: a naive
+// ticks*1000/90000 wraps for ticks above ~1.8e16 (well within the 40-bit range
+// the underlying *uint64 SegmentationDuration can hold), yielding a bogus
+// millisecond value used in '<'/'>'/'range' rule comparisons. Dividing first
+// and folding the remainder keeps the result exact without big.Int.
 func ticksToMillis(ticks uint64) int64 {
-	return int64(ticks * 1000 / 90000)
+	return int64(ticks/90000*1000 + ticks%90000*1000/90000)
 }
 
 // compareNumeric compares two string-encoded numbers.

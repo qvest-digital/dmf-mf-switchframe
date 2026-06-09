@@ -5,12 +5,23 @@ import (
 )
 
 // applyMasterChain runs the master output processing on a PCM buffer:
-// master gain -> LUFS metering -> limiter -> MXL tap -> program mute -> unmute ramp -> peak metering.
+// master gain -> program mute -> LUFS metering -> limiter -> MXL tap -> unmute ramp -> peak metering.
 // Caller must hold m.mu.
 func (m *Mixer) applyMasterChain(pcm []float32, pts int64) {
 	// Master gain
 	if m.masterLinear != 1.0 && len(pcm) > 0 {
 		vec.ScaleFloat32(&pcm[0], m.masterLinear, len(pcm))
+	}
+
+	// Program mute (FTB). Zero BEFORE metering and the output taps so the
+	// LUFS meter, limiter and MXL tap all see the silence that is actually
+	// broadcast — SetProgramMute's contract is "Metering reflects silence".
+	// Metering the live pre-mute mix would skew the gated integrated LUFS
+	// (EBU R128 compliance) with audio that never went to air.
+	if m.programMuted {
+		for i := range pcm {
+			pcm[i] = 0
+		}
 	}
 
 	// LUFS metering (after master fader, before limiter)
@@ -24,13 +35,6 @@ func (m *Mixer) applyMasterChain(pcm []float32, pts int64) {
 		m.mxlSinkBuf = growBuf(m.mxlSinkBuf, len(pcm))
 		copy(m.mxlSinkBuf, pcm)
 		(*sinkPtr)(m.mxlSinkBuf, pts, m.sampleRate, m.numChannels)
-	}
-
-	// Program mute (FTB)
-	if m.programMuted {
-		for i := range pcm {
-			pcm[i] = 0
-		}
 	}
 
 	// Unmute fade-in ramp

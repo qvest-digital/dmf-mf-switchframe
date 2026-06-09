@@ -30,6 +30,11 @@ import (
 // GaussianBlur applies a 2-pass separable Gaussian blur to an NV12 GPU frame.
 // radius controls the blur strength (1..50). A larger radius means more blur.
 // dst and src must have the same dimensions. dst may alias src.
+//
+// NOT CONCURRENCY-SAFE on the same Context: it uses the Context-global blurTmp
+// and blurWeights scratch buffers without holding mu across the kernel + sync.
+// Today the only callers run inside the single-threaded GPU pipeline Run();
+// serialize calls if invoking from elsewhere.
 func GaussianBlur(ctx *Context, dst, src *GPUFrame, radius int) error {
 	if ctx == nil || dst == nil || src == nil {
 		return ErrGPUNotAvailable
@@ -41,20 +46,11 @@ func GaussianBlur(ctx *Context, dst, src *GPUFrame, radius int) error {
 		return fmt.Errorf("gpu: gaussian blur: radius must be <= 50, got %d", radius)
 	}
 
-	// Compute Gaussian weights on CPU
-	weights := gaussianWeights(radius)
-
-	// Upload weights to device
-	var dWeights unsafe.Pointer
-	weightsSize := len(weights) * 4
-	if rc := C.cudaMalloc(&dWeights, C.size_t(weightsSize)); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: gaussian blur: alloc weights failed: %d", rc)
-	}
-	defer C.cudaFree(dWeights)
-
-	if rc := C.cudaMemcpyAsync(dWeights, unsafe.Pointer(&weights[0]),
-		C.size_t(weightsSize), C.cudaMemcpyHostToDevice, ctx.stream); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: gaussian blur: copy weights failed: %d", rc)
+	// Cached weight buffer keyed by radius — avoids a per-frame
+	// cudaMalloc/cudaFree (cudaFree is device-synchronizing) on the hot path.
+	dWeights, err := ctx.ensureBlurWeights(radius)
+	if err != nil {
+		return fmt.Errorf("gpu: gaussian blur: %w", err)
 	}
 
 	// Ensure cached temp float buffer: pitch * height * 3/2 floats
@@ -67,7 +63,7 @@ func GaussianBlur(ctx *Context, dst, src *GPUFrame, radius int) error {
 		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
 		(*C.uint8_t)(unsafe.Pointer(uintptr(src.DevPtr))),
 		ctx.blurTmp,
-		(*C.float)(dWeights),
+		dWeights,
 		C.int(src.Width), C.int(src.Height), C.int(src.Pitch), C.int(radius),
 		ctx.stream,
 	)
@@ -85,6 +81,9 @@ func GaussianBlur(ctx *Context, dst, src *GPUFrame, radius int) error {
 // radius controls the blur strength (1..50). A larger radius means more blur.
 // dst and src must have the same dimensions. dst may alias src.
 // P210 has uint16 samples (0-1023) and full-height UV (4:2:2).
+//
+// NOT CONCURRENCY-SAFE on the same Context: see GaussianBlur. Uses the
+// Context-global blurTmp and blurWeights scratch buffers.
 func GaussianBlurP210(ctx *Context, dst, src *GPUFrame, radius int) error {
 	if ctx == nil || dst == nil || src == nil {
 		return ErrGPUNotAvailable
@@ -96,20 +95,11 @@ func GaussianBlurP210(ctx *Context, dst, src *GPUFrame, radius int) error {
 		return fmt.Errorf("gpu: gaussian blur p210: radius must be <= 50, got %d", radius)
 	}
 
-	// Compute Gaussian weights on CPU
-	weights := gaussianWeights(radius)
-
-	// Upload weights to device
-	var dWeights unsafe.Pointer
-	weightsSize := len(weights) * 4
-	if rc := C.cudaMalloc(&dWeights, C.size_t(weightsSize)); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: gaussian blur p210: alloc weights failed: %d", rc)
-	}
-	defer C.cudaFree(dWeights)
-
-	if rc := C.cudaMemcpyAsync(dWeights, unsafe.Pointer(&weights[0]),
-		C.size_t(weightsSize), C.cudaMemcpyHostToDevice, ctx.stream); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: gaussian blur p210: copy weights failed: %d", rc)
+	// Cached weight buffer keyed by radius — avoids a per-frame
+	// cudaMalloc/cudaFree (cudaFree is device-synchronizing) on the hot path.
+	dWeights, err := ctx.ensureBlurWeights(radius)
+	if err != nil {
+		return fmt.Errorf("gpu: gaussian blur p210: %w", err)
 	}
 
 	// Ensure cached temp float buffer: samplesPerRow * height * 2 floats (Y + UV)
@@ -123,7 +113,7 @@ func GaussianBlurP210(ctx *Context, dst, src *GPUFrame, radius int) error {
 		(*C.uint16_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
 		(*C.uint16_t)(unsafe.Pointer(uintptr(src.DevPtr))),
 		ctx.blurTmp,
-		(*C.float)(dWeights),
+		dWeights,
 		C.int(src.Width), C.int(src.Height), C.int(src.Pitch), C.int(radius),
 		ctx.stream,
 	)

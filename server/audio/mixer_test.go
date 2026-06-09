@@ -245,6 +245,73 @@ func TestMixerAFVActivatesOnCut(t *testing.T) {
 	require.False(t, m.IsChannelActive("cam1"), "cam1 should deactivate after crossfade completes")
 }
 
+// TestMixerAFVMultipleActiveNotHardCut verifies the fix for nondeterministic
+// outgoing-AFV selection. When more than one AFV channel is active at once (the
+// pathological case where OnProgramChange is re-invoked mid-crossfade), the
+// outgoing source must be chosen deterministically and every active AFV channel
+// that isn't the new program must be kept active to fade out with the
+// transition — not hard-cut to inactive immediately (which clicks).
+func TestMixerAFVMultipleActiveNotHardCut(t *testing.T) {
+	// Clock-driven so no background ticker advances/completes the crossfade
+	// before we inspect the mid-transition state.
+	m := NewMixer(MixerConfig{
+		SampleRate:  48000,
+		Channels:    2,
+		ClockDriven: true,
+		Output:      func(_ *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.AddChannel("cam3")
+	_ = m.SetAFV("cam1", true)
+	_ = m.SetAFV("cam2", true)
+	_ = m.SetAFV("cam3", true)
+
+	// Force the pathological multi-active state: two AFV channels active at
+	// once, with cam1 tracked as the program AFV source.
+	m.mu.Lock()
+	m.channels["cam1"].active = true
+	m.channels["cam2"].active = true
+	m.programAFVSource = "cam1"
+	m.mu.Unlock()
+
+	// Switch program to cam3. cam1 is the deterministic outgoing source (tracked
+	// program AFV) and gets the crossfade ramp; cam2 is also active but must NOT
+	// be hard-cut — it should be deferred for deactivation on completion.
+	m.OnProgramChange("cam3")
+
+	m.mu.RLock()
+	from := m.transCrossfadeFrom
+	to := m.transCrossfadeTo
+	cam1Active := m.channels["cam1"].active
+	cam2Active := m.channels["cam2"].active
+	cam3Active := m.channels["cam3"].active
+	_, cam2Deferred := m.afvDeactivateOnComplete["cam2"]
+	progAFV := m.programAFVSource
+	m.mu.RUnlock()
+
+	require.Equal(t, "cam1", from, "outgoing source must be the deterministically tracked program AFV source")
+	require.Equal(t, "cam3", to, "incoming source must be the new program")
+	require.True(t, cam3Active, "new program AFV channel must activate")
+	require.True(t, cam1Active, "outgoing AFV channel stays active during the crossfade ramp")
+	require.True(t, cam2Active, "extra active AFV channel must NOT be hard-cut; it fades out on completion")
+	require.True(t, cam2Deferred, "extra active AFV channel must be queued for deferred deactivation")
+	require.Equal(t, "cam3", progAFV, "program AFV source is updated to the new program")
+
+	// Driving the crossfade to completion deactivates every deferred channel.
+	for i := 0; i < 5; i++ {
+		m.AdvanceCrossfade()
+	}
+	m.mu.RLock()
+	cam1After := m.channels["cam1"].active
+	cam2After := m.channels["cam2"].active
+	m.mu.RUnlock()
+	require.False(t, cam1After, "outgoing AFV channel deactivates after crossfade completes")
+	require.False(t, cam2After, "extra AFV channel deactivates after crossfade completes")
+}
+
 func TestMixerAFVDisabledChannelStaysActive(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -697,7 +764,7 @@ func TestChannelDecoderInitOnce(t *testing.T) {
 		"decoder factory should be called exactly once per channel, got %d", factoryCalls.Load())
 }
 
-func TestMixerRemoveChannelCleansUpPCMBuffer(t *testing.T) {
+func TestMixerRemoveChannelCleansUpState(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
@@ -715,21 +782,21 @@ func TestMixerRemoveChannelCleansUpPCMBuffer(t *testing.T) {
 	m.SetActive("cam1", true)
 	require.NoError(t, m.SetMasterLevel(-1.0)) // force mixing path
 
-	// Ingest a frame to populate lastDecodedPCM
+	// Ingest a frame so the channel has live state.
 	m.IngestFrame("cam1", &media.AudioFrame{PTS: 0, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
 
 	m.mu.RLock()
-	_, hasPCM := m.lastDecodedPCM["cam1"]
+	_, hasChannel := m.channels["cam1"]
 	m.mu.RUnlock()
-	require.True(t, hasPCM, "lastDecodedPCM should be populated after IngestFrame")
+	require.True(t, hasChannel, "channel should exist after AddChannel")
 
-	// Remove channel — should clean up the PCM buffer
+	// Remove channel — should drop all per-channel state.
 	m.RemoveChannel("cam1")
 
 	m.mu.RLock()
-	_, hasPCM = m.lastDecodedPCM["cam1"]
+	_, hasChannel = m.channels["cam1"]
 	m.mu.RUnlock()
-	require.False(t, hasPCM, "lastDecodedPCM should be cleaned up after RemoveChannel")
+	require.False(t, hasChannel, "channel should be removed after RemoveChannel")
 }
 
 func TestMixerTrimRangeValidation(t *testing.T) {

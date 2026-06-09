@@ -135,6 +135,61 @@ func TestOutput_WriteVideo(t *testing.T) {
 	out.Stop()
 }
 
+func TestOutput_WriteVideoDimensionGuard(t *testing.T) {
+	vtx := &mockVideoTx{}
+
+	const w, h = 8, 4
+	frameSize := w * h * 3 / 2 // YUV420p
+
+	out := NewOutput(OutputConfig{
+		FPSNum: 1000,
+		FPSDen: 1,
+		Width:  w,
+		Height: h,
+	})
+	out.Start(vtx, nil, nil)
+	defer out.Stop()
+
+	// Mismatched dimensions must be dropped (would otherwise feed a
+	// wrong-size buffer to the fixed-size TX converter -> OOB/corruption).
+	out.WriteVideo(make([]byte, (w/2)*(h/2)*3/2), w/2, h/2, 1)
+
+	// Give the ticker time to fire; nothing should be delivered.
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		if len(vtx.getFrames()) != 0 {
+			t.Fatal("mismatched-dimension frame was not dropped")
+		}
+		select {
+		case <-deadline:
+			goto matching
+		default:
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+
+matching:
+	// A frame at the configured resolution must be delivered.
+	out.WriteVideo(make([]byte, frameSize), w, h, 2)
+
+	got := time.After(500 * time.Millisecond)
+	for {
+		frames := vtx.getFrames()
+		if len(frames) > 0 {
+			if len(frames[0]) != frameSize {
+				t.Fatalf("delivered frame size: got %d, want %d", len(frames[0]), frameSize)
+			}
+			return
+		}
+		select {
+		case <-got:
+			t.Fatal("matching-dimension frame was not delivered")
+		default:
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+}
+
 func TestOutput_WriteAudio(t *testing.T) {
 	vtx := &mockVideoTx{}
 	atx := &mockAudioTx{}

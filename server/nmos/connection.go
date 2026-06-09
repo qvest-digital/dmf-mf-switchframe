@@ -10,6 +10,12 @@ import (
 
 const connectionAPIBase = "/x-nmos/connection/v1.1/"
 
+// maxStagedBodyBytes caps the size of a PATCH staged request body. IS-05
+// staged payloads (transport_params + activation) are small; this bounds
+// allocation so a control-network client cannot exhaust memory with an
+// arbitrarily large or deeply nested JSON body.
+const maxStagedBodyBytes = 64 << 10 // 64 KiB
+
 // TransportParams holds RTP transport parameters for IS-05.
 type TransportParams struct {
 	SourceIP        *string `json:"source_ip"`
@@ -66,6 +72,15 @@ type ConnectionServer struct {
 	onActivateSender     func(id string, params StagedParams) error
 	onDeactivateSender   func(id string) error
 	mux                  *http.ServeMux
+
+	// actLocks holds one mutex per sender/receiver, serializing staged PATCH
+	// processing (state mutation + activation callback + error rollback) per
+	// resource. Activation callbacks have side effects (start/stop ST 2110 TX)
+	// and must fire outside cs.mu, but in the same order as the recorded
+	// Active state — otherwise concurrent PATCHes can leave the transmitter in
+	// the opposite state of what the API reports. Lock order: actLock → cs.mu.
+	actLocksMu sync.Mutex
+	actLocks   map[string]*sync.Mutex
 }
 
 // NewConnectionServer creates a ConnectionServer and registers all routes.
@@ -79,6 +94,7 @@ func NewConnectionServer(opts ConnectionServerOpts) *ConnectionServer {
 		onActivateSender:     opts.OnActivateSender,
 		onDeactivateSender:   opts.OnDeactivateSender,
 		mux:                  http.NewServeMux(),
+		actLocks:             make(map[string]*sync.Mutex),
 	}
 	cs.mux.HandleFunc(connectionAPIBase, cs.handleRoot)
 	cs.mux.HandleFunc(connectionAPIBase+"single/", cs.handleSingle)
@@ -88,6 +104,23 @@ func NewConnectionServer(opts ConnectionServerOpts) *ConnectionServer {
 // Handler returns the HTTP handler for the Connection API.
 func (cs *ConnectionServer) Handler() http.Handler {
 	return cs.mux
+}
+
+// activationLock returns the per-resource mutex serializing staged PATCH
+// processing for one sender or receiver. The key is namespaced ("sender/" or
+// "receiver/" prefix) so sender and receiver ids cannot collide. Locks are
+// created lazily and retained for the server's lifetime; the set of resource
+// ids is small and bounded by the app's registered senders/receivers.
+func (cs *ConnectionServer) activationLock(kind, id string) *sync.Mutex {
+	key := kind + "/" + id
+	cs.actLocksMu.Lock()
+	defer cs.actLocksMu.Unlock()
+	m, ok := cs.actLocks[key]
+	if !ok {
+		m = &sync.Mutex{}
+		cs.actLocks[key] = m
+	}
+	return m
 }
 
 // AddSender registers a sender with its SDP.
@@ -367,6 +400,7 @@ func (cs *ConnectionServer) handleSenderStaged(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusOK, staged)
 
 	case http.MethodPatch:
+		r.Body = http.MaxBytesReader(w, r.Body, maxStagedBodyBytes)
 		var patch StagedParams
 		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
@@ -398,6 +432,13 @@ func (cs *ConnectionServer) handleSenderStaged(w http.ResponseWriter, r *http.Re
 				return
 			}
 		}
+
+		// Serialize the state mutation AND the activation callback per
+		// resource: concurrent PATCHes must apply their side effects in the
+		// same order as their recorded Active state (finding #79).
+		actLock := cs.activationLock("sender", id)
+		actLock.Lock()
+		defer actLock.Unlock()
 
 		cs.mu.Lock()
 		state, ok := cs.senderStates[id]
@@ -501,6 +542,7 @@ func (cs *ConnectionServer) handleReceiverStaged(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusOK, staged)
 
 	case http.MethodPatch:
+		r.Body = http.MaxBytesReader(w, r.Body, maxStagedBodyBytes)
 		var patch StagedParams
 		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
@@ -532,6 +574,13 @@ func (cs *ConnectionServer) handleReceiverStaged(w http.ResponseWriter, r *http.
 				return
 			}
 		}
+
+		// Serialize the state mutation AND the activation callback per
+		// resource: concurrent PATCHes must apply their side effects in the
+		// same order as their recorded Active state (finding #79).
+		actLock := cs.activationLock("receiver", id)
+		actLock.Lock()
+		defer actLock.Unlock()
 
 		cs.mu.Lock()
 		state, ok := cs.receiverStates[id]

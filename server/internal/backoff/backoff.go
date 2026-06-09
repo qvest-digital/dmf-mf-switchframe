@@ -26,6 +26,14 @@ func (b *Backoff) init() {
 	if b.current == 0 {
 		b.current = b.Initial
 	}
+	// Clamp jitter to [0,1]. A JitterPct > 1 would let the jitter factor go
+	// negative, producing a negative duration whose Timer fires immediately and
+	// defeats the backoff. Negative values are treated as "no jitter".
+	if b.JitterPct < 0 {
+		b.JitterPct = 0
+	} else if b.JitterPct > 1 {
+		b.JitterPct = 1
+	}
 }
 
 // Next returns the current backoff duration (with jitter applied) and

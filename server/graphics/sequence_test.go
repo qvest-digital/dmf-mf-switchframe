@@ -127,6 +127,66 @@ func TestSequenceState_InLoopOut(t *testing.T) {
 	}
 }
 
+// TestSequenceState_FrameAccumResetOnRestart is a regression test: at fractional
+// playback speeds, a stopped/restarted sequence must begin with a clean
+// fractional accumulator. Previously frameAccum was only mutated inside tick()
+// and never reset by startIn/startLoop/startOut, so a leftover [0,1) value
+// carried into the next run and made the first tick advance a frame early.
+func TestSequenceState_FrameAccumResetOnRestart(t *testing.T) {
+	s := &sequenceState{
+		inFrames:   [][]byte{fakeFrame(1, 4), fakeFrame(2, 4), fakeFrame(3, 4)},
+		loopFrames: [][]byte{fakeFrame(10, 4), fakeFrame(11, 4)},
+		outFrames:  [][]byte{fakeFrame(20, 4)},
+		cropW:      1, cropH: 1,
+		speed: 0.5,
+	}
+
+	// Run partway at half speed to leave a fractional remainder in the accumulator.
+	s.startIn()
+	if s.frameAccum != 0 {
+		t.Fatalf("startIn should zero frameAccum, got %v", s.frameAccum)
+	}
+	// One tick at 0.5: accumulates to 0.5, no frame advance yet.
+	if s.tick() {
+		t.Fatal("first tick at speed 0.5 should not advance a frame")
+	}
+	if s.frameAccum != 0.5 {
+		t.Fatalf("expected frameAccum 0.5 after one half-speed tick, got %v", s.frameAccum)
+	}
+
+	// Restart from a fresh phase — the leftover 0.5 must be discarded.
+	s.startIn()
+	if s.frameAccum != 0 {
+		t.Fatalf("startIn must reset frameAccum to 0 on restart, got %v", s.frameAccum)
+	}
+	// With a clean accumulator the first tick must NOT advance (0.0+0.5 < 1.0).
+	if s.tick() {
+		t.Fatal("first tick after restart advanced early — frameAccum not reset")
+	}
+	if s.frameIdx != 0 {
+		t.Fatalf("expected frameIdx still 0 after first half-speed tick, got %d", s.frameIdx)
+	}
+	// Second tick reaches 1.0 and advances exactly one frame.
+	if !s.tick() {
+		t.Fatal("second half-speed tick should advance one frame")
+	}
+	if s.frameIdx != 1 {
+		t.Fatalf("expected frameIdx 1 after two half-speed ticks, got %d", s.frameIdx)
+	}
+
+	// startLoop and startOut must likewise reset a dirty accumulator.
+	s.frameAccum = 0.9
+	s.startLoop()
+	if s.frameAccum != 0 {
+		t.Fatalf("startLoop must reset frameAccum, got %v", s.frameAccum)
+	}
+	s.frameAccum = 0.9
+	s.startOut()
+	if s.frameAccum != 0 {
+		t.Fatalf("startOut must reset frameAccum, got %v", s.frameAccum)
+	}
+}
+
 func TestSequenceState_LoopWraps(t *testing.T) {
 	s := &sequenceState{
 		loopFrames: [][]byte{fakeFrame(1, 4), fakeFrame(2, 4)},

@@ -136,8 +136,15 @@ func (m *Manager) AddSource(key string) error {
 	if m.tmpfsDir != "" {
 		safeName := sanitizeKey(key)
 		path := filepath.Join(m.tmpfsDir, safeName+".buf")
-		// Size: buffer duration * ~750KB/s (6Mbps H.264)
-		maxBytes := int64(m.config.BufferDurationSecs) * 750_000
+		// Size the ring to the full byte budget rather than an assumed
+		// ~6Mbps. The replayBuffer trims its frame index by wall-clock time
+		// only (maxBytes=0 in newReplayBufferWithRing), so if the ring were
+		// sized below the bitrate it would wrap and overwrite frames whose
+		// metadata is still live, corrupting extracted clips. Matching the
+		// in-memory budget keeps the wall-clock window of frames resident at
+		// realistic 1080p/4K bitrates; the seq check in fileRing.Read is the
+		// backstop if a wrap still occurs.
+		maxBytes := m.config.MaxBufferBytes
 		ring, err := newFileRing(path, maxBytes)
 		if err != nil {
 			m.log.Warn("file ring failed, falling back to memory",
@@ -344,7 +351,15 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 			}
 		}
 
-		if m.gpuFRUC != nil && m.gpuFRUC.HasNVOFA() {
+		// The GPU player decodes the entire clip into VRAM up front, so its
+		// memory use grows linearly with clip length; clips over the frame
+		// budget go to the CPU player's bounded sliding-window decode.
+		gpuCapable := m.gpuFRUC != nil && m.gpuFRUC.HasNVOFA()
+		if gpuCapable && !useGPUReplayPlayer(gpuCapable, len(clip)) {
+			m.log.Info("clip exceeds GPU replay frame budget, using CPU player",
+				"clipFrames", len(clip), "budget", maxGPUClipFrames)
+		}
+		if useGPUReplayPlayer(gpuCapable, len(clip)) {
 			m.player = newGPUReplayPlayer(GPUPlayerConfig{
 				Clip:           clip,
 				AudioClip:      audioClip,
@@ -707,12 +722,15 @@ func (m *Manager) SetShutterAngle(degrees float64) {
 		degrees = 360
 	}
 	m.shutterAngle = degrees / 360.0
+	sa := m.shutterAngle
 	player := m.player
 	m.mu.Unlock()
 
-	// Push to active player for mid-playback changes.
+	// Push to active player for mid-playback changes. Use the locally
+	// captured value (sa) rather than re-reading m.shutterAngle, which
+	// would be an unsynchronized read racing a concurrent setter.
 	if player != nil {
-		player.SetShutterAngle(m.shutterAngle)
+		player.SetShutterAngle(sa)
 	}
 }
 

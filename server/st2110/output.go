@@ -30,6 +30,12 @@ type AncillaryTransmitter interface {
 type OutputConfig struct {
 	FPSNum int // default 30000
 	FPSDen int // default 1001
+	// Width and Height are the configured video TX dimensions. When both are
+	// > 0, WriteVideo drops frames whose dimensions don't match (mirroring
+	// mxl.Writer.WriteVideo), preventing a runtime pipeline-resolution change
+	// from feeding a mismatched-size buffer to the fixed-size TX converter.
+	Width  int
+	Height int
 	Logger *slog.Logger
 }
 
@@ -115,6 +121,16 @@ func (o *Output) Start(videoTx VideoTransmitter, audioTx AudioTransmitter, ancTx
 func (o *Output) WriteVideo(yuv []byte, width, height int, pts int64) {
 	if o.closed.Load() {
 		return
+	}
+	// Drop frames that don't match the configured TX resolution. The ST 2110
+	// video TX converter sizes its buffers from the configured width/height,
+	// so a frame from a different pipeline resolution (e.g. after
+	// Switcher.SetPipelineFormat) would be read out of bounds or reinterpreted
+	// as a corrupted essence. Mirrors mxl.Writer.WriteVideo.
+	if o.config.Width > 0 && o.config.Height > 0 {
+		if width != o.config.Width || height != o.config.Height {
+			return
+		}
 	}
 	cp := make([]byte, len(yuv))
 	copy(cp, yuv)

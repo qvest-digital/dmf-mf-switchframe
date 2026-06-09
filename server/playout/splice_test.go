@@ -661,6 +661,95 @@ func TestSpliceCoordinator_Integration_FireAndDumpOut(t *testing.T) {
 	}
 }
 
+// hookInjector lets a test run arbitrary code inside SchedulePodCue, which the
+// coordinator calls with sc.mu released — exactly the window in which a
+// concurrent DumpOut->Cancel + Fire->BeginSplice can replace the operation.
+type hookInjector struct {
+	fakeSpliceInjector
+	onSchedule func()
+}
+
+func (h *hookInjector) SchedulePodCue(isOut, autoReturn bool, durationMs, preRollMs int64) (uint32, error) {
+	if h.onSchedule != nil {
+		h.onSchedule()
+	}
+	return h.fakeSpliceInjector.SchedulePodCue(isOut, autoReturn, durationMs, preRollMs)
+}
+
+// TestSpliceCoordinator_FinalizeDoesNotCorruptReplacedOp verifies that if the
+// active operation is cancelled and replaced (DumpOut -> Cancel, then
+// Fire -> BeginSplice) while finalizeSplice is mid-analysis with sc.mu
+// released, the post-analysis writes do NOT land on the brand-new operation and
+// the onSpliceReady callback is not fired for the old pod against the new op.
+func TestSpliceCoordinator_FinalizeDoesNotCorruptReplacedOp(t *testing.T) {
+	inj := &hookInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+		TimeoutMs:     5000,
+	})
+
+	var oldReadyCalls int32
+	sc.SetOnSpliceReady(func(podID string, pts int64, preRollMs int64) {
+		if podID == "pod-old" {
+			atomic.AddInt32(&oldReadyCalls, 1)
+		}
+	})
+
+	// During the unlocked injector call (analysis window), simulate the racing
+	// DumpOut->Cancel of the old op followed by a fresh Fire->BeginSplice that
+	// installs a brand-new operation for a different pod.
+	inj.onSchedule = func() {
+		sc.Cancel()
+		if err := sc.BeginSplice("pod-new", false, false, 60000, 1000000); err != nil {
+			t.Errorf("BeginSplice for replacement op: %v", err)
+		}
+	}
+
+	// Begin and finalize the OLD splice. Window = [405000, 495000].
+	_ = sc.BeginSplice("pod-old", true, true, 180000, 0)
+	sc.IngestFrame(make([]byte, video.YUV420FrameSize(64, 64)), 64, 64, 450000)
+	// Frame past window end triggers finalizeSplice synchronously.
+	sc.IngestFrame(make([]byte, video.YUV420FrameSize(64, 64)), 64, 64, 500000)
+
+	// The new operation must be intact: not stamped with the old op's EventID,
+	// not flipped to SpliceComplete, and still scanning its own window.
+	sc.mu.Lock()
+	newOp := sc.active
+	sc.mu.Unlock()
+
+	if newOp == nil {
+		t.Fatal("expected a new active operation after replacement")
+	}
+	if newOp.PodID != "pod-new" {
+		t.Fatalf("active PodID = %q, want pod-new", newOp.PodID)
+	}
+	if newOp.State != SpliceScanning {
+		t.Errorf("new op State = %v, want SpliceScanning (must not be overwritten to complete)", newOp.State)
+	}
+	if newOp.EventID != 0 {
+		t.Errorf("new op EventID = %d, want 0 (old op's eventID must not leak in)", newOp.EventID)
+	}
+	if newOp.LockedPTS != 0 {
+		t.Errorf("new op LockedPTS = %d, want 0 (old op's lockedPTS must not leak in)", newOp.LockedPTS)
+	}
+	// The new op opened its own scan window from currentPTS=1000000 (+5000ms
+	// pre-roll), so it must not have inherited the old op's window.
+	if newOp.TargetPTS == 450000 {
+		t.Error("new op inherited the old op's TargetPTS — operation was corrupted")
+	}
+
+	// onSpliceReady must not have fired for the cancelled/replaced old pod.
+	if got := atomic.LoadInt32(&oldReadyCalls); got != 0 {
+		t.Errorf("onSpliceReady fired %d times for cancelled old pod, want 0", got)
+	}
+
+	sc.Cancel()
+}
+
 func TestSpliceCoordinator_ReturnSplice(t *testing.T) {
 	inj := &fakeSpliceInjector{}
 	bd := NewBlackDetector(BlackDetectorConfig{})

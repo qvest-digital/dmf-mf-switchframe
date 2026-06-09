@@ -1,10 +1,53 @@
 package testutil
 
 import (
+	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+// recordingTestingT is a minimal require.TestingT used to capture whether a
+// parse helper reported a failure, without failing the enclosing test. It
+// mirrors testify's real FailNow semantics by calling runtime.Goexit so the
+// helper unwinds at the assertion point exactly as it would under *testing.T.
+type recordingTestingT struct {
+	mu       sync.Mutex
+	failed   bool
+	lastMsg  string
+	failNowN int
+}
+
+func (r *recordingTestingT) Errorf(format string, args ...interface{}) {
+	r.mu.Lock()
+	r.failed = true
+	r.lastMsg = format
+	r.mu.Unlock()
+}
+
+func (r *recordingTestingT) FailNow() {
+	r.mu.Lock()
+	r.failNowN++
+	r.mu.Unlock()
+	runtime.Goexit()
+}
+
+// runParseInGoroutine runs parseTSPackets on an isolated goroutine so a
+// require failure (runtime.Goexit) terminates only that goroutine. Returns the
+// recorder and whether the parse ran to completion (i.e. did not abort).
+func runParseInGoroutine(data []byte) (*recordingTestingT, bool) {
+	rt := &recordingTestingT{}
+	completed := false
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = parseTSPackets(rt, data)
+		completed = true
+	}()
+	<-done
+	return rt, completed
+}
 
 // buildTSPacket creates a minimal valid 188-byte TS packet.
 func buildTSPacket(pid uint16, cc uint8, hasAdaptation, hasPayload bool) []byte {
@@ -203,4 +246,69 @@ func TestAssertRandomAccessIndicator(t *testing.T) {
 
 	packets := ParseTSPackets(t, pkt)
 	require.True(t, packets[0].AdaptationField.RandomAccessIndicator)
+}
+
+// buildTSPacketBadAdaptationLen builds a payload-bearing packet (afc=0x30)
+// whose adaptation_field_length pushes the computed payload start to
+// payloadStart = 4 + 1 + afLen. With afLen=183 this lands exactly at the
+// 188-byte packet boundary, leaving no room for payload.
+func buildTSPacketBadAdaptationLen(afLen byte) []byte {
+	pkt := make([]byte, 188)
+	pkt[0] = 0x47
+	pkt[1] = 0x01
+	pkt[2] = 0x00
+	pkt[3] = 0x30  // adaptation + payload
+	pkt[4] = afLen // adaptation field length
+	for i := 5; i < 188; i++ {
+		pkt[i] = 0xFF
+	}
+	return pkt
+}
+
+// TestParseTSPackets_AdaptationLengthDesyncFailsParse ensures a payload-bearing
+// packet whose adaptation length overruns the packet is rejected loudly rather
+// than silently downgraded to no-payload. Silently dropping the payload would
+// let AssertContinuityCounters skip the CC check for the packet (it treats
+// payload-less packets as allowed-to-repeat) and mask a real CC discontinuity.
+func TestParseTSPackets_AdaptationLengthDesyncFailsParse(t *testing.T) {
+	// afLen=183 -> payloadStart = 4 + 1 + 183 = 188 == PacketSize (no room).
+	bad := buildTSPacketBadAdaptationLen(183)
+
+	rt, completed := runParseInGoroutine(bad)
+	require.False(t, completed,
+		"parse should abort on adaptation-length desync, not run to completion")
+	require.True(t, rt.failed, "parse should report a failure via Errorf")
+	require.Greater(t, rt.failNowN, 0, "parse should call FailNow")
+}
+
+// TestParseTSPackets_AdaptationLengthMaxValidStillParses confirms the guard does
+// not fire for the largest adaptation length that still leaves a payload byte
+// (afLen=182 -> payloadStart=187 < 188).
+func TestParseTSPackets_AdaptationLengthMaxValidStillParses(t *testing.T) {
+	good := buildTSPacketBadAdaptationLen(182)
+
+	packets := ParseTSPackets(t, good)
+	require.Len(t, packets, 1)
+	require.True(t, packets[0].HasPayload)
+	require.Len(t, packets[0].Payload, 1, "exactly one payload byte should remain")
+}
+
+// TestParseTSPackets_AdaptationOnlyMaxLenNoFailure confirms an adaptation-only
+// packet (no payload bit) with a maximal adaptation length is not affected by
+// the payload-start guard.
+func TestParseTSPackets_AdaptationOnlyMaxLenNoFailure(t *testing.T) {
+	pkt := make([]byte, 188)
+	pkt[0] = 0x47
+	pkt[1] = 0x01
+	pkt[2] = 0x00
+	pkt[3] = 0x20 // adaptation only, no payload
+	pkt[4] = 183  // fills the rest of the packet
+	for i := 5; i < 188; i++ {
+		pkt[i] = 0xFF
+	}
+
+	packets := ParseTSPackets(t, pkt)
+	require.Len(t, packets, 1)
+	require.False(t, packets[0].HasPayload)
+	require.Nil(t, packets[0].Payload)
 }

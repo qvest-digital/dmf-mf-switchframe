@@ -46,19 +46,19 @@ const (
 
 // Sentinel errors for the switcher package.
 var (
-	ErrSourceNotFound          = errors.New("switcher: source not found")
-	ErrAlreadyOnProgram        = errors.New("switcher: already on program")
-	ErrInvalidDelay            = errors.New("switcher: delay must be 0-500ms")
-	ErrInvalidPosition         = errors.New("switcher: position must be >= 1")
-	ErrNoTransition            = errors.New("switcher: no active transition")
-	ErrFormatDuringTransition  = errors.New("switcher: cannot change pipeline format during active transition")
-	ErrEncoderNotAvailable     = errors.New("switcher: encoder not available")
-	ErrInvalidFTBDuration      = errors.New("switcher: ftb duration must be 100-5000ms")
+	ErrSourceNotFound                  = errors.New("switcher: source not found")
+	ErrAlreadyOnProgram                = errors.New("switcher: already on program")
+	ErrInvalidDelay                    = errors.New("switcher: delay must be 0-500ms")
+	ErrInvalidPosition                 = errors.New("switcher: position must be >= 1")
+	ErrNoTransition                    = errors.New("switcher: no active transition")
+	ErrFormatDuringTransition          = errors.New("switcher: cannot change pipeline format during active transition")
+	ErrEncoderNotAvailable             = errors.New("switcher: encoder not available")
+	ErrInvalidFTBDuration              = errors.New("switcher: ftb duration must be 100-5000ms")
 	ErrInvalidTransitionAbortThreshold = errors.New("switcher: transition abort threshold must be 0.05-0.5")
-	errTransitionNotConfigured = errors.New("transition not configured")
-	errNoProgramSource         = errors.New("no program source set")
-	errNoTargetSource          = errors.New("no target source specified")
-	errStingerDataRequired     = errors.New("stinger transition requires stinger data")
+	errTransitionNotConfigured         = errors.New("transition not configured")
+	errNoProgramSource                 = errors.New("no program source set")
+	errNoTargetSource                  = errors.New("no target source specified")
+	errStingerDataRequired             = errors.New("stinger transition requires stinger data")
 )
 
 // State represents the global state of the switching engine.
@@ -286,7 +286,7 @@ func (ss *sourceState) getFrameCount() int {
 // and routes frames from the program source to the program Relay.
 type Switcher struct {
 	log                 *slog.Logger
-	configMu            sync.Mutex // writer-serialization for COLD/WARM fields; all hot-path readers use atomic slots
+	configMu            sync.Mutex                      // writer-serialization for COLD/WARM fields; all hot-path readers use atomic slots
 	builtinSources      map[string]*builtinSource       // always-registered virtual sources (source:black, source:colorbars)
 	builtinProducerStop chan struct{}                   // closed by Close() to shut down the built-in producer goroutine
 	builtinProducerDone chan struct{}                   // closed by the producer loop on exit
@@ -295,17 +295,23 @@ type Switcher struct {
 	programSource       string
 	previewSource       string
 	programRelay        *distribution.Relay
-	seq             uint64 // always use atomic ops, even under s.configMu, to prevent races on lock-free read paths
-	stateCallbacks  []func(internal.ControlRoomState)
-	health          *healthMonitor
-	audioHandler    func(sourceKey string, frame *media.AudioFrame)
-	mixer           audioStateProvider
-	audioCut        audioCutHandler
-	transConfig     *TransitionConfig
-	transEngine     *transition.Engine
-	transTypeOrig   string // original transition type string (e.g., "dve-push-left") for GPU dispatch
-	state           State
-	ftbDurationMs   int
+	seq                 uint64 // always use atomic ops, even under s.configMu, to prevent races on lock-free read paths
+	stateCallbacks      []func(internal.ControlRoomState)
+	health              *healthMonitor
+	audioHandler        func(sourceKey string, frame *media.AudioFrame)
+	mixer               audioStateProvider
+	audioCut            audioCutHandler
+	transConfig         *TransitionConfig
+	transEngine         *transition.Engine
+	transTypeOrig       string // original transition type string (e.g., "dve-push-left") for GPU dispatch
+	// transStartGen is bumped (under configMu) each time StartTransition or
+	// FadeToBlack begins its unlocked engine-creation window. Publish/rollback
+	// phases re-check it (together with state) so a concurrent Cut/abort or a
+	// newer transition start that landed inside the window is detected and the
+	// stale engine is never published over the live state.
+	transStartGen uint64
+	state         State
+	ftbDurationMs int
 
 	// transitionAbortThreshold is the T-bar position (in [0.05, 0.5]) below
 	// which a mid-AUTO pull-back internally aborts the transition, provided
@@ -316,10 +322,10 @@ type Switcher struct {
 	// transitionMaxForward tracks the maximum T-bar position reached during
 	// the active transition. Reset to 0 at each StartTransition.
 	transitionMaxForward float64
-	audioTransition audioTransitionHandler
-	delayBuffer     *DelayBuffer
-	frameSync       *FrameSynchronizer
-	frameSyncActive bool
+	audioTransition      audioTransitionHandler
+	delayBuffer          *DelayBuffer
+	frameSync            *FrameSynchronizer
+	frameSyncActive      bool
 
 	// Callback to seed audio PTS epoch from first program video frame.
 	onFirstVideoPTS     func(pts int64)
@@ -329,6 +335,14 @@ type Switcher struct {
 	// mixer's wall-clock audio PTS, keeping A/V aligned after source cuts.
 	// Seeded from the first program video frame (same as audio seed).
 	// Enabled via EnableWallClockVideoPTS() — off by default for backward compat.
+	//
+	// videoPTSMu guards the seeding + per-frame state below. These fields are
+	// touched by both the videoProcessingLoop goroutine (wallClockVideoPTS via
+	// the per-frame rewrite at videoProcessingLoop and the GPU-transition path
+	// in handleRawVideoFrame) and the frame-delivery goroutines (the one-time
+	// seeding block in handleRawVideoFrame). videoPTSEpoch is a 24-byte
+	// time.Time, so an unsynchronized read can tear; serialize all access.
+	videoPTSMu            sync.Mutex
 	videoPTSStart         int64
 	videoPTSEpoch         time.Time
 	videoPTS              int64
@@ -350,8 +364,8 @@ type Switcher struct {
 	// Thumbnail cache — pipeline routing view JPEG thumbnails.
 	// Created in New(), passed to each sourceDecoder and tapped in
 	// videoProcessingLoop for program output capture.
-	thumbnailCache         *ThumbnailCache
-	lastProgramThumbTime   time.Time
+	thumbnailCache       *ThumbnailCache
+	lastProgramThumbTime time.Time
 
 	// Wipe map store — resolves gradient maps for gradient-map-based wipe transitions.
 	wipeMapStore *wipemap.WipeMapStore
@@ -418,8 +432,11 @@ type Switcher struct {
 	pipeCodecs *pipelineCodecs
 
 	// Pre-allocated YUV buffer pool — replaces sync.Pool for deterministic
-	// buffer lifecycle. Sized at pipeline format resolution.
-	framePool *FramePool
+	// buffer lifecycle. Sized at pipeline format resolution. Atomic pointer:
+	// SetPipelineFormat reassigns it under configMu while hot-path readers
+	// (broadcastProcessed, normalizeResolution) Load() it without a lock,
+	// matching the pipelineFormat/pipeCodecsAtomic pattern.
+	framePool atomic.Pointer[FramePool]
 
 	// Structured video processing pipeline. Built via BuildPipeline(),
 	// called per-frame from videoProcessingLoop. Atomic pointer for
@@ -603,20 +620,20 @@ type Switcher struct {
 	// When useRefClock is set, the synchronous processing loop replaces
 	// both videoProcessingLoop and the mixer's outputTicker, driving
 	// A/V from a single clock source.
-	refClock            *clock.ReferenceClock
-	clockRecovery       *clock.ClockRecovery
-	aacBuffer           *clock.AACFrameBuffer
-	syncMixer           syncMixerInterface
-	syncLoopWg          sync.WaitGroup
-	useRefClock         atomic.Bool
-	ticksBehind         int
-	syncLoopRunning     atomic.Bool                     // double-start guard (Issue 10)
-	cachedBlackFrame    atomic.Pointer[ProcessingFrame] // cached broadcast black (Issue 11)
+	refClock         *clock.ReferenceClock
+	clockRecovery    *clock.ClockRecovery
+	aacBuffer        *clock.AACFrameBuffer
+	syncMixer        syncMixerInterface
+	syncLoopWg       sync.WaitGroup
+	useRefClock      atomic.Bool
+	ticksBehind      int
+	syncLoopRunning  atomic.Bool                     // double-start guard (Issue 10)
+	cachedBlackFrame atomic.Pointer[ProcessingFrame] // cached broadcast black (Issue 11)
 	// transitionBlendBuf is the persistent dst for engine.BlendRawInto on
 	// the sync-loop transition path. Grown on first tick and reused every
 	// tick thereafter — kills the ~3 MB/frame result allocation that
 	// BlendRaw's older copy-out contract forced.
-	transitionBlendBuf []byte
+	transitionBlendBuf  []byte
 	overloadDrops       atomic.Int64
 	syncLoopRepeats     atomic.Int64
 	lastEncodedFrame    atomic.Pointer[ProcessingFrame]
@@ -661,16 +678,16 @@ var _ frameHandler = (*Switcher)(nil)
 func New(programRelay *distribution.Relay) *Switcher {
 	defaultFmt := DefaultFormat
 	s := &Switcher{
-		log:            slog.With("component", "switcher"),
-		programRelay:   programRelay,
-		health:         newHealthMonitor(),
-		videoProcCh:    make(chan videoProcWork, 8),
-		videoProcDone:  make(chan struct{}),
-		framePool:      NewFramePool(512, defaultFmt.Width, defaultFmt.Height, defaultFmt.Color.ColorFormat),
-		thumbnailCache: NewThumbnailCache(),
-		ftbDurationMs:  defaultFTBDurationMs,
+		log:                      slog.With("component", "switcher"),
+		programRelay:             programRelay,
+		health:                   newHealthMonitor(),
+		videoProcCh:              make(chan videoProcWork, 8),
+		videoProcDone:            make(chan struct{}),
+		thumbnailCache:           NewThumbnailCache(),
+		ftbDurationMs:            defaultFTBDurationMs,
 		transitionAbortThreshold: defaultTransitionAbortThreshold,
 	}
+	s.framePool.Store(NewFramePool(512, defaultFmt.Width, defaultFmt.Height, defaultFmt.Color.ColorFormat))
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
 	s.recentCmdErrors = newRecentErrors(8)
@@ -947,8 +964,8 @@ func (s *Switcher) Close() {
 		<-s.videoProcDone
 		// Release pre-allocated frame pool buffers. Safe after videoProcDone
 		// guarantees no more pipeline work (no concurrent Acquire calls).
-		if s.framePool != nil {
-			s.framePool.Close()
+		if fp := s.framePool.Load(); fp != nil {
+			fp.Close()
 		}
 		// Swap pipeline to nil and synchronously drain + close.
 		if p := s.pipeline.Swap(nil); p != nil {
@@ -1261,7 +1278,7 @@ func (s *Switcher) BuildPipeline() error {
 	if old := s.pipeline.Load(); old != nil {
 		p.RestoreBypass(old.BypassState())
 	}
-	if err := p.Build(format, s.framePool, nodes); err != nil {
+	if err := p.Build(format, s.framePool.Load(), nodes); err != nil {
 		return err
 	}
 	p.SetMetrics(prom)
@@ -1292,6 +1309,35 @@ func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
 	}()
 }
 
+// runPipelineGuarded runs a frame through the current pipeline, closing the
+// Load→inflight.Add window that swapPipeline's drain goroutine could slip
+// through: with a bare `s.pipeline.Load()` followed by `p.Run(frame)`, a swap
+// landing between the two lets `old.Wait()` observe a zero in-flight counter
+// and Close all nodes (including cgo encoder nodes) while Run is about to
+// process a frame through them. Here the in-flight registration happens
+// FIRST, and the pipeline pointer is re-checked afterwards: if a swap won
+// the race, the registration is dropped and the new pipeline is used.
+// Returns (frame, false) when no pipeline is configured.
+func (s *Switcher) runPipelineGuarded(frame *ProcessingFrame) (*ProcessingFrame, bool) {
+	for {
+		p := s.pipeline.Load()
+		if p == nil {
+			return frame, false
+		}
+		p.inflight.Add(1)
+		if s.pipeline.Load() != p {
+			// Lost the race with swapPipeline — its drain goroutine may
+			// already be waiting to close this pipeline's nodes. Drop the
+			// registration and retry on the new pipeline.
+			p.inflight.Done()
+			continue
+		}
+		out := p.Run(frame)
+		p.inflight.Done()
+		return out, true
+	}
+}
+
 // rebuildPipeline builds a fresh Pipeline from current state and atomically
 // swaps it in. Logs a warning and keeps the old pipeline if Build() fails.
 // This is the runtime reconfiguration path — SetCompositor, SetKeyBridge,
@@ -1316,7 +1362,7 @@ func (s *Switcher) rebuildPipeline() {
 	if old := s.pipeline.Load(); old != nil {
 		p.RestoreBypass(old.BypassState())
 	}
-	if err := p.Build(format, s.framePool, nodes); err != nil {
+	if err := p.Build(format, s.framePool.Load(), nodes); err != nil {
 		s.log.Warn("pipeline rebuild failed", "error", err)
 		return
 	}
@@ -1375,7 +1421,7 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 		fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
 			s.handleRawVideoFrame(sourceKey, pf)
 		}
-		fs.framePool = s.framePool
+		fs.framePool = s.framePool.Load()
 		s.frameSync = fs
 
 		// Wire all existing source viewers to the frame sync.
@@ -1470,7 +1516,7 @@ func (s *Switcher) PipelineFormat() PipelineFormat {
 // Used by external packages (e.g., SRT wiring) that create ProcessingFrames
 // and want pool-managed buffer lifecycle instead of heap allocation.
 func (s *Switcher) GetFramePool() *FramePool {
-	return s.framePool
+	return s.framePool.Load()
 }
 
 // SetPipelineFormat changes the global pipeline format at runtime.
@@ -1489,12 +1535,14 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	s.invalidateBuiltinSources()
 
 	// Recreate frame pool at new dimensions. Old pool drains naturally —
-	// Release() discards wrong-sized buffers via cap check.
-	s.framePool = NewFramePool(512, f.Width, f.Height, f.Color.ColorFormat)
+	// Release() discards wrong-sized buffers via cap check. Store under
+	// configMu; hot-path readers Load() it without a lock.
+	newPool := NewFramePool(512, f.Width, f.Height, f.Color.ColorFormat)
+	s.framePool.Store(newPool)
 
 	// Update frame sync tick rate and pool reference if active.
 	if s.frameSyncActive && s.frameSync != nil {
-		s.frameSync.SetFramePool(s.framePool)
+		s.frameSync.SetFramePool(newPool)
 		s.frameSync.SetTickRate(f.FrameDuration())
 	}
 
@@ -1516,7 +1564,7 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 
 	if hasPipeCodecs {
 		p := &Pipeline{}
-		if err := p.Build(f, s.framePool, nodes); err != nil {
+		if err := p.Build(f, newPool, nodes); err != nil {
 			s.log.Warn("pipeline rebuild failed on format change", "error", err)
 		} else {
 			p.SetMetrics(prom)
@@ -1643,10 +1691,21 @@ func (s *Switcher) wallClockVideoPTS(sourcePTS int64) int64 {
 	if s.useRefClock.Load() {
 		return sourcePTS // PTS comes from reference clock, not wall clock
 	}
-	if !s.wallClockVideoEnabled {
+	// wallClockVideoEnabled is published via the hotState mirror under configMu
+	// (EnableWallClockVideoPTS); read the mirror to avoid an unsynchronized
+	// plain-field read racing with that writer.
+	if !s.hotState.Load().wallClockVideoEnabled {
 		return sourcePTS
 	}
 	now := time.Now()
+
+	// videoPTSMu serializes the seeding + per-frame update against the one-time
+	// seeding in handleRawVideoFrame and against concurrent wallClockVideoPTS
+	// calls from the videoProcessingLoop and GPU-transition goroutines. Without
+	// it, a torn read of videoPTSEpoch (a 24-byte time.Time) corrupts the
+	// wall-clock PTS for the rest of the session.
+	s.videoPTSMu.Lock()
+	defer s.videoPTSMu.Unlock()
 	if !s.videoPTSInited {
 		s.videoPTSStart = sourcePTS
 		s.videoPTSEpoch = now
@@ -2160,9 +2219,7 @@ func (s *Switcher) videoProcessingLoop() {
 				// GPU was available but failed — this is a fallback.
 				s.gpuFallbackFrames.Add(1)
 			}
-			if p := s.pipeline.Load(); p != nil {
-				work.yuvFrame = p.Run(work.yuvFrame)
-			}
+			work.yuvFrame, _ = s.runPipelineGuarded(work.yuvFrame)
 		}
 
 		// Program output thumbnail capture: bounded async encode via the
@@ -2230,9 +2287,13 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 		return
 	}
 
+	// Load the pool once: Acquire and the stored pool pointer must come from
+	// the same FramePool even if SetPipelineFormat swaps s.framePool mid-call.
+	pool := s.framePool.Load()
+
 	// Defensive: if the frame exceeds pool buffer capacity (e.g., 4K clip
 	// in a 1080p pipeline), skip rather than panic on slice bounds.
-	poolBufSize := s.framePool.BufSize()
+	poolBufSize := pool.BufSize()
 	if expectedSize > poolBufSize {
 		s.log.Warn("broadcastProcessed: frame exceeds pool buffer size, dropping",
 			"frame_w", width, "frame_h", height,
@@ -2241,7 +2302,7 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 		return
 	}
 
-	buf := s.framePool.Acquire()
+	buf := pool.Acquire()
 	copy(buf, yuv[:expectedSize])
 
 	frame := &ProcessingFrame{
@@ -2250,7 +2311,7 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 		Format:  colorFmt,
 		Codec:   codecStr,
 		GroupID: groupID,
-		pool:    s.framePool,
+		pool:    pool,
 	}
 	frame.SetRefs(1)
 	s.enqueueVideoWork(videoProcWork{yuvFrame: frame, enqueueNano: time.Now().UnixNano()})
@@ -2305,11 +2366,15 @@ func (s *Switcher) normalizeResolution(pf *ProcessingFrame) *ProcessingFrame {
 	dstW, dstH := fmt.Width, fmt.Height
 	colorFmt := fmt.Color.ColorFormat
 	dstSize := colorFmt.FrameSize(dstW, dstH)
+	// Load the pool once: the BufSize guard, Acquire, and the stored pool
+	// pointer must all refer to the same FramePool even if SetPipelineFormat
+	// swaps s.framePool concurrently.
+	pool := s.framePool.Load()
 	// Skip if the pool can't hold the target resolution (test safety).
-	if s.framePool.BufSize() < dstSize {
+	if pool.BufSize() < dstSize {
 		return pf
 	}
-	buf := s.framePool.Acquire()
+	buf := pool.Acquire()
 	buf = buf[:dstSize]
 	if colorFmt == ColorYUV422_10bit {
 		if err := transition.ScaleYUV422P10(pf.Data, pf.Width, pf.Height, buf, dstW, dstH); err != nil {
@@ -2329,7 +2394,7 @@ func (s *Switcher) normalizeResolution(pf *ProcessingFrame) *ProcessingFrame {
 		Format:     pf.Format,
 		Codec:      pf.Codec,
 		GroupID:    pf.GroupID,
-		pool:       s.framePool,
+		pool:       pool,
 	}
 	scaled.SetRefs(1)
 	return scaled
@@ -2428,6 +2493,8 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// StateTransitioning without transEngine is safe — frames won't route to
 	// the engine and normal frame processing continues for the current program source.
 	s.transitionState(StateTransitioning)
+	s.transStartGen++
+	startGen := s.transStartGen
 	s.configMu.Unlock()
 
 	// Capture decoder factory — still needed for virtual/legacy sources
@@ -2441,9 +2508,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 	// Check for cancellation before engine creation.
 	if err := ctx.Err(); err != nil {
-		s.configMu.Lock()
-		s.transitionState(StateIdle)
-		s.configMu.Unlock()
+		s.rollbackTransitionState(StateTransitioning, startGen, StateIdle)
 		return fmt.Errorf("start transition: %w", err)
 	}
 
@@ -2492,9 +2557,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		engine.StartSync(fromSource, sourceKey, engineType, durationMs)
 	} else if err := engine.Start(fromSource, sourceKey, engineType, durationMs); err != nil {
 		// Roll back state since we failed to start.
-		s.configMu.Lock()
-		s.transitionState(StateIdle)
-		s.configMu.Unlock()
+		s.rollbackTransitionState(StateTransitioning, startGen, StateIdle)
 		return fmt.Errorf("start transition: %w", err)
 	}
 
@@ -2541,6 +2604,21 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// Now publish the engine — audio crossfade is already active, so the
 	// first OnTransitionPosition from a video frame will be handled.
 	s.configMu.Lock()
+	if s.state != StateTransitioning || s.transStartGen != startGen {
+		// A concurrent Cut (or abort) tore this transition down during the
+		// unlocked setup window — it observed StateTransitioning with a nil
+		// engine and already returned the switcher to its post-cut state.
+		// Publishing now would install a dead engine over the live hotState
+		// (frames would route to it forever; its completion handler would
+		// early-return on the state guard). Abandon the start instead.
+		s.configMu.Unlock()
+		engine.Stop()
+		if audioHandler != nil {
+			audioHandler.OnTransitionAbort()
+		}
+		s.log.Warn("transition aborted", "type", transType, "reason", "pre-empted during setup")
+		return fmt.Errorf("start transition: pre-empted by concurrent cut/abort")
+	}
 	s.transEngine = engine
 	s.transTypeOrig = transType // preserve original type string for GPU DVE dispatch
 	s.transitionMaxForward = 0  // fresh transition: reset T-bar pull-back gate
@@ -2664,6 +2742,14 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		return fmt.Errorf("cannot FTB while mix/dip transition is active: %w", transition.ErrActive)
 	}
 
+	// Reject a double-press while an FTB leg is still in flight (forward or
+	// reverse). Falling through would spawn a second concurrent engine over
+	// the live one, orphaning the first engine mid-fade.
+	if s.state == StateFTBTransitioning || s.state == StateFTBReversing {
+		s.configMu.Unlock()
+		return fmt.Errorf("FTB transition already in progress: %w", transition.ErrActive)
+	}
+
 	// Toggle off: FTB is active but transition is complete (fully black).
 	// Start a reverse FTB transition to fade back from black.
 	if s.state == StateFTB {
@@ -2680,6 +2766,8 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 		// Mark transition as starting, then release lock.
 		s.transitionState(StateFTBReversing)
+		s.transStartGen++
+		ftbRevStartGen := s.transStartGen
 		s.configMu.Unlock()
 
 		// No decoder warmup needed — sources provide raw YUV.
@@ -2710,9 +2798,8 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		}
 
 		if err := engine.Start(fromSource, "", transition.FTBReverse, ftbRevDurMs); err != nil {
-			s.configMu.Lock()
-			s.transitionState(StateFTB) // Roll back to StateFTB
-			s.configMu.Unlock()
+			// Roll back to StateFTB (unless a concurrent Cut/abort moved on).
+			s.rollbackTransitionState(StateFTBReversing, ftbRevStartGen, StateFTB)
 			return fmt.Errorf("start FTB reverse: %w", err)
 		}
 
@@ -2725,6 +2812,17 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 		// Now publish the engine.
 		s.configMu.Lock()
+		if s.state != StateFTBReversing || s.transStartGen != ftbRevStartGen {
+			// A concurrent Cut/abort pre-empted this FTB reverse during the
+			// unlocked setup window — do not publish the dead engine.
+			s.configMu.Unlock()
+			engine.Stop()
+			if audioHandler != nil {
+				audioHandler.OnTransitionAbort()
+			}
+			s.log.Warn("transition aborted", "type", "ftb_reverse", "reason", "pre-empted during setup")
+			return fmt.Errorf("start FTB reverse: pre-empted by concurrent cut/abort")
+		}
 		s.transEngine = engine
 		s.updateHotState(func(hs *hotState) {
 			hs.state = StateFTBReversing
@@ -2756,6 +2854,8 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 	// Mark transition as starting, then release lock.
 	s.transitionState(StateFTBTransitioning)
+	s.transStartGen++
+	ftbFwdStartGen := s.transStartGen
 	s.configMu.Unlock()
 
 	// No decoder warmup needed — sources provide raw YUV.
@@ -2786,9 +2886,8 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	}
 
 	if err := engine.Start(fromSource, "", transition.FTB, ftbFwdDurMs); err != nil {
-		s.configMu.Lock()
-		s.transitionState(StateIdle)
-		s.configMu.Unlock()
+		// Roll back to idle (unless a concurrent Cut/abort moved on).
+		s.rollbackTransitionState(StateFTBTransitioning, ftbFwdStartGen, StateIdle)
 		return fmt.Errorf("start FTB: %w", err)
 	}
 
@@ -2800,6 +2899,17 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 	// Now publish the engine.
 	s.configMu.Lock()
+	if s.state != StateFTBTransitioning || s.transStartGen != ftbFwdStartGen {
+		// A concurrent Cut/abort pre-empted this FTB during the unlocked
+		// setup window — do not publish the dead engine.
+		s.configMu.Unlock()
+		engine.Stop()
+		if audioHandler != nil {
+			audioHandler.OnTransitionAbort()
+		}
+		s.log.Warn("transition aborted", "type", "ftb", "reason", "pre-empted during setup")
+		return fmt.Errorf("start FTB: pre-empted by concurrent cut/abort")
+	}
 	s.transEngine = engine
 	s.updateHotState(func(hs *hotState) {
 		hs.state = StateFTBTransitioning
@@ -2841,6 +2951,19 @@ func (s *Switcher) SetFTBDuration(durationMs int) error {
 	return nil
 }
 
+// rollbackTransitionState reverts the transitional state set at the start of
+// StartTransition/FadeToBlack's unlocked setup window, but only if no
+// concurrent Cut/abort/transition-start already moved the state on (detected
+// via the expected state + start generation). Used on setup-failure paths so
+// a blind rollback cannot clobber state a concurrent operation just set.
+func (s *Switcher) rollbackTransitionState(expect State, expectGen uint64, to State) {
+	s.configMu.Lock()
+	if s.state == expect && s.transStartGen == expectGen {
+		s.transitionState(to)
+	}
+	s.configMu.Unlock()
+}
+
 // AbortTransition stops any active transition and restores normal frame routing.
 func (s *Switcher) AbortTransition() {
 	s.configMu.Lock()
@@ -2866,8 +2989,14 @@ func (s *Switcher) AbortTransition() {
 			hs.state = newState
 			hs.transEngine = nil
 		})
+		// Allow videoProcessingLoop to resume — without this, a manually
+		// aborted GPU transition leaves the flag set forever and every
+		// program-source frame is dropped (frozen program output).
+		s.gpuTransActive.Store(false)
 		atomic.AddUint64(&s.seq, 1)
 	}
+	frameSync := s.frameSync
+	programAfterAbort := s.programSource
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 
@@ -2875,6 +3004,15 @@ func (s *Switcher) AbortTransition() {
 		engine.Stop()
 	}
 	if wasActive {
+		// Restore the frame sync program source. StartTransition retargeted
+		// it to the incoming source (early-release phase lock + FRC quality);
+		// engine.Stop() never fires OnComplete, so handleTransitionComplete
+		// will not restore it for a manual abort. programSource is unchanged
+		// by the abort, so this re-points the sync at the on-air source.
+		if frameSync != nil {
+			frameSync.SetProgramSource(programAfterAbort)
+		}
+
 		s.log.Warn("transition aborted", "type", transType, "reason", "manual abort")
 
 		if audioHandler != nil {
@@ -3124,7 +3262,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	// at ingest time. Decoded frames route through frameSync/delayBuffer via callback.
 	if s.sourceDecoderFactory != nil {
 		cb := s.makeDecoderCallback(key)
-		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool, &s.pipelineFormat, s.stmapRegistry, &s.gpuSourceActive)
+		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool.Load(), &s.pipelineFormat, s.stmapRegistry, &s.gpuSourceActive)
 		if sd != nil {
 			sd.thumbnailCache = s.thumbnailCache
 			viewer.srcDecoder.Store(sd)
@@ -3320,6 +3458,11 @@ func (s *Switcher) IngestReplayVideo(sourceKey string, pf *ProcessingFrame) {
 // When frame sync is active, frames are buffered in the synchronizer's
 // per-source ring and released at steady tick rate. Otherwise, delegates
 // directly to handleRawVideoFrame for immediate processing.
+//
+// Ownership: IngestRawVideo always CONSUMES pf — callers must not release or
+// reuse pf after the call. The frame-sync path takes ownership of the buffer
+// (ring buffer / FRC releases it); the direct path releases it here after
+// handleRawVideoFrame returns. This mirrors makeDecoderCallback's direct path.
 func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 	// Record health for ALL sources — in buffer-only mode (ref clock),
 	// handleRawVideoFrame doesn't fire, so this is the only place that
@@ -3339,9 +3482,10 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 
 	if fs := s.frameSyncBundle.Load().sync; fs != nil {
 		fs.IngestRawVideo(sourceKey, pf)
-		return
+		return // frame sync owns the buffer (ring buffer / FRC handles release)
 	}
 	s.handleRawVideoFrame(sourceKey, pf)
+	pf.ReleaseYUV() // direct path: frame consumed synchronously, safe to release
 }
 
 // UnregisterSource removes a source from the switcher and detaches its
@@ -3430,6 +3574,10 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 			abortAudioHandler = s.audioTransition
 			s.transEngine = nil
 			s.transitionState(StateIdle)
+			// Allow videoProcessingLoop to resume — engine.Stop() never
+			// fires OnComplete, so handleTransitionComplete will not clear
+			// the GPU-transition flag for this abort path.
+			s.gpuTransActive.Store(false)
 		}
 		oldProgram = s.programSource
 		s.programSource = sourceKey
@@ -3712,13 +3860,13 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		},
 	}
 
-	if s.framePool != nil {
-		hits, misses := s.framePool.Stats()
+	if fp := s.framePool.Load(); fp != nil {
+		hits, misses := fp.Stats()
 		result["frame_pool"] = map[string]any{
 			"hits":     hits,
 			"misses":   misses,
-			"capacity": s.framePool.cap,
-			"buf_size": s.framePool.bufSize,
+			"capacity": fp.cap,
+			"buf_size": fp.bufSize,
 		}
 	}
 
@@ -3981,20 +4129,20 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		transType = string(s.transEngine.TransitionType())
 	}
 	state := internal.ControlRoomState{
-		ProgramSource:   s.programSource,
-		PreviewSource:   s.previewSource,
-		TransitionType:  transType,
-		InTransition:    s.state.isInTransition(),
-		FTBActive:       s.state.isFTBActive(),
-		FTBDurationMs:   s.ftbDurationMs,
+		ProgramSource:            s.programSource,
+		PreviewSource:            s.previewSource,
+		TransitionType:           transType,
+		InTransition:             s.state.isInTransition(),
+		FTBActive:                s.state.isFTBActive(),
+		FTBDurationMs:            s.ftbDurationMs,
 		TransitionAbortThreshold: s.transitionAbortThreshold,
-		TallyState:      tally,
-		Sources:         sources,
-		Seq:             atomic.LoadUint64(&s.seq),
-		Timestamp:       time.Now().UnixMilli(),
-		LastCommandSeq:  s.lastCommandSeq.Load(),
-		LastExecutedSeq: s.lastExecutedSeq.Load(),
-		ClockSync:       clockSyncAsInfo(clock.GetSyncState()),
+		TallyState:               tally,
+		Sources:                  sources,
+		Seq:                      atomic.LoadUint64(&s.seq),
+		Timestamp:                time.Now().UnixMilli(),
+		LastCommandSeq:           s.lastCommandSeq.Load(),
+		LastExecutedSeq:          s.lastExecutedSeq.Load(),
+		ClockSync:                clockSyncAsInfo(clock.GetSyncState()),
 	}
 	if errPtr := s.lastExecutedErr.Load(); errPtr != nil {
 		state.LastExecutedErr = *errPtr
@@ -4408,19 +4556,30 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 
 	// Seed BOTH audio and video PTS epochs from first program video frame.
 	// Both must seed at the same moment with the same PTS to stay aligned.
-	if !s.firstVideoPTSSeeded {
+	// firstVideoPTSSeeded + the video epoch fields are guarded by videoPTSMu
+	// so this seeding (which runs on a frame-delivery goroutine) is ordered
+	// with the per-frame wallClockVideoPTS read/update on the processing loop.
+	// wallClockVideoEnabled is read from the hotState mirror (its published
+	// snapshot under configMu).
+	s.videoPTSMu.Lock()
+	firstSeed := !s.firstVideoPTSSeeded
+	if firstSeed {
 		s.firstVideoPTSSeeded = true
 		now := time.Now()
 		// Seed video epoch directly (same moment as audio).
-		if s.wallClockVideoEnabled && !s.videoPTSInited {
+		if s.hotState.Load().wallClockVideoEnabled && !s.videoPTSInited {
 			s.videoPTSStart = pf.PTS
 			s.videoPTSEpoch = now
 			s.videoPTS = pf.PTS
 			s.videoPTSInited = true
 		}
-		// Seed audio epoch via callback.
-		if s.onFirstVideoPTS != nil {
-			s.onFirstVideoPTS(pf.PTS)
+	}
+	s.videoPTSMu.Unlock()
+	// Seed audio epoch via callback, outside videoPTSMu (the callback reaches
+	// into the audio mixer; holding the video PTS lock across it is unsafe).
+	if firstSeed {
+		if cb := s.hotState.Load().onFirstVideoPTS; cb != nil {
+			cb(pf.PTS)
 		}
 	}
 

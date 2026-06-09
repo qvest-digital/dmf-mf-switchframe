@@ -29,9 +29,10 @@ type FramePool struct {
 	cap    int            // total capacity
 	format GPUFrameFormat // pixel format (default: GPUFormatNV12)
 
-	mu   sync.Mutex
-	free []*GPUFrame
-	all  []*GPUFrame // all pre-allocated frames (for IPC export)
+	mu     sync.Mutex
+	free   []*GPUFrame
+	all    []*GPUFrame // all pre-allocated frames (for IPC export)
+	closed bool        // set by Close; release() frees instead of re-pooling
 
 	// Diagnostics
 	hits   uint64
@@ -173,22 +174,27 @@ func (p *FramePool) release(frame *GPUFrame) {
 	frame.Width = p.width
 	frame.Height = p.height
 	frame.Format = p.format
-	if len(p.free) < p.cap {
+	if !p.closed && len(p.free) < p.cap {
 		p.free = append(p.free, frame)
 		p.mu.Unlock()
 		return
 	}
 	p.mu.Unlock()
-	// Pool full — free GPU memory
+	// Pool full or closed — free GPU memory. Frames still checked out when
+	// Close() runs land here on their final Release, so their VRAM is
+	// reclaimed instead of leaking in a dead pool's free list.
 	if frame.DevPtr != 0 {
 		C.cudaFree(unsafe.Pointer(uintptr(frame.DevPtr)))
 		frame.DevPtr = 0
 	}
 }
 
-// Close frees all pooled GPU frames.
+// Close frees all pooled GPU frames and marks the pool closed. Frames
+// currently checked out remain valid; they are freed when their holders
+// call Release (release() frees instead of re-pooling once closed).
 func (p *FramePool) Close() {
 	p.mu.Lock()
+	p.closed = true
 	for _, frame := range p.free {
 		if frame.DevPtr != 0 {
 			C.cudaFree(unsafe.Pointer(uintptr(frame.DevPtr)))

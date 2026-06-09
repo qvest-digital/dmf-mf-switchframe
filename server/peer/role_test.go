@@ -43,13 +43,15 @@ func TestRole_Matrix(t *testing.T) {
 		// recovery) correctly overrides the conservative default.
 		{"A forced leader before ever seeing peer", input{"a", 1, false, "", 0}, RoleLeader},
 
-		// Misconfiguration: both engines booted with the same label.
-		// Tiebreak collapses to the !<  branch → both become followers
-		// under reachable pairing (safe), and partitioned-follower on
-		// split (still safe — no dual-leader). Documented so a
-		// future refactor doesn't silently change the direction.
-		{"both labeled a, reachable → dual-follower", input{"a", 0, true, "a", 0}, RoleFollowerHealthy},
-		{"both labeled b, partitioned → dual-follower", input{"b", 0, false, "b", 0}, RoleFollowerPartitioned},
+		// Misconfiguration: both engines booted with the same label AND no
+		// instance ID configured (the backward-compatible fail-safe). With no
+		// secondary tiebreak key the lexical-label branch collapses → both
+		// become followers under reachable pairing (safe), and partitioned-
+		// follower on split (still safe — no dual-leader). The instance-ID
+		// tiebreak that rescues leadership is exercised in
+		// TestRole_SameLabelInstanceIDTiebreak below.
+		{"both labeled a, no instance ID, reachable → dual-follower", input{"a", 0, true, "a", 0}, RoleFollowerHealthy},
+		{"both labeled b, no instance ID, partitioned → dual-follower", input{"b", 0, false, "b", 0}, RoleFollowerPartitioned},
 	}
 
 	for _, tc := range cases {
@@ -62,6 +64,95 @@ func TestRole_Matrix(t *testing.T) {
 				t.Errorf("Role() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRole_SameLabelInstanceIDTiebreak verifies the regression fix for the
+// same-label collapse: when two engines share an --engine-label and have equal
+// epochs, a distinct per-process instance ID breaks the tie deterministically
+// so exactly one engine leads instead of both silently becoming followers.
+func TestRole_SameLabelInstanceIDTiebreak(t *testing.T) {
+	cases := []struct {
+		name           string
+		localLabel     string
+		localInstance  string
+		peerReachable  bool
+		peerLabel      string
+		peerInstance   string
+		want           Role
+	}{
+		// Reachable, same label, distinct instance IDs: lexically-smaller leads.
+		{"same label, local instance smaller, reachable → leader",
+			"a", "inst-1", true, "a", "inst-2", RoleLeader},
+		{"same label, local instance larger, reachable → follower-healthy",
+			"a", "inst-2", true, "a", "inst-1", RoleFollowerHealthy},
+
+		// Partitioned, same label, distinct instance IDs: lexically-smaller
+		// leads (no dual-leader because the peer reaches the opposite verdict).
+		{"same label, local instance smaller, partitioned → leader",
+			"b", "aaa", false, "b", "bbb", RoleLeader},
+		{"same label, local instance larger, partitioned → follower-partitioned",
+			"b", "bbb", false, "b", "aaa", RoleFollowerPartitioned},
+
+		// Identical instance IDs (e.g. both default to the same fallback):
+		// no tiebreak, fail-safe both-follower preserved.
+		{"same label, identical instance, reachable → follower-healthy",
+			"a", "same", true, "a", "same", RoleFollowerHealthy},
+
+		// Peer not yet publishing an instance ID: fail-safe preserved even
+		// though local has one.
+		{"same label, peer instance empty, reachable → follower-healthy",
+			"a", "inst-1", true, "a", "", RoleFollowerHealthy},
+		{"same label, local instance empty, partitioned → follower-partitioned",
+			"b", "", false, "b", "inst-1", RoleFollowerPartitioned},
+
+		// Distinct labels: instance ID is irrelevant, label still wins.
+		{"distinct labels ignore instance IDs → label wins",
+			"a", "zzz", true, "b", "aaa", RoleLeader},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewHealthPoller("http://peer",
+				WithLocalIdentity(tc.localLabel),
+				WithLocalInstanceID(tc.localInstance))
+			p.SetPeerStateForTest(tc.peerReachable, tc.peerLabel, 0)
+			p.SetPeerInstanceIDForTest(tc.peerInstance)
+
+			if got := p.Role(); got != tc.want {
+				t.Errorf("Role() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRole_SameLabelTiebreakNeverDualLeader is a mirror test: from the same
+// inputs, the two engines must reach complementary verdicts so leadership is
+// held by exactly one side (never both leader, never both follower) whenever
+// instance IDs are distinct.
+func TestRole_SameLabelTiebreakNeverDualLeader(t *testing.T) {
+	mkPoller := func(instance, peerInstance string, reachable bool) *HealthPoller {
+		p := NewHealthPoller("http://peer",
+			WithLocalIdentity("x"),
+			WithLocalInstanceID(instance))
+		p.SetPeerStateForTest(reachable, "x", 0)
+		p.SetPeerInstanceIDForTest(peerInstance)
+		return p
+	}
+
+	for _, reachable := range []bool{true, false} {
+		engineA := mkPoller("uuid-aaaa", "uuid-bbbb", reachable)
+		engineB := mkPoller("uuid-bbbb", "uuid-aaaa", reachable)
+
+		roleA := engineA.Role()
+		roleB := engineB.Role()
+
+		aLeads := roleA == RoleLeader
+		bLeads := roleB == RoleLeader
+		if aLeads == bLeads {
+			t.Errorf("reachable=%v: expected exactly one leader, got A=%v B=%v",
+				reachable, roleA, roleB)
+		}
 	}
 }
 

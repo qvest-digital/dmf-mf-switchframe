@@ -309,7 +309,11 @@ func validateCorrectorState(s colorgrade.CorrectorState) error {
 	if err := validateRange("sharpness", float64(s.Sharpness), 0, 1.0); err != nil {
 		return err
 	}
-	// Curves: validate control points are in [0,1] range.
+	// Curves: validate control points are in [0,1], strictly increasing in X,
+	// and bounded in count. evalCurve assumes points are sorted by X; duplicate
+	// or unsorted X produce a zero-width segment → ±Inf → NaN in the LUT that is
+	// uploaded to the GPU, corrupting the live output. The state arrives as JSON
+	// from the browser/CEF (an untrusted boundary), so reject it here.
 	for _, curve := range []struct {
 		name string
 		pts  []colorgrade.CurvePoint
@@ -319,10 +323,18 @@ func validateCorrectorState(s colorgrade.CorrectorState) error {
 		{"curveG", s.CurveG},
 		{"curveB", s.CurveB},
 	} {
+		if len(curve.pts) > colorgrade.MaxCurvePoints {
+			return fmt.Errorf("%s: too many points: %d (max %d)",
+				curve.name, len(curve.pts), colorgrade.MaxCurvePoints)
+		}
 		for j, pt := range curve.pts {
 			if pt.X < 0 || pt.X > 1 || pt.Y < 0 || pt.Y > 1 {
 				return fmt.Errorf("%s[%d]: x and y must be 0-1 (got x=%.2f, y=%.2f)",
 					curve.name, j, pt.X, pt.Y)
+			}
+			if j > 0 && pt.X <= curve.pts[j-1].X {
+				return fmt.Errorf("%s[%d]: x must be strictly increasing (got x=%.4f after x=%.4f)",
+					curve.name, j, pt.X, curve.pts[j-1].X)
 			}
 		}
 	}

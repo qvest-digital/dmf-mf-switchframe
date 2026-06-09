@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestConnectionRoot(t *testing.T) {
@@ -258,6 +259,67 @@ func TestConnectionPatchReceiverStaged(t *testing.T) {
 	}
 	if *staged2.TransportParams[0].DestinationIP != destIP {
 		t.Errorf("persisted destination_ip: got %q, want %q", *staged2.TransportParams[0].DestinationIP, destIP)
+	}
+}
+
+// TestConnectionPatchStagedBodyLimit verifies the PATCH staged handlers cap the
+// request body via http.MaxBytesReader, so an oversized body is rejected with a
+// 400 instead of being buffered/allocated in full (DoS protection).
+func TestConnectionPatchStagedBodyLimit(t *testing.T) {
+	cs := NewConnectionServer(ConnectionServerOpts{})
+	cs.AddSender("sender-001", "")
+	cs.AddReceiver("recv-001")
+	ts := httptest.NewServer(cs.Handler())
+	defer ts.Close()
+
+	endpoints := []string{
+		ts.URL + "/x-nmos/connection/v1.1/single/senders/sender-001/staged",
+		ts.URL + "/x-nmos/connection/v1.1/single/receivers/recv-001/staged",
+	}
+
+	for _, url := range endpoints {
+		// Body well over the 64 KiB cap. Valid JSON shape so the only way to
+		// fail is hitting the byte limit, not a parse error on the prefix.
+		big := append([]byte(`{"transport_params":[{"destination_ip":"`),
+			bytes.Repeat([]byte("9"), maxStagedBodyBytes+1024)...)
+		big = append(big, []byte(`"}]}`)...)
+
+		req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader(big))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PATCH oversized: %v", err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		// MaxBytesReader makes Decode fail, which the handler maps to 400.
+		// The key assertion is that the oversized body is NOT accepted (200).
+		if resp.StatusCode == http.StatusOK {
+			t.Fatalf("%s: oversized body accepted (status 200); body limit not enforced", url)
+		}
+	}
+
+	// A normal, within-limit body must still succeed.
+	destIP := "239.1.1.1"
+	patch := StagedParams{TransportParams: []TransportParams{{DestinationIP: &destIP}}}
+	body, _ := json.Marshal(patch)
+	req, err := http.NewRequest(http.MethodPatch, endpoints[0], bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH normal: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("normal body status: got %d, want 200", resp.StatusCode)
 	}
 }
 
@@ -1306,5 +1368,193 @@ func TestConnectionUnsupportedActivationMode(t *testing.T) {
 				t.Fatalf("status: got %d, want %d; body: %s", resp.StatusCode, tt.wantStatus, string(bodyBytes))
 			}
 		})
+	}
+}
+
+// patchStaged issues an activate_immediate PATCH with the given master_enable
+// against a sender or receiver staged endpoint and returns the status code.
+func patchStaged(t *testing.T, url string, masterEnable bool) int {
+	t.Helper()
+	mode := "activate_immediate"
+	patch := StagedParams{
+		MasterEnable: &masterEnable,
+		Activation:   &Activation{Mode: &mode},
+	}
+	body, _ := json.Marshal(patch)
+	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader(body))
+	if err != nil {
+		t.Errorf("NewRequest: %v", err)
+		return 0
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Errorf("PATCH: %v", err)
+		return 0
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+// TestConnectionConcurrentSenderPatchesSerialized reproduces finding #79:
+// activation callbacks fired outside cs.mu let two concurrent PATCHes apply
+// their activate/deactivate side effects out of order relative to the
+// recorded Active state. The PATCH that commits its state LAST must also run
+// its callback LAST, otherwise the API reports deactivated while the
+// transmitter is actually on (or vice versa).
+func TestConnectionConcurrentSenderPatchesSerialized(t *testing.T) {
+	var (
+		eventsMu sync.Mutex
+		events   []string
+	)
+	activateEntered := make(chan struct{})
+	releaseActivate := make(chan struct{})
+
+	cs := NewConnectionServer(ConnectionServerOpts{
+		OnActivateSender: func(id string, params StagedParams) error {
+			close(activateEntered)
+			<-releaseActivate // hold the transmitter start mid-flight
+			eventsMu.Lock()
+			events = append(events, "activate")
+			eventsMu.Unlock()
+			return nil
+		},
+		OnDeactivateSender: func(id string) error {
+			eventsMu.Lock()
+			events = append(events, "deactivate")
+			eventsMu.Unlock()
+			return nil
+		},
+	})
+	cs.AddSender("sender-001", "v=0\r\n")
+	ts := httptest.NewServer(cs.Handler())
+	defer ts.Close()
+
+	url := ts.URL + "/x-nmos/connection/v1.1/single/senders/sender-001/staged"
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if code := patchStaged(t, url, true); code != http.StatusOK {
+			t.Errorf("activate PATCH status = %d, want 200", code)
+		}
+	}()
+
+	// Wait for controller A's activate callback to be in flight, then have
+	// controller B deactivate the same sender. B's state write lands after
+	// A's, so B's callback must also run after A's.
+	<-activateEntered
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if code := patchStaged(t, url, false); code != http.StatusOK {
+			t.Errorf("deactivate PATCH status = %d, want 200", code)
+		}
+	}()
+
+	// Give the unserialized deactivate a chance to race ahead (pre-fix it
+	// completes here while the activate callback is still blocked).
+	time.Sleep(150 * time.Millisecond)
+	close(releaseActivate)
+	wg.Wait()
+
+	eventsMu.Lock()
+	got := append([]string(nil), events...)
+	eventsMu.Unlock()
+	want := []string{"activate", "deactivate"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("callback order = %v, want %v (callbacks must apply in the same order as the recorded Active state)", got, want)
+	}
+
+	// Final recorded state must match the last side effect: deactivated.
+	resp, err := http.Get(ts.URL + "/x-nmos/connection/v1.1/single/senders/sender-001/active")
+	if err != nil {
+		t.Fatalf("GET active: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var active StagedParams
+	if err := json.NewDecoder(resp.Body).Decode(&active); err != nil {
+		t.Fatalf("decode active: %v", err)
+	}
+	if active.MasterEnable == nil || *active.MasterEnable {
+		t.Error("active.master_enable should be false after the final deactivate")
+	}
+}
+
+// TestConnectionConcurrentReceiverPatchesSerialized is the receiver-side
+// variant of finding #79.
+func TestConnectionConcurrentReceiverPatchesSerialized(t *testing.T) {
+	var (
+		eventsMu sync.Mutex
+		events   []string
+	)
+	activateEntered := make(chan struct{})
+	releaseActivate := make(chan struct{})
+
+	cs := NewConnectionServer(ConnectionServerOpts{
+		OnActivateReceiver: func(id string, params StagedParams) error {
+			close(activateEntered)
+			<-releaseActivate
+			eventsMu.Lock()
+			events = append(events, "activate")
+			eventsMu.Unlock()
+			return nil
+		},
+		OnDeactivateReceiver: func(id string) error {
+			eventsMu.Lock()
+			events = append(events, "deactivate")
+			eventsMu.Unlock()
+			return nil
+		},
+	})
+	cs.AddReceiver("recv-001")
+	ts := httptest.NewServer(cs.Handler())
+	defer ts.Close()
+
+	url := ts.URL + "/x-nmos/connection/v1.1/single/receivers/recv-001/staged"
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if code := patchStaged(t, url, true); code != http.StatusOK {
+			t.Errorf("activate PATCH status = %d, want 200", code)
+		}
+	}()
+
+	<-activateEntered
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if code := patchStaged(t, url, false); code != http.StatusOK {
+			t.Errorf("deactivate PATCH status = %d, want 200", code)
+		}
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	close(releaseActivate)
+	wg.Wait()
+
+	eventsMu.Lock()
+	got := append([]string(nil), events...)
+	eventsMu.Unlock()
+	want := []string{"activate", "deactivate"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("callback order = %v, want %v", got, want)
+	}
+
+	resp, err := http.Get(ts.URL + "/x-nmos/connection/v1.1/single/receivers/recv-001/active")
+	if err != nil {
+		t.Fatalf("GET active: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var active StagedParams
+	if err := json.NewDecoder(resp.Body).Decode(&active); err != nil {
+		t.Fatalf("decode active: %v", err)
+	}
+	if active.MasterEnable == nil || *active.MasterEnable {
+		t.Error("active.master_enable should be false after the final deactivate")
 	}
 }

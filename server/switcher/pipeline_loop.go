@@ -41,8 +41,13 @@ type Pipeline struct {
 	// Monotonically increasing across rebuilds for downstream change detection.
 	epoch uint64
 
-	// In-flight tracking for safe cleanup (atomic swap drain)
-	inflight sync.WaitGroup
+	// In-flight tracking for safe cleanup (atomic swap drain).
+	// An inflightGauge rather than a sync.WaitGroup: the guarded runner
+	// (Switcher.runPipelineGuarded) registers from a zero count concurrently
+	// with Wait — a pattern WaitGroup forbids (and the race detector flags)
+	// but which is safe here thanks to the pipeline-pointer re-check after
+	// registration.
+	inflight inflightGauge
 
 	// Per-node bypass flags. Keyed by node Name(). When a flag is true,
 	// Run() skips that node's Process() call — the frame passes through
@@ -228,6 +233,45 @@ func (p *Pipeline) Snapshot() map[string]any {
 
 // Wait blocks until all in-flight Run() calls complete.
 func (p *Pipeline) Wait() { p.inflight.Wait() }
+
+// inflightGauge counts frames currently inside Run and lets Wait/Close block
+// until the count drains to zero. Unlike sync.WaitGroup, Add(1) from a zero
+// count is allowed to race Wait: Wait may then return before the racing
+// frame finishes, which the caller compensates for by re-checking the
+// current pipeline pointer after registering (see runPipelineGuarded) so a
+// frame never runs on a pipeline whose drain already won.
+type inflightGauge struct {
+	mu sync.Mutex
+	c  *sync.Cond
+	n  int64
+}
+
+func (g *inflightGauge) Add(delta int64) {
+	g.mu.Lock()
+	g.n += delta
+	if g.n < 0 {
+		g.mu.Unlock()
+		panic("switcher: pipeline in-flight counter went negative")
+	}
+	if g.n == 0 && g.c != nil {
+		g.c.Broadcast()
+	}
+	g.mu.Unlock()
+}
+
+func (g *inflightGauge) Done() { g.Add(-1) }
+
+// Wait blocks until the in-flight count is zero.
+func (g *inflightGauge) Wait() {
+	g.mu.Lock()
+	for g.n != 0 {
+		if g.c == nil {
+			g.c = sync.NewCond(&g.mu)
+		}
+		g.c.Wait()
+	}
+	g.mu.Unlock()
+}
 
 // Close waits for in-flight frames, then closes all nodes.
 func (p *Pipeline) Close() error {

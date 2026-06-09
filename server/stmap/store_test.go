@@ -1,6 +1,7 @@
 package stmap
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -305,4 +306,24 @@ func TestStore_SaveStatic_LargeMap(t *testing.T) {
 	last := m.Width*m.Height - 1
 	require.Equal(t, m.S[last], loaded.S[last])
 	require.Equal(t, m.T[last], loaded.T[last])
+}
+
+// TestStore_LoadStatic_OverflowHeader verifies that a corrupt/crafted on-disk
+// .stmap file with huge header dimensions is rejected with an error instead
+// of panicking via integer overflow in the expected-size computation
+// (the same pattern ReadRaw had).
+func TestStore_LoadStatic_OverflowHeader(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	require.NoError(t, err)
+
+	data := make([]byte, 8)
+	binary.BigEndian.PutUint32(data[0:4], 1<<31)
+	binary.BigEndian.PutUint32(data[4:8], 1<<31)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "evil.stmap"), data, 0o644))
+
+	require.NotPanics(t, func() {
+		_, err := store.LoadStatic("evil")
+		require.Error(t, err)
+	})
 }

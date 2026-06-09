@@ -5,6 +5,7 @@ package codec
 /*
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/audio_fifo.h>
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
@@ -24,7 +25,108 @@ typedef struct {
 	int sample_rate;
 	int channels;
 	int video_frames;
+	int64_t audio_samples; // samples accepted by the audio encoder
 } transcode_result_t;
+
+// ff_transcode_push_audio resamples decoded audio (or, with in==NULL, flushes
+// the resampler) into the audio FIFO, growing the temporary conversion buffer
+// as needed. The FIFO decouples the source's decoded frame size from the AAC
+// encoder's fixed frame_size: sending short frames straight to the encoder
+// would make it treat the first one as the final frame and reject the rest.
+// Returns the number of samples pushed (>= 0), or a negative AVERROR.
+static int ff_transcode_push_audio(struct SwrContext* swr_ctx, AVAudioFifo* afifo,
+                                   const uint8_t** in, int in_count, int nb_channels,
+                                   uint8_t*** conv_samples, int* conv_capacity) {
+	int max_out = swr_get_out_samples(swr_ctx, in_count);
+	if (max_out <= 0) {
+		if (in_count <= 0) {
+			return 0; // nothing buffered, nothing to flush
+		}
+		max_out = in_count + 256;
+	}
+	if (max_out > *conv_capacity) {
+		if (*conv_samples) {
+			av_freep(&(*conv_samples)[0]);
+			av_freep(conv_samples);
+		}
+		*conv_capacity = 0;
+		int ret = av_samples_alloc_array_and_samples(conv_samples, NULL, nb_channels,
+		                                             max_out, AV_SAMPLE_FMT_FLTP, 0);
+		if (ret < 0) {
+			return ret;
+		}
+		*conv_capacity = max_out;
+	}
+	int out_samples = swr_convert(swr_ctx, *conv_samples, max_out, in, in_count);
+	if (out_samples <= 0) {
+		return out_samples;
+	}
+	if (av_audio_fifo_write(afifo, (void**)*conv_samples, out_samples) < out_samples) {
+		return AVERROR(ENOMEM);
+	}
+	return out_samples;
+}
+
+// ff_transcode_drain_audio_fifo sends full frame_size chunks from the FIFO to
+// the audio encoder and muxes the resulting packets. When final is non-zero
+// the trailing partial frame is sent as well (valid only once, at end of
+// stream). audio_samples_sent is incremented by the samples the encoder
+// accepted. Returns 0 on success, negative on a fatal encode/mux error.
+static int ff_transcode_drain_audio_fifo(AVAudioFifo* afifo, int frame_size, int final,
+                                         AVFrame* swr_frame, int64_t* audio_pts,
+                                         int64_t* audio_samples_sent,
+                                         AVCodecContext* audio_enc_ctx,
+                                         AVFormatContext* ofmt_ctx,
+                                         AVStream* out_audio_stream, int out_audio_idx,
+                                         AVPacket* enc_pkt) {
+	while (av_audio_fifo_size(afifo) >= frame_size ||
+	       (final && av_audio_fifo_size(afifo) > 0)) {
+		int n = av_audio_fifo_size(afifo);
+		if (n > frame_size) {
+			n = frame_size;
+		}
+
+		// Restore full capacity before make_writable so a reallocation
+		// (encoder still holds a reference) keeps room for frame_size samples.
+		swr_frame->nb_samples = frame_size;
+		int ret = av_frame_make_writable(swr_frame);
+		if (ret < 0) {
+			return ret;
+		}
+		if (av_audio_fifo_read(afifo, (void**)swr_frame->data, n) < n) {
+			return AVERROR(EINVAL);
+		}
+		swr_frame->nb_samples = n;
+		swr_frame->pts = *audio_pts;
+		*audio_pts += n;
+
+		ret = avcodec_send_frame(audio_enc_ctx, swr_frame);
+		if (ret < 0) {
+			return ret;
+		}
+		*audio_samples_sent += n;
+
+		while (1) {
+			ret = avcodec_receive_packet(audio_enc_ctx, enc_pkt);
+			if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+				break;
+			}
+			if (ret < 0) {
+				return ret;
+			}
+			enc_pkt->stream_index = out_audio_idx;
+			av_packet_rescale_ts(enc_pkt,
+				audio_enc_ctx->time_base,
+				out_audio_stream->time_base);
+			ret = av_interleaved_write_frame(ofmt_ctx, enc_pkt);
+			av_packet_unref(enc_pkt);
+			if (ret < 0) {
+				return ret;
+			}
+		}
+	}
+	return 0;
+}
 
 // ff_transcode_file transcodes any media file FFmpeg can handle into H.264+AAC MPEG-TS.
 //
@@ -46,9 +148,11 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 	memset(result, 0, sizeof(transcode_result_t));
 
 	int ret = 0;
+	int loop_err = 0;
 	int video_frames = 0;
 	int64_t video_pts = 0;
 	int64_t audio_pts = 0;
+	int64_t audio_samples_sent = 0;
 
 	// Input state
 	AVFormatContext* ifmt_ctx = NULL;
@@ -71,6 +175,10 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 	enum AVPixelFormat last_sws_fmt = AV_PIX_FMT_NONE;
 	int last_sws_w = 0, last_sws_h = 0;
 	struct SwrContext* swr_ctx = NULL;
+	AVAudioFifo* afifo = NULL;     // re-chunks resampled audio to aac_frame_size
+	uint8_t** conv_samples = NULL; // temp buffer between swr_convert and the FIFO
+	int conv_capacity = 0;
+	int aac_frame_size = 1024;
 
 	// Frame/packet state
 	AVFrame* dec_frame = NULL;
@@ -291,6 +399,10 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 		avcodec_parameters_from_context(out_audio_stream->codecpar, audio_enc_ctx);
 		out_audio_stream->time_base = audio_enc_ctx->time_base;
 		out_audio_stream->codecpar->codec_tag = 0;
+
+		if (audio_enc_ctx->frame_size > 0) {
+			aac_frame_size = audio_enc_ctx->frame_size;
+		}
 	}
 
 	// --- Open output file ---
@@ -340,6 +452,13 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 			ret = -10;
 			goto cleanup;
 		}
+
+		afifo = av_audio_fifo_alloc(AV_SAMPLE_FMT_FLTP,
+			audio_enc_ctx->ch_layout.nb_channels, aac_frame_size * 4);
+		if (!afifo) {
+			ret = -10;
+			goto cleanup;
+		}
 	}
 
 	// --- Allocate frames and packets ---
@@ -363,15 +482,14 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 		goto cleanup;
 	}
 
-	// Set up swr output frame (if audio)
+	// Set up swr output frame (if audio). Sized to exactly one encoder frame;
+	// the FIFO above guarantees we always fill it with aac_frame_size samples
+	// (except for the final partial frame).
 	if (audio_enc_ctx) {
 		swr_frame->format = AV_SAMPLE_FMT_FLTP;
 		swr_frame->sample_rate = 48000;
 		av_channel_layout_copy(&swr_frame->ch_layout, &audio_enc_ctx->ch_layout);
-		swr_frame->nb_samples = audio_enc_ctx->frame_size;
-		if (swr_frame->nb_samples <= 0) {
-			swr_frame->nb_samples = 1024;
-		}
+		swr_frame->nb_samples = aac_frame_size;
 		ret = av_frame_get_buffer(swr_frame, 0);
 		if (ret < 0) {
 			ret = -8;
@@ -414,7 +532,7 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 						break;
 					}
 					if (ret < 0) {
-						goto loop_done;
+						goto loop_fail;
 					}
 
 					// Reinitialize sws only when decoder format/resolution actually changes.
@@ -457,7 +575,7 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 							break;
 						}
 						if (ret < 0) {
-							goto loop_done;
+							goto loop_fail;
 						}
 
 						enc_pkt->stream_index = out_video_idx;
@@ -467,7 +585,7 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 						ret = av_interleaved_write_frame(ofmt_ctx, enc_pkt);
 						av_packet_unref(enc_pkt);
 						if (ret < 0) {
-							goto loop_done;
+							goto loop_fail;
 						}
 						video_frames++;
 					}
@@ -486,47 +604,26 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 						break;
 					}
 					if (ret < 0) {
-						goto loop_done;
+						goto loop_fail;
 					}
 
-					// Resample audio
-					int out_samples = swr_convert(swr_ctx,
-						swr_frame->data, swr_frame->nb_samples,
-						(const uint8_t**)dec_frame->data, dec_frame->nb_samples);
+					// Resample into the FIFO and encode in exact aac_frame_size
+					// chunks (the AAC encoder rejects mid-stream short frames).
+					ret = ff_transcode_push_audio(swr_ctx, afifo,
+						(const uint8_t**)dec_frame->data, dec_frame->nb_samples,
+						audio_enc_ctx->ch_layout.nb_channels,
+						&conv_samples, &conv_capacity);
 					av_frame_unref(dec_frame);
-
-					if (out_samples <= 0) {
-						continue;
-					}
-
-					swr_frame->nb_samples = out_samples;
-					swr_frame->pts = audio_pts;
-					audio_pts += out_samples;
-
-					// Encode audio
-					ret = avcodec_send_frame(audio_enc_ctx, swr_frame);
 					if (ret < 0) {
-						continue;
+						continue; // skip unconvertible frames
 					}
 
-					while (1) {
-						ret = avcodec_receive_packet(audio_enc_ctx, enc_pkt);
-						if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-							break;
-						}
-						if (ret < 0) {
-							goto loop_done;
-						}
-
-						enc_pkt->stream_index = out_audio_idx;
-						av_packet_rescale_ts(enc_pkt,
-							audio_enc_ctx->time_base,
-							out_audio_stream->time_base);
-						ret = av_interleaved_write_frame(ofmt_ctx, enc_pkt);
-						av_packet_unref(enc_pkt);
-						if (ret < 0) {
-							goto loop_done;
-						}
+					ret = ff_transcode_drain_audio_fifo(afifo, aac_frame_size, 0,
+						swr_frame, &audio_pts, &audio_samples_sent,
+						audio_enc_ctx, ofmt_ctx, out_audio_stream,
+						out_audio_idx, enc_pkt);
+					if (ret < 0) {
+						goto loop_fail;
 					}
 				}
 			} else {
@@ -534,6 +631,15 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 			}
 		}
 	}
+
+	goto loop_done;
+
+loop_fail:
+	// A fatal mid-loop error (decode/encode/mux failure) aborted the transcode.
+	// Remember it so the function reports failure instead of silently returning
+	// a truncated output as success. ret itself is reused as scratch by the
+	// flush paths below, so the error must be latched here.
+	loop_err = -8;
 
 loop_done:
 
@@ -632,65 +738,36 @@ loop_done:
 				break;
 			}
 
-			int out_samples = swr_convert(swr_ctx,
-				swr_frame->data, swr_frame->nb_samples,
-				(const uint8_t**)dec_frame->data, dec_frame->nb_samples);
+			ret = ff_transcode_push_audio(swr_ctx, afifo,
+				(const uint8_t**)dec_frame->data, dec_frame->nb_samples,
+				audio_enc_ctx->ch_layout.nb_channels,
+				&conv_samples, &conv_capacity);
 			av_frame_unref(dec_frame);
-
-			if (out_samples <= 0) {
-				continue;
-			}
-
-			swr_frame->nb_samples = out_samples;
-			swr_frame->pts = audio_pts;
-			audio_pts += out_samples;
-
-			ret = avcodec_send_frame(audio_enc_ctx, swr_frame);
 			if (ret < 0) {
 				continue;
 			}
 
-			while (1) {
-				ret = avcodec_receive_packet(audio_enc_ctx, enc_pkt);
-				if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-					break;
-				}
-				if (ret < 0) {
-					break;
-				}
-
-				enc_pkt->stream_index = out_audio_idx;
-				av_packet_rescale_ts(enc_pkt,
-					audio_enc_ctx->time_base,
-					out_audio_stream->time_base);
-				av_interleaved_write_frame(ofmt_ctx, enc_pkt);
-				av_packet_unref(enc_pkt);
+			if (ff_transcode_drain_audio_fifo(afifo, aac_frame_size, 0,
+				swr_frame, &audio_pts, &audio_samples_sent,
+				audio_enc_ctx, ofmt_ctx, out_audio_stream,
+				out_audio_idx, enc_pkt) < 0) {
+				break;
 			}
 		}
 	}
 
 	// --- Flush audio encoder ---
 	if (audio_enc_ctx) {
-		// Flush remaining samples from resampler
-		if (swr_ctx) {
-			int flush_samples = swr_convert(swr_ctx,
-				swr_frame->data, swr_frame->nb_samples,
-				NULL, 0);
-			if (flush_samples > 0) {
-				swr_frame->nb_samples = flush_samples;
-				avcodec_send_frame(audio_enc_ctx, swr_frame);
-				while (1) {
-					ret = avcodec_receive_packet(audio_enc_ctx, enc_pkt);
-					if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-					if (ret < 0) break;
-					enc_pkt->stream_index = out_audio_idx;
-					av_packet_rescale_ts(enc_pkt,
-						audio_enc_ctx->time_base,
-						out_audio_stream->time_base);
-					av_interleaved_write_frame(ofmt_ctx, enc_pkt);
-					av_packet_unref(enc_pkt);
-				}
-			}
+		// Flush remaining samples from the resampler into the FIFO, then
+		// drain everything including the trailing partial frame.
+		if (swr_ctx && afifo) {
+			ff_transcode_push_audio(swr_ctx, afifo, NULL, 0,
+				audio_enc_ctx->ch_layout.nb_channels,
+				&conv_samples, &conv_capacity);
+			ff_transcode_drain_audio_fifo(afifo, aac_frame_size, 1,
+				swr_frame, &audio_pts, &audio_samples_sent,
+				audio_enc_ctx, ofmt_ctx, out_audio_stream,
+				out_audio_idx, enc_pkt);
 		}
 
 		avcodec_send_frame(audio_enc_ctx, NULL);
@@ -732,15 +809,16 @@ loop_done:
 		if (audio_enc_ctx) {
 			result->sample_rate = audio_enc_ctx->sample_rate;
 			result->channels = audio_enc_ctx->ch_layout.nb_channels;
+			result->audio_samples = audio_samples_sent;
 		}
 	}
 
 	// Mark progress complete after successful flush.
-	if (progress_pct) {
+	if (progress_pct && loop_err == 0) {
 		__atomic_store_n(progress_pct, 100, __ATOMIC_RELAXED);
 	}
 
-	ret = 0; // success
+	ret = loop_err; // 0 on success, -8 if the transcode loop aborted
 
 cleanup:
 	if (enc_pkt) av_packet_free(&enc_pkt);
@@ -748,6 +826,11 @@ cleanup:
 	if (swr_frame) av_frame_free(&swr_frame);
 	if (sws_frame) av_frame_free(&sws_frame);
 	if (dec_frame) av_frame_free(&dec_frame);
+	if (afifo) av_audio_fifo_free(afifo);
+	if (conv_samples) {
+		av_freep(&conv_samples[0]);
+		av_freep(&conv_samples);
+	}
 	if (swr_ctx) swr_free(&swr_ctx);
 	if (sws_ctx) sws_freeContext(sws_ctx);
 	if (audio_enc_ctx) avcodec_free_context(&audio_enc_ctx);
@@ -781,6 +864,9 @@ type TranscodeResult struct {
 	SampleRate  int
 	Channels    int
 	VideoFrames int
+	// AudioSamples is the number of audio samples (at the output sample rate)
+	// accepted by the audio encoder.
+	AudioSamples int64
 }
 
 // transcodeErrors maps C error codes to descriptive messages.
@@ -839,12 +925,13 @@ func TranscodeFileWithProgress(inputPath, outputPath, encoderName string, bitrat
 	}
 
 	return &TranscodeResult{
-		Width:       int(result.width),
-		Height:      int(result.height),
-		DurationMs:  int64(result.duration_ms),
-		FPS:         float64(result.fps),
-		SampleRate:  int(result.sample_rate),
-		Channels:    int(result.channels),
-		VideoFrames: int(result.video_frames),
+		Width:        int(result.width),
+		Height:       int(result.height),
+		DurationMs:   int64(result.duration_ms),
+		FPS:          float64(result.fps),
+		SampleRate:   int(result.sample_rate),
+		Channels:     int(result.channels),
+		VideoFrames:  int(result.video_frames),
+		AudioSamples: int64(result.audio_samples),
 	}, nil
 }

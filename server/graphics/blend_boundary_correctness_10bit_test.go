@@ -59,30 +59,15 @@ func readCr10At(buf []byte, cx, cy, w, h int) uint16 {
 // ---------------------------------------------------------------------------
 
 func TestAlphaBlendRGBA10_BoundarySizes(t *testing.T) {
-	// BT.709: Y8 = (66*255 + 129*0 + 25*0 + 128) >> 8 + 16 = (16958) >> 8 + 16 = 66 + 16 - 1 ≈ 82
-	// Actually: (66*255 + 128) >> 8 + 16 = (16958) >> 8 + 16 = 66 + 16 = 82
-	// Wait: (66*255) = 16830, +128 = 16958, >> 8 = 66 (integer), + 16 = 82
-	// But: 66*255 = 16830, not 16958. 16830+128=16958. 16958>>8 = 66. 66+16 = 82.
-	// Hmm that doesn't match. Let me recalculate:
-	// y8 = (66*R + 129*G + 25*B + 128) >> 8 + 16
-	// For red (R=255, G=0, B=0): y8 = (66*255 + 0 + 0 + 128) >> 8 + 16 = 16958 >> 8 + 16 = 66 + 16 = 82
-	// Hmm, but RGBToYUV_BT709Limited gives Y≈63 for red. That's a different formula.
-	// The AlphaBlendRGBA10 code uses:
-	//   y8 = (66*R + 129*G + 25*B + 128) >> 8 + 16 → Y10 = y8 * 4
-	// For red: y8 = (16830 + 128) >> 8 + 16 = 66 + 16 = 82, Y10 = 328
-	// But wait — with full alpha=255: result = (overlayY*255 + existingY*0 + 128) >> 8
-	// = (328*255 + 128) >> 8 = 83768 >> 8 = 327
-	// The /255 approximation causes a slight error.
-
+	// BT.709 (matching the 8-bit blend path):
+	//   y8 = (47*R + 157*G + 16*B + 128) >> 8 + 16 → Y10 = y8 * 4
 	// For this test, use white overlay (255,255,255) A=255 for clearer math.
-	// White: y8 = (66*255+129*255+25*255+128)>>8+16 = (56100+128)>>8+16 = 219+16 = 235
+	// White: y8 = (47*255+157*255+16*255+128)>>8+16 = (56100+128)>>8+16 = 219+16 = 235
 	// Y10 = 235*4 = 940
-	// Result: (940*255 + existingY*0 + 128) >> 8 = (239700+128) >> 8 = 239828 >> 8 = 936
-	// Hmm, /255 approximation: 940*255/255 = 940, but (940*255+128)>>8 = 936.
-	// This is the well-known /256 vs /255 issue.
-
-	// Use alpha=255: the existing code uses inv = 255 - a = 0
-	// result = (overlayY * a + existingY * inv + 128) >> 8
+	//
+	// Alpha is mapped exactly to 0-256 (A' = A + A>>7), so A=255 → A'=256 and
+	// the opaque overlay replaces the background exactly:
+	// result = (940*256 + existingY*0 + 128) >> 8 = 940
 	//        = (overlayY * 255 + 0 + 128) >> 8
 
 	var failedWidths []int
@@ -107,8 +92,8 @@ func TestAlphaBlendRGBA10_BoundarySizes(t *testing.T) {
 			}
 
 			// White overlay: Y8 = 235, Y10 = 940
-			// With A=255: result = (940*255 + 512*0 + 128) >> 8 = 239828 >> 8 = 936
-			expectedY := (940*255 + 128) >> 8
+			// With A=255 (A'=256): result = (940*256 + 512*0 + 128) >> 8 = 940
+			expectedY := 940
 
 			for py := 0; py < h; py++ {
 				for px := 0; px < width; px++ {
@@ -202,7 +187,7 @@ func TestAlphaBlendRGBA10_AlphaZeroPassthrough(t *testing.T) {
 // A=255 overlay replaces frame completely (within /256 approximation error).
 // ---------------------------------------------------------------------------
 
-func TestAlphaBlendRGBA10_FullyOpaque(t *testing.T) {
+func TestAlphaBlendRGBA10_FullyOpaqueBoundary(t *testing.T) {
 	w, h := 16, 4
 	yuv := make10bitTestFrame(w, h, 64, 512, 512) // start with black
 
@@ -220,14 +205,10 @@ func TestAlphaBlendRGBA10_FullyOpaque(t *testing.T) {
 		t.Fatalf("AlphaBlendRGBA10: %v", err)
 	}
 
-	// Green: Y8 = (66*0+129*255+25*0+128)>>8+16 = (32895+128)>>8+16 = 128+16 = 144 (wait...)
-	// 129*255 = 32895, +128 = 33023, >>8 = 128, +16 = 144. But that doesn't seem right...
-	// Let me check: RGBToYUV_BT709Limited green Y = 173.
-	// The formula in AlphaBlendRGBA10 is different (uses different coefficients):
-	// y8 = (66*0 + 129*255 + 25*0 + 128) >> 8 + 16 = (32895 + 128) >> 8 + 16 = 129 + 16 = 145
-	// Hmm: 33023 >> 8 = 129 (33023 / 256 = 129.0). So y8 = 129 + 16 = 145. Y10 = 580.
-	// After alpha blend with A=255: (580*255 + 64*0 + 128) >> 8 = (147900 + 128) >> 8 = 578
-	expectedY := (int(145)*4*255 + 128) >> 8
+	// Green (BT.709): y8 = (47*0 + 157*255 + 16*0 + 128) >> 8 + 16
+	//   157*255 = 40035, +128 = 40163, >>8 = 156, +16 = 172. Y10 = 688.
+	// After alpha blend with A=255 (A'=256): (688*256 + 64*0 + 128) >> 8 = 688
+	expectedY := 688
 
 	gotY := int(readY10At(yuv, 0, 0, w))
 
@@ -265,10 +246,10 @@ func TestAlphaBlendRGBA10_HalfAlphaBlend(t *testing.T) {
 	}
 
 	// White: Y8=235, Y10=940
-	// A=128, inv=127
-	// result = (940*128 + 64*127 + 128) >> 8 = (120320 + 8128 + 128) >> 8 = 128576 >> 8 = 502
+	// A=128 → A' = 128 + (128>>7) = 129, inv = 256-129 = 127
+	// result = (940*129 + 64*127 + 128) >> 8 = (121260 + 8128 + 128) >> 8 = 505
 	overlayY10 := 940
-	expectedY := (overlayY10*128 + int(backgroundY)*127 + 128) >> 8
+	expectedY := (overlayY10*129 + int(backgroundY)*127 + 128) >> 8
 
 	gotY := int(readY10At(yuv, 0, 0, w))
 	diff := gotY - expectedY
@@ -309,9 +290,9 @@ func TestAlphaBlendRGBA10_ChromaFullHeight(t *testing.T) {
 	}
 
 	// Check the very last row of chroma
-	// Red Cb8 = (-38*255 + 128) >> 8 + 128 = (-9690+128)>>8+128 = -37+128 = 91
-	// Cb10 = 91*4 = 364
-	// After alpha blend: (364*255 + 512*0 + 128) >> 8 = (92820+128)>>8 = 363
+	// Red Cb8 (BT.709) = (-26*255 + 128) >> 8 + 128 = (-6502)>>8+128 = -26+128 = 102
+	// Cb10 = 102*4 = 408
+	// After alpha blend with A=255 (A'=256): exactly 408
 
 	lastCb := readCb10At(yuv, 0, h-1, w, h)
 	lastCr := readCr10At(yuv, 0, h-1, w, h)

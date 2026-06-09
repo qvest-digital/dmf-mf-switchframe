@@ -29,13 +29,14 @@ type decoderFactoryFunc func(cfg StreamDecoderConfig) (streamDecoder, error)
 // Source orchestrates an SRT input source: connects the StreamDecoder to the
 // switcher pipeline. Same fan-out pattern as mxl.Source.
 type Source struct {
-	config  SourceConfig
-	conn    io.ReadCloser // srtgo.Conn typed as io.ReadCloser for testability
-	stats   *ConnStats
-	log     *slog.Logger
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	stopped sync.Once
+	config    SourceConfig
+	conn      io.ReadCloser // srtgo.Conn typed as io.ReadCloser for testability
+	stats     *ConnStats
+	log       *slog.Logger
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	stopped   sync.Once
+	connClose sync.Once
 
 	// decoderFactory creates the stream decoder. Injected for testing;
 	// defaults to newRealDecoder which creates a real StreamDecoder.
@@ -107,6 +108,13 @@ func (s *Source) Start(ctx context.Context) error {
 		defer s.wg.Done()
 		dec.Run()
 		s.log.Info("srt source: decode loop ended", "key", s.config.Key)
+		// Release resources on every termination path, including a natural
+		// decode EOF/disconnect that never goes through Stop(). Cancelling the
+		// context unblocks the context-watcher and stats-poller goroutines, and
+		// closing the conn releases the SRT socket (dec.Run() already ran the
+		// decoder's close(), so its Stop() will not close the reader).
+		s.cancel()
+		s.closeConn()
 		if s.OnStopped != nil {
 			s.OnStopped(s.config.Key)
 		}
@@ -138,6 +146,21 @@ func (s *Source) Stop() {
 			s.cancel()
 		}
 		s.wg.Wait()
+		// Ensure the SRT socket is released even if the decode goroutine did not
+		// (e.g. Start() was never called, or the decoder's Stop() path did not
+		// close the reader). closeConn is idempotent via sync.Once.
+		s.closeConn()
+	})
+}
+
+// closeConn releases the underlying SRT connection exactly once. It is invoked
+// from both the natural-EOF teardown in the decode goroutine and from Stop(),
+// so the socket is freed on every termination path without double-closing.
+func (s *Source) closeConn() {
+	s.connClose.Do(func() {
+		if s.conn != nil {
+			_ = s.conn.Close()
+		}
 	})
 }
 
@@ -170,19 +193,29 @@ func (s *Source) pollStats(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.updateStats()
+			s.updateStats(ctx)
 		}
 	}
 }
 
 // updateStats fetches SRT stats from the connection and updates ConnStats.
-func (s *Source) updateStats() {
+// It no-ops once ctx is cancelled (source stopped or decode loop ended) so a
+// poller tick that races the cancellation cannot write stale metrics from a
+// dead conn into the shared per-key ConnStats.
+func (s *Source) updateStats(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+
 	statter, ok := s.conn.(SRTStatter)
 	if !ok {
 		return
 	}
 
-	cs := statter.Stats(true) // interval mode: MbpsRecvRate and loss reflect recent window
+	// Interval mode: MbpsRecvRate and loss rate reflect the recent window.
+	// The packet counters are also interval deltas; ConnStats.Update
+	// accumulates them into the lifetime totals exposed by snapshots.
+	cs := statter.Stats(true)
 
 	s.stats.Update(StatsUpdate{
 		RTTMs:           float64(cs.RTT) / float64(time.Millisecond),

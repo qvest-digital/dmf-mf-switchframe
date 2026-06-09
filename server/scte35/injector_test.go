@@ -201,6 +201,75 @@ func TestInjector_AutoReturn(t *testing.T) {
 	require.GreaterOrEqual(t, c, 2, "expected at least 2 sink calls (cue-out + cue-in)")
 }
 
+// TestDurationToTicksSat_Normal verifies the saturating converter matches the
+// plain ms→ticks math for in-range durations (no behavior change) and clamps
+// negative/zero to 0.
+func TestDurationToTicksSat_Normal(t *testing.T) {
+	t.Parallel()
+	cases := []time.Duration{
+		0,
+		-5 * time.Second,
+		1 * time.Millisecond,
+		100 * time.Millisecond,
+		30 * time.Second,
+		33333 * time.Millisecond, // exercises sub-second remainder
+		2 * time.Hour,
+	}
+	for _, d := range cases {
+		got := durationToTicksSat(d)
+		if d <= 0 {
+			require.Equal(t, int64(0), got, "non-positive duration must clamp to 0: %v", d)
+			continue
+		}
+		// Must equal the original (int64(d)*90000)/1e9 integer division.
+		want := int64(d) * 90000 / int64(time.Second)
+		require.Equal(t, want, got, "in-range duration must match plain math: %v", d)
+	}
+}
+
+// TestDurationToTicksSat_Saturates verifies abusive durations clamp to the
+// 33-bit PTS ceiling instead of overflowing int64. Regression for unbounded
+// DurationMs/preRollMs producing garbage (often instantly-reached) return PTS.
+func TestDurationToTicksSat_Saturates(t *testing.T) {
+	t.Parallel()
+	// time.Duration(MaxInt64) ns is the worst case; plain int64(d)*90000 would
+	// overflow. The saturating version must clamp and stay positive (so it does
+	// not mask to 0 and trigger an instant auto-return).
+	got := durationToTicksSat(time.Duration(1<<62 + 1234))
+	require.Equal(t, maxPTSTicks, got)
+	require.Greater(t, got, int64(0))
+	// Clamped value must not mask to 0 (which would be reached immediately).
+	require.NotEqual(t, int64(0), maskPTS33(got))
+}
+
+// TestInjector_AutoReturn_AbusiveDuration verifies that an absurdly large
+// AutoReturn break duration does not auto-return instantly. Regression: an
+// overflowed durTicks could mask to ~0 and make ptsReached() true immediately.
+func TestInjector_AutoReturn_AbusiveDuration(t *testing.T) {
+	t.Parallel()
+	sink := func(data []byte) {}
+	var curPTS atomic.Int64
+	ptsFn := func() int64 { return curPTS.Load() }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// MaxInt64-ish duration; previously this overflowed and auto-returned at once.
+	msg := NewSpliceInsert(0, time.Duration(1<<62), true, true)
+	id, err := inj.InjectCue(msg)
+	require.NoError(t, err)
+
+	// Advance PTS well past any sane break but far short of the 33-bit ceiling.
+	curPTS.Store(60 * 90000) // 60 seconds of ticks
+	require.Never(t, func() bool {
+		return len(inj.ActiveEventIDs()) == 0
+	}, 200*time.Millisecond, 20*time.Millisecond,
+		"abusive duration must not auto-return prematurely")
+
+	// Sanity: a normal return still works.
+	require.NoError(t, inj.ReturnToProgram(id))
+}
+
 func TestInjector_ConcurrentEvents(t *testing.T) {
 	t.Parallel()
 	sink := func(data []byte) {}
@@ -1423,6 +1492,48 @@ func TestInjector_InjectCue_TimeSignal_ReturnsSegEventID(t *testing.T) {
 
 	// Should return the SegEventID, not 0.
 	require.Equal(t, uint32(555), eventID)
+}
+
+func TestInjector_InjectCue_TimeSignal_DuplicateSegEventIDRejected(t *testing.T) {
+	t.Parallel()
+	var sinkCalls int
+	sink := func(data []byte) { sinkCalls++ }
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Two cue-out descriptors sharing the same explicit non-zero SegEventID
+	// would collide in the activeEvents map, losing the first's tracking while
+	// removeSiblingEventsLocked still references it. InjectCue must reject this
+	// outright rather than silently overwriting.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 900},
+			{SegmentationType: 0x36, SegEventID: 900},
+		},
+	}
+	_, err := inj.InjectCue(msg)
+	require.ErrorIs(t, err, errDuplicateSegEvent)
+
+	// Nothing should have been tracked or emitted on the rejected cue.
+	require.Empty(t, inj.ActiveEventIDs(), "no events should be tracked after rejection")
+	require.Zero(t, sinkCalls, "no SCTE-35 payload should be emitted on rejection")
+
+	// Distinct explicit IDs are accepted, and auto-assigned (zero) IDs are
+	// unaffected by the de-dup check.
+	ok := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 901},
+			{SegmentationType: 0x36, SegEventID: 902},
+			{SegmentationType: 0x34, SegEventID: 0},
+			{SegmentationType: 0x36, SegEventID: 0},
+		},
+	}
+	_, err = inj.InjectCue(ok)
+	require.NoError(t, err, "distinct and auto-assigned SegEventIDs must be accepted")
 }
 
 func TestInjector_ReturnToProgram_TimeSignal_PreservesSegNum(t *testing.T) {

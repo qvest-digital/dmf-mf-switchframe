@@ -3,8 +3,11 @@
 package codec
 
 import (
+	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -249,4 +252,62 @@ func TestTranscodeFile_OutputIsMPEGTS(t *testing.T) {
 	require.NoError(t, probeErr, "output should be probeable as valid media")
 	require.True(t, probeResult.HasVideo, "output should have video stream")
 	require.True(t, probeResult.IsH264(), "output video should be H.264")
+}
+
+func TestTranscodeFile_MidLoopWriteErrorReportsFailure(t *testing.T) {
+	// Regression test: a fatal mux/write error halfway through the transcode
+	// loop must surface as an error, not as a "successful" transcode of a
+	// silently truncated file.
+	//
+	// Strategy: make the output a FIFO whose reader consumes the first 32 KiB
+	// and then closes. Subsequent writes from the muxer fail with EPIPE, so
+	// av_interleaved_write_frame errors out mid-loop.
+	dir := t.TempDir()
+	inputPath := createTestTSInputFile(t, dir, 128, 128, 200)
+
+	outputPath := filepath.Join(dir, "output.ts")
+	require.NoError(t, syscall.Mkfifo(outputPath, 0o600))
+
+	// Ensure SIGPIPE from the C-side write() surfaces as EPIPE instead of
+	// killing the process, then restore default handling.
+	signal.Ignore(syscall.SIGPIPE)
+	t.Cleanup(func() { signal.Reset(syscall.SIGPIPE) })
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f, err := os.OpenFile(outputPath, os.O_RDONLY, 0)
+		if err != nil {
+			return
+		}
+		defer func() { _ = f.Close() }()
+		_, _ = io.CopyN(io.Discard, f, 32*1024)
+	}()
+
+	_, err := TranscodeFile(inputPath, outputPath, "libx264", 2000000)
+	<-done
+	require.Error(t, err, "mid-transcode write failure must not be reported as success")
+	require.Contains(t, err.Error(), "transcode processing error")
+}
+
+func TestTranscodeFile_OpusShortAudioFramesFullyEncoded(t *testing.T) {
+	// Opus decodes to 960-sample frames at 48 kHz — smaller than the AAC
+	// encoder's 1024-sample frame_size. Regression test for the bug where
+	// swr_frame->nb_samples (used as the swr_convert output capacity) shrank
+	// permanently after the first sub-1024-sample frame, making the AAC
+	// encoder treat that frame as the final one and silently reject all
+	// subsequent audio, producing a transcode "success" with almost no audio.
+	inputPath := filepath.Join("testdata", "h264_opus_1s.mkv")
+	outputPath := filepath.Join(t.TempDir(), "output.ts")
+
+	result, err := TranscodeFile(inputPath, outputPath, "libx264", 500000)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 48000, result.SampleRate)
+
+	// The fixture has 1s of 48 kHz audio (~48000 samples). Require at least
+	// 90% of it to reach the AAC encoder (allowing for resampler priming and
+	// container edge trimming).
+	require.GreaterOrEqual(t, result.AudioSamples, int64(43000),
+		"nearly all input audio must be encoded, got %d of ~48000 samples", result.AudioSamples)
 }

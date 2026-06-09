@@ -1,6 +1,7 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import type { CommsState, EngineId } from '$lib/api/types';
-	import { commsJoin, commsLeave, commsMute, apiCall } from '$lib/api/switch-api';
+	import { commsJoin, commsLeave, commsMute, apiCall, getAuthToken } from '$lib/api/switch-api';
 	import { CommsAudioManager } from '$lib/audio/comms';
 	import { notify } from '$lib/state/notifications.svelte';
 
@@ -93,6 +94,7 @@
 				audioManager = new CommsAudioManager({
 					operatorId,
 					operatorName,
+					getToken: getAuthToken,
 					onError: (msg) => notify('error', msg),
 					onCommsActive,
 					onStreamError: () => {
@@ -131,6 +133,18 @@
 		}
 		connectedEngine = null;
 	}
+
+	// Release the microphone, AudioContexts, codecs, and the WebTransport bidi
+	// stream when the component is destroyed (e.g. layout switch unmounts the
+	// traditional layout). Without this the manager keeps the mic hot and keeps
+	// streaming audio with no UI attached to it.
+	onDestroy(() => {
+		if (audioManager) {
+			audioManager.stop().catch(() => {});
+			audioManager = null;
+		}
+		connectedEngine = null;
+	});
 </script>
 
 {#if visible && !isJoined}

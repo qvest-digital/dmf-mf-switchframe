@@ -12,7 +12,6 @@ import (
 	"github.com/zsiec/switchframe/server/cmdqueue"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
-	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 	"github.com/zsiec/switchframe/server/transition/wipemap"
@@ -165,11 +164,13 @@ func (a *App) registerTransitionActions(d *cmdqueue.Dispatcher) {
 			opts = append(opts, switcher.WithEasing(ec))
 		}
 		if req.Type == "stinger" && a.stingerStore != nil {
-			clip, ok := a.stingerStore.Get(req.StingerName)
+			// StingerData deep-copies the (possibly mmap-backed) frame bytes
+			// under the store lock, so the transition never aliases memory a
+			// concurrent Delete()/Upload() could munmap.
+			sd, ok := a.stingerStore.StingerData(req.StingerName)
 			if !ok {
 				return fmt.Errorf("stinger clip not found: %s", req.StingerName)
 			}
-			sd := stingerClipToData(clip)
 			opts = append(opts, switcher.WithStingerData(sd))
 		}
 		if req.WipeConfig != nil {
@@ -742,27 +743,5 @@ func dveLayoutFromPreset(p *dve.Preset) *dve.Layout {
 	return &dve.Layout{
 		Name:  p.Name,
 		Slots: p.Slots,
-	}
-}
-
-// stingerClipToData converts a stinger.Clip to transition.StingerData.
-// This duplicates the logic from control/api_graphics.go for use in the
-// dispatcher (which runs without HTTP context).
-func stingerClipToData(clip *stinger.Clip) *transition.StingerData {
-	frames := make([]transition.StingerFrameData, len(clip.Frames))
-	for i, f := range clip.Frames {
-		frames[i] = transition.StingerFrameData{
-			YUV:   f.YUV,
-			Alpha: f.Alpha,
-		}
-	}
-	return &transition.StingerData{
-		Frames:          frames,
-		Width:           clip.Width,
-		Height:          clip.Height,
-		CutPoint:        clip.CutPoint,
-		Audio:           clip.Audio,
-		AudioSampleRate: clip.AudioSampleRate,
-		AudioChannels:   clip.AudioChannels,
 	}
 }

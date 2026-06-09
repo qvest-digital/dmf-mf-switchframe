@@ -99,13 +99,27 @@ func (tx *VideoTx) PutFrame(yuv []byte) error {
 		return fmt.Errorf("st2110: video tx closed")
 	}
 
+	w := tx.cfg.Format.Width
+	h := tx.cfg.Format.Height
+
+	// Reject frames whose byte length does not match the configured TX
+	// dimensions BEFORE acquiring a frame buffer (so a rejected frame does
+	// not leak an MTL buffer). The conversion below indexes the input buffer
+	// up to w*h*3/2 with no per-sample bounds check, so a smaller buffer
+	// (e.g. after a runtime pipeline-resolution change) would panic with an
+	// out-of-range read, and a larger or differently-formatted buffer (e.g.
+	// professional YUV422 10-bit, which is w*h*4 bytes) would be silently
+	// reinterpreted and transmitted as corrupted essence.
+	wantSize := video.YUV420FrameSize(w, h)
+	if len(yuv) != wantSize {
+		return fmt.Errorf("st2110: video frame size mismatch: got %d bytes, want %d for %dx%d YUV420p",
+			len(yuv), wantSize, w, h)
+	}
+
 	frame := C.st20p_tx_get_frame(tx.handle)
 	if frame == nil {
 		return fmt.Errorf("st2110: st20p_tx_get_frame returned nil")
 	}
-
-	w := tx.cfg.Format.Width
-	h := tx.cfg.Format.Height
 
 	// Convert YUV420p 8-bit → YUV422 planar 10-bit LE.
 	// YUV422 10-bit planar: Y=w*h*2, U=w/2*h*2, V=w/2*h*2 → total = w*h*4
@@ -116,7 +130,9 @@ func (tx *VideoTx) PutFrame(yuv []byte) error {
 		tx.yuv422 = make([]byte, yuv422Size)
 	}
 	tx.yuv422 = tx.yuv422[:yuv422Size]
-	yuv420p8ToYUV422Planar10LE(yuv, tx.yuv422, w, h)
+	if err := yuv420p8ToYUV422Planar10LE(yuv, tx.yuv422, w, h); err != nil {
+		return err
+	}
 
 	copySize := yuv422Size
 	if int(frame.data_size) < copySize {
@@ -142,7 +158,23 @@ func (tx *VideoTx) PutFrame(yuv []byte) error {
 // Output layout (YUV422 planar 10-bit LE):
 //
 //	Y: w*h*2 bytes (uint16 LE), U: w/2*h*2 bytes, V: w/2*h*2 bytes
-func yuv420p8ToYUV422Planar10LE(src, dst []byte, w, h int) {
+//
+// Returns an error (instead of panicking with an out-of-range index) if src is
+// shorter than a w*h YUV420p frame or dst is shorter than the YUV422 10-bit
+// output. This is a defensive precondition for callers that may pass a buffer
+// whose size does not match w/h.
+func yuv420p8ToYUV422Planar10LE(src, dst []byte, w, h int) error {
+	srcSize := video.YUV420FrameSize(w, h)
+	dstSize := video.YUV422_10bitFrameSize(w, h)
+	if len(src) < srcSize {
+		return fmt.Errorf("st2110: yuv420p source too short: got %d bytes, want >= %d for %dx%d",
+			len(src), srcSize, w, h)
+	}
+	if len(dst) < dstSize {
+		return fmt.Errorf("st2110: yuv422 dest too short: got %d bytes, want >= %d for %dx%d",
+			len(dst), dstSize, w, h)
+	}
+
 	ySize8 := w * h
 	chromaW := w / 2
 	chromaH420 := h / 2
@@ -187,6 +219,7 @@ func yuv420p8ToYUV422Planar10LE(src, dst []byte, w, h int) {
 			dstV[(row*2+1)*chromaW*2+col*2+1] = hi
 		}
 	}
+	return nil
 }
 
 // Close frees the video transmitter session.

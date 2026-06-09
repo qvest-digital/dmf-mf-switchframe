@@ -113,9 +113,10 @@ type SegmentationState interface {
 	HasEnabledSources() bool
 	// ProgramSourceKey returns the current program source key.
 	ProgramSourceKey() string
-	// MaskForSource returns the latest GPU-resident segmentation mask for the source.
-	// Returns nil if no mask is available. The returned GPUFrame is a uint8
-	// single-plane mask (255 = foreground, 0 = background).
+	// MaskForSource returns the latest GPU-resident segmentation mask for
+	// the source, with a reference taken; callers MUST Release() it when
+	// done. Returns nil if no mask is available. The returned GPUFrame is
+	// a uint8 single-plane mask (255 = foreground, 0 = background).
 	MaskForSource(key string) *GPUFrame
 	// ConfigForSource returns the AI segmentation config for a source.
 	// Returns nil if the source has no AI segmentation config.

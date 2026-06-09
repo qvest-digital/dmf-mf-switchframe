@@ -130,14 +130,14 @@ func TestPipeline_TimeSignal_FullRoundTrip(t *testing.T) {
 			{
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
-					SegEventID:              0x0000BEEF,
-					SegmentationTypeID:      0x34,    // Provider Placement Opportunity Start
-					DurationTicks:           2700000, // 30 seconds at 90kHz
-					UPIDType:                0x09,    // ADI
-					UPID:                    upid,
-					SegNum:                  1,
-					SegExpected:             4,
-					ProgramSegmentationFlag: true,
+					SegEventID:            0x0000BEEF,
+					SegmentationTypeID:    0x34, // Provider Placement Opportunity Start
+					Duration:              30,   // seconds
+					UPIDType:              0x09, // ADI
+					UPID:                  upid,
+					SegNum:                1,
+					SegExpected:           4,
+					DeliveryNotRestricted: true,
 				},
 			},
 		},
@@ -314,9 +314,9 @@ func TestPipeline_PreRollMs_SurvivesRoundTrip(t *testing.T) {
 					{
 						OpID: OpSegmentationDescriptorRequest,
 						Data: &SegmentationDescriptorRequest{
-							SegEventID:              500,
-							SegmentationTypeID:      0x34,
-							ProgramSegmentationFlag: true,
+							SegEventID:            500,
+							SegmentationTypeID:    0x34,
+							DeliveryNotRestricted: true,
 						},
 					},
 				},
@@ -366,10 +366,10 @@ func TestPipeline_PreRollMs_SurvivesRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPipeline_SubSegments_FullRoundTrip exercises the complete pipeline with
-// sub-segment fields (sub_segment_num, sub_segments_expected) per SCTE 104 2021.
-func TestPipeline_SubSegments_FullRoundTrip(t *testing.T) {
-	upid := []byte("SUBSEG-TEST")
+// TestPipeline_DeliveryRestrictions_FullRoundTrip exercises the complete
+// pipeline with delivery restriction fields per SCTE 104 Table 8-29.
+func TestPipeline_DeliveryRestrictions_FullRoundTrip(t *testing.T) {
+	upid := []byte("RESTRICT-TEST")
 
 	original := &Message{
 		ProtocolVersion: 0,
@@ -384,16 +384,18 @@ func TestPipeline_SubSegments_FullRoundTrip(t *testing.T) {
 			{
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
-					SegEventID:              0x00001234,
-					SegmentationTypeID:      0x34,
-					DurationTicks:           5400000, // 60 seconds
-					UPIDType:                0x09,
-					UPID:                    upid,
-					SegNum:                  1,
-					SegExpected:             4,
-					SubSegmentNum:           2,
-					SubSegmentsExpected:     3,
-					ProgramSegmentationFlag: true,
+					SegEventID:            0x00001234,
+					SegmentationTypeID:    0x34,
+					Duration:              60, // seconds
+					UPIDType:              0x09,
+					UPID:                  upid,
+					SegNum:                1,
+					SegExpected:           4,
+					DeliveryNotRestricted: false,
+					WebDeliveryAllowed:    true,
+					NoRegionalBlackout:    true,
+					ArchiveAllowed:        true,
+					DeviceRestrictions:    2,
 				},
 			},
 		},
@@ -417,8 +419,13 @@ func TestPipeline_SubSegments_FullRoundTrip(t *testing.T) {
 
 	require.Len(t, cue1.Descriptors, 1, "pass 1: descriptor count")
 	desc1 := cue1.Descriptors[0]
-	require.Equal(t, uint8(2), desc1.SubSegmentNum, "pass 1: SubSegmentNum")
-	require.Equal(t, uint8(3), desc1.SubSegmentsExpected, "pass 1: SubSegmentsExpected")
+	require.NotNil(t, desc1.DeliveryRestrictions, "pass 1: DeliveryRestrictions")
+	require.True(t, desc1.DeliveryRestrictions.WebDeliveryAllowed, "pass 1: WebDeliveryAllowed")
+	require.True(t, desc1.DeliveryRestrictions.NoRegionalBlackout, "pass 1: NoRegionalBlackout")
+	require.True(t, desc1.DeliveryRestrictions.ArchiveAllowed, "pass 1: ArchiveAllowed")
+	require.Equal(t, uint8(2), desc1.DeliveryRestrictions.DeviceRestrictions, "pass 1: DeviceRestrictions")
+	require.NotNil(t, desc1.DurationTicks, "pass 1: DurationTicks")
+	require.Equal(t, uint64(60)*90000, *desc1.DurationTicks, "pass 1: DurationTicks")
 
 	// --- Pass 2: CueMessage -> SCTE-104 -> wire -> SCTE-104 -> CueMessage ---
 	msg104_2, err := FromCueMessage(cue1)
@@ -441,86 +448,8 @@ func TestPipeline_SubSegments_FullRoundTrip(t *testing.T) {
 
 	require.Len(t, cue2.Descriptors, 1, "round-trip: descriptor count")
 	desc2 := cue2.Descriptors[0]
-	require.Equal(t, desc1.SubSegmentNum, desc2.SubSegmentNum, "round-trip: SubSegmentNum")
-	require.Equal(t, desc1.SubSegmentsExpected, desc2.SubSegmentsExpected, "round-trip: SubSegmentsExpected")
-}
-
-// TestPipeline_SubSegments_NotParsedForNonSubSegmentTypes verifies that
-// sub_segment_num and sub_segments_expected are NOT parsed for segmentation
-// types that don't carry them per SCTE-35 Table 22.
-func TestPipeline_SubSegments_NotParsedForNonSubSegmentTypes(t *testing.T) {
-	// Use type 0x34 (Provider Placement Opportunity Start) which HAS sub-segments.
-	msgWith := &Message{
-		Operations: []Operation{
-			{OpID: OpTimeSignalRequest, Data: &TimeSignalRequestData{PreRollTime: 0}},
-			{
-				OpID: OpSegmentationDescriptorRequest,
-				Data: &SegmentationDescriptorRequest{
-					SegEventID:              0x00005678,
-					SegmentationTypeID:      0x34,
-					UPIDType:                0x09,
-					UPID:                    []byte("X"),
-					SegNum:                  1,
-					SegExpected:             2,
-					SubSegmentNum:           3,
-					SubSegmentsExpected:     4,
-					ProgramSegmentationFlag: true,
-				},
-			},
-		},
-	}
-
-	encoded, err := Encode(msgWith)
-	require.NoError(t, err, "Encode (sub-seg type)")
-	decoded, err := Decode(encoded)
-	require.NoError(t, err, "Decode (sub-seg type)")
-	sd := decoded.Operations[1].Data.(*SegmentationDescriptorRequest)
-	require.Equal(t, uint8(3), sd.SubSegmentNum, "type 0x34: SubSegmentNum")
-	require.Equal(t, uint8(4), sd.SubSegmentsExpected, "type 0x34: SubSegmentsExpected")
-
-	// Now use type 0x30 (Provider Advertisement Start) which does NOT have sub-segments.
-	msgWithout := &Message{
-		Operations: []Operation{
-			{OpID: OpTimeSignalRequest, Data: &TimeSignalRequestData{PreRollTime: 0}},
-			{
-				OpID: OpSegmentationDescriptorRequest,
-				Data: &SegmentationDescriptorRequest{
-					SegEventID:              0x00009ABC,
-					SegmentationTypeID:      0x30,
-					UPIDType:                0x09,
-					UPID:                    []byte("Y"),
-					SegNum:                  1,
-					SegExpected:             2,
-					SubSegmentNum:           3, // Should NOT be encoded for 0x30
-					SubSegmentsExpected:     4, // Should NOT be encoded for 0x30
-					ProgramSegmentationFlag: true,
-				},
-			},
-		},
-	}
-
-	encoded2, err := Encode(msgWithout)
-	require.NoError(t, err, "Encode (non-sub-seg type)")
-	decoded2, err := Decode(encoded2)
-	require.NoError(t, err, "Decode (non-sub-seg type)")
-	sd2 := decoded2.Operations[1].Data.(*SegmentationDescriptorRequest)
-	// For 0x30, sub-segment fields should be zero (not parsed).
-	require.Equal(t, uint8(0), sd2.SubSegmentNum, "type 0x30: SubSegmentNum should not be parsed")
-	require.Equal(t, uint8(0), sd2.SubSegmentsExpected, "type 0x30: SubSegmentsExpected should not be parsed")
-}
-
-// TestPipeline_HasSubSegmentFields verifies the hasSubSegmentFields function
-// correctly classifies segmentation types per SCTE-35 Table 22.
-func TestPipeline_HasSubSegmentFields(t *testing.T) {
-	// Types that SHOULD have sub-segment fields.
-	subSegTypes := []uint8{0x34, 0x36, 0x38, 0x3A, 0x44, 0x46}
-	for _, typeID := range subSegTypes {
-		require.True(t, hasSubSegmentFields(typeID), "hasSubSegmentFields(0x%02X) should be true", typeID)
-	}
-
-	// Types that should NOT have sub-segment fields.
-	nonSubSegTypes := []uint8{0x22, 0x30, 0x32, 0x3C, 0x3E, 0x40, 0x42, 0x50, 0x00, 0xFF}
-	for _, typeID := range nonSubSegTypes {
-		require.False(t, hasSubSegmentFields(typeID), "hasSubSegmentFields(0x%02X) should be false", typeID)
-	}
+	require.NotNil(t, desc2.DeliveryRestrictions, "round-trip: DeliveryRestrictions")
+	require.Equal(t, *desc1.DeliveryRestrictions, *desc2.DeliveryRestrictions, "round-trip: DeliveryRestrictions")
+	require.NotNil(t, desc2.DurationTicks, "round-trip: DurationTicks")
+	require.Equal(t, *desc1.DurationTicks, *desc2.DurationTicks, "round-trip: DurationTicks")
 }

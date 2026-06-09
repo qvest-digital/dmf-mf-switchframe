@@ -461,21 +461,31 @@ func TestIsOverlayTransparent(t *testing.T) {
 		t.Error("overlay with non-zero alpha should not be transparent")
 	}
 
-	// Reset and set a pixel at a non-sampled position (between sample points).
+	// The check is exact: a single opaque pixel anywhere must be detected
+	// (the old sparse stride-64 sampling missed pixel 32).
 	rgba[3] = 0
-	// Set pixel 32 (which is between sample points 0 and 64).
 	rgba[32*4+3] = 128
-	// Sparse check every 64th pixel won't catch pixel 32.
-	if !isOverlayTransparent(rgba, 100*100) {
-		t.Error("pixel at non-sampled position should not be detected by sparse check")
+	if isOverlayTransparent(rgba, 100*100) {
+		t.Error("pixel 32 with non-zero alpha should be detected")
 	}
 
-	// Set pixel at exactly the 64th position (second sample point).
+	// Pixel at the 64th position.
 	rgba[32*4+3] = 0
 	rgba[64*4+3] = 1
 	if isOverlayTransparent(rgba, 100*100) {
-		t.Error("pixel at sampled position 64 should be detected")
+		t.Error("pixel at position 64 should be detected")
 	}
+
+	// Last pixel of an odd pixel count (exercises the trailing-pixel loop).
+	rgba[64*4+3] = 0
+	if !isOverlayTransparent(rgba[:101*4], 101) {
+		t.Error("all-zero odd-count overlay should be transparent")
+	}
+	rgba[100*4+3] = 7
+	if isOverlayTransparent(rgba[:101*4], 101) {
+		t.Error("non-zero alpha on the trailing odd pixel should be detected")
+	}
+	rgba[100*4+3] = 0
 }
 
 func TestAlphaBlendRGBARectInto_TransparentOverlayNoOp(t *testing.T) {
@@ -788,5 +798,35 @@ func BenchmarkAlphaBlendRGBARectInto_Opaque(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		scratch, colLUT = AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH,
 			overlayW, overlayH, rect, 1.0, scratch, colLUT)
+	}
+}
+
+// TestIsOverlayTransparent_NarrowGraphicAtStandardWidth reproduces the
+// stride-64 sampling bug: at widths divisible by 64 (1280/1920/3840), linear
+// index sampling lands on the same columns in every row, so a narrow opaque
+// graphic between sampled columns (e.g. a 48px live indicator at x=70..117)
+// was classified fully transparent and silently dropped from compositing.
+func TestIsOverlayTransparent_NarrowGraphicAtStandardWidth(t *testing.T) {
+	t.Parallel()
+
+	w, h := 1920, 1080
+	rgba := make([]byte, w*h*4)
+	// Fully opaque 48px-wide, full-height band at x=70..117 — entirely between
+	// the columns a stride-64 linear sample would inspect.
+	for y := 0; y < h; y++ {
+		for x := 70; x < 118; x++ {
+			rgba[(y*w+x)*4+3] = 255
+		}
+	}
+	if isOverlayTransparent(rgba, w*h) {
+		t.Error("overlay with a 48px opaque band must not be classified transparent")
+	}
+
+	// Single opaque pixel anywhere must be detected (the check is a hard
+	// render gate, so false positives drop real content).
+	rgba2 := make([]byte, w*h*4)
+	rgba2[(537*w+1001)*4+3] = 1
+	if isOverlayTransparent(rgba2, w*h) {
+		t.Error("overlay with a single non-zero alpha pixel must not be classified transparent")
 	}
 }

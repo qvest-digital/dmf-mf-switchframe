@@ -22,6 +22,13 @@ type runeMapping struct {
 	basic    byte
 	asciiSeq string
 	twoByte  [2]byte
+	// fallback is the closest standard (basic) ASCII byte for runeKindExtended
+	// mappings. Per CEA-608-E §8.4 a conformant decoder auto-backspaces over the
+	// preceding character when it receives a 0x12/0x13 extended code, so the
+	// encoder must transmit this fallback basic char first; the decoder shows it
+	// on non-extended players and backspaces over it on extended players. Zero
+	// for non-extended kinds (special 0x11 codes do NOT auto-backspace).
+	fallback byte
 }
 
 // CEA-608-C basic NA character set: ASCII slots 0x2A, 0x5C-0x60, 0x7B-0x7E carry Spanish chars.
@@ -114,6 +121,69 @@ var runeToExtPorGer = map[rune]byte{
 	'\u2518': 0x3F, // ┘
 }
 
+// extRuneToFallback maps each CEA-608 extended-table rune (0x12/0x13 codes) to
+// the closest standard ASCII character. Extended codes trigger an automatic
+// decoder backspace (CEA-608-E \u00a78.4), so this fallback basic char is transmitted
+// immediately before the extended pair: it is rendered by decoders that lack the
+// extended glyph and backspaced over by decoders that have it. Without it the
+// extended char would backspace over the previous legitimate character. Keys
+// must stay in sync with runeToExtSpaMisc and runeToExtPorGer.
+var extRuneToFallback = map[rune]byte{
+	// runeToExtSpaMisc (0x12 table).
+	'\u00c1': 'A', // \u00c1
+	'\u00c9': 'E', // \u00c9
+	'\u00d3': 'O', // \u00d3
+	'\u00da': 'U', // \u00da
+	'\u00dc': 'U', // \u00dc
+	'\u00fc': 'u', // \u00fc
+	'\u00a1': '!', // \u00a1
+	'\u00a9': 'C', // \u00a9
+	'\u2120': 'S', // \u2120
+	'\u2022': '*', // \u2022
+	'\u00c0': 'A', // \u00c0
+	'\u00c2': 'A', // \u00c2
+	'\u00c7': 'C', // \u00c7
+	'\u00c8': 'E', // \u00c8
+	'\u00ca': 'E', // \u00ca
+	'\u00cb': 'E', // \u00cb
+	'\u00eb': 'e', // \u00eb
+	'\u00ce': 'I', // \u00ce
+	'\u00cf': 'I', // \u00cf
+	'\u00ef': 'i', // \u00ef
+	'\u00d4': 'O', // \u00d4
+	'\u00d9': 'U', // \u00d9
+	'\u00f9': 'u', // \u00f9
+	'\u00db': 'U', // \u00db
+	'\u00ab': '"', // \u00ab
+	'\u00bb': '"', // \u00bb
+
+	// runeToExtPorGer (0x13 table).
+	'\u00c3': 'A', // \u00c3
+	'\u00e3': 'a', // \u00e3
+	'\u00cd': 'I', // \u00cd
+	'\u00cc': 'I', // \u00cc
+	'\u00ec': 'i', // \u00ec
+	'\u00d2': 'O', // \u00d2
+	'\u00f2': 'o', // \u00f2
+	'\u00d5': 'O', // \u00d5
+	'\u00f5': 'o', // \u00f5
+	'\u00c4': 'A', // \u00c4
+	'\u00e4': 'a', // \u00e4
+	'\u00d6': 'O', // \u00d6
+	'\u00f6': 'o', // \u00f6
+	'\u00df': 's', // \u00df
+	'\u00a5': 'Y', // \u00a5
+	'\u00a4': '*', // \u00a4
+	'\u00c5': 'A', // \u00c5
+	'\u00e5': 'a', // \u00e5
+	'\u00d8': 'O', // \u00d8
+	'\u00f8': 'o', // \u00f8
+	'\u250c': '+', // \u250c
+	'\u2510': '+', // \u2510
+	'\u2514': '+', // \u2514
+	'\u2518': '+', // \u2518
+}
+
 var runeToAsciiSeq = map[rune]string{
 	'\u2018': "'",
 	'\u2019': "'",
@@ -196,10 +266,10 @@ func lookupRune(r rune) runeMapping {
 		return runeMapping{kind: runeKindSpecial, twoByte: [2]byte{cc608SpecialCh1, b}}
 	}
 	if b, ok := runeToExtSpaMisc[r]; ok {
-		return runeMapping{kind: runeKindExtended, twoByte: [2]byte{cc608ExtSpaMisc, b}}
+		return runeMapping{kind: runeKindExtended, twoByte: [2]byte{cc608ExtSpaMisc, b}, fallback: extFallback(r)}
 	}
 	if b, ok := runeToExtPorGer[r]; ok {
-		return runeMapping{kind: runeKindExtended, twoByte: [2]byte{cc608ExtPorGerCh1, b}}
+		return runeMapping{kind: runeKindExtended, twoByte: [2]byte{cc608ExtPorGerCh1, b}, fallback: extFallback(r)}
 	}
 	if s, ok := runeToAsciiSeq[r]; ok {
 		return runeMapping{kind: runeKindAsciiSeq, asciiSeq: s}
@@ -208,4 +278,16 @@ func lookupRune(r rune) runeMapping {
 		return runeMapping{kind: runeKindBasic, basic: b}
 	}
 	return runeMapping{kind: runeKindUnsupported}
+}
+
+// extFallback returns the standard ASCII byte transmitted before an extended
+// (0x12/0x13) code so the decoder's automatic backspace consumes it instead of
+// the previous on-screen character. Defaults to a space for any extended rune
+// missing from extRuneToFallback — a space is a benign backspace target that
+// still preserves the preceding character.
+func extFallback(r rune) byte {
+	if b, ok := extRuneToFallback[r]; ok {
+		return b
+	}
+	return ' '
 }

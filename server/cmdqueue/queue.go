@@ -89,10 +89,20 @@ func WithReplaySeqTracker(fn func(seq uint64)) Option {
 // Queue holds pending commands sorted by ExecuteAt and drains them when the
 // injected clock reaches their scheduled time.
 type Queue struct {
-	mu               sync.Mutex
-	h                cmdHeap
-	seen             map[uint64]struct{}
-	prunedHighWater  uint64 // highest Seq evicted during prune; rejects retransmits
+	mu              sync.Mutex
+	h               cmdHeap
+	seen            map[uint64]struct{}
+	prunedHighWater uint64 // highest Seq evicted during prune; rejects retransmits
+	// inflightSeqs/inflightCount reserve commands whose WAL append is in
+	// flight on another goroutine: Enqueue releases q.mu across the WAL
+	// write+fsync so it never stalls the frame loop's Drain, and these
+	// reservations keep the dedup and maxSize checks atomic with the
+	// append. walAppendDone wakes same-Seq enqueues parked on a
+	// reservation.
+	inflightSeqs     map[uint64]struct{}
+	inflightCount    int
+	walAppendDone    *sync.Cond
+	compacting       atomic.Bool // at most one background WAL compaction in flight
 	clock            func() int64
 	maxAge           int64
 	maxSize          int
@@ -111,10 +121,12 @@ func (q *Queue) LateCommands() int64 { return q.lateCommands.Load() }
 // to obtain the current PTP time in microseconds.
 func New(clock func() int64, opts ...Option) *Queue {
 	q := &Queue{
-		seen:   make(map[uint64]struct{}),
-		clock:  clock,
-		maxAge: DefaultMaxAge,
+		seen:         make(map[uint64]struct{}),
+		inflightSeqs: make(map[uint64]struct{}),
+		clock:        clock,
+		maxAge:       DefaultMaxAge,
 	}
+	q.walAppendDone = sync.NewCond(&q.mu)
 	for _, opt := range opts {
 		opt(q)
 	}
@@ -132,6 +144,13 @@ func New(clock func() int64, opts ...Option) *Queue {
 					q.replaySeqTracker(seq)
 				}
 			}
+		} else {
+			// An unreadable WAL silently disables restart dedup — the
+			// executed tombstones are the SOLE source of dedup state at
+			// restart, so a peer retransmit of an already-executed Seq
+			// would be re-executed. Operators must hear about it.
+			slog.Error("cmdqueue: WAL executed-seq replay failed — restart dedup is disabled; retransmits of already-executed commands may re-execute",
+				"err", err)
 		}
 		// Replay un-executed commands.
 		if cmds, err := q.wal.Replay(q.maxAge); err == nil {
@@ -147,6 +166,9 @@ func New(clock func() int64, opts ...Option) *Queue {
 					q.replaySeqTracker(cmd.Seq)
 				}
 			}
+		} else {
+			slog.Error("cmdqueue: WAL replay failed — pending commands from before the restart were not recovered",
+				"err", err)
 		}
 	}
 	return q
@@ -177,30 +199,83 @@ func (q *Queue) Enqueue(cmd Command) error {
 	}
 
 	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	// Size limit check — reject before mutating any state.
-	if q.maxSize > 0 && len(q.h) >= q.maxSize {
-		return ErrQueueFull
-	}
 
 	// Dedup by Seq (skip when Seq is 0 — untimed/legacy commands).
 	if cmd.Seq > 0 {
-		// Reject commands at or below the pruned high-water mark.
-		// After pruning, these Seq values are no longer in the seen map but
-		// must still be rejected to prevent double execution of retransmits.
-		if cmd.Seq <= q.prunedHighWater {
-			if q.metricsCB != nil && q.metricsCB.OnDup != nil {
-				q.metricsCB.OnDup()
+		for {
+			// Reject commands at or below the pruned high-water mark.
+			// After pruning, these Seq values are no longer in the seen map but
+			// must still be rejected to prevent double execution of retransmits.
+			if cmd.Seq <= q.prunedHighWater {
+				if q.metricsCB != nil && q.metricsCB.OnDup != nil {
+					q.metricsCB.OnDup()
+				}
+				q.mu.Unlock()
+				return ErrDuplicateCommand
 			}
-			return ErrDuplicateCommand
-		}
-		if _, seen := q.seen[cmd.Seq]; seen {
-			if q.metricsCB != nil && q.metricsCB.OnDup != nil {
-				q.metricsCB.OnDup()
+			if _, seen := q.seen[cmd.Seq]; seen {
+				if q.metricsCB != nil && q.metricsCB.OnDup != nil {
+					q.metricsCB.OnDup()
+				}
+				q.mu.Unlock()
+				return ErrDuplicateCommand
 			}
-			return ErrDuplicateCommand
+			// The same Seq has a WAL append in flight on another goroutine:
+			// wait for it to resolve, then re-run the dedup checks. If it
+			// succeeded the Seq is now seen (duplicate); if its append
+			// failed the Seq stays unseen and this retransmit proceeds.
+			if _, busy := q.inflightSeqs[cmd.Seq]; !busy {
+				break
+			}
+			q.walAppendDone.Wait()
 		}
+	}
+
+	// Size limit check — reject before mutating any state. In-flight WAL
+	// reservations count toward capacity so a burst of concurrent enqueues
+	// cannot overshoot maxSize while their appends run off-lock.
+	if q.maxSize > 0 && len(q.h)+q.inflightCount >= q.maxSize {
+		q.mu.Unlock()
+		return ErrQueueFull
+	}
+
+	// Persist to WAL before recording the Seq as seen and committing to heap.
+	// The dedup record must come AFTER a successful append: if Append fails
+	// (disk full, EIO, fsync failure) the command is neither persisted nor
+	// executed, so its Seq must remain unseen to allow a retransmit to be
+	// accepted rather than rejected as a duplicate.
+	//
+	// The append (a file write + fsync, commonly 1-20ms) runs WITHOUT q.mu:
+	// holding the queue lock across an fsync would stall the frame loop's
+	// Drain for the fsync duration — and a burst of concurrent enqueues
+	// would stack one fsync each under the lock. Atomicity with the dedup
+	// check is preserved by reserving the Seq in inflightSeqs while
+	// unlocked; concurrent enqueues of the same Seq park above until the
+	// reservation resolves.
+	if q.wal != nil {
+		q.inflightCount++
+		if cmd.Seq > 0 {
+			q.inflightSeqs[cmd.Seq] = struct{}{}
+		}
+		q.mu.Unlock()
+
+		err := q.wal.Append(cmd)
+
+		q.mu.Lock()
+		q.inflightCount--
+		if cmd.Seq > 0 {
+			delete(q.inflightSeqs, cmd.Seq)
+		}
+		q.walAppendDone.Broadcast()
+		if err != nil {
+			q.mu.Unlock()
+			return err
+		}
+	}
+
+	// Record the Seq as seen only now that durability is guaranteed (skip for
+	// untimed/legacy commands with Seq 0).
+	if cmd.Seq > 0 {
 		q.seen[cmd.Seq] = struct{}{}
 		if len(q.seen) > maxSeen {
 			// Seq is monotonic — keep only recent entries by rebuilding with
@@ -221,14 +296,8 @@ func (q *Queue) Enqueue(cmd Command) error {
 		}
 	}
 
-	// Persist to WAL before committing to heap.
-	if q.wal != nil {
-		if err := q.wal.Append(cmd); err != nil {
-			return err
-		}
-	}
-
 	heap.Push(&q.h, cmd)
+	q.mu.Unlock()
 	return nil
 }
 
@@ -257,7 +326,6 @@ func (q *Queue) Drain() []Command {
 	atomic.StoreInt64(&q.lastDrainClock, now)
 
 	q.mu.Lock()
-	defer q.mu.Unlock()
 
 	var out []Command
 	for q.h.Len() > 0 && len(out) < MaxDrainPerCall {
@@ -268,6 +336,7 @@ func (q *Queue) Drain() []Command {
 		heap.Pop(&q.h)
 		out = append(out, top)
 	}
+	q.mu.Unlock()
 
 	// Mark drained commands as executed in WAL.  The executed entries are
 	// the sole source of dedup state at restart (Queue.New seeds the
@@ -275,23 +344,36 @@ func (q *Queue) Drain() []Command {
 	// crash-retransmit between Drain and client retry would otherwise
 	// re-dispatch the command.
 	//
-	// To keep the file bounded and the per-call rewriteLocked cost
-	// bounded, CompactExecuted runs on drain-to-empty (same trigger the
-	// old Truncate had) keeping only the last maxSeen executed tombstones
-	// — matches the in-memory seen-map watermark so on-disk dedup state
-	// tracks the in-memory state.
+	// This WAL I/O runs AFTER releasing q.mu so it never blocks concurrent
+	// Enqueue from HTTP handlers nor stalls the frame loop while holding the
+	// queue lock. All drained seqs are marked in a SINGLE MarkExecutedBatch
+	// call, which APPENDS one tombstone line per seq with one fsync — it
+	// never reads or rewrites the file, so the frame-loop cost is
+	// O(drained commands), not O(file size).
+	//
+	// Compaction — the only O(file size) pass — keeps the file bounded at
+	// roughly the last maxSeen executed tombstones (matching the in-memory
+	// seen-map watermark) plus pending entries. It is gated on
+	// walCompactMinAppends of growth and runs on a background goroutine so
+	// the frame loop never pays a full-file read+rewrite+fsync; the CAS
+	// flag ensures at most one compaction is in flight.
 	if q.wal != nil && len(out) > 0 {
-		for _, cmd := range out {
-			if err := q.wal.MarkExecuted(cmd.Seq); err != nil {
-				slog.Warn("cmdqueue: WAL MarkExecuted failed — crash here can replay this command",
-					"seq", cmd.Seq, "err", err)
-			}
+		seqs := make([]uint64, len(out))
+		for i, cmd := range out {
+			seqs[i] = cmd.Seq
 		}
-		if q.h.Len() == 0 {
-			if err := q.wal.CompactExecuted(maxSeen); err != nil {
-				slog.Warn("cmdqueue: WAL compact failed — file will continue growing until next successful compact",
-					"err", err)
-			}
+		if err := q.wal.MarkExecutedBatch(seqs); err != nil {
+			slog.Warn("cmdqueue: WAL MarkExecutedBatch failed — crash here can replay these commands",
+				"count", len(seqs), "err", err)
+		}
+		if q.compacting.CompareAndSwap(false, true) {
+			go func() {
+				defer q.compacting.Store(false)
+				if err := q.wal.MaybeCompactExecuted(maxSeen); err != nil {
+					slog.Warn("cmdqueue: WAL compact failed — file will continue growing until next successful compact",
+						"err", err)
+				}
+			}()
 		}
 	}
 

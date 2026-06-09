@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -259,6 +260,78 @@ func TestWorkerReady(t *testing.T) {
 
 	if buf.String() != "READY\n" {
 		t.Errorf("Ready() printed %q, want %q", buf.String(), "READY\n")
+	}
+}
+
+// TestWorkerRunShutdownUnwindsRecvGoroutine is a regression test for the recv
+// goroutine leak: when Run returns on a shutdown command, the internal goroutine
+// parked in a blocking w.Recv() must still unwind even though the caller never
+// calls Close() (the documented footgun for embedders that keep the process
+// alive after Run returns). Run sets a past read deadline on exit to force the
+// parked read to fail, so the goroutine exits on its own.
+func TestWorkerRunShutdownUnwindsRecvGoroutine(t *testing.T) {
+	// Not t.TempDir(): it embeds this long test name, and the resulting unix
+	// socket path exceeds the kernel's sun_path limit (104 bytes on macOS),
+	// failing bind with EINVAL.
+	dir, err := os.MkdirTemp("", "wrk-*")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := dir + "/test.sock"
+
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	w, err := NewWorker(sock)
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+	// Intentionally do NOT defer w.Close(): the whole point is that the recv
+	// goroutine unwinds without the caller closing the conn.
+
+	hostConn, err := ln.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	defer func() { _ = hostConn.Close() }()
+
+	baseline := runtime.NumGoroutine()
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- w.Run(context.Background(), func(*Message) *Message { return nil })
+	}()
+
+	if err := WriteMessage(hostConn, &Message{Cmd: "shutdown"}); err != nil {
+		t.Fatalf("host send shutdown: %v", err)
+	}
+
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Errorf("Run returned error: %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Run to return")
+	}
+
+	// The Run goroutine plus the internal recv goroutine must both have exited.
+	// Poll instead of asserting once, since goroutine teardown is asynchronous.
+	deadline := time.After(5 * time.Second)
+	for {
+		if runtime.NumGoroutine() <= baseline {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("recv goroutine did not unwind: NumGoroutine=%d, baseline=%d",
+				runtime.NumGoroutine(), baseline)
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }
 

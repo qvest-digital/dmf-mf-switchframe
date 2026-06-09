@@ -182,9 +182,19 @@ func (m *Manager) Clear() {
 }
 
 // SetPassThroughText re-encodes decoded caption text for pass-through mode.
-// Called from the switcher's handleCaptionFrame path. The text is run through
+// Called from the switcher's handleCaptionFrame path with the FULL current
+// on-screen text on every incoming caption frame. The text is run through
 // a CEA-608 encoder to produce properly formatted cc_data pairs with parity,
 // control codes, and rate limiting (1 pair per frame via ConsumeForFrame).
+//
+// Because the drain rate is limited to one CC pair per video frame, the
+// whole screen must NOT be re-transmitted on every update: live roll-up
+// sources change the screen text several times per second, far faster than
+// a full screen can be re-sent, and re-ingesting already-displayed text in
+// roll-up (append) mode duplicates it on the downstream display. Instead,
+// only the appended delta is transmitted when the new text continues the
+// previous text (including the case where leading rows scrolled off the
+// top); a wholesale change erases the downstream display and re-transmits.
 func (m *Manager) SetPassThroughText(text string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -197,12 +207,36 @@ func (m *Manager) SetPassThroughText(text string) {
 		return
 	}
 
+	prev := m.passThroughText
 	m.passThroughText = text
-	// Clear and re-encode the new text through the CEA-608 encoder.
-	m.ptEncoder.Reset()
+
 	if text == "" {
+		// Upstream cleared the screen: drop any pending output and erase
+		// the downstream display rather than leaving stale rows visible.
+		m.ptEncoder.Reset()
+		m.ptEncoder.Clear()
 		return
 	}
+
+	if delta, ok := passThroughDelta(prev, text); ok {
+		// Roll-up continuation: transmit only the newly appended text.
+		// A leading newline in the delta becomes a CR, which makes the
+		// downstream decoder scroll exactly like the upstream display did.
+		m.ingestPassThroughLocked(delta)
+		return
+	}
+
+	// Unrelated text (pop-on flip, correction, source change): drop the
+	// pending queue, erase the downstream display so previously shown rows
+	// are not duplicated, and re-transmit from scratch.
+	m.ptEncoder.Reset()
+	m.ptEncoder.Clear()
+	m.ingestPassThroughLocked(text)
+}
+
+// ingestPassThroughLocked feeds text (possibly containing newlines) to the
+// pass-through encoder. Caller must hold m.mu.
+func (m *Manager) ingestPassThroughLocked(text string) {
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
 		if line != "" {
@@ -211,6 +245,29 @@ func (m *Manager) SetPassThroughText(text string) {
 		if i < len(lines)-1 {
 			m.ptEncoder.IngestNewline()
 		}
+	}
+}
+
+// passThroughDelta returns the suffix of next that was appended to prev,
+// accounting for roll-up scrolling where complete leading lines of prev fall
+// off the top of the screen. ok is false when next does not continue prev
+// (the text changed in some other way and must be re-transmitted).
+func passThroughDelta(prev, next string) (string, bool) {
+	if prev == "" {
+		return next, true
+	}
+	rest := prev
+	for {
+		if strings.HasPrefix(next, rest) {
+			return next[len(rest):], true
+		}
+		// Drop the topmost remaining line of prev (it scrolled off
+		// upstream) and try again.
+		idx := strings.IndexByte(rest, '\n')
+		if idx < 0 {
+			return "", false
+		}
+		rest = rest[idx+1:]
 	}
 }
 

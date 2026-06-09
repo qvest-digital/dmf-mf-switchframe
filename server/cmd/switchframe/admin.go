@@ -105,7 +105,12 @@ func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string,
 
 	ln, err := net.Listen("tcp", adminAddr)
 	if err != nil {
-		slog.Error("admin server listen failed", "addr", adminAddr, "err", err)
+		// Best-effort: the process keeps running, but with NO /metrics scrape
+		// endpoint, NO /health and /ready probes, and NO pprof. Log loudly and
+		// name the disabled capabilities so operators can alert on it (e.g. a
+		// k8s deployment would otherwise see opaque probe failures).
+		slog.Error("admin server unavailable: metrics, health/readiness probes, and pprof are DISABLED",
+			"addr", adminAddr, "err", err)
 		return func() {}, ""
 	}
 

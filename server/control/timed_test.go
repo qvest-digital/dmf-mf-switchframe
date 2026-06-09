@@ -197,6 +197,30 @@ func TestTimedHandler_ImmediateCallTracksSeq(t *testing.T) {
 	require.Equal(t, uint64(42), trackedSeq, "expected seqTracker called with 42")
 }
 
+// TestTimedHandler_BoundsOversizedBody verifies the handler self-bounds its
+// read even when MaxBytesMiddleware is not in front of it: an oversized body is
+// rejected (400) by http.MaxBytesReader rather than fully allocated. This is the
+// defense-in-depth guard against a missing/incorrect outer body cap.
+func TestTimedHandler_BoundsOversizedBody(t *testing.T) {
+	called := false
+	inner := func(w http.ResponseWriter, r *http.Request, body []byte) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}
+
+	// No queue and no outer middleware — the handler's own bound must apply.
+	h := timedHandler(nil, "cut", nil, inner)
+
+	bigBody := strings.NewReader(strings.Repeat("a", maxCommandBodySize+1))
+	req := httptest.NewRequest(http.MethodPost, "/api/switch/cut", bigBody)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.False(t, called, "inner handler must not run for an oversized body")
+	require.Equal(t, http.StatusBadRequest, rec.Code,
+		"oversized command body should be rejected by the handler's own MaxBytesReader")
+}
+
 func TestTimedHandler_SeqTracker_NotCalledForZeroSeq(t *testing.T) {
 	inner := func(w http.ResponseWriter, r *http.Request, body []byte) {
 		w.WriteHeader(http.StatusOK)

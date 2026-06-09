@@ -12,6 +12,9 @@ var (
 	ErrBufferTooSmall = errors.New("stmap: buffer too small for given dimensions")
 	ErrOddWidth       = errors.New("stmap: width must be even for YUV422")
 	ErrZeroDimensions = errors.New("stmap: width and height must be positive")
+	// ErrDimensionMismatch is returned when the frame dimensions do not match
+	// the ST map dimensions the LUTs were built for.
+	ErrDimensionMismatch = errors.New("stmap: frame dimensions do not match ST map dimensions")
 )
 
 // yuv422p10Size returns the byte size of a YUV422P10LE frame.
@@ -64,6 +67,15 @@ func validateWarp10Params(p *Processor, dst, src []byte, w, h int) error {
 	}
 	if w%2 != 0 {
 		return ErrOddWidth
+	}
+	// The luma LUT is sized to the ST map's dimensions (see buildLUT), which may
+	// differ from the frame's dimensions. The warp kernels read exactly w*h LUT
+	// entries with no bounds check, and ensure422ChromaLUTs derives the chroma
+	// LUT by indexing lutSX[y*w+lx] up to (h-1)*w+(w-1). A frame larger than the
+	// map would over-read the LUT backing array (segfault for mmap-backed LUTs).
+	// Require an exact match.
+	if w*h != len(p.lutSX) {
+		return ErrDimensionMismatch
 	}
 	needed := yuv422p10Size(w, h)
 	if len(dst) < needed {

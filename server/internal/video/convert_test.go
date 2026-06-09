@@ -240,6 +240,55 @@ func TestDownconvert422_10to420_BitDepth(t *testing.T) {
 	}
 }
 
+func TestDownconvert422_10to420_PeakClamp(t *testing.T) {
+	// Peak 10-bit samples (1022-1023) round to >=256 via (val+2)>>2.
+	// Without clamping, byte() truncation wraps them to 0 (black). Verify
+	// both the Y plane and the chroma plane saturate to 255 instead.
+	w, h := 16, 8
+	chromaW := w / 2
+
+	testCases := []struct {
+		val10 uint16
+		want8 byte
+	}{
+		{1020, 255}, // (1020+2)>>2 = 255
+		{1021, 255}, // (1021+2)>>2 = 255 (without clamp: 255, but lock it)
+		{1022, 255}, // (1022+2)>>2 = 256 -> byte wraps to 0 without clamp
+		{1023, 255}, // (1023+2)>>2 = 256 -> byte wraps to 0 without clamp
+	}
+
+	for _, tc := range testCases {
+		src := make([]byte, YUV422_10bit.FrameSize(w, h))
+		ySize := YUV422_10bit.YPlaneSize(w, h)
+		// Fill Y with the peak value.
+		for i := 0; i < ySize; i += 2 {
+			binary.LittleEndian.PutUint16(src[i:], tc.val10)
+		}
+		// Fill chroma with the peak value too (exercises the averaged path:
+		// avg(peak, peak) == peak).
+		for i := ySize; i < len(src); i += 2 {
+			binary.LittleEndian.PutUint16(src[i:], tc.val10)
+		}
+
+		dst := make([]byte, YUV420_8bit.FrameSize(w, h))
+		if err := Downconvert422_10to420(src, dst, w, h); err != nil {
+			t.Fatalf("val10=%d: %v", tc.val10, err)
+		}
+
+		if dst[0] != tc.want8 {
+			t.Errorf("Y peak val10=%d: got %d, want %d", tc.val10, dst[0], tc.want8)
+		}
+		cbOff := w * h
+		if dst[cbOff] != tc.want8 {
+			t.Errorf("Cb peak val10=%d: got %d, want %d", tc.val10, dst[cbOff], tc.want8)
+		}
+		crOff := cbOff + chromaW*(h/2)
+		if dst[crOff] != tc.want8 {
+			t.Errorf("Cr peak val10=%d: got %d, want %d", tc.val10, dst[crOff], tc.want8)
+		}
+	}
+}
+
 func TestDownconvert422_10to420_ChromaSubsample(t *testing.T) {
 	// Verify that 422 chroma rows get averaged into 420 (half height)
 	w, h := 4, 4

@@ -3,6 +3,10 @@ package switcher
 import (
 	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/require"
+	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // frcSource.ingest releases the old prevFrame's YUV buffer back to the pool.
@@ -329,6 +333,97 @@ func TestRawSinkNode_ZeroCopyWithRefcount(t *testing.T) {
 	if src.Data != nil {
 		t.Error("src.Data should be nil after final release")
 	}
+}
+
+// IngestRawVideo must release a pool-backed unmanaged frame on the
+// non-frame-sync (direct) path. Regression for the leak where a pool-backed
+// frame (refs==nil, pool!=nil — exactly how the SRT pipeline builds frames
+// via SetPool without SetRefs) was DeepCopied by broadcastProcessedFromPF into
+// a fresh pool buffer, leaving the ORIGINAL buffer never returned to the pool.
+// IngestRawVideo's direct path now releases the frame after handleRawVideoFrame.
+func TestIngestRawVideo_DirectPath_ReleasesPoolBackedFrame(t *testing.T) {
+	programRelay := distribution.NewRelay()
+	// newTestSwitcherDirect leaves frame sync DISABLED (frameSyncBundle.sync
+	// is nil), so IngestRawVideo routes to the direct handleRawVideoFrame path.
+	sw := newTestSwitcherDirect(programRelay)
+	defer sw.closeDirect()
+
+	require.Nil(t, sw.frameSyncBundle.Load().sync, "frame sync must be disabled for the direct path")
+
+	w, h := 16, 16
+	fmt8 := PipelineFormat{
+		Name: "direct", Width: w, Height: h, FPSNum: 30000, FPSDen: 1001,
+		Color: PipelineColorConfig{ColorFormat: ColorYUV420_8bit, Codec: CodecAVC},
+	}
+	sw.pipelineFormat.Store(&fmt8)
+	pool := NewFramePool(8, w, h, ColorYUV420_8bit)
+	sw.framePool.Store(pool)
+
+	// Minimal encoder + pipeline so broadcastProcessedFromPF reaches the
+	// unmanaged DeepCopy branch (s.pipeline.Load() != nil).
+	sw.SetPipelineCodecs(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+		return transition.NewMockEncoder(), nil
+	})
+	require.NoError(t, sw.BuildPipeline())
+
+	// Register cam1 and make it the program source (publish to both the plain
+	// field and the hotState mirror that handleRawVideoFrame reads).
+	cam1Relay := distribution.NewRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.configMu.Lock()
+	sw.programSource = "cam1"
+	sw.updateHotState(func(hs *hotState) { hs.programSource = "cam1" })
+	sw.configMu.Unlock()
+
+	// Build a pool-backed UNMANAGED frame: SetPool but NO SetRefs — exactly how
+	// app_srt.go constructs frames before IngestRawVideo (and does not release).
+	yuvSize := ColorYUV420_8bit.FrameSize(w, h)
+	pf := &ProcessingFrame{
+		Data:   pool.Acquire()[:yuvSize],
+		Width:  w,
+		Height: h,
+		PTS:    90000,
+		Codec:  "h264",
+	}
+	pf.SetPool(pool)
+	require.Equal(t, int32(0), pf.Refs(), "frame must be unmanaged (nil refs)")
+	// Backing-array pointer of the original buffer, to confirm THIS buffer is
+	// returned to the pool (decoupled from the separate DeepCopied pipeline
+	// frame's lifecycle, which the mock pipeline churns independently).
+	origPtr := &pf.Data[:cap(pf.Data)][0]
+
+	sw.IngestRawVideo("cam1", pf)
+
+	// The fix: IngestRawVideo consumed the original frame, returning its pool
+	// buffer (ReleaseYUV sets Data=nil). Before the fix this stayed non-nil —
+	// a FramePool leak per program frame.
+	require.Nil(t, pf.Data, "IngestRawVideo direct path must release the original pool-backed frame")
+
+	// The original buffer must now be back in the pool's free list. Before the
+	// fix it was never returned (handleRawVideoFrame DeepCopied into a fresh
+	// buffer and IngestRawVideo dropped pf without releasing it).
+	require.True(t, framePoolHasFreeBuf(pool, origPtr),
+		"original pool buffer must be returned to the free list after IngestRawVideo")
+
+	// Drain the DeepCopied frame that was enqueued for the pipeline and release
+	// it so the test leaves no buffers outstanding.
+	out := sw.runPipelineDirect(t)
+	if out != nil {
+		out.ReleaseYUV()
+	}
+}
+
+// framePoolHasFreeBuf reports whether a buffer with the given backing-array
+// pointer is currently in the pool's free list.
+func framePoolHasFreeBuf(fp *FramePool, ptr *byte) bool {
+	fp.mu.Lock()
+	defer fp.mu.Unlock()
+	for _, b := range fp.free {
+		if len(b) > 0 && &b[:cap(b)][0] == ptr {
+			return true
+		}
+	}
+	return false
 }
 
 // makeDecoderCallback direct path releases frame after handleRawVideoFrame.

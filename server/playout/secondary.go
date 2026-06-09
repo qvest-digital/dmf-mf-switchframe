@@ -3,7 +3,9 @@ package playout
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -28,11 +30,20 @@ type scheduledEvent struct {
 }
 
 // SecondaryEventScheduler manages timed secondary events for a playlist item.
+//
+// BeginItem, EndItem, Reanchor, and Tick are all driven by the owning Channel's
+// single run goroutine and are not safe to call concurrently with each other.
+// SetAsRunLog, however, may be invoked from a different goroutine (e.g. when the
+// as-run logger is wired or re-wired via Channel.SetAsRunLog), so the asRunLog
+// callback is guarded by mu to establish a happens-before relationship with the
+// Tick reader and avoid a data race on reassignment.
 type SecondaryEventScheduler struct {
 	handler    SecondaryEventHandler
 	events     []scheduledEvent
 	durationMs int64
-	asRunLog   func(AsRunEvent)
+
+	mu       sync.Mutex // guards asRunLog
+	asRunLog func(AsRunEvent)
 }
 
 // NewSecondaryEventScheduler creates a scheduler that dispatches to the given handler.
@@ -42,9 +53,19 @@ func NewSecondaryEventScheduler(handler SecondaryEventHandler) *SecondaryEventSc
 	}
 }
 
-// SetAsRunLog registers a callback for emitting as-run events when secondary events fire.
+// SetAsRunLog registers a callback for emitting as-run events when secondary
+// events fire. Safe to call concurrently with Tick.
 func (s *SecondaryEventScheduler) SetAsRunLog(fn func(AsRunEvent)) {
+	s.mu.Lock()
 	s.asRunLog = fn
+	s.mu.Unlock()
+}
+
+// getAsRunLog returns the current as-run callback under the lock.
+func (s *SecondaryEventScheduler) getAsRunLog() func(AsRunEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.asRunLog
 }
 
 // BeginItem loads secondary events for a new playlist item, computing absolute
@@ -72,6 +93,7 @@ func (s *SecondaryEventScheduler) EndItem() {
 // Tick checks whether any scheduled events should fire at the given elapsed time.
 // Events are fired in order and marked to prevent re-firing.
 func (s *SecondaryEventScheduler) Tick(elapsedMs int64) {
+	asRunLog := s.getAsRunLog()
 	for i := range s.events {
 		if s.events[i].fired {
 			continue
@@ -83,8 +105,8 @@ func (s *SecondaryEventScheduler) Tick(elapsedMs int64) {
 		if err := s.dispatch(&s.events[i].event); err != nil {
 			slog.Warn("playout: secondary event dispatch failed", "type", s.events[i].event.Type, "error", err)
 		}
-		if s.asRunLog != nil {
-			s.asRunLog(AsRunEvent{
+		if asRunLog != nil {
+			asRunLog(AsRunEvent{
 				Timestamp: time.Now().UTC(),
 				Type:      AsRunSecondaryFire,
 				EventName: s.events[i].event.Type,
@@ -109,13 +131,23 @@ func (s *SecondaryEventScheduler) Reanchor(newDurationMs int64) {
 	})
 }
 
+// fireTimeUnknown marks an end-anchored event whose item duration is not yet
+// known. The event is held (sorted last, never reached by Tick) until Reanchor
+// supplies a real duration. Without this, an unknown (zero) duration would
+// clamp the fire time to 0 and incorrectly fire the event at item start.
+const fireTimeUnknown = int64(math.MaxInt64)
+
 // resolveFireTime computes the absolute fire time in milliseconds.
 // Start-anchored: offsetMs from start. End-anchored: durationMs + offsetMs.
-// Clamped to 0 minimum.
+// Clamped to 0 minimum. End-anchored events with no known duration are
+// deferred (fireTimeUnknown) until Reanchor is called with a real duration.
 func resolveFireTime(ev SecondaryEvent, durationMs int64) int64 {
 	var t int64
 	switch ev.Anchor {
 	case "end":
+		if durationMs <= 0 {
+			return fireTimeUnknown
+		}
 		t = durationMs + int64(ev.OffsetMs)
 	default: // "start"
 		t = int64(ev.OffsetMs)

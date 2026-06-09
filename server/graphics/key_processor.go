@@ -221,6 +221,13 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 	uvSize := uvWidth * (height / 2)
 	frameSize := ySize + 2*uvSize
 
+	// Tracks whether at least one key actually composited onto bg this call.
+	// We only legalize the range when a blend ran — a configured key with a
+	// missing/wrong-sized fill, or an all-neural set (skipped on CPU), must
+	// leave the untouched program frame byte-identical, preserving any
+	// super-black/super-white content.
+	composited := false
+
 	// Use cached sorted key list for deterministic compositing order
 	// (rebuilt on SetKey/RemoveKey, avoids per-frame allocation + sort).
 	for _, source := range kp.sortedKeys {
@@ -296,15 +303,20 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 
 		blendMaskY(&bg[ySize], &workFill[ySize], &chromaMask[0], uvSize)
 		blendMaskY(&bg[ySize+uvSize], &workFill[ySize+uvSize], &chromaMask[0], uvSize)
+		composited = true
 	}
 
-	// Clamp output to BT.709 legal range.
-	// Input frames may contain super-black (Y<16) or super-white (Y>235)
-	// values; blending preserves these out-of-range values, so we clamp
-	// after compositing to guarantee legal output.
-	clampYPlane(bg[:ySize])
-	clampCPlane(bg[ySize : ySize+uvSize])
-	clampCPlane(bg[ySize+uvSize : ySize+2*uvSize])
+	// Clamp output to BT.709 legal range, but only when a key actually
+	// composited. Blending can introduce out-of-range samples (it preserves
+	// the fill's super-black/super-white values), so we legalize the result.
+	// When no blend ran the program frame is untouched and must pass through
+	// verbatim — clamping it would silently alter super-black/super-white
+	// content merely because a key config exists with no usable fill.
+	if composited {
+		clampYPlane(bg[:ySize])
+		clampCPlane(bg[ySize : ySize+uvSize])
+		clampCPlane(bg[ySize+uvSize : ySize+2*uvSize])
+	}
 
 	return bg
 }

@@ -92,6 +92,108 @@ func TestLoudnessMeter_IntegratedWithGating(t *testing.T) {
 	}
 }
 
+// gateEnergyForLUFS converts a target loudness to the mean-square block energy
+// that produces it: lufs = -0.691 + 10*log10(e)  =>  e = 10^((lufs+0.691)/10).
+func gateEnergyForLUFS(lufs float64) float64 {
+	return math.Pow(10, (lufs+0.691)/10.0)
+}
+
+// gate100msReference is the previous (non-compliant) integrated gating that
+// applied the absolute/relative gates per individual 100ms sub-block. The fix
+// gates per overlapping 400ms gating block instead (BS.1770-4 / EBU Tech 3341),
+// so the two must diverge on a signal engineered to straddle the relative gate.
+func gate100msReference(blocks []float64) float64 {
+	if len(blocks) == 0 {
+		return -math.MaxFloat64
+	}
+	absGate := gateEnergyForLUFS(-70.0)
+	var us float64
+	var uc int
+	for _, e := range blocks {
+		if e >= absGate {
+			us += e
+			uc++
+		}
+	}
+	if uc == 0 {
+		return -math.MaxFloat64
+	}
+	ungatedLUFS := -0.691 + 10*math.Log10(us/float64(uc))
+	relGate := gateEnergyForLUFS(ungatedLUFS - 10.0)
+	var gs float64
+	var gc int
+	for _, e := range blocks {
+		if e >= relGate {
+			gs += e
+			gc++
+		}
+	}
+	if gc == 0 {
+		return -math.MaxFloat64
+	}
+	return -0.691 + 10*math.Log10(gs/float64(gc))
+}
+
+// TestLoudnessMeter_IntegratedGatesOn400msBlocks pins the BS.1770-4 fix: the
+// integrated measurement must gate on overlapping 400ms gating blocks (75%
+// overlap, 100ms hop), not on individual 100ms sub-blocks. On a signal whose
+// quiet section sits just below the relative gate, 100ms-granular gating drops
+// every quiet sub-block while 400ms gating retains the boundary blocks that
+// average above the gate — so the two methods must produce different integrated
+// loudness.
+func TestLoudnessMeter_IntegratedGatesOn400msBlocks(t *testing.T) {
+	// Loud plateau (~-10 LUFS) bracketing a run of quiet (~-25 LUFS) sub-blocks
+	// positioned near the relative gate (ungated-10).
+	var blocks []float64
+	for i := 0; i < 40; i++ {
+		blocks = append(blocks, gateEnergyForLUFS(-10))
+	}
+	for i := 0; i < 8; i++ {
+		blocks = append(blocks, gateEnergyForLUFS(-25))
+	}
+	for i := 0; i < 40; i++ {
+		blocks = append(blocks, gateEnergyForLUFS(-10))
+	}
+
+	m := &LoudnessMeter{integratedBlocks: blocks}
+	got := m.computeIntegratedLUFS()
+	naive100ms := gate100msReference(blocks)
+
+	if math.Abs(got-naive100ms) < 0.05 {
+		t.Fatalf("integrated gating did not switch to 400ms blocks: 400ms=%.4f, 100ms=%.4f (diff %.4f LU, want >= 0.05)",
+			got, naive100ms, got-naive100ms)
+	}
+	// Sanity: the result must still be a sensible loudness near the loud plateau.
+	if got < -15 || got > -8 {
+		t.Fatalf("integrated LUFS %.4f out of expected range for a -10 LUFS plateau", got)
+	}
+}
+
+// TestLoudnessMeter_IntegratedRequires400msBlock verifies that integrated
+// loudness is reported as the empty sentinel until at least one full 400ms
+// gating block (4 x 100ms sub-blocks) is available, per BS.1770-4.
+func TestLoudnessMeter_IntegratedRequires400msBlock(t *testing.T) {
+	for n := 1; n <= 3; n++ {
+		m := &LoudnessMeter{}
+		for i := 0; i < n; i++ {
+			m.integratedBlocks = append(m.integratedBlocks, gateEnergyForLUFS(-10))
+		}
+		if got := m.computeIntegratedLUFS(); got != -math.MaxFloat64 {
+			t.Errorf("with %d sub-block(s) (<400ms) integrated should be sentinel, got %.4f", n, got)
+		}
+	}
+	// Exactly 4 sub-blocks forms one 400ms gating block → a finite value.
+	m := &LoudnessMeter{}
+	for i := 0; i < 4; i++ {
+		m.integratedBlocks = append(m.integratedBlocks, gateEnergyForLUFS(-10))
+	}
+	if got := m.computeIntegratedLUFS(); got == -math.MaxFloat64 {
+		t.Errorf("with 4 sub-blocks (one 400ms gating block) integrated should be finite, got sentinel")
+	} else if math.Abs(got-(-10.0)) > 0.01 {
+		t.Errorf("single uniform 400ms gating block at -10 LUFS should read -10, got %.4f", got)
+	}
+}
+
 func TestLoudnessMeter_Reset(t *testing.T) {
 	m := NewLoudnessMeter(48000, 2)
 

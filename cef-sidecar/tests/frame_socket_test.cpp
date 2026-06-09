@@ -1,3 +1,5 @@
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <functional>
 #include <iostream>
@@ -9,6 +11,7 @@
 #include <unistd.h>
 #include <vector>
 
+#include "../src/frame_socket.h"
 #include "../src/protocol.h"
 
 // ---------------------------------------------------------------------------
@@ -113,6 +116,15 @@ static bool read_exact(int fd, void* buf, size_t n) {
         remaining -= static_cast<size_t>(got);
     }
     return true;
+}
+
+// Read one length-prefixed frame message (header + pixels) from fd.
+static bool read_frame_msg(int fd, std::vector<uint8_t>& out) {
+    uint8_t len_buf[4];
+    if (!read_exact(fd, len_buf, 4)) return false;
+    uint32_t total_len = protocol::ParseLengthPrefix(len_buf);
+    out.resize(total_len);
+    return read_exact(fd, out.data(), total_len);
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +328,212 @@ TEST(FrameWire_SerializationMatchesExpectedFormat) {
     ASSERT_EQ(buf[10], uint8_t(0xAD));
     ASSERT_EQ(buf[11], uint8_t(0xBE));
     ASSERT_EQ(buf[12], uint8_t(0xEF));
+}
+
+// ---------------------------------------------------------------------------
+// FrameSocket class tests (exercise the live writer-thread path)
+//
+// These instantiate the real FrameSocket so we cover SendFrame -> background
+// writer -> socket, including the non-blocking-under-backpressure and
+// per-browser coalescing behavior that decouples the CEF UI thread from I/O.
+// ---------------------------------------------------------------------------
+
+TEST(FrameSocket_DeliversFrameThroughWriterThread) {
+    std::string path = tmp_socket_path();
+    int listen_fd = create_listener(path);
+    ASSERT_TRUE(listen_fd >= 0);
+
+    FrameSocket fs(listen_fd);
+
+    // Accept runs in its own thread (blocks until the client connects).
+    std::thread accept_thread([&]() { ASSERT_TRUE(fs.Accept()); });
+
+    int client_fd = connect_to(path);
+    ASSERT_TRUE(client_fd >= 0);
+    accept_thread.join();
+
+    // 2x2 BGRA frame.
+    uint8_t bgra[16] = {};
+    bgra[0] = 0x7E;  // B of pixel 0
+    bgra[3] = 0xFF;  // A of pixel 0
+    ASSERT_TRUE(fs.SendFrame(1, 2, 2, bgra, sizeof(bgra)));
+
+    std::vector<uint8_t> msg;
+    ASSERT_TRUE(read_frame_msg(client_fd, msg));
+
+    auto hdr = protocol::ParseFrameHeader(msg.data());
+    ASSERT_EQ(hdr.browser_id, uint8_t(1));
+    ASSERT_EQ(hdr.width, uint16_t(2));
+    ASSERT_EQ(hdr.height, uint16_t(2));
+    ASSERT_EQ(msg[protocol::kFrameHeaderSize], uint8_t(0x7E));  // B of pixel 0
+
+    fs.Close();
+    close(client_fd);
+    close(listen_fd);
+    unlink(path.c_str());
+}
+
+// Regression test for the freeze bug: OnPaint -> SendFrame must not block the
+// caller (the CEF UI thread) when the reader stops draining and the socket
+// send buffer fills. Before the fix, SendFrame did a blocking write() loop and
+// would hang here; with the writer-thread hand-off it returns promptly.
+TEST(FrameSocket_SendFrameDoesNotBlockUnderBackpressure) {
+    std::string path = tmp_socket_path();
+    int listen_fd = create_listener(path);
+    ASSERT_TRUE(listen_fd >= 0);
+
+    FrameSocket fs(listen_fd);
+    std::thread accept_thread([&]() { ASSERT_TRUE(fs.Accept()); });
+
+    int client_fd = connect_to(path);
+    ASSERT_TRUE(client_fd >= 0);
+    accept_thread.join();
+
+    // The client never reads, so the socket send buffer fills quickly.
+    // Each frame is ~4MB (1024x1024 BGRA); a handful overflows any send buffer.
+    const int kFrames = 16;
+    const int kW = 1024, kH = 1024;
+    std::vector<uint8_t> bgra(static_cast<size_t>(kW) * kH * 4, 0x33);
+
+    std::atomic<bool> burst_done{false};
+
+    std::thread sender([&]() {
+        for (int i = 0; i < kFrames; i++) {
+            // Vary browser_id so we also keep multiple per-browser slots.
+            ASSERT_TRUE(fs.SendFrame(i % 4, kW, kH, bgra.data(), bgra.size()));
+        }
+        burst_done.store(true);
+    });
+
+    // Watchdog: the entire burst of SendFrame calls must complete quickly
+    // because none of them may block on the full socket. Poll for up to 5s.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!burst_done.load() &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    bool finished = burst_done.load();
+
+    // Drain the reader so the writer thread can make progress and the sender
+    // (already finished if the fix is in place) can be joined cleanly.
+    std::thread drainer([&]() {
+        uint8_t buf[65536];
+        while (read(client_fd, buf, sizeof(buf)) > 0) {
+        }
+    });
+
+    sender.join();
+    ASSERT_TRUE(finished);  // would be false (hung) before the fix
+
+    // Tear down: closing the socket unblocks the drainer's read().
+    fs.Close();
+    close(client_fd);
+    drainer.join();
+    close(listen_fd);
+    unlink(path.c_str());
+}
+
+// While the reader is stalled, newer frames for the same browser must replace
+// older queued ones (single-slot-per-browser coalescing), so the reader sees
+// the latest frame rather than a backlog of stale ones.
+TEST(FrameSocket_CoalescesStaleFramesPerBrowser) {
+    std::string path = tmp_socket_path();
+    int listen_fd = create_listener(path);
+    ASSERT_TRUE(listen_fd >= 0);
+
+    FrameSocket fs(listen_fd);
+    std::thread accept_thread([&]() { ASSERT_TRUE(fs.Accept()); });
+
+    int client_fd = connect_to(path);
+    ASSERT_TRUE(client_fd >= 0);
+    accept_thread.join();
+
+    // Make the socket non-blocking on the reader side so we can detect "no
+    // more frames" without hanging.
+    // (We instead just count frames received within a bounded read window.)
+
+    // Queue many frames for browser 0 in a tight loop while nothing is reading.
+    // Each frame carries a distinct marker byte so we can identify which
+    // survived. The writer thread will deliver at most a small number; the key
+    // property is that the LAST queued frame's marker is delivered.
+    const int kW = 1, kH = 1;
+    const int kFrames = 200;
+    uint8_t last_marker = 0;
+    for (int i = 0; i < kFrames; i++) {
+        uint8_t px[4] = {static_cast<uint8_t>(i & 0xFF), 0x00, 0x00, 0xFF};
+        last_marker = px[0];
+        ASSERT_TRUE(fs.SendFrame(0, kW, kH, px, sizeof(px)));
+    }
+
+    // Now drain everything the writer manages to deliver, with a bounded
+    // window, and remember the last frame's marker byte (offset
+    // kFrameHeaderSize in the message body = first pixel's B channel).
+    std::vector<uint8_t> msg;
+    int received = 0;
+    uint8_t seen_last = 0;
+    // Read until the writer drains the single outstanding slot. Give it a few
+    // attempts; with coalescing only a few distinct frames arrive.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    // Mark the end of the live stream by closing the writer after a short
+    // grace period from a helper thread, which makes read_frame_msg return
+    // false once the buffered data is consumed.
+    std::thread closer([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        fs.Close();
+    });
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!read_frame_msg(client_fd, msg)) break;
+        received++;
+        seen_last = msg[protocol::kFrameHeaderSize];
+    }
+    closer.join();
+
+    // We must have received at least one frame, strictly fewer than we queued
+    // (proving coalescing dropped stale frames), and the most recent frame we
+    // saw must be the last one we queued (latest-wins).
+    ASSERT_TRUE(received >= 1);
+    ASSERT_TRUE(received < kFrames);
+    ASSERT_EQ(seen_last, last_marker);
+
+    close(client_fd);
+    close(listen_fd);
+    unlink(path.c_str());
+}
+
+// Regression test for the Accept/Close shutdown race: main.cpp runs Accept()
+// on a background thread and calls Close() from the main thread while Accept
+// may still be parked in accept(). If a connection arrives as (or after)
+// Close runs, Accept must NOT re-arm stop_ = false and start a writer thread
+// that Close has already joined-past — that resurrects the socket after
+// shutdown and races the writer_ std::thread object itself.
+//
+// Deterministic interleaving: the client connection is queued in the listener
+// backlog BEFORE Close() runs, so the subsequent Accept() call returns a real
+// connection even though Close has fully completed.
+TEST(FrameSocket_AcceptAfterCloseDoesNotResurrect) {
+    std::string path = tmp_socket_path();
+    int listen_fd = create_listener(path);
+    ASSERT_TRUE(listen_fd >= 0);
+
+    FrameSocket fs(listen_fd);
+
+    // Connection pending in the backlog; accept() will succeed immediately.
+    int client_fd = connect_to(path);
+    ASSERT_TRUE(client_fd >= 0);
+
+    fs.Close();
+
+    // Accept must observe the completed Close and refuse to start the writer
+    // or clear the stop flag. Before the fix this returned true.
+    ASSERT_TRUE(!fs.Accept());
+
+    // And the socket must not consider itself connected afterwards.
+    uint8_t px[4] = {0, 0, 0, 0xFF};
+    ASSERT_TRUE(!fs.SendFrame(0, 1, 1, px, sizeof(px)));
+
+    close(client_fd);
+    close(listen_fd);
+    unlink(path.c_str());
 }
 
 // ---------------------------------------------------------------------------

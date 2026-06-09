@@ -62,6 +62,18 @@ func (d *GPUDecoder) Flush() {
 	d.ffDec.Flush()
 }
 
+// SendEOS signals end-of-stream to the decoder so frames buffered for
+// B-frame reordering can be drained via ReceiveFrame.
+func (d *GPUDecoder) SendEOS() error {
+	return d.ffDec.SendEOS()
+}
+
+// ReceiveFrame receives a buffered frame from the decoder without sending
+// new input. Returns an error once no more frames are available.
+func (d *GPUDecoder) ReceiveFrame() ([]byte, int, int, error) {
+	return d.ffDec.ReceiveFrame()
+}
+
 // Close releases decoder resources.
 func (d *GPUDecoder) Close() {
 	d.ffDec.Close()

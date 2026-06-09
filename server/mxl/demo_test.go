@@ -37,6 +37,38 @@ func TestDemoVideoReader_GeneratesValidV210(t *testing.T) {
 	t.Logf("Demo frame: %d bytes V210 → %d bytes YUV420p (360x240)", len(data), len(yuv))
 }
 
+// TestDemoVideoReader_GrainsDoNotAlias verifies that consecutive ReadGrain
+// calls return independent buffers. videoLoop buffers grains on a channel
+// (size 4), so a reused/aliased buffer would let a later read overwrite an
+// earlier, still-queued grain in place — tearing the V210 frame downstream.
+// The DiscreteReader contract requires returned data to be a copy safe to retain.
+func TestDemoVideoReader_GrainsDoNotAlias(t *testing.T) {
+	reader := NewDemoVideoReader(12, 2, 30, 0)
+	reader.interval = 0 // disable per-frame sleep
+	defer func() { _ = reader.Close() }()
+
+	first, _, err := reader.ReadGrain(0, 0)
+	require.NoError(t, err)
+	// Snapshot the first grain's contents before the next read.
+	firstCopy := make([]byte, len(first))
+	copy(firstCopy, first)
+
+	second, _, err := reader.ReadGrain(0, 0)
+	require.NoError(t, err)
+
+	// The two grains must not share backing storage. If they aliased, the
+	// second read's in-place V210 generation would have mutated `first`; the
+	// snapshot taken before the second read would then no longer match.
+	// (A pointer-identity check is unreliable: the GC may recycle a freed
+	// backing array to a fresh allocation at the same address.)
+	require.Equal(t, firstCopy, first,
+		"first grain must be unchanged after the second ReadGrain (no aliasing)")
+	// Different animation frames (index 1 vs 2) should also differ in content,
+	// confirming the second buffer holds fresh data rather than a stale copy.
+	require.NotEqual(t, firstCopy, second,
+		"second grain should hold a newer frame")
+}
+
 func TestDemoVideoReader_DifferentColors(t *testing.T) {
 	// Verify different colorIdx produces different patterns.
 	reader0 := NewDemoVideoReader(12, 2, 30, 0)

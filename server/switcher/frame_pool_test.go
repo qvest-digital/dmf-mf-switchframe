@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/require"
 )
@@ -203,4 +204,53 @@ func BenchmarkFramePoolAcquireRelease(b *testing.B) {
 		buf := fp.Acquire()
 		fp.Release(buf)
 	}
+}
+
+// Finding #87: Close used to munmap every pre-allocated buffer, including
+// ones still checked out by in-flight frames (write → SIGSEGV), and Release
+// had no closed flag, so a buffer released after Close re-entered the free
+// list and a later Acquire handed out unmapped memory.
+
+func TestFramePoolCloseKeepsCheckedOutBuffersMapped(t *testing.T) {
+	fp := NewFramePool(4, 64, 48, ColorYUV420_8bit)
+
+	buf := fp.Acquire() // checked out by an "in-flight frame"
+	fp.Close()
+
+	// The checked-out buffer must still be mapped and writable.
+	buf[0] = 0xAB
+	buf[len(buf)-1] = 0xCD
+	require.Equal(t, byte(0xAB), buf[0])
+	require.Equal(t, byte(0xCD), buf[len(buf)-1])
+
+	// Returning it after Close must hand it to munmap, not the free list.
+	fp.Release(buf)
+	fp.mu.Lock()
+	require.Empty(t, fp.free, "closed pool must not recycle buffers")
+	require.Empty(t, fp.mmapBufs, "late-released mmap buffer should be unmapped and untracked")
+	fp.mu.Unlock()
+}
+
+func TestFramePoolReleaseAfterCloseDoesNotRecycle(t *testing.T) {
+	fp := NewFramePool(4, 64, 48, ColorYUV420_8bit)
+
+	buf := fp.Acquire()
+	bufAddr := uintptr(unsafe.Pointer(&buf[0]))
+	fp.Close()
+	fp.Release(buf)
+
+	// A post-Close Acquire must get a fresh heap allocation, never the
+	// released (now unmapped) buffer. Compare addresses as uintptr —
+	// require.NotEqual on *byte would dereference the unmapped pointer.
+	buf2 := fp.Acquire()
+	require.NotEqual(t, bufAddr, uintptr(unsafe.Pointer(&buf2[0])),
+		"Acquire after Close must not return the unmapped buffer")
+	buf2[0] = 1 // must be writable
+	require.Equal(t, byte(1), buf2[0])
+}
+
+func TestFramePoolCloseIdempotent(t *testing.T) {
+	fp := NewFramePool(4, 64, 48, ColorYUV420_8bit)
+	fp.Close()
+	fp.Close() // second Close must be a no-op, not a double munmap
 }

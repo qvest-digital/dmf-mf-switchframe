@@ -122,9 +122,21 @@ func (rx *AudioRx) GetFrame(ctx context.Context) ([]float32, int, error) {
 		}
 
 		channels := rx.cfg.Format.Channels
+		if channels <= 0 {
+			// Guard against divide-by-zero on the hot path. A zero/negative
+			// channel count means the session is misconfigured (e.g. a future
+			// SDP-derived config that failed to populate Channels); skip the
+			// frame rather than panicking.
+			C.st30p_rx_put_frame(rx.handle, frame)
+			rx.mu.Unlock()
+			return nil, 0, fmt.Errorf("st2110: audio rx channel count is %d", channels)
+		}
 		dataSize := int(frame.data_size)
-		totalSamples := dataSize / 3
-		samplesPerCh := totalSamples / channels
+		samplesPerCh := (dataSize / 3) / channels
+		// Size the output to channels*samplesPerCh (channel-aligned), not the
+		// raw dataSize/3, so a non-aligned frame doesn't leave a silent zero
+		// tail of partial-sample data.
+		totalSamples := channels * samplesPerCh
 
 		rawL24 := make([]byte, dataSize)
 		C.memcpy(unsafe.Pointer(&rawL24[0]), frame.addr, C.size_t(dataSize))

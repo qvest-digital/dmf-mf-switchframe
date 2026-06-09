@@ -14,9 +14,8 @@ import (
 // src[:srcYSize] with capacity 0.
 func TestNormalizeResolution_NilYUV_NoPanic(t *testing.T) {
 	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
-	sw := &Switcher{
-		framePool: pool,
-	}
+	sw := &Switcher{}
+	sw.framePool.Store(pool)
 	// Pipeline format: 320×240 (matching pool).
 	pf := PipelineFormat{Width: 320, Height: 240}
 	sw.pipelineFormat.Store(&pf)
@@ -42,9 +41,8 @@ func TestNormalizeResolution_NilYUV_NoPanic(t *testing.T) {
 // an empty (non-nil, zero-length) YUV slice.
 func TestNormalizeResolution_EmptyYUV_NoPanic(t *testing.T) {
 	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
-	sw := &Switcher{
-		framePool: pool,
-	}
+	sw := &Switcher{}
+	sw.framePool.Store(pool)
 	pf := PipelineFormat{Width: 320, Height: 240}
 	sw.pipelineFormat.Store(&pf)
 

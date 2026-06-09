@@ -65,9 +65,17 @@ func TestEndpointSubsystem(t *testing.T) {
 		{"/api/output/srt/start", SubsystemOutput, true},
 		{"/api/output/srt/stop", SubsystemOutput, true},
 
-		// Presets (prefix)
+		// Presets (prefix + bare collection root)
 		{"/api/presets/abc/recall", SubsystemSwitching, true},
 		{"/api/presets/abc", SubsystemSwitching, true},
+		{"/api/presets", SubsystemSwitching, true}, // POST creates a preset
+
+		// Collection-root mutating routes must map to their subtree subsystem
+		// (regression: bare paths used to miss the trailing-slash prefix and
+		// fall through to deny-by-default, bypassing per-subsystem role/lock).
+		{"/api/graphics", SubsystemGraphics, true},    // POST adds a layer
+		{"/api/sources", SubsystemSwitching, true},    // POST creates a source
+		{"/api/colorgrade", SubsystemSwitching, true}, // PUT alters program grade
 
 		// Captions (prefix)
 		{"/api/captions/mode", SubsystemCaptions, true},
@@ -123,7 +131,7 @@ func TestEndpointSubsystem(t *testing.T) {
 		// Exempt / unmapped (should return false)
 		{"/api/switch/state", "", false},
 		{"/api/operator/register", "", false},
-		{"/api/presets", "", false}, // list endpoint (no trailing slash)
+		{"/api/sync/state-snapshot", "", false}, // genuinely unmapped (deny-by-default)
 		{"/api/unknown", "", false},
 	}
 
@@ -520,7 +528,7 @@ func TestMiddleware_CommsPassesThrough(t *testing.T) {
 	}
 }
 
-func TestMiddleware_UnknownEndpointPassesThrough(t *testing.T) {
+func TestMiddleware_UnmappedMutatingEndpointDeniedForNonDirector(t *testing.T) {
 	store, _ := NewStore(tempStorePath(t))
 	sm := NewSessionManager()
 	defer sm.Close()
@@ -535,11 +543,216 @@ func TestMiddleware_UnknownEndpointPassesThrough(t *testing.T) {
 	mw := NewMiddleware(store, sm)
 	wrapped := mw(handler)
 
-	// Unknown endpoint should pass through (not a lockable subsystem).
-	req := httptest.NewRequest("POST", "/api/presets", nil)
+	// POST /api/sync/state-snapshot is an unmapped mutating path. Under the
+	// deny-by-default policy a non-director must NOT reach the handler.
+	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", nil)
 	req.Header.Set("Authorization", "Bearer "+op.Token)
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
 
-	require.Equal(t, http.StatusOK, rr.Code, "expected 200 for unknown endpoint")
+	require.Equal(t, http.StatusForbidden, rr.Code,
+		"expected 403 for viewer on unmapped mutating endpoint")
+}
+
+func TestMiddleware_UnmappedMutatingEndpointAllowedForDirector(t *testing.T) {
+	store, _ := NewStore(tempStorePath(t))
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	op, _ := store.Register("Alice", RoleDirector)
+	sm.Connect(op.ID, op.Name, op.Role)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := NewMiddleware(store, sm)
+	wrapped := mw(handler)
+
+	// Director retains access to unmapped privileged mutating endpoints.
+	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", nil)
+	req.Header.Set("Authorization", "Bearer "+op.Token)
+	rr := httptest.NewRecorder()
+	wrapped.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code,
+		"expected 200 for director on unmapped mutating endpoint")
+}
+
+// TestMiddleware_ViewerForbiddenOnProgramAffectingEndpoints is the direct
+// regression test for the operator-authz finding: a read-only viewer must not
+// be able to drive on-air playout, color grade, ST-map program geometry,
+// pipeline-node bypass, or apply a full engine state snapshot. Before the fix
+// every one of these unmapped mutating paths fell through to a permissive
+// branch and returned 200 for any registered operator.
+func TestMiddleware_ViewerForbiddenOnProgramAffectingEndpoints(t *testing.T) {
+	store, _ := NewStore(tempStorePath(t))
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	op, _ := store.Register("Viewer", RoleViewer)
+	sm.Connect(op.ID, op.Name, op.Role)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := NewMiddleware(store, sm)
+	wrapped := mw(handler)
+
+	cases := []struct {
+		method string
+		path   string
+	}{
+		// Playout on-air automation (channels + pods).
+		{"POST", "/api/playout/channels/1/start"},
+		{"POST", "/api/playout/channels/1/stop"},
+		{"POST", "/api/playout/channels/1/jump"},
+		{"POST", "/api/playout/channels/1/load"},
+		{"POST", "/api/playout/channels/1/pods/p1/arm"},
+		{"POST", "/api/playout/channels/1/pods/p1/fire"},
+		{"POST", "/api/playout/channels/1/pods/p1/dump"},
+		// Color grade (alters program color).
+		{"PUT", "/api/colorgrade"},
+		{"PUT", "/api/colorgrade/corrector"},
+		{"DELETE", "/api/colorgrade/corrector"},
+		{"POST", "/api/colorgrade/upload"},
+		{"DELETE", "/api/colorgrade/my-look"},
+		// ST-map program + source geometry.
+		{"PUT", "/api/stmap/program"},
+		{"DELETE", "/api/stmap/program"},
+		{"PUT", "/api/stmap/source/cam1"},
+		{"POST", "/api/stmap/upload/foo"},
+		// Pipeline node bypass (DSK/color/AI on program).
+		{"PUT", "/api/pipeline/nodes/dsk/bypass"},
+		{"DELETE", "/api/pipeline/nodes/dsk/bypass"},
+		// ASR config (drives captions).
+		{"PUT", "/api/asr/config"},
+		// Custom wipe upload/delete.
+		{"POST", "/api/wipes/custom"},
+		{"DELETE", "/api/wipes/custom/w1"},
+		// Replay shutter angle.
+		{"PUT", "/api/replay/shutter-angle"},
+		// Full engine state snapshot — the most dangerous (deny-by-default).
+		{"POST", "/api/sync/state-snapshot"},
+	}
+
+	for _, tc := range cases {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		req.Header.Set("Authorization", "Bearer "+op.Token)
+		rr := httptest.NewRecorder()
+		wrapped.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusForbidden, rr.Code,
+			"expected 403 for viewer on %s %s", tc.method, tc.path)
+	}
+}
+
+// TestMiddleware_CollectionRootRoutesGuarded is the direct regression test for
+// the collection-root finding: mutating routes on a collection root
+// (POST /api/graphics, POST /api/sources, POST /api/presets) previously missed
+// the trailing-slash prefix match and fell through to deny-by-default, so they
+// bypassed BOTH the per-subsystem role check (CanCommand) and the lock check
+// (CheckLock). They must now be guarded by the same subsystem as their subtree.
+func TestMiddleware_CollectionRootRoutesGuarded(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// route -> the subsystem it must be guarded under.
+	routes := []struct {
+		method string
+		path   string
+		sub    Subsystem
+	}{
+		{"POST", "/api/graphics", SubsystemGraphics},   // handleGraphicsAddLayer
+		{"POST", "/api/sources", SubsystemSwitching},   // handleCreateSource
+		{"POST", "/api/presets", SubsystemSwitching},   // handleCreatePreset
+		{"PUT", "/api/colorgrade", SubsystemSwitching}, // handleColorGradeSet
+	}
+
+	for _, rt := range routes {
+		t.Run(rt.method+" "+rt.path, func(t *testing.T) {
+			store, _ := NewStore(tempStorePath(t))
+			sm := NewSessionManager()
+			defer sm.Close()
+
+			director, _ := store.Register("Alice", RoleDirector)
+			viewer, _ := store.Register("Viewer", RoleViewer)
+			// An operator whose role canNOT command rt.sub: audio is wrong for
+			// both switching and graphics.
+			audio, _ := store.Register("Bob", RoleAudio)
+			sm.Connect(director.ID, director.Name, director.Role)
+			sm.Connect(viewer.ID, viewer.Name, viewer.Role)
+			sm.Connect(audio.ID, audio.Name, audio.Role)
+
+			mw := NewMiddleware(store, sm)
+			wrapped := mw(handler)
+
+			do := func(token string) int {
+				req := httptest.NewRequest(rt.method, rt.path, nil)
+				req.Header.Set("Authorization", "Bearer "+token)
+				rr := httptest.NewRecorder()
+				wrapped.ServeHTTP(rr, req)
+				return rr.Code
+			}
+
+			// Role check is enforced: a viewer and a wrong-role operator are
+			// forbidden (not silently allowed via the fall-through branch).
+			require.Equal(t, http.StatusForbidden, do(viewer.Token),
+				"viewer must be forbidden on %s %s", rt.method, rt.path)
+			require.Equal(t, http.StatusForbidden, do(audio.Token),
+				"audio role must be forbidden on %s %s", rt.method, rt.path)
+
+			// A director (commands all subsystems) is allowed when unlocked.
+			require.Equal(t, http.StatusOK, do(director.Token),
+				"director must be allowed on %s %s", rt.method, rt.path)
+
+			// Lock check is enforced: once the director locks the subsystem,
+			// a second director is blocked with 409 — proving these routes go
+			// through CheckLock rather than the unconditional pass-through.
+			second, _ := store.Register("Carol", RoleDirector)
+			sm.Connect(second.ID, second.Name, second.Role)
+			require.NoError(t, sm.AcquireLock(director.ID, rt.sub))
+			require.Equal(t, http.StatusConflict, do(second.Token),
+				"second director must get 409 while %s holds the %s lock", director.Name, rt.sub)
+		})
+	}
+}
+
+// TestMiddleware_StateSnapshotRequiresDirector verifies the full state-snapshot
+// apply endpoint is gated behind the director role even for a non-viewer
+// operator (e.g. an audio operator), and that a director is permitted.
+func TestMiddleware_StateSnapshotRequiresDirector(t *testing.T) {
+	store, _ := NewStore(tempStorePath(t))
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	audio, _ := store.Register("Bob", RoleAudio)
+	director, _ := store.Register("Alice", RoleDirector)
+	sm.Connect(audio.ID, audio.Name, audio.Role)
+	sm.Connect(director.ID, director.Name, director.Role)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := NewMiddleware(store, sm)
+	wrapped := mw(handler)
+
+	// Audio operator is denied.
+	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", nil)
+	req.Header.Set("Authorization", "Bearer "+audio.Token)
+	rr := httptest.NewRecorder()
+	wrapped.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusForbidden, rr.Code,
+		"expected 403 for audio role on state-snapshot apply")
+
+	// Director is allowed.
+	req = httptest.NewRequest("POST", "/api/sync/state-snapshot", nil)
+	req.Header.Set("Authorization", "Bearer "+director.Token)
+	rr = httptest.NewRecorder()
+	wrapped.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code,
+		"expected 200 for director on state-snapshot apply")
 }

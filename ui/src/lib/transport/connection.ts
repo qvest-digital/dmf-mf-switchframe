@@ -11,6 +11,7 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 	let transport: WebTransport | null = null;
 	let retryTimeout: ReturnType<typeof setTimeout> | null = null;
 	let retryDelay = 2000;
+	let stopped = false;
 	const MAX_RETRY_DELAY = 30000;
 
 	function _setConnectionState(newState: ConnectionState) {
@@ -31,12 +32,17 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 
 	async function connect() {
 		if (state === 'connecting' || state === 'connected') return;
+		stopped = false;
 		_setConnectionState('connecting');
 
 		try {
 			// Fetch cert info for WebTransport connection
 			const certRes = await fetch(`${config.url}/api/cert-hash`);
 			const certData = await certRes.json();
+			// disconnect() may have landed while we were suspended on the cert
+			// fetch — creating a WebTransport now would leak it (nothing would
+			// ever close it) and fire a spurious 'connected'.
+			if (stopped) return;
 			const trusted = certData.trusted === true;
 
 			const opts: WebTransportOptions = {};
@@ -51,28 +57,44 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 			}
 
 			transport = new WebTransport(config.url, opts);
-			await transport.ready;
+			const t = transport;
+			await t.ready;
+			// disconnect() may have landed while we were suspended on
+			// transport.ready (it already closed t). Stay torn down rather than
+			// reporting 'connected' on a connection the caller abandoned.
+			if (stopped) {
+				t.close();
+				if (transport === t) transport = null;
+				return;
+			}
 			retryDelay = 2000;
 			_setConnectionState('connected');
 
 			// Monitor for close
-			transport.closed
+			t.closed
 				.then(() => {
+					if (stopped) return;
 					_setConnectionState('disconnected');
 					scheduleRetry();
 				})
 				.catch(() => {
+					if (stopped) return;
 					_setConnectionState('error');
 					scheduleRetry();
 				});
 		} catch {
+			// An explicit disconnect() during connect (e.g. ConnectionManager
+			// teardown) rejects transport.ready and lands here. Reporting
+			// 'error' would undo the disconnect: ConnectionManager reacts to
+			// 'error' by resurrecting REST polling on a stopped manager.
+			if (stopped) return;
 			_setConnectionState('error');
 			scheduleRetry();
 		}
 	}
 
 	function scheduleRetry() {
-		if (retryTimeout) return;
+		if (stopped || retryTimeout) return;
 		const jitter = retryDelay * 0.2 * Math.random();
 		retryTimeout = setTimeout(() => {
 			retryTimeout = null;
@@ -82,6 +104,7 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 	}
 
 	function disconnect() {
+		stopped = true;
 		if (retryTimeout) {
 			clearTimeout(retryTimeout);
 			retryTimeout = null;

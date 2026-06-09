@@ -90,9 +90,13 @@ func newParticipantWithFactory(id, name string, encFactory encoderFactory, decFa
 		name:    name,
 		encoder: enc,
 		decoder: dec,
-		pcmBuf:  make([]int16, FrameSize),
-		pcmQ:    make(chan []int16, pcmQueueSize),
-		sendCh:  make(chan []byte, 4),
+		// Sized to the Opus maximum frame (120ms) so a client that negotiates
+		// a 40/60/120ms frame still decodes; the hraban wrapper passes
+		// cap(pcmBuf)/Channels to opus_decode as the output capacity. Frames
+		// are clamped to FrameSize for the 20ms mix path in decodeAudio.
+		pcmBuf: make([]int16, MaxFrameSize),
+		pcmQ:   make(chan []int16, pcmQueueSize),
+		sendCh: make(chan []byte, 4),
 	}, nil
 }
 
@@ -106,10 +110,29 @@ func (p *participant) decodeAudio(opusData []byte) ([]int16, error) {
 		p.mu.Unlock()
 		return nil, nil
 	}
-	n, err := p.decoder.Decode(opusData, p.pcmBuf, FrameSize)
+	// Pass MaxFrameSize (the full pcmBuf capacity) so the hraban wrapper hints
+	// the correct output capacity to opus_decode; a client negotiating a
+	// 40/60/120ms frame then decodes instead of failing OPUS_BUFFER_TOO_SMALL.
+	n, err := p.decoder.Decode(opusData, p.pcmBuf, MaxFrameSize)
 	if err != nil {
 		p.mu.Unlock()
 		return nil, err
+	}
+	// Defensive clamp: n is samples-per-channel from the decoder and must lie
+	// within the buffer; guard against a negative or over-capacity return so
+	// the copy below can never read out of bounds on a malformed wrapper.
+	if n < 0 {
+		n = 0
+	}
+	if n > len(p.pcmBuf) {
+		n = len(p.pcmBuf)
+	}
+	// The mix path is built around 20ms (FrameSize) frames; take the leading
+	// FrameSize samples of any longer frame so downstream sees canonical
+	// 20ms blocks. (The mixer also clamps, but normalizing here keeps the
+	// pcmQ contract simple.)
+	if n > FrameSize {
+		n = FrameSize
 	}
 	// Copy while still holding the lock so pcmBuf can't be overwritten
 	// by a concurrent decode (single-writer today, but defensive).

@@ -31,10 +31,29 @@ func V210ToYUV422P10(v210 []byte, srcStride, width, height int) ([]byte, error) 
 	if height < 1 {
 		return nil, fmt.Errorf("v210_10bit: height %d must be >= 1", height)
 	}
+	out := make([]byte, width*height*4)
+	if err := V210ToYUV422P10Into(v210, out, srcStride, width, height); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// V210ToYUV422P10Into is the allocation-free variant of V210ToYUV422P10: it
+// writes the YUV422P10LE planes into out, which must be at least
+// width*height*4 bytes. This conversion runs on the per-frame hot path
+// (Source.processVideoGrain in Lossless10bit mode), so callers should reuse
+// out across frames to avoid ~8 MB/frame of garbage at 1080p.
+func V210ToYUV422P10Into(v210, out []byte, srcStride, width, height int) error {
+	if width < 2 || width%2 != 0 {
+		return fmt.Errorf("v210_10bit: width %d must be even and >= 2", width)
+	}
+	if height < 1 {
+		return fmt.Errorf("v210_10bit: height %d must be >= 1", height)
+	}
 
 	requiredSize := srcStride * height
 	if len(v210) < requiredSize {
-		return nil, fmt.Errorf("v210_10bit: V210 buffer size %d too small, need %d for %dx%d (stride %d)",
+		return fmt.Errorf("v210_10bit: V210 buffer size %d too small, need %d for %dx%d (stride %d)",
 			len(v210), requiredSize, width, height, srcStride)
 	}
 
@@ -43,7 +62,10 @@ func V210ToYUV422P10(v210 []byte, srcStride, width, height int) ([]byte, error) 
 	cbSize := chromaW * height
 	crSize := chromaW * height
 	totalBytes := (ySize + cbSize + crSize) * 2
-	out := make([]byte, totalBytes)
+	if len(out) < totalBytes {
+		return fmt.Errorf("v210_10bit: output buffer size %d too small, need %d for %dx%d",
+			len(out), totalBytes, width, height)
+	}
 
 	yPlane := out
 	cbPlane := out[ySize*2:]
@@ -116,7 +138,7 @@ func V210ToYUV422P10(v210 []byte, srcStride, width, height int) ([]byte, error) 
 		}
 	}
 
-	return out, nil
+	return nil
 }
 
 // YUV422P10ToV210 converts a YUV422P10LE (10-bit 4:2:2 planar) frame to
@@ -136,6 +158,25 @@ func YUV422P10ToV210(yuv []byte, width, height int) ([]byte, error) {
 	if height < 1 {
 		return nil, fmt.Errorf("v210_10bit: height %d must be >= 1", height)
 	}
+	out := make([]byte, V210LineStride(width)*height)
+	if err := YUV422P10ToV210Into(yuv, out, width, height); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// YUV422P10ToV210Into is the allocation-free variant of YUV422P10ToV210: it
+// packs the V210 frame into out, which must be at least
+// V210LineStride(width)*height bytes. This conversion runs on the per-frame
+// hot path (Writer.WriteVideo10bit), so callers should reuse out across
+// frames to avoid ~5.5 MB/frame of garbage at 1080p.
+func YUV422P10ToV210Into(yuv, out []byte, width, height int) error {
+	if width < 6 || width%6 != 0 {
+		return fmt.Errorf("v210_10bit: width %d must be divisible by 6 and >= 6", width)
+	}
+	if height < 1 {
+		return fmt.Errorf("v210_10bit: height %d must be >= 1", height)
+	}
 
 	chromaW := width / 2
 	ySize := width * height
@@ -143,12 +184,15 @@ func YUV422P10ToV210(yuv []byte, width, height int) ([]byte, error) {
 	crSize := chromaW * height
 	requiredBytes := (ySize + cbSize + crSize) * 2
 	if len(yuv) < requiredBytes {
-		return nil, fmt.Errorf("v210_10bit: YUV422P10 buffer size %d too small, need %d for %dx%d",
+		return fmt.Errorf("v210_10bit: YUV422P10 buffer size %d too small, need %d for %dx%d",
 			len(yuv), requiredBytes, width, height)
 	}
 
 	stride := V210LineStride(width)
-	out := make([]byte, stride*height)
+	if len(out) < stride*height {
+		return fmt.Errorf("v210_10bit: output buffer size %d too small, need %d for %dx%d",
+			len(out), stride*height, width, height)
+	}
 	groups := width / 6
 
 	yPlane := yuv
@@ -195,5 +239,5 @@ func YUV422P10ToV210(yuv []byte, width, height int) ([]byte, error) {
 		}
 	}
 
-	return out, nil
+	return nil
 }

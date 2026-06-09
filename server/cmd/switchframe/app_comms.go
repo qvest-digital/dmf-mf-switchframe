@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/zsiec/switchframe/server/comms"
+	"github.com/zsiec/switchframe/server/operator"
 )
 
 const (
@@ -48,16 +49,89 @@ func (a *App) handleCommsBidiStream(_ string, stream io.ReadWriteCloser) {
 	var hello struct {
 		Action     string `json:"action"`
 		OperatorID string `json:"operatorId"`
+		Token      string `json:"token"`
 	}
 	if err := json.Unmarshal(payload, &hello); err != nil || hello.Action != "hello" || hello.OperatorID == "" {
 		return
 	}
 
+	// Authenticate the handshake. Prism viewer sessions carry no operator
+	// auth, so without this check any client that can reach the server could
+	// bind a stream to an arbitrary operator: receive their N-1 mix
+	// (eavesdrop), inject audio as them, toggle their mute, and kick them
+	// from comms on disconnect via the deferred Leave below.
+	if !a.authorizeCommsStream(hello.OperatorID, hello.Token) {
+		slog.Warn("comms stream rejected: unauthorized hello", "operator", hello.OperatorID)
+		return
+	}
+
+	// Register this stream as the operator's active comms stream, superseding
+	// (closing) any lingering previous stream from before a reconnect.
+	a.registerCommsStream(hello.OperatorID, stream)
+
 	// Auto-leave when the stream closes (browser disconnect, refresh, etc.)
-	// so the participant doesn't remain as a ghost in the comms session.
-	defer a.commsMgr.Leave(hello.OperatorID)
+	// so the participant doesn't remain as a ghost in the comms session —
+	// but only if this stream is still the operator's CURRENT stream. A
+	// stale pre-reconnect stream that errors out late (e.g. QUIC idle
+	// timeout) must not tear down the fresh session the reconnected
+	// operator is actively using.
+	defer func() {
+		if a.unregisterCommsStream(hello.OperatorID, stream) {
+			a.commsMgr.Leave(hello.OperatorID)
+		}
+	}()
 
 	a.handleCommsStream(hello.OperatorID, stream, stream)
+}
+
+// authorizeCommsStream validates that the comms stream handshake token is
+// allowed to act as operatorID. It mirrors the REST path's
+// authorizeCommsTarget (control/api_comms.go): the token must resolve to a
+// registered operator who is either the target operator or a director. When
+// no operator store is wired, the claimed ID is trusted for backward
+// compatibility, mirroring the rest of the API.
+func (a *App) authorizeCommsStream(operatorID, token string) bool {
+	if a.operatorStore == nil {
+		return true
+	}
+	caller, err := a.operatorStore.GetByToken(token)
+	if err != nil {
+		return false
+	}
+	return caller.ID == operatorID || caller.Role == operator.RoleDirector
+}
+
+// registerCommsStream records stream as operatorID's active comms stream,
+// closing any previous stream for the same operator. Closing the stale
+// stream unblocks its read loop so its goroutines unwind promptly; otherwise
+// both streams' write goroutines would compete for the participant's single
+// send channel, splitting the encoded mix between a dead and a live stream.
+func (a *App) registerCommsStream(operatorID string, stream io.ReadWriteCloser) {
+	a.commsStreamsMu.Lock()
+	if a.commsStreams == nil {
+		a.commsStreams = make(map[string]io.ReadWriteCloser)
+	}
+	old := a.commsStreams[operatorID]
+	a.commsStreams[operatorID] = stream
+	a.commsStreamsMu.Unlock()
+
+	if old != nil && old != stream {
+		slog.Info("comms stream superseded by reconnect, closing stale stream", "operator", operatorID)
+		_ = old.Close()
+	}
+}
+
+// unregisterCommsStream removes stream from the active-stream map if it is
+// still the operator's current stream, and reports whether it was. Only the
+// current stream's teardown may Leave() the comms session.
+func (a *App) unregisterCommsStream(operatorID string, stream io.ReadWriteCloser) bool {
+	a.commsStreamsMu.Lock()
+	defer a.commsStreamsMu.Unlock()
+	if a.commsStreams[operatorID] != stream {
+		return false
+	}
+	delete(a.commsStreams, operatorID)
+	return true
 }
 
 // handleCommsStream processes a bidirectional WebTransport stream for operator
@@ -81,8 +155,21 @@ func (a *App) handleCommsStream(operatorID string, readable io.Reader, writable 
 	log.Info("comms stream opened")
 
 	// done signals the write goroutine to stop when the read loop exits.
+	//
+	// close(done) alone does NOT interrupt a write that is already blocked
+	// inside writable.Write — once the goroutine leaves the select to perform
+	// a Write, transport flow-control backpressure (a half-open peer that
+	// reads control but never drains audio) can pin it there until the stream
+	// is torn down. So in addition to signalling done we close the writable
+	// side on read-loop exit when it implements io.Closer: that forces the
+	// in-flight Write to return an error and unwinds the goroutine promptly,
+	// rather than waiting for the outer stream.Close() in
+	// handleCommsBidiStream (which only runs after this function returns).
 	done := make(chan struct{})
 	defer close(done)
+	if wc, ok := writable.(io.Closer); ok {
+		defer func() { _ = wc.Close() }()
+	}
 
 	// Write goroutine: read from participant's send channel and write
 	// wire-protocol framed audio back to the client.

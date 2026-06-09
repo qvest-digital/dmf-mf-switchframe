@@ -45,6 +45,33 @@ type decodedGPUFrame struct {
 	pts   int64
 }
 
+// maxGPUClipFrames bounds the number of decoded frames the GPU player holds
+// in VRAM at once. Phase 1 decodes the whole clip up front (seek and loop
+// need random access to decoded frames), so VRAM use grows linearly with clip
+// length: a 1080p NV12 frame is ~3.1 MB, so 600 frames is ~1.8 GiB — and the
+// pool is shared with the live encode pipeline. Replay buffers can hold up to
+// 300s (~9000 frames at 30fps, ~28 GiB at 1080p), which would exhaust GPU
+// memory. Clips over this budget are routed to the CPU player, which uses a
+// 2-GOP sliding window and handles arbitrary lengths with bounded memory.
+const maxGPUClipFrames = 600
+
+// useGPUReplayPlayer decides whether a clip should play on the GPU
+// (NVOFA motion-blur) player or the CPU sliding-window player. gpuCapable is
+// whether an NVOFA-capable FRUC engine is available; clipFrames is the number
+// of buffered frames in the clip.
+func useGPUReplayPlayer(gpuCapable bool, clipFrames int) bool {
+	return gpuCapable && clipFrames <= maxGPUClipFrames
+}
+
+// gpuFrameDrainer is implemented by decoders that buffer frames for B-frame
+// reordering and support an explicit EOS drain (mirrors the CPU player's
+// frameDrainer). The non-CUDA GPUDecoder stub does not implement it, in which
+// case draining is skipped.
+type gpuFrameDrainer interface {
+	SendEOS() error
+	ReceiveFrame() ([]byte, int, int, error)
+}
+
 // gpuReplayPlayer decodes a clip on NVDEC, applies NVOFA optical-flow
 // motion blur via CUDA kernels, encodes on NVENC, and outputs to a relay.
 // Created per-Play, destroyed on complete.
@@ -260,6 +287,32 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 	// Track SPS/PPS from the first keyframe for OnVideoInfo.
 	var firstSPS, firstPPS []byte
 
+	// uploadDecoded acquires a pool frame, uploads the CPU YUV to GPU NV12,
+	// and appends it to decoded. Returns false on failure (already logged).
+	uploadDecoded := func(yuv []byte, w, h int, pts int64) bool {
+		gpuFrame, acqErr := pool.Acquire()
+		if acqErr != nil {
+			slog.Error("gpu replay: pool acquire failed", "err", acqErr)
+			return false
+		}
+		gpuFrame.Width = w
+		gpuFrame.Height = h
+		gpuFrame.PTS = pts
+
+		if upErr := gpu.Upload(gpuCtx, gpuFrame, yuv, w, h); upErr != nil {
+			slog.Error("gpu replay: upload failed", "err", upErr)
+			gpuFrame.Release()
+			return false
+		}
+
+		decoded = append(decoded, decodedGPUFrame{frame: gpuFrame, pts: pts})
+		return true
+	}
+
+	// PTS of every frame fed to the decoder, used to assign timestamps to
+	// frames recovered from the decoder's reorder tail during the EOS drain.
+	var fedPTS []int64
+
 	for _, bf := range clip {
 		if bf.wireData == nil {
 			// Ring-backed frame without wireData — skip (only in-memory supported).
@@ -284,6 +337,7 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 		}
 
 		// NVDEC decode → CPU YUV420p.
+		fedPTS = append(fedPTS, bf.pts)
 		yuv, w, h, decErr := decoder.Decode(annexB)
 		if decErr != nil {
 			// EAGAIN from B-frame buffering is expected.
@@ -291,22 +345,34 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 		}
 
 		// Acquire GPU frame and upload CPU YUV → GPU NV12.
-		gpuFrame, acqErr := pool.Acquire()
-		if acqErr != nil {
-			slog.Error("gpu replay: pool acquire failed", "err", acqErr)
+		if !uploadDecoded(yuv, w, h, bf.pts) {
 			return
 		}
-		gpuFrame.Width = w
-		gpuFrame.Height = h
-		gpuFrame.PTS = bf.pts
+	}
 
-		if upErr := gpu.Upload(gpuCtx, gpuFrame, yuv, w, h); upErr != nil {
-			slog.Error("gpu replay: upload failed", "err", upErr)
-			gpuFrame.Release()
-			return
+	// Drain the decoder's B-frame reorder tail (mirrors the CPU player's
+	// decodeGOP SendEOS+ReceiveFrame drain). Without this, frames the
+	// decoder buffered for reordering are silently dropped from the end of
+	// the replay. The stub GPUDecoder does not implement the drainer.
+	if drainer, ok := any(decoder).(gpuFrameDrainer); ok {
+		if eosErr := drainer.SendEOS(); eosErr == nil {
+			for {
+				yuv, w, h, derr := drainer.ReceiveFrame()
+				if derr != nil {
+					break
+				}
+				// Assign the PTS of the next fed-but-not-yet-output frame.
+				pts := int64(0)
+				if idx := len(decoded); idx < len(fedPTS) {
+					pts = fedPTS[idx]
+				} else if len(fedPTS) > 0 {
+					pts = fedPTS[len(fedPTS)-1]
+				}
+				if !uploadDecoded(yuv, w, h, pts) {
+					return
+				}
+			}
 		}
-
-		decoded = append(decoded, decodedGPUFrame{frame: gpuFrame, pts: bf.pts})
 	}
 
 	if len(decoded) == 0 {
@@ -351,7 +417,16 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 	}
 	frameDuration := time.Second / 30 // 30fps output
 	var ptsIncrement int64
-	totalFrames := (len(decoded) - 1) * dupCount // pairs × dups
+	// numPairs is the number of (prev,curr) iterations. With N>=2 decoded
+	// frames this is N-1 consecutive pairs. With exactly one decoded frame
+	// (e.g. a clip/mark range containing a single keyframe, or where all but
+	// one frame failed to decode) we still emit that one frame, so clamp to 1
+	// — mirroring the CPU player, which iterates frames rather than pairs.
+	numPairs := len(decoded) - 1
+	if numPairs < 1 {
+		numPairs = 1
+	}
+	totalFrames := numPairs * dupCount // pairs × dups
 	if totalFrames <= 0 {
 		totalFrames = 1
 	}
@@ -402,23 +477,28 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 			dupCount = 1
 		}
 		ptsIncrement = int64(3003.0 / speed)
-		totalFrames = (len(decoded) - 1) * dupCount
+		totalFrames = numPairs * dupCount
 		if totalFrames <= 0 {
 			totalFrames = 1
 		}
 		p.totalOutputFrames = totalFrames
 
-		// Iterate over consecutive frame pairs.
-		for i := 0; i < len(decoded)-1; i++ {
+		// Iterate over consecutive frame pairs. For a single decoded frame
+		// numPairs==1 and curr falls back to prev so the frame is still
+		// emitted (duplicated for the slow-mo duration).
+		for i := 0; i < numPairs; i++ {
 			prev := decoded[i]
-			curr := decoded[i+1]
+			curr := prev
+			if i+1 < len(decoded) {
+				curr = decoded[i+1]
+			}
 
 			// Check for seek.
 			select {
 			case pos := <-p.seekCh:
-				targetPair := int(pos * float64(len(decoded)-1))
-				if targetPair >= len(decoded)-1 {
-					targetPair = len(decoded) - 2
+				targetPair := int(pos * float64(numPairs))
+				if targetPair >= numPairs {
+					targetPair = numPairs - 1
 				}
 				if targetPair < 0 {
 					targetPair = 0
@@ -446,7 +526,7 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 					dupCount = 1
 				}
 				ptsIncrement = int64(3003.0 / speed)
-				totalFrames = (len(decoded) - 1) * dupCount
+				totalFrames = numPairs * dupCount
 				if totalFrames <= 0 {
 					totalFrames = 1
 				}

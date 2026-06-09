@@ -196,18 +196,59 @@ func isNoisyPath(path string) bool {
 // content types and are excluded from this middleware.
 const maxJSONBodySize = 16 << 20 // 16 MB
 
+// isLargeUploadPath reports whether the request path is one of the dedicated
+// file-upload endpoints that legitimately accept bodies larger than
+// maxJSONBodySize. These handlers each install their own http.MaxBytesReader
+// (clip: 2GB, stinger/sequence: 256MB, stmap: 64MB, etc.), so they remain
+// bounded; the global JSON cap is only skipped here to avoid clipping those
+// larger limits.
+//
+// The exemption is keyed on the route path (NOT the Content-Type), so a client
+// cannot bypass the cap on an arbitrary endpoint merely by sending a different
+// Content-Type. Both the "/api/" and forward-compatible "/api/v1/" prefixes are
+// matched, since this middleware runs before the version-prefix rewrite.
+func isLargeUploadPath(path string) bool {
+	// Normalize the versioned prefix so a single set of patterns covers both.
+	if rest, ok := strings.CutPrefix(path, "/api/v1/"); ok {
+		path = "/api/" + rest
+	}
+	switch path {
+	case "/api/clips/upload", // multipart media clip (2GB)
+		"/api/colorgrade/upload", // multipart .cube LUT
+		"/api/wipes/custom":      // multipart grayscale PNG
+		return true
+	}
+	// Path-variable routes: stmap upload, stinger raw upload, graphics
+	// image/sequence uploads. Each handler self-bounds the body.
+	if strings.HasPrefix(path, "/api/stmap/upload/") {
+		return true
+	}
+	if strings.HasPrefix(path, "/api/stinger/") && strings.HasSuffix(path, "/upload") {
+		return true
+	}
+	if strings.HasPrefix(path, "/api/graphics/") &&
+		(strings.HasSuffix(path, "/image") || strings.HasSuffix(path, "/sequence")) {
+		return true
+	}
+	return false
+}
+
 // MaxBytesMiddleware wraps request bodies with http.MaxBytesReader to reject
 // oversized payloads before they are fully read. This prevents memory exhaustion
 // from malicious or accidental large POST bodies. Excluded:
 //   - GET/HEAD requests (no body)
-//   - multipart/form-data uploads (stinger zip, clip upload have their own limits)
-//   - application/octet-stream uploads (stinger raw upload)
+//   - the dedicated file-upload endpoints (see isLargeUploadPath), which install
+//     their own, larger per-handler limits
+//
+// The exemption is path-based rather than Content-Type-based: a previous version
+// skipped the cap for application/octet-stream, application/zip, and multipart
+// bodies, which let a client send an arbitrarily large body to ANY endpoint
+// (e.g. POST /api/switch/cut) simply by setting Content-Type: application/octet-stream,
+// defeating the cap and enabling a memory-exhaustion DoS via io.ReadAll.
 func MaxBytesMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Body != nil {
-			ct := r.Header.Get("Content-Type")
-			// Skip file uploads — they have per-handler size limits.
-			if !strings.HasPrefix(ct, "multipart/") && ct != "application/octet-stream" && ct != "application/zip" {
+			if !isLargeUploadPath(r.URL.Path) {
 				r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 			}
 		}

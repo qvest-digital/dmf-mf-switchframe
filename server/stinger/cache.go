@@ -88,10 +88,42 @@ func LoadCache(path string) (*Clip, error) {
 	frameCount := int(binary.LittleEndian.Uint32(mapped[16:20]))
 	cutPoint := math.Float64frombits(binary.LittleEndian.Uint64(mapped[20:28]))
 
-	yuvSize := video.YUV420FrameSize(w, h)
+	// The header fields come from an on-disk file that can be truncated or
+	// corrupted; compute frame sizes with explicit overflow checks so a crafted
+	// w/h/frameCount cannot wrap past the size guard below and cause the
+	// per-frame slicing (mapped[off:off+...]) to run off the mapped region.
+	// w, h and frameCount are read from uint32, so each fits non-negative in a
+	// 64-bit int, but the products (w*h up to ~1.8e19, then *3, then
+	// *frameCount) can exceed int64. Guard every multiply with a division-based
+	// overflow check; legitimate sizes can never exceed len(mapped) (the size of
+	// the mmap'd file) anyway, so any overflow here means the file is corrupt.
 	alphaSize := w * h
-	frameSize := yuvSize + alphaSize
-	expectedSize := cacheHeaderSize + frameCount*frameSize
+	if w != 0 && alphaSize/w != h {
+		_ = mmaputil.Free(mapped)
+		return nil, fmt.Errorf("stinger cache: %s dimensions %dx%d overflow", path, w, h)
+	}
+	// video.YUV420FrameSize computes alphaSize*3/2; guard the *3 so the helper
+	// cannot overflow, keeping it as the single source of truth for the formula.
+	if alphaSize > math.MaxInt/3 {
+		_ = mmaputil.Free(mapped)
+		return nil, fmt.Errorf("stinger cache: %s dimensions %dx%d overflow", path, w, h)
+	}
+	yuvSize := video.YUV420FrameSize(w, h)
+	frameSize := yuvSize + alphaSize // <= alphaSize*5/2 < alphaSize*3, cannot overflow
+
+	// expectedSize = cacheHeaderSize + frameCount*frameSize, computed defensively:
+	// detect frameCount*frameSize overflow before it can coincidentally equal
+	// len(mapped) and slip past the size guard below.
+	frameBytes := frameCount * frameSize
+	if frameSize != 0 && frameBytes/frameSize != frameCount {
+		_ = mmaputil.Free(mapped)
+		return nil, fmt.Errorf("stinger cache: %s frame data size overflow (count=%d, size=%d)", path, frameCount, frameSize)
+	}
+	expectedSize := cacheHeaderSize + frameBytes
+	if expectedSize < frameBytes { // cacheHeaderSize + frameBytes wrapped
+		_ = mmaputil.Free(mapped)
+		return nil, fmt.Errorf("stinger cache: %s total size overflow (count=%d, size=%d)", path, frameCount, frameSize)
+	}
 
 	if len(mapped) != expectedSize {
 		_ = mmaputil.Free(mapped)

@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal/video"
@@ -260,6 +262,99 @@ func TestFileFrameIterator_NextSequence(t *testing.T) {
 	}
 	if f != nil {
 		t.Error("Next() at EOF returned non-nil frame")
+	}
+}
+
+// slowCloseTrackingDecoder widens the decode window (so a concurrent Close()
+// is likely to land mid-Decode) and panics if Decode() is ever called after
+// Close() — the use-after-free the iterator mutex must prevent.
+type slowCloseTrackingDecoder struct {
+	width  int
+	height int
+
+	mu     sync.Mutex
+	closed bool
+}
+
+func (d *slowCloseTrackingDecoder) Decode(h264 []byte) ([]byte, int, int, error) {
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		panic("Decode() called after Close(): use-after-free")
+	}
+	d.mu.Unlock()
+
+	// Simulate real decode latency to widen the race window.
+	time.Sleep(50 * time.Microsecond)
+
+	size := video.YUV420FrameSize(d.width, d.height)
+	return make([]byte, size), d.width, d.height, nil
+}
+
+func (d *slowCloseTrackingDecoder) Close() {
+	d.mu.Lock()
+	d.closed = true
+	d.mu.Unlock()
+}
+
+// TestFileFrameIterator_ConcurrentNextAndClose is a regression test for the
+// use-after-close race where SeekToItem (on the snapshot-sync goroutine) calls
+// clipIter.Close() while the run goroutine is inside Next()/decoder.Decode().
+// Before the fix, f.closed was read in Next() without synchronization (a data
+// race flagged by -race) and the FFmpeg decoder could be freed mid-Decode (a
+// use-after-free crash). With FileFrameIterator's mutex, Close() is mutually
+// exclusive with Next(), so Decode() never runs after Close() and the bool is
+// race-free. Run with -race to exercise the data-race aspect.
+func TestFileFrameIterator_ConcurrentNextAndClose(t *testing.T) {
+	for iteration := 0; iteration < 50; iteration++ {
+		encoded := make([]encodedFrame, 200)
+		for i := range encoded {
+			encoded[i] = encodedFrame{
+				wireData:   []byte{0x00, 0x00, 0x00, 0x01, byte(i)},
+				pts:        int64(i) * 3000,
+				isKeyframe: i == 0,
+			}
+		}
+
+		iter := &FileFrameIterator{
+			encodedFrames: encoded,
+			decoder:       &slowCloseTrackingDecoder{width: 64, height: 48},
+			fps:           30.0,
+			totalFrames:   len(encoded),
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		// Reader goroutine (the run loop): hammer Next().
+		go func() {
+			defer wg.Done()
+			for {
+				f, err := iter.Next()
+				if err != nil {
+					return
+				}
+				if f == nil {
+					return // end of stream or closed
+				}
+			}
+		}()
+
+		// Closer goroutine (SeekToItem / cleanup on another goroutine).
+		go func() {
+			defer wg.Done()
+			time.Sleep(100 * time.Microsecond)
+			iter.Close()
+			// Close must be idempotent.
+			iter.Close()
+		}()
+
+		wg.Wait()
+
+		// After Close, Next() must return cleanly (no panic, no decode).
+		if f, err := iter.Next(); f != nil || err != nil {
+			t.Fatalf("Next() after Close: got (%v, %v), want (nil, nil)", f, err)
+		}
 	}
 }
 

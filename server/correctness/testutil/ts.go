@@ -30,6 +30,13 @@ type AdaptationField struct {
 // Asserts every packet starts with 0x47 and data length is a multiple of 188.
 func ParseTSPackets(t *testing.T, data []byte) []TSPacket {
 	t.Helper()
+	return parseTSPackets(t, data)
+}
+
+// parseTSPackets is the implementation of ParseTSPackets, written against the
+// testify TestingT interface so the parse assertions (sync byte, alignment,
+// adaptation-length sanity) can be exercised with a mock reporter in tests.
+func parseTSPackets(t require.TestingT, data []byte) []TSPacket {
 	require.Equal(t, 0, len(data)%mpegts.PacketSize,
 		"data length %d is not a multiple of %d", len(data), mpegts.PacketSize)
 
@@ -62,7 +69,15 @@ func ParseTSPackets(t *testing.T, data []byte) []TSPacket {
 			payloadStart = 4 + 1 + int(pkt[4]) // 4 header + 1 length byte + length
 		}
 
-		if p.HasPayload && payloadStart < mpegts.PacketSize {
+		if p.HasPayload {
+			// A malformed adaptation_field_length can push payloadStart past
+			// the end of the packet. Fail loudly rather than silently dropping
+			// the payload, which would otherwise let AssertContinuityCounters
+			// skip the CC check for this packet (it treats payload-less packets
+			// as allowed-to-repeat) and mask a real CC discontinuity.
+			require.Less(t, payloadStart, mpegts.PacketSize,
+				"packet %d: payload-bearing packet has payload start %d at or past packet size %d (adaptation_field_length=%d)",
+				i, payloadStart, mpegts.PacketSize, pkt[4])
 			p.Payload = pkt[payloadStart:]
 		}
 

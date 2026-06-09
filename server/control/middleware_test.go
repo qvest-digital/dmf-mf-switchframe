@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -304,4 +305,89 @@ func TestMaxBytesMiddleware_SkipsMultipartUploads(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code,
 		"multipart uploads should bypass body size limit")
+}
+
+// TestMaxBytesMiddleware_OctetStreamCannotBypassCapOnCommandPath is the
+// regression test for the Content-Type bypass: previously any request whose
+// Content-Type was application/octet-stream (or zip/multipart) skipped the cap
+// on EVERY path, so a giant body to /api/switch/cut would be read whole into
+// memory. The cap is now keyed on the route path, so non-upload endpoints stay
+// bounded regardless of Content-Type.
+func TestMaxBytesMiddleware_OctetStreamCannotBypassCapOnCommandPath(t *testing.T) {
+	handler := MaxBytesMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The handler reads the whole body, mirroring timedHandler/io.ReadAll.
+		if _, err := io.ReadAll(r.Body); err != nil {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for _, ct := range []string{"application/octet-stream", "application/zip", "multipart/form-data; boundary=x"} {
+		bigBody := make([]byte, maxJSONBodySize+1)
+		req := httptest.NewRequest("POST", "/api/switch/cut", bytes.NewReader(bigBody))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code,
+			"oversized body to /api/switch/cut with Content-Type %q must still be capped", ct)
+	}
+}
+
+// TestMaxBytesMiddleware_SnapshotPathCapped ensures the snapshot-apply endpoint
+// is also bounded (it formerly relied on the bypassable middleware and did an
+// unbounded io.ReadAll).
+func TestMaxBytesMiddleware_SnapshotPathCapped(t *testing.T) {
+	handler := MaxBytesMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.ReadAll(r.Body); err != nil {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	bigBody := make([]byte, maxJSONBodySize+1)
+	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", bytes.NewReader(bigBody))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code,
+		"oversized snapshot body must be capped regardless of Content-Type")
+}
+
+// TestMaxBytesMiddleware_LargeUploadPathsExempt confirms the dedicated upload
+// endpoints (which install their own larger per-handler limits) remain exempt
+// from the global JSON cap, including via the /api/v1/ version prefix.
+func TestMaxBytesMiddleware_LargeUploadPathsExempt(t *testing.T) {
+	handler := MaxBytesMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Body must NOT be wrapped: a >cap read should succeed here.
+		if _, err := io.ReadAll(r.Body); err != nil {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	paths := []string{
+		"/api/clips/upload",
+		"/api/colorgrade/upload",
+		"/api/wipes/custom",
+		"/api/stmap/upload/mymap",
+		"/api/stinger/intro/upload",
+		"/api/graphics/2/image",
+		"/api/graphics/2/sequence",
+		"/api/v1/clips/upload", // version-prefixed
+		"/api/v1/stinger/intro/upload",
+	}
+	for _, p := range paths {
+		bigBody := make([]byte, maxJSONBodySize+1)
+		req := httptest.NewRequest("POST", p, bytes.NewReader(bigBody))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code,
+			"large-upload path %q must be exempt from the global JSON cap", p)
+	}
 }

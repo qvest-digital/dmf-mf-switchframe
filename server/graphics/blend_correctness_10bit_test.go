@@ -76,10 +76,11 @@ func readCrSample10(buf []byte, w, h, idx int) uint16 {
 // TestAlphaBlendRGBA10_Formula verifies the blend formula at several alpha levels.
 //
 // For a red (255,0,0) overlay on a Y=512 background:
-// BT.709 8-bit Y = (66*255 + 129*0 + 25*0 + 128) >> 8 + 16 = 16830>>8 + 16 = 65+16 = 81
-// 10-bit Y = 81 * 4 = 324
+// BT.709 8-bit Y = (47*255 + 157*0 + 16*0 + 128) >> 8 + 16 = 12113>>8 + 16 = 47+16 = 63
+// 10-bit Y = 63 * 4 = 252
 //
-// At alpha=128: result = (324*128 + 512*127 + 128) >> 8 = (41472 + 65024 + 128) >> 8 = 416
+// Alpha maps exactly to 0-256 via A' = A + (A>>7), matching the 8-bit path.
+// At alpha=128: A'=129, result = (252*129 + 512*127 + 128) >> 8 = 381
 func TestAlphaBlendRGBA10_Formula(t *testing.T) {
 	w, h := 64, 32
 
@@ -109,10 +110,11 @@ func TestAlphaBlendRGBA10_Formula(t *testing.T) {
 				assert.Equal(t, uint16(512), gotY,
 					"alpha=0: Y must be unchanged (512), got %d", gotY)
 			} else {
-				// BT.709 red Y in 10-bit: (66*255 + 128)>>8 + 16 = 81 => 81*4 = 324
-				overlayY := int32(81 * 4)
+				// BT.709 red Y in 10-bit: (47*255 + 128)>>8 + 16 = 63 => 63*4 = 252
+				overlayY := int32(63 * 4)
 				a := int32(tc.alpha)
-				inv := int32(255) - a
+				a += a >> 7 // exact 0-256 alpha mapping
+				inv := int32(256) - a
 				expected := (overlayY*a + 512*inv + 128) >> 8
 
 				assert.InDelta(t, float64(expected), float64(gotY), 4,
@@ -128,7 +130,7 @@ func TestAlphaBlendRGBA10_Formula(t *testing.T) {
 
 // TestAlphaBlendRGBA10_FullyOpaque verifies that a fully opaque white
 // (255,255,255,255) overlay produces BT.709 10-bit white.
-// BT.709 8-bit Y = (66*255 + 129*255 + 25*255 + 128)>>8 + 16
+// BT.709 8-bit Y = (47*255 + 157*255 + 16*255 + 128)>>8 + 16
 //
 //	= (56100 + 128) >> 8 + 16 = 219 + 16 = 235
 //
@@ -180,13 +182,13 @@ func TestAlphaBlendRGBA10_ScaleZero(t *testing.T) {
 // TestAlphaBlendRGBA10_ChromaFormula verifies the BT.709 chroma conversion
 // for a fully opaque red overlay.
 //
-// BT.709 8-bit Cb = (-38*255 - 74*0 + 112*0 + 128) >> 8 + 128
+// BT.709 8-bit Cb = (-26*255 - 86*0 + 112*0 + 128) >> 8 + 128
 //
-//	= (-9690 + 128) >> 8 + 128 = -37 + 128 = 91
+//	= (-6630 + 128) >> 8 + 128 = -26 + 128 = 102
 //
-// 10-bit Cb = 91 * 4 = 364
+// 10-bit Cb = 102 * 4 = 408
 //
-// BT.709 8-bit Cr = (112*255 - 94*0 - 18*0 + 128) >> 8 + 128
+// BT.709 8-bit Cr = (112*255 - 102*0 - 10*0 + 128) >> 8 + 128
 //
 //	= (28560 + 128) >> 8 + 128 = 112 + 128 = 240
 //
@@ -203,12 +205,12 @@ func TestAlphaBlendRGBA10_ChromaFormula(t *testing.T) {
 	require.NoError(t, err)
 
 	// BT.709 red in 10-bit:
-	// Cb = 91*4 = 364; at alpha=255, blend = (364*255 + 512*0 + 128) >> 8 ~ 364
+	// Cb = 102*4 = 408; at alpha=255 (A'=256), blend = exactly 408
 	gotCb := readCbSample10(yuv, w, h, 0)
-	assert.InDelta(t, 364, int(gotCb), 8,
-		"opaque red Cb should be ~364 (10-bit BT.709), got %d", gotCb)
+	assert.InDelta(t, 408, int(gotCb), 8,
+		"opaque red Cb should be ~408 (10-bit BT.709), got %d", gotCb)
 
-	// Cr = 240*4 = 960; at alpha=255, blend = (960*255 + 512*0 + 128) >> 8 ~ 960
+	// Cr = 240*4 = 960; at alpha=255 (A'=256), blend = exactly 960
 	gotCr := readCrSample10(yuv, w, h, 0)
 	assert.InDelta(t, 960, int(gotCr), 8,
 		"opaque red Cr should be ~960 (10-bit BT.709), got %d", gotCr)

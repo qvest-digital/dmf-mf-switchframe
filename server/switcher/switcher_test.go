@@ -1398,8 +1398,8 @@ func TestEnqueueVideoWork_ReenqueueFailureReleasesNewBuffer(t *testing.T) {
 		// Channel capacity 1 to make it easy to fill.
 		videoProcCh:   make(chan videoProcWork, 1),
 		videoProcDone: make(chan struct{}),
-		framePool:     pool,
 	}
+	sw.framePool.Store(pool)
 	defaultFmt := DefaultFormat
 	sw.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	sw.pipelineFormat.Store(&defaultFmt)
@@ -1447,8 +1447,8 @@ func TestEnqueueVideoWork_ReenqueueFailureReleasesNewBuffer(t *testing.T) {
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 1),
 		videoProcDone: make(chan struct{}),
-		framePool:     pool2,
 	}
+	sw2.framePool.Store(pool2)
 	sw2.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	sw2.pipelineFormat.Store(&defaultFmt)
 	sw2.delayBuffer = NewDelayBuffer(sw2)
@@ -1507,8 +1507,8 @@ func TestEnqueueVideoWork_DroppedCountOnlyOnActualLoss(t *testing.T) {
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 1),
 		videoProcDone: make(chan struct{}),
-		framePool:     pool,
 	}
+	sw.framePool.Store(pool)
 	defaultFmt := DefaultFormat
 	sw.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	sw.pipelineFormat.Store(&defaultFmt)

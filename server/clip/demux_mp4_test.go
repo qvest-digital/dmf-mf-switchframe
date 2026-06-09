@@ -1,6 +1,8 @@
 package clip
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"os/exec"
@@ -215,7 +217,7 @@ func TestBuildSampleTable_StscReferencesNonexistentChunk(t *testing.T) {
 		stco: []uint64{0, 100}, // only 2 chunks
 	}
 
-	_, err := buildSampleTable(track)
+	_, err := buildSampleTable(track, 1<<20)
 	require.Error(t, err, "should error when stsc references chunks beyond stco")
 	assert.Contains(t, err.Error(), "chunk")
 }
@@ -231,7 +233,7 @@ func TestBuildSampleTable_ValidTrack(t *testing.T) {
 		stco: []uint64{0, 100, 300}, // 3 chunks
 	}
 
-	entries, err := buildSampleTable(track)
+	entries, err := buildSampleTable(track, 1<<20)
 	require.NoError(t, err)
 	require.Len(t, entries, 3)
 	assert.Equal(t, uint64(0), entries[0].offset)
@@ -245,7 +247,7 @@ func TestBuildSampleTable_ValidTrack(t *testing.T) {
 func TestBuildSampleTable_EmptyInputs(t *testing.T) {
 	// Empty stsz/stsc/stco should return nil, no error.
 	track := &mp4Track{}
-	entries, err := buildSampleTable(track)
+	entries, err := buildSampleTable(track, 1<<20)
 	require.NoError(t, err)
 	assert.Nil(t, entries)
 }
@@ -284,7 +286,7 @@ func TestReadVideoSamples_NegativeCTTSOffset(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = f.Close() }()
 
-	frames, err := readVideoSamples(f, track)
+	frames, err := readVideoSamples(f, track, 1<<20)
 	require.NoError(t, err)
 	require.Len(t, frames, 1)
 
@@ -374,7 +376,7 @@ func TestMP4KeyframeSPSPPSIndependence(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = f.Close() }()
 
-	frames, err := readVideoSamples(f, track)
+	frames, err := readVideoSamples(f, track, 1<<20)
 	require.NoError(t, err)
 	require.Len(t, frames, 3)
 
@@ -406,4 +408,205 @@ func TestMP4KeyframeSPSPPSIndependence(t *testing.T) {
 
 	assert.Equal(t, originalPPS2, frames[2].pps,
 		"keyframe 2's PPS should be unaffected by mutating keyframe 0's PPS (must be independent copies)")
+}
+
+// mp4box builds a raw ISOBMFF box: [4-byte size][4-byte type][payload].
+func mp4box(boxType string, payload []byte) []byte {
+	out := make([]byte, 8+len(payload))
+	binary.BigEndian.PutUint32(out[0:4], uint32(8+len(payload)))
+	copy(out[4:8], boxType)
+	copy(out[8:], payload)
+	return out
+}
+
+// TestParseMP4Tracks_MaliciousStszSampleCount verifies that a crafted stsz box
+// with a uniform SampleSize and an enormous SampleCount is rejected instead of
+// triggering a multi-gigabyte allocation (OOM). go-mp4 reads SampleCount
+// verbatim when SampleSize != 0 and leaves EntrySize empty, so without a
+// file-size bound the demuxer would do make([]uint32, 0xFFFFFFFF) (~16 GiB).
+func TestParseMP4Tracks_MaliciousStszSampleCount(t *testing.T) {
+	// Build a minimal box tree the parser descends into:
+	// moov -> trak -> mdia -> minf -> stbl -> stsz.
+	// The stsz FullBox payload is: version(1) + flags(3) + SampleSize(4) +
+	// SampleCount(4). With SampleSize=1, go-mp4 returns SampleCount verbatim
+	// and reads no EntrySize array.
+	stszPayload := make([]byte, 12)
+	// version=0, flags=0 (bytes 0..3 stay zero).
+	binary.BigEndian.PutUint32(stszPayload[4:8], 1)           // SampleSize = 1
+	binary.BigEndian.PutUint32(stszPayload[8:12], 0xFFFFFFFF) // SampleCount = ~4 billion
+
+	stsz := mp4box("stsz", stszPayload)
+	stbl := mp4box("stbl", stsz)
+	minf := mp4box("minf", stbl)
+	mdia := mp4box("mdia", minf)
+	trak := mp4box("trak", mdia)
+	moov := mp4box("moov", trak)
+
+	r := bytes.NewReader(moov)
+
+	// The crafted file is tiny; pass its real size as the bound. This must be
+	// rejected with an error rather than attempting the huge allocation.
+	_, err := parseMP4Tracks(r, int64(len(moov)))
+	require.Error(t, err, "crafted stsz with huge SampleCount must be rejected")
+	assert.Contains(t, err.Error(), "stsz",
+		"error should identify the offending stsz box")
+}
+
+// TestParseMP4Tracks_UniformStszWithinBounds verifies the uniform-size stsz
+// path still works for a legitimate box whose SampleCount*SampleSize fits the
+// file size (the fix must not break the non-malicious path).
+func TestParseMP4Tracks_UniformStszWithinBounds(t *testing.T) {
+	// SampleSize=4, SampleCount=3 => 12 bytes of media, well within the file.
+	stszPayload := make([]byte, 12)
+	binary.BigEndian.PutUint32(stszPayload[4:8], 4)  // SampleSize = 4
+	binary.BigEndian.PutUint32(stszPayload[8:12], 3) // SampleCount = 3
+
+	stsz := mp4box("stsz", stszPayload)
+	stbl := mp4box("stbl", stsz)
+	minf := mp4box("minf", stbl)
+	mdia := mp4box("mdia", minf)
+	trak := mp4box("trak", mdia)
+	moov := mp4box("moov", trak)
+
+	r := bytes.NewReader(moov)
+
+	tracks, err := parseMP4Tracks(r, 1<<20) // 1 MiB nominal file
+	require.NoError(t, err)
+	require.Len(t, tracks, 1)
+	assert.Equal(t, []uint32{4, 4, 4}, tracks[0].stsz,
+		"uniform stsz within bounds should expand to per-sample sizes")
+}
+
+// TestBuildSampleTable_SampleSizeExceedsFileSize verifies that a non-uniform
+// stsz entry whose size extends past the end of the file is rejected before
+// readVideoSamples can attempt a huge allocation. A single crafted EntrySize
+// of 0xFFFFFFFF in a tiny file would otherwise force a ~4 GiB make([]byte).
+func TestBuildSampleTable_SampleSizeExceedsFileSize(t *testing.T) {
+	track := &mp4Track{
+		stsz: []uint32{0xFFFFFFFF}, // attacker-controlled per-sample size
+		stsc: []mp4.StscEntry{{FirstChunk: 1, SamplesPerChunk: 1}},
+		stco: []uint64{0},
+	}
+
+	_, err := buildSampleTable(track, 1024) // tiny file
+	require.Error(t, err, "sample extending past end of file must be rejected")
+}
+
+// TestBuildSampleTable_SampleOffsetPastEOF verifies that a chunk offset
+// pointing past the end of the file is rejected.
+func TestBuildSampleTable_SampleOffsetPastEOF(t *testing.T) {
+	track := &mp4Track{
+		stsz: []uint32{16},
+		stsc: []mp4.StscEntry{{FirstChunk: 1, SamplesPerChunk: 1}},
+		stco: []uint64{1 << 40}, // offset far beyond the file
+	}
+
+	_, err := buildSampleTable(track, 1024)
+	require.Error(t, err, "sample offset past EOF must be rejected")
+}
+
+// TestBuildSampleTable_OffsetSizeOverflow verifies that offset+size wrapping
+// around uint64 does not bypass the bounds check.
+func TestBuildSampleTable_OffsetSizeOverflow(t *testing.T) {
+	track := &mp4Track{
+		stsz: []uint32{0xFFFFFFFF},
+		stsc: []mp4.StscEntry{{FirstChunk: 1, SamplesPerChunk: 1}},
+		stco: []uint64{^uint64(0) - 100}, // offset+size wraps past zero
+	}
+
+	_, err := buildSampleTable(track, 1024)
+	require.Error(t, err, "uint64 overflow in offset+size must be rejected")
+}
+
+// TestBuildSampleTable_OverlappingChunksAmplification verifies the memory
+// amplification defense: stco chunk offsets may overlap (every chunk pointing
+// at offset 0 with size==fileSize), in which case every individual sample fits
+// within the file but the cumulative retained bytes are numSamples*fileSize.
+// Legitimate samples cannot overlap, so cumulative size > fileSize must fail.
+func TestBuildSampleTable_OverlappingChunksAmplification(t *testing.T) {
+	const fileSize = 1024
+	const numSamples = 64
+
+	stsz := make([]uint32, numSamples)
+	stco := make([]uint64, numSamples)
+	for i := range stsz {
+		stsz[i] = fileSize // each sample spans the whole file
+		stco[i] = 0        // every chunk overlaps at offset 0
+	}
+	track := &mp4Track{
+		stsz: stsz,
+		stsc: []mp4.StscEntry{{FirstChunk: 1, SamplesPerChunk: 1}},
+		stco: stco,
+	}
+
+	_, err := buildSampleTable(track, fileSize)
+	require.Error(t, err, "cumulative sample bytes exceeding file size must be rejected")
+}
+
+// TestBuildSampleTable_CumulativeAtFileSizeOK verifies that a legitimate
+// track whose samples exactly fill the file is still accepted.
+func TestBuildSampleTable_CumulativeAtFileSizeOK(t *testing.T) {
+	track := &mp4Track{
+		stsz: []uint32{512, 512},
+		stsc: []mp4.StscEntry{{FirstChunk: 1, SamplesPerChunk: 2}},
+		stco: []uint64{0},
+	}
+
+	entries, err := buildSampleTable(track, 1024)
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+}
+
+// TestReadVideoSamples_ZeroTimescale verifies that a track with a missing or
+// zero mdhd timescale is rejected with an error instead of panicking with an
+// integer divide-by-zero when computing PTS (finding: crafted MP4 without
+// mdhd, or with Timescale=0, panics the demux on the first sample).
+func TestReadVideoSamples_ZeroTimescale(t *testing.T) {
+	track := &mp4Track{
+		handlerType:    "vide",
+		timescale:      0, // mdhd missing or Timescale=0
+		naluLengthSize: 4,
+		sps:            []byte{0x67, 0x42},
+		pps:            []byte{0x68, 0xce},
+		stts:           []mp4.SttsEntry{{SampleCount: 1, SampleDelta: 100}},
+		stss:           []uint32{1},
+		stsz:           []uint32{8},
+		stsc:           []mp4.StscEntry{{FirstChunk: 1, SamplesPerChunk: 1}},
+		stco:           []uint64{0},
+	}
+
+	sampleData := []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x00, 0x00, 0x00}
+	tmpFile := writeTemp(t, sampleData, ".raw")
+	f, err := os.Open(tmpFile)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+
+	_, err = readVideoSamples(f, track, int64(len(sampleData)))
+	require.Error(t, err, "zero timescale must be a demux error, not a panic")
+	assert.Contains(t, err.Error(), "timescale")
+}
+
+// TestReadAudioSamples_ZeroTimescale is the audio-track analogue of
+// TestReadVideoSamples_ZeroTimescale.
+func TestReadAudioSamples_ZeroTimescale(t *testing.T) {
+	track := &mp4Track{
+		handlerType:     "soun",
+		timescale:       0,
+		audioSampleRate: 48000,
+		audioChannels:   2,
+		stts:            []mp4.SttsEntry{{SampleCount: 1, SampleDelta: 1024}},
+		stsz:            []uint32{4},
+		stsc:            []mp4.StscEntry{{FirstChunk: 1, SamplesPerChunk: 1}},
+		stco:            []uint64{0},
+	}
+
+	sampleData := []byte{0x01, 0x02, 0x03, 0x04}
+	tmpFile := writeTemp(t, sampleData, ".raw")
+	f, err := os.Open(tmpFile)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+
+	_, err = readAudioSamples(f, track, int64(len(sampleData)))
+	require.Error(t, err, "zero timescale must be a demux error, not a panic")
+	assert.Contains(t, err.Error(), "timescale")
 }

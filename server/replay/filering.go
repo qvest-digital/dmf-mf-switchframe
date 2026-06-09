@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -17,6 +18,7 @@ type fileRing struct {
 	maxBytes     int64
 	writePos     int64
 	totalWritten int64 // monotonic, for wrap detection
+	nextSeq      int64 // monotonic per-frame sequence number
 
 	// In-memory index — small structs, not frame data
 	frames []frameEntry
@@ -29,7 +31,7 @@ type frameEntry struct {
 	pts      int64
 	wallTime time.Time
 	isIDR    bool
-	writeSeq int64 // monotonic sequence for invalidation on wrap
+	writeSeq int64 // monotonic sequence; identifies this frame's slot across wraps
 }
 
 // newFileRing creates a file-backed ring buffer at the given path.
@@ -54,14 +56,17 @@ func newFileRing(path string, maxBytes int64) (*fileRing, error) {
 
 // Write appends frame data to the ring file. Wraps to the beginning
 // when reaching maxBytes, invalidating old entries that overlap.
-// Returns the file offset where the data was written.
-func (r *fileRing) Write(data []byte, pts int64, wallTime time.Time, isIDR bool) (int64, error) {
+// Returns the file offset where the data was written and a monotonic
+// sequence number identifying this frame's slot. The seq must be passed
+// back to Read so a frame that has since been overwritten by a wrap is
+// detected and rejected rather than read as valid (stale) bytes.
+func (r *fileRing) Write(data []byte, pts int64, wallTime time.Time, isIDR bool) (offset int64, seq int64, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	size := int64(len(data))
 	if size > r.maxBytes {
-		return 0, fmt.Errorf("filering: frame too large (%d > %d)", size, r.maxBytes)
+		return 0, 0, fmt.Errorf("filering: frame too large (%d > %d)", size, r.maxBytes)
 	}
 
 	// Check if we need to wrap.
@@ -72,19 +77,20 @@ func (r *fileRing) Write(data []byte, pts int64, wallTime time.Time, isIDR bool)
 	writeStart := r.writePos
 
 	// Write frame data at current position.
-	_, err := r.f.WriteAt(data, writeStart)
-	if err != nil {
-		return 0, fmt.Errorf("filering: write: %w", err)
+	if _, err := r.f.WriteAt(data, writeStart); err != nil {
+		return 0, 0, fmt.Errorf("filering: write: %w", err)
 	}
 
 	r.totalWritten += size
+	r.nextSeq++
+	frameSeq := r.nextSeq
 	entry := frameEntry{
 		offset:   writeStart,
 		size:     int32(size),
 		pts:      pts,
 		wallTime: wallTime,
 		isIDR:    isIDR,
-		writeSeq: r.totalWritten,
+		writeSeq: frameSeq,
 	}
 
 	// Invalidate any old frames that this write overwrites.
@@ -94,7 +100,7 @@ func (r *fileRing) Write(data []byte, pts int64, wallTime time.Time, isIDR bool)
 	r.frames = append(r.frames, entry)
 	r.writePos = writeStart + size
 
-	return writeStart, nil
+	return writeStart, frameSeq, nil
 }
 
 // invalidateRange removes frames whose file region overlaps [start, end).
@@ -110,12 +116,36 @@ func (r *fileRing) invalidateRange(start, end int64) {
 	r.frames = valid
 }
 
+// ErrFrameRecycled is returned by Read when the requested frame slot has
+// been overwritten by a circular wrap since it was written. The buffer
+// metadata still references it by wall-clock time, but the bytes on disk
+// no longer hold that frame, so reading them would yield silent corruption.
+var ErrFrameRecycled = errors.New("filering: frame slot recycled by wrap")
+
 // Read reads frame data from the ring file at the given offset and size.
-// Uses pread (positional read) — thread-safe, no seek.
-func (r *fileRing) Read(offset int64, size int32) ([]byte, error) {
+// The seq (returned by Write) is validated under the ring lock: if the slot
+// at offset has been recycled by a wrap, the original frameEntry is no longer
+// present in the index and Read returns ErrFrameRecycled instead of stale
+// bytes. The disk read happens while holding the lock so a concurrent Write
+// cannot overwrite the slot between the validity check and the read.
+func (r *fileRing) Read(offset int64, size int32, seq int64) ([]byte, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Confirm the frame's slot is still live (not overwritten by a wrap).
+	live := false
+	for i := range r.frames {
+		if r.frames[i].writeSeq == seq && r.frames[i].offset == offset {
+			live = true
+			break
+		}
+	}
+	if !live {
+		return nil, ErrFrameRecycled
+	}
+
 	buf := make([]byte, size)
-	_, err := r.f.ReadAt(buf, offset)
-	if err != nil {
+	if _, err := r.f.ReadAt(buf, offset); err != nil {
 		return nil, fmt.Errorf("filering: read: %w", err)
 	}
 	return buf, nil

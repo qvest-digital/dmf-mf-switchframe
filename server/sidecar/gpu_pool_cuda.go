@@ -436,6 +436,8 @@ func (p *CUDAGPUPool) allocFrameSlots() error {
 			p.cfg.Pitch = int(pitch)
 		} else if int(pitch) != p.cfg.pitch() {
 			C.cudaFree(devPtr)
+			// Clear the slot so Close() does not re-free this pointer.
+			p.frameDevPtrs[i] = 0
 			return fmt.Errorf("slot %d pitch %d != expected %d", i, int(pitch), p.cfg.pitch())
 		}
 	}

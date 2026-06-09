@@ -39,9 +39,13 @@ func TestNoFrameLeakageAfterCut(t *testing.T) {
 	h := newPipelineHarness(t)
 	defer h.close()
 
-	// Maximally distinct: Y=20 vs Y=230, 210 apart. Cb/Cr neutral.
-	colorA := sourceColor{Y: 20, Cb: 128, Cr: 128}
-	colorB := sourceColor{Y: 230, Cb: 128, Cr: 128}
+	// Maximally distinct in BOTH luma and chroma so a leak is detectable even
+	// if it doesn't move the luminance mean: Y 20 vs 230 (210 apart), and
+	// chroma swapped (Cb/Cr 90/200 vs 200/90, ~110 apart on each axis). Using
+	// distinct chroma lets the per-frame checks catch chroma corruption that a
+	// neutral-chroma (Cb=Cr=128) source would hide entirely.
+	colorA := sourceColor{Y: 20, Cb: 90, Cr: 200}
+	colorB := sourceColor{Y: 230, Cb: 200, Cr: 90}
 
 	h.addSource("leakA", colorA)
 	h.addSource("leakB", colorB)
@@ -66,9 +70,11 @@ func TestNoFrameLeakageAfterCut(t *testing.T) {
 	t.Logf("Phase 1 (leakA, Y=20): decoded %d frames", len(decodedP1))
 	for i, df := range decodedP1 {
 		avgY := averageY(df.YUV, df.Width, df.Height)
-		t.Logf("  MEASURE: phase1 frame %d avg Y = %.1f", i, avgY)
 		require.Less(t, avgY, thresholdLow,
 			"phase1 frame %d: avg Y=%.1f >= %.0f — source B leaking into source A!", i, avgY, thresholdLow)
+		// Stronger: verify luma+chroma+per-quadrant all match source A, catching
+		// chroma/spatial leaks the whole-frame Y mean cannot see.
+		assertSolidSourceFrame(t, df, colorA, "phase1", i)
 	}
 	prevDecodedLen = len(decodedP1)
 
@@ -102,9 +108,10 @@ func TestNoFrameLeakageAfterCut(t *testing.T) {
 	for i := actualFlush; i < len(decodedP2); i++ {
 		df := decodedP2[i]
 		avgY := averageY(df.YUV, df.Width, df.Height)
-		t.Logf("  MEASURE: phase2 frame %d avg Y = %.1f", i, avgY)
 		require.Greater(t, avgY, thresholdHigh,
 			"phase2 frame %d: avg Y=%.1f <= %.0f — source A leaking after cut to B!", i, avgY, thresholdHigh)
+		// Stronger: full luma+chroma+per-quadrant match against source B.
+		assertSolidSourceFrame(t, df, colorB, "phase2", i)
 	}
 
 	// Also check: NO frame after flush has avg Y < thresholdLow (definite A).
@@ -616,6 +623,72 @@ func TestNoFrameLeakageWithGraphicsOverlay(t *testing.T) {
 	_ = math.Abs // used in assertions above
 	t.Logf("Graphics overlay leakage test passed: phase1=%d phase2=%d phase3=%d",
 		len(decodedP1), len(decodedP2), len(decodedP3))
+}
+
+// quadrantAverageY returns the average Y of one of the four equal quadrants of
+// a YUV420 frame (qx, qy in {0,1}). A solid-color source must have all four
+// quadrants near the same value; a spatial-corruption bug that swaps one
+// quadrant for another source's data moves a single quadrant's mean without
+// necessarily moving the whole-frame mean, so per-region checks catch leaks
+// the frame-wide average misses.
+func quadrantAverageY(yuv []byte, w, h, qx, qy int) float64 {
+	if len(yuv) < w*h {
+		return -1
+	}
+	x0, x1 := qx*w/2, (qx+1)*w/2
+	y0, y1 := qy*h/2, (qy+1)*h/2
+	var sum uint64
+	var n uint64
+	for y := y0; y < y1; y++ {
+		row := y * w
+		for x := x0; x < x1; x++ {
+			sum += uint64(yuv[row+x])
+			n++
+		}
+	}
+	if n == 0 {
+		return -1
+	}
+	return float64(sum) / float64(n)
+}
+
+// assertSolidSourceFrame verifies a decoded frame matches the expected solid
+// source in luminance AND chroma AND uniformly across all four quadrants. This
+// is stronger than a whole-frame Y mean: it detects chroma corruption (Cb/Cr
+// from the wrong source), and spatial corruption (a quadrant carrying another
+// source's pixels) that an averaged-Y check would let slide. Tolerances are
+// loose enough to survive H.264 luma/chroma quantization and 4:2:0 subsampling.
+func assertSolidSourceFrame(t *testing.T, df decodedFrame, want sourceColor, phase string, idx int) {
+	t.Helper()
+	const (
+		yTol      = 60.0 // generous: lossy H.264 + flush-edge frames
+		chromaTol = 40.0 // chroma is subsampled and coarsely quantized
+		quadTol   = 50.0 // per-quadrant deviation from frame mean
+	)
+
+	avgY := averageY(df.YUV, df.Width, df.Height)
+	avgCb := averageCb(df.YUV, df.Width, df.Height)
+	avgCr := averageCr(df.YUV, df.Width, df.Height)
+	t.Logf("  MEASURE: %s frame %d Y=%.1f Cb=%.1f Cr=%.1f (want Y=%d Cb=%d Cr=%d)",
+		phase, idx, avgY, avgCb, avgCr, want.Y, want.Cb, want.Cr)
+
+	require.InDeltaf(t, float64(want.Y), avgY, yTol,
+		"%s frame %d: Y=%.1f far from expected %d — wrong source luminance", phase, idx, avgY, want.Y)
+	require.InDeltaf(t, float64(want.Cb), avgCb, chromaTol,
+		"%s frame %d: Cb=%.1f far from expected %d — chroma corruption / wrong source", phase, idx, avgCb, want.Cb)
+	require.InDeltaf(t, float64(want.Cr), avgCr, chromaTol,
+		"%s frame %d: Cr=%.1f far from expected %d — chroma corruption / wrong source", phase, idx, avgCr, want.Cr)
+
+	// All four quadrants of a solid source must track the frame mean; a single
+	// quadrant from another source would diverge sharply.
+	for qy := 0; qy < 2; qy++ {
+		for qx := 0; qx < 2; qx++ {
+			q := quadrantAverageY(df.YUV, df.Width, df.Height, qx, qy)
+			require.InDeltaf(t, avgY, q, quadTol,
+				"%s frame %d quadrant (%d,%d): Y=%.1f deviates from frame mean %.1f — spatial corruption",
+				phase, idx, qx, qy, q, avgY)
+		}
+	}
 }
 
 // createSemiTransparentOverlayPNG creates an RGBA PNG with specified color and alpha.

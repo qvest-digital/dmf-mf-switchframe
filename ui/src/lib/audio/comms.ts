@@ -19,6 +19,13 @@ const SAMPLE_RATE = 48000;
 export interface CommsConfig {
 	operatorId: string;
 	operatorName: string;
+	/**
+	 * Returns the operator's bearer token, included in the hello handshake.
+	 * The server validates it against the operator store — without it the
+	 * stream is rejected (any viewer session can open a bidi stream, so an
+	 * unauthenticated hello would allow operator impersonation).
+	 */
+	getToken?: () => string | null;
 	onError?: (error: string) => void;
 	/** Called when comms audio activity changes (for program audio ducking). */
 	onCommsActive?: (active: boolean) => void;
@@ -83,18 +90,8 @@ export class CommsAudioManager {
 			this.writer = bidiStream.writable.getWriter();
 			this.reader = bidiStream.readable.getReader();
 
-			// Send handshake identifying this operator
-			const hello = JSON.stringify({
-				action: 'hello',
-				operatorId: this.config.operatorId,
-			});
-			const helloBytes = new TextEncoder().encode(hello);
-			const helloMsg = new Uint8Array(3 + helloBytes.length);
-			helloMsg[0] = MSG_CONTROL;
-			helloMsg[1] = (helloBytes.length >> 8) & 0xff;
-			helloMsg[2] = helloBytes.length & 0xff;
-			helloMsg.set(helloBytes, 3);
-			await this.writer.write(helloMsg);
+			// Send handshake identifying (and authenticating) this operator
+			await this.sendHello();
 
 			// Create AudioContext for capture and playback
 			// Separate contexts: capture context for mic processing,
@@ -143,6 +140,27 @@ export class CommsAudioManager {
 	}
 
 	/**
+	 * Send the hello handshake on the current writer, identifying this
+	 * operator and carrying their bearer token for server-side
+	 * authentication of the stream.
+	 */
+	private async sendHello(): Promise<void> {
+		if (!this.writer) return;
+		const hello = JSON.stringify({
+			action: 'hello',
+			operatorId: this.config.operatorId,
+			token: this.config.getToken?.() ?? undefined,
+		});
+		const helloBytes = new TextEncoder().encode(hello);
+		const helloMsg = new Uint8Array(3 + helloBytes.length);
+		helloMsg[0] = MSG_CONTROL;
+		helloMsg[1] = (helloBytes.length >> 8) & 0xff;
+		helloMsg[2] = helloBytes.length & 0xff;
+		helloMsg.set(helloBytes, 3);
+		await this.writer.write(helloMsg);
+	}
+
+	/**
 	 * Whether comms is currently active (started and running).
 	 */
 	get isActive(): boolean {
@@ -169,17 +187,7 @@ export class CommsAudioManager {
 			this.reader = bidiStream.readable.getReader();
 
 			// Send handshake on the new stream
-			const hello = JSON.stringify({
-				action: 'hello',
-				operatorId: this.config.operatorId,
-			});
-			const helloBytes = new TextEncoder().encode(hello);
-			const helloMsg = new Uint8Array(3 + helloBytes.length);
-			helloMsg[0] = MSG_CONTROL;
-			helloMsg[1] = (helloBytes.length >> 8) & 0xff;
-			helloMsg[2] = helloBytes.length & 0xff;
-			helloMsg.set(helloBytes, 3);
-			await this.writer.write(helloMsg);
+			await this.sendHello();
 
 			// Reset decode timestamp for clean audio scheduling
 			this.decodeTimestamp = 0;

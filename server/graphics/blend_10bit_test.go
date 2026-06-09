@@ -158,11 +158,11 @@ func TestAlphaBlendRGBA10_OpaqueRedOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Pure red BT.709 10-bit: Y8 = (66*255+128)>>8 + 16 = 82, Y10 = 82*4 = 328
+	// Pure red BT.709 10-bit: Y8 = (47*255+128)>>8 + 16 = 63, Y10 = 63*4 = 252
 	// Cr should be above neutral (red pulls Cr positive)
 	gotY := readY10g(yuv, 0, 0, w)
-	if gotY < 310 || gotY > 350 {
-		t.Errorf("opaque red: Y=%d, want ~328", gotY)
+	if gotY < 240 || gotY > 270 {
+		t.Errorf("opaque red: Y=%d, want ~252", gotY)
 	}
 	gotCr := readCr10g(yuv, 0, 0, w, h)
 	if gotCr <= 512 {

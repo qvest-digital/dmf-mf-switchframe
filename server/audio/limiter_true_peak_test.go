@@ -98,6 +98,58 @@ func TestLimiter_TruePeakCatchesISP(t *testing.T) {
 		"gain reduction must be active when true-peak exceeds ceiling")
 }
 
+// TestLimiter_TransientOnsetOvershoot characterizes a KNOWN limitation of the
+// zero-lookahead feed-forward design: on a fast transient onset (silence jumping
+// straight to a full-amplitude inter-sample-peak tone) the envelope takes several
+// samples to rise, so the first samples of the transient are under-attenuated and
+// the reconstructed true-peak briefly exceeds the configured ceiling.
+//
+// This is the transient counterpart to TestLimiter_TruePeakCatchesISP, which only
+// measures the SETTLED back half of a steady tone. The fix for a truly brickwall
+// transient ceiling is a short lookahead delay (see Limiter doc comment); until
+// then this test pins the magnitude of the overshoot so a regression that made it
+// dramatically worse would fail, while documenting that the ceiling holds in
+// steady state.
+func TestLimiter_TransientOnsetOvershoot(t *testing.T) {
+	t.Parallel()
+	const (
+		sr      = 48000.0
+		freq    = 12000.0 // Fs/4, phase π/4 → reconstructs ~+3 dBTP above sample-peak
+		ceiling = -1.0
+	)
+	lim := NewLimiter(int(sr), 1)
+	lim.SetCeiling(ceiling)
+	lim.SetThreshold(ceiling)
+
+	const n = 4800 // 100 ms
+	samples := make([]float32, n)
+	// First half silence, then an abrupt onset of the ISP tone — worst case for
+	// a limiter with no lookahead.
+	for i := n / 2; i < n; i++ {
+		samples[i] = float32(math.Cos(2*math.Pi*freq*float64(i)/sr + math.Pi/4))
+	}
+	lim.Process(samples)
+
+	// Steady state (settled, far from the onset) MUST respect the ceiling: that
+	// is the guarantee the limiter actually makes.
+	settledTP := measureTruePeakDBTP(samples[n-600:], 1)
+	require.LessOrEqual(t, settledTP, ceiling+0.1,
+		"settled true-peak %.3f dBTP must respect the %.1f dBTP ceiling", settledTP, ceiling)
+
+	// Onset region: the true-peak overshoots the ceiling because the envelope
+	// has not risen yet. This documents the limitation. We bound the overshoot
+	// so the test still fails if it ever blows past the sample-peak headroom
+	// (~+3 dBTP of inter-sample peak), which would indicate a real regression.
+	onsetTP := measureTruePeakDBTP(samples[n/2:n/2+200], 1)
+	require.Greater(t, onsetTP, settledTP+0.3,
+		"expected the transient onset (%.3f dBTP) to overshoot the settled value "+
+			"(%.3f dBTP) given the zero-lookahead design", onsetTP, settledTP)
+	require.LessOrEqual(t, onsetTP, ceiling+3.1,
+		"transient overshoot %.3f dBTP should stay within the inter-sample-peak "+
+			"headroom above the %.1f dBTP ceiling; a larger value is a regression",
+		onsetTP, ceiling)
+}
+
 // TestLimiter_TruePeakOnCorrelatedStereo feeds an identical 12 kHz ISP signal
 // on L and R at -0.5 dBFS sample-peak.  The true-peak detector must report
 // the reconstructed peak (which for Fs/4 phase-π/4 sits ~3 dB above the

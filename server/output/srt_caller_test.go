@@ -112,6 +112,124 @@ func TestSRTCaller_Close(t *testing.T) {
 	require.Equal(t, StateStopped, status.State)
 }
 
+// TestSRTCaller_CloseDuringReconnect verifies that Close joins the reconnect
+// goroutine and that a Dial in flight when Close runs does not install a
+// leaked connection. srt.Dial ignores ctx cancellation, so a reconnect that
+// is mid-Dial when Close cancels the context can return a live conn
+// afterward; reconnectLoop must close that conn instead of storing it, and
+// the final state must deterministically be StateStopped (not StateActive).
+func TestSRTCaller_CloseDuringReconnect(t *testing.T) {
+	t.Parallel()
+	c := NewSRTCaller(SRTCallerConfig{Address: "srt.example.com", Port: 9998})
+	c.bo.Initial = time.Millisecond // keep the reconnect backoff fast for the test
+	ctx, cancel := context.WithCancel(context.Background())
+	c.ctx = ctx
+	c.cancel = cancel
+
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+	lateConn := &mockSRTConn{}
+	c.connectFn = func(_ context.Context, _ SRTCallerConfig) (srtConn, error) {
+		close(dialStarted)
+		// Block as srt.Dial would, ignoring ctx — Close runs in this window.
+		<-releaseDial
+		return lateConn, nil
+	}
+
+	c.reconnecting.Store(true)
+	go c.reconnectLoop()
+
+	// Wait until the reconnect goroutine is blocked inside Dial, so Close
+	// observes the in-flight loop and joins it.
+	<-dialStarted
+
+	closeReturned := make(chan struct{})
+	go func() {
+		_ = c.Close() // cancels ctx, then blocks joining reconnectLoop
+		close(closeReturned)
+	}()
+
+	// Let Close cancel the context, then release the in-flight Dial so it
+	// returns a live conn after cancellation.
+	time.Sleep(20 * time.Millisecond)
+	close(releaseDial)
+
+	select {
+	case <-closeReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return — it failed to join reconnectLoop")
+	}
+
+	require.True(t, lateConn.closed.Load(),
+		"a Dial completing after Close must be closed, not installed")
+	c.mu.Lock()
+	storedConn := c.conn
+	c.mu.Unlock()
+	require.Nil(t, storedConn, "no connection should be installed after Close")
+	require.Equal(t, StateStopped, *c.state.Load(),
+		"final state must be StateStopped, not a zombie StateActive")
+	require.False(t, c.reconnecting.Load(), "reconnect goroutine must have exited")
+}
+
+// TestSRTCaller_WriteFailureDuringReconnectWindowRespawnsLoop reproduces the
+// lost-wakeup race where the caller gets permanently stuck in
+// StateReconnecting with no reconnect goroutine: reconnectLoop stores
+// StateActive and calls onReconnect BEFORE its deferred
+// reconnecting.Store(false) runs. A Write that fails inside that window
+// stores StateReconnecting but its CompareAndSwap(false, true) loses against
+// the still-set flag, so no new loop is spawned; the old loop then exits and
+// clears the flag. Without the re-arm on loop exit, the output silently
+// buffers forever.
+func TestSRTCaller_WriteFailureDuringReconnectWindowRespawnsLoop(t *testing.T) {
+	t.Parallel()
+	badConn := &mockSRTConn{
+		writeFn: func([]byte) (int, error) { return 0, fmt.Errorf("immediate RST") },
+	}
+	goodConn := &mockSRTConn{}
+
+	c := NewSRTCaller(SRTCallerConfig{
+		Address:        "srt.example.com",
+		Port:           9998,
+		RingBufferSize: 4096,
+	})
+	c.bo.Initial = time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	c.ctx = ctx
+	c.cancel = cancel
+
+	var dials atomic.Int32
+	c.connectFn = func(_ context.Context, _ SRTCallerConfig) (srtConn, error) {
+		if dials.Add(1) == 1 {
+			return badConn, nil // fails on first write (flapping endpoint)
+		}
+		return goodConn, nil
+	}
+
+	var reconnects atomic.Int32
+	c.onReconnect = func(bool) {
+		if reconnects.Add(1) == 1 {
+			// We are now inside the window: state == StateActive but
+			// reconnecting is still true (the loop's deferred Store(false)
+			// has not run). A keyframe passes the IDR gate and the write
+			// fails, storing StateReconnecting; the CAS loses.
+			_, _ = c.Write(makeTSPacket(0x100, true))
+		}
+	}
+
+	c.state.Store(ptrTo(StateReconnecting))
+	c.reconnecting.Store(true)
+	go c.reconnectLoop()
+
+	// The caller must recover to StateActive via a re-spawned reconnect
+	// loop; without the fix it is stuck in StateReconnecting forever.
+	require.Eventually(t, func() bool {
+		return c.Status().State == StateActive
+	}, 5*time.Second, 10*time.Millisecond,
+		"caller stuck in StateReconnecting with no reconnect goroutine")
+
+	_ = c.Close()
+}
+
 func TestSRTCaller_BackoffProgression(t *testing.T) {
 	t.Parallel()
 	c := NewSRTCaller(SRTCallerConfig{

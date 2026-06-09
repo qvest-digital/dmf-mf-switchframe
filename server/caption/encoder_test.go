@@ -26,6 +26,47 @@ func TestOddParity(t *testing.T) {
 	}
 }
 
+func TestDisplayWidth(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want int
+	}{
+		{"empty", "", 0},
+		{"ascii", "hello", 5},
+		// Accented Latin runes are multi-byte in UTF-8 but render as one cell.
+		{"accented cafe", "café", 4},       // len() == 5 bytes
+		{"accented senor", "señor", 5},     // len() == 6 bytes
+		{"accented basic n-tilde", "ñ", 1}, // 0x7E basic slot, 2 UTF-8 bytes
+		{"special trademark", "™", 1},      // 0x11 special, 3 UTF-8 bytes
+		{"extended A-acute", "Á", 1},       // 0x12 extended, 2 UTF-8 bytes
+		// ASCII-sequence runes expand to their literal cell width.
+		{"ellipsis expands", "…", 3}, // -> "..."
+		{"em dash expands", "—", 2},  // -> "--"
+		{"curly quote", "’", 1},      // -> "'"
+		// Control/skip runes occupy no cell.
+		{"tab is skipped", "a\tb", 2},
+		// Speaker prefix used by the pacer stays 3 cells.
+		{"speaker prefix", ">> ", 3},
+		// Mixed real-world caption line: ">> " (3) + "Está aquí" (9) + "…" (3).
+		{"mixed", ">> Está aquí…", 15},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := DisplayWidth(tt.in); got != tt.want {
+				t.Errorf("DisplayWidth(%q) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+
+	// The core bug: byte length over-counts accented words. DisplayWidth must
+	// equal the rune-cell count, which here is strictly less than len().
+	const accented = "café señor"
+	if w := DisplayWidth(accented); w >= len(accented) {
+		t.Errorf("DisplayWidth(%q) = %d should be < byte len %d", accented, w, len(accented))
+	}
+}
+
 func TestEncoderInit(t *testing.T) {
 	enc := NewEncoder(2)
 

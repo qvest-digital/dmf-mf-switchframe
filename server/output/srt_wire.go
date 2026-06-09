@@ -60,6 +60,8 @@ func SRTConnect(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
 		Latency:     time.Duration(latency) * time.Millisecond,
 		StreamID:    config.StreamID,
 		ConnTimeout: 5 * time.Second,
+		Passphrase:  config.Passphrase,
+		KeyLength:   config.KeyLength,
 	}
 
 	// When InputBW is set, tell SRT the expected input rate so it can
@@ -92,7 +94,9 @@ func SRTAcceptLoop(ctx context.Context, config SRTListenerConfig, listener *SRTL
 	}
 
 	cfg := srt.Config{
-		Latency: time.Duration(latency) * time.Millisecond,
+		Latency:    time.Duration(latency) * time.Millisecond,
+		Passphrase: config.Passphrase,
+		KeyLength:  config.KeyLength,
 	}
 
 	// When InputBW is set, tell SRT the expected input rate so it can

@@ -130,6 +130,114 @@ func TestKeyProcessor_NeuralKeyAmongOthers_OnlyNeuralSkipped(t *testing.T) {
 	}
 }
 
+// makeOutOfRangeYUV420Frame builds a YUV420 frame whose Y plane alternates
+// super-black (8) and super-white (250) and whose chroma planes carry
+// out-of-legal-range samples (8 / 250). Used to prove the legal-range clamp
+// runs only when a key actually composited.
+func makeOutOfRangeYUV420Frame(width, height int) []byte {
+	ySize := width * height
+	uvSize := (width / 2) * (height / 2)
+	frame := make([]byte, ySize+2*uvSize)
+	for i := 0; i < ySize; i++ {
+		if i%2 == 0 {
+			frame[i] = 8 // super-black (Y<16)
+		} else {
+			frame[i] = 250 // super-white (Y>235)
+		}
+	}
+	for i := 0; i < uvSize; i++ {
+		frame[ySize+i] = 8          // Cb below legal floor
+		frame[ySize+uvSize+i] = 250 // Cr above legal ceiling
+	}
+	return frame
+}
+
+// TestKeyProcessor_NoBlendDoesNotClamp is a regression test: once Process is
+// entered (gated only by len(keys)==0), the BT.709 legal-range clamp must NOT
+// run when no key actually composited. An enabled key with a missing or
+// wrong-sized fill, or an all-neural set (skipped on the CPU path), must leave
+// the program frame byte-identical, preserving super-black/super-white content.
+func TestKeyProcessor_NoBlendDoesNotClamp(t *testing.T) {
+	t.Run("missing fill", func(t *testing.T) {
+		kp := NewKeyProcessor()
+		kp.SetKey("cam1", KeyConfig{
+			Type:       KeyTypeChroma,
+			Enabled:    true,
+			KeyColorY:  182,
+			KeyColorCb: 30,
+			KeyColorCr: 12,
+			Similarity: 0.4,
+		})
+
+		bg := makeOutOfRangeYUV420Frame(4, 4)
+		original := make([]byte, len(bg))
+		copy(original, bg)
+
+		// No fill supplied for cam1 → blend is skipped → no clamp must occur.
+		result := kp.Process(bg, nil, 4, 4)
+		require.Equal(t, original, result,
+			"enabled key with no fill must not clamp the untouched program frame")
+	})
+
+	t.Run("wrong-sized fill", func(t *testing.T) {
+		kp := NewKeyProcessor()
+		kp.SetKey("cam1", KeyConfig{
+			Type:     KeyTypeLuma,
+			Enabled:  true,
+			HighClip: 0.5,
+		})
+
+		bg := makeOutOfRangeYUV420Frame(4, 4)
+		original := make([]byte, len(bg))
+		copy(original, bg)
+
+		// Fill too small for the frame → continue → no blend → no clamp.
+		shortFill := makeYUV420Frame(2, 2, 200, 128, 128)
+		result := kp.Process(bg, map[string][]byte{"cam1": shortFill}, 4, 4)
+		require.Equal(t, original, result,
+			"enabled key with wrong-sized fill must not clamp the program frame")
+	})
+
+	t.Run("neural only", func(t *testing.T) {
+		kp := NewKeyProcessor()
+		kp.SetKey("cam1", KeyConfig{Type: KeyTypeNeural, Enabled: true})
+
+		bg := makeOutOfRangeYUV420Frame(4, 4)
+		original := make([]byte, len(bg))
+		copy(original, bg)
+
+		// Neural keys are skipped on CPU → no blend → no clamp.
+		fill := makeYUV420Frame(4, 4, 200, 50, 200)
+		result := kp.Process(bg, map[string][]byte{"cam1": fill}, 4, 4)
+		require.Equal(t, original, result,
+			"neural-only key (skipped on CPU) must not clamp the program frame")
+	})
+
+	t.Run("blend clamps", func(t *testing.T) {
+		// Positive control: when a key DOES composite, the output is legalized.
+		kp := NewKeyProcessor()
+		kp.SetKey("cam1", KeyConfig{
+			Type:     KeyTypeLuma,
+			Enabled:  true,
+			LowClip:  0.0,
+			HighClip: 1.0,
+			Softness: 0.0,
+		})
+
+		bg := makeOutOfRangeYUV420Frame(4, 4)
+		// Fill is itself out-of-range super-white so the blended result stays
+		// out of range pre-clamp; the clamp must pull it back to [16,235].
+		fill := makeYUV420Frame(4, 4, 250, 250, 8)
+		result := kp.Process(bg, map[string][]byte{"cam1": fill}, 4, 4)
+
+		ySize := 4 * 4
+		for i := 0; i < ySize; i++ {
+			require.GreaterOrEqual(t, result[i], byte(16), "Y[%d] clamped to legal floor", i)
+			require.LessOrEqual(t, result[i], byte(235), "Y[%d] clamped to legal ceiling", i)
+		}
+	})
+}
+
 func TestKeyProcessor_DisabledKeySkipped(t *testing.T) {
 	kp := NewKeyProcessor()
 	kp.SetKey("cam1", KeyConfig{

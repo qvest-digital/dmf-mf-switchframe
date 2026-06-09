@@ -51,10 +51,11 @@ func alphaBlendRGBA10Dispatch(yuv []byte, rgba []byte, frameW, frameH int) error
 }
 
 // alphaBlendRGBA10YRowGo is the pure Go reference for Y plane alpha blending.
-// For each pixel:
+// For each pixel (BT.709 coefficients, matching the 8-bit blend path):
 //
-//	overlayY = ((66*R + 129*G + 25*B + 128) >> 8 + 16) * 4
-//	result = (overlayY * A + existingY * (255-A) + 128) >> 8
+//	A' = A + (A >> 7)  (map 0-255 to 0-256, opaque = exact replacement)
+//	overlayY = ((47*R + 157*G + 16*B + 128) >> 8 + 16) * 4
+//	result = (overlayY * A' + existingY * (256-A') + 128) >> 8
 //	clamp to [0, 1023]
 func alphaBlendRGBA10YRowGo(yPlane *byte, rgba *byte, count int) {
 	if count <= 0 {
@@ -69,17 +70,18 @@ func alphaBlendRGBA10YRowGo(yPlane *byte, rgba *byte, count int) {
 		if a == 0 {
 			continue
 		}
+		a += a >> 7 // map 0-255 to 0-256
 
 		r := int32(rS[i*4+0])
 		g := int32(rS[i*4+1])
 		b := int32(rS[i*4+2])
 
-		y8 := int32((66*r+129*g+25*b+128)>>8) + 16
+		y8 := int32((47*r+157*g+16*b+128)>>8) + 16
 		overlayY := y8 * 4
 
 		existingY := int32(binary.LittleEndian.Uint16(yS[i*2:]))
 
-		inv := int32(255) - a
+		inv := int32(256) - a
 		result := (overlayY*a + existingY*inv + 128) >> 8
 		if result < 0 {
 			result = 0
@@ -109,17 +111,18 @@ func alphaBlendRGBA10UVRowGo(cbPlane, crPlane *byte, rgba *byte, chromaCount int
 		if a == 0 {
 			continue
 		}
+		a += a >> 7 // map 0-255 to 0-256
 
 		r := int32(rS[rgbaIdx+0])
 		g := int32(rS[rgbaIdx+1])
 		b := int32(rS[rgbaIdx+2])
 
-		cb8 := int32((-38*r-74*g+112*b+128)>>8) + 128
-		cr8 := int32((112*r-94*g-18*b+128)>>8) + 128
+		cb8 := int32((-26*r-86*g+112*b+128)>>8) + 128
+		cr8 := int32((112*r-102*g-10*b+128)>>8) + 128
 		overlayCb := cb8 * 4
 		overlayCr := cr8 * 4
 
-		inv := int32(255) - a
+		inv := int32(256) - a
 
 		existingCb := int32(binary.LittleEndian.Uint16(cbS[cx*2:]))
 		resultCb := (overlayCb*a + existingCb*inv + 128) >> 8

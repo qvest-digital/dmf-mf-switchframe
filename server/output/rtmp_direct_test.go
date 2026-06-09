@@ -4,6 +4,7 @@ package output
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -182,6 +183,95 @@ func TestRTMPDirect_CloseWithoutStart(t *testing.T) {
 	require.NoError(t, err)
 	closeErr := r.Close()
 	require.NoError(t, closeErr)
+}
+
+// TestRTMPDirect_CloseJoinsReconnectLoop reproduces the leak where Close
+// joins only the writeLoop (doneCh) but not the reconnectLoop goroutine.
+// If Close runs while the reconnect loop is past its backoff timer, the
+// loop proceeds with no context re-check: it reopens the RTMP connection
+// (leaking the FFmpeg context), stores StateActive after Close stored
+// StateStopped, and fires onReconnect into a Manager that already removed
+// the adapter.
+func TestRTMPDirect_CloseJoinsReconnectLoop(t *testing.T) {
+	t.Parallel()
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://example.com/live/key"})
+	require.NoError(t, err)
+	r.connectFn = func(string) error { return nil } // test mode
+
+	require.NoError(t, r.Start(context.Background()))
+	r.bo.Initial = 30 * time.Millisecond
+
+	var reconnects atomic.Int32
+	r.onReconnect = func() { reconnects.Add(1) }
+
+	// Spawn the reconnect loop, then pin it: grab r.mu while it sleeps in
+	// its backoff so that after the timer fires it blocks at the top of
+	// its work section, past the backoff select's goCtx.Done() case.
+	r.enterReconnect("simulated endpoint failure")
+	r.mu.Lock()
+	time.Sleep(150 * time.Millisecond) // backoff fired; loop now blocked on r.mu
+
+	closeReturned := make(chan struct{})
+	go func() {
+		_ = r.Close() // cancels goCtx, joins writeLoop, must also join reconnectLoop
+		close(closeReturned)
+	}()
+	time.Sleep(20 * time.Millisecond) // let Close cancel the context
+	r.mu.Unlock()
+
+	select {
+	case <-closeReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return")
+	}
+
+	// Wait for the reconnect goroutine to fully exit, then verify it did
+	// not complete a reconnect after Close.
+	require.Eventually(t, func() bool {
+		return !r.reconnecting.Load()
+	}, 2*time.Second, time.Millisecond)
+	require.Equal(t, int32(0), reconnects.Load(),
+		"reconnect completed after Close — reconnectLoop was not joined")
+	require.Equal(t, StateStopped, *r.state.Load(),
+		"final state must be StateStopped, not a resurrected StateActive")
+}
+
+// TestRTMPDirect_EnterReconnectDuringWindowRespawnsLoop reproduces the CAS
+// window where the adapter gets permanently stuck in StateReconnecting:
+// reconnectLoop stores StateActive and calls onReconnect BEFORE its deferred
+// reconnecting.Store(false) runs. A write failure in that window calls
+// enterReconnect, which stores StateReconnecting but loses the
+// CompareAndSwap against the still-set flag, so no new loop is spawned; the
+// old loop then exits and clears the flag. handleVideo/handleAudio drop all
+// frames while state != StateActive, so the output is dead until Close/Start.
+func TestRTMPDirect_EnterReconnectDuringWindowRespawnsLoop(t *testing.T) {
+	t.Parallel()
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://example.com/live/key"})
+	require.NoError(t, err)
+	r.connectFn = func(string) error { return nil } // test mode
+
+	require.NoError(t, r.Start(context.Background()))
+	defer func() { _ = r.Close() }()
+	r.bo.Initial = time.Millisecond
+
+	var reconnects atomic.Int32
+	r.onReconnect = func() {
+		if reconnects.Add(1) == 1 {
+			// Inside the window: state == StateActive but reconnecting is
+			// still true. This is what handleVideo does when the first
+			// write after a reconnect fails on a flapping server.
+			r.enterReconnect("write failed during reconnect window")
+		}
+	}
+
+	r.enterReconnect("initial failure")
+
+	// The adapter must recover to StateActive via a re-spawned reconnect
+	// loop; without the fix it is stuck in StateReconnecting forever.
+	require.Eventually(t, func() bool {
+		return *r.state.Load() == StateActive
+	}, 5*time.Second, 10*time.Millisecond,
+		"adapter stuck in StateReconnecting with no reconnect goroutine")
 }
 
 func TestRTMPDirect_BackoffProgression(t *testing.T) {

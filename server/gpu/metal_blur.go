@@ -16,6 +16,11 @@ import (
 // GaussianBlur applies a 2-pass separable Gaussian blur to an NV12 GPU frame.
 // radius controls the blur strength (1..50). A larger radius means more blur.
 // dst and src must have the same dimensions. dst may alias src.
+//
+// NOT CONCURRENCY-SAFE on the same Context: it uses the Context-global
+// blurTmpBuf and blurWeightsBuf scratch buffers without holding mu across the
+// kernel passes. Today the only callers run inside the single-threaded GPU
+// pipeline Run(); serialize calls if invoking from elsewhere.
 func GaussianBlur(ctx *Context, dst, src *GPUFrame, radius int) error {
 	if ctx == nil || ctx.mtl == nil || dst == nil || src == nil {
 		return ErrGPUNotAvailable
@@ -29,20 +34,12 @@ func GaussianBlur(ctx *Context, dst, src *GPUFrame, radius int) error {
 
 	mtl := ctx.mtl
 
-	// Compute Gaussian weights on CPU
-	weights := gaussianWeights(radius)
-
-	// Upload weights to a small Metal buffer
-	weightsBuf, err := mtl.allocBuffer(len(weights) * 4)
+	// Cached weight buffer keyed by radius — avoids a per-frame alloc/free
+	// on the hot blur path (weights only change when radius changes).
+	weightsBuf, err := mtl.ensureBlurWeights(radius)
 	if err != nil {
-		return fmt.Errorf("gpu: gaussian blur: alloc weights: %w", err)
+		return fmt.Errorf("gpu: gaussian blur: %w", err)
 	}
-	defer C.metal_buffer_free(weightsBuf)
-
-	// Copy weights into the buffer
-	wPtr := C.metal_buffer_contents(weightsBuf)
-	wSlice := unsafe.Slice((*float32)(wPtr), len(weights))
-	copy(wSlice, weights)
 
 	// Ensure cached temp float buffer: pitch * height * 3/2 floats (covers Y + UV)
 	tmpFloats := src.Pitch * src.Height * 3 / 2
@@ -134,6 +131,9 @@ func GaussianBlur(ctx *Context, dst, src *GPUFrame, radius int) error {
 // radius controls the blur strength (1..50). A larger radius means more blur.
 // dst and src must have the same dimensions. dst may alias src.
 // P210 has uint16 samples (0-1023) and full-height UV (4:2:2).
+//
+// NOT CONCURRENCY-SAFE on the same Context: see GaussianBlur. Uses the
+// Context-global blurTmpBuf and blurWeightsBuf scratch buffers.
 func GaussianBlurP210(ctx *Context, dst, src *GPUFrame, radius int) error {
 	if ctx == nil || ctx.mtl == nil || dst == nil || src == nil {
 		return ErrGPUNotAvailable
@@ -148,19 +148,12 @@ func GaussianBlurP210(ctx *Context, dst, src *GPUFrame, radius int) error {
 	mtl := ctx.mtl
 	samplesPerRow := src.Pitch / 2 // uint16 samples per row
 
-	// Compute Gaussian weights on CPU
-	weights := gaussianWeights(radius)
-
-	// Upload weights to a small Metal buffer
-	weightsBuf, err := mtl.allocBuffer(len(weights) * 4)
+	// Cached weight buffer keyed by radius — avoids a per-frame alloc/free
+	// on the hot blur path (weights only change when radius changes).
+	weightsBuf, err := mtl.ensureBlurWeights(radius)
 	if err != nil {
-		return fmt.Errorf("gpu: gaussian blur p210: alloc weights: %w", err)
+		return fmt.Errorf("gpu: gaussian blur p210: %w", err)
 	}
-	defer C.metal_buffer_free(weightsBuf)
-
-	wPtr := C.metal_buffer_contents(weightsBuf)
-	wSlice := unsafe.Slice((*float32)(wPtr), len(weights))
-	copy(wSlice, weights)
 
 	// Ensure cached temp float buffer: samplesPerRow * height * 2 floats (Y + UV)
 	// P210: both Y and UV planes have full height, each with samplesPerRow floats per row.

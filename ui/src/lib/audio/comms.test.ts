@@ -160,6 +160,49 @@ describe('CommsAudioManager', () => {
 		await mgr.stop();
 	});
 
+	it('start sends hello handshake with auth token when getToken is provided', async () => {
+		const mgr = new CommsAudioManager({
+			operatorId: 'op1',
+			operatorName: 'Alice',
+			getToken: () => 'secret-token',
+		});
+		await mgr.start(transportA);
+
+		expect(writerA.write).toHaveBeenCalledTimes(1);
+		const msg = writerA.write.mock.calls[0][0] as Uint8Array;
+		expect(msg[0]).toBe(0x02); // MSG_CONTROL
+		const payloadLen = (msg[1] << 8) | msg[2];
+		const payload = JSON.parse(new TextDecoder().decode(msg.slice(3, 3 + payloadLen)));
+		expect(payload.action).toBe('hello');
+		expect(payload.operatorId).toBe('op1');
+		// The server authenticates the hello against the operator store
+		// (any viewer session can open a bidi stream, so an unauthenticated
+		// hello would let anyone impersonate an operator).
+		expect(payload.token).toBe('secret-token');
+
+		await mgr.stop();
+	});
+
+	it('reconnect sends hello handshake with auth token when getToken is provided', async () => {
+		const mgr = new CommsAudioManager({
+			operatorId: 'op1',
+			operatorName: 'Alice',
+			getToken: () => 'secret-token',
+		});
+		await mgr.start(transportA);
+		await mgr.reconnect(transportB);
+
+		expect(writerB.write).toHaveBeenCalledTimes(1);
+		const msg = writerB.write.mock.calls[0][0] as Uint8Array;
+		expect(msg[0]).toBe(0x02); // MSG_CONTROL
+		const payloadLen = (msg[1] << 8) | msg[2];
+		const payload = JSON.parse(new TextDecoder().decode(msg.slice(3, 3 + payloadLen)));
+		expect(payload.action).toBe('hello');
+		expect(payload.token).toBe('secret-token');
+
+		await mgr.stop();
+	});
+
 	it('reconnect opens new bidi stream on new transport', async () => {
 		const mgr = new CommsAudioManager({
 			operatorId: 'op1',

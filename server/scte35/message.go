@@ -163,6 +163,21 @@ func NewTimeSignalMulti(descriptors []SegmentationDescriptor) *CueMessage {
 	}
 }
 
+// EffectiveSplicePTS returns the effective presentation PTS of the splice point,
+// computed as (pts_adjustment + splice_time) mod 2^33 per SCTE-35. Decode
+// surfaces SpliceTimePTS and PTSAdjustment independently; passthrough callers
+// that drive auto-return or alignment from upstream cues carrying a non-zero
+// pts_adjustment must use this helper rather than SpliceTimePTS alone.
+//
+// The bool is false when no splice time is specified (SpliceTimePTS == nil), in
+// which case the returned PTS is meaningless (the splice is immediate).
+func (m *CueMessage) EffectiveSplicePTS() (int64, bool) {
+	if m.SpliceTimePTS == nil {
+		return 0, false
+	}
+	return maskPTS33(*m.SpliceTimePTS + int64(m.PTSAdjustment)), true
+}
+
 // Encode converts this CueMessage into SCTE-35 binary format.
 // If verify is true, the encoded bytes are decoded back and CRC-32 is verified.
 //

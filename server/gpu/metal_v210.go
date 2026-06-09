@@ -57,6 +57,16 @@ func UploadV210(ctx *Context, dst *GPUFrame, v210 []byte, width, height int) err
 	if ctx == nil || ctx.mtl == nil || dst == nil {
 		return ErrGPUNotAvailable
 	}
+	// Match the CUDA UploadV210 input contract: width must be a multiple of 6
+	// (one V210 group = 6 luma pixels) and height even (4:2:0/4:2:2 chroma).
+	// Without this the shader silently leaves the trailing 1-5 luma pixels of
+	// each row unwritten and truncates the bottom row's chroma averaging.
+	if width%6 != 0 {
+		return fmt.Errorf("gpu: V210 width %d not divisible by 6", width)
+	}
+	if height%2 != 0 {
+		return fmt.Errorf("gpu: V210 height %d not even", height)
+	}
 
 	v210Stride := V210LineStride(width)
 	expected := v210Stride * height
@@ -96,6 +106,13 @@ func UploadV210(ctx *Context, dst *GPUFrame, v210 []byte, width, height int) err
 func DownloadV210(ctx *Context, v210 []byte, src *GPUFrame, width, height int) error {
 	if ctx == nil || ctx.mtl == nil || src == nil {
 		return ErrGPUNotAvailable
+	}
+	// Match the CUDA DownloadV210 input contract (see UploadV210).
+	if width%6 != 0 {
+		return fmt.Errorf("gpu: V210 width %d not divisible by 6", width)
+	}
+	if height%2 != 0 {
+		return fmt.Errorf("gpu: V210 height %d not even", height)
 	}
 
 	v210Stride := V210LineStride(width)

@@ -105,12 +105,54 @@ func TestBitWriter_ByteAlignNoOp(t *testing.T) {
 	}
 }
 
+func TestBitWriter_RBSPTrailingBits(t *testing.T) {
+	// Per ITU-T H.264 7.3.2.3.1 / H.265 7.3.2.4, a non-byte-aligned SEI payload
+	// must end with bit_equal_to_one (a 1 bit) followed by zero bits — not the
+	// all-zero padding byteAlign() produces.
+	t.Run("partial byte gets 1 bit then zeros", func(t *testing.T) {
+		var bw bitWriter
+		bw.init(4)
+		bw.writeBits(0, 5) // 5 data bits = 00000
+		bw.rbspTrailingBits()
+		got := bw.bytes()
+		// 00000 + 1 (bit_equal_to_one) + 00 zero-fill = 0b00000100 = 0x04.
+		if len(got) != 1 || got[0] != 0x04 {
+			t.Errorf("got %X, want [04]", got)
+		}
+	})
+
+	t.Run("single trailing bit at byte end", func(t *testing.T) {
+		var bw bitWriter
+		bw.init(4)
+		bw.writeBits(0, 7) // 7 data bits
+		bw.rbspTrailingBits()
+		got := bw.bytes()
+		// 0000000 + 1 (bit_equal_to_one) = 0b00000001 = 0x01.
+		if len(got) != 1 || got[0] != 0x01 {
+			t.Errorf("got %X, want [01]", got)
+		}
+	})
+
+	t.Run("already aligned is a no-op", func(t *testing.T) {
+		var bw bitWriter
+		bw.init(4)
+		bw.writeBits(0xAB, 8) // exactly one full byte
+		bw.rbspTrailingBits()
+		got := bw.bytes()
+		// byte_aligned() is true, so no trailing bits are added.
+		if len(got) != 1 || got[0] != 0xAB {
+			t.Errorf("got %X, want [AB]", got)
+		}
+	})
+}
+
 // --- pic_timing SEI payload tests ---
 
 func TestBuildPicTimingSEI_H264_NoHRD(t *testing.T) {
 	// Minimal pic_timing: no HRD, only pic_struct present.
-	// Should contain pic_struct(4 bits) = 0000 + clock_timestamp_flag[0](1 bit) = 0
-	// = 5 bits total, padded to 1 byte = 0x00.
+	// Contains pic_struct(4 bits) = 0000 + clock_timestamp_flag[0](1 bit) = 0
+	// = 5 data bits. The SEI payload trailing (ITU-T H.264 7.3.2.3.1) then writes
+	// bit_equal_to_one followed by zero-fill: 0b00000_1_00 = 0x04.
 	cfg := PicTimingConfig{
 		NalHRDParametersPresent: false,
 		VclHRDParametersPresent: false,
@@ -121,9 +163,10 @@ func TestBuildPicTimingSEI_H264_NoHRD(t *testing.T) {
 	if len(payload) != 1 {
 		t.Fatalf("payload length = %d, want 1", len(payload))
 	}
-	// pic_struct=0 (4 bits) + clock_timestamp_flag=0 (1 bit) + 3 zero-fill bits = 0b00000_000 = 0x00
-	if payload[0] != 0x00 {
-		t.Errorf("payload = %02X, want 0x00", payload[0])
+	// pic_struct=0 (4 bits) + clock_timestamp_flag=0 (1 bit) + trailing bit_equal_to_one(1)
+	// + 2 zero-fill bits = 0b00000_1_00 = 0x04.
+	if payload[0] != 0x04 {
+		t.Errorf("payload = %02X, want 0x04", payload[0])
 	}
 }
 
@@ -159,7 +202,7 @@ func TestBuildPicTimingSEI_H264_WithHRD(t *testing.T) {
 	// dpb_output_delay (24 bits):  0x000000
 	// pic_struct (4 bits):         0b0000
 	// clock_timestamp_flag (1 bit): 0
-	// Padding (3 bits):            0b000
+	// SEI trailing: bit_equal_to_one(1) + zero-fill(2): 0b1_00
 	// Total: 24 + 24 + 4 + 1 + 3 = 56 bits = 7 bytes
 
 	if len(payload) != 7 {
@@ -178,9 +221,10 @@ func TestBuildPicTimingSEI_H264_WithHRD(t *testing.T) {
 			payload[3], payload[4], payload[5])
 	}
 
-	// pic_struct(0000) + clock_timestamp_flag(0) + padding(000) = 0x00.
-	if payload[6] != 0x00 {
-		t.Errorf("pic_struct byte = %02X, want 0x00", payload[6])
+	// pic_struct(0000) + clock_timestamp_flag(0) + trailing bit_equal_to_one(1)
+	// + zero-fill(00) = 0b00000_1_00 = 0x04.
+	if payload[6] != 0x04 {
+		t.Errorf("pic_struct byte = %02X, want 0x04", payload[6])
 	}
 }
 
@@ -326,14 +370,15 @@ func TestBuildPicTimingSEI_HEVC_FrameFieldInfoOnly(t *testing.T) {
 	}
 
 	payload := BuildPicTimingSEI(cfg, 0, nil)
-	// 4+2+1 = 7 bits, padded to 1 byte.
+	// 4+2+1 = 7 data bits + 1 SEI trailing bit_equal_to_one = 8 bits = 1 byte.
 	if len(payload) != 1 {
 		t.Fatalf("payload length = %d, want 1", len(payload))
 	}
 
-	// 0b0000_010_0 = 0x04 (pic_struct=0, source_scan_type=1, duplicate_flag=0, pad=0)
-	if payload[0] != 0x04 {
-		t.Errorf("payload = %02X, want 0x04", payload[0])
+	// pic_struct=0(0000), source_scan_type=1(01), duplicate_flag=0(0) = 0b0000010,
+	// then trailing bit_equal_to_one(1) at the final bit = 0b0000_0101 = 0x05.
+	if payload[0] != 0x05 {
+		t.Errorf("payload = %02X, want 0x05", payload[0])
 	}
 }
 

@@ -568,10 +568,18 @@ static void srtdec_process_video(srtdec_t *h, AVFrame *frame, int64_t pts) {
             h->sws_frame->format = AV_PIX_FMT_YUV420P;
             h->sws_frame->width = w;
             h->sws_frame->height = h_val;
-            av_frame_get_buffer(h->sws_frame, 0);
+            if (av_frame_get_buffer(h->sws_frame, 0) < 0) {
+                // Allocation failed: invalidate cached params so the next
+                // frame re-runs setup, and bail before sws_scale writes
+                // into unallocated planes.
+                h->last_sws_fmt = AV_PIX_FMT_NONE;
+                h->last_sws_w = 0;
+                h->last_sws_h = 0;
+                return;
+            }
         }
 
-        av_frame_make_writable(h->sws_frame);
+        if (av_frame_make_writable(h->sws_frame) < 0) return;
         sws_scale(h->sws_ctx,
             (const uint8_t* const*)frame->data, frame->linesize,
             0, frame->height,
@@ -589,6 +597,7 @@ static void srtdec_process_video(srtdec_t *h, AVFrame *frame, int64_t pts) {
             frame->height != h->last_sws_h) {
             if (h->sws_ctx) {
                 sws_freeContext(h->sws_ctx);
+                h->sws_ctx = NULL;
             }
             h->sws_ctx = sws_getContext(
                 frame->width, frame->height, frame->format,
@@ -616,10 +625,18 @@ static void srtdec_process_video(srtdec_t *h, AVFrame *frame, int64_t pts) {
             h->sws_frame->format = AV_PIX_FMT_YUV420P;
             h->sws_frame->width = w;
             h->sws_frame->height = h_val;
-            av_frame_get_buffer(h->sws_frame, 0);
+            if (av_frame_get_buffer(h->sws_frame, 0) < 0) {
+                // Allocation failed: invalidate cached params so the next
+                // frame re-runs setup, and bail before sws_scale writes
+                // into unallocated planes.
+                h->last_sws_fmt = AV_PIX_FMT_NONE;
+                h->last_sws_w = 0;
+                h->last_sws_h = 0;
+                return;
+            }
         }
 
-        av_frame_make_writable(h->sws_frame);
+        if (av_frame_make_writable(h->sws_frame) < 0) return;
         sws_scale(h->sws_ctx,
             (const uint8_t* const*)frame->data, frame->linesize,
             0, frame->height,

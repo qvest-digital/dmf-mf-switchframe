@@ -854,3 +854,124 @@ func TestManager_ChannelStatesIncludePods(t *testing.T) {
 		t.Errorf("podsArmed = %d, want 1", states[0].Pods.PodsArmed)
 	}
 }
+
+// TestPodBoard_Fire_SpliceFallback_ArmsAutoReturn is a regression test: when
+// BeginSplice fails (e.g. another channel's splice is in flight on the shared
+// coordinator), Fire falls back to immediate break activation — but unlike the
+// legacy no-coordinator path it never armed the auto-return timer, so a pod
+// with AutoReturn stayed in break forever (channel stuck in ModeBreak).
+func TestPodBoard_Fire_SpliceFallback_ArmsAutoReturn(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+		TimeoutMs:     60000, // long timeout so the other splice stays active
+	})
+
+	// Occupy the coordinator so the pod board's BeginSplice fails.
+	if err := sc.BeginSplice("other-channel-pod", true, true, 180000, 0); err != nil {
+		t.Fatalf("BeginSplice (occupier): %v", err)
+	}
+
+	pb := NewPodBoard(1)
+	pb.SetSCTE35Injector(inj)
+	pb.SetSpliceCoordinator(sc)
+	pb.SetPTSProvider(func() int64 { return 0 })
+
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:       "quarter",
+		DurationMs: 100, // short so auto-return fires quickly
+		AutoReturn: true,
+	})
+	_ = pb.Arm(pod.ID)
+	if err := pb.Fire(pod.ID); err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+
+	// Fallback path: pod goes straight to break_active...
+	p, _ := pb.GetPod(pod.ID)
+	if p.State != PodBreakActive {
+		t.Fatalf("state after fallback fire = %v, want break_active", p.State)
+	}
+
+	// ...and auto-return must still complete the break after DurationMs.
+	waitFor(t, 2*time.Second, func() bool {
+		pp, _ := pb.GetPod(pod.ID)
+		return pp.State == PodRejoined
+	})
+
+	sc.Cancel()
+}
+
+// TestPodBoard_Fire_FailedSplice_DoesNotClobberOtherBoardCallback is a
+// regression test for the shared-coordinator callback clobber: Fire registered
+// the board's splice-ready callback on the coordinator BEFORE BeginSplice, so a
+// second board's failed Fire overwrote the first board's pending callback. When
+// the first board's splice finalized, the callback was routed to the wrong
+// board, the podID lookup missed, and the first board's pod was stuck in
+// PodPreRoll with no auto-return ever armed.
+func TestPodBoard_Fire_FailedSplice_DoesNotClobberOtherBoardCallback(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     100,
+		WindowMs:      50,
+		TimeoutMs:     60000, // finalization driven by IngestFrame below
+	})
+
+	pb1 := NewPodBoard(1)
+	pb1.SetSCTE35Injector(inj)
+	pb1.SetSpliceCoordinator(sc)
+	pb1.SetPTSProvider(func() int64 { return 0 })
+
+	pb2 := NewPodBoard(2)
+	pb2.SetSCTE35Injector(inj)
+	pb2.SetSpliceCoordinator(sc)
+	pb2.SetPTSProvider(func() int64 { return 0 })
+
+	pod1, _ := pb1.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000, AllowDumpOut: true})
+	_ = pb1.Arm(pod1.ID)
+	if err := pb1.Fire(pod1.ID); err != nil {
+		t.Fatalf("board1 Fire: %v", err)
+	}
+	p1, _ := pb1.GetPod(pod1.ID)
+	if p1.State != PodPreRoll {
+		t.Fatalf("board1 pod state = %v, want pre_roll", p1.State)
+	}
+
+	// Board 2 fires while board 1's splice is scanning — BeginSplice fails and
+	// board 2 falls back to immediate activation. This must NOT disturb board
+	// 1's pending splice-ready callback.
+	pod2, _ := pb2.CreatePod(PodConfig{Type: "timeout", DurationMs: 180000, AllowDumpOut: true})
+	_ = pb2.Arm(pod2.ID)
+	if err := pb2.Fire(pod2.ID); err != nil {
+		t.Fatalf("board2 Fire: %v", err)
+	}
+	p2, _ := pb2.GetPod(pod2.ID)
+	if p2.State != PodBreakActive {
+		t.Fatalf("board2 pod state = %v, want break_active (fallback)", p2.State)
+	}
+
+	// Finalize board 1's splice: feed frames through and past the scan window
+	// (target=9000, window=[4500, 13500] at 90kHz).
+	w, h := 320, 240
+	ySize := video.YUV420FrameSize(w, h)
+	for pts := int64(0); pts <= 15000; pts += 3000 {
+		sc.IngestFrame(make([]byte, ySize), w, h, pts)
+	}
+
+	// Board 1's pod must transition to break_active via ITS callback.
+	waitFor(t, 2*time.Second, func() bool {
+		pp, _ := pb1.GetPod(pod1.ID)
+		return pp.State == PodBreakActive
+	})
+
+	// Cleanup.
+	_ = pb1.DumpOut(pod1.ID)
+	_ = pb2.DumpOut(pod2.ID)
+}

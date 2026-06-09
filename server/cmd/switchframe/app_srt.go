@@ -35,6 +35,11 @@ type srtSourceState struct {
 	// Relay path drop counters (incremented in decode callbacks).
 	relayVideoDrops *atomic.Int64
 	relayAudioDrops *atomic.Int64
+
+	// oversizeLogged gates a one-time warning when a decoded frame exceeds the
+	// frame pool's buffer size, which forces per-frame heap fallback allocations
+	// on the hot ingest path (a source/pipeline resolution or format mismatch).
+	oversizeLogged atomic.Bool
 }
 
 // srtVideoJob carries a decoded YUV frame between the decode callback and
@@ -70,6 +75,12 @@ type srtRelayContext struct {
 	state     *srtSourceState
 	framePool *switcher.FramePool
 	pf        switcher.PipelineFormat
+
+	// gpu is the GPU state snapshot taken when the source was wired (nil when
+	// the GPU subsystem is inactive). The replay/preview goroutines must keep
+	// using the snapshot their registrations were made against, not whatever
+	// state a later format-change rebuild installs.
+	gpu *gpuState
 
 	// Channels connecting decode callbacks to goroutines.
 	relayVideoCh  chan srtVideoJob
@@ -148,15 +159,29 @@ func (a *App) initSRT() error {
 // by the listener. Fire-and-forget -- the Source manages its own lifecycle.
 // Closes the connection on any error path to prevent resource leaks.
 func (a *App) onSRTListenerSource(cfg srt.SourceConfig, conn *srtgo.Conn) {
+	// The listener incremented activeCount before invoking this callback. On the
+	// happy path the slot is released by src.OnStopped when the decode loop ends.
+	// But Source.Start creates the decoder (and can fail with no goroutines
+	// launched) before OnStopped can ever fire, and wireSRTSource may return nil,
+	// so any terminal path here that doesn't reach OnStopped must release the
+	// slot itself — otherwise activeCount leaks and eventually wedges MaxSources.
 	src := a.wireSRTSource(cfg, conn)
 	if src == nil {
 		_ = conn.Close()
+		if a.srtListener != nil {
+			a.srtListener.ReleaseSource()
+		}
 		return
 	}
 	if err := src.Start(a.srtCtx); err != nil {
 		slog.Error("srt: failed to start source", "key", cfg.Key, "error", err)
 		_ = conn.Close()
-		src.Stop() // clean up any partially started goroutines
+		// OnStopped never fires on its own when Start fails (no decode
+		// goroutine was launched), so run its cleanup explicitly: it closes
+		// the fan-out channels, removes GPU/replay registrations and the
+		// srtSources entry, and releases the listener slot (cfg.Mode is
+		// ModeListener here, so no extra ReleaseSource call is needed).
+		failSRTSourceStart(src, cfg.Key)
 		return
 	}
 }
@@ -189,12 +214,34 @@ func (a *App) onSRTCallerSource(cfg srt.SourceConfig, conn *srtgo.Conn) <-chan s
 	if err := src.Start(a.srtCtx); err != nil {
 		slog.Error("srt: failed to start source", "key", cfg.Key, "error", err)
 		_ = conn.Close()
-		src.Stop()
-		closeOnce.Do(func() { close(doneCh) })
+		// OnStopped never fires on its own when Start fails (no decode
+		// goroutine was launched). failSRTSourceStart invokes the wrapped
+		// OnStopped above, which runs wireSRTSource's cleanup (closing the
+		// fan-out channels, removing GPU/replay registrations and the
+		// srtSources entry) AND closes doneCh to trigger reconnection.
+		failSRTSourceStart(src, cfg.Key)
 		return doneCh
 	}
 
 	return doneCh
+}
+
+// failSRTSourceStart cleans up an SRT source whose Start() returned an error.
+//
+// srt.Source.Start fails before launching any goroutine (decoder creation is
+// the first step), so the decode-goroutine teardown that normally invokes
+// OnStopped never runs — and Stop() does not call OnStopped either.
+// Everything wireSRTSource set up before Start is reclaimed only by
+// OnStopped: the fan-out goroutines parked on their job channels (and the
+// encoders they own), the GPU source-manager and replay registrations, the
+// srtSources map entry, and (for listener mode) the listener slot. Invoke it
+// explicitly here, exactly once, or all of it leaks on every failed
+// connection attempt.
+func failSRTSourceStart(src *srt.Source, key string) {
+	src.Stop() // release the conn and any partially initialized state
+	if src.OnStopped != nil {
+		src.OnStopped(key)
+	}
 }
 
 // wireSRTSource creates an SRT Source and wires it into the switcher/mixer/relay.
@@ -252,8 +299,14 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		_ = a.sw.SetLabel(context.Background(), key, cfg.Label)
 	}
 
+	// Snapshot the GPU state once for the whole wiring: every registration,
+	// closure, and goroutine below must operate against the SAME state, and
+	// the OnStopped cleanup must remove registrations from the manager they
+	// were made on even if a format-change rebuild swapped in a new one.
+	gs := a.gpu()
+
 	// Pass hardware device context for NVDEC when CUDA GPU is active.
-	if a.gpuState != nil && a.gpuState.sourceManager != nil {
+	if gs != nil && gs.sourceManager != nil {
 		cfg.HWDeviceCtx = codec.HWDeviceCtx()
 	}
 
@@ -313,7 +366,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	// --- Preview proxy encoder (replaces full-quality relay encode) ---
 	var previewEnc *preview.Encoder
 	var gpuPreviewActive bool
-	if a.cfg.PreviewProxy && a.gpuState != nil && a.gpuState.sourceManager != nil {
+	if a.cfg.PreviewProxy && gs != nil && gs.sourceManager != nil {
 		// GPU preview encoding — source manager handles it in IngestYUV.
 		// Register the source with a PreviewConfig so the GPU source manager
 		// creates a per-source GPU preview encoder. The OnPreview callback
@@ -321,7 +374,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
 		var groupID atomic.Uint32
 		var videoInfoSent bool
-		a.gpuState.sourceManager.RegisterSource(key, pf.Width, pf.Height, &gpu.PreviewConfig{
+		gs.sourceManager.RegisterSource(key, pf.Width, pf.Height, &gpu.PreviewConfig{
 			Width:   pw,
 			Height:  ph,
 			Bitrate: a.cfg.PreviewBitrate,
@@ -404,6 +457,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		state:         state,
 		framePool:     framePool,
 		pf:            pf,
+		gpu:           gs,
 		relayVideoCh:  relayVideoCh,
 		replayVideoCh: replayVideoCh,
 		audioCh:       audioCh,
@@ -425,7 +479,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	}
 
 	// --- GPU replay encode (NVDEC + NVENC, zero CPU-copy) ---
-	if a.gpuState != nil && a.gpuState.sourceManager != nil && cfg.HWDeviceCtx != nil && replayViewer != nil {
+	if gs != nil && gs.sourceManager != nil && cfg.HWDeviceCtx != nil && replayViewer != nil {
 		replayGPUCh = make(chan srtReplayGPUJob, 2)
 		a.startSRTReplayGPUEncode(rc, replayGPUCh)
 	}
@@ -454,6 +508,16 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		a.sourceLastVideoPTS.Store(pts)
 		if a.sourceLastAudioPTS.Load() != 0 {
 			a.sourceAVGapInited.Store(true)
+		}
+
+		// Surface persistent size mismatch: if the decoded frame is larger than
+		// the pool buffer, each of the three fan-out copies below falls back to a
+		// fresh heap allocation every frame, defeating the off-GC-heap pool. Log
+		// once per source (rate-limited via CAS) so the misconfiguration is
+		// visible instead of only showing up as silent pool misses + GC pressure.
+		if framePool != nil && len(yuv) > framePool.BufSize() && state.oversizeLogged.CompareAndSwap(false, true) {
+			slog.Warn("srt: decoded frame exceeds frame pool buffer size; falling back to per-frame heap allocation (check source vs pipeline resolution/format)",
+				"key", key, "frameBytes", len(yuv), "poolBufSize", framePool.BufSize(), "w", w, "h", h)
 		}
 
 		// Pipeline and relay get SEPARATE buffers to prevent wrong-frame
@@ -521,8 +585,8 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	// of goOnVideoFrame. This callback receives a CUDA device pointer to the
 	// NV12 surface in VRAM and copies it directly into a GPU pool frame,
 	// bypassing CPU entirely. PTS linearization still runs here (fast, no alloc).
-	if a.gpuState != nil && a.gpuState.sourceManager != nil && cfg.HWDeviceCtx != nil {
-		srcMgr := a.gpuState.sourceManager
+	if gs != nil && gs.sourceManager != nil && cfg.HWDeviceCtx != nil {
+		srcMgr := gs.sourceManager
 		pool := srcMgr.Pool()
 
 		src.OnRawVideoGPU = func(sourceKey string, yDevPtr, uvDevPtr uintptr, pitch, w, h int, pts int64, bitDepth int) {
@@ -566,8 +630,11 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 						return
 					}
 				}
-				// Convert NV12 → P210 on GPU.
-				if err := gpu.ConvertNV12ToP210(a.gpuState.ctx, frame, nv12Tmp); err != nil {
+				// Convert NV12 → P210 on GPU. Use the snapshot ctx, NOT the
+				// live a.gpu() state: pool frames belong to the snapshot's
+				// pool, and mixing a rebuilt context with old-pool frames
+				// would touch destroyed CUDA streams.
+				if err := gpu.ConvertNV12ToP210(gs.ctx, frame, nv12Tmp); err != nil {
 					nv12Tmp.Release()
 					frame.Release()
 					return
@@ -664,9 +731,12 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			a.replayMgr.RemoveSource(sourceKey)
 		}
 
-		// Remove from GPU source manager (releases GPU frames and preview encoder).
-		if a.gpuState != nil && a.gpuState.sourceManager != nil {
-			a.gpuState.sourceManager.RemoveSource(sourceKey)
+		// Remove from GPU source manager (releases GPU frames and preview
+		// encoder). Use the wire-time snapshot: the registration was made on
+		// that manager, and after a format-change rebuild the current manager
+		// has no entry for this source.
+		if gs != nil && gs.sourceManager != nil {
+			gs.sourceManager.RemoveSource(sourceKey)
 		}
 
 		// Don't unregister from switcher -- leave as "no_signal" for reconnect.
@@ -874,7 +944,7 @@ func (a *App) startSRTVideoRelayFullQuality(rc *srtRelayContext) {
 // from the source manager and NVENC-encodes them directly from VRAM for replay.
 // Used when NVDEC is active (OnRawVideo never fires, so CPU replay starves).
 func (a *App) startSRTReplayGPUEncode(rc *srtRelayContext, replayGPUCh <-chan srtReplayGPUJob) {
-	srcMgr := a.gpuState.sourceManager
+	srcMgr := rc.gpu.sourceManager
 
 	go func() {
 		var (
@@ -912,7 +982,7 @@ func (a *App) startSRTReplayGPUEncode(rc *srtRelayContext, replayGPUCh <-chan sr
 			}
 
 			if gpuEnc == nil {
-				enc, err := gpu.NewGPUEncoder(a.gpuState.ctx, job.w, job.h, rc.pf.FPSNum, rc.pf.FPSDen, 6_000_000)
+				enc, err := gpu.NewGPUEncoder(rc.gpu.ctx, job.w, job.h, rc.pf.FPSNum, rc.pf.FPSDen, 6_000_000)
 				if err != nil {
 					slog.Error("srt: GPU replay encoder init failed", "key", rc.key, "error", err)
 					continue
@@ -932,7 +1002,7 @@ func (a *App) startSRTReplayGPUEncode(rc *srtRelayContext, replayGPUCh <-chan sr
 			encFrame := gpuFrame
 			if gpuFrame.Format == gpu.GPUFormatP210 {
 				if replayNV12Tmp == nil {
-					tmp, tmpErr := gpu.NewFramePool(a.gpuState.ctx, job.w, job.h, 2)
+					tmp, tmpErr := gpu.NewFramePool(rc.gpu.ctx, job.w, job.h, 2)
 					if tmpErr != nil {
 						continue
 					}
@@ -943,7 +1013,7 @@ func (a *App) startSRTReplayGPUEncode(rc *srtRelayContext, replayGPUCh <-chan sr
 					}
 					replayNV12Tmp = f
 				}
-				if err := gpu.ScaleP210ToNV12On(a.gpuState.ctx, replayNV12Tmp, gpuFrame, nil); err != nil {
+				if err := gpu.ScaleP210ToNV12On(rc.gpu.ctx, replayNV12Tmp, gpuFrame, nil); err != nil {
 					continue
 				}
 				replayNV12Tmp.PTS = gpuFrame.PTS

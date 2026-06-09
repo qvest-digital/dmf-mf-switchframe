@@ -74,6 +74,10 @@ func ScaleBilinearOn(ctx *Context, dst, src *GPUFrame, q *GPUWorkQueue) error {
 // ScaleLanczos3 scales an NV12 GPU frame using a two-pass separable Lanczos-3
 // kernel. It allocates (and caches on the Context) a temporary float device
 // buffer sized dstW * srcH floats, sufficient for both Y and UV passes.
+//
+// NOT CONCURRENCY-SAFE on the same Context: it uses the Context-global
+// lanczosTmp scratch buffer without holding mu across the kernel + sync.
+// Serialize calls (or use ScaleBilinear, which the production path uses).
 func ScaleLanczos3(ctx *Context, dst, src *GPUFrame) error {
 	if ctx == nil || dst == nil || src == nil {
 		return ErrGPUNotAvailable

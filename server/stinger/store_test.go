@@ -10,9 +10,12 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 func createTestPNG(t *testing.T, dir, name string, w, h int, c color.NRGBA) {
@@ -782,4 +785,127 @@ func TestStingerStore_UploadAtFrameLimit(t *testing.T) {
 	clip, ok := store.Get("at-limit")
 	require.True(t, ok)
 	require.Equal(t, maxFramesPerClip, len(clip.Frames))
+}
+
+// newMmapBackedStore returns a store whose clips are mmap-backed (cacheDir
+// enabled), plus the clip name. This exercises the use-after-free path where
+// Frame.YUV/Frame.Alpha alias a memory-mapped region freed by Delete().
+func newMmapBackedStore(t *testing.T, name string, w, h, frames int) *Store {
+	t.Helper()
+	dir := t.TempDir()
+	cacheDir := t.TempDir()
+	stingerDir := filepath.Join(dir, name)
+	require.NoError(t, os.MkdirAll(stingerDir, 0755))
+	for i := 0; i < frames; i++ {
+		createTestPNG(t, stingerDir, fmt.Sprintf("%03d.png", i), w, h, color.NRGBA{R: 255, A: byte(10 + i)})
+	}
+	store, err := NewStore(dir, 0, cacheDir)
+	require.NoError(t, err)
+
+	// Sanity: the clip must actually be mmap-backed, otherwise this test would
+	// not reproduce the original use-after-free.
+	clip, ok := store.Get(name)
+	require.True(t, ok)
+	require.NotNil(t, clip.mmapBacking, "clip must be mmap-backed to exercise the UAF path")
+	return store
+}
+
+// TestStingerStore_StingerData_SurvivesDelete is a regression test for the
+// use-after-free where deleting (munmap) a stinger clip freed the frame bytes a
+// live transition was still reading. StingerData must return a heap-owned deep
+// copy that is unaffected by a subsequent Delete()/munmap.
+func TestStingerStore_StingerData_SurvivesDelete(t *testing.T) {
+	store := newMmapBackedStore(t, "wipe1", 8, 8, 4)
+
+	clip, ok := store.Get("wipe1")
+	require.True(t, ok)
+	// Capture expected bytes (copied) and the backing array pointer of the mmap
+	// before deletion so we can assert the copy is independent.
+	wantYUV := bytes.Clone(clip.Frames[0].YUV)
+	wantAlpha := bytes.Clone(clip.Frames[0].Alpha)
+	mmapYUVPtr := &clip.Frames[0].YUV[0]
+
+	sd, ok := store.StingerData("wipe1")
+	require.True(t, ok)
+	require.Len(t, sd.Frames, 4)
+
+	// The returned copy must NOT alias the mmap region.
+	require.NotSame(t, mmapYUVPtr, &sd.Frames[0].YUV[0],
+		"StingerData must deep-copy, not alias the mmap")
+
+	// Delete munmaps the backing. Reading the mmap aliases now would SIGSEGV;
+	// reading the deep copy must remain safe and unchanged.
+	require.NoError(t, store.Delete("wipe1"))
+
+	require.Equal(t, wantYUV, sd.Frames[0].YUV)
+	require.Equal(t, wantAlpha, sd.Frames[0].Alpha)
+	// Touch every byte of every frame to ensure none of it points into the
+	// freed mapping (this would fault under the buggy shallow-copy behavior).
+	var sum int
+	for i := range sd.Frames {
+		for _, b := range sd.Frames[i].YUV {
+			sum += int(b)
+		}
+		for _, b := range sd.Frames[i].Alpha {
+			sum += int(b)
+		}
+	}
+	_ = sum
+}
+
+// TestStingerStore_StingerData_IsIndependentCopy verifies that mutating the
+// returned StingerData does not affect the stored clip (and vice versa).
+func TestStingerStore_StingerData_IsIndependentCopy(t *testing.T) {
+	store := newMmapBackedStore(t, "wipe1", 8, 8, 2)
+
+	sd, ok := store.StingerData("wipe1")
+	require.True(t, ok)
+	require.Greater(t, len(sd.Frames[0].YUV), 0)
+
+	orig := sd.Frames[0].YUV[0]
+	sd.Frames[0].YUV[0] = orig ^ 0xFF // mutate the copy
+
+	clip, ok := store.Get("wipe1")
+	require.True(t, ok)
+	require.Equal(t, orig, clip.Frames[0].YUV[0],
+		"mutating the StingerData copy must not affect the stored clip")
+}
+
+// TestStingerStore_StingerData_ConcurrentDelete runs StingerData and Delete
+// concurrently. Under the race detector this catches any window where the deep
+// copy reads mmap memory that Delete is munmapping. The data is exercised after
+// the store is empty to ensure the copy outlives the mapping.
+func TestStingerStore_StingerData_ConcurrentDelete(t *testing.T) {
+	for iter := 0; iter < 50; iter++ {
+		store := newMmapBackedStore(t, "wipe1", 8, 8, 4)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		var sd *transition.StingerData
+		go func() {
+			defer wg.Done()
+			if data, ok := store.StingerData("wipe1"); ok {
+				sd = data
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			_ = store.Delete("wipe1")
+		}()
+		wg.Wait()
+
+		// If StingerData won the race, its bytes must remain readable after the
+		// clip is gone (the mapping may already be munmapped).
+		if sd != nil {
+			for i := range sd.Frames {
+				for _, b := range sd.Frames[i].YUV {
+					_ = b
+				}
+				for _, b := range sd.Frames[i].Alpha {
+					_ = b
+				}
+			}
+		}
+	}
 }

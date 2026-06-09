@@ -451,12 +451,32 @@ func (m *Manager) StartSRTOutput(config SRTConfig) error {
 		return fmt.Errorf("unknown SRT mode: %s", config.Mode)
 	}
 
+	// Reserve the output slot, then run adapter.Start outside Manager.mu:
+	// for caller mode Start performs a synchronous SRT dial that can block
+	// up to the 5s ConnTimeout and must not stall the control plane.
+	m.srtOutput = adapter
+	m.mu.Unlock()
+
 	if err := adapter.Start(m.ctx); err != nil {
+		m.mu.Lock()
+		if m.srtOutput == adapter {
+			m.srtOutput = nil
+		}
+		m.removeSRTStats(adapter.ID(), "")
 		m.mu.Unlock()
 		return fmt.Errorf("start SRT output: %w", err)
 	}
 
-	m.srtOutput = adapter
+	m.mu.Lock()
+	if m.srtOutput != adapter {
+		// A concurrent StopSRTOutput/Close claimed the adapter while Start
+		// was dialing. It already closed the adapter, but the dial may have
+		// completed after that Close — close again so no live connection
+		// survives, and do not publish.
+		m.mu.Unlock()
+		_ = adapter.Close()
+		return ErrSRTNotActive
+	}
 	stale := m.rebuildAdaptersLocked()
 	muxStarted := m.ensureMuxerLocked()
 	fn := m.onState
@@ -544,6 +564,12 @@ func (m *Manager) AddDestination(config DestinationConfig) (string, error) {
 		}
 	default:
 		return "", fmt.Errorf("unsupported destination type: %s", config.Type)
+	}
+
+	// Validate encryption settings up front: silently dropping them later
+	// would stream an "encrypted" destination in cleartext.
+	if err := validateEncryptionConfig(config); err != nil {
+		return "", err
 	}
 
 	// Default engine label from manager if not explicitly set.
@@ -671,6 +697,16 @@ func (m *Manager) StartDestination(id string) error {
 		srtOverheadBW = 5
 	}
 
+	// Map encryption config to the srtgo key length. Config was validated
+	// at AddDestination time; a failure here means the stored config is
+	// corrupt, so refuse to start rather than stream in cleartext.
+	srtKeyLen, err := srtKeyLength(dest.config.Encryption)
+	if err != nil {
+		dest.mu.Unlock()
+		m.mu.Unlock()
+		return fmt.Errorf("destination %s: %w", id, err)
+	}
+
 	// Create adapter based on config type.
 	var adapter Adapter
 	switch dest.config.Type {
@@ -680,6 +716,8 @@ func (m *Manager) StartDestination(id string) error {
 			Port:       dest.config.Port,
 			Latency:    dest.config.Latency,
 			StreamID:   dest.config.StreamID,
+			Passphrase: dest.config.Passphrase,
+			KeyLength:  srtKeyLen,
 			InputBW:    srtInputBW,
 			OverheadBW: srtOverheadBW,
 		}
@@ -720,6 +758,8 @@ func (m *Manager) StartDestination(id string) error {
 			Port:       dest.config.Port,
 			Latency:    dest.config.Latency,
 			MaxConns:   maxConns,
+			Passphrase: dest.config.Passphrase,
+			KeyLength:  srtKeyLen,
 			InputBW:    srtInputBW,
 			OverheadBW: srtOverheadBW,
 		})
@@ -779,17 +819,48 @@ func (m *Manager) StartDestination(id string) error {
 		return nil
 	}
 
-	if err := adapter.Start(m.ctx); err != nil {
-		dest.mu.Unlock()
-		m.mu.Unlock()
-		return fmt.Errorf("start destination %s: %w", id, err)
-	}
-
+	// Reserve the destination before dialing: mark it active and publish
+	// the adapter reference so concurrent Start/Stop/Remove operations see
+	// a consistent state, then run adapter.Start outside BOTH locks. For
+	// srt-caller adapters Start performs a synchronous SRT dial that can
+	// block up to the 5s ConnTimeout; holding Manager.mu across the dial
+	// would stall the entire control plane for the duration.
 	now := time.Now()
 	dest.adapter = adapter
 	dest.active = true
 	dest.startedAt = &now
 	dest.mu.Unlock()
+	m.mu.Unlock()
+
+	if err := adapter.Start(m.ctx); err != nil {
+		// Roll back the reservation (unless a concurrent Stop/Remove
+		// already claimed it).
+		m.mu.Lock()
+		dest.mu.Lock()
+		if dest.adapter == adapter {
+			dest.adapter = nil
+			dest.active = false
+			dest.startedAt = nil
+		}
+		dest.mu.Unlock()
+		m.removeSRTStats(adapter.ID(), id)
+		m.mu.Unlock()
+		return fmt.Errorf("start destination %s: %w", id, err)
+	}
+
+	m.mu.Lock()
+	dest.mu.Lock()
+	current := dest.active && dest.adapter == adapter
+	dest.mu.Unlock()
+	if !current {
+		// A concurrent StopDestination/RemoveDestination/Close claimed the
+		// adapter while Start was dialing. It already closed the adapter,
+		// but the dial may have completed after that Close — close again
+		// so no live connection survives, and do not publish.
+		m.mu.Unlock()
+		_ = adapter.Close()
+		return ErrDestinationStopped
+	}
 
 	stale := m.rebuildAdaptersLocked()
 	muxStarted := m.ensureMuxerLocked()

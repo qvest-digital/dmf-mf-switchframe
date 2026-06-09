@@ -317,13 +317,15 @@ func TestMultiSourceMemoryStability(t *testing.T) {
 	t.Logf("MEASURE: TS data accumulated=%d bytes (%.1f MB)",
 		h.tsLen(), float64(h.tsLen())/(1024*1024))
 
-	// Assert: heap growth < 50MB.
-	if heapAfter > heapBefore {
-		heapGrowth := int64(heapAfter - heapBefore)
-		require.Less(t, heapGrowth, int64(50*1024*1024),
-			"heap grew by %d MB (>50MB) during %v multi-source run — possible memory leak",
-			deltaMB, duration)
-	}
+	// Assert: heap growth < 50MB. Evaluate unconditionally on the signed delta —
+	// the old `if heapAfter > heapBefore` guard skipped the check whenever GC
+	// reclaimed more than allocated at the sample point, letting a real leak slip
+	// through. A net-shrunk heap is not a leak and passes trivially; only growth
+	// past the bound fails. (HeapAlloc cannot see off-heap FramePool leaks.)
+	heapGrowth := int64(heapAfter) - int64(heapBefore)
+	require.Less(t, heapGrowth, int64(50*1024*1024),
+		"heap grew by %d MB (>50MB) during %v multi-source run — possible memory leak",
+		deltaMB, duration)
 }
 
 // ==========================================================================

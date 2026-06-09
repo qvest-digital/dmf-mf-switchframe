@@ -464,13 +464,18 @@ func (pb *PodBoard) Fire(id string) error {
 			})
 		}
 
-		// Wire the onSpliceReady callback to transition pod to break_active.
-		sc.SetOnSpliceReady(func(podID string, pts int64, preRollMs int64) {
-			pb.onSpliceReady(podID, pts, preRollMs)
-		})
-
+		// The onSpliceReady callback (transitions the pod to break_active) is
+		// bound to the splice operation itself, atomically with BeginSplice.
+		// Registering it via SetOnSpliceReady before BeginSplice would let a
+		// concurrent Fire on another board sharing this coordinator overwrite
+		// our pending callback (its BeginSplice fails, but the SetOnSpliceReady
+		// would already have clobbered ours), leaving this pod stuck in
+		// PodPreRoll forever.
 		currentPTS := ptsProvider()
-		err := sc.BeginSplice(id, true, config.AutoReturn, config.DurationMs, currentPTS)
+		err := sc.BeginSpliceWithCallback(id, true, config.AutoReturn, config.DurationMs, currentPTS,
+			func(podID string, pts int64, preRollMs int64) {
+				pb.onSpliceReady(podID, pts, preRollMs)
+			})
 		if err != nil {
 			slog.Warn("playout: splice BeginSplice failed, falling back to immediate", "pod", id, "error", err)
 			// Fall back: transition directly to break_active.
@@ -480,6 +485,18 @@ func (pb *PodBoard) Fire(id string) error {
 			}
 			pb.mu.Unlock()
 			pb.fireImmediate(id, inj, config)
+
+			// onSpliceReady will never fire for this pod (no splice operation
+			// exists), so arm the auto-return timer here — mirroring the legacy
+			// immediate path. Without it an AutoReturn pod stays in break
+			// forever (channel stuck in ModeBreak until a manual return).
+			if config.AutoReturn && config.DurationMs > 0 {
+				ctx, cancel := context.WithCancel(context.Background())
+				pb.mu.Lock()
+				pb.autoReturnCancels[id] = cancel
+				pb.mu.Unlock()
+				go pb.runAutoReturn(ctx, id, config.DurationMs)
+			}
 		}
 
 		if breakStartFn != nil {

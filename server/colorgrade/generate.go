@@ -85,19 +85,31 @@ func ApplySaturation(lut *LUT3D, sat float32) {
 	}
 }
 
-// ApplyContrast applies an S-curve contrast around the midpoint (0.5).
-// amount controls strength: 0.0 = no change, positive = more contrast.
+// ApplyContrast applies a contrast adjustment around the midpoint (0.5).
+// amount range is -1 to +1: 0.0 = no change, positive = more contrast
+// (S-curve), negative = less contrast (values blend linearly toward the
+// midpoint; -1 collapses to flat 0.5 gray).
 func ApplyContrast(lut *LUT3D, amount float32) {
-	for i := 0; i < len(lut.Data); i++ {
-		v := lut.Data[i]
-		// Attempt a smooth S-curve via adjusted sigmoid.
+	switch {
+	case amount > 0:
+		// Smooth S-curve via adjusted sigmoid.
 		// Map [0,1] through: 0.5 + 0.5 * tanh(amount * (v - 0.5) * 4) / tanh(amount * 2)
-		if amount > 0 {
-			t := float64(amount) * 2.0
-			norm := math.Tanh(t)
+		norm := math.Tanh(float64(amount) * 2.0)
+		for i := 0; i < len(lut.Data); i++ {
+			v := lut.Data[i]
 			v = float32(0.5 + 0.5*math.Tanh(float64(amount)*float64(v-0.5)*4.0)/norm)
+			lut.Data[i] = clampf(v, 0, 1)
 		}
-		lut.Data[i] = clampf(v, 0, 1)
+	case amount < 0:
+		// Reduce contrast: scale values linearly toward the midpoint.
+		// amount = -1 yields zero contrast (everything 0.5).
+		k := 1 + amount
+		if k < 0 {
+			k = 0
+		}
+		for i := 0; i < len(lut.Data); i++ {
+			lut.Data[i] = clampf(0.5+(lut.Data[i]-0.5)*k, 0, 1)
+		}
 	}
 }
 
@@ -177,9 +189,51 @@ func reinhardToneMap(l float32) float32 {
 	return l / (1.0 + l)
 }
 
+// Luminance normalization for PQ conversions.
+//
+// PQ (SMPTE ST 2084) is an absolute transfer function: pqEOTF/pqOETF linear
+// 1.0 corresponds to 10,000 nits. BT.709 and HLG linear values are
+// display/scene-relative: bt709EOTF 1.0 is SDR reference white (203 nits on a
+// PQ display per ITU-R BT.2408) and HLG 1.0 is the nominal 1,000-nit peak
+// (ITU-R BT.2100). Conversions through PQ must rescale linear light between
+// these domains — otherwise SDR white maps to PQ code 1.0 (10,000 nits) and
+// 1,000-nit PQ content is crushed into the SDR midtones.
+const (
+	pqPeakNits      = 10000.0 // PQ linear 1.0
+	sdrRefWhiteNits = 203.0   // SDR reference white on a PQ display (BT.2408)
+	hlgPeakNits     = 1000.0  // HLG nominal peak luminance (BT.2100)
+)
+
+// sdrLinearToPQLinear rescales display-relative SDR linear light
+// (1.0 = reference white) to absolute PQ linear light (1.0 = 10,000 nits).
+func sdrLinearToPQLinear(l float32) float32 {
+	return l * (sdrRefWhiteNits / pqPeakNits)
+}
+
+// pqLinearToSDRLinear rescales absolute PQ linear light to display-relative
+// SDR linear light (1.0 = reference white), then Reinhard tone-maps the
+// above-white HDR headroom into the SDR range.
+func pqLinearToSDRLinear(l float32) float32 {
+	return reinhardToneMap(l * (pqPeakNits / sdrRefWhiteNits))
+}
+
+// hlgLinearToPQLinear rescales HLG-relative linear light (1.0 = 1,000-nit
+// nominal peak) to absolute PQ linear light.
+func hlgLinearToPQLinear(l float32) float32 {
+	return l * (hlgPeakNits / pqPeakNits)
+}
+
+// pqLinearToHLGLinear rescales absolute PQ linear light to HLG-relative
+// linear light (1.0 = 1,000-nit nominal peak), Reinhard tone-mapping
+// brighter-than-peak content into range.
+func pqLinearToHLGLinear(l float32) float32 {
+	return reinhardToneMap(l * (pqPeakNits / hlgPeakNits))
+}
+
 // GenerateHDRLook creates a 3D LUT that converts between color spaces by
-// applying a source EOTF (signal → linear), optional tone mapping, and a
-// destination OETF (linear → signal) to every entry of an identity LUT.
+// applying a source EOTF (signal → linear), an optional linear-light
+// transform (luminance normalization and/or tone mapping), and a destination
+// OETF (linear → signal) to every entry of an identity LUT.
 func GenerateHDRLook(name string, sourceEOTF, destOETF func(float32) float32, toneMap func(float32) float32) *LUT3D {
 	lut := GenerateIdentityLUT()
 	lut.Title = name
@@ -583,7 +637,7 @@ func BuiltinLooks() []LookParams {
 			Name: "sdr-to-pq", Group: "Technical",
 			Description: "BT.709 to BT.2100 PQ expansion",
 			HDRGen: func(name string) *LUT3D {
-				return GenerateHDRLook(name, bt709EOTF, pqOETF, nil)
+				return GenerateHDRLook(name, bt709EOTF, pqOETF, sdrLinearToPQLinear)
 			},
 		},
 		{
@@ -597,21 +651,21 @@ func BuiltinLooks() []LookParams {
 			Name: "pq-to-sdr", Group: "Technical",
 			Description: "BT.2100 PQ to BT.709 compression",
 			HDRGen: func(name string) *LUT3D {
-				return GenerateHDRLook(name, pqEOTF, bt709OETF, reinhardToneMap)
+				return GenerateHDRLook(name, pqEOTF, bt709OETF, pqLinearToSDRLinear)
 			},
 		},
 		{
 			Name: "hlg-to-pq", Group: "Technical",
 			Description: "BT.2100 HLG to PQ transfer",
 			HDRGen: func(name string) *LUT3D {
-				return GenerateHDRLook(name, hlgInverseOETF, pqOETF, nil)
+				return GenerateHDRLook(name, hlgInverseOETF, pqOETF, hlgLinearToPQLinear)
 			},
 		},
 		{
 			Name: "pq-to-hlg", Group: "Technical",
 			Description: "BT.2100 PQ to HLG transfer",
 			HDRGen: func(name string) *LUT3D {
-				return GenerateHDRLook(name, pqEOTF, hlgOETF, reinhardToneMap)
+				return GenerateHDRLook(name, pqEOTF, hlgOETF, pqLinearToHLGLinear)
 			},
 		},
 	}

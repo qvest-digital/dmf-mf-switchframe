@@ -6,11 +6,24 @@ import (
 	"sync/atomic"
 )
 
-// Limiter is a brickwall true-peak limiter for the program output bus.
-// It uses a peak-following envelope with fast attack and slow release
-// driven by an ITU-R BS.1770-4 Annex 2 4× polyphase FIR true-peak detector,
-// so inter-sample peaks are caught before they reach a downstream DAC.
-// Always active on the program bus.
+// Limiter is a true-peak limiter for the program output bus. It uses a
+// peak-following envelope with fast attack and slow release driven by an
+// ITU-R BS.1770-4 Annex 2 4× polyphase FIR true-peak detector, so inter-sample
+// peaks are caught before they reach a downstream DAC. Always active on the
+// program bus.
+//
+// Ceiling guarantee — steady state only. This is a feed-forward design with
+// zero lookahead and a finite attack coefficient (0.1ms). The dBTP ceiling is
+// only guaranteed once the envelope has settled: on a fast transient ONSET the
+// envelope needs several samples to rise, so the first samples are
+// under-attenuated and the reconstructed true-peak can briefly exceed the
+// configured ceiling (measured ~1 dB of overshoot on a worst-case
+// silence→inter-sample-peak step; see TestLimiter_TransientOnsetOvershoot).
+// The sample-domain hard clamp below clamps the SAMPLE value to ±target, not
+// the reconstructed true-peak, so it does not close this gap. Making the
+// ceiling truly brickwall on transients requires a short (1-2ms) lookahead
+// delay so gain reduction is applied before the peak it must attenuate; that is
+// a follow-up because it adds output latency and changes the audio path.
 //
 // Process() is single-threaded (called from the mixer's processing goroutine).
 // GainReduction and TruePeak are stored as atomic float64 for lock-free
@@ -175,6 +188,10 @@ func (l *Limiter) Process(samples []float32) float64 {
 
 		for j := 0; j < ch && i+j < len(samples); j++ {
 			samples[i+j] *= gain
+			// Sample-domain hard clamp. NOTE: this bounds the SAMPLE value to
+			// ±target, not the reconstructed inter-sample (true) peak, which can
+			// sit up to ~+3 dB above the sample peak. It is a backstop against
+			// gross overshoot, not a true-peak ceiling guarantee on transients.
 			if samples[i+j] > targetF32 {
 				samples[i+j] = targetF32
 			} else if samples[i+j] < -targetF32 {

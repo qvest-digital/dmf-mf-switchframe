@@ -417,12 +417,25 @@ func (w *discreteFlowWriter) WriteGrain(index uint64, data []byte) error {
 		return err
 	}
 
+	// Bounds-check the payload against the grain slot capacity BEFORE the
+	// memcpy: an oversized payload (e.g. a flow definition whose resolution
+	// disagrees with the producer's WriterConfig) would otherwise overwrite
+	// adjacent grains/headers in the cross-process shared-memory ring.
+	if err := checkGrainPayloadFits(len(data), uint32(grain.grainSize)); err != nil {
+		// Release the opened grain without publishing it.
+		C.mxlFlowWriterCancelGrain(w.writer)
+		return fmt.Errorf("write grain at index %d: %w", index, err)
+	}
+
 	// Copy Go data into shared memory.
 	C.memcpy(unsafe.Pointer(payload), unsafe.Pointer(&data[0]), C.size_t(len(data)))
 
-	// Commit — mark all slices valid, clear invalid flag.
+	// Commit — mark all slices valid, clear invalid flag, and record the
+	// actual payload length so readers of variable-length data grains do not
+	// receive stale trailing bytes from previous occupants of the slot.
 	grain.flags = 0
 	grain.validSlices = grain.totalSlices
+	grain.grainSize = C.uint32_t(len(data))
 	status = C.mxlFlowWriterCommitGrain(w.writer, &grain)
 	return statusError(status, "commit grain")
 }

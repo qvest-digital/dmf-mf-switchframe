@@ -99,6 +99,11 @@ type TimeSignalRequestData struct {
 }
 
 // SegmentationDescriptorRequest carries segmentation metadata (OpID 0x010B).
+//
+// Field layout mirrors SCTE 104 Table 8-29 (insert_segmentation_descriptor_request),
+// which is byte-aligned and differs from the SCTE-35 segmentation_descriptor()
+// bit layout: there is no program_segmentation_flag, no component loop and no
+// 40-bit 90 kHz duration in SCTE 104 — duration is a 16-bit SECONDS field.
 type SegmentationDescriptorRequest struct {
 	// SegEventID uniquely identifies the segmentation event.
 	SegEventID uint32
@@ -106,8 +111,13 @@ type SegmentationDescriptorRequest struct {
 	// SegmentationTypeID identifies the type of segmentation (per SCTE-35 table).
 	SegmentationTypeID uint8
 
-	// DurationTicks is the segmentation duration in 90kHz ticks.
-	DurationTicks uint64
+	// Duration is the segmentation duration in SECONDS (16-bit wire field).
+	// Translation to/from SCTE-35's 90 kHz tick duration happens in translate.go.
+	Duration uint16
+
+	// DurationExtensionFrames extends Duration by a number of video frames
+	// for sub-second precision.
+	DurationExtensionFrames uint8
 
 	// UPIDType identifies the type of UPID.
 	UPIDType uint8
@@ -122,19 +132,25 @@ type SegmentationDescriptorRequest struct {
 	SegExpected uint8
 
 	// CancelIndicator when true cancels the segmentation event.
+	// On the wire this is a full byte with value 0 or 1.
 	CancelIndicator bool
 
-	// ProgramSegmentationFlag when true indicates program-level segmentation
-	// (no component-level data). Per SCTE 104 2021 Table 8-29.
-	ProgramSegmentationFlag bool
+	// DeliveryNotRestricted when true indicates no delivery restrictions;
+	// the four fields below are only meaningful when it is false.
+	DeliveryNotRestricted bool
 
-	// SubSegmentNum is the sub-segment number within the segment.
-	// Per SCTE 104 2021 Table 8-29, present after segs_expected for
-	// certain segmentation types.
-	SubSegmentNum uint8
+	// WebDeliveryAllowed indicates web delivery is permitted.
+	WebDeliveryAllowed bool
 
-	// SubSegmentsExpected is the expected number of sub-segments.
-	SubSegmentsExpected uint8
+	// NoRegionalBlackout indicates no regional blackout applies.
+	NoRegionalBlackout bool
+
+	// ArchiveAllowed indicates recording/archiving is permitted.
+	ArchiveAllowed bool
+
+	// DeviceRestrictions is the 2-bit SCTE-35 device restrictions value
+	// carried as a full byte in SCTE 104.
+	DeviceRestrictions uint8
 }
 
 // String returns a human-readable description of the operation.
@@ -158,23 +174,6 @@ func (o Operation) String() string {
 func isKnownSingleOpID(opID uint16) bool {
 	switch opID {
 	case OpSpliceRequest, OpSpliceNull, OpTimeSignalRequest, OpSegmentationDescriptorRequest:
-		return true
-	default:
-		return false
-	}
-}
-
-// hasSubSegmentFields returns true if the segmentation_type_id carries
-// sub_segment_num and sub_segments_expected fields per SCTE-35 Table 22
-// and SCTE-104 2021 Table 8-29.
-func hasSubSegmentFields(typeID uint8) bool {
-	switch typeID {
-	case 0x34, // Provider Placement Opportunity Start
-		0x36, // Distributor Placement Opportunity Start
-		0x38, // Provider Overlay Placement Opportunity Start
-		0x3A, // Distributor Overlay Placement Opportunity Start
-		0x44, // Provider Ad Block Start
-		0x46: // Distributor Ad Block Start
 		return true
 	default:
 		return false

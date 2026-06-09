@@ -25,8 +25,9 @@ type WriterConfig struct {
 
 // v210Frame holds a converted V210 frame for the steady-rate output ticker.
 // slot is the index into Writer.v210Bufs that data points into; -1 indicates
-// a standalone allocation (the 10-bit path) that is not part of the ring and
-// therefore needs no in-flight coordination.
+// a standalone allocation that is not part of the ring and therefore needs
+// no in-flight coordination (no current producer path emits these — both the
+// 8-bit and 10-bit paths use ring slots — but the ticker still honors it).
 type v210Frame struct {
 	data []byte
 	slot int
@@ -65,10 +66,17 @@ type Writer struct {
 	// videoRef is lock-free: accessed atomically from the ticker hot path.
 	videoRef atomic.Pointer[videoWriterRef]
 
-	// dataRef is lock-free: accessed atomically from event-driven WriteDataGrain calls.
+	// dataRef is stored atomically (SetDataWriter can race Close), but
+	// WriteDataGrain holds w.mu for the duration of the cgo WriteGrain call
+	// so Close cannot release the flow writer while it is in use.
 	dataRef atomic.Pointer[dataWriterRef]
 
-	// mu protects audioWriter/audioRate and Close() resource cleanup.
+	// mu protects audioWriter/audioRate and Close() resource cleanup, and is
+	// held across the cgo WriteSamples/WriteGrain calls in WriteAudio and
+	// WriteDataGrain: Close releases the underlying C flow writers under the
+	// same mutex, so an in-flight write can never hit a released handle
+	// (use-after-free in C). Contention is only writer-vs-Close — the video
+	// hot path (WriteVideo + videoTickLoop) does not take this mutex.
 	mu          sync.Mutex
 	audioWriter ContinuousWriter
 	audioRate   Rational
@@ -88,12 +96,16 @@ type Writer struct {
 	deinterleaveBuf [][]float32
 
 	// Ring-buffered V210 output to avoid per-frame allocation.
-	// WriteVideo advances v210BufIdx around the ring; the ticker publishes
-	// v210InFlight = (slot it is currently consuming) before its cgo
-	// WriteGrain copy and clears it back to -1 after. WriteVideo refuses to
-	// reuse a slot that is currently in flight (dropping the frame and
-	// bumping v210Drops). Four slots give the producer headroom equal to
-	// one cgo WriteGrain plus the ticker's nanosecond-scale Load→Store gap.
+	// WriteVideo advances v210BufIdx around the ring; the ticker claims
+	// v210InFlight = (slot it is about to consume) and then re-confirms that
+	// slot still matches the latest frame before its cgo WriteGrain copy
+	// (claim-then-confirm — see videoTickLoop), clearing it back to -1 after.
+	// WriteVideo refuses to reuse a slot that is currently in flight (dropping
+	// the frame and bumping v210Drops). Four slots give the producer headroom
+	// equal to one cgo WriteGrain; the confirm step removes any dependence on
+	// the claim landing within a bounded Load→Store gap. The producer's burst
+	// rate must still stay well under four conversions per WriteGrain so the
+	// ticker's confirm loop converges (it does at any realistic frame rate).
 	v210Bufs      [4][]byte
 	v210BufIdx    int
 	v210InFlight  atomic.Int64 // ring slot currently held by the ticker, or -1
@@ -153,6 +165,13 @@ func (w *Writer) WriteDataGrain(data []byte) error {
 		return errors.New("mxl writer: closed")
 	}
 
+	// Hold w.mu for the duration of the cgo write: Close() releases the data
+	// flow writer under the same mutex, so WriteGrain can never execute on an
+	// already-released C handle. (The closed.Load above is just a fast path —
+	// it is a TOCTOU without the mutex.)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	ref := w.dataRef.Load()
 	if ref == nil || ref.writer == nil {
 		return errors.New("mxl writer: no data writer set")
@@ -193,8 +212,29 @@ func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
 
 	// Convert YUV420p → V210 using a 4-slot ring coordinated with the
 	// ticker via v210InFlight. See the field doc on v210Bufs.
-	stride := V210LineStride(width)
-	outSize := stride * height
+	buf, nextIdx, ok := w.acquireV210Slot(width, height)
+	if !ok {
+		return
+	}
+	if err := YUV420pToV210Into(yuv, buf, width, height); err != nil {
+		w.log.Error("mxl writer: YUV420p→V210 conversion failed",
+			"error", err, "width", width, "height", height)
+		return
+	}
+
+	w.latestV210.Store(&v210Frame{data: buf, slot: nextIdx})
+	w.v210BufIdx = nextIdx
+}
+
+// acquireV210Slot returns the next V210 ring slot for the producer to fill,
+// (re)allocating the ring when the resolution changes. It returns ok=false
+// (after bumping v210Drops) when the slot is currently claimed by the ticker
+// — the caller must drop the frame rather than overwrite a buffer that is
+// mid-cgo-WriteGrain. Called only from the single video producer goroutine
+// (WriteVideo / WriteVideo10bit — both produce V210 of the same size,
+// V210LineStride(width)*height).
+func (w *Writer) acquireV210Slot(width, height int) ([]byte, int, bool) {
+	outSize := V210LineStride(width) * height
 	if w.v210BufWidth != width || w.v210BufHeight != height {
 		for i := range w.v210Bufs {
 			w.v210Bufs[i] = make([]byte, outSize)
@@ -215,17 +255,9 @@ func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
 	nextIdx := (w.v210BufIdx + 1) % len(w.v210Bufs)
 	if int64(nextIdx) == w.v210InFlight.Load() {
 		w.v210Drops.Add(1)
-		return
+		return nil, 0, false
 	}
-	buf := w.v210Bufs[nextIdx]
-	if err := YUV420pToV210Into(yuv, buf, width, height); err != nil {
-		w.log.Error("mxl writer: YUV420p→V210 conversion failed",
-			"error", err, "width", width, "height", height)
-		return
-	}
-
-	w.latestV210.Store(&v210Frame{data: buf, slot: nextIdx})
-	w.v210BufIdx = nextIdx
+	return w.v210Bufs[nextIdx], nextIdx, true
 }
 
 // WriteVideo10bit converts a YUV422P10LE (10-bit 4:2:2 planar) frame to V210
@@ -246,18 +278,22 @@ func (w *Writer) WriteVideo10bit(yuv []byte, width, height int, pts int64) {
 		}
 	}
 
-	// Convert YUV422P10LE → V210 losslessly. The SIMD-accelerated path is
-	// selected automatically when available.
-	v210, err := YUV422P10ToV210(yuv, width, height)
-	if err != nil {
+	// Convert YUV422P10LE → V210 losslessly into a ring slot. V210 output is
+	// V210LineStride(width)*height bytes regardless of source bit depth, so
+	// the 10-bit path shares the 8-bit path's 4-slot ring (and its in-flight
+	// coordination with the ticker) instead of allocating ~5.5 MB per frame.
+	buf, nextIdx, ok := w.acquireV210Slot(width, height)
+	if !ok {
+		return
+	}
+	if err := YUV422P10ToV210Into(yuv, buf, width, height); err != nil {
 		w.log.Error("mxl writer: YUV422P10→V210 conversion failed",
 			"error", err, "width", width, "height", height)
 		return
 	}
 
-	// slot = -1 — this is a fresh standalone allocation, not a ring slot,
-	// so the ticker does not need to coordinate an in-flight claim.
-	w.latestV210.Store(&v210Frame{data: v210, slot: -1})
+	w.latestV210.Store(&v210Frame{data: buf, slot: nextIdx})
+	w.v210BufIdx = nextIdx
 }
 
 // videoTickLoop writes the latest V210 frame to MXL at a steady frame rate.
@@ -297,12 +333,27 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 				index = CurrentIndex(ref.rate)
 			}
 
-			// Publish the ring slot we are about to read so WriteVideo
-			// will drop rather than overwrite it. slot < 0 denotes a
-			// standalone (non-ring) buffer and needs no claim.
-			if frame.slot >= 0 {
+			// Claim-then-confirm: publish the ring slot we intend to read so
+			// WriteVideo will drop rather than overwrite it, THEN re-load
+			// latest and confirm the slot is unchanged before the cgo copy.
+			// This makes correctness independent of the Load→Store timing: if
+			// a producer published a newer frame (and thus a different slot)
+			// between our load and our claim, we retry against the new frame
+			// instead of memcpying a slot whose protection the producer never
+			// observed. The loop converges immediately at steady state (the
+			// producer must outrun the claim every iteration to spin it).
+			// slot < 0 denotes a standalone (non-ring) buffer needing no claim.
+			for frame.slot >= 0 {
 				w.v210InFlight.Store(int64(frame.slot))
+				latest := w.latestV210.Load()
+				if latest == frame {
+					break
+				}
+				// A newer frame was published; our claim may guard a slot we
+				// are no longer going to read. Re-target the newest frame.
+				frame = latest
 			}
+
 			err := ref.writer.WriteGrain(index, frame.data)
 			if frame.slot >= 0 {
 				w.v210InFlight.Store(-1)
@@ -322,18 +373,21 @@ func (w *Writer) WriteAudio(pcm []float32, pts int64, sampleRate, channels int) 
 	if w.closed.Load() {
 		return
 	}
+	if channels <= 0 || len(pcm) == 0 {
+		return
+	}
+
+	// Hold w.mu for the duration of the cgo write: Close() releases the audio
+	// flow writer under the same mutex, so WriteSamples can never execute on
+	// an already-released C handle (use-after-free). Snapshotting the writer
+	// and unlocking before the call would reintroduce that race.
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.audioWriter == nil {
-		w.mu.Unlock()
 		return
 	}
 	aw := w.audioWriter
 	rate := w.audioRate
-	w.mu.Unlock()
-
-	if channels <= 0 || len(pcm) == 0 {
-		return
-	}
 
 	// De-interleave: MXL audio is de-interleaved (one buffer per channel).
 	// Reuse buffers across calls to avoid hot-path allocation.

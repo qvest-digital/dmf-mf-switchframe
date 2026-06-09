@@ -86,8 +86,14 @@ func ProbeFile(path string) (*FileProbeResult, error) {
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
 
+	// ff_probe_file calls avformat_open_input/avformat_find_stream_info, which
+	// must be serialized with all other FFmpeg opens via FFmpegOpenMu (NVENC
+	// initializes the CUDA runtime inside avcodec_open2; concurrent FFmpeg
+	// opens SIGSEGV the CUDA driver).
 	var result C.ff_probe_result_t
+	FFmpegOpenMu.Lock()
 	ret := C.ff_probe_file(cPath, &result)
+	FFmpegOpenMu.Unlock()
 	if ret < 0 {
 		return nil, fmt.Errorf("failed to probe file: %s", path)
 	}

@@ -34,6 +34,15 @@ export const LOC_EXT_VIDEO_CONFIG = 13;
 // RFC 9626 Video Frame Marking flags.
 export const VFM_KEYFRAME = 0xe0;
 
+// Sanity caps for object lengths read from untrusted wire data (network
+// varints can encode up to 2^62). Lengths above these are rejected before any
+// allocation, so a buggy/compromised relay can't cause a RangeError or
+// memory-pressure DoS — the stream is cleanly abandoned instead. Media payloads
+// (encoded video GOP frames) get a generous cap; header extensions and control
+// payloads are small and get a much tighter one.
+export const MAX_MEDIA_OBJECT_LEN = 64 * 1024 * 1024; // 64 MiB
+export const MAX_EXTENSION_LEN = 64 * 1024; // 64 KiB
+
 // --- QUIC Varint codec (RFC 9000 section 16) ---
 
 /** Synchronously read a QUIC varint from buf at offset. Returns { value, bytesRead }. */
@@ -115,7 +124,7 @@ export async function readVarIntBytesFromBuffer(
 	const len = await readVarintFromBuffer(buffer);
 	if (len === null) return null;
 	if (len === 0) return new Uint8Array(0);
-	return buffer.read(len);
+	return buffer.read(len, MAX_EXTENSION_LEN);
 }
 
 // --- Control message framing ---

@@ -29,21 +29,13 @@ func (m *GPUSourceManager) queuePreviewFrame(entry *gpuSourceEntry, _ []byte, _ 
 		}
 	}()
 
-	// Get the current cached frame with a Ref to prevent it from being
-	// recycled while we copy. Without this, IngestYUV can swap+release
-	// the cached frame between our Load and CopyGPUFrame, causing us to
-	// read from a recycled buffer containing another source's data.
-	var cached *GPUFrame
-	for {
-		cached = entry.current.Load()
-		if cached == nil {
-			return
-		}
-		cached.Ref()
-		if entry.current.Load() == cached {
-			break // Still current — our ref is valid.
-		}
-		cached.Release() // Swapped out, retry.
+	// Get the current cached frame with a Ref (taken under the entry's
+	// curMu) to prevent it from being recycled while we copy. Without this,
+	// IngestYUV can swap+release the cached frame and the pool can recycle
+	// it, causing us to read from a buffer containing another source's data.
+	cached := refCurrent(entry)
+	if cached == nil {
+		return
 	}
 
 	previewFrame, err := m.pool.Acquire()

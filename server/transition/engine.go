@@ -671,8 +671,22 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 	decodeOK := false
 	if decoder != nil {
 		decStart := time.Now()
-		yuv, w, h, err := decoder.Decode(wireData)
-		e.decodeWG.Done() // paired with Add(1) above
+		// Run the decode inside a closure so decodeWG.Done() is ALWAYS paired
+		// with the Add(1) above, even if the cgo decoder (FFmpeg/OpenH264)
+		// panics on a malformed bitstream. Without this, a panic would skip
+		// Done() and deadlock cleanup()'s decodeWG.Wait(), leaking the engine.
+		// recover() also converts a cgo fault into a decode error rather than
+		// killing the frame-delivery goroutine.
+		yuv, w, h, err := func() (yuv []byte, w, h int, err error) {
+			defer e.decodeWG.Done() // paired with Add(1) above
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("decoder panic: %v", r)
+					e.log.Error("decoder panicked", "source", sourceKey, "panic", r, "dataLen", len(wireData))
+				}
+			}()
+			return decoder.Decode(wireData)
+		}()
 		decDur := time.Since(decStart).Nanoseconds()
 		e.decodeLastNano.Store(decDur)
 		atomicutil.UpdateMax(&e.decodeMaxNano, decDur)
@@ -1529,6 +1543,20 @@ func (e *Engine) cleanup() {
 	e.cleaning = true
 	e.mu.Unlock()
 	e.decodeWG.Wait()
+
+	// Release BlendRawInto scratch so a tear-down at 4K doesn't pin ~12 MB
+	// of retained memory across the next (potentially smaller) transition.
+	// This must happen while e.mu is NOT held: BlendRawInto acquires
+	// blendRawMu then mu, so taking blendRawMu with mu held is an ABBA
+	// lock-order inversion that deadlocks against a concurrent blend tick.
+	e.blendRawMu.Lock()
+	e.rawScaleToBuf = nil
+	e.rawScaleSBuf = nil
+	e.rawAlphaScaleBuf = nil
+	e.rawXCoordsFullW = nil
+	e.rawXCoordsHalfW = nil
+	e.blendRawMu.Unlock()
+
 	e.mu.Lock()
 	e.cleaning = false
 
@@ -1551,14 +1579,4 @@ func (e *Engine) cleanup() {
 	e.blender = nil
 	e.scaleBuf = nil
 	e.stingerScaled = nil
-
-	// Release BlendRawInto scratch so a tear-down at 4K doesn't pin ~12 MB
-	// of retained memory across the next (potentially smaller) transition.
-	e.blendRawMu.Lock()
-	e.rawScaleToBuf = nil
-	e.rawScaleSBuf = nil
-	e.rawAlphaScaleBuf = nil
-	e.rawXCoordsFullW = nil
-	e.rawXCoordsHalfW = nil
-	e.blendRawMu.Unlock()
 }

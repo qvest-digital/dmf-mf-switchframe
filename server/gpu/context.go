@@ -70,14 +70,35 @@ type Context struct {
 	// Persistent temporary float32 device buffer for Lanczos-3 scaler.
 	// Lazily allocated under ctx.mu, freed in Close().
 	// Size: lanczosTmpSize floats (4 bytes each).
+	//
+	// CONCURRENCY: this is a single Context-global scratch buffer shared by all
+	// callers. ScaleLanczos3/ScaleLanczos3P210 launch kernels that read+write it
+	// WITHOUT holding mu across the kernel+sync, so they are NOT safe to call
+	// concurrently on the same Context — a second caller's ensureLanczosTemp
+	// could cudaFree/grow the buffer (or clobber the intermediate H-pass) while
+	// the first caller's kernel is still using it. The production source/preview
+	// path uses ScaleBilinear* (per-work-queue streams), which does not touch
+	// this buffer.
 	lanczosTmp     *C.float
 	lanczosTmpSize int
 
 	// Persistent temporary float32 device buffer for Gaussian blur.
 	// Lazily allocated under ctx.mu, freed in Close().
 	// Size: blurTmpSize floats (4 bytes each).
+	// Same single-shared-buffer concurrency contract as lanczosTmp above:
+	// GaussianBlur/GaussianBlurP210 are not safe to call concurrently on the
+	// same Context. Today the only callers run inside the single-threaded GPU
+	// pipeline Run(), so this is safe in practice.
 	blurTmp     *C.float
 	blurTmpSize int
+
+	// Persistent device buffer for Gaussian blur weights, keyed by radius.
+	// The weights only change when radius changes, so this avoids a per-frame
+	// cudaMalloc/cudaFree (cudaFree is device-synchronizing) on the 30fps
+	// program path. Lazily allocated under ctx.mu, freed in Close().
+	// blurWeightsRadius == -1 means "not yet allocated".
+	blurWeights       *C.float
+	blurWeightsRadius int
 }
 
 // NewContext initializes CUDA and creates a shared context on device 0.
@@ -96,7 +117,7 @@ func NewContext() (*Context, error) {
 		return nil, fmt.Errorf("gpu: cudaSetDevice failed: %d", rc)
 	}
 
-	c := &Context{device: 0}
+	c := &Context{device: 0, blurWeightsRadius: -1}
 
 	// Create CUDA streams for concurrent operations.
 	// cudaStreamNonBlocking means these streams do NOT synchronize with the
@@ -137,6 +158,17 @@ func NewContext() (*Context, error) {
 // Sets closed=true atomically (prevents new Sync/SyncStream callers), then
 // acquires mu (waits for any in-flight Sync to finish) before destroying
 // GPU resources.
+//
+// CONTRACT: per-op kernels (ScaleBilinear, ColorGradeLUT3D, CopyGPUFrame,
+// FillColor/FillBlack, etc.) read ctx.stream and submit+synchronize WITHOUT
+// taking mu or checking closed — only Sync()/SyncStream() are mu/closed-guarded.
+// The caller MUST therefore join all per-source IngestYUV and per-preview
+// goroutines (i.e. drain the source manager and pipeline) BEFORE calling
+// Close(); otherwise an in-flight op could pass a destroyed stream to
+// cudaStreamSynchronize (use-after-free). The production shutdown path
+// (closeGPU drains sources then pipeline first) honors this ordering. Making
+// Close() block until in-flight per-op submissions complete would close the
+// window fully but requires per-op accounting.
 func (c *Context) Close() error {
 	if c == nil || c.closed.Swap(true) {
 		return nil
@@ -188,6 +220,11 @@ func (c *Context) Close() error {
 		c.blurTmp = nil
 	}
 	c.blurTmpSize = 0
+	if c.blurWeights != nil {
+		C.cudaFree(unsafe.Pointer(c.blurWeights))
+		c.blurWeights = nil
+	}
+	c.blurWeightsRadius = -1
 	c.mu.Unlock()
 	// Note: we don't call cudaDeviceReset() — the primary context
 	// persists for the process lifetime. This is intentional: other
@@ -382,4 +419,38 @@ func (c *Context) ensureBlurTemp(needed int) error {
 	c.blurTmp = (*C.float)(ptr)
 	c.blurTmpSize = needed
 	return nil
+}
+
+// ensureBlurWeights returns a cached device buffer holding the normalized
+// Gaussian weights for the given radius. The buffer is keyed by radius and
+// only (re)allocated and refilled when the radius changes, avoiding a
+// per-frame cudaMalloc/cudaFree on the hot blur path. The refill copy is
+// issued on c.stream so it is ordered before the blur kernel that reads it.
+// Must be called under the same serialization as gaussian_blur_nv12 (i.e.
+// the caller holds no concurrent access to blurWeights).
+func (c *Context) ensureBlurWeights(radius int) (*C.float, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.blurWeights != nil && c.blurWeightsRadius == radius {
+		return c.blurWeights, nil
+	}
+	if c.blurWeights != nil {
+		C.cudaFree(unsafe.Pointer(c.blurWeights))
+		c.blurWeights = nil
+		c.blurWeightsRadius = -1
+	}
+	weights := gaussianWeights(radius)
+	var ptr unsafe.Pointer
+	weightsSize := C.size_t(len(weights) * 4) // float32 = 4 bytes
+	if rc := C.cudaMalloc(&ptr, weightsSize); rc != C.cudaSuccess {
+		return nil, fmt.Errorf("gpu: blur weights alloc (radius %d) failed: %d", radius, rc)
+	}
+	if rc := C.cudaMemcpyAsync(ptr, unsafe.Pointer(&weights[0]),
+		weightsSize, C.cudaMemcpyHostToDevice, c.stream); rc != C.cudaSuccess {
+		C.cudaFree(ptr)
+		return nil, fmt.Errorf("gpu: blur weights copy (radius %d) failed: %d", radius, rc)
+	}
+	c.blurWeights = (*C.float)(ptr)
+	c.blurWeightsRadius = radius
+	return c.blurWeights, nil
 }

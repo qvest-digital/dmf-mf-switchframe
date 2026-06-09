@@ -33,13 +33,14 @@
 	import RedundancyPanel from '../components/RedundancyPanel.svelte';
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
+	import { cutToPreview, autoTransitionToPreview } from '$lib/state/switch-actions';
 	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot, scte35Cue, scte35Return, podFire, playoutNext, playoutJump, playoutTakeManual, playoutReturnToAuto, startRecording, stopRecording, playoutPlaylist as fetchPlaylist } from '$lib/api/switch-api';
 	import { setEngineUrls, getEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider, setEmergencyEngineBUrl } from '$lib/api/base-url';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
 	import { notify } from '$lib/state/notifications.svelte';
 	import { getSourceError } from '$lib/transport/source-errors.svelte';
-	import { KeyboardHandler } from '$lib/keyboard/handler';
+	import { KeyboardHandler, isEditableTarget } from '$lib/keyboard/handler';
 	import { DualConnectionManager } from '$lib/transport/dual-connection';
 	import { DualApiClient } from '$lib/api/dual-api-client';
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
@@ -514,12 +515,7 @@
 	let selectedAudioChannel = $state<string | null>(null);
 
 	const keyboard = new KeyboardHandler({
-		onCut: () => {
-			if (store.state.previewSource) {
-				store.optimisticCut(store.state.previewSource);
-				apiCall(cut(store.state.previewSource), 'Cut failed');
-			}
-		},
+		onCut: () => cutToPreview(store),
 		onSetPreview: (key) => {
 			store.optimisticPreview(key);
 			apiCall(setPreview(key), 'Preview failed');
@@ -528,11 +524,7 @@
 			store.optimisticCut(key);
 			apiCall(cut(key), 'Cut failed');
 		},
-		onAutoTransition: () => {
-			if (store.state.previewSource && !store.state.inTransition && !store.state.ftbActive) {
-				apiCall(startTransition(store.state.previewSource, transitionType, transitionDuration), 'Transition failed');
-			}
-		},
+		onAutoTransition: () => autoTransitionToPreview(store, transitionType, transitionDuration),
 		onFadeToBlack: () => {
 			if (!store.state.inTransition || store.state.ftbActive) {
 				apiCall(fadeToBlack(), 'FTB failed');
@@ -926,26 +918,29 @@
 	let programLevels = $state<{ peakL: number; peakR: number }>({ peakL: 0, peakR: 0 });
 
 	function handleGlobalShortcuts(e: KeyboardEvent) {
+		// Single focus guard for all page-level shortcuts: when focus is in a text-editing
+		// context (INPUT/TEXTAREA/SELECT/contenteditable) none of these should fire — this
+		// includes Ctrl+Shift+D and the Escape panel handlers, so Escape in a field can't
+		// unexpectedly close panels. Mirrors KeyboardHandler's capture-phase guard.
+		if (isEditableTarget(e.target)) return;
+
 		if (e.ctrlKey && e.shiftKey && (e.key === 'd' || e.key === 'D')) {
 			e.preventDefault();
 			exportDebugSnapshot();
 		}
 		// Shift+G toggles pipeline graph
 		if (e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyG') {
-			if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
 			e.preventDefault();
 			pipelineGraphVisible = !pipelineGraphVisible;
 			return;
 		}
 		// Shift+P toggles stats panel
 		if (e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyP') {
-			if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
 			e.preventDefault();
 			statsPanelVisible = !statsPanelVisible;
 		}
 		// Shift+I toggles I/O panel
 		if (e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyI') {
-			if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
 			e.preventDefault();
 			ioPanelVisible = !ioPanelVisible;
 		}
@@ -1643,17 +1638,8 @@
 				store.optimisticPreview(key);
 				apiCall(setPreview(key), 'Preview failed');
 			}}
-			onCut={() => {
-				if (store.state.previewSource) {
-					store.optimisticCut(store.state.previewSource);
-					apiCall(cut(store.state.previewSource), 'Cut failed');
-				}
-			}}
-			onDissolve={() => {
-				if (store.state.previewSource && !store.state.inTransition && !store.state.ftbActive) {
-					apiCall(startTransition(store.state.previewSource, 'mix', 1000), 'Dissolve failed');
-				}
-			}}
+			onCut={() => cutToPreview(store)}
+			onDissolve={() => autoTransitionToPreview(store, 'mix', 1000, 'Dissolve failed')}
 		/>
 	{:else if layoutMode === 'on-air'}
 		<OnAirController

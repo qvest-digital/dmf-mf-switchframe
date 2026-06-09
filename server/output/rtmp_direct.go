@@ -429,6 +429,10 @@ type RTMPDirect struct {
 	stopCh chan struct{}
 	doneCh chan struct{}
 
+	// reconnectDone is closed by reconnectLoop on exit so Close can join
+	// the goroutine; nil when no loop is running. Guarded by mu.
+	reconnectDone chan struct{}
+
 	videoCh chan *media.VideoFrame
 	audioCh chan *media.AudioFrame
 
@@ -519,6 +523,17 @@ func (r *RTMPDirect) Close() error {
 
 	if r.doneCh != nil {
 		<-r.doneCh
+	}
+
+	// Join the reconnect goroutine so it cannot reopen the RTMP connection
+	// (leaking the FFmpeg context) or resurrect StateActive after Close.
+	// The writeLoop has exited, so no new reconnect loop can be spawned
+	// once this snapshot is taken.
+	r.mu.Lock()
+	reconnectDone := r.reconnectDone
+	r.mu.Unlock()
+	if reconnectDone != nil {
+		<-reconnectDone
 	}
 
 	r.mu.Lock()
@@ -793,9 +808,14 @@ func (r *RTMPDirect) initConnection(frame *media.VideoFrame) error {
 func (r *RTMPDirect) enterReconnect(errMsg string) {
 	r.state.Store(ptrTo(StateReconnecting))
 	r.lastError.Store(ptrTo(errMsg))
+	// CAS guard prevents duplicate reconnect goroutines. Create the done
+	// channel under r.mu so Close can observe it atomically.
+	r.mu.Lock()
 	if r.reconnecting.CompareAndSwap(false, true) {
+		r.reconnectDone = make(chan struct{})
 		go r.reconnectLoop()
 	}
+	r.mu.Unlock()
 }
 
 // reconnectLoop retries the RTMP connection with exponential backoff.
@@ -803,7 +823,39 @@ func (r *RTMPDirect) enterReconnect(errMsg string) {
 // re-opens the RTMP connection. Otherwise it resets state and waits for
 // the next keyframe to trigger initConnection from the writeLoop.
 func (r *RTMPDirect) reconnectLoop() {
-	defer r.reconnecting.Store(false)
+	// Capture (and lazily create, for direct test invocation) the done
+	// channel so Close can join this goroutine. Closing it on exit lets a
+	// concurrent Close know the loop has finished and will not reopen the
+	// RTMP connection.
+	r.mu.Lock()
+	if r.reconnectDone == nil {
+		r.reconnectDone = make(chan struct{})
+	}
+	done := r.reconnectDone
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		if r.reconnectDone == done {
+			r.reconnectDone = nil
+		}
+		r.mu.Unlock()
+		close(done)
+		r.reconnecting.Store(false)
+		// Re-arm check: this loop stores StateActive and calls onReconnect
+		// BEFORE the Store(false) above. A write failure inside that window
+		// calls enterReconnect, which stores StateReconnecting but loses
+		// the CompareAndSwap against the still-set flag, spawning nothing.
+		// Without this re-check the adapter would be stuck dropping all
+		// frames in StateReconnecting with no reconnect goroutine.
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.goCtx != nil && r.goCtx.Err() == nil &&
+			*r.state.Load() == StateReconnecting &&
+			r.reconnecting.CompareAndSwap(false, true) {
+			r.reconnectDone = make(chan struct{})
+			go r.reconnectLoop()
+		}
+	}()
 
 	for {
 		select {
@@ -822,6 +874,14 @@ func (r *RTMPDirect) reconnectLoop() {
 		}
 
 		r.mu.Lock()
+		// Re-check after the backoff timer: Close may have run while this
+		// loop was sleeping (or won the select race above). Reopening the
+		// connection now would leak the FFmpeg context and resurrect
+		// StateActive after Close.
+		if r.goCtx.Err() != nil {
+			r.mu.Unlock()
+			return
+		}
 		r.closeLocked()
 
 		// Try eager reconnect if we have cached SPS/PPS.

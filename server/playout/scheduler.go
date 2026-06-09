@@ -265,6 +265,9 @@ func (s *Scheduler) Previous() error {
 		s.cursor--
 	}
 	s.resetItemState()
+	// An explicit operator navigation overrides a pending schedule wait —
+	// otherwise the next Tick would still route through tickIdleWaiting.
+	s.idleWaiting = false
 	s.state = SchedPlaying
 	return nil
 }
@@ -283,6 +286,11 @@ func (s *Scheduler) JumpTo(itemID string) error {
 		if item.ID == itemID {
 			s.cursor = i
 			s.resetItemState()
+			// An explicit operator jump overrides a pending schedule wait —
+			// even if the target item has a future ScheduledTime, the
+			// operator asked for it NOW. Without this the next Tick would
+			// route back through tickIdleWaiting and re-enter the wait.
+			s.idleWaiting = false
 			s.state = SchedPlaying
 			return nil
 		}
@@ -575,6 +583,23 @@ func (s *Scheduler) tickIdleWaiting(now time.Time) SchedulerDecision {
 	}
 
 	item := &s.playlist.Items[s.cursor]
+
+	// An explicit operator advance (Next) overrides the schedule wait: start
+	// the waiting item immediately. The flag must be consumed here — leaving
+	// it latched used to make the scheduled item play for exactly one tick
+	// and then be skipped on air by the stale advancePend.
+	if s.advancePend {
+		s.advancePend = false
+		s.idleWaiting = false
+		s.state = SchedPlaying
+		s.itemStartTime = now
+		s.itemDurationMs = s.resolvedDuration(item)
+		return SchedulerDecision{
+			State: SchedPlaying,
+			Item:  item,
+		}
+	}
+
 	if item.ScheduledTime != nil && now.Before(*item.ScheduledTime) {
 		// Still waiting.
 		return SchedulerDecision{

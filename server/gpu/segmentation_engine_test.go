@@ -111,9 +111,10 @@ func TestSegmentationEngineSession(t *testing.T) {
 
 	se.Segment("cam1", frame)
 
-	// Verify mask is non-nil.
+	// Verify mask is non-nil. MaskForSource refs the frame; release it.
 	mask := se.MaskForSource("cam1")
 	require.NotNil(t, mask, "mask should be non-nil after segmentation")
+	defer mask.Release()
 	assert.Equal(t, 1920, mask.Width)
 	assert.Equal(t, 1080, mask.Height)
 }
@@ -145,16 +146,18 @@ func TestSegmentationEngineMaskForSource(t *testing.T) {
 
 	se.Segment("cam1", frame)
 
-	// Now mask should be available.
+	// Now mask should be available. MaskForSource refs the frame.
 	mask := se.MaskForSource("cam1")
 	require.NotNil(t, mask, "mask should be non-nil after first segment")
 	assert.Equal(t, 1920, mask.Width)
 	assert.Equal(t, 1080, mask.Height)
+	mask.Release()
 
 	// Segment again — mask should still be available (updated in place).
 	se.Segment("cam1", frame)
 	mask2 := se.MaskForSource("cam1")
 	require.NotNil(t, mask2, "mask should still be non-nil after second segment")
+	mask2.Release()
 }
 
 func TestSegmentationEngineDisable(t *testing.T) {
@@ -178,6 +181,47 @@ func TestSegmentationEngineDisable(t *testing.T) {
 
 	// Double disable should not panic.
 	se.DisableSource("cam1")
+}
+
+// TestSegmentationEngineDisableWhileMaskHeld is the regression test for the
+// DisableSource use-after-free: a pipeline reader that obtained the mask via
+// MaskForSource (which refs it) must keep the mask's device memory alive
+// across a concurrent DisableSource. The buffer is freed only when the
+// reader drops its reference.
+func TestSegmentationEngineDisableWhileMaskHeld(t *testing.T) {
+	modelPath := segModelPath(t)
+
+	ctx := testContext(t)
+
+	pool, err := NewFramePool(ctx, 1920, 1080, 4)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	se, err := NewSegmentationEngine(ctx, modelPath)
+	require.NoError(t, err)
+	defer se.Close()
+
+	require.NoError(t, se.EnableSource("cam1", 1920, 1080, 0.0))
+
+	frame := makeGrayTestFrame(t, ctx, pool, 1920, 1080)
+	defer frame.Release()
+	se.Segment("cam1", frame)
+
+	mask := se.MaskForSource("cam1")
+	require.NotNil(t, mask)
+
+	// Disable while the reader still holds its reference: the mask's device
+	// pointer must remain valid (the refcount keeps the buffer alive).
+	se.DisableSource("cam1")
+	assert.NotZero(t, mask.DevPtr,
+		"mask device memory must not be freed while a reader holds a ref")
+
+	// Reading through the pointer must still work.
+	probe := make([]byte, 16)
+	require.NoError(t, ProbeGPUFrame(ctx, mask, probe))
+
+	// The reader's final Release frees the buffer.
+	mask.Release()
 }
 
 func TestSegmentationEngineNilSafe(t *testing.T) {

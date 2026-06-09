@@ -33,9 +33,9 @@ const (
 
 // VANC packet limits.
 const (
-	// vancMaxPayload is the maximum CDP data in a single non-fragmented ST 291 packet.
-	// DC is 8-bit (max 255), minus 1 byte for payload descriptor.
-	vancMaxPayload = 254
+	// vancMaxPayload is the maximum CDP data in a single ST 291 packet.
+	// DC is 8-bit (max 255); per SMPTE ST 334-1 the UDW is the CDP itself.
+	vancMaxPayload = 255
 )
 
 // Sentinel errors.
@@ -154,17 +154,22 @@ func BuildCDP(pairs []CCPair, seq uint16, frameRate byte) []byte {
 
 // WrapCaptionST291 wraps CDP data into an ST 291 VANC packet for MXL output.
 //
-// Output format:
+// Output format per SMPTE ST 334-1:
 //
-//	[DID=0x61] [SDID=0x01] [DC] [payload_descriptor=0x00] [cdpData...] [CS]
+//	[DID=0x61] [SDID=0x01] [DC] [cdpData...] [CS]
+//
+// The UDW is the CDP itself, starting directly with the 0x96 0x69
+// cdp_identifier. There is no payload-descriptor byte: that is a SMPTE
+// ST 2010 concept that applies only to SCTE-104 VANC (DID 0x41/SDID 0x07,
+// see scte104/st291.go), not to caption VANC.
 func WrapCaptionST291(cdpData []byte) ([]byte, error) {
 	if len(cdpData) > vancMaxPayload {
 		return nil, fmt.Errorf("%w: length %d exceeds maximum %d",
 			ErrVANCTooLarge, len(cdpData), vancMaxPayload)
 	}
 
-	// DC = payload descriptor (1 byte) + cdpData length.
-	dc := len(cdpData) + 1
+	// DC = cdpData length (the UDW is exactly the CDP).
+	dc := len(cdpData)
 
 	// Total: DID(1) + SDID(1) + DC(1) + UDW[DC] + CS(1) = 3 + DC + 1
 	packetLen := 3 + dc + 1
@@ -173,9 +178,8 @@ func WrapCaptionST291(cdpData []byte) ([]byte, error) {
 	packet[0] = CaptionDID
 	packet[1] = CaptionSDID
 	packet[2] = byte(dc)
-	packet[3] = 0x00 // payload descriptor: non-fragmented
 
-	copy(packet[4:], cdpData)
+	copy(packet[3:], cdpData)
 
 	// Checksum: simplified 8-bit byte sum for byte-oriented transports (MXL data grains).
 	// Note: full ST 291 uses a 9-bit checksum over 10-bit words with bit 8 inverted,
@@ -191,7 +195,9 @@ func WrapCaptionST291(cdpData []byte) ([]byte, error) {
 }
 
 // ParseCaptionST291 parses an ST 291 VANC packet with caption DID/SDID
-// and returns the CDP payload.
+// and returns the CDP payload. Per SMPTE ST 334-1 the UDW is the CDP
+// itself (beginning with the 0x96 0x69 cdp_identifier); there is no
+// payload-descriptor byte.
 func ParseCaptionST291(packet []byte) ([]byte, error) {
 	if len(packet) < 4 {
 		return nil, fmt.Errorf("%w: need at least 4 bytes, got %d", ErrVANCTooShort, len(packet))
@@ -226,14 +232,8 @@ func ParseCaptionST291(packet []byte) ([]byte, error) {
 		return []byte{}, nil
 	}
 
-	// Check for fragmented payload (payload descriptor != 0x00).
-	// 0x00 = non-fragmented, 0x80 = first fragment, 0x40 = continuation, 0xC0 = last fragment.
-	if packet[3] != 0x00 {
-		return nil, fmt.Errorf("fragmented caption VANC packets not supported (descriptor=0x%02X)", packet[3])
-	}
-
-	// Strip payload descriptor byte (first UDW byte).
-	udwData := packet[4 : 3+dc]
+	// The UDW is the CDP itself.
+	udwData := packet[3 : 3+dc]
 	result := make([]byte, len(udwData))
 	copy(result, udwData)
 

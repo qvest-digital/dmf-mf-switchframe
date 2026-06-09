@@ -42,6 +42,11 @@ type KeyProcessorBridge struct {
 
 	// Reusable fillMap passed to KeyProcessor.Process (avoids per-call map allocation).
 	fillMap map[string][]byte
+
+	// Reusable mask buffers for the 10-bit key path (ProcessYUV10), avoiding a
+	// per-key, per-frame allocation. Guarded by b.mu (held for all of ProcessYUV10).
+	maskBuf10       []byte // luma-resolution key mask (w*h)
+	chromaMaskBuf10 []byte // chroma-resolution key mask (w/2*h)
 }
 
 // NewKeyProcessorBridge creates a bridge wrapping the given KeyProcessor.
@@ -346,6 +351,16 @@ func (b *KeyProcessorBridge) ProcessYUV10(yuv []byte, width, height int) []byte 
 	chromaW := width / 2
 	chromaSize := chromaW * height
 
+	// Reuse mask buffers across keys/frames to avoid per-key allocation on the
+	// realtime 10-bit path. Sized to current resolution; b.mu is held for the
+	// whole function, so these are safe to mutate.
+	if cap(b.maskBuf10) < ySize {
+		b.maskBuf10 = make([]byte, ySize)
+	}
+	if cap(b.chromaMaskBuf10) < chromaSize {
+		b.chromaMaskBuf10 = make([]byte, chromaSize)
+	}
+
 	// Read key configs under kp lock.
 	b.kp.mu.RLock()
 	defer b.kp.mu.RUnlock()
@@ -381,12 +396,12 @@ func (b *KeyProcessorBridge) ProcessYUV10(yuv []byte, width, height int) []byte 
 			// 10-bit chroma range is ~0-1023, tolerance is a distance threshold.
 			tolerance := int(cfg.Similarity * 400) // scale to 10-bit range
 			softness := int(cfg.Smoothness * 200)
-			mask = ChromaKey10(fill, width, height, targetCb, targetCr, tolerance, softness)
+			mask = ChromaKey10Into(b.maskBuf10, fill, width, height, targetCb, targetCr, tolerance, softness)
 		case KeyTypeLuma:
 			// Convert 0.0-1.0 clips to 10-bit Y thresholds.
 			lowThresh := uint16(cfg.LowClip * 1023)
 			highThresh := uint16(cfg.HighClip * 1023)
-			mask = LumaKey10(fill, width, height, lowThresh, highThresh)
+			mask = LumaKey10Into(b.maskBuf10, fill, width, height, lowThresh, highThresh)
 		default:
 			continue
 		}
@@ -413,7 +428,8 @@ func (b *KeyProcessorBridge) ProcessYUV10(yuv []byte, width, height int) []byte 
 		keyMaskBlend10Row(&yuv[0], &fill[0], &mask[0], ySize)
 
 		// Downsample mask to chroma resolution: average 2 horizontal pixels (4:2:2).
-		chromaMask := make([]byte, chromaSize)
+		// Reuse the persistent chroma buffer (fully overwritten below).
+		chromaMask := b.chromaMaskBuf10[:chromaSize]
 		for py := 0; py < height; py++ {
 			for cx := 0; cx < chromaW; cx++ {
 				lx := cx * 2

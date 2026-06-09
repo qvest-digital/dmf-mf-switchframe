@@ -2,6 +2,7 @@ package audio
 
 import (
 	"math"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -443,4 +444,50 @@ func TestMixer_LimiterSettings_Defaults(t *testing.T) {
 	require.False(t, math.IsInf(tp, 0), "TruePeak must be JSON-safe (finite) on cold start, got %v", tp)
 	require.False(t, math.IsNaN(tp), "TruePeak must not be NaN on cold start")
 	require.Less(t, tp, -100.0, "idle TruePeak should report a deep floor, got %v", tp)
+}
+
+// TestMixer_LimiterSettings_ConcurrentWithSetters is a regression test for the
+// data race where LimiterSettings() read Limiter.threshold/ceiling without
+// holding m.mu while SetLimiterThreshold/SetLimiterCeiling wrote them under
+// m.mu. Run with -race: it fails before the fix and passes after. It also
+// asserts LimiterSettings never observes a torn (threshold, ceiling) pair
+// outside the configured ranges.
+func TestMixer_LimiterSettings_ConcurrentWithSetters(t *testing.T) {
+	t.Parallel()
+	m := newTestMixerForLimiter(t)
+	defer func() { _ = m.Close() }()
+
+	const iters = 2000
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	// Writer: threshold (valid range -12..0 dBTP).
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			db := -12.0 + float64(i%13) // -12..0
+			_ = m.SetLimiterThreshold(db)
+		}
+	}()
+	// Writer: ceiling (valid range -3..0 dBTP).
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			db := -3.0 + float64(i%4) // -3..0
+			_ = m.SetLimiterCeiling(db)
+		}
+	}()
+	// Reader: LimiterSettings concurrently (the previously-unsynchronized path).
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			th, ceil, _, _ := m.LimiterSettings()
+			require.GreaterOrEqual(t, th, -12.5)
+			require.LessOrEqual(t, th, 0.5)
+			require.GreaterOrEqual(t, ceil, -3.5)
+			require.LessOrEqual(t, ceil, 0.5)
+		}
+	}()
+
+	wg.Wait()
 }

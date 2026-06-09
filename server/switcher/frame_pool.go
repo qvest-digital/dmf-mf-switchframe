@@ -26,8 +26,15 @@ type FramePool struct {
 
 	// mmapBufs tracks only the mmap-backed pre-allocated buffers so
 	// Close can munmap them safely without touching heap-allocated
-	// fallback buffers.
+	// fallback buffers. After Close, it holds the mmap buffers still
+	// checked out by in-flight frames; Release munmaps them as they
+	// come back.
 	mmapBufs [][]byte
+
+	// closed is set by Close. Once closed, Release never recycles buffers
+	// (a recycled munmapped buffer handed out by Acquire would fault on
+	// the next write) and Acquire always falls back to heap allocation.
+	closed bool
 }
 
 // NewFramePool creates a pool with n pre-allocated buffers for the given
@@ -72,11 +79,31 @@ func (fp *FramePool) Acquire() []byte {
 // Release returns a buffer to the pool. Wrong-sized buffers are discarded.
 // Duplicate releases of the same buffer are detected and silently ignored
 // to prevent buffer aliasing corruption.
+//
+// After Close, buffers are never recycled: an mmap-backed buffer released
+// late (by an in-flight frame that outlived Close) is munmapped here, and
+// heap buffers are simply discarded.
 func (fp *FramePool) Release(buf []byte) {
 	if cap(buf) < fp.bufSize {
 		return // wrong size — discard
 	}
 	fp.mu.Lock()
+	if fp.closed {
+		// Pool is closed — never put the buffer back in the free list.
+		// If it is one of our mmap-backed buffers, its holder is done with
+		// it now, so complete the deferred munmap.
+		ptr := &buf[:cap(buf)][0]
+		for i, mb := range fp.mmapBufs {
+			if &mb[0] == ptr {
+				fp.mmapBufs = append(fp.mmapBufs[:i], fp.mmapBufs[i+1:]...)
+				fp.mu.Unlock()
+				_ = mmaputil.Free(mb)
+				return
+			}
+		}
+		fp.mu.Unlock()
+		return
+	}
 	if len(fp.free) < fp.cap {
 		// Check for duplicate (prevent double-release corruption).
 		// Scan is O(n) where n ≤ pool capacity (typically 4-16), negligible.
@@ -106,17 +133,40 @@ func (fp *FramePool) Stats() (hits, misses uint64) {
 	return h, m
 }
 
-// Close releases all pre-allocated buffers. Mmap-backed buffers are
-// munmapped. Safe to call during graceful shutdown. After Close,
-// Acquire falls back to make() (pool is empty).
+// Close releases the pre-allocated buffers currently in the free list.
+// Mmap-backed buffers still checked out by in-flight frames stay mapped —
+// they are munmapped by Release when their holders return them (and are
+// never recycled). Safe to call during graceful shutdown. After Close,
+// Acquire falls back to make() (pool is empty and closed). Idempotent.
 func (fp *FramePool) Close() {
 	fp.mu.Lock()
+	if fp.closed {
+		fp.mu.Unlock()
+		return
+	}
+	fp.closed = true
+
+	// Partition mmap buffers into free (munmap now) vs checked out
+	// (deferred to Release).
+	freeSet := make(map[*byte]struct{}, len(fp.free))
+	for _, buf := range fp.free {
+		if cap(buf) > 0 {
+			freeSet[&buf[:cap(buf)][0]] = struct{}{}
+		}
+	}
+	var toFree, outstanding [][]byte
+	for _, buf := range fp.mmapBufs {
+		if _, ok := freeSet[&buf[0]]; ok {
+			toFree = append(toFree, buf)
+		} else {
+			outstanding = append(outstanding, buf)
+		}
+	}
 	fp.free = fp.free[:0]
-	mmapBufs := fp.mmapBufs
-	fp.mmapBufs = nil
+	fp.mmapBufs = outstanding
 	fp.mu.Unlock()
 
-	for _, buf := range mmapBufs {
+	for _, buf := range toFree {
 		_ = mmaputil.Free(buf)
 	}
 }

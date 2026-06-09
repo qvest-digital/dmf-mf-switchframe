@@ -136,29 +136,7 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		tickerEngine:   a.tickerEngine,
 	}
 
-	onProgress := func(state macro.ExecutionState) {
-		ms := &internal.MacroExecutionState{
-			Running:     state.Running,
-			MacroName:   state.MacroName,
-			CurrentStep: state.CurrentStep,
-			Error:       state.Error,
-		}
-		ms.Steps = make([]internal.MacroStepState, len(state.Steps))
-		for i, s := range state.Steps {
-			ms.Steps[i] = internal.MacroStepState{
-				Action:      string(s.Action),
-				Summary:     s.Summary,
-				Status:      string(s.Status),
-				Error:       s.Error,
-				WaitMs:      s.WaitMs,
-				WaitStartMs: s.WaitStartMs,
-			}
-		}
-		a.macroMu.Lock()
-		a.macroState = ms
-		a.macroMu.Unlock()
-		a.broadcast()
-	}
+	onProgress := a.macroProgressFn(gen)
 
 	// Run in background goroutine so the HTTP handler returns immediately.
 	go func() {
@@ -183,6 +161,47 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "started", "name": m.Name})
 }
 
+// macroProgressFn returns the onProgress callback for the macro execution
+// identified by gen. The returned callback publishes the running state and
+// broadcasts it, but only while gen is still the current generation.
+//
+// The generation guard is essential: macro.Run fires a final onProgress
+// synchronously on cancellation (and a "wait" step blocks until the context
+// is cancelled). A dismissed-then-restarted macro therefore leaves the old
+// run's goroutine still unwinding; without the guard its trailing callback
+// would clobber the NEW macro's state and broadcast it to every browser.
+func (a *API) macroProgressFn(gen uint64) macro.OnProgress {
+	return func(state macro.ExecutionState) {
+		ms := &internal.MacroExecutionState{
+			Running:     state.Running,
+			MacroName:   state.MacroName,
+			CurrentStep: state.CurrentStep,
+			Error:       state.Error,
+		}
+		ms.Steps = make([]internal.MacroStepState, len(state.Steps))
+		for i, s := range state.Steps {
+			ms.Steps[i] = internal.MacroStepState{
+				Action:      string(s.Action),
+				Summary:     s.Summary,
+				Status:      string(s.Status),
+				Error:       s.Error,
+				WaitMs:      s.WaitMs,
+				WaitStartMs: s.WaitStartMs,
+			}
+		}
+		a.macroMu.Lock()
+		stale := a.macroGen != gen
+		if !stale {
+			a.macroState = ms
+		}
+		a.macroMu.Unlock()
+		if stale {
+			return
+		}
+		a.broadcast()
+	}
+}
+
 // handleDismissMacro clears the macro execution state and cancels any
 // running macro. Without cancellation, a dismissed macro would continue
 // executing steps silently in the background.
@@ -191,6 +210,11 @@ func (a *API) handleDismissMacro(w http.ResponseWriter, r *http.Request) {
 	cancel := a.macroCancel
 	a.macroState = nil
 	a.macroCancel = nil
+	// Invalidate the current generation: macro.Run fires a final synchronous
+	// onProgress (with Running still true) on the cancellation path, and
+	// without a gen bump that trailing callback would pass the staleness
+	// guard in macroProgressFn and resurrect the state we just cleared.
+	a.macroGen++
 	a.macroMu.Unlock()
 	if cancel != nil {
 		cancel()

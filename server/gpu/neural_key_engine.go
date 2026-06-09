@@ -463,8 +463,13 @@ func (nke *NeuralKeyEngine) Infer(
 	C.cudaStreamSynchronize(stream)
 
 	// Step 6: Composite — upscale alpha+fg from 512 to program res, despill, blend.
-	// Launch on the DEFAULT stream (stream 0) which is synchronous, ensuring
-	// the kernel completes before the encoder reads the frame.
+	// Launch on the caller's stream: the cudaStreamSynchronize above already
+	// ordered the TRT outputs on it. Launching on the legacy null stream is
+	// NOT host-synchronous and forces an implicit device-wide barrier, and
+	// the cudaDeviceSynchronize this code used to compensate with stalled
+	// every concurrent CUDA stream (preview encoders, segmentation sessions,
+	// encode stream) once per frame. A stream-scoped sync below is all the
+	// encoder needs.
 	if isP210 {
 		rc = C.ck_composite_neural_p210(
 			(*C.uint8_t)(devPtr),
@@ -472,7 +477,7 @@ func (nke *NeuralKeyEngine) Infer(
 			(*C.float)(nke.fgBuf),
 			C.int(w), C.int(h), C.int(pitch),
 			C.int(ckModelW), C.int(ckModelH),
-			nil, // default stream — synchronous
+			stream,
 		)
 	} else {
 		rc = C.ck_composite_neural(
@@ -481,14 +486,15 @@ func (nke *NeuralKeyEngine) Infer(
 			(*C.float)(nke.fgBuf),
 			C.int(w), C.int(h), C.int(pitch),
 			C.int(ckModelW), C.int(ckModelH),
-			nil, // default stream — synchronous
+			stream,
 		)
 	}
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: neural_key: composite failed: cuda %d", rc)
 	}
-	// Sync to ensure composite is visible before encoder reads.
-	C.cudaDeviceSynchronize()
+	// Stream-scoped sync: composite is visible before the encoder reads,
+	// without serializing the rest of the device.
+	C.cudaStreamSynchronize(stream)
 
 	nke.warmupDone.Store(true)
 	return nil
@@ -640,6 +646,10 @@ func (nke *NeuralKeyEngine) InferAndComposite(
 	C.cudaStreamSynchronize(stream)
 
 	// Step 6: Composite onto the PROGRAM frame.
+	// Launch on the caller's stream (TRT outputs were ordered on it by the
+	// sync above) and use a stream-scoped sync — a null-stream launch plus
+	// cudaDeviceSynchronize would stall every concurrent CUDA stream once
+	// per frame. See Infer for details.
 	if isP210 {
 		rc = C.ck_composite_neural_p210(
 			(*C.uint8_t)(progPtr),
@@ -647,7 +657,7 @@ func (nke *NeuralKeyEngine) InferAndComposite(
 			(*C.float)(nke.fgBuf),
 			C.int(progW), C.int(progH), C.int(progPitch),
 			C.int(ckModelW), C.int(ckModelH),
-			nil, // default stream
+			stream,
 		)
 	} else {
 		rc = C.ck_composite_neural(
@@ -656,13 +666,13 @@ func (nke *NeuralKeyEngine) InferAndComposite(
 			(*C.float)(nke.fgBuf),
 			C.int(progW), C.int(progH), C.int(progPitch),
 			C.int(ckModelW), C.int(ckModelH),
-			nil, // default stream
+			stream,
 		)
 	}
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: neural_key: composite failed: cuda %d", rc)
 	}
-	C.cudaDeviceSynchronize()
+	C.cudaStreamSynchronize(stream)
 
 	nke.warmupDone.Store(true)
 	return nil

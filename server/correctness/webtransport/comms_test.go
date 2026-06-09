@@ -9,6 +9,7 @@ import (
 	stdErrors "errors"
 	"io"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -585,8 +586,8 @@ func TestCommsN1MixerExclusion(t *testing.T) {
 // ==========================================================================
 
 func TestCommsManagerCleanShutdown(t *testing.T) {
-	goroutinesBefore := runtime.NumGoroutine()
-	t.Logf("MEASURE: goroutines before=%d", goroutinesBefore)
+	before := goroutineCreators()
+	t.Logf("MEASURE: tracked goroutines before=%d", len(before))
 
 	mgr := comms.NewManager(nil)
 
@@ -600,19 +601,10 @@ func TestCommsManagerCleanShutdown(t *testing.T) {
 		t.Fatalf("Join failed: %v", err)
 	}
 
-	goroutinesWithManager := runtime.NumGoroutine()
-	t.Logf("MEASURE: goroutines with manager + 3 participants=%d", goroutinesWithManager)
+	t.Logf("MEASURE: tracked goroutines with manager + 3 participants=%d", len(goroutineCreators()))
 
 	// Close manager.
 	mgr.Close()
-
-	// Give goroutines time to wind down.
-	time.Sleep(100 * time.Millisecond)
-	runtime.GC()
-	time.Sleep(50 * time.Millisecond)
-
-	goroutinesAfter := runtime.NumGoroutine()
-	t.Logf("MEASURE: goroutines after close=%d", goroutinesAfter)
 
 	// After close, all participants should be gone.
 	state := mgr.State()
@@ -626,13 +618,107 @@ func TestCommsManagerCleanShutdown(t *testing.T) {
 		t.Errorf("expected 0 participants after close, got %d", participantsAfterClose)
 	}
 
-	// The goroutine count should drop back close to the before count.
-	// We allow a margin of 3 for GC/scheduler goroutines.
-	leaked := goroutinesAfter - goroutinesBefore
-	t.Logf("MEASURE: goroutine delta=%d (after=%d - before=%d)", leaked, goroutinesAfter, goroutinesBefore)
-	if leaked > 3 {
-		t.Errorf("possible goroutine leak: %d extra goroutines after Close()", leaked)
+	// Goroutine-leak detection by stack diff, not raw count. A raw
+	// NumGoroutine() delta with a magic +N tolerance is racy against
+	// runtime/scheduler/test-framework goroutines and parallel tests. Instead
+	// we snapshot each goroutine's creator (the "created by" frame), filter
+	// known runtime/test noise, and require any goroutines newly created since
+	// `before` to drain. We retry a few times to absorb async teardown.
+	var leaked []string
+	for attempt := 0; attempt < 20; attempt++ {
+		runtime.GC()
+		time.Sleep(50 * time.Millisecond)
+		leaked = newGoroutines(before, goroutineCreators())
+		if len(leaked) == 0 {
+			break
+		}
 	}
+	t.Logf("MEASURE: leaked goroutine creators after close=%d", len(leaked))
+	if len(leaked) > 0 {
+		t.Errorf("possible goroutine leak after Close(): %d goroutine(s) still running, created by:\n  %s",
+			len(leaked), strings.Join(leaked, "\n  "))
+	}
+}
+
+// goroutineCreators returns, for every currently running goroutine, the
+// "created by <func>" frame that spawned it (or the goroutine's top function
+// for the few that have no creator). Goroutines belonging to the Go runtime and
+// the test framework are filtered out so the result reflects only application
+// goroutines whose lifecycle a test controls. The returned slice is a multiset
+// (one entry per live goroutine) so N copies of the same worker are tracked
+// distinctly.
+func goroutineCreators() []string {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+
+	var creators []string
+	for _, block := range strings.Split(string(buf), "\n\n") {
+		lines := strings.Split(strings.TrimSpace(block), "\n")
+		if len(lines) == 0 || !strings.HasPrefix(lines[0], "goroutine ") {
+			continue
+		}
+		// Prefer the "created by" frame (the spawn site); fall back to the
+		// goroutine's running function (lines[1]) when there is no creator.
+		creator := ""
+		for _, ln := range lines {
+			if strings.HasPrefix(ln, "created by ") {
+				creator = strings.TrimSpace(strings.TrimPrefix(ln, "created by "))
+				break
+			}
+		}
+		if creator == "" && len(lines) > 1 {
+			creator = strings.TrimSpace(lines[1])
+		}
+		if creator == "" || isRuntimeGoroutine(creator) {
+			continue
+		}
+		creators = append(creators, creator)
+	}
+	return creators
+}
+
+// isRuntimeGoroutine reports whether a creator frame belongs to the Go runtime
+// or the test harness rather than application code, so it should be ignored by
+// leak detection.
+func isRuntimeGoroutine(creator string) bool {
+	noise := []string{
+		"runtime.",       // GC, sysmon, scavenger, etc.
+		"testing.",       // test runner / tRunner / parallel coordination
+		"runtime/trace.", // execution tracer
+		"os/signal.",     // signal handling goroutine
+	}
+	for _, p := range noise {
+		if strings.Contains(creator, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// newGoroutines returns the creators present in `after` beyond what was present
+// in `before`, treating both as multisets so an extra copy of an already-seen
+// creator is still reported as new (a leaked duplicate worker).
+func newGoroutines(before, after []string) []string {
+	remaining := make(map[string]int, len(before))
+	for _, c := range before {
+		remaining[c]++
+	}
+	var extra []string
+	for _, c := range after {
+		if remaining[c] > 0 {
+			remaining[c]--
+			continue
+		}
+		extra = append(extra, c)
+	}
+	return extra
 }
 
 // ==========================================================================

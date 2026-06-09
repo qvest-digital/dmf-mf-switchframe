@@ -109,28 +109,35 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 	async function executeSnapshotPush(authoritative: EngineId) {
 		if (pushInFlight || destroyed) return;
 
+		// Hold the re-entrancy guard continuously from here through the
+		// transition-wait, lock acquisition, and push. Previously the flag was
+		// dropped across these awaits, leaving a window in which a second
+		// invocation (a new 'mismatch' status or a retry timer) could pass the
+		// guard above and run a concurrent snapshot pull+push to the same
+		// target — a state-consistency hazard since reconcile swaps full engine
+		// state. Every early-return below must release it, EXCEPT the cooldown
+		// path, which deliberately keeps it held until its pending timer fires
+		// (tracked via cooldownHoldingFlight so clearPendingTimer can release it).
+		pushInFlight = true;
+
 		// Transition guard: wait for active transition to complete
 		const state = config.getAuthoritativeState?.();
 		if (state?.inTransition) {
-			pushInFlight = true;
 			await waitForTransitionEnd(TRANSITION_WAIT_TIMEOUT_MS);
-			if (destroyed) {
-				pushInFlight = false;
-				return;
-			}
-			pushInFlight = false;
 		}
 
-		if (pushInFlight || destroyed) return;
+		if (destroyed) {
+			pushInFlight = false;
+			return;
+		}
 
 		const target = otherEngine(authoritative);
 		const remaining = COOLDOWN_MS - (Date.now() - (lastPushTimes.get(target) ?? 0));
 		if (remaining > 0) {
-			// Cooldown active — schedule a retry so the push isn't lost.
-			// Set pushInFlight to prevent concurrent calls from racing past
-			// the cooldown check while the timer is pending.
-			if (pendingTimer === null && !pushInFlight) {
-				pushInFlight = true;
+			// Cooldown active — schedule a retry so the push isn't lost. Keep
+			// pushInFlight held by the pending timer so concurrent calls can't
+			// race past the cooldown check while the timer is pending.
+			if (pendingTimer === null) {
 				cooldownHoldingFlight = true;
 				pendingTimer = setTimeout(() => {
 					pendingTimer = null;
@@ -138,7 +145,17 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 					cooldownHoldingFlight = false;
 					executeSnapshotPush(currentAuthoritative);
 				}, remaining);
+			} else if (!cooldownHoldingFlight) {
+				// The pending timer is a diverge-delay timer created by
+				// onSyncStatusChange('diverged') during the transition-wait await
+				// above. Its callback does NOT release pushInFlight (it re-invokes
+				// executeSnapshotPush, which would no-op at the re-entrancy guard),
+				// and clearPendingTimer only releases the flag for cooldown timers.
+				// Keeping the flag held here would permanently disable
+				// reconciliation, so release it — the diverge timer owns the retry.
+				pushInFlight = false;
 			}
+			// A cooldown timer is pending (it owns the flag release). Stay held.
 			return;
 		}
 
@@ -164,6 +181,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 
 				const lock1 = await acquireWithTimeout(first);
 				if (!lock1.acquired) {
+					pushInFlight = false;
 					config.onReconcileBusy?.(first);
 					return;
 				}
@@ -174,6 +192,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 					if (firstLockId && config.releaseLock) {
 						config.releaseLock(first, firstLockId).catch(() => {});
 					}
+					pushInFlight = false;
 					config.onReconcileBusy?.(second);
 					return;
 				}
@@ -182,6 +201,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 				if (firstLockId && config.releaseLock) {
 					config.releaseLock(first, firstLockId).catch(() => {});
 				}
+				pushInFlight = false;
 				return;
 			}
 		}
@@ -191,7 +211,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		// browser from starting a reverse-direction reconcile.
 		const sourceLockId = authoritative === first ? firstLockId : secondLockId;
 
-		pushInFlight = true;
+		// pushInFlight is already held continuously from function entry.
 		pushTotal++;
 
 		// Start periodic lock refresh to prevent expiry during long operations.

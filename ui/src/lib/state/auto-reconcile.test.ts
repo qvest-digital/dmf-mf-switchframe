@@ -530,6 +530,40 @@ describe('createAutoReconcile', () => {
 			reconcile.destroy();
 		});
 
+		it('blocks a concurrent push that arrives during the transition wait', async () => {
+			// Regression: the re-entrancy guard (pushInFlight) must be held
+			// continuously from function entry through the transition-wait await.
+			// Previously the flag was only set after the wait, so a second
+			// invocation arriving while the first was parked in waitForTransitionEnd
+			// could pass the guard and run a concurrent snapshot pull+push to the
+			// same target — a state-consistency hazard since reconcile swaps full
+			// engine state.
+			let transitionActive = true;
+			const config = makeConfig({
+				getAuthoritativeState: () => ({ inTransition: transitionActive }),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			// First mismatch: parks in the transition wait.
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.getSnapshot).not.toHaveBeenCalled();
+
+			// Second mismatch DURING the transition wait — must be blocked.
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			// End the transition; the first (and only) push proceeds after the
+			// next 100ms transition poll.
+			transitionActive = false;
+			await vi.advanceTimersByTimeAsync(100);
+
+			expect(config.getSnapshot).toHaveBeenCalledTimes(1);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			reconcile.destroy();
+		});
+
 		it('times out transition guard after 5s', async () => {
 			const config = makeConfig({
 				getAuthoritativeState: () => ({ inTransition: true }), // never ends
@@ -1191,6 +1225,83 @@ describe('createAutoReconcile', () => {
 			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
 			expect(onStaleConflict).not.toHaveBeenCalled();
 			expect(config.onRecoveryError).not.toHaveBeenCalled();
+
+			reconcile.destroy();
+		});
+	});
+
+	describe('pushInFlight release when a diverge timer overlaps the cooldown', () => {
+		it('does not permanently disable reconciliation when a diverged status fires during the transition wait', async () => {
+			let inTransition = false;
+			const config = makeConfig({
+				getAuthoritativeState: () => ({ inTransition }),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			// 1. A successful push starts the 5s per-target cooldown clock.
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			// 2. A new mismatch arrives while a transition is active, inside the
+			//    cooldown window — executeSnapshotPush holds pushInFlight and
+			//    awaits the transition end.
+			inTransition = true;
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			// 3. A 'diverged' status fires during that await. Its 2s timer does
+			//    NOT own the pushInFlight flag.
+			reconcile.onSyncStatusChange('diverged', 'A');
+
+			// 4. The transition ends; the awaited push resumes, sees the cooldown
+			//    still active and a pending timer, and returns.
+			inTransition = false;
+			await vi.advanceTimersByTimeAsync(200);
+
+			// 5. The diverge timer (2s) and the cooldown (5s) both elapse — the
+			//    deferred push must eventually execute.
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
+
+			// 6. Future mismatches must still reconcile (flag not stuck forever).
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(3);
+
+			reconcile.destroy();
+		});
+
+		it('does not leave the flag stuck when a synced status cancels the overlapping diverge timer', async () => {
+			let inTransition = false;
+			const config = makeConfig({
+				getAuthoritativeState: () => ({ inTransition }),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			// Successful push -> cooldown active.
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			// Mismatch during a transition; diverged fires during the wait.
+			inTransition = true;
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			reconcile.onSyncStatusChange('diverged', 'A');
+
+			// Transition ends; push resumes into the cooldown branch.
+			inTransition = false;
+			await vi.advanceTimersByTimeAsync(200);
+
+			// 'synced' cancels the diverge timer before it fires.
+			reconcile.onSyncStatusChange('synced', 'A');
+
+			// A later mismatch (after the cooldown expired) must still push.
+			await vi.advanceTimersByTimeAsync(6000);
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
 
 			reconcile.destroy();
 		});

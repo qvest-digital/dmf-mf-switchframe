@@ -232,8 +232,14 @@ func ReadEXR(data []byte, name string) (*STMap, error) {
 
 	// Read scanline blocks.
 	for block := 0; block < numBlocks; block++ {
+		// Offsets come directly from the untrusted file as int64, so they can
+		// be negative or huge; compare against len(data)-8 rather than
+		// computing blockOffset+8, which overflows for offsets near
+		// math.MaxInt64 and would let the slice below panic. len(data) >= 8
+		// here because the offset table was already length-checked, so the
+		// subtraction cannot underflow.
 		blockOffset := int(offsets[block])
-		if blockOffset+8 > len(data) {
+		if blockOffset < 0 || blockOffset > len(data)-8 {
 			return nil, fmt.Errorf("exr: scanline block %d offset out of range", block)
 		}
 
@@ -241,7 +247,9 @@ func ReadEXR(data []byte, name string) (*STMap, error) {
 		blockY := int(int32(binary.LittleEndian.Uint32(data[blockOffset : blockOffset+4])))
 		pixelDataSize := int(binary.LittleEndian.Uint32(data[blockOffset+4 : blockOffset+8]))
 
-		if blockOffset+8+pixelDataSize > len(data) {
+		// pixelDataSize is untrusted too; compare against the remaining
+		// length instead of adding it to blockOffset+8.
+		if pixelDataSize > len(data)-(blockOffset+8) {
 			return nil, fmt.Errorf("exr: scanline block %d data extends beyond file", block)
 		}
 
@@ -256,13 +264,23 @@ func ReadEXR(data []byte, name string) (*STMap, error) {
 			pixelBytes = decompressed
 		}
 
-		// Determine rows in this block.
+		// Determine rows in this block. blockY comes directly from the
+		// untrusted file, so startRow may be out of range; reject blocks
+		// that would index outside the output buffer.
 		startRow := blockY - yMin
+		if startRow < 0 || startRow >= height {
+			return nil, fmt.Errorf("exr: scanline block %d has out-of-range y %d (dataWindow yMin %d, height %d)",
+				block, blockY, yMin, height)
+		}
 		endRow := startRow + rowsPerBlock
 		if endRow > height {
 			endRow = height
 		}
 		rowsInBlock := endRow - startRow
+		if rowsInBlock <= 0 {
+			return nil, fmt.Errorf("exr: scanline block %d has no rows (startRow %d, endRow %d)",
+				block, startRow, endRow)
+		}
 
 		// EXR block layout: channels are stored sequentially within each block.
 		// For each channel (in alphabetical order), all rows of that channel
@@ -374,15 +392,26 @@ func parseChannelList(data []byte) ([]exrChannel, error) {
 	return channels, nil
 }
 
-// readPixel reads a single pixel value at the given byte offset for the given pixel type.
+// readPixel reads a single pixel value at the given byte offset for the given
+// pixel type. It guards against out-of-range offsets (returning 0) rather than
+// relying solely on upstream offset math, so malformed input cannot panic.
 func readPixel(data []byte, off int, pixelType int32) float32 {
 	switch pixelType {
 	case exrPixelTypeHALF:
+		if off < 0 || off+2 > len(data) {
+			return 0
+		}
 		h := binary.LittleEndian.Uint16(data[off : off+2])
 		return halfToFloat(h)
 	case exrPixelTypeFLOAT:
+		if off < 0 || off+4 > len(data) {
+			return 0
+		}
 		return math.Float32frombits(binary.LittleEndian.Uint32(data[off : off+4]))
 	case exrPixelTypeUINT:
+		if off < 0 || off+4 > len(data) {
+			return 0
+		}
 		u := binary.LittleEndian.Uint32(data[off : off+4])
 		return float32(u) / float32(math.MaxUint32)
 	default:

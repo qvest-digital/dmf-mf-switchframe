@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -446,6 +447,82 @@ func TestCallerReconnectsOnDisconnect(t *testing.T) {
 	mu.Unlock()
 
 	cancel()
+}
+
+// TestCallerBacksOffOnImmediateSourceFailure reproduces finding #51: when the
+// SRT handshake succeeds but the source fails immediately (OnSource returns an
+// already-closed done channel, e.g. decoder open failure or instant remote
+// EOF), the connect loop must apply reconnect backoff instead of re-dialing in
+// a tight loop at full speed with a freshly reset backoff.
+func TestCallerBacksOffOnImmediateSourceFailure(t *testing.T) {
+	addr := findFreePort(t)
+	store := tempStore(t)
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	// Start a real SRT listener that accepts every connection.
+	srvCfg := srtgo.DefaultConfig()
+	srvCfg.Latency = 120 * time.Millisecond
+	ln, err := srtgo.Listen(addr, srvCfg)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Hold the connection; the caller side tears down immediately.
+			go func() {
+				time.Sleep(30 * time.Second)
+				_ = conn.Close()
+			}()
+		}
+	}()
+
+	var callCount atomic.Int32
+	caller := NewCaller(CallerConfig{
+		Store:          store,
+		DefaultLatency: 120 * time.Millisecond,
+		OnSource: func(cfg SourceConfig, conn *srtgo.Conn) <-chan struct{} {
+			callCount.Add(1)
+			_ = conn.Close()
+			done := make(chan struct{})
+			close(done) // source fails immediately
+			return done
+		},
+		Log: log,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := caller.Pull(ctx, SourceConfig{
+		Key:       "srt:fastfail",
+		Mode:      ModeCaller,
+		Address:   addr,
+		StreamID:  "live/fastfail",
+		LatencyMs: 120,
+	}); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	// With the default 1s-initial backoff (±25% jitter) the loop may connect
+	// at ~t0, ~t0.75-1.25s, and ~t2.25-3.75s. Without backoff on the
+	// immediate-failure path, the loop re-dials as fast as the localhost SRT
+	// handshake completes — far more than a handful of attempts.
+	time.Sleep(3 * time.Second)
+	cancel()
+
+	n := callCount.Load()
+	if n < 1 {
+		t.Fatal("expected at least one OnSource call")
+	}
+	if n > 4 {
+		t.Errorf("expected reconnect backoff after immediate source failure; got %d connects in 3s", n)
+	}
 }
 
 func TestCallerValidation(t *testing.T) {

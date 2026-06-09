@@ -168,6 +168,11 @@ type Source struct {
 	// Pre-allocated V210 conversion buffers (used from single videoFanOut goroutine).
 	v210Bufs v210Buffers
 
+	// Pre-allocated YUV422P10LE output for the Lossless10bit path (~8.3 MB at
+	// 1080p), reused across grains from the single videoFanOut goroutine —
+	// same rationale as v210Bufs for the 8-bit path.
+	yuv422p10Out []byte
+
 	// Reusable buffer for YUV data passed to the encoder, avoiding aliasing
 	// with v210Bufs.yuvOut which may be retained by OnRawVideo consumers.
 	encoderYUV []byte
@@ -327,10 +332,16 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 	var yuv []byte
 
 	if s.config.Lossless10bit {
-		// Lossless path: V210 → YUV422P10LE (preserves 10-bit depth + 4:2:2 chroma).
+		// Lossless path: V210 → YUV422P10LE (preserves 10-bit depth + 4:2:2
+		// chroma). Convert into the reusable yuv422p10Out buffer — this runs
+		// per grain, and a fresh allocation here is ~8.3 MB at 1080p.
+		need := grain.Width * grain.Height * 4
+		if cap(s.yuv422p10Out) < need {
+			s.yuv422p10Out = make([]byte, need)
+		}
+		out := s.yuv422p10Out[:need]
 		srcStride := V210LineStride(grain.Width)
-		out, err := V210ToYUV422P10(grain.V210, srcStride, grain.Width, grain.Height)
-		if err != nil {
+		if err := V210ToYUV422P10Into(grain.V210, out, srcStride, grain.Width, grain.Height); err != nil {
 			s.log.Error("mxl source: V210→YUV422P10 conversion failed",
 				"error", err, "width", grain.Width, "height", grain.Height)
 			return
@@ -355,9 +366,10 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 	pts := int64(grain.ReadTime.Sub(s.startTime).Seconds() * 90000)
 
 	// 2. Deliver raw YUV to switcher pipeline.
-	// Allocate a fresh copy because v210Bufs.yuvOut is overwritten on the
-	// next frame conversion, and the consumer (switcher pipeline) retains
-	// the buffer reference asynchronously via ProcessingFrame.Data.
+	// Allocate a fresh copy because the pooled conversion buffer
+	// (v210Bufs.yuvOut or yuv422p10Out) is overwritten on the next frame
+	// conversion, and the consumer (switcher pipeline) retains the buffer
+	// reference asynchronously via ProcessingFrame.Data.
 	if s.config.OnRawVideo != nil {
 		rawCopy := make([]byte, len(yuv))
 		copy(rawCopy, yuv)

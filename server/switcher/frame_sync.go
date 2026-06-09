@@ -549,7 +549,14 @@ func (fs *FrameSynchronizer) IngestRawVideo(sourceKey string, pf *ProcessingFram
 	ss.mu.Lock()
 	ss.pushRawVideo(pf)
 	ss.drift.sample(pf.PTS, time.Now().UnixNano())
-	if ss.frc != nil {
+	// Only feed managed (refcounted) frames to FRC. FRC retains an
+	// independent reference to its buffered prev/curr frames via Ref(), which
+	// is a no-op on unmanaged frames (refs == nil, e.g. builtin-source
+	// frames). For those, the ring buffer's ReleaseYUV would nil the frame's
+	// Data while FRC still pointed at the same struct — a stale pointer.
+	// Builtins are already exempt from interpolation via SetFRCQuality; this
+	// guard makes the stale-pointer state impossible for any unmanaged source.
+	if ss.frc != nil && pf.refs != nil {
 		ss.frc.ingest(pf)
 	}
 	ss.mu.Unlock()
@@ -815,23 +822,27 @@ func (fs *FrameSynchronizer) SetClockDriven(enabled bool) {
 // loop over the same ring buffers.
 //
 // If the tickLoop is already running (Start() was called before SetBufferOnly),
-// it is stopped gracefully. The done channel is closed and the goroutine
-// drains, then the channel is reset so Stop() can close it again cleanly.
+// it is stopped gracefully. The done channel is closed and replaced in one
+// critical section under fs.mu, so a concurrent Stop() can never observe the
+// stale closed channel (which would double-close and panic) — it closes the
+// fresh channel instead. The tickLoop captured the old channel at launch, so
+// it still receives the close signal.
 func (fs *FrameSynchronizer) SetBufferOnly(enabled bool) {
 	fs.mu.Lock()
 	alreadyRunning := fs.started && !fs.bufferOnly && !fs.stopped && enabled
 	fs.bufferOnly = enabled
+	if alreadyRunning {
+		// Stop the tickLoop that was already launched by Start():
+		// close done to signal the goroutine and immediately swap in a
+		// fresh channel for Stop() to close later.
+		close(fs.done)
+		fs.done = make(chan struct{})
+	}
 	fs.mu.Unlock()
 
 	if alreadyRunning {
-		// Stop the tickLoop that was already launched by Start().
-		// Close done to signal the goroutine, wait for it, then reset
-		// the done channel so Stop() doesn't double-close.
-		close(fs.done)
+		// Wait for the tickLoop goroutine to drain.
 		fs.wg.Wait()
-		fs.mu.Lock()
-		fs.done = make(chan struct{})
-		fs.mu.Unlock()
 	}
 
 	if enabled {
@@ -1004,6 +1015,10 @@ func (fs *FrameSynchronizer) tickLoop() {
 	defer fs.wg.Done()
 	fs.mu.Lock()
 	rate := fs.tickRate
+	// Capture the done channel for this tickLoop generation. SetBufferOnly
+	// closes-and-replaces fs.done under fs.mu; reading the field directly in
+	// the select below would race with that swap (and could miss the close).
+	done := fs.done
 	fs.mu.Unlock()
 
 	timer := time.NewTimer(rate)
@@ -1039,13 +1054,13 @@ func (fs *FrameSynchronizer) tickLoop() {
 					}
 				}
 				earlyRelease = true
-			case <-fs.done:
+			case <-done:
 				return
 			}
 		} else {
 			// Tick is overdue.
 			select {
-			case <-fs.done:
+			case <-done:
 				return
 			default:
 			}

@@ -95,8 +95,8 @@ func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),
 		videoProcDone: make(chan struct{}),
-		framePool:     NewFramePool(8, 320, 240, ColorYUV420_8bit),
 	}
+	s.framePool.Store(NewFramePool(8, 320, 240, ColorYUV420_8bit))
 	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&testFmt)
 	s.recentCmdErrors = newRecentErrors(8)
@@ -124,7 +124,7 @@ func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
 	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
 		s.handleRawVideoFrame(sourceKey, pf)
 	}
-	fs.framePool = s.framePool
+	fs.framePool = s.framePool.Load()
 	fs.SetClockDriven(true)
 
 	s.configMu.Lock()
@@ -178,7 +178,7 @@ func TestSyncLoopProducesVideoOutput(t *testing.T) {
 	s.programRelay.AddViewer(viewer)
 
 	// Feed frames into the frame sync buffer.
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	for i := 0; i < 5; i++ {
 		buf := pool.Acquire()[:yuvSize]
@@ -316,7 +316,7 @@ func TestSyncLoopAVAligned(t *testing.T) {
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Feed many frames.
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	for i := 0; i < 60; i++ {
 		buf := pool.Acquire()[:yuvSize]
@@ -395,7 +395,7 @@ func TestSyncLoopOverload(t *testing.T) {
 	// First, process one frame WITHOUT the slow node to establish
 	// lastBroadcastVFrame. Without this, the overload guard (which
 	// prevents skipping when there's nothing to repeat) won't trigger.
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	{
 		buf := pool.Acquire()[:yuvSize]
@@ -415,7 +415,7 @@ func TestSyncLoopOverload(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(PipelineFormat{
 		Name: "test", Width: 320, Height: 240, FPSNum: 30, FPSDen: 1,
-	}, s.framePool, []PipelineNode{slowNode}))
+	}, s.framePool.Load(), []PipelineNode{slowNode}))
 	s.pipeline.Store(p)
 
 	// Reset for second run with slow pipeline.
@@ -525,7 +525,7 @@ func TestSyncLoopProcessTickDirect(t *testing.T) {
 	s.SetAACBuffer(aacBuf)
 
 	// Feed a frame.
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	buf := pool.Acquire()[:yuvSize]
 	pf := &ProcessingFrame{
@@ -649,7 +649,7 @@ func TestSyncLoopNoMixerNoAAC(t *testing.T) {
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Feed a frame.
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	buf := pool.Acquire()[:yuvSize]
 	pf := &ProcessingFrame{
@@ -721,11 +721,11 @@ func TestSyncLoopVideoFramesGetRefClockPTS(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(PipelineFormat{
 		Name: "test", Width: 320, Height: 240, FPSNum: 30, FPSDen: 1,
-	}, s.framePool, []PipelineNode{captureNode}))
+	}, s.framePool.Load(), []PipelineNode{captureNode}))
 	s.pipeline.Store(p)
 
 	// Feed a frame with a known source PTS that differs from the tick PTS.
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	buf := pool.Acquire()[:yuvSize]
 	pf := &ProcessingFrame{
@@ -919,7 +919,7 @@ func TestSyncLoopSourceLossFreeze(t *testing.T) {
 	s.programRelay.AddViewer(viewer)
 
 	// Feed 10 frames with known luma value.
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	for i := 0; i < 10; i++ {
 		buf := pool.Acquire()[:yuvSize]
@@ -997,7 +997,7 @@ func TestSyncLoopSourceLossToBlack(t *testing.T) {
 	s.programRelay.AddViewer(viewer)
 
 	// Feed one frame.
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	buf := pool.Acquire()[:yuvSize]
 	for j := 0; j < 320*240; j++ {
@@ -1068,7 +1068,7 @@ func TestSyncLoopSourceRecovery(t *testing.T) {
 	viewer := newMockProgramViewer("recovery-viewer")
 	s.programRelay.AddViewer(viewer)
 
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 
 	// Feed initial frame.
@@ -1160,7 +1160,7 @@ func TestSyncLoopTransitionDissolve(t *testing.T) {
 	viewer := newMockProgramViewer("dissolve-viewer")
 	s.programRelay.AddViewer(viewer)
 
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 
 	// Feed frames for cam1 (Y=40) and cam2 (Y=200).
@@ -1242,7 +1242,7 @@ func TestSyncLoopTransitionComplete(t *testing.T) {
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 	_ = s.SetPreview(context.Background(), "cam2")
 
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 
 	feedSource := func(key string) {
@@ -1295,6 +1295,118 @@ func TestSyncLoopTransitionComplete(t *testing.T) {
 		"program source should switch to cam2 after transition completes")
 }
 
+// TestSyncLoopTransitionTypeNoRace is a race-detector regression test for the
+// data race on s.transTypeOrig. The sync-loop reader (processVideoTick ->
+// processTransitionTick) used to read the plain s.transTypeOrig field with no
+// lock, while StartTransition/handleTransitionComplete write that field under
+// configMu from API-handler goroutines. A Go string header (ptr,len) is not
+// atomic, so the lockless read was a data race. The fix threads the value from
+// the hotState snapshot the reader already loads.
+//
+// This test drives processVideoTick on the transition path (with a mock GPU
+// runner so the transTypeOrig read at sync_loop.go is actually executed)
+// concurrently with writers that mutate transTypeOrig under configMu exactly
+// the way StartTransition/handleTransitionComplete do. Run with -race: it
+// fails on the pre-fix code and passes after the fix.
+func TestSyncLoopTransitionTypeNoRace(t *testing.T) {
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	// Install a mock GPU runner so processTransitionTick takes the GPU branch
+	// that reads transTypeOrig (rather than the CPU fallback).
+	s.SetGPUPipeline(&mockGPUPipelineRunner{})
+
+	// Register two sources and put the switcher into a transition.
+	for _, key := range []string{"cam1", "cam2"} {
+		s.RegisterSource(key, distribution.NewRelay())
+		s.configMu.Lock()
+		s.frameSync.AddSource(key)
+		s.configMu.Unlock()
+	}
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	pool := s.framePool.Load()
+	yuvSize := 320 * 240 * 3 / 2
+	feedSource := func(key string) {
+		buf := pool.Acquire()[:yuvSize]
+		for j := range buf {
+			buf[j] = 128
+		}
+		pf := &ProcessingFrame{Data: buf, Width: 320, Height: 240, PTS: 0, pool: pool}
+		pf.SetRefs(1)
+		s.frameSync.IngestRawVideo(key, pf)
+	}
+
+	engine := transition.NewEngine(transition.EngineConfig{})
+	engine.StartSync("cam1", "cam2", transition.Mix, 60000) // long: stays in transition
+	s.configMu.Lock()
+	s.transConfig = &TransitionConfig{}
+	s.transEngine = engine
+	s.transitionState(StateTransitioning)
+	s.updateHotState(func(hs *hotState) {
+		hs.transEngine = engine
+		hs.state = StateTransitioning
+	})
+	s.configMu.Unlock()
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Reader goroutine: drives the sync-loop transition path, which reads
+	// transTypeOrig once per tick.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			feedSource("cam1")
+			feedSource("cam2")
+			s.processVideoTick(clock.Tick{
+				Number:        int64(i),
+				VideoPTS:      int64(i) * 3000,
+				AudioSamples:  1600,
+				FrameDuration: 33333 * time.Microsecond,
+			})
+		}
+	}()
+
+	// Writer goroutine: mutates transTypeOrig under configMu exactly the way
+	// StartTransition (set) and handleTransitionComplete (clear) do — including
+	// the hotState mirror — to reproduce the racing-writer surface without the
+	// full transition codec setup.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		types := []string{"dve-push-left", "mix", "dve-slide-up", "dip"}
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			tt := types[i%len(types)]
+			s.configMu.Lock()
+			s.transTypeOrig = tt
+			s.updateHotState(func(hs *hotState) { hs.transTypeOrig = tt })
+			s.configMu.Unlock()
+
+			s.configMu.Lock()
+			s.transTypeOrig = ""
+			s.updateHotState(func(hs *hotState) { hs.transTypeOrig = "" })
+			s.configMu.Unlock()
+		}
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+	// Success = no race detector report and no panic from a torn string read.
+}
+
 // === Task 16: Clock Recovery Tests ===
 
 func TestSyncLoopClockRecovery(t *testing.T) {
@@ -1313,7 +1425,7 @@ func TestSyncLoopClockRecovery(t *testing.T) {
 	s.configMu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 
 	// Simulate 29.97fps frame arrivals by recording timestamps at that rate.
@@ -1381,7 +1493,7 @@ func TestSyncLoopClockRecoveryNoMutation(t *testing.T) {
 	// Record initial rate.
 	initNum, initDen := rc.Rate()
 
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 
 	// Feed 100 frames with 25fps timing — clock recovery will detect 25fps
@@ -1536,7 +1648,7 @@ func TestFTBTransitionCallsCorrectHandler(t *testing.T) {
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Feed frames for the source.
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	for i := 0; i < 10; i++ {
 		buf := pool.Acquire()[:yuvSize]
@@ -1610,7 +1722,7 @@ func TestStartSyncLoopDoubleStartGuard(t *testing.T) {
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
 	// Feed some frames.
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	for i := 0; i < 20; i++ {
 		buf := pool.Acquire()[:yuvSize]
@@ -1669,14 +1781,14 @@ func TestSyncLoopNoRaceWithAsyncPath(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(PipelineFormat{
 		Name: "test", Width: 320, Height: 240, FPSNum: 30, FPSDen: 1,
-	}, s.framePool, []PipelineNode{countNode}))
+	}, s.framePool.Load(), []PipelineNode{countNode}))
 	s.pipeline.Store(p)
 
 	// Set up viewer to capture output.
 	viewer := newMockProgramViewer("no-race-viewer")
 	s.programRelay.AddViewer(viewer)
 
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 
 	// Feed frames into the frame sync buffer AND trigger handleRawVideoFrame
@@ -1778,11 +1890,11 @@ func TestSyncLoopChecksGPURunner(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(PipelineFormat{
 		Name: "test", Width: 320, Height: 240, FPSNum: 30, FPSDen: 1,
-	}, s.framePool, []PipelineNode{cpuNode}))
+	}, s.framePool.Load(), []PipelineNode{cpuNode}))
 	s.pipeline.Store(p)
 
 	// Feed frames and process ticks.
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	for i := 0; i < 5; i++ {
 		buf := pool.Acquire()[:yuvSize]
@@ -1852,13 +1964,13 @@ func TestSyncLoopGPUFallbackToCPU(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(PipelineFormat{
 		Name: "test", Width: 320, Height: 240, FPSNum: 30, FPSDen: 1,
-	}, s.framePool, []PipelineNode{cpuNode}))
+	}, s.framePool.Load(), []PipelineNode{cpuNode}))
 	s.pipeline.Store(p)
 
 	viewer := newMockProgramViewer("gpu-fallback-viewer")
 	s.programRelay.AddViewer(viewer)
 
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	for i := 0; i < 3; i++ {
 		buf := pool.Acquire()[:yuvSize]
@@ -1949,8 +2061,8 @@ func newSyncTestSwitcherBufferOnly(t *testing.T) (*Switcher, *clock.ReferenceClo
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),
 		videoProcDone: make(chan struct{}),
-		framePool:     NewFramePool(8, 320, 240, ColorYUV420_8bit),
 	}
+	s.framePool.Store(NewFramePool(8, 320, 240, ColorYUV420_8bit))
 	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&testFmt)
 	s.recentCmdErrors = newRecentErrors(8)
@@ -1971,7 +2083,7 @@ func newSyncTestSwitcherBufferOnly(t *testing.T) (*Switcher, *clock.ReferenceClo
 	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
 		s.handleRawVideoFrame(sourceKey, pf)
 	}
-	fs.framePool = s.framePool
+	fs.framePool = s.framePool.Load()
 	fs.SetClockDriven(true)
 	fs.SetBufferOnly(true)
 	fs.Start() // should NOT launch tickLoop
@@ -2011,7 +2123,7 @@ func TestSyncLoopWithBufferOnlyFrameSync(t *testing.T) {
 	s.programRelay.AddViewer(viewer)
 
 	// Feed frames into the frame sync ring buffer.
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	for i := 0; i < 5; i++ {
 		buf := pool.Acquire()[:yuvSize]
@@ -2075,7 +2187,7 @@ func TestSyncLoopBufferOnlyNoTimerRace(t *testing.T) {
 
 	// Continuously ingest frames from a background goroutine while the
 	// sync loop is running. With -race this catches any data races.
-	pool := s.framePool
+	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 	stopIngest := make(chan struct{})
 	go func() {

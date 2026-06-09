@@ -453,6 +453,54 @@ func TestCrc32MPEG2(t *testing.T) {
 	require.Equal(t, expectedCRC, computedCRC)
 }
 
+func TestEffectiveSplicePTS(t *testing.T) {
+	t.Parallel()
+
+	const ptsMod = int64(1) << 33
+
+	t.Run("noSpliceTime", func(t *testing.T) {
+		t.Parallel()
+		m := &CueMessage{CommandType: CommandTimeSignal}
+		pts, ok := m.EffectiveSplicePTS()
+		require.False(t, ok, "immediate splice has no effective PTS")
+		require.Zero(t, pts)
+	})
+
+	t.Run("zeroAdjustment", func(t *testing.T) {
+		t.Parallel()
+		splice := int64(1_234_567)
+		m := &CueMessage{SpliceTimePTS: &splice, PTSAdjustment: 0}
+		pts, ok := m.EffectiveSplicePTS()
+		require.True(t, ok)
+		require.Equal(t, splice, pts, "zero adjustment leaves splice time unchanged")
+	})
+
+	t.Run("foldsAdjustment", func(t *testing.T) {
+		t.Parallel()
+		splice := int64(1_000_000)
+		adj := uint64(500_000)
+		m := &CueMessage{SpliceTimePTS: &splice, PTSAdjustment: adj}
+		pts, ok := m.EffectiveSplicePTS()
+		require.True(t, ok)
+		require.Equal(t, splice+int64(adj), pts,
+			"effective PTS must be pts_adjustment + splice_time")
+	})
+
+	t.Run("wrapsAt33Bit", func(t *testing.T) {
+		t.Parallel()
+		// splice_time + pts_adjustment exceeds 2^33 and must wrap.
+		splice := ptsMod - 100
+		adj := uint64(500)
+		m := &CueMessage{SpliceTimePTS: &splice, PTSAdjustment: adj}
+		pts, ok := m.EffectiveSplicePTS()
+		require.True(t, ok)
+		require.Equal(t, (splice+int64(adj))&(ptsMod-1), pts,
+			"effective PTS must be reduced mod 2^33")
+		require.GreaterOrEqual(t, pts, int64(0))
+		require.Less(t, pts, ptsMod)
+	})
+}
+
 func TestMultipleUPIDs_RoundTrip(t *testing.T) {
 	t.Parallel()
 	// A segmentation descriptor with 2 UPIDs should survive encode→decode.

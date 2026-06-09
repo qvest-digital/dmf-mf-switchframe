@@ -79,15 +79,20 @@ inline std::vector<uint8_t> SerializeFrame(uint8_t browser_id, uint16_t width,
 }
 
 // Escape a string for safe embedding in a JavaScript string literal (single-quoted).
-// Handles: backslash, single quote, newline, carriage return, tab, and </script>.
+// Handles: backslash, single quote, \b, \f, newline, carriage return, tab, the
+// Unicode line separators U+2028/U+2029 (which terminate a JS string literal),
+// other control characters (<0x20, as \u00XX), and </script>.
 inline std::string EscapeForJS(const std::string& s) {
+    static const char kHex[] = "0123456789abcdef";
     std::string out;
     out.reserve(s.size() + s.size() / 8);
     for (size_t i = 0; i < s.size(); ++i) {
-        char c = s[i];
+        unsigned char c = static_cast<unsigned char>(s[i]);
         switch (c) {
             case '\\': out += "\\\\"; break;
             case '\'': out += "\\'";  break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
             case '\n': out += "\\n";  break;
             case '\r': out += "\\r";  break;
             case '\t': out += "\\t";  break;
@@ -97,11 +102,33 @@ inline std::string EscapeForJS(const std::string& s) {
                     out += "<\\/script";
                     i += 7;
                 } else {
-                    out += c;
+                    out += static_cast<char>(c);
+                }
+                break;
+            case 0xE2:
+                // U+2028 (E2 80 A8) and U+2029 (E2 80 A9) are valid JS string
+                // terminators; escape them as   /  .
+                if (i + 2 < s.size() &&
+                    static_cast<unsigned char>(s[i + 1]) == 0x80 &&
+                    (static_cast<unsigned char>(s[i + 2]) == 0xA8 ||
+                     static_cast<unsigned char>(s[i + 2]) == 0xA9)) {
+                    out += (static_cast<unsigned char>(s[i + 2]) == 0xA8)
+                               ? "\\u2028"
+                               : "\\u2029";
+                    i += 2;
+                } else {
+                    out += static_cast<char>(c);
                 }
                 break;
             default:
-                out += c;
+                if (c < 0x20) {
+                    // Remaining control characters (incl. NUL) as \u00XX.
+                    out += "\\u00";
+                    out += kHex[(c >> 4) & 0xF];
+                    out += kHex[c & 0xF];
+                } else {
+                    out += static_cast<char>(c);
+                }
                 break;
         }
     }
@@ -109,17 +136,32 @@ inline std::string EscapeForJS(const std::string& s) {
 }
 
 // Escape a string for safe embedding in a JSON string value (double-quoted).
+// Handles backslash, double-quote, the named control escapes, and all other
+// control characters (<0x20) as \u00XX so page-derived titles / CEF error text
+// cannot produce invalid JSON in the control response stream.
 inline std::string EscapeForJSON(const std::string& s) {
+    static const char kHex[] = "0123456789abcdef";
     std::string out;
     out.reserve(s.size() + s.size() / 8);
-    for (char c : s) {
+    for (char ch : s) {
+        unsigned char c = static_cast<unsigned char>(ch);
         switch (c) {
             case '\\': out += "\\\\"; break;
             case '"':  out += "\\\""; break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
             case '\n': out += "\\n";  break;
             case '\r': out += "\\r";  break;
             case '\t': out += "\\t";  break;
-            default:   out += c;      break;
+            default:
+                if (c < 0x20) {
+                    out += "\\u00";
+                    out += kHex[(c >> 4) & 0xF];
+                    out += kHex[c & 0xF];
+                } else {
+                    out += static_cast<char>(c);
+                }
+                break;
         }
     }
     return out;
@@ -140,10 +182,11 @@ inline std::string MakeErrorResponse(int id, const std::string& error) {
 inline std::string MakeEventResponse(int id, const std::string& event,
                                       const std::string& extra_key = "",
                                       const std::string& extra_value = "") {
-    std::string resp =
-        "{\"id\":" + std::to_string(id) + ",\"event\":\"" + event + "\"";
+    std::string resp = "{\"id\":" + std::to_string(id) + ",\"event\":\"" +
+                       EscapeForJSON(event) + "\"";
     if (!extra_key.empty()) {
-        resp += ",\"" + extra_key + "\":\"" + EscapeForJSON(extra_value) + "\"";
+        resp += ",\"" + EscapeForJSON(extra_key) + "\":\"" +
+                EscapeForJSON(extra_value) + "\"";
     }
     resp += "}\n";
     return resp;

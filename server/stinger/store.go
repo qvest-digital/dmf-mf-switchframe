@@ -164,6 +164,13 @@ func (s *Store) List() []string {
 }
 
 // Get returns a stinger clip by name.
+//
+// WARNING: when the clip is mmap-backed (cacheDir enabled), the returned
+// Clip's Frame.YUV/Frame.Alpha slices alias a memory-mapped region that
+// Delete()/Upload() will munmap. Do NOT retain those slices past the call —
+// a concurrent Delete would turn them into a use-after-free. Callers that
+// need the frame bytes to outlive the store lock (e.g. to drive a transition)
+// must use StingerData, which returns heap-owned copies.
 func (s *Store) Get(name string) (*Clip, bool) {
 	if validateName(name) != nil {
 		return nil, false
@@ -172,6 +179,46 @@ func (s *Store) Get(name string) (*Clip, bool) {
 	defer s.mu.RUnlock()
 	c, ok := s.clips[name]
 	return c, ok
+}
+
+// StingerData returns a deep copy of the named clip as transition.StingerData.
+//
+// The returned data owns its frame bytes on the Go heap, independent of any
+// mmap backing. This is the safe way to obtain stinger frames for a transition
+// that outlives the store lock: a subsequent Delete()/Upload() may munmap the
+// clip's backing, but the returned copy is unaffected. The deep copy is
+// performed while holding the read lock, so it cannot race a concurrent
+// Delete() (which takes the write lock).
+func (s *Store) StingerData(name string) (*transition.StingerData, bool) {
+	if validateName(name) != nil {
+		return nil, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.clips[name]
+	if !ok {
+		return nil, false
+	}
+	frames := make([]transition.StingerFrameData, len(c.Frames))
+	for i := range c.Frames {
+		frames[i] = transition.StingerFrameData{
+			YUV:   bytes.Clone(c.Frames[i].YUV),
+			Alpha: bytes.Clone(c.Frames[i].Alpha),
+		}
+	}
+	var audio []float32
+	if c.Audio != nil {
+		audio = slices.Clone(c.Audio)
+	}
+	return &transition.StingerData{
+		Frames:          frames,
+		Width:           c.Width,
+		Height:          c.Height,
+		CutPoint:        c.CutPoint,
+		Audio:           audio,
+		AudioSampleRate: c.AudioSampleRate,
+		AudioChannels:   c.AudioChannels,
+	}, true
 }
 
 // Delete removes a stinger clip and its directory.

@@ -90,8 +90,11 @@ kernel void pip_composite_y(
     // Map local rect coords to source crop region coords
     float srcXf = float(srcRegionX) + float(gid.x) * float(srcRegionW - 1) / float(max(params.rectW - 1, 1));
     float srcYf = float(srcRegionY) + float(gid.y) * float(srcRegionH - 1) / float(max(params.rectH - 1, 1));
-    int sx = int(srcXf);
-    int sy = int(srcYf);
+    // Clamp the base sample index to the source bounds so an out-of-range crop
+    // rect (cropX+cropW > srcW or cropY+cropH > srcH) cannot read past the
+    // source buffer. Matches the UV kernels, which already clamp sx/sy.
+    int sx = clamp(int(srcXf), 0, int(params.srcW) - 1);
+    int sy = clamp(int(srcYf), 0, int(params.srcH) - 1);
     float fx = srcXf - float(sx);
     float fy = srcYf - float(sy);
 
@@ -214,8 +217,11 @@ kernel void pip_composite_p210_y(
 
     float srcXf = float(srcRegionX) + float(gid.x) * float(srcRegionW - 1) / float(max(params.rectW - 1, 1));
     float srcYf = float(srcRegionY) + float(gid.y) * float(srcRegionH - 1) / float(max(params.rectH - 1, 1));
-    int sx = int(srcXf);
-    int sy = int(srcYf);
+    // Clamp the base sample index to the source bounds so an out-of-range crop
+    // rect (cropX+cropW > srcW or cropY+cropH > srcH) cannot read past the
+    // source buffer. Matches the UV kernels, which already clamp sx/sy.
+    int sx = clamp(int(srcXf), 0, int(params.srcW) - 1);
+    int sy = clamp(int(srcYf), 0, int(params.srcH) - 1);
     float fx = srcXf - float(sx);
     float fy = srcYf - float(sy);
 

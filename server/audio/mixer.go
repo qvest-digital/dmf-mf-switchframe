@@ -100,7 +100,6 @@ type Channel struct {
 	// Reusable work buffers (hot-path allocation elimination)
 	trimBuf    []float32
 	gainBuf    []float32
-	storedBuf  []float32
 	upmixBuf   []float32 // reused by upmixMono to avoid per-call allocation
 	downmixBuf []float32 // reused by downmixChannels to avoid per-call allocation
 
@@ -135,8 +134,11 @@ type Mixer struct {
 	tickerWg   sync.WaitGroup
 	closeOnce  sync.Once
 
-	// Pre-buffered PCM: last decoded frame per source for instant crossfade.
-	lastDecodedPCM map[string][]float32
+	// closed is set true under m.mu before Close() frees the codecs. A
+	// straggler tick()/ingest that wins the lock after a shutdown-wait timeout
+	// checks this flag before (re)creating or using ch.decoder/m.encoder, so it
+	// cannot resurrect or touch codecs Close() is about to release.
+	closed atomic.Bool
 
 	// Transition crossfade state: multi-frame crossfade synced with video transition.
 	// Also used for cut crossfade (2-tick ramp driven by cutFramesRemaining).
@@ -148,15 +150,34 @@ type Mixer struct {
 	transCrossfadeAudioPos float64        // position at end of last audio output (for smooth interpolation)
 	mixCycleTransPos       float64        // snapshotted transition position for current mix cycle
 
+	// transAbortActivated is the source key of the channel that
+	// OnTransitionStart activated (it was inactive before the transition
+	// began). OnTransitionAbort rolls that activation back so the preview
+	// source's audio does not keep mixing into program at full fader gain
+	// after an aborted transition (e.g. T-bar pulled back to 0).
+	// OnTransitionComplete simply clears it — the channel legitimately
+	// stays active because its source is now on program.
+	transAbortActivated string
+
 	// Cut crossfade state: driven by tick() frame counter.
 	// When cutFramesRemaining > 0, tick() auto-advances transCrossfadePosition.
 	cutFramesRemaining int // >0 means cut crossfade in progress
 	cutTotalFrames     int // total frames in cut crossfade (usually 2)
 
-	// AFV deferred deactivation: when OnProgramChange sets up a crossfade,
-	// the outgoing AFV channel stays active during the ramp. This field
-	// records which channel to deactivate when the cut crossfade completes.
-	afvDeactivateOnComplete string
+	// programAFVSource is the source key of the AFV channel currently on
+	// program. Tracked explicitly so OnProgramChange picks the outgoing source
+	// deterministically instead of via random map iteration (which would pick an
+	// arbitrary one when several AFV channels are momentarily active and hard-cut
+	// the rest, causing a click and a nondeterministic mix).
+	programAFVSource string
+
+	// AFV deferred deactivation: when OnProgramChange sets up a crossfade, the
+	// outgoing AFV channel(s) stay active during the ramp and are deactivated
+	// when the cut crossfade completes. A set (not a single key) so that if
+	// several AFV channels are active at once — e.g. OnProgramChange is
+	// re-invoked mid-crossfade — every one of them fades out with the transition
+	// rather than only the first being ramped and the others hard-cut.
+	afvDeactivateOnComplete map[string]struct{}
 
 	// Stinger audio overlay (optional, active during stinger transitions)
 	stingerAudio    []float32 // interleaved PCM from stinger clip
@@ -229,17 +250,16 @@ func NewMixer(config MixerConfig) *Mixer {
 		output = func(*media.AudioFrame) {}
 	}
 	m := &Mixer{
-		log:            slog.With("component", "audio"),
-		channels:       make(map[string]*Channel),
-		masterLevel:    0.0,
-		masterLinear:   1.0, // 0 dB = unity
-		sampleRate:     config.SampleRate,
-		numChannels:    config.Channels,
-		output:         output,
-		config:         config,
-		limiter:        NewLimiter(config.SampleRate, config.Channels),
-		loudness:       NewLoudnessMeter(config.SampleRate, config.Channels),
-		lastDecodedPCM: make(map[string][]float32),
+		log:          slog.With("component", "audio"),
+		channels:     make(map[string]*Channel),
+		masterLevel:  0.0,
+		masterLinear: 1.0, // 0 dB = unity
+		sampleRate:   config.SampleRate,
+		numChannels:  config.Channels,
+		output:       output,
+		config:       config,
+		limiter:      NewLimiter(config.SampleRate, config.Channels),
+		loudness:     NewLoudnessMeter(config.SampleRate, config.Channels),
 	}
 	if !config.ClockDriven {
 		m.stopTicker = make(chan struct{})
@@ -322,18 +342,30 @@ func (m *Mixer) AdvanceCrossfade() {
 
 // Close releases all codec resources and stops the background ticker.
 // It is safe to call multiple times.
+//
+// Returns a non-nil error if the background ticker goroutine did not exit
+// within the shutdown timeout. In that pathological case Close still proceeds
+// to free the codecs (leaking them forever would be worse), but it first sets
+// m.closed so a still-running tick()/ingest cannot recreate or reuse the
+// codecs it is about to release — see ensureEncoder/initChannelDecoder.
 func (m *Mixer) Close() error {
+	var closeErr error
 	m.closeOnce.Do(func() {
 		if m.stopTicker != nil {
 			close(m.stopTicker)
 			if !internal.WaitWithTimeout(&m.tickerWg, 5*time.Second) {
-				m.log.Warn("mixer ticker shutdown timed out after 5s")
+				closeErr = errors.New("audio: mixer ticker shutdown timed out after 5s")
+				m.log.Error("mixer ticker shutdown timed out after 5s; freeing codecs anyway")
 			}
 		}
 
 		// Collect codecs under lock, then close outside lock to avoid
-		// holding mu during cgo calls (which may block).
+		// holding mu during cgo calls (which may block). Set m.closed first
+		// (under the same lock) so any straggler tick()/ingest that acquires
+		// the lock after this point sees the mixer as closed and refuses to
+		// recreate or use the codecs we are about to free.
 		m.mu.Lock()
+		m.closed.Store(true)
 		var decoders []Decoder
 		for _, ch := range m.channels {
 			if ch.decoder != nil {
@@ -352,7 +384,7 @@ func (m *Mixer) Close() error {
 			_ = enc.Close()
 		}
 	})
-	return nil
+	return closeErr
 }
 
 // initChannelDecoder ensures the channel's AAC decoder is initialized exactly
@@ -362,6 +394,10 @@ func (m *Mixer) Close() error {
 // Caller must hold m.mu (read or write).
 func (m *Mixer) initChannelDecoder(ch *Channel) {
 	if ch.decoder != nil || m.config.DecoderFactory == nil {
+		return
+	}
+	// Don't resurrect a decoder after Close() has begun freeing codecs.
+	if m.closed.Load() {
 		return
 	}
 	ch.decoderOnce.Do(func() {
@@ -382,6 +418,12 @@ func (m *Mixer) initChannelDecoder(ch *Channel) {
 func (m *Mixer) ensureEncoder() error {
 	if m.encoder != nil {
 		return nil
+	}
+	// Don't resurrect the encoder after Close() has begun freeing codecs. A
+	// straggler tick() that wins the lock post-timeout lands here; returning an
+	// error makes it produce no output instead of recreating a live encoder.
+	if m.closed.Load() {
+		return errors.New("audio: mixer is closed")
 	}
 	if m.config.EncoderFactory == nil {
 		return errors.New("no encoder factory")
@@ -523,7 +565,6 @@ func (m *Mixer) RemoveChannel(sourceKey string) {
 			_ = ch.decoder.Close()
 		}
 		delete(m.channels, sourceKey)
-		delete(m.lastDecodedPCM, sourceKey)
 	}
 }
 
@@ -943,6 +984,12 @@ func (m *Mixer) SetLimiterCeiling(ceilingDB float64) error {
 // signal) so callers can flow the value through encoding/json without
 // encode errors.
 func (m *Mixer) LimiterSettings() (thresholdDB, ceilingDB, gainReduction, truePeakDBTP float64) {
+	// RLock synchronizes the threshold/ceiling reads with SetLimiterThreshold/
+	// SetLimiterCeiling (write under m.mu) and Limiter.Process (reads under m.mu),
+	// and guarantees a consistent (threshold, ceiling) pair. GainReduction/TruePeak
+	// are atomic but read here under the lock for a coherent snapshot.
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	tp := m.limiter.TruePeakDBTP()
 	if math.IsInf(tp, -1) || math.IsNaN(tp) {
 		tp = -144.0

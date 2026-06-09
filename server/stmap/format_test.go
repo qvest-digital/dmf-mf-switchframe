@@ -254,3 +254,32 @@ func TestReadPNG_RGBA64(t *testing.T) {
 	require.InDelta(t, 0.75, float64(m.S[w+3]), 2e-2)
 	require.InDelta(t, 0.5, float64(m.T[w+3]), 2e-2)
 }
+
+// TestReadRaw_OverflowDimensions verifies that huge header dimensions cannot
+// bypass the length validation via integer overflow. With w = h = 2^31,
+// n = w*h = 2^62 and expected = 8 + n*4*2 wraps to 8, so an 8-byte body
+// passed the old check and make([]float32, 2^62) panicked.
+func TestReadRaw_OverflowDimensions(t *testing.T) {
+	cases := []struct {
+		name string
+		w, h uint32
+	}{
+		// n*4*2 wraps int64 to exactly 0 → expected = 8.
+		{"pow31", 1 << 31, 1 << 31},
+		// w*h itself overflows int64 negative.
+		{"near-max", 0xFFFFFFFE, 0xFFFFFFFE},
+		// Just over the per-dimension ceiling, but a huge total allocation.
+		{"large-but-no-wrap", 1 << 20, 1 << 20},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := make([]byte, 8)
+			binary.BigEndian.PutUint32(data[0:4], tc.w)
+			binary.BigEndian.PutUint32(data[4:8], tc.h)
+			require.NotPanics(t, func() {
+				_, err := ReadRaw(data, "overflow")
+				require.Error(t, err)
+			})
+		})
+	}
+}

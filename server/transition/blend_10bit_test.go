@@ -190,10 +190,10 @@ func TestBlendWipe10_AllB(t *testing.T) {
 		t.Fatal(err)
 	}
 	gotY := readY10(dst, 0, 0, w)
-	// With >>8 approximation: (940*1 + 64*255 + 128)>>8 = 67
-	// Allow +-4 tolerance for the >>8 vs /255 approximation
-	if gotY < 60 || gotY > 68 {
-		t.Errorf("wipe alpha=255 should be near B: got Y=%d, want ~64", gotY)
+	// alpha=255 remaps to weight 256 (inv=0), so the result is byte-exact B:
+	// (940*0 + 64*256 + 128)>>8 = 64.
+	if gotY != 64 {
+		t.Errorf("wipe alpha=255 should be exactly B: got Y=%d, want 64", gotY)
 	}
 }
 
@@ -227,10 +227,10 @@ func TestBlendStinger10_FullAlpha(t *testing.T) {
 		t.Fatal(err)
 	}
 	gotY := readY10(dst, 0, 0, w)
-	// With >>8 approximation: (500*1 + 900*255 + 128)>>8 = 898
-	// Allow +-4 tolerance for the >>8 vs /255 approximation
-	if gotY < 896 || gotY > 904 {
-		t.Errorf("stinger alpha=255 should be near overlay: got Y=%d, want ~900", gotY)
+	// alpha=255 remaps to weight 256 (inv=0), so the result is byte-exact overlay:
+	// (500*0 + 900*256 + 128)>>8 = 900.
+	if gotY != 900 {
+		t.Errorf("stinger alpha=255 should be exactly overlay: got Y=%d, want 900", gotY)
 	}
 }
 
@@ -343,10 +343,64 @@ func TestBlendWipe10_ChromaDownsample(t *testing.T) {
 	chromaW := w / 2
 	ySize := w * h * 2
 	lastRowLastCb := binary.LittleEndian.Uint16(dst[ySize+((h-1)*chromaW+(chromaW-1))*2:])
-	// With >>8 approximation and alpha=255: (300*1 + 700*255 + 128)>>8 = 698
-	if lastRowLastCb < 696 || lastRowLastCb > 704 {
-		t.Errorf("wipe chroma bottom-right should be near B: got Cb=%d, want ~700", lastRowLastCb)
+	// alpha=255 averages to chromaAlpha=255, remapped to weight 256 (inv=0), so
+	// the chroma result is byte-exact B: (300*0 + 700*256 + 128)>>8 = 700.
+	if lastRowLastCb != 700 {
+		t.Errorf("wipe chroma bottom-right should be exactly B: got Cb=%d, want 700", lastRowLastCb)
 	}
+}
+
+// TestBlend10bit_Alpha255_ByteExact is the regression test for the 1-LSB bias
+// where the 10-bit wipe/stinger kernels used raw 0-255 alpha as a 0-256 weight,
+// so a fully-opaque (alpha=255) pixel could never reach full B / full overlay.
+// Asserts byte-exact results on BOTH the Y plane and the (downsampled) chroma
+// planes, for BlendWipe10 and BlendStinger10.
+func TestBlend10bit_Alpha255_ByteExact(t *testing.T) {
+	w, h := 16, 8
+	// Distinct Y/Cb/Cr for A/B so any base bleed-through is detectable.
+	a := make10bitFrame(w, h, 100, 200, 300)
+	b := make10bitFrame(w, h, 900, 700, 800)
+	alpha := make([]byte, w*h)
+	for i := range alpha {
+		alpha[i] = 255
+	}
+
+	check := func(name string, dst []byte) {
+		// Y plane: every sample must be exactly B's Y.
+		for i := 0; i < w*h; i++ {
+			if got := binary.LittleEndian.Uint16(dst[i*2:]); got != 900 {
+				t.Errorf("%s: Y[%d]=%d, want exactly 900 (full B)", name, i, got)
+				break
+			}
+		}
+		// Chroma planes: every sample must be exactly B's Cb/Cr.
+		ySize := w * h
+		chromaSize := (w / 2) * h
+		cbOff := ySize * 2
+		crOff := cbOff + chromaSize*2
+		for i := 0; i < chromaSize; i++ {
+			if got := binary.LittleEndian.Uint16(dst[cbOff+i*2:]); got != 700 {
+				t.Errorf("%s: Cb[%d]=%d, want exactly 700 (full B)", name, i, got)
+				break
+			}
+			if got := binary.LittleEndian.Uint16(dst[crOff+i*2:]); got != 800 {
+				t.Errorf("%s: Cr[%d]=%d, want exactly 800 (full B)", name, i, got)
+				break
+			}
+		}
+	}
+
+	dstWipe := make([]byte, w*h*4)
+	if err := BlendWipe10(dstWipe, a, b, w, h, alpha); err != nil {
+		t.Fatal(err)
+	}
+	check("BlendWipe10", dstWipe)
+
+	dstStinger := make([]byte, w*h*4)
+	if err := BlendStinger10(dstStinger, a, b, w, h, alpha); err != nil {
+		t.Fatal(err)
+	}
+	check("BlendStinger10", dstStinger)
 }
 
 func TestBlendStinger10_MidAlpha(t *testing.T) {
@@ -363,9 +417,10 @@ func TestBlendStinger10_MidAlpha(t *testing.T) {
 		t.Fatal(err)
 	}
 	gotY := readY10(dst, 0, 0, w)
-	// (200 * (256-128) + 800 * 128 + 128) >> 8 = (25600 + 102400 + 128) >> 8 = 500
-	if gotY != 500 {
-		t.Errorf("stinger mid-alpha Y: got %d, want 500", gotY)
+	// alpha=128 remaps to weight 129 (128 + 128>>7), matching the 8-bit kernel:
+	// (200 * (256-129) + 800 * 129 + 128) >> 8 = (25400 + 103200 + 128) >> 8 = 502
+	if gotY != 502 {
+		t.Errorf("stinger mid-alpha Y: got %d, want 502", gotY)
 	}
 }
 

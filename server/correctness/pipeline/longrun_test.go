@@ -195,13 +195,20 @@ func TestPipelineLongRunMemoryStability(t *testing.T) {
 	t.Logf("MEASURE: TS data accumulated = %d bytes (%.1f MB)",
 		h.tsLen(), float64(h.tsLen())/(1024*1024))
 
-	// Assert heap growth < 50MB.
-	// Use absolute value since delta could be negative (GC reclaimed more than allocated).
-	if deltaMB > 0 {
-		require.Less(t, deltaMB, int64(50*1024*1024),
-			"heap grew by %d MB (>50MB) during 30s pipeline run — possible memory leak",
-			deltaMBSigned)
-	}
+	// Assert heap growth < 50MB. Evaluate unconditionally (signed delta): the
+	// previous `if deltaMB > 0` guard skipped the assertion whenever GC happened
+	// to reclaim more than was allocated at the sample point, which let a real
+	// leak slip past on a lucky GC. A negative delta (heap shrank) is not a leak
+	// and passes trivially; only growth beyond the bound fails.
+	//
+	// NOTE: HeapAlloc cannot observe the leak class that matters most here —
+	// frames acquired from the pre-allocated (mmap-backed, off-heap) FramePool
+	// but never released. A pool-outstanding/high-water assertion would catch
+	// that, but FramePool currently exposes only hit/miss counts; see the
+	// pool-accounting follow-up.
+	require.Less(t, deltaMB, int64(50*1024*1024),
+		"heap grew by %d MB (>50MB) during 30s pipeline run — possible memory leak",
+		deltaMBSigned)
 }
 
 // ==========================================================================

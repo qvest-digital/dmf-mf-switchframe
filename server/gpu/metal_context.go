@@ -37,12 +37,30 @@ type metalContext struct {
 	pipelinesMu sync.Mutex
 
 	// Lanczos-3 temporary float buffer (cached, grown as needed).
+	//
+	// CONCURRENCY: this is a single Context-global scratch buffer shared by all
+	// callers. ScaleLanczos3/ScaleLanczos3P210 launch kernels that read+write it
+	// WITHOUT holding mu across the kernel, so they are NOT safe to call
+	// concurrently on the same Context — a second caller's ensureLanczosTemp
+	// could free/grow the buffer (or clobber the intermediate H-pass) while the
+	// first caller's kernel is still using it. The production source/preview
+	// path uses ScaleBilinear*, which does not touch this buffer.
 	lanczosTmpBuf  C.MetalBufferRef
 	lanczosTmpSize int
 
 	// Gaussian blur temporary float buffer (cached, grown as needed).
+	// Same single-shared-buffer concurrency contract as lanczosTmpBuf above:
+	// GaussianBlur/GaussianBlurP210 are not safe to call concurrently on the
+	// same Context. Today the only callers run inside the single-threaded GPU
+	// pipeline Run(), so this is safe in practice.
 	blurTmpBuf  C.MetalBufferRef
 	blurTmpSize int
+
+	// Gaussian blur weight buffer (cached, keyed by radius). The weights only
+	// change when radius changes, so this avoids a per-frame alloc/free on the
+	// 30fps program path. -1 means "not yet allocated".
+	blurWeightsBuf    C.MetalBufferRef
+	blurWeightsRadius int
 
 	// Luma key LUT buffer (cached, 256 bytes).
 	lumaKeyLUTBuf C.MetalBufferRef
@@ -118,8 +136,9 @@ func newMetalContext() (*metalContext, error) {
 	defer C.free(unsafe.Pointer(cPath))
 
 	c := &metalContext{
-		pipelines:        make(map[string]C.MetalPipelineRef),
-		tempMetallibPath: tempPath,
+		pipelines:         make(map[string]C.MetalPipelineRef),
+		tempMetallibPath:  tempPath,
+		blurWeightsRadius: -1,
 	}
 
 	rc := C.metal_init(&c.device, &c.queue, &c.library, cPath)
@@ -136,6 +155,16 @@ func newMetalContext() (*metalContext, error) {
 // Close releases all Metal resources and temp files.
 // Sets closed=true atomically (prevents new Sync callers), then acquires mu
 // (waits for any in-flight Sync to finish) before destroying GPU resources.
+//
+// CONTRACT: per-op kernels (ScaleBilinear, ColorGradeLUT3D, FillColor/FillBlack,
+// CopyGPUFrame, etc.) read mtl.queue and submit+synchronize WITHOUT taking mu
+// or checking closed — only Sync() is mu/closed-guarded. The caller MUST
+// therefore join all per-source IngestYUV and per-preview goroutines (i.e.
+// drain the source manager and pipeline) BEFORE calling Close(); otherwise an
+// in-flight op could submit to a released MTLCommandQueue (use-after-free). The
+// production shutdown path (closeGPU drains sources then pipeline first) honors
+// this ordering. Making Close() block until in-flight per-op submissions
+// complete would close the window fully but requires per-op accounting.
 func (c *metalContext) Close() error {
 	if c == nil || c.closed.Swap(true) {
 		return nil
@@ -161,6 +190,13 @@ func (c *metalContext) Close() error {
 		C.metal_buffer_free(c.blurTmpBuf)
 		c.blurTmpBuf = nil
 		c.blurTmpSize = 0
+	}
+
+	// Free cached Gaussian blur weight buffer
+	if c.blurWeightsBuf != nil {
+		C.metal_buffer_free(c.blurWeightsBuf)
+		c.blurWeightsBuf = nil
+		c.blurWeightsRadius = -1
 	}
 
 	// Free cached luma key LUT buffer
@@ -237,6 +273,33 @@ func (c *metalContext) ensureBlurTemp(needed int) error {
 	c.blurTmpBuf = buf
 	c.blurTmpSize = needed
 	return nil
+}
+
+// ensureBlurWeights returns a cached Metal buffer holding the normalized
+// Gaussian weights for the given radius. The buffer is keyed by radius and
+// only (re)allocated and refilled when the radius changes, avoiding a
+// per-frame alloc/free on the hot blur path. Thread-safe: acquires c.mu.
+func (c *metalContext) ensureBlurWeights(radius int) (C.MetalBufferRef, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.blurWeightsBuf != nil && c.blurWeightsRadius == radius {
+		return c.blurWeightsBuf, nil
+	}
+	if c.blurWeightsBuf != nil {
+		C.metal_buffer_free(c.blurWeightsBuf)
+		c.blurWeightsBuf = nil
+		c.blurWeightsRadius = -1
+	}
+	weights := gaussianWeights(radius)
+	buf, err := c.allocBuffer(len(weights) * 4) // 4 bytes per float32
+	if err != nil {
+		return nil, fmt.Errorf("gpu: blur weights alloc (radius %d): %w", radius, err)
+	}
+	wSlice := unsafe.Slice((*float32)(C.metal_buffer_contents(buf)), len(weights))
+	copy(wSlice, weights)
+	c.blurWeightsBuf = buf
+	c.blurWeightsRadius = radius
+	return buf, nil
 }
 
 // createQueue creates a new Metal command queue on the same device.

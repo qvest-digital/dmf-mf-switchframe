@@ -22,6 +22,9 @@ export class ConnectionManager {
 	private hasMoQPipeline = false;
 	/** True after the first successful state fetch (initial or polling). */
 	private initialLoadDone = false;
+	/** True after stop(); guards in-flight fetches from resurrecting the
+	 * retry/poll loops or pushing state into torn-down consumers. */
+	private stopped = false;
 	private pollDelay = 500;
 	private readonly POLL_MIN = 500;
 	private readonly POLL_MAX = 5000;
@@ -53,8 +56,14 @@ export class ConnectionManager {
 	}
 
 	async start(): Promise<void> {
+		this.stopped = false;
+
 		// Initial state fetch via REST (with retry on failure)
 		await this.fetchInitialState();
+
+		// stop() may have raced the fetch above — don't resurrect polling or
+		// open a WebTransport on a torn-down manager.
+		if (this.stopped) return;
 
 		// Start REST polling as immediate fallback
 		this.startPolling();
@@ -64,6 +73,7 @@ export class ConnectionManager {
 	}
 
 	stop(): void {
+		this.stopped = true;
 		if (this.retryTimer !== undefined) {
 			clearTimeout(this.retryTimer);
 			this.retryTimer = undefined;
@@ -120,6 +130,7 @@ export class ConnectionManager {
 				});
 				if (!res.ok) throw new Error(`Poll failed: ${res.status}`);
 				const state = await res.json() as ControlRoomState;
+				if (this.stopped) return; // stop() raced the in-flight poll
 				this.config.onStateUpdate(state);
 				this.pollDelay = this.POLL_MIN; // reset on success
 				// Clear loading overlay if initial fetch failed but polling succeeds.
@@ -151,6 +162,7 @@ export class ConnectionManager {
 	}
 
 	private async fetchInitialState(): Promise<void> {
+		if (this.stopped) return;
 		try {
 			const res = await fetch(`${this.config.url}/api/switch/state`, {
 				headers: getAuthHeaders(),
@@ -160,12 +172,17 @@ export class ConnectionManager {
 				throw new SwitchApiError(res.status, body || `${res.status}`);
 			}
 			const state = await res.json() as ControlRoomState;
+			if (this.stopped) return; // stop() raced the in-flight fetch
 			this.config.onStateUpdate(state);
 			if (!this.initialLoadDone) {
 				this.initialLoadDone = true;
 				this.config.onInitialLoadComplete();
 			}
 		} catch (e) {
+			// stop() raced the in-flight fetch (or aborted it) — re-arming the
+			// retry timer here would create an unkillable 3s fetch loop that
+			// keeps invoking callbacks on torn-down consumers.
+			if (this.stopped) return;
 			const msg = e instanceof Error ? e.message : String(e);
 			this.config.onInitialLoadError(msg, e);
 			// Retry every 3 seconds until successful

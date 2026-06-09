@@ -38,10 +38,18 @@ func registerGenerator(info GeneratorInfo, fn GeneratorFunc) {
 
 // Generate creates a static ST map using the named generator. Unknown params
 // are ignored; missing params use defaults from GeneratorInfo.
+//
+// Width and height must be positive and even, matching NewSTMap. The generators
+// build *STMap directly (bypassing NewSTMap), and some divide by w-1/h-1 (e.g.
+// corner_pin), so dimensions are validated here to avoid divide-by-zero and the
+// corrupt maps that odd dimensions produce under the YUV420 chroma LUT.
 func Generate(typeName string, params map[string]float64, w, h int) (*STMap, error) {
 	fn, ok := generators[typeName]
 	if !ok {
 		return nil, fmt.Errorf("stmap: unknown generator type %q", typeName)
+	}
+	if !validDimensions(w, h) {
+		return nil, ErrInvalidDimensions
 	}
 	resolved := resolveParams(generatorInfos[typeName], params)
 	return fn(resolved, w, h)
@@ -80,6 +88,9 @@ func GenerateAnimated(typeName string, params map[string]float64, w, h, frameCou
 	fn, ok := animatedGenerators[typeName]
 	if !ok {
 		return nil, fmt.Errorf("stmap: unknown animated generator type %q", typeName)
+	}
+	if !validDimensions(w, h) {
+		return nil, ErrInvalidDimensions
 	}
 	resolved := resolveParams(animatedGeneratorInfos[typeName], params)
 	anim, err := fn(resolved, w, h, frameCount)
@@ -141,6 +152,14 @@ func GeneratorInfoList() []GeneratorInfo {
 		return infos[i].Name < infos[j].Name
 	})
 	return infos
+}
+
+// validDimensions reports whether w and h are valid ST map dimensions: positive
+// and even. Even dimensions are required by the YUV420 chroma LUT (cw=w/2), and
+// w>=2/h>=2 avoids divide-by-(w-1)/(h-1) in generators like corner_pin. This is
+// the same constraint enforced by NewSTMap.
+func validDimensions(w, h int) bool {
+	return w > 0 && h > 0 && w%2 == 0 && h%2 == 0
 }
 
 // paramOr returns params[key] if present, otherwise def.

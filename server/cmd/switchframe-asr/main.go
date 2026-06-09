@@ -273,7 +273,18 @@ func main() {
 		}
 	}()
 
-	// Main loop: 80ms ticker reads audio from shm, processes it through
+	// Drain the shm ring on a dedicated goroutine. The ring holds only ~2s of
+	// audio and the writer never blocks, so reading it from the same
+	// select-case that runs multi-second synchronous Transcribe calls would
+	// let the writer lap the ring and silently drop mid-utterance audio. The
+	// drainer keeps the ring empty regardless of inference latency; the main
+	// loop picks up the accumulated samples via Take. The pending buffer is
+	// bounded at ~60s of 48kHz stereo (~23MB).
+	const maxPendingSamples = 48000 * 2 * 60
+	drainer := newShmDrainer(reader, 20*time.Millisecond, maxPendingSamples)
+	defer drainer.Stop() // runs before the deferred reader.Close (LIFO)
+
+	// Main loop: 80ms ticker takes drained audio, processes it through
 	// dual VAD (energy + Silero), and triggers inference on speech-end.
 	ticker := time.NewTicker(80 * time.Millisecond)
 	defer ticker.Stop()
@@ -300,9 +311,12 @@ func main() {
 		select {
 		case <-ticker.C:
 			if !running {
+				// Discard while stopped (the old code let the ring lap,
+				// which also discarded).
+				drainer.Take()
 				continue
 			}
-			samples := reader.Read()
+			samples := drainer.Take()
 			if len(samples) == 0 {
 				continue
 			}

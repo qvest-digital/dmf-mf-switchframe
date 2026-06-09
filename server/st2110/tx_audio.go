@@ -23,8 +23,13 @@ type AudioTx struct {
 	cfg    TxAudioConfig
 	mu     sync.Mutex
 	closed bool
-	l24Buf []byte // reusable L24 buffer
+	l24Buf []byte                // reusable L24 buffer
+	agg    *audioFrameAggregator // re-slices PCM chunks into exact framebuffers
 }
+
+// txAudioMaxPendingFrames bounds the aggregator's pending buffer to 1s of
+// audio (100 frames of 10ms) so a stalled TX cannot grow memory unbounded.
+const txAudioMaxPendingFrames = 100
 
 // CreateAudioTx creates an audio transmitter session on the MTL instance.
 func (inst *Instance) CreateAudioTx(cfg TxAudioConfig) (*AudioTx, error) {
@@ -88,21 +93,21 @@ func (inst *Instance) CreateAudioTx(cfg TxAudioConfig) (*AudioTx, error) {
 		handle: handle,
 		inst:   inst,
 		cfg:    cfg,
+		agg:    newAudioFrameAggregator(int(fbSize), txAudioMaxPendingFrames),
 	}, nil
 }
 
-// PutFrame submits interleaved float32 PCM for transmission.
-// Converts float32 → L24 big-endian before copying into MTL frame buffer.
+// PutFrame submits interleaved float32 PCM for transmission. The PCM is
+// converted to L24 big-endian and aggregated into the session's fixed-size
+// framebuffers (10ms each): callers may deliver chunks of any size, and a
+// frame is submitted for every full framebuffer of accumulated audio.
+// Partial frames are buffered until enough samples arrive, so the wire never
+// carries stale framebuffer bytes and no samples are silently dropped.
 func (tx *AudioTx) PutFrame(pcm []float32) error {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 	if tx.closed {
 		return fmt.Errorf("st2110: audio tx closed")
-	}
-
-	frame := C.st30p_tx_get_frame(tx.handle)
-	if frame == nil {
-		return fmt.Errorf("st2110: st30p_tx_get_frame returned nil")
 	}
 
 	l24Size := len(pcm) * 3
@@ -111,16 +116,34 @@ func (tx *AudioTx) PutFrame(pcm []float32) error {
 	}
 	tx.l24Buf = tx.l24Buf[:l24Size]
 	ConvertFloat32ToInt24BE(pcm, tx.l24Buf)
+	dropped := tx.agg.Push(tx.l24Buf)
 
-	copySize := l24Size
-	if int(frame.data_size) < copySize {
-		copySize = int(frame.data_size)
+	for {
+		fb := tx.agg.Frame()
+		if fb == nil {
+			break
+		}
+		frame := C.st30p_tx_get_frame(tx.handle)
+		if frame == nil {
+			// No free framebuffer: keep the pending audio for the next call
+			// (the aggregator bounds it) instead of dropping it.
+			return fmt.Errorf("st2110: st30p_tx_get_frame returned nil")
+		}
+
+		copySize := len(fb)
+		if int(frame.data_size) < copySize {
+			copySize = int(frame.data_size)
+		}
+		C.memcpy(frame.addr, unsafe.Pointer(&fb[0]), C.size_t(copySize))
+		tx.agg.Consume()
+
+		if ret := C.st30p_tx_put_frame(tx.handle, frame); ret != 0 {
+			return fmt.Errorf("st2110: st30p_tx_put_frame returned %d", int(ret))
+		}
 	}
-	C.memcpy(frame.addr, unsafe.Pointer(&tx.l24Buf[0]), C.size_t(copySize))
 
-	ret := C.st30p_tx_put_frame(tx.handle, frame)
-	if ret != 0 {
-		return fmt.Errorf("st2110: st30p_tx_put_frame returned %d", int(ret))
+	if dropped > 0 {
+		return fmt.Errorf("st2110: audio tx pending buffer overflow, dropped %d bytes", dropped)
 	}
 	return nil
 }

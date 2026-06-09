@@ -9,6 +9,12 @@ import (
 	"github.com/zsiec/switchframe/server/control/httperr"
 )
 
+// maxCommandBodySize bounds command-handler request bodies as defense-in-depth,
+// independent of MaxBytesMiddleware. It matches the global JSON cap so the
+// legitimate path is unaffected, but ensures io.ReadAll cannot allocate without
+// bound even if the outer middleware is misconfigured or removed.
+const maxCommandBodySize = maxJSONBodySize
+
 // timedRequest extracts PTP timing fields from a command body.
 type timedRequest struct {
 	ExecuteAt  int64  `json:"execute_at"`
@@ -26,7 +32,9 @@ type immediateHandlerFunc func(w http.ResponseWriter, r *http.Request, body []by
 // highest-enqueued sequence number (for staleness detection in state broadcasts).
 func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), handler immediateHandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
+		// Bound the read so a missing/incorrect outer body cap cannot translate
+		// into an unbounded allocation. Command bodies are small JSON.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxCommandBodySize))
 		if err != nil {
 			httperr.Write(w, http.StatusBadRequest, "failed to read body")
 			return
@@ -69,7 +77,9 @@ func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), han
 // {source} or {id} are available in the payload as "_path_<key>".
 func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint64), pathKeys []string, handler immediateHandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
+		// Bound the read so a missing/incorrect outer body cap cannot translate
+		// into an unbounded allocation. Command bodies are small JSON.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxCommandBodySize))
 		if err != nil {
 			httperr.Write(w, http.StatusBadRequest, "failed to read body")
 			return

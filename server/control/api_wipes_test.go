@@ -2,7 +2,9 @@ package control
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
@@ -218,4 +220,79 @@ func TestWipeAPI_NotConfigured(t *testing.T) {
 
 	// Routes should not be registered at all, so 405 or 404.
 	require.NotEqual(t, http.StatusOK, rec.Code)
+}
+
+// buildWipeUploadRequest wraps raw PNG bytes in a multipart upload request.
+func buildWipeUploadRequest(t *testing.T, filename string, pngData []byte) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", filename)
+	require.NoError(t, err)
+	_, err = part.Write(pngData)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	req := httptest.NewRequest("POST", "/api/wipes/custom", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return req
+}
+
+func TestWipeAPI_CustomUploadRejectsOversizedDimensions(t *testing.T) {
+	api, _ := setupWipeAPI(t)
+
+	// A real (tiny on disk, tiny decoded) PNG whose width exceeds the cap.
+	img := image.NewGray(image.Rect(0, 0, maxWipeImageDimension+2, 2))
+	var pngBuf bytes.Buffer
+	require.NoError(t, png.Encode(&pngBuf, img))
+
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, buildWipeUploadRequest(t, "wide.png", pngBuf.Bytes()))
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+	require.Contains(t, rec.Body.String(), "too large")
+}
+
+// TestWipeAPI_CustomUploadRejectsDecompressionBombHeader verifies the
+// dimension check runs on the PNG header BEFORE pixel data is decoded: a
+// hand-crafted IHDR claiming 50000x50000 (which would decode to 2.5GB+) must
+// be rejected as too large, not decoded or reported as a generic PNG error.
+func TestWipeAPI_CustomUploadRejectsDecompressionBombHeader(t *testing.T) {
+	api, _ := setupWipeAPI(t)
+
+	// PNG signature + IHDR chunk claiming 50000x50000, 8-bit grayscale.
+	// No IDAT — png.DecodeConfig only reads the header.
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:], 50000)
+	binary.BigEndian.PutUint32(ihdr[4:], 50000)
+	ihdr[8] = 8 // bit depth
+	ihdr[9] = 0 // color type: grayscale
+	var bomb bytes.Buffer
+	bomb.Write([]byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a})
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(ihdr)))
+	bomb.Write(lenBuf[:])
+	chunk := append([]byte("IHDR"), ihdr...)
+	bomb.Write(chunk)
+	binary.BigEndian.PutUint32(lenBuf[:], crc32.ChecksumIEEE(chunk))
+	bomb.Write(lenBuf[:])
+
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, buildWipeUploadRequest(t, "bomb.png", bomb.Bytes()))
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+	require.Contains(t, rec.Body.String(), "too large")
+}
+
+func TestWipeAPI_CustomUploadAcceptsMaxDimension(t *testing.T) {
+	api, _ := setupWipeAPI(t)
+
+	// Exactly at the cap must still be accepted.
+	img := image.NewGray(image.Rect(0, 0, maxWipeImageDimension, 2))
+	var pngBuf bytes.Buffer
+	require.NoError(t, png.Encode(&pngBuf, img))
+
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, buildWipeUploadRequest(t, "at-cap.png", pngBuf.Bytes()))
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
 }

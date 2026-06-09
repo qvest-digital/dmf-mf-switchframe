@@ -33,7 +33,7 @@ func TestBroadcastProcessed_10bit_FrameNotDropped(t *testing.T) {
 		},
 	}
 	sw.pipelineFormat.Store(&fmt10)
-	sw.framePool = NewFramePool(8, 16, 16, ColorYUV422_10bit)
+	sw.framePool.Store(NewFramePool(8, 16, 16, ColorYUV422_10bit))
 
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -99,7 +99,7 @@ func TestBroadcastProcessed_10bit_CorrectCodecAndFormat(t *testing.T) {
 		},
 	}
 	sw.pipelineFormat.Store(&fmt10)
-	sw.framePool = NewFramePool(8, 16, 16, ColorYUV422_10bit)
+	sw.framePool.Store(NewFramePool(8, 16, 16, ColorYUV422_10bit))
 
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -225,7 +225,7 @@ func TestTransitionEngine_10bit_SetColorFormat(t *testing.T) {
 		},
 	}
 	sw.pipelineFormat.Store(&fmt10)
-	sw.framePool = NewFramePool(4, 320, 240, ColorYUV422_10bit)
+	sw.framePool.Store(NewFramePool(4, 320, 240, ColorYUV422_10bit))
 
 	sw.SetTransitionConfig(TransitionConfig{
 		DecoderFactory: func() (transition.VideoDecoder, error) {

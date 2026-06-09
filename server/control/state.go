@@ -53,11 +53,23 @@ func NewChannelPublisher(bufSize int) *ChannelPublisher {
 // Publish serializes state and sends to the channel.
 // If the channel is full, the oldest message is dropped.
 //
-// Note: under concurrent producers, the drain-and-retry loop may over-drain
-// (two goroutines both drain one message when only one slot was needed).
-// This is benign—the retry loop ensures all messages land, and the drop
-// counter may slightly over-report. Acceptable for the current low-contention
-// usage (2 producers: switcher + output manager state callbacks).
+// Producers: many distinct callback sources feed this publisher via
+// API.broadcast() and the subsystem state callbacks wired in app_state.go —
+// switcher, output manager, compositor, HTML graphics, replay, macros, comms,
+// clip-upload progress, transcode polling, plus the per-handler broadcasts in
+// the api_*.go files. The consumer is single (the MoQ reader on Ch()).
+//
+// Note: under concurrent producers the drain-and-retry loop may over-drain
+// (two goroutines both drain one message when only one slot was needed) and a
+// losing producer can repeatedly drain others' messages before it lands its
+// own, inflating the drop counter and discarding already-marshalled payloads.
+// This is not a correctness bug — the single consumer and bounded channel keep
+// the loop making forward progress and every Publish eventually lands a message
+// — but it does burn CPU under genuine multi-producer contention. A future
+// improvement is a single broadcaster goroutine that owns the channel and
+// re-reads the latest enriched state on a dirty-flag / 1-deep notify trigger,
+// which would coalesce bursts and avoid the per-producer marshalling and
+// drop-oldest churn entirely.
 func (cp *ChannelPublisher) Publish(state internal.ControlRoomState) {
 	data, err := json.Marshal(state)
 	if err != nil {

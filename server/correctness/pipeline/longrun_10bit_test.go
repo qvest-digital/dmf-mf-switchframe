@@ -133,12 +133,13 @@ func TestPipeline10bit_LongRunMemoryStability(t *testing.T) {
 		switcher.ColorYUV422_10bit.FrameSize(w, ht),
 		w*ht*3/2)
 
-	// Allow more headroom for 10-bit (frames are 4x larger).
-	// 80MB limit vs 50MB for 8-bit.
-	if deltaMB > 0 {
-		require.Less(t, deltaMB, int64(80*1024*1024),
-			"heap grew by %dMB during 10-bit long run -- possible memory leak", deltaMB/(1024*1024))
-	}
+	// Allow more headroom for 10-bit (frames are 4x larger): 80MB vs 50MB.
+	// Evaluate unconditionally (signed delta) — the old `if deltaMB > 0` guard
+	// skipped the check whenever GC reclaimed more than allocated at the sample
+	// point, hiding a real leak. A shrinking heap passes trivially; only growth
+	// past the bound fails. (HeapAlloc still cannot see off-heap FramePool leaks.)
+	require.Less(t, deltaMB, int64(80*1024*1024),
+		"heap grew by %dMB during 10-bit long run -- possible memory leak", deltaMB/(1024*1024))
 }
 
 // TestPipeline10bit_PeriodicCuts feeds 10-bit frames with periodic cuts

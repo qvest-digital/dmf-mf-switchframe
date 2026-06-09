@@ -2,6 +2,7 @@ package srt
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -91,6 +92,143 @@ func TestPTSLinearizer_MultipleJumpsAccumulateDrift(t *testing.T) {
 	driftSeconds := float64(abs64(finalVideo-finalAudio)) / 90000.0
 	require.Less(t, driftSeconds, 1.0,
 		"after 5 loops, video-audio PTS drift should be <1 second, got %.1fs", driftSeconds)
+}
+
+func TestPTSLinearizer_OneSidedAudioGapDoesNotShiftVideo(t *testing.T) {
+	// Finding #76: an audio-only PTS gap (>0.5s SRT loss burst or audio
+	// decode errors while video keeps flowing) is NOT a shared-timeline jump.
+	// It must not rewrite the shared offset, or the video output PTS jumps
+	// backward by the gap length even though video's raw deltas are normal.
+	lin := NewPTSLinearizer()
+
+	const videoFrameDur = 3750 // 24fps in 90kHz
+	const audioFrameDur = 1920 // 48kHz/1024 in 90kHz
+	const gapStart = 180000    // 2s in
+	const gapLen = 90000       // 1s audio-only dropout
+	const end = 360000         // 4s total
+
+	var lastVideoOut int64 = -1
+	feedVideo := func(raw int64) {
+		out := lin.Linearize(raw, StreamVideo)
+		if lastVideoOut >= 0 {
+			require.Equal(t, int64(videoFrameDur), out-lastVideoOut,
+				"video output PTS must keep advancing by one frame (raw video deltas are normal); raw=%d", raw)
+		}
+		lastVideoOut = out
+	}
+	var lastAudioOut int64 = -1
+	feedAudio := func(raw int64) {
+		out := lin.Linearize(raw, StreamAudio)
+		if lastAudioOut >= 0 {
+			require.GreaterOrEqual(t, out, lastAudioOut,
+				"audio output PTS must stay monotonic; raw=%d", raw)
+		}
+		lastAudioOut = out
+	}
+
+	// Interleave both streams in timestamp order, skipping the audio frames
+	// that fall inside the dropout window.
+	nextVideo, nextAudio := int64(0), int64(0)
+	for nextVideo < end || nextAudio < end {
+		if nextAudio <= nextVideo && nextAudio < end {
+			if nextAudio < gapStart || nextAudio >= gapStart+gapLen {
+				feedAudio(nextAudio)
+			}
+			nextAudio += audioFrameDur
+		} else {
+			feedVideo(nextVideo)
+			nextVideo += videoFrameDur
+		}
+	}
+}
+
+func TestPTSLinearizer_SharedJumpStillCorrectedAfterOneSidedGap(t *testing.T) {
+	// After a one-sided audio gap, a subsequent genuine shared jump (source
+	// loop back to 0) must still be corrected exactly once and keep both
+	// outputs monotonic and aligned.
+	lin := NewPTSLinearizer()
+
+	const videoFrameDur = 3750
+	const audioFrameDur = 1920
+	const gapStart = 90000
+	const gapLen = 90000
+	const loopAt = 360000 // both streams restart at 0 here
+
+	var lastVideoOut, lastAudioOut int64 = -1, -1
+	feed := func(raw int64, st StreamType) int64 {
+		out := lin.Linearize(raw, st)
+		if st == StreamVideo {
+			if lastVideoOut >= 0 {
+				require.Greater(t, out, lastVideoOut, "video output must stay monotonic; raw=%d", raw)
+			}
+			lastVideoOut = out
+		} else {
+			if lastAudioOut >= 0 {
+				require.GreaterOrEqual(t, out, lastAudioOut, "audio output must stay monotonic; raw=%d", raw)
+			}
+			lastAudioOut = out
+		}
+		return out
+	}
+
+	run := func(from, to int64) {
+		nextVideo, nextAudio := from, from
+		for nextVideo < to || nextAudio < to {
+			if nextAudio <= nextVideo && nextAudio < to {
+				if nextAudio < gapStart || nextAudio >= gapStart+gapLen {
+					feed(nextAudio, StreamAudio)
+				}
+				nextAudio += audioFrameDur
+			} else {
+				feed(nextVideo, StreamVideo)
+				nextVideo += videoFrameDur
+			}
+		}
+	}
+
+	run(0, loopAt)
+	preDelta := lastVideoOut - lastAudioOut
+
+	// Source loops: both streams restart from 0.
+	run(0, 90000)
+	postDelta := lastVideoOut - lastAudioOut
+
+	// Video/audio alignment must survive the loop (within a frame or two).
+	require.Less(t, abs64(postDelta-preDelta), int64(2*videoFrameDur),
+		"video-audio alignment must survive a shared jump after a one-sided gap: pre=%d post=%d", preDelta, postDelta)
+}
+
+func TestPTSLinearizer_StaleOtherStreamFallsBackToJumpCorrection(t *testing.T) {
+	// If the other stream died long ago, its last raw PTS cannot vouch for
+	// the shared timeline. A jump on the live stream must then fall back to
+	// the regular shared-offset correction so its output stays monotonic.
+	lin := NewPTSLinearizer()
+
+	const videoFrameDur = 3750
+	now := time.Unix(1000, 0)
+	lin.now = func() time.Time { return now }
+
+	// Audio delivers a couple of frames near PTS 0, then dies.
+	lin.Linearize(0, StreamAudio)
+	lin.Linearize(1920, StreamAudio)
+
+	// Video runs for 60s of frames while the clock advances.
+	var lastOut int64 = -1
+	for pts := int64(0); pts < 60*90000; pts += videoFrameDur {
+		now = now.Add(time.Second / 24)
+		out := lin.Linearize(pts, StreamVideo)
+		if lastOut >= 0 {
+			require.Greater(t, out, lastOut)
+		}
+		lastOut = out
+	}
+
+	// Video loops back to ~0 — numerically close to the dead audio stream's
+	// last raw PTS, but audio is long stale and must not be trusted.
+	now = now.Add(time.Second / 24)
+	out := lin.Linearize(0, StreamVideo)
+	require.Greater(t, out, lastOut,
+		"video output must stay monotonic across a loop even when the other stream is stale")
 }
 
 func abs64(x int64) int64 {

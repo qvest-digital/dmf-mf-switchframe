@@ -556,6 +556,48 @@ func TestFileRecorder_WriteFailureSetsStateError(t *testing.T) {
 		"error message should be set after write failure")
 }
 
+// TestFileRecorder_WriteFailureClosesFile verifies that a write error closes
+// the underlying file descriptor instead of leaking it. Unlike
+// TestFileRecorder_WriteFailureSetsStateError (which pre-closes the fd itself
+// and thus cannot detect a leak), this provokes the write error on a still-open
+// descriptor by reopening the recording file read-only. After the failed write
+// the recorder must have closed and cleared r.file so Close() (which
+// short-circuits on StateError) cannot leave the fd dangling.
+func TestFileRecorder_WriteFailureClosesFile(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{Dir: dir})
+	require.NoError(t, r.Start(context.TODO()))
+	require.Equal(t, StateActive, r.Status().State)
+
+	path := filepath.Join(dir, r.Filename())
+
+	// Swap in a read-only handle to the same file. The fd is genuinely open,
+	// so a failed Write must close it explicitly or it leaks for the process
+	// lifetime (Close() returns early once state is StateError).
+	r.mu.Lock()
+	require.NoError(t, r.file.Close()) // close the writable handle we replace
+	ro, err := os.OpenFile(path, os.O_RDONLY, 0)
+	require.NoError(t, err)
+	r.file = ro
+	r.mu.Unlock()
+
+	_, werr := r.Write(make([]byte, 188))
+	require.Error(t, werr, "write to read-only fd should fail")
+
+	require.Equal(t, StateError, r.Status().State)
+
+	// The fix: the descriptor must have been closed and cleared on the error
+	// path. A non-nil r.file here would be the leaked fd, since Close() bails
+	// out for StateError.
+	r.mu.Lock()
+	leaked := r.file
+	r.mu.Unlock()
+	require.Nil(t, leaked, "errored write must close and clear the file descriptor")
+
+	// Close() must remain safe and not error after the file was already closed.
+	require.NoError(t, r.Close())
+}
+
 func TestFileRecorder_PeriodicSync(t *testing.T) {
 	dir := t.TempDir()
 	r := NewFileRecorder(RecorderConfig{Dir: dir})
@@ -696,4 +738,75 @@ func TestFileRecorder_PATMPTWriteFailureSetsStateError(t *testing.T) {
 		require.Equal(t, StateError, status.State,
 			"state should be StateError after any write failure")
 	}
+}
+
+// TestFileRecorder_NoPATPMTScanWhenRotationDisabled verifies the hot-path
+// optimization: when no rotation threshold is configured the cached PAT/PMT is
+// never needed, so the per-batch scan is skipped entirely (cachedPATMPT stays
+// nil) even though PAT and PMT packets flow through every write.
+func TestFileRecorder_NoPATPMTScanWhenRotationDisabled(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{Dir: dir}) // rotation disabled
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
+
+	pat := makeTSPacket(0x0000, false)
+	pmt := makeTSPacket(0x1000, false)
+	video := makeTSPacket(0x0100, false)
+	data := append(append(pat, pmt...), video...)
+
+	for i := 0; i < 5; i++ {
+		_, err := r.Write(data)
+		require.NoError(t, err)
+	}
+
+	r.mu.Lock()
+	cached := r.cachedPATMPT
+	r.mu.Unlock()
+	require.Nil(t, cached,
+		"PAT/PMT scan must be skipped when rotation is disabled")
+}
+
+// TestFileRecorder_PATPMTScanSkippedInSteadyState verifies that once a PAT/PMT
+// copy is cached and no rotation is pending, subsequent writes do not re-scan
+// the batch: a later batch carrying a different PAT/PMT must NOT overwrite the
+// already-cached copy. This proves the per-frame full-batch scan is elided in
+// the common case while the cache remains valid for the eventual rotation.
+func TestFileRecorder_PATPMTScanSkippedInSteadyState(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{
+		Dir:         dir,
+		MaxFileSize: 1 << 30, // large: rotation enabled but never reached here
+	})
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
+
+	// First write carries PAT+PMT: cache is populated (cachedPATMPT == nil path).
+	pat := makeTSPacket(0x0000, false)
+	pmt := makeTSPacket(0x1000, false)
+	video := makeTSPacket(0x0100, false)
+	_, err := r.Write(append(append(pat, pmt...), video...))
+	require.NoError(t, err)
+
+	r.mu.Lock()
+	firstCached := append([]byte(nil), r.cachedPATMPT...)
+	r.mu.Unlock()
+	require.Len(t, firstCached, 2*mpegts.PacketSize,
+		"first write should cache PAT+PMT")
+
+	// A later batch carries PAT+PMT with a distinguishing payload byte. With the
+	// optimization the scan is skipped (cache present, no pending rotate), so the
+	// cached copy must be unchanged.
+	pat2 := makeTSPacket(0x0000, false)
+	pat2[10] = 0xAB
+	pmt2 := makeTSPacket(0x1000, false)
+	pmt2[10] = 0xCD
+	_, err = r.Write(append(append(pat2, pmt2...), video...))
+	require.NoError(t, err)
+
+	r.mu.Lock()
+	secondCached := append([]byte(nil), r.cachedPATMPT...)
+	r.mu.Unlock()
+	require.Equal(t, firstCached, secondCached,
+		"cached PAT/PMT must not be re-scanned/overwritten in steady state")
 }

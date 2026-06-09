@@ -12,7 +12,20 @@ export class StreamBuffer {
 		this.reader = reader;
 	}
 
-	async read(n: number): Promise<Uint8Array | null> {
+	/**
+	 * Read exactly `n` bytes from the stream, or null on EOF.
+	 *
+	 * `maxLen` is an optional sanity cap for lengths that originate from
+	 * untrusted wire data (network varints). When `n` exceeds `maxLen` the
+	 * read is rejected immediately by returning null — before any bytes are
+	 * accumulated — so a buggy or compromised relay sending a huge length
+	 * cannot trigger an unbounded allocation / RangeError or memory-pressure
+	 * DoS. Callers that pass a fixed, locally-computed length (e.g. 1- or
+	 * 2-byte framing reads) omit `maxLen`.
+	 */
+	async read(n: number, maxLen?: number): Promise<Uint8Array | null> {
+		if (maxLen !== undefined && n > maxLen) return null;
+
 		while (this.totalBytes < n) {
 			const { value, done } = await this.reader.read();
 			if (done || !value) {

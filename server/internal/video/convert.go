@@ -127,7 +127,13 @@ func Downconvert422_10to420(src []byte, dst []byte, width, height int) error {
 	// --- Y plane: 10-bit to 8-bit ---
 	for i := 0; i < width*height; i++ {
 		val10 := binary.LittleEndian.Uint16(src[i*2:])
-		dst[i] = byte((val10 + 2) >> 2)
+		// Round to 8-bit then clamp: peak samples (1022-1023) round to >=256,
+		// which would wrap to 0 (black) without the clamp.
+		v := (uint32(val10) + 2) >> 2
+		if v > 255 {
+			v = 255
+		}
+		dst[i] = byte(v)
 	}
 
 	// --- Cb plane: 422->420 downsample + 10->8 bit ---
@@ -171,7 +177,13 @@ func downconvertChromaPlane(src422 []byte, dst420 []byte, chromaW, fullH int) {
 			a := binary.LittleEndian.Uint16(src422[srcOff0+x*2:])
 			b := binary.LittleEndian.Uint16(src422[srcOff1+x*2:])
 			avg := (uint32(a) + uint32(b) + 1) >> 1
-			dst420[dstOff+x] = byte((avg + 2) >> 2)
+			// Round to 8-bit then clamp: peak averaged samples (1022-1023)
+			// round to >=256, which would wrap to 0 without the clamp.
+			v := (avg + 2) >> 2
+			if v > 255 {
+				v = 255
+			}
+			dst420[dstOff+x] = byte(v)
 		}
 	}
 }

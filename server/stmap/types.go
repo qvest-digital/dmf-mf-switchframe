@@ -41,7 +41,7 @@ type STMap struct {
 // NewSTMap creates an empty ST map with zero-initialized coordinates.
 // Width and height must be positive and even (required for YUV420 processing).
 func NewSTMap(name string, width, height int) (*STMap, error) {
-	if width <= 0 || height <= 0 || width%2 != 0 || height%2 != 0 {
+	if !validDimensions(width, height) {
 		return nil, ErrInvalidDimensions
 	}
 	n := width * height

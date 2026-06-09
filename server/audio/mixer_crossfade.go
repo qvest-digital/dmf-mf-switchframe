@@ -2,6 +2,7 @@ package audio
 
 import (
 	"math"
+	"sort"
 )
 
 // OnProgramChange updates AFV channel states based on the new program source.
@@ -14,12 +15,29 @@ func (m *Mixer) OnProgramChange(newProgramSource string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Find the currently active AFV channel (the outgoing source).
-	var oldSource string
-	for key, ch := range m.channels {
-		if ch.afv && ch.active {
-			oldSource = key
-			break
+	// Determine the outgoing AFV source deterministically. Prefer the tracked
+	// program AFV source; only fall back to a scan (in sorted key order, never
+	// random map order) if the tracked source is gone, no longer AFV, or no
+	// longer active. This keeps oldSource — and therefore the resulting mix —
+	// deterministic even when several AFV channels are momentarily active.
+	oldSource := ""
+	if m.programAFVSource != "" {
+		if ch, ok := m.channels[m.programAFVSource]; ok && ch.afv && ch.active {
+			oldSource = m.programAFVSource
+		}
+	}
+	if oldSource == "" {
+		keys := make([]string, 0, len(m.channels))
+		for key := range m.channels {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			ch := m.channels[key]
+			if ch.afv && ch.active {
+				oldSource = key
+				break
+			}
 		}
 	}
 
@@ -40,6 +58,10 @@ func (m *Mixer) OnProgramChange(newProgramSource string) {
 		}
 	}
 
+	// Track whether the new program actually has an AFV channel; if not, there
+	// is no AFV source on program anymore.
+	newProgramHasAFV := false
+
 	for key, ch := range m.channels {
 		if !ch.afv {
 			continue
@@ -47,17 +69,36 @@ func (m *Mixer) OnProgramChange(newProgramSource string) {
 		if key == newProgramSource {
 			// Activate the incoming AFV channel.
 			ch.active = true
+			newProgramHasAFV = true
+			// A rapid bounce-back (A→B→A within the crossfade window) may
+			// have queued this channel for deferred deactivation on the
+			// previous program change. It is the program source again, so it
+			// must not be deactivated when the ramp completes.
+			delete(m.afvDeactivateOnComplete, key)
 			m.initChannelDecoder(ch)
-		} else if key == oldSource && m.cutFramesRemaining > 0 {
-			// Don't deactivate the old source yet — keep it active
-			// during the crossfade ramp so its audio fades out smoothly.
-			// It will be deactivated when the crossfade completes in tick().
-			m.afvDeactivateOnComplete = key
+		} else if ch.active && m.cutFramesRemaining > 0 {
+			// A crossfade ramp is in progress. Keep every currently-active AFV
+			// channel that isn't the new program alive until the ramp completes
+			// so it fades out with the transition instead of being hard-cut
+			// (which clicks). The ramped outgoing source (transCrossfadeFrom)
+			// fades smoothly; any extra stragglers at least avoid an instant
+			// discontinuity. They are all deactivated together in tick() when
+			// the crossfade completes.
+			if m.afvDeactivateOnComplete == nil {
+				m.afvDeactivateOnComplete = make(map[string]struct{})
+			}
+			m.afvDeactivateOnComplete[key] = struct{}{}
 		} else {
-			// All other AFV channels that aren't participating in
-			// the crossfade get deactivated immediately.
+			// No crossfade to ride out (e.g. switching to a non-AFV program):
+			// deactivate immediately.
 			ch.active = false
 		}
+	}
+
+	if newProgramHasAFV {
+		m.programAFVSource = newProgramSource
+	} else {
+		m.programAFVSource = ""
 	}
 }
 
@@ -92,6 +133,11 @@ func (m *Mixer) OnCut(oldSource, newSource string) {
 			ch.ringBuf.Reset()
 		}
 		ch.active = true
+		// The cut put this source on program; a later OnTransitionAbort must
+		// not roll back its activation.
+		if m.transAbortActivated == newSource {
+			m.transAbortActivated = ""
+		}
 		m.initChannelDecoder(ch)
 	}
 }
@@ -119,9 +165,15 @@ func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMo
 
 	// Flush + activate the incoming source's channel so we start from
 	// fresh audio rather than stale data buffered before the transition.
+	m.transAbortActivated = ""
 	if ch, ok := m.channels[newSource]; ok {
 		if ch.ringBuf != nil {
 			ch.ringBuf.Reset()
+		}
+		if !ch.active {
+			// Remember that this transition is what activated the channel
+			// so OnTransitionAbort can roll the activation back.
+			m.transAbortActivated = newSource
 		}
 		ch.active = true
 		// Pre-warm the decoder so the first frame from this source
@@ -159,15 +211,30 @@ func (m *Mixer) OnTransitionComplete() {
 	m.stingerAudio = nil
 	m.stingerOffset = 0
 	m.stingerChannels = 0
-	m.afvDeactivateOnComplete = ""
+	m.afvDeactivateOnComplete = nil
+	m.transAbortActivated = "" // the incoming source is on program now — keep it active
 	m.mu.Unlock()
 }
 
 // OnTransitionAbort handles a cancelled transition (e.g. T-bar pulled back
 // to 0). Snaps the crossfade position to 0.0 (fully original source) and
-// clears all transition state.
+// clears all transition state, rolling back the incoming channel activation
+// performed by OnTransitionStart so preview audio does not keep leaking into
+// program.
 func (m *Mixer) OnTransitionAbort() {
 	m.mu.Lock()
+	// Deactivate the incoming channel if (and only if) OnTransitionStart was
+	// what activated it. The transition never completed, so leaving it active
+	// would mix the preview source into program at full fader gain forever —
+	// the switcher's abort path skips OnProgramChange, which is otherwise the
+	// only thing that deactivates it. Never touch the current program AFV
+	// source (e.g. a cut landed on that source mid-transition).
+	if m.transAbortActivated != "" && m.transAbortActivated != m.programAFVSource {
+		if ch, ok := m.channels[m.transAbortActivated]; ok {
+			ch.active = false
+		}
+	}
+	m.transAbortActivated = ""
 	m.transCrossfadeActive = false
 	m.transCrossfadeFrom = ""
 	m.transCrossfadeTo = ""
@@ -180,7 +247,7 @@ func (m *Mixer) OnTransitionAbort() {
 	m.stingerAudio = nil
 	m.stingerOffset = 0
 	m.stingerChannels = 0
-	m.afvDeactivateOnComplete = ""
+	m.afvDeactivateOnComplete = nil
 	m.mu.Unlock()
 }
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1449,4 +1450,80 @@ func TestAsRunLogger_RetentionGoroutine(t *testing.T) {
 		_, err := os.Stat(oldFile)
 		return os.IsNotExist(err)
 	})
+}
+
+// TestAsRunLogger_AsyncWriteDurableOnClose verifies that events logged via the
+// asynchronous writer are all flushed to disk by the time Close returns, so the
+// off-hot-path JSONL writing preserves durability for normal (non-overflowing)
+// volumes.
+func TestAsRunLogger_AsyncWriteDurableOnClose(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 10000})
+	if err != nil {
+		t.Fatalf("NewAsRunLogger: %v", err)
+	}
+
+	const n = 500
+	now := time.Now().UTC()
+	for i := 0; i < n; i++ {
+		logger.Log(AsRunEvent{
+			Timestamp: now,
+			Type:      AsRunItemStart,
+			ChannelID: 1,
+			ItemID:    "item",
+		})
+	}
+
+	// Close must drain the writer queue and flush every event to disk.
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	filename := filepath.Join(dir, now.Format("asrun-2006-01-02")+".jsonl")
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != n {
+		t.Fatalf("JSONL lines = %d, want %d (events dropped/not flushed on Close)", len(lines), n)
+	}
+
+	// Close is idempotent.
+	if err := logger.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// TestAsRunLogger_ConcurrentLogRaceFree exercises concurrent Log calls from many
+// goroutines (mimicking pod-board + tick paths) plus a concurrent Reset/Query,
+// proving the ring update and the async write queue are race-free under -race.
+func TestAsRunLogger_ConcurrentLogRaceFree(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 256})
+	if err != nil {
+		t.Fatalf("NewAsRunLogger: %v", err)
+	}
+	defer func() { _ = logger.Close() }()
+
+	now := time.Now().UTC()
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				logger.Log(AsRunEvent{Timestamp: now, Type: AsRunSecondaryFire, ChannelID: g})
+			}
+		}(g)
+	}
+	// Concurrent readers must not race the writers.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			_ = logger.All()
+		}
+	}()
+	wg.Wait()
 }

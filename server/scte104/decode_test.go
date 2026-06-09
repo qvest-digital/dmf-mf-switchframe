@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/scte35"
 )
 
 func TestDecode_SOM_SpliceRequest(t *testing.T) {
@@ -19,7 +21,7 @@ func TestDecode_SOM_SpliceRequest(t *testing.T) {
 	binary.BigEndian.PutUint16(data[11:13], 300) // break_duration (100ms units)
 	data[13] = 1                                 // avail_num
 	data[14] = 2                                 // avails_expected
-	data[15] = 0x80                              // auto_return_flag (bit 7 per SCTE-104 spec)
+	data[15] = 0x80                              // auto_return_flag (legacy bit-7 encoding, tolerated)
 
 	msg, err := Decode(data)
 	require.NoError(t, err)
@@ -157,25 +159,22 @@ func TestDecode_MOM_SegmentationDescriptor(t *testing.T) {
 	// Build a MOM with time_signal + segmentation_descriptor.
 	upid := []byte("AD-ID-12345")
 
-	// Spec-compliant wire format per SCTE 104 2021 Table 8-29:
-	// seg_event_id(4) + flags(1) + duration(5) + upid_type(1) + upid_length(1) +
-	// upid(11) + type_id(1) + seg_num(1) + segs_expected(1) = 26
-	segPayload := make([]byte, 15+len(upid))
-	binary.BigEndian.PutUint32(segPayload[0:4], 500) // seg_event_id
-	segPayload[4] = 0x01                             // flags: cancel=0, reserved=0, program_seg_flag=1
-	// duration: 2700000 ticks (30 seconds at 90kHz)
-	dur := uint64(2700000)
-	segPayload[5] = byte(dur >> 32)
-	segPayload[6] = byte(dur >> 24)
-	segPayload[7] = byte(dur >> 16)
-	segPayload[8] = byte(dur >> 8)
-	segPayload[9] = byte(dur)
-	segPayload[10] = 0x09 // upid_type (ADI)
-	segPayload[11] = byte(len(upid))
-	copy(segPayload[12:], upid)
-	segPayload[12+len(upid)] = 0x34 // segmentation_type_id (AFTER upid)
-	segPayload[12+len(upid)+1] = 1  // seg_num
-	segPayload[12+len(upid)+2] = 1  // segs_expected
+	// Spec-compliant wire format per SCTE 104 Table 8-29:
+	// seg_event_id(4) + cancel(1) + duration(2, seconds) + upid_type(1) +
+	// upid_length(1) + upid(11) + type_id(1) + seg_num(1) + segs_expected(1) +
+	// duration_extension_frames(1) + 5 delivery restriction bytes = 29
+	segPayload := buildSpecSegDescriptorPayload(
+		500,  // seg_event_id
+		0x00, // cancel_indicator
+		30,   // duration: 30 seconds
+		0x09, // upid_type (ADI)
+		upid,
+		0x34,                   // segmentation_type_id
+		1,                      // seg_num
+		1,                      // segs_expected
+		0,                      // duration_extension_frames
+		[5]byte{1, 0, 0, 0, 0}, // delivery_not_restricted
+	)
 
 	// time_signal payload: pre_roll_time(2) = 2
 	tsPayload := make([]byte, 2)
@@ -225,7 +224,7 @@ func TestDecode_MOM_SegmentationDescriptor(t *testing.T) {
 	sd := msg.Operations[1].Data.(*SegmentationDescriptorRequest)
 	require.Equal(t, uint32(500), sd.SegEventID)
 	require.Equal(t, uint8(0x34), sd.SegmentationTypeID)
-	require.Equal(t, uint64(2700000), sd.DurationTicks)
+	require.Equal(t, uint16(30), sd.Duration)
 	require.Equal(t, uint8(0x09), sd.UPIDType)
 	require.Equal(t, "AD-ID-12345", string(sd.UPID))
 	require.Equal(t, uint8(1), sd.SegNum)
@@ -235,13 +234,14 @@ func TestDecode_MOM_SegmentationDescriptor(t *testing.T) {
 
 func TestDecode_SegmentationDescriptor_Cancel(t *testing.T) {
 	t.Parallel()
-	// SOM with segmentation_descriptor cancel.
-	// Per SCTE 104 2021: cancel format is seg_event_id(4) + flags(1) = 5 bytes.
-	// Cancel flag is bit 7 of flags byte. No type_id in cancel messages.
-	data := make([]byte, 7) // OpID(2) + payload(5)
+	// SOM with segmentation_descriptor cancel. Per SCTE 104 Table 8-29 the
+	// cancel indicator is a full byte (value 1) and the remaining fields stay
+	// in place.
+	payload := buildSpecSegDescriptorPayload(
+		777, 0x01, 0, 0, nil, 0x35, 0, 0, 0, [5]byte{1, 0, 0, 0, 0})
+	data := make([]byte, 2+len(payload))
 	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
-	binary.BigEndian.PutUint32(data[2:6], 777) // seg_event_id
-	data[6] = 0x80                             // flags: cancel=1 (no type_id)
+	copy(data[2:], payload)
 
 	msg, err := Decode(data)
 	require.NoError(t, err)
@@ -250,8 +250,8 @@ func TestDecode_SegmentationDescriptor_Cancel(t *testing.T) {
 	sd := msg.Operations[0].Data.(*SegmentationDescriptorRequest)
 	require.True(t, sd.CancelIndicator, "CancelIndicator should be true")
 	require.Equal(t, uint32(777), sd.SegEventID)
-	// type_id is not present in cancel format, should be zero.
-	require.Equal(t, uint8(0), sd.SegmentationTypeID)
+	// type_id stays in place on the wire even for cancel.
+	require.Equal(t, uint8(0x35), sd.SegmentationTypeID)
 }
 
 func TestDecode_TooShort(t *testing.T) {
@@ -370,7 +370,7 @@ func TestDecode_MOM_UnknownOp_Skipped(t *testing.T) {
 }
 
 func TestDecode_SegmentationDescriptor_TooShort(t *testing.T) {
-	// SOM with segmentation_descriptor but only 3 bytes (needs 5 minimum).
+	// SOM with segmentation_descriptor but only 3 bytes (needs 9 minimum).
 	data := make([]byte, 5) // OpID(2) + 3 bytes
 	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
 
@@ -378,13 +378,12 @@ func TestDecode_SegmentationDescriptor_TooShort(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestDecode_SegmentationDescriptor_NonCancel_TooShort(t *testing.T) {
-	// SOM with non-cancel segmentation_descriptor but insufficient bytes for
-	// the non-cancel fields.
-	data := make([]byte, 9) // OpID(2) + seg_event_id(4) + flags(1) + 2 bytes (needs 7 more for duration+upid header)
+func TestDecode_SegmentationDescriptor_TruncatedAfterUPIDHeader(t *testing.T) {
+	// Payload long enough for the fixed prefix but truncated before
+	// type_id/seg_num/segs_expected.
+	data := make([]byte, 11) // OpID(2) + event_id(4) + cancel(1) + duration(2) + upid_type(1) + upid_length(1)
 	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
 	binary.BigEndian.PutUint32(data[2:6], 100)
-	data[6] = 0x01 // flags: program_seg_flag=1, no cancel
 
 	_, err := Decode(data)
 	require.Error(t, err)
@@ -449,6 +448,24 @@ func FuzzDecode(f *testing.F) {
 		}
 		// Re-decode should not fail.
 		_, _ = Decode(encoded)
+
+		// Exercise the production ingress path: ToCueMessage -> InjectCue.
+		// A malformed-but-decodable SCTE-104 message can translate to an
+		// extreme duration/preroll; feeding it through a real Injector with a
+		// mock ptsFn/sink ensures the time-math (durationToTicksSat,
+		// maskPTS33, scheduledReturnPTS) never panics on adversarial input.
+		cue, err := ToCueMessage(msg)
+		if err != nil || cue == nil {
+			return
+		}
+		inj := scte35.NewInjector(
+			scte35.InjectorConfig{HeartbeatInterval: 0},
+			func([]byte) {},
+			func() int64 { return 1_000_000 },
+		)
+		defer inj.Close()
+		// Must not panic regardless of the translated cue's magnitudes.
+		_, _ = inj.InjectCue(cue)
 	})
 }
 
@@ -607,7 +624,7 @@ func TestDecode_MOM_TimeType1_WithSpliceRequest(t *testing.T) {
 	binary.BigEndian.PutUint16(spliceData[9:11], 300)
 	spliceData[11] = 1
 	spliceData[12] = 2
-	spliceData[13] = 0x80 // auto_return_flag (bit 7 per SCTE-104 spec)
+	spliceData[13] = 1 // auto_return_flag (spec full-byte value)
 
 	// Build MOM manually with UTC timestamp + splice_request
 	fixedHeaderBeforeTS := 8
@@ -659,16 +676,8 @@ func TestDecode_MOM_TimeType1_TooShortForTimestamp(t *testing.T) {
 
 func TestDecode_SegmentationDescriptor_EmptyUPID(t *testing.T) {
 	// Non-cancel seg descriptor with zero-length UPID.
-	// Per SCTE 104 2021: seg_event_id(4) + flags(1) + duration(5) + upid_type(1) +
-	// upid_length(1) + type_id(1) + seg_num(1) + segs_expected(1) = 15
-	payload := make([]byte, 15)
-	binary.BigEndian.PutUint32(payload[0:4], 123)
-	payload[4] = 0x01  // flags: program_seg_flag=1
-	payload[10] = 0x01 // upid_type
-	payload[11] = 0    // upid_length = 0
-	payload[12] = 0x30 // segmentation_type_id (after upid)
-	payload[13] = 1    // seg_num
-	payload[14] = 1    // segs_expected
+	payload := buildSpecSegDescriptorPayload(
+		123, 0x00, 10, 0x01, nil, 0x30, 1, 1, 0, [5]byte{1, 0, 0, 0, 0})
 
 	data := make([]byte, 2+len(payload))
 	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
@@ -680,62 +689,7 @@ func TestDecode_SegmentationDescriptor_EmptyUPID(t *testing.T) {
 	sd := msg.Operations[0].Data.(*SegmentationDescriptorRequest)
 	require.Equal(t, uint32(123), sd.SegEventID)
 	require.Len(t, sd.UPID, 0)
-}
-
-func TestDecode_SOM_FullHeader(t *testing.T) {
-	// Build a full SOM with the 12-byte header before the operation data.
-	spliceData := make([]byte, 14)
-	spliceData[0] = SpliceStartImmediate              // splice_insert_type
-	binary.BigEndian.PutUint32(spliceData[1:5], 77)   // splice_event_id
-	binary.BigEndian.PutUint16(spliceData[5:7], 200)  // unique_program_id
-	binary.BigEndian.PutUint16(spliceData[7:9], 3000) // pre_roll_time
-	binary.BigEndian.PutUint16(spliceData[9:11], 600) // break_duration
-	spliceData[11] = 3                                // avail_num
-	spliceData[12] = 4                                // avails_expected
-	spliceData[13] = 0x80                             // auto_return_flag (bit 7 per SCTE-104 spec)
-
-	headerSize := 12
-	payloadSize := headerSize + len(spliceData) // 12 + 14 = 26
-
-	// Full message: OpID(2) + payload(26)
-	buf := make([]byte, 2+payloadSize)
-	binary.BigEndian.PutUint16(buf[0:2], OpSpliceRequest) // OpID
-
-	// Payload starts at buf[2]:
-	payload := buf[2:]
-	binary.BigEndian.PutUint16(payload[0:2], uint16(payloadSize-2)) // messageSize = 24 (spec: excludes self)
-	binary.BigEndian.PutUint16(payload[2:4], 0)                     // result (ignored)
-	binary.BigEndian.PutUint16(payload[4:6], 0)                     // result_extension (ignored)
-	payload[6] = 2                                                  // protocol_version
-	payload[7] = 10                                                 // AS_index
-	payload[8] = 5                                                  // message_number
-	binary.BigEndian.PutUint16(payload[9:11], 4000)                 // DPI_PID_index
-	payload[11] = 0                                                 // SCTE35_protocol_version
-	copy(payload[12:], spliceData)
-
-	msg, err := Decode(buf)
-	require.NoError(t, err)
-
-	// Verify header fields are populated.
-	require.Equal(t, uint8(2), msg.ProtocolVersion)
-	require.Equal(t, uint8(10), msg.ASIndex)
-	require.Equal(t, uint8(5), msg.MessageNumber)
-	require.Equal(t, uint16(4000), msg.DPIPIDIndex)
-
-	// Verify operation data is parsed correctly.
-	require.Len(t, msg.Operations, 1)
-	op := msg.Operations[0]
-	require.Equal(t, uint16(OpSpliceRequest), op.OpID)
-	require.IsType(t, &SpliceRequestData{}, op.Data)
-	srd := op.Data.(*SpliceRequestData)
-	require.Equal(t, uint8(SpliceStartImmediate), srd.SpliceInsertType)
-	require.Equal(t, uint32(77), srd.SpliceEventID)
-	require.Equal(t, uint16(200), srd.UniqueProgramID)
-	require.Equal(t, uint16(3000), srd.PreRollTime)
-	require.Equal(t, uint16(600), srd.BreakDuration)
-	require.Equal(t, uint8(3), srd.AvailNum)
-	require.Equal(t, uint8(4), srd.AvailsExpected)
-	require.True(t, srd.AutoReturnFlag, "AutoReturnFlag = false, want true")
+	require.Equal(t, uint8(0x30), sd.SegmentationTypeID)
 }
 
 func TestDecode_SOM_AbbreviatedVANC_Regression(t *testing.T) {
@@ -774,115 +728,6 @@ func TestDecode_SOM_AbbreviatedVANC_Regression(t *testing.T) {
 	require.False(t, srd.AutoReturnFlag, "AutoReturnFlag = true, want false")
 }
 
-func TestDecode_SOM_FullHeader_SpliceNull(t *testing.T) {
-	// Full SOM with time_signal (2 bytes of operation data).
-	payloadSize := 14
-
-	buf := make([]byte, 2+payloadSize)
-	binary.BigEndian.PutUint16(buf[0:2], OpTimeSignalRequest) // OpID
-
-	payload := buf[2:]
-	binary.BigEndian.PutUint16(payload[0:2], uint16(payloadSize-2)) // messageSize = 12
-	binary.BigEndian.PutUint16(payload[2:4], 0)                     // result
-	binary.BigEndian.PutUint16(payload[4:6], 0)                     // result_extension
-	payload[6] = 1                                                  // protocol_version
-	payload[7] = 3                                                  // AS_index
-	payload[8] = 9                                                  // message_number
-	binary.BigEndian.PutUint16(payload[9:11], 500)                  // DPI_PID_index
-	payload[11] = 0                                                 // SCTE35_protocol_version
-	binary.BigEndian.PutUint16(payload[12:14], 7000)                // pre_roll_time
-
-	msg, err := Decode(buf)
-	require.NoError(t, err)
-
-	require.Equal(t, uint8(1), msg.ProtocolVersion)
-	require.Equal(t, uint8(3), msg.ASIndex)
-	require.Equal(t, uint8(9), msg.MessageNumber)
-	require.Equal(t, uint16(500), msg.DPIPIDIndex)
-
-	require.Len(t, msg.Operations, 1)
-	require.IsType(t, &TimeSignalRequestData{}, msg.Operations[0].Data)
-	tsr := msg.Operations[0].Data.(*TimeSignalRequestData)
-	require.Equal(t, uint16(7000), tsr.PreRollTime)
-}
-
-func TestDecode_SegmentationDescriptor_SpecFormat(t *testing.T) {
-	// Spec-compliant wire format per SCTE 104 2021 Table 8-29.
-	upid := []byte("AD-ID-99")
-	dur := uint64(2700000) // 30 seconds at 90kHz
-
-	segPayload := make([]byte, 15+len(upid))
-	binary.BigEndian.PutUint32(segPayload[0:4], 500) // seg_event_id
-	segPayload[4] = 0x01                             // flags: cancel=0, reserved=0, program_seg_flag=1
-	segPayload[5] = byte(dur >> 32)
-	segPayload[6] = byte(dur >> 24)
-	segPayload[7] = byte(dur >> 16)
-	segPayload[8] = byte(dur >> 8)
-	segPayload[9] = byte(dur)
-	segPayload[10] = 0x09            // upid_type
-	segPayload[11] = byte(len(upid)) // upid_length
-	copy(segPayload[12:], upid)
-	segPayload[12+len(upid)] = 0x34 // segmentation_type_id (AFTER upid!)
-	segPayload[12+len(upid)+1] = 1  // seg_num
-	segPayload[12+len(upid)+2] = 1  // segs_expected
-
-	data := make([]byte, 2+len(segPayload))
-	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
-	copy(data[2:], segPayload)
-
-	msg, err := Decode(data)
-	require.NoError(t, err)
-
-	sd := msg.Operations[0].Data.(*SegmentationDescriptorRequest)
-	require.Equal(t, uint32(500), sd.SegEventID)
-	require.Equal(t, uint8(0x34), sd.SegmentationTypeID)
-	require.Equal(t, uint64(2700000), sd.DurationTicks)
-	require.Equal(t, uint8(0x09), sd.UPIDType)
-	require.Equal(t, "AD-ID-99", string(sd.UPID))
-	require.Equal(t, uint8(1), sd.SegNum)
-	require.Equal(t, uint8(1), sd.SegExpected)
-	require.True(t, sd.ProgramSegmentationFlag, "ProgramSegmentationFlag should be true")
-	require.False(t, sd.CancelIndicator, "CancelIndicator should be false")
-}
-
-func TestDecode_SegmentationDescriptor_ComponentLevel(t *testing.T) {
-	// Component-level segmentation: program_seg_flag=0, component_count=2.
-	upid := []byte("X")
-	dur := uint64(900000)
-
-	segPayload := make([]byte, 19)
-	binary.BigEndian.PutUint32(segPayload[0:4], 700) // seg_event_id
-	segPayload[4] = 0x00                             // flags: cancel=0, program_seg_flag=0
-	segPayload[5] = 2                                // component_count
-	segPayload[6] = 0x01                             // component_tag 1
-	segPayload[7] = 0x02                             // component_tag 2
-	segPayload[8] = byte(dur >> 32)
-	segPayload[9] = byte(dur >> 24)
-	segPayload[10] = byte(dur >> 16)
-	segPayload[11] = byte(dur >> 8)
-	segPayload[12] = byte(dur)
-	segPayload[13] = 0x09            // upid_type
-	segPayload[14] = byte(len(upid)) // upid_length
-	copy(segPayload[15:], upid)
-	segPayload[16] = 0x22 // segmentation_type_id
-	segPayload[17] = 1    // seg_num
-	segPayload[18] = 3    // segs_expected
-
-	data := make([]byte, 2+len(segPayload))
-	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
-	copy(data[2:], segPayload)
-
-	msg, err := Decode(data)
-	require.NoError(t, err)
-
-	sd := msg.Operations[0].Data.(*SegmentationDescriptorRequest)
-	require.False(t, sd.ProgramSegmentationFlag, "ProgramSegmentationFlag should be false for component-level")
-	require.Equal(t, uint8(0x22), sd.SegmentationTypeID)
-	require.Equal(t, uint64(900000), sd.DurationTicks)
-	require.Equal(t, uint8(1), sd.SegNum)
-	require.Equal(t, uint8(3), sd.SegExpected)
-}
-
 func TestDecode_MOM_MessageSizeMismatch(t *testing.T) {
 	// MOM with messageSize that doesn't match either convention.
 	headerSize := 10
@@ -905,106 +750,29 @@ func TestDecode_MOM_MessageSizeMismatch(t *testing.T) {
 	require.Equal(t, uint16(OpSpliceNull), msg.Operations[0].OpID)
 }
 
-func TestDecode_SOM_LegacyMessageSize(t *testing.T) {
-	// Legacy convention: messageSize = len(payload) (total length, not spec-compliant).
-	spliceData := make([]byte, 14)
-	spliceData[0] = SpliceStartImmediate
-	binary.BigEndian.PutUint32(spliceData[1:5], 88)
-
-	headerSize := 12
-	payloadSize := headerSize + len(spliceData) // 26
-
-	buf := make([]byte, 2+payloadSize)
-	binary.BigEndian.PutUint16(buf[0:2], OpSpliceRequest)
-
-	payload := buf[2:]
-	binary.BigEndian.PutUint16(payload[0:2], uint16(payloadSize)) // legacy: messageSize = total length
-	binary.BigEndian.PutUint16(payload[2:4], 0)
-	binary.BigEndian.PutUint16(payload[4:6], 0)
-	payload[6] = 1 // protocol_version
-	payload[7] = 5 // AS_index
-	payload[8] = 2 // message_number
-	binary.BigEndian.PutUint16(payload[9:11], 1000)
-	payload[11] = 0 // SCTE35_protocol_version
-	copy(payload[12:], spliceData)
-
-	msg, err := Decode(buf)
-	require.NoError(t, err)
-
-	require.Equal(t, uint8(1), msg.ProtocolVersion)
-	require.Equal(t, uint8(5), msg.ASIndex)
-
-	require.IsType(t, &SpliceRequestData{}, msg.Operations[0].Data)
-	srd := msg.Operations[0].Data.(*SpliceRequestData)
-	require.Equal(t, uint32(88), srd.SpliceEventID)
-}
-
-func TestDecode_AutoReturnFlag_Bit7(t *testing.T) {
-	// Per SCTE-104 spec, auto_return_flag is bit 7 (MSB) of byte 13.
+func TestDecode_AutoReturnFlag_LegacyBit7_Tolerated(t *testing.T) {
+	// Legacy encoders wrote auto_return_flag as bit 7 (0x80). The decoder
+	// treats any non-zero byte as true for tolerance.
 	data := make([]byte, 16) // OpID(2) + splice_request_data(14)
 	binary.BigEndian.PutUint16(data[0:2], OpSpliceRequest)
 	data[2] = SpliceStartImmediate           // splice_insert_type
 	binary.BigEndian.PutUint32(data[3:7], 1) // splice_event_id
-	data[15] = 0x80                          // auto_return_flag: bit 7 set
+	data[15] = 0x80                          // legacy bit-7 encoding
 
 	msg, err := Decode(data)
 	require.NoError(t, err)
 
 	srd := msg.Operations[0].Data.(*SpliceRequestData)
-	require.True(t, srd.AutoReturnFlag, "AutoReturnFlag = false, want true (bit 7 = 0x80)")
-}
-
-func TestDecode_AutoReturnFlag_Bit0Only_IsFalse(t *testing.T) {
-	// If only bit 0 is set (0x01) but bit 7 is not, auto_return_flag should be false.
-	data := make([]byte, 16) // OpID(2) + splice_request_data(14)
-	binary.BigEndian.PutUint16(data[0:2], OpSpliceRequest)
-	data[2] = SpliceStartImmediate           // splice_insert_type
-	binary.BigEndian.PutUint32(data[3:7], 1) // splice_event_id
-	data[15] = 0x01                          // only bit 0 set, NOT bit 7
-
-	msg, err := Decode(data)
-	require.NoError(t, err)
-
-	srd := msg.Operations[0].Data.(*SpliceRequestData)
-	require.False(t, srd.AutoReturnFlag, "AutoReturnFlag = true, want false (only bit 0 set, bit 7 required)")
+	require.True(t, srd.AutoReturnFlag, "AutoReturnFlag = false, want true (legacy 0x80)")
 }
 
 func TestDecode_SOM_FullHeader_SegmentationDescriptor(t *testing.T) {
-	// Full SOM with 12-byte header + segmentation_descriptor_request operation.
+	// Full SOM (11-byte header) + spec segmentation_descriptor_request payload.
 	upid := []byte("ABCD")
-	dur := uint64(1800000) // 20 seconds at 90kHz
+	segPayload := buildSpecSegDescriptorPayload(
+		1234, 0x00, 20, 0x09, upid, 0x34, 2, 4, 0, [5]byte{1, 0, 0, 0, 0})
 
-	segPayload := make([]byte, 15+len(upid))
-	binary.BigEndian.PutUint32(segPayload[0:4], 1234) // seg_event_id
-	segPayload[4] = 0x01                              // flags: program_seg_flag=1
-	segPayload[5] = byte(dur >> 32)
-	segPayload[6] = byte(dur >> 24)
-	segPayload[7] = byte(dur >> 16)
-	segPayload[8] = byte(dur >> 8)
-	segPayload[9] = byte(dur)
-	segPayload[10] = 0x09            // upid_type
-	segPayload[11] = byte(len(upid)) // upid_length
-	copy(segPayload[12:], upid)
-	segPayload[12+len(upid)] = 0x34 // segmentation_type_id
-	segPayload[12+len(upid)+1] = 2  // seg_num
-	segPayload[12+len(upid)+2] = 4  // segs_expected
-
-	headerSize := 12
-	payloadSize := headerSize + len(segPayload) // 12 + 19 = 31
-
-	buf := make([]byte, 2+payloadSize)
-	binary.BigEndian.PutUint16(buf[0:2], OpSegmentationDescriptorRequest) // OpID
-
-	payload := buf[2:]
-	binary.BigEndian.PutUint16(payload[0:2], uint16(payloadSize-2)) // messageSize (spec convention)
-	binary.BigEndian.PutUint16(payload[2:4], 0)                     // result
-	binary.BigEndian.PutUint16(payload[4:6], 0)                     // result_extension
-	payload[6] = 3                                                  // protocol_version
-	payload[7] = 8                                                  // AS_index
-	payload[8] = 15                                                 // message_number
-	binary.BigEndian.PutUint16(payload[9:11], 6000)                 // DPI_PID_index
-	payload[11] = 0                                                 // SCTE35_protocol_version
-	copy(payload[12:], segPayload)
+	buf := buildSpecFullSOM(OpSegmentationDescriptorRequest, 3, 8, 15, 6000, segPayload)
 
 	msg, err := Decode(buf)
 	require.NoError(t, err)
@@ -1022,16 +790,15 @@ func TestDecode_SOM_FullHeader_SegmentationDescriptor(t *testing.T) {
 	sd := msg.Operations[0].Data.(*SegmentationDescriptorRequest)
 	require.Equal(t, uint32(1234), sd.SegEventID)
 	require.Equal(t, uint8(0x34), sd.SegmentationTypeID)
-	require.Equal(t, uint64(1800000), sd.DurationTicks)
+	require.Equal(t, uint16(20), sd.Duration)
 	require.Equal(t, "ABCD", string(sd.UPID))
 	require.Equal(t, uint8(2), sd.SegNum)
 	require.Equal(t, uint8(4), sd.SegExpected)
-	require.True(t, sd.ProgramSegmentationFlag, "ProgramSegmentationFlag should be true")
 }
 
 func TestDecode_SOM_AmbiguousMessageSize(t *testing.T) {
-	// When messageSize matches neither spec (len-2) nor legacy (len) convention,
-	// decodeSOM falls through to the abbreviated format.
+	// When messageSize does not match the spec convention (complete message
+	// size including opID), decodeSOM falls through to the abbreviated format.
 	data := make([]byte, 16)
 	binary.BigEndian.PutUint16(data[0:2], OpSpliceRequest)
 	data[2] = SpliceStartImmediate               // splice_insert_type
@@ -1041,13 +808,13 @@ func TestDecode_SOM_AmbiguousMessageSize(t *testing.T) {
 	binary.BigEndian.PutUint16(data[11:13], 200) // break_duration
 	data[13] = 1                                 // avail_num
 	data[14] = 5                                 // avails_expected
-	data[15] = 0x80                              // auto_return_flag (bit 7)
+	data[15] = 0x80                              // auto_return_flag (legacy bit 7)
 
-	// Verify the first 2 bytes of payload (data[2:4]) do NOT match either convention.
+	// Verify the first 2 bytes of payload (data[2:4]) do NOT match the spec convention.
 	payloadLen := 14
 	pseudoMsgSize := int(binary.BigEndian.Uint16(data[2:4]))
-	require.True(t, pseudoMsgSize != payloadLen-2 && pseudoMsgSize != payloadLen,
-		"test setup error: pseudo messageSize %d matches a convention (payload len %d)",
+	require.True(t, pseudoMsgSize != payloadLen+2,
+		"test setup error: pseudo messageSize %d matches the spec convention (payload len %d)",
 		pseudoMsgSize, payloadLen)
 
 	msg, err := Decode(data)
@@ -1093,59 +860,19 @@ func TestDecode_SOM_SpliceNull_NoHeader(t *testing.T) {
 	require.Nil(t, op.Data)
 }
 
-func TestDecode_SegmentationDescriptor_SubSegments(t *testing.T) {
-	// Build an abbreviated SOM segmentation_descriptor_request with sub-segment fields.
-	payload := make([]byte, 17)
-	binary.BigEndian.PutUint32(payload[0:4], 5000) // seg_event_id
-	payload[4] = 0x01                              // flags: program_segmentation_flag=1
-	// duration: 900000 ticks (10 seconds at 90kHz) as 5-byte big-endian
-	payload[5] = 0
-	payload[6] = 0
-	binary.BigEndian.PutUint16(payload[7:9], 0x0DBA)
-	payload[9] = 0xC0
-	binary.BigEndian.PutUint32(payload[5:9], 0x000DBBA0>>8)
-	payload[9] = byte(0x000DBBA0 & 0xFF)
-	// Fix: use proper 5-byte encoding
-	dur := uint64(900000)
-	payload[5] = byte(dur >> 32)
-	payload[6] = byte(dur >> 24)
-	payload[7] = byte(dur >> 16)
-	payload[8] = byte(dur >> 8)
-	payload[9] = byte(dur)
-	payload[10] = 0x09 // upid_type
-	payload[11] = 0    // upid_length = 0
-	payload[12] = 0x34 // segmentation_type_id
-	payload[13] = 2    // seg_num
-	payload[14] = 4    // segs_expected
-	payload[15] = 3    // sub_segment_num
-	payload[16] = 6    // sub_segments_expected
-
-	// Prepend OpID for abbreviated SOM.
-	data := make([]byte, 2+len(payload))
-	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
-	copy(data[2:], payload)
-
-	msg, err := Decode(data)
-	require.NoError(t, err)
-
-	require.Len(t, msg.Operations, 1)
-
-	sd := msg.Operations[0].Data.(*SegmentationDescriptorRequest)
-	require.Equal(t, uint32(5000), sd.SegEventID)
-	require.Equal(t, uint8(3), sd.SubSegmentNum)
-	require.Equal(t, uint8(6), sd.SubSegmentsExpected)
-}
-
-func TestDecode_SegmentationDescriptor_NoSubSegments_Backward_Compatible(t *testing.T) {
-	// Verify that messages without sub-segment fields still decode correctly.
-	payload := make([]byte, 15)
+func TestDecode_SegmentationDescriptor_TrailingFieldsOmitted_Lenient(t *testing.T) {
+	// Some older automation systems omit duration_extension_frames and the
+	// delivery restriction bytes. The decoder parses them leniently and
+	// assumes "delivery not restricted" when absent.
+	payload := make([]byte, 12)
 	binary.BigEndian.PutUint32(payload[0:4], 42)
-	payload[4] = 0x01  // flags: program_segmentation_flag=1
-	payload[10] = 0x09 // upid_type
-	payload[11] = 0    // upid_length = 0
-	payload[12] = 0x34 // segmentation_type_id
-	payload[13] = 1    // seg_num
-	payload[14] = 2    // segs_expected
+	payload[4] = 0x00                            // cancel_indicator
+	binary.BigEndian.PutUint16(payload[5:7], 15) // duration: 15 seconds
+	payload[7] = 0x09                            // upid_type
+	payload[8] = 0                               // upid_length = 0
+	payload[9] = 0x34                            // segmentation_type_id
+	payload[10] = 1                              // seg_num
+	payload[11] = 2                              // segs_expected
 
 	data := make([]byte, 2+len(payload))
 	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
@@ -1155,23 +882,25 @@ func TestDecode_SegmentationDescriptor_NoSubSegments_Backward_Compatible(t *test
 	require.NoError(t, err)
 
 	sd := msg.Operations[0].Data.(*SegmentationDescriptorRequest)
-	require.Equal(t, uint8(0), sd.SubSegmentNum)
-	require.Equal(t, uint8(0), sd.SubSegmentsExpected)
+	require.Equal(t, uint32(42), sd.SegEventID)
+	require.Equal(t, uint16(15), sd.Duration)
+	require.Equal(t, uint8(0x34), sd.SegmentationTypeID)
+	require.Equal(t, uint8(0), sd.DurationExtensionFrames)
+	require.True(t, sd.DeliveryNotRestricted, "absent restriction bytes mean unrestricted")
 }
 
 // Bug 14: An abbreviated splice_request payload whose first 2 bytes accidentally
-// encode a value matching len(payload)-2 or len(payload) should NOT be falsely
-// parsed as a full SOM with header. The protocolVersion check (byte[6] > 15)
-// guards against this.
+// encode a value matching len(payload)+2 should NOT be falsely parsed as a full
+// SOM with header. The protocolVersion check (byte[6] > 15) guards against this.
 func TestDecode_SOM_AbbreviatedNotFalsePositiveSOM(t *testing.T) {
 	payload := make([]byte, 16) // OpID(2) + 14 bytes
 	binary.BigEndian.PutUint16(payload[0:2], OpSpliceRequest)
 
 	// Abbreviated payload starts at payload[2:].
 	abbrev := payload[2:]
-	// Set first 2 bytes to 12 (= len(abbrev)-2 = 14-2), triggering the
+	// Set first 2 bytes to 16 (= len(abbrev)+2 = 14+2), triggering the
 	// messageSize length-match heuristic.
-	binary.BigEndian.PutUint16(abbrev[0:2], 12) // messageSize match!
+	binary.BigEndian.PutUint16(abbrev[0:2], 16) // messageSize match!
 
 	// In a real SOM, abbrev[6] is protocol_version. Set to 0xFF (invalid
 	// protocol version, > 15) to test that the fix rejects SOM interpretation.
@@ -1188,8 +917,8 @@ func TestDecode_SOM_AbbreviatedNotFalsePositiveSOM(t *testing.T) {
 	// In abbreviated mode, splice_insert_type is the first byte of the payload.
 	require.Equal(t, uint8(0x00), srd.SpliceInsertType)
 
-	// splice_event_id = bytes [1:5] = 0x0C000000
-	wantEventID := uint32(0x0C000000)
+	// splice_event_id = bytes [1:5] = 0x10000000
+	wantEventID := uint32(0x10000000)
 	require.Equal(t, wantEventID, srd.SpliceEventID)
 
 	// The message should NOT have SOM header fields populated.

@@ -560,6 +560,10 @@ static int ffdec_decode(ffdec_t* h, unsigned char* data, int data_len,
 		if (h->frame->hw_frames_ctx) {
 			rc = av_hwframe_transfer_data(h->sw_frame, h->frame, 0);
 			if (rc < 0) {
+				// A failed transfer can leave sw_frame with a partial buffer
+				// reference; unref both to stay symmetric with the
+				// unsupported-format branch below.
+				av_frame_unref(h->sw_frame);
 				av_frame_unref(h->frame);
 				return -3;
 			}
@@ -688,6 +692,10 @@ static int ffdec_receive_only(ffdec_t* h, unsigned char* dst_buf, int dst_cap,
 		if (h->frame->hw_frames_ctx) {
 			rc = av_hwframe_transfer_data(h->sw_frame, h->frame, 0);
 			if (rc < 0) {
+				// A failed transfer can leave sw_frame with a partial buffer
+				// reference; unref both to stay symmetric with the
+				// unsupported-format branch below.
+				av_frame_unref(h->sw_frame);
 				av_frame_unref(h->frame);
 				return -3;
 			}
@@ -838,6 +846,11 @@ var initRangeTablesOnce sync.Once
 //
 // FFmpegDecoder is NOT safe for concurrent use. Callers must synchronize access externally.
 type FFmpegDecoder struct {
+	// closeMu only serializes concurrent Close calls so that freeing the C
+	// context and setting closed is idempotent. It does NOT make Decode/
+	// ReceiveFrame safe to call concurrently with Close (that would be a
+	// use-after-free of the AVCodecContext) — the documented external-
+	// synchronization contract above is what keeps the hot path safe.
 	closeMu        sync.Mutex
 	handle         C.ffdec_t
 	closed         bool

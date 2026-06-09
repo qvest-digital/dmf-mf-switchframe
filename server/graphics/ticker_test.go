@@ -568,3 +568,62 @@ func TestTickerEngine_FrameLockedMultipleFPS(t *testing.T) {
 		})
 	}
 }
+
+// TestExtractViewport_CrossRowOverflow reproduces the strip-row boundary bug:
+// when a looping ticker's text is narrower than the screen, xOffset can reach
+// values where xOffset+viewW > stripW. The old code only bounds-checked the
+// end of the whole Pix buffer, so every row except the last copied the
+// beginning of the NEXT strip row into the right side of the viewport row
+// (breaking the top accent line), and the last row left stale previous-frame
+// bytes in the reused dst buffer.
+func TestExtractViewport_CrossRowOverflow(t *testing.T) {
+	const (
+		stripW = 12
+		stripH = 4
+		viewW  = 8
+		viewH  = 4
+		xOff   = 7 // xOff+viewW = 15 > stripW = 12 → 3-pixel overrun per row
+	)
+
+	// Each strip row has a distinct R value; G holds the column index so
+	// wrap-around content is verifiable.
+	strip := image.NewRGBA(image.Rect(0, 0, stripW, stripH))
+	for y := 0; y < stripH; y++ {
+		for x := 0; x < stripW; x++ {
+			off := y*strip.Stride + x*4
+			strip.Pix[off+0] = byte(y + 1) // row marker
+			strip.Pix[off+1] = byte(x)     // column marker
+			strip.Pix[off+3] = 255
+		}
+	}
+
+	// Simulate the reused per-layer viewport buffer holding stale bytes.
+	dst := make([]byte, viewW*viewH*4)
+	for i := range dst {
+		dst[i] = 0xEE
+	}
+
+	extractTickerViewport(strip, xOff, viewW, viewH, dst)
+
+	for y := 0; y < viewH; y++ {
+		for x := 0; x < viewW; x++ {
+			off := (y*viewW + x) * 4
+			gotRow := dst[off+0]
+			if gotRow == 0xEE {
+				t.Fatalf("viewport (%d,%d): stale byte 0xEE left in reused buffer", x, y)
+			}
+			// Every pixel of viewport row y must come from STRIP row y —
+			// never from the next row.
+			if gotRow != byte(y+1) {
+				t.Fatalf("viewport (%d,%d): got row marker %d, want %d (cross-row read)",
+					x, y, gotRow, y+1)
+			}
+			// In-bounds columns must be a straight copy.
+			if x < stripW-xOff {
+				if gotCol := dst[off+1]; gotCol != byte(xOff+x) {
+					t.Fatalf("viewport (%d,%d): column %d, want %d", x, y, gotCol, xOff+x)
+				}
+			}
+		}
+	}
+}

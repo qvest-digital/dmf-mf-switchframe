@@ -121,6 +121,13 @@ func (r *FileRecorder) openFileLocked(now time.Time) error {
 	return nil
 }
 
+// rotationEnabled reports whether any rotation threshold is configured. When
+// rotation is disabled the cached PAT/PMT is never consumed, so the scan that
+// populates it can be skipped entirely.
+func (r *FileRecorder) rotationEnabled() bool {
+	return r.config.RotateAfter > 0 || r.config.MaxFileSize > 0
+}
+
 // shouldRotate checks whether the current file should be rotated based on
 // the configured time and size thresholds.
 func (r *FileRecorder) shouldRotate() bool {
@@ -148,6 +155,10 @@ func (r *FileRecorder) rotateLocked() error {
 		if err := r.file.Close(); err != nil {
 			slog.Error("error closing rotated file", "file", r.filename, "err", err)
 		}
+		// Clear the handle now that the old file is closed. If
+		// openFileLocked below fails, r.file must not point at the
+		// already-closed descriptor (avoids a stale handle / double close).
+		r.file = nil
 	}
 
 	r.fileIndex++
@@ -198,12 +209,21 @@ func (r *FileRecorder) Write(tsData []byte) (int, error) {
 		return 0, ErrRecorderNotActive
 	}
 
-	// Cache PAT/PMT for use after rotation.
-	r.cachePATandPMT(tsData)
-
 	// Check if rotation is needed -- defer until we see a keyframe.
 	if !r.pendingRotate && r.shouldRotate() {
 		r.pendingRotate = true
+	}
+
+	// Cache PAT/PMT for prepending after rotation. The full per-batch scan is
+	// wasted CPU on the 30fps write path: go-astits retransmits PAT/PMT only
+	// every ~40 PES packets, so most batches contain neither. Only scan when
+	// rotation can actually happen (a cached copy is needed) and either we have
+	// no copy yet or a rotation is pending -- the latter refreshes the cache one
+	// last time just before it is consumed at the next keyframe. Once a copy
+	// exists and no rotation is pending, the steady-state common case skips the
+	// scan entirely.
+	if r.rotationEnabled() && (r.cachedPATMPT == nil || r.pendingRotate) {
+		r.cachePATandPMT(tsData)
 	}
 
 	// Rotate only when we have a keyframe to start the new file.
@@ -222,6 +242,11 @@ func (r *FileRecorder) Write(tsData []byte) (int, error) {
 			if err != nil {
 				r.state = StateError
 				r.errMsg = err.Error()
+				// Close the descriptor so it is not leaked: Close()
+				// short-circuits on StateError and the manager never
+				// auto-closes an errored recorder.
+				_ = r.file.Close()
+				r.file = nil
 				return 0, err
 			}
 		}
@@ -233,6 +258,11 @@ func (r *FileRecorder) Write(tsData []byte) (int, error) {
 	if err != nil {
 		r.state = StateError
 		r.errMsg = err.Error()
+		// Close the descriptor so it is not leaked: Close()
+		// short-circuits on StateError and the manager never
+		// auto-closes an errored recorder.
+		_ = r.file.Close()
+		r.file = nil
 		return n, err
 	}
 

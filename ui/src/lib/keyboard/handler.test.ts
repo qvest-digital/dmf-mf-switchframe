@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { KeyboardHandler, type KeyboardActions } from './handler';
+import { KeyboardHandler, isEditableTarget, type KeyboardActions } from './handler';
 import { getConfirmMode, setConfirmMode } from '$lib/state/preferences.svelte';
 
 vi.mock('$lib/state/preferences.svelte', () => {
@@ -295,5 +295,29 @@ describe('confirm mode', () => {
 	it('preview select is not gated by confirm mode', () => {
 		press('Digit1');
 		expect(actions.onSetPreview).toHaveBeenCalledWith('cam1');
+	});
+});
+
+describe('isEditableTarget', () => {
+	// Shared focus guard used by both the capture-phase KeyboardHandler and the
+	// bubble-phase page-level handleGlobalShortcuts so both layers treat the same
+	// elements as text-editing contexts where shortcuts (including Escape) must not fire.
+	it('returns true for INPUT, TEXTAREA and SELECT', () => {
+		for (const tag of ['input', 'textarea', 'select']) {
+			expect(isEditableTarget(document.createElement(tag))).toBe(true);
+		}
+	});
+
+	it('returns true for a contenteditable element', () => {
+		const el = document.createElement('div');
+		// jsdom does not implement the isContentEditable getter from the attribute, so set it directly.
+		Object.defineProperty(el, 'isContentEditable', { value: true });
+		expect(isEditableTarget(el)).toBe(true);
+	});
+
+	it('returns false for a non-editable element and for null', () => {
+		expect(isEditableTarget(document.createElement('div'))).toBe(false);
+		expect(isEditableTarget(document.createElement('button'))).toBe(false);
+		expect(isEditableTarget(null)).toBe(false);
 	});
 });

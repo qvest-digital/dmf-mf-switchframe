@@ -644,6 +644,88 @@ func TestSlotOn_ActiveChange_NotMissed(t *testing.T) {
 	require.Equal(t, int32(2), atomic.LoadInt32(&callCount), "SlotOff inactive->inactive should not trigger callback")
 }
 
+// TestSlotOff_AnimatedDeactivation_FiresActiveChange verifies that when the
+// last enabled slot is taken off-air with a dissolve or fly transition, the
+// OnActiveChange callback fires when the animation completes (not at SlotOff
+// time, since the slot stays Enabled during the animation). Without this the
+// switcher is never told the DVE node went idle.
+func TestSlotOff_AnimatedDeactivation_FiresActiveChange(t *testing.T) {
+	for _, transType := range []string{"dissolve", "fly"} {
+		t.Run(transType, func(t *testing.T) {
+			c := NewCompositor(8, 8)
+			l := &Layout{
+				Name: "pip",
+				Slots: []Slot{
+					{SourceKey: "cam1", Transform: DefaultTransform(0, 0, 4, 4), Enabled: true},
+				},
+			}
+			c.SetLayout(l)
+			c.SetSlotTransition(0, SlotTransition{Type: transType, DurationMs: 10})
+
+			src := makeYUV420(4, 4, 235, 128, 128)
+			c.IngestSourceFrame("cam1", src, 4, 4, 0)
+
+			var callCount int32
+			c.OnActiveChange = func() {
+				atomic.AddInt32(&callCount, 1)
+			}
+
+			c.SlotOff(0)
+			// The slot stays enabled during the transition, so no callback yet.
+			require.Equal(t, int32(0), atomic.LoadInt32(&callCount),
+				"animated SlotOff should not fire OnActiveChange before completion")
+			require.True(t, c.Active(), "compositor still active during animation")
+
+			time.Sleep(20 * time.Millisecond)
+
+			bg := makeYUV420(8, 8, 16, 128, 128)
+			c.ProcessFrame(bg, 8, 8)
+
+			require.Equal(t, int32(1), atomic.LoadInt32(&callCount),
+				"completed animated SlotOff of last slot should fire OnActiveChange once")
+			require.False(t, c.Active(), "compositor inactive after last slot animated off")
+
+			// A subsequent frame must not re-fire the callback.
+			c.ProcessFrame(bg, 8, 8)
+			require.Equal(t, int32(1), atomic.LoadInt32(&callCount),
+				"OnActiveChange should fire only on the active->inactive transition")
+		})
+	}
+}
+
+// TestSlotOff_AnimatedDeactivation_OtherSlotEnabled verifies that completing a
+// dissolve-off of one slot does NOT fire OnActiveChange while another slot
+// remains enabled (the compositor is still active).
+func TestSlotOff_AnimatedDeactivation_OtherSlotEnabled(t *testing.T) {
+	c := NewCompositor(8, 8)
+	l := &Layout{
+		Name: "pip",
+		Slots: []Slot{
+			{SourceKey: "cam1", Transform: DefaultTransform(0, 0, 4, 4), Enabled: true},
+			{SourceKey: "cam2", Transform: DefaultTransform(4, 0, 4, 4), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+	c.SetSlotTransition(0, SlotTransition{Type: "dissolve", DurationMs: 10})
+	c.IngestSourceFrame("cam1", makeYUV420(4, 4, 235, 128, 128), 4, 4, 0)
+	c.IngestSourceFrame("cam2", makeYUV420(4, 4, 100, 128, 128), 4, 4, 0)
+
+	var callCount int32
+	c.OnActiveChange = func() {
+		atomic.AddInt32(&callCount, 1)
+	}
+
+	c.SlotOff(0)
+	time.Sleep(20 * time.Millisecond)
+
+	bg := makeYUV420(8, 8, 16, 128, 128)
+	c.ProcessFrame(bg, 8, 8)
+
+	require.Equal(t, int32(0), atomic.LoadInt32(&callCount),
+		"completing dissolve-off while another slot is enabled must not fire OnActiveChange")
+	require.True(t, c.Active(), "compositor still active with second slot enabled")
+}
+
 func TestCompositor_SkipsScaleOnSamePTS(t *testing.T) {
 	c := NewCompositor(1920, 1080)
 	l := &Layout{

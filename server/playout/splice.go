@@ -67,6 +67,14 @@ type SpliceOperation struct {
 	EventID        uint32
 	candidates     []CandidateFrame
 	frameIdx       int
+
+	// onReady is the operation-scoped splice-ready callback, bound atomically
+	// with BeginSpliceWithCallback. Unlike the coordinator-wide onSpliceReady
+	// field, it cannot be clobbered by another caller (e.g. a second channel's
+	// pod board sharing this coordinator) between registration and
+	// finalization. When nil, finalizeSplice falls back to the coordinator-
+	// wide callback.
+	onReady func(podID string, pts int64, preRollMs int64)
 }
 
 // SpliceCoordinator manages splice-point detection between PodBoard and SCTE-35 injector.
@@ -132,6 +140,16 @@ func (sc *SpliceCoordinator) SetAsRunLog(fn func(AsRunEvent)) {
 // scan window, and transitions to SpliceScanning. Returns ErrSpliceAlreadyActive
 // if a splice is already in progress.
 func (sc *SpliceCoordinator) BeginSplice(podID string, isOut, autoReturn bool, durationMs, currentPTS int64) error {
+	return sc.BeginSpliceWithCallback(podID, isOut, autoReturn, durationMs, currentPTS, nil)
+}
+
+// BeginSpliceWithCallback is BeginSplice with an operation-scoped splice-ready
+// callback. The callback is bound to this specific operation under the same
+// lock that creates it, so concurrent callers sharing one coordinator (e.g.
+// multiple channels' pod boards) cannot overwrite each other's pending
+// callbacks the way SetOnSpliceReady (a single coordinator-wide field) can.
+// A nil onReady falls back to the coordinator-wide callback at finalization.
+func (sc *SpliceCoordinator) BeginSpliceWithCallback(podID string, isOut, autoReturn bool, durationMs, currentPTS int64, onReady func(podID string, pts int64, preRollMs int64)) error {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
@@ -152,6 +170,7 @@ func (sc *SpliceCoordinator) BeginSplice(podID string, isOut, autoReturn bool, d
 		WindowStartPTS: targetPTS - windowTicks,
 		WindowEndPTS:   targetPTS + windowTicks,
 		State:          SpliceScanning,
+		onReady:        onReady,
 	}
 
 	// Start timeout goroutine.
@@ -231,7 +250,12 @@ func (sc *SpliceCoordinator) finalizeSplice() {
 	isOut := op.IsOut
 	autoReturn := op.AutoReturn
 	durationMs := op.DurationMs
-	callbackFn := sc.onSpliceReady
+	// Prefer the operation-scoped callback (bound at BeginSpliceWithCallback);
+	// fall back to the coordinator-wide one for legacy BeginSplice callers.
+	callbackFn := op.onReady
+	if callbackFn == nil {
+		callbackFn = sc.onSpliceReady
+	}
 	asRunFn := sc.asRunLog
 	preRollTicks := sc.preRollMs * 90
 
@@ -265,13 +289,25 @@ func (sc *SpliceCoordinator) finalizeSplice() {
 		remainingPreRollMs = 0
 	}
 
-	// Store analysis results.
+	// Store analysis results — but only if this is still the same operation.
+	// During the unlocked analysis window, Cancel() may have cleared sc.active
+	// (e.g. DumpOut) and a fresh BeginSplice may have installed a brand-new
+	// operation. Guard every post-analysis write and the callback on pointer
+	// identity so results never land on a different pod's operation.
 	sc.mu.Lock()
-	if sc.active != nil {
+	stillActive := sc.active == op
+	if stillActive {
 		sc.active.LockedPTS = lockedPTS
 		sc.active.SpliceReason = reason
 	}
 	sc.mu.Unlock()
+
+	// If the operation was cancelled or replaced during analysis, abort: do not
+	// emit as-run, inject a cue, write EventID/State onto a different pod's
+	// operation, or fire the ready callback for a pod that is no longer current.
+	if !stillActive {
+		return
+	}
 
 	// Emit as-run splice_active event.
 	if asRunFn != nil {
@@ -296,23 +332,28 @@ func (sc *SpliceCoordinator) finalizeSplice() {
 			slog.Warn("playout: splice SchedulePodCue failed", "pod", podID, "error", err)
 		} else {
 			sc.mu.Lock()
-			if sc.active != nil {
+			if sc.active == op {
 				sc.active.EventID = eventID
 			}
 			sc.mu.Unlock()
 		}
 	}
 
-	// Set state to complete.
+	// Set state to complete. Re-check identity: the lock was released for the
+	// injector call above, so a concurrent Cancel+BeginSplice could have
+	// replaced the operation in the interim.
 	sc.mu.Lock()
-	if sc.active != nil {
+	stillActive = sc.active == op
+	if stillActive {
 		sc.active.State = SpliceComplete
 	}
 	sc.mu.Unlock()
 
 	// Fire callback with remaining pre-roll so the pod board can set
 	// its auto-return timer to breakDuration + preRoll (not just breakDuration).
-	if callbackFn != nil {
+	// Skip it if the operation was cancelled/replaced while injecting, so we
+	// never invoke onSpliceReady for a pod that is no longer current.
+	if stillActive && callbackFn != nil {
 		callbackFn(podID, lockedPTS, remainingPreRollMs)
 	}
 }

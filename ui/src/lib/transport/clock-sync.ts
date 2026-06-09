@@ -244,7 +244,21 @@ export class ClockSync {
 		this.pingSentTimes.delete(seq);
 
 		const rtt = now - sentAt;
-		const offset = serverTimestamp - (sentAt + rtt / 2);
+
+		// RTT is measured on the monotonic `performance.now()` clock (immune to
+		// wall-clock jumps), but the offset MUST be expressed against the same
+		// epoch as `serverTimestamp` (server wall-clock, `time.Now().UnixMicro()`)
+		// and as `ptpNow()` (which adds the offset to `Date.now()*1000`).
+		// `nowMicros()` lives in the `performance.now()` epoch (≈ms since page
+		// load), so subtracting it from `serverTimestamp` would yield a bogus
+		// ~navigationStart-sized offset. Convert the send time into the
+		// wall-clock domain via the just-measured RTT: the request left the
+		// client `rtt` µs ago in monotonic time, so its wall-clock send time is
+		// `Date.now()*1000 - rtt`. Then
+		//   offset = serverTimestamp - (wallSentAt + rtt/2)
+		//          = serverTimestamp - (Date.now()*1000 - rtt/2).
+		const wallNowUS = Date.now() * 1000;
+		const offset = serverTimestamp - (wallNowUS - rtt / 2);
 		this.updateRTT(engineId, rtt);
 		this.updateOffset(engineId, offset);
 		this.offsetAge.set(engineId, Date.now());

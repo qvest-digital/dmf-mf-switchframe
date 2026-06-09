@@ -114,6 +114,42 @@ func TestJitterRange(t *testing.T) {
 	}
 }
 
+func TestJitterPctClampedAboveOne(t *testing.T) {
+	// JitterPct > 1 is nonsensical input. Without clamping, the jitter factor
+	// (1 - JitterPct + rand*2*JitterPct) can go negative and yield a negative
+	// duration whose Timer fires immediately, defeating the backoff. The clamp
+	// in init() bounds JitterPct to 1, so every value stays in [0, 2*Initial].
+	b := Backoff{
+		Initial:   10 * time.Second,
+		Max:       10 * time.Second, // hold at 10s so each call jitters around 10s
+		JitterPct: 5.0,              // way out of range
+	}
+	for i := 0; i < 200; i++ {
+		d := b.Next()
+		if d <= 0 {
+			t.Fatalf("iteration %d: non-positive duration %v (negative defeats backoff)", i, d)
+		}
+		// With JitterPct clamped to 1, factor ∈ [0,2], so d ∈ [0, 20s].
+		if d > 20*time.Second {
+			t.Fatalf("iteration %d: %v exceeds clamped upper bound 20s", i, d)
+		}
+	}
+}
+
+func TestJitterPctNegativeTreatedAsZero(t *testing.T) {
+	// A negative JitterPct should behave like no jitter, not amplify the result.
+	b := Backoff{
+		Initial:   time.Second,
+		Max:       time.Second,
+		JitterPct: -0.5,
+	}
+	for i := 0; i < 20; i++ {
+		if got := b.Next(); got != time.Second {
+			t.Fatalf("iteration %d: expected exact 1s with negative jitter, got %v", i, got)
+		}
+	}
+}
+
 func TestCustomInitialAndMax(t *testing.T) {
 	b := Backoff{
 		Initial:   500 * time.Millisecond,

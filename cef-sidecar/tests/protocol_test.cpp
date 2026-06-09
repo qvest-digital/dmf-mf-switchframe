@@ -367,6 +367,38 @@ TEST(EscapeForJS_EmptyString) {
     ASSERT_EQ(protocol::EscapeForJS(""), std::string(""));
 }
 
+TEST(EscapeForJS_LineSeparatorU2028) {
+    // U+2028 is a valid JS string terminator; must be escaped.
+    std::string input = std::string("a") + "\xE2\x80\xA8" + "b";
+    ASSERT_EQ(protocol::EscapeForJS(input), std::string("a\\u2028b"));
+}
+
+TEST(EscapeForJS_ParagraphSeparatorU2029) {
+    // U+2029 is a valid JS string terminator; must be escaped.
+    std::string input = std::string("a") + "\xE2\x80\xA9" + "b";
+    ASSERT_EQ(protocol::EscapeForJS(input), std::string("a\\u2029b"));
+}
+
+TEST(EscapeForJS_OtherE2BytePassesThrough) {
+    // A standalone 0xE2 that is not part of U+2028/U+2029 must pass through
+    // unchanged (e.g. the UTF-8 em dash U+2014 = E2 80 94).
+    std::string input = std::string("\xE2\x80\x94");
+    ASSERT_EQ(protocol::EscapeForJS(input), input);
+}
+
+TEST(EscapeForJS_BackspaceFormFeed) {
+    ASSERT_EQ(protocol::EscapeForJS("a\bb"), std::string("a\\bb"));
+    ASSERT_EQ(protocol::EscapeForJS("a\fb"), std::string("a\\fb"));
+}
+
+TEST(EscapeForJS_NulAndControl) {
+    // NUL and other control bytes escaped as \u00XX.
+    std::string input = std::string("a") + '\0' + "b";
+    ASSERT_EQ(protocol::EscapeForJS(input), std::string("a\\u0000b"));
+    ASSERT_EQ(protocol::EscapeForJS(std::string(1, '\x01')), std::string("\\u0001"));
+    ASSERT_EQ(protocol::EscapeForJS(std::string(1, '\x1f')), std::string("\\u001f"));
+}
+
 // ---------------------------------------------------------------------------
 // EscapeForJSON Tests
 // ---------------------------------------------------------------------------
@@ -391,6 +423,28 @@ TEST(EscapeForJSON_MakeErrorResponseEscapes) {
     auto resp = protocol::MakeErrorResponse(1, "can't load \"foo\"");
     // The error message should have double quotes escaped
     ASSERT_EQ(resp, std::string("{\"id\":1,\"status\":\"error\",\"error\":\"can't load \\\"foo\\\"\"}\n"));
+}
+
+TEST(EscapeForJSON_ControlCharacters) {
+    // Raw control bytes (<0x20) must become \u00XX so the JSON stays valid.
+    ASSERT_EQ(protocol::EscapeForJSON(std::string(1, '\x01')), std::string("\\u0001"));
+    ASSERT_EQ(protocol::EscapeForJSON(std::string(1, '\x1f')), std::string("\\u001f"));
+    std::string nul = std::string("a") + '\0' + "b";
+    ASSERT_EQ(protocol::EscapeForJSON(nul), std::string("a\\u0000b"));
+}
+
+TEST(EscapeForJSON_BackspaceFormFeed) {
+    ASSERT_EQ(protocol::EscapeForJSON("a\bb"), std::string("a\\bb"));
+    ASSERT_EQ(protocol::EscapeForJSON("a\fb"), std::string("a\\fb"));
+}
+
+TEST(EscapeForJSON_MakeEventResponseEscapesControlByteValue) {
+    // A page-derived format/title with a raw control byte must yield valid JSON
+    // (the control byte escaped), not a line the Go json.Unmarshal rejects.
+    std::string fmt = std::string("og") + '\x01' + "raf";
+    auto resp = protocol::MakeEventResponse(2, "format_detected", "format", fmt);
+    ASSERT_EQ(resp, std::string("{\"id\":2,\"event\":\"format_detected\","
+                                "\"format\":\"og\\u0001raf\"}\n"));
 }
 
 // ---------------------------------------------------------------------------

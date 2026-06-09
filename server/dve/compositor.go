@@ -397,7 +397,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 
 	// Phase 1: Under lock -- tick animations, snapshot source data, release lock.
 	c.mu.Lock()
-	c.tickAnimations()
+	deactivated := c.tickAnimations()
 
 	sortedSlots := c.sortedSlots
 	if len(sortedSlots) == 0 {
@@ -546,6 +546,13 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		c.snapCache = append(c.snapCache, snap)
 	}
 	c.mu.Unlock()
+
+	// A dissolve/fly completion that disabled the last enabled slot transitions
+	// the compositor to inactive; notify the switcher (outside the lock) so it
+	// can rebuild the pipeline and drop the now-idle DVE node.
+	if deactivated && c.OnActiveChange != nil {
+		c.OnActiveChange()
+	}
 
 	// Phase 2: Lock-free -- crop (if fill mode), scale, and composite each slot.
 	for i := range c.snapCache {
@@ -705,11 +712,21 @@ func (c *Compositor) SnapshotSlots() []SlotSnap {
 		return nil
 	}
 
+	// A dissolve/fly completion that disabled the last enabled slot transitions
+	// the compositor to inactive; notify the switcher outside the lock. The
+	// notify defer is registered first so it runs after the unlock defer (LIFO).
+	var deactivated bool
+	defer func() {
+		if deactivated && c.OnActiveChange != nil {
+			c.OnActiveChange()
+		}
+	}()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// Tick animations under lock.
-	c.tickAnimations()
+	deactivated = c.tickAnimations()
 
 	var result []SlotSnap
 	for _, idx := range c.sortedSlots {
@@ -831,8 +848,22 @@ func (c *Compositor) isAnimating(slotIdx int) bool {
 	return false
 }
 
-// tickAnimations removes completed animations and runs callbacks.
-func (c *Compositor) tickAnimations() {
+// tickAnimations removes completed animations and runs callbacks. It returns
+// true when running the completion callbacks transitioned the compositor from
+// active (at least one enabled slot) to inactive -- e.g. the last enabled slot
+// finished dissolving or flying off. Callers must invoke OnActiveChange outside
+// the lock in that case so the switcher can drop the now-idle DVE node.
+// Must be called with c.mu held.
+func (c *Compositor) tickAnimations() (deactivated bool) {
+	hasCompletions := false
+	for _, anim := range c.animations {
+		if anim.Progress() >= 1.0 && anim.OnComplete != nil {
+			hasCompletions = true
+			break
+		}
+	}
+	wasActive := hasCompletions && c.hasEnabledSlots(c.layout.Load())
+
 	remaining := c.animations[:0]
 	for _, anim := range c.animations {
 		if anim.Progress() >= 1.0 {
@@ -844,6 +875,8 @@ func (c *Compositor) tickAnimations() {
 		remaining = append(remaining, anim)
 	}
 	c.animations = remaining
+
+	return wasActive && !c.hasEnabledSlots(c.layout.Load())
 }
 
 // UpdateFormat updates the frame dimensions (called on pipeline format change).
@@ -1290,9 +1323,12 @@ func (c *Compositor) processSlotDVEWarp(yuv []byte, width, height int, snap *slo
 	}
 
 	// Composite warped buffer onto output frame using the effective opacity.
+	// Both paths honor the coverage mask: pixels of the AABB never touched
+	// by the rotated quad are black padding, not source content, and must
+	// not be blended over the program.
 	alpha := snap.alpha
 	if alpha < 1.0 {
-		BlendRegion(yuv, width, height, warpBuf, slotW, slotH, rect, alpha)
+		blendWithMaskAlpha(yuv, width, height, warpBuf, alphaMask, slotW, slotH, rect, alpha)
 	} else {
 		blendWithMask(yuv, width, height, warpBuf, alphaMask, slotW, slotH, rect)
 	}

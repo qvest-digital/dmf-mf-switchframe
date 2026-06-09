@@ -19,10 +19,12 @@ const (
 // SRTListenerConfig holds configuration for SRT listener (pull mode).
 type SRTListenerConfig struct {
 	Port       int
-	Latency    int   // ms, default 120
-	MaxConns   int   // max simultaneous connections, default 8
-	InputBW    int64 // bytes/sec, 0 = auto-estimate
-	OverheadBW int   // percent, 0 = use srtgo default (25%)
+	Latency    int    // ms, default 120
+	MaxConns   int    // max simultaneous connections, default 8
+	Passphrase string // enables SRT encryption when non-empty (10-79 chars)
+	KeyLength  int    // AES key length in bytes: 16/24/32; 0 = srtgo default (16)
+	InputBW    int64  // bytes/sec, 0 = auto-estimate
+	OverheadBW int    // percent, 0 = use srtgo default (25%)
 }
 
 // listenerConn wraps an SRT connection with a buffered channel for non-blocking writes.
@@ -114,6 +116,14 @@ func (l *SRTListener) Start(ctx context.Context) error {
 		go func() {
 			if err := l.acceptFn(l.ctx, l.config); err != nil {
 				slog.Warn("SRT listener accept error", "error", err)
+				// Surface the failure (e.g., port already in use) instead
+				// of reporting StateActive forever while no client can
+				// connect. Only transition from StateActive so a late
+				// error cannot overwrite the terminal StateStopped.
+				l.lastError.Store(ptrTo(err.Error()))
+				if *l.state.Load() == StateActive {
+					l.state.Store(ptrTo(StateError))
+				}
 			}
 		}()
 	}

@@ -8,9 +8,10 @@
 // ============================================================================
 // func alphaBlendRGBA10YRow(yPlane *byte, rgba *byte, count int)
 // ============================================================================
-// For each pixel:
-//   overlayY = ((66*R + 129*G + 25*B + 128) >> 8 + 16) * 4
-//   result = (overlayY * A + existingY * (255-A) + 128) >> 8
+// For each pixel (BT.709 coefficients, matching the 8-bit blend path):
+//   A' = A + (A >> 7)   (map 0-255 to 0-256, opaque = exact replacement)
+//   overlayY = ((47*R + 157*G + 16*B + 128) >> 8 + 16) * 4
+//   result = (overlayY * A' + existingY * (256-A') + 128) >> 8
 //   clamp to [0, 1023]
 TEXT ·alphaBlendRGBA10YRow(SB), NOSPLIT, $0-24
 	MOVQ yPlane+0(FP), DI       // Y plane ptr (uint16 LE)
@@ -26,24 +27,29 @@ aby10_loop:
 	TESTQ   R8, R8
 	JZ      aby10_skip           // skip if fully transparent
 
+	// A' = A + (A >> 7), map 0-255 to 0-256
+	MOVQ    R8, R9
+	SHRQ    $7, R9
+	ADDQ    R9, R8              // R8 = A'
+
 	// Load R, G, B
 	MOVBLZX (SI), AX            // AX = R
 	MOVBLZX 1(SI), BX           // BX = G
 	MOVBLZX 2(SI), DX           // DX = B
 
-	// y8 = (66*R + 129*G + 25*B + 128) >> 8 + 16
-	// 66*R
-	MOVQ    $66, R9
-	IMULQ   R9, AX              // AX = 66*R
-	// 129*G
-	MOVQ    $129, R9
+	// y8 = (47*R + 157*G + 16*B + 128) >> 8 + 16
+	// 47*R
+	MOVQ    $47, R9
+	IMULQ   R9, AX              // AX = 47*R
+	// 157*G
+	MOVQ    $157, R9
 	MOVQ    BX, R10
-	IMULQ   R9, R10             // R10 = 129*G
-	ADDQ    R10, AX             // AX = 66*R + 129*G
-	// 25*B
-	MOVQ    $25, R9
-	IMULQ   R9, DX              // DX = 25*B
-	ADDQ    DX, AX              // AX += 25*B
+	IMULQ   R9, R10             // R10 = 157*G
+	ADDQ    R10, AX             // AX = 47*R + 157*G
+	// 16*B
+	MOVQ    $16, R9
+	IMULQ   R9, DX              // DX = 16*B
+	ADDQ    DX, AX              // AX += 16*B
 	ADDQ    $128, AX            // AX += 128
 	SHRQ    $8, AX              // AX >>= 8
 	ADDQ    $16, AX             // AX += 16 = y8
@@ -52,9 +58,9 @@ aby10_loop:
 	// Load existing Y (uint16 LE)
 	MOVWLZX (DI), DX            // DX = existingY
 
-	// result = (overlayY * A + existingY * (255-A) + 128) >> 8
-	MOVQ    $255, R9
-	SUBQ    R8, R9              // R9 = 255 - A = inv
+	// result = (overlayY * A' + existingY * (256-A') + 128) >> 8
+	MOVQ    $256, R9
+	SUBQ    R8, R9              // R9 = 256 - A' = inv
 	IMULQ   R8, AX              // AX = overlayY * A
 	IMULQ   R9, DX              // DX = existingY * inv
 	ADDQ    DX, AX              // AX = sum
@@ -83,10 +89,12 @@ aby10_done:
 // func alphaBlendRGBA10UVRow(cbPlane, crPlane *byte, rgba *byte, chromaCount int)
 // ============================================================================
 // For each chroma sample (2 horizontal pixels), uses the left RGBA pixel.
-//   cb8 = (-38*R - 74*G + 112*B + 128) >> 8 + 128; cb10 = cb8 * 4
-//   cr8 = (112*R - 94*G - 18*B + 128) >> 8 + 128; cr10 = cr8 * 4
-//   resultCb = (overlayCb * A + existingCb * (255-A) + 128) >> 8
-//   resultCr = (overlayCr * A + existingCr * (255-A) + 128) >> 8
+// BT.709 coefficients, matching the 8-bit blend path:
+//   A' = A + (A >> 7)   (map 0-255 to 0-256, opaque = exact replacement)
+//   cb8 = (-26*R - 86*G + 112*B + 128) >> 8 + 128; cb10 = cb8 * 4
+//   cr8 = (112*R - 102*G - 10*B + 128) >> 8 + 128; cr10 = cr8 * 4
+//   resultCb = (overlayCb * A' + existingCb * (256-A') + 128) >> 8
+//   resultCr = (overlayCr * A' + existingCr * (256-A') + 128) >> 8
 TEXT ·alphaBlendRGBA10UVRow(SB), NOSPLIT, $0-32
 	MOVQ cbPlane+0(FP), DI      // Cb ptr
 	MOVQ crPlane+8(FP), R14     // Cr ptr
@@ -102,50 +110,55 @@ abuv10_loop:
 	TESTQ   R8, R8
 	JZ      abuv10_skip
 
+	// A' = A + (A >> 7), map 0-255 to 0-256
+	MOVQ    R8, R9
+	SHRQ    $7, R9
+	ADDQ    R9, R8              // R8 = A'
+
 	// Load R, G, B (keep in R9, R10, R11 for reuse)
 	MOVBLZX (SI), R9            // R9 = R
 	MOVBLZX 1(SI), R10          // R10 = G
 	MOVBLZX 2(SI), R11          // R11 = B
 
-	// Cb8 = (-38*R - 74*G + 112*B + 128) >> 8 + 128
-	// sum = 112*B + 128 - 38*R - 74*G
+	// Cb8 = (-26*R - 86*G + 112*B + 128) >> 8 + 128
+	// sum = 112*B + 128 - 26*R - 86*G
 	MOVQ    R11, AX
 	MOVQ    $112, BX
 	IMULQ   BX, AX              // AX = 112*B
 	ADDQ    $128, AX            // AX += 128
 	MOVQ    R9, BX
-	MOVQ    $38, DX
-	IMULQ   DX, BX              // BX = 38*R
-	SUBQ    BX, AX              // AX -= 38*R
+	MOVQ    $26, DX
+	IMULQ   DX, BX              // BX = 26*R
+	SUBQ    BX, AX              // AX -= 26*R
 	MOVQ    R10, BX
-	MOVQ    $74, DX
-	IMULQ   DX, BX              // BX = 74*G
-	SUBQ    BX, AX              // AX -= 74*G
+	MOVQ    $86, DX
+	IMULQ   DX, BX              // BX = 86*G
+	SUBQ    BX, AX              // AX -= 86*G
 	SARQ    $8, AX              // AX >>= 8 (signed)
 	ADDQ    $128, AX            // AX += 128
 	SHLQ    $2, AX              // AX *= 4 = overlayCb
 	MOVQ    AX, R12             // R12 = overlayCb
 
-	// Cr8 = (112*R - 94*G - 18*B + 128) >> 8 + 128
+	// Cr8 = (112*R - 102*G - 10*B + 128) >> 8 + 128
 	MOVQ    R9, AX
 	MOVQ    $112, BX
 	IMULQ   BX, AX              // AX = 112*R
 	ADDQ    $128, AX            // AX += 128
 	MOVQ    R10, BX
-	MOVQ    $94, DX
-	IMULQ   DX, BX              // BX = 94*G
-	SUBQ    BX, AX              // AX -= 94*G
+	MOVQ    $102, DX
+	IMULQ   DX, BX              // BX = 102*G
+	SUBQ    BX, AX              // AX -= 102*G
 	MOVQ    R11, BX
-	MOVQ    $18, DX
-	IMULQ   DX, BX              // BX = 18*B
-	SUBQ    BX, AX              // AX -= 18*B
+	MOVQ    $10, DX
+	IMULQ   DX, BX              // BX = 10*B
+	SUBQ    BX, AX              // AX -= 10*B
 	SARQ    $8, AX              // AX >>= 8 (signed)
 	ADDQ    $128, AX            // AX += 128
 	SHLQ    $2, AX              // AX *= 4 = overlayCr
 	MOVQ    AX, R13             // R13 = overlayCr
 
-	// inv = 255 - A
-	MOVQ    $255, R15
+	// inv = 256 - A'
+	MOVQ    $256, R15
 	SUBQ    R8, R15             // R15 = inv
 
 	// Alpha blend Cb

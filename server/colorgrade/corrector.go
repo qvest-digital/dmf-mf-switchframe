@@ -8,6 +8,13 @@ type CurvePoint struct {
 	Y float32 `json:"y"` // 0-1, output level
 }
 
+// MaxCurvePoints caps the number of control points per tone curve. Curve
+// evaluation does an O(n) segment scan for every one of the 35937 LUT
+// entries, so an unbounded point list from the (untrusted) JSON boundary is a
+// CPU-amplification DoS. A real tone curve never needs anywhere near this
+// many points.
+const MaxCurvePoints = 64
+
 // ApplyTemperature shifts the color temperature of a LUT.
 // Positive values warm (boost red, cut blue), negative values cool.
 // Range: -100 to +100. Internally scaled to a small offset.
@@ -99,6 +106,16 @@ func ApplyCurves(lut *LUT3D, master, curveR, curveG, curveB []CurvePoint) {
 		return
 	}
 
+	// The spline setup (segment widths + monotone tangents) depends only on
+	// the control points, so build it once per curve here instead of once per
+	// LUT sample. This runs lazily under the SourceCorrectorManager lock on
+	// the render path, where a per-sample rebuild (up to 6 setups x 35937
+	// entries) blows the frame budget.
+	masterSpline := newHermiteSpline(master)
+	splineR := newHermiteSpline(curveR)
+	splineG := newHermiteSpline(curveG)
+	splineB := newHermiteSpline(curveB)
+
 	for i := 0; i < len(lut.Data); i += 3 {
 		r := lut.Data[i]
 		g := lut.Data[i+1]
@@ -106,60 +123,84 @@ func ApplyCurves(lut *LUT3D, master, curveR, curveG, curveB []CurvePoint) {
 
 		// Apply master curve to all channels.
 		if hasMaster {
-			r = evalCurve(master, r)
-			g = evalCurve(master, g)
-			b = evalCurve(master, b)
+			r = masterSpline.eval(r)
+			g = masterSpline.eval(g)
+			b = masterSpline.eval(b)
 		}
 
 		// Apply per-channel curves.
 		if hasR {
-			r = evalCurve(curveR, r)
+			r = splineR.eval(r)
 		}
 		if hasG {
-			g = evalCurve(curveG, g)
+			g = splineG.eval(g)
 		}
 		if hasB {
-			b = evalCurve(curveB, b)
+			b = splineB.eval(b)
 		}
 
-		lut.Data[i] = clampf(r, 0, 1)
-		lut.Data[i+1] = clampf(g, 0, 1)
-		lut.Data[i+2] = clampf(b, 0, 1)
+		// clampf does not remove NaN/Inf (NaN<lo and NaN>hi are both false),
+		// so scrub non-finite results before writing them into the LUT that is
+		// uploaded to the GPU. This is defense-in-depth on top of input
+		// validation; a non-finite output passes through the original value.
+		lut.Data[i] = sanitizeCurveOutput(r, lut.Data[i])
+		lut.Data[i+1] = sanitizeCurveOutput(g, lut.Data[i+1])
+		lut.Data[i+2] = sanitizeCurveOutput(b, lut.Data[i+2])
 	}
+}
+
+// sanitizeCurveOutput clamps v to [0,1]. If v is NaN or Inf, it falls back to
+// the original (pre-curve) value, also clamped, so a malformed curve can never
+// write a non-finite entry into the LUT.
+func sanitizeCurveOutput(v, fallback float32) float32 {
+	if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+		v = fallback
+	}
+	return clampf(v, 0, 1)
 }
 
 // evalCurve evaluates a monotone cubic Hermite spline (Fritsch-Carlson method)
 // at input value x. This matches the UI's CurveEditor.svelte algorithm exactly.
 // Points must be sorted by X. Values outside the point range are clamped
 // to the nearest endpoint Y value. For 2 points, falls back to linear.
+//
+// For repeated evaluation over the same control points (e.g. ApplyCurves),
+// build a hermiteSpline once and call its eval method instead.
 func evalCurve(pts []CurvePoint, x float32) float32 {
+	s := newHermiteSpline(pts)
+	return s.eval(x)
+}
+
+// hermiteSpline holds the precomputed setup (segment widths and
+// Fritsch-Carlson monotone tangents) for a tone curve. The setup depends
+// only on the control points, so it is computed once in newHermiteSpline;
+// eval is then allocation-free per sample.
+type hermiteSpline struct {
+	pts      []CurvePoint
+	dx       []float64 // segment widths, len n-1 (nil for n < 3)
+	tangents []float64 // monotone tangents, len n (nil for n < 3)
+}
+
+// newHermiteSpline precomputes the spline setup for the given control points.
+// Points must be sorted by X. Curves with fewer than 3 points need no setup
+// (constant or linear evaluation).
+func newHermiteSpline(pts []CurvePoint) hermiteSpline {
 	n := len(pts)
-	if n == 0 {
-		return x
-	}
-	if x <= pts[0].X {
-		return pts[0].Y
-	}
-	if x >= pts[n-1].X {
-		return pts[n-1].Y
-	}
-	// Two points: linear interpolation (matches UI behavior).
-	if n == 2 {
-		t := (x - pts[0].X) / (pts[1].X - pts[0].X)
-		return pts[0].Y + t*(pts[1].Y-pts[0].Y)
+	s := hermiteSpline{pts: pts}
+	if n < 3 {
+		return s
 	}
 
 	// Compute secant slopes for each segment.
 	dx := make([]float64, n-1)
-	dy := make([]float64, n-1)
 	m := make([]float64, n-1)
 	for i := 0; i < n-1; i++ {
 		dx[i] = float64(pts[i+1].X - pts[i].X)
-		dy[i] = float64(pts[i+1].Y - pts[i].Y)
+		dy := float64(pts[i+1].Y - pts[i].Y)
 		if dx[i] == 0 {
 			m[i] = 0
 		} else {
-			m[i] = dy[i] / dx[i]
+			m[i] = dy / dx[i]
 		}
 	}
 
@@ -192,16 +233,49 @@ func evalCurve(pts []CurvePoint, x float32) float32 {
 		}
 	}
 
-	// Find the segment containing x.
+	s.dx = dx
+	s.tangents = tangents
+	return s
+}
+
+// eval evaluates the spline at input value x. Values outside the point range
+// clamp to the nearest endpoint Y value; 2-point curves are linear.
+func (s *hermiteSpline) eval(x float32) float32 {
+	pts := s.pts
+	n := len(pts)
+	if n == 0 {
+		return x
+	}
+	if x <= pts[0].X {
+		return pts[0].Y
+	}
+	if x >= pts[n-1].X {
+		return pts[n-1].Y
+	}
+	// Two points: linear interpolation (matches UI behavior).
+	if n == 2 {
+		t := (x - pts[0].X) / (pts[1].X - pts[0].X)
+		return pts[0].Y + t*(pts[1].Y-pts[0].Y)
+	}
+
+	// Find the segment containing x (points are sorted by X).
 	seg := 0
 	for i := 1; i < n-1; i++ {
-		if x >= pts[i].X {
-			seg = i
+		if x < pts[i].X {
+			break
 		}
+		seg = i
 	}
 
 	// Cubic Hermite interpolation on the segment [seg, seg+1].
-	h := dx[seg]
+	h := s.dx[seg]
+	// Defensive: duplicate/unsorted X can make the segment width zero, which
+	// would produce ±Inf for t and NaN for the Hermite combination. Callers
+	// validate strictly-increasing X, but guard here so a bad curve cannot
+	// corrupt the LUT (and thus the live GPU output).
+	if h == 0 {
+		return pts[seg].Y
+	}
 	t := (float64(x) - float64(pts[seg].X)) / h
 	t2 := t * t
 	t3 := t2 * t
@@ -212,8 +286,8 @@ func evalCurve(pts []CurvePoint, x float32) float32 {
 	h01 := -2*t3 + 3*t2
 	h11 := t3 - t2
 
-	y := h00*float64(pts[seg].Y) + h10*h*tangents[seg] +
-		h01*float64(pts[seg+1].Y) + h11*h*tangents[seg+1]
+	y := h00*float64(pts[seg].Y) + h10*h*s.tangents[seg] +
+		h01*float64(pts[seg+1].Y) + h11*h*s.tangents[seg+1]
 
 	return float32(y)
 }

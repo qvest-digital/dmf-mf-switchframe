@@ -16,6 +16,7 @@ var (
 	errInjectorClosed    = errors.New("injector is closed")
 	errNoActiveEvents    = errors.New("no active events")
 	errActiveEventsLimit = errors.New("active events limit exceeded")
+	errDuplicateSegEvent = errors.New("duplicate segmentation event id")
 )
 
 // InjectorConfig holds injector configuration.
@@ -174,20 +175,20 @@ func (cl *circularLog) list() []EventLogEntry {
 
 // Injector manages the lifecycle of SCTE-35 splice events.
 type Injector struct {
-	config          InjectorConfig
-	activeEvents    map[uint32]*activeEvent
-	eventIDCounter  atomic.Uint32
-	eventLog        *circularLog
-	rules           *RuleEngine
-	webhook         *WebhookDispatcher
-	muxerSink       func([]byte)
-	scte104Sink     func(*CueMessage)
-	ptsFn           func() int64
-	onStateChange   func()
-	heartbeatStop   chan struct{}
-	autoReturnTick  time.Duration
-	closed          atomic.Bool
-	mu              sync.Mutex
+	config         InjectorConfig
+	activeEvents   map[uint32]*activeEvent
+	eventIDCounter atomic.Uint32
+	eventLog       *circularLog
+	rules          *RuleEngine
+	webhook        *WebhookDispatcher
+	muxerSink      func([]byte)
+	scte104Sink    func(*CueMessage)
+	ptsFn          func() int64
+	onStateChange  func()
+	heartbeatStop  chan struct{}
+	autoReturnTick time.Duration
+	closed         atomic.Bool
+	mu             sync.Mutex
 }
 
 // autoReturnTickInterval is how often the injector polls the program PTS clock
@@ -210,6 +211,35 @@ func ptsReached(current, scheduled int64) bool {
 // PTS wraps at 2^33 = 8,589,934,592 ticks (~26.5 hours at 90 kHz).
 func maskPTS33(pts int64) int64 {
 	return pts & 0x1FFFFFFFF
+}
+
+// maxPTSTicks caps a tick delta just below half the 33-bit PTS space
+// (ptsHalfRange-1, ~13.25h). Auto-return relies on ptsReached, whose forward/
+// backward decision is only unambiguous within half the PTS period; clamping
+// here keeps abusive durations from (a) overflowing int64 and (b) landing on
+// the wrong side of that half-range and auto-returning prematurely. The API
+// boundary bounds operator input well under this; this is defense-in-depth for
+// other callers (e.g. SCTE-104 input).
+const maxPTSTicks = ptsHalfRange - 1
+
+// durationToTicksSat converts a time.Duration to 90 kHz ticks using saturating
+// arithmetic: negative durations clamp to 0 and anything that would exceed the
+// usable PTS half-range clamps to maxPTSTicks instead of overflowing.
+func durationToTicksSat(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	// d/time.Second cannot overflow; multiply the (bounded) second count.
+	secs := int64(d) / int64(time.Second)
+	frac := int64(d) % int64(time.Second)
+	if secs > maxPTSTicks/90000 {
+		return maxPTSTicks
+	}
+	ticks := secs*90000 + frac*90000/int64(time.Second)
+	if ticks > maxPTSTicks {
+		return maxPTSTicks
+	}
+	return ticks
 }
 
 // NewInjector creates a new SCTE-35 injector.
@@ -360,6 +390,30 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 		return 0, errInjectorClosed
 	}
 
+	// Reject time_signal payloads carrying duplicate explicit (non-zero)
+	// SegEventIDs. Each cue-out descriptor is tracked individually by SegEventID
+	// in activeEvents; a duplicate would silently overwrite the first entry,
+	// losing its tracking while removeSiblingEventsLocked still references it
+	// (leaking or double-processing siblings). Auto-assignment (SegEventID==0)
+	// guarantees uniqueness on its own, so only explicit IDs need checking.
+	if msg.CommandType == CommandTimeSignal {
+		var seen map[uint32]struct{}
+		for i := range msg.Descriptors {
+			id := msg.Descriptors[i].SegEventID
+			if id == 0 {
+				continue
+			}
+			if seen == nil {
+				seen = make(map[uint32]struct{}, len(msg.Descriptors))
+			}
+			if _, dup := seen[id]; dup {
+				inj.mu.Unlock()
+				return 0, fmt.Errorf("%w: %d", errDuplicateSegEvent, id)
+			}
+			seen[id] = struct{}{}
+		}
+	}
+
 	// Enforce active events limit to prevent unbounded map growth from events
 	// that have AutoReturn=false and are never explicitly returned or cancelled.
 	if len(inj.activeEvents) >= inj.config.MaxActiveEvents {
@@ -458,7 +512,7 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 		ae.anchorPTS = anchorPTS
 
 		if msg.AutoReturn && msg.BreakDuration != nil && *msg.BreakDuration > 0 {
-			durTicks := int64(*msg.BreakDuration) * 90000 / int64(time.Second)
+			durTicks := durationToTicksSat(*msg.BreakDuration)
 			ae.scheduledReturnPTS = maskPTS33(anchorPTS + durTicks)
 			ae.autoReturnPending = true
 		}
@@ -529,7 +583,7 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 			if effectiveDuration > 0 {
 				ae := inj.activeEvents[firstCueOutID]
 				ae.AutoReturn = true
-				durTicks := int64(effectiveDuration) * 90000 / int64(time.Second)
+				durTicks := durationToTicksSat(effectiveDuration)
 				ae.scheduledReturnPTS = maskPTS33(anchorPTS + durTicks)
 				ae.autoReturnPending = true
 			}
@@ -609,7 +663,11 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 // during the pre-roll window until the splice PTS is reached.
 func (inj *Injector) ScheduleCue(msg *CueMessage, preRollMs int64) (uint32, error) {
 	currentPTS := maskPTS33(inj.ptsFn())
-	spliceTimePTS := maskPTS33(currentPTS + preRollMs*90) // 90 kHz ticks per ms, masked to 33 bits
+	// Saturating ms→ticks (90 kHz) so abusive pre-roll values can't overflow
+	// the multiply and yield a bogus splice PTS. The API boundary already caps
+	// operator input; this protects other callers.
+	preRollTicks := durationToTicksSat(time.Duration(preRollMs) * time.Millisecond)
+	spliceTimePTS := maskPTS33(currentPTS + preRollTicks) // masked to 33 bits
 	msg.SpliceTimePTS = &spliceTimePTS
 	msg.Timing = "scheduled"
 
@@ -1004,7 +1062,7 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 	ae.Held = false
 
 	if ae.AutoReturn {
-		durTicks := int64(newDur) * 90000 / int64(time.Second)
+		durTicks := durationToTicksSat(newDur)
 		ae.scheduledReturnPTS = maskPTS33(ae.anchorPTS + durTicks)
 		ae.autoReturnPending = true
 	} else {

@@ -191,6 +191,97 @@ func TestPCMRingBuffer_PopDriftCompensated_Empty(t *testing.T) {
 	}
 }
 
+// TestPCMRingBuffer_PopDriftCompensated_NoOverReadInDangerWindow guards the
+// safety clamp: when the buffered count sits just below the requested n
+// (count == n-channels) and the slow-down branch is NOT taken because the
+// target/threshold relationship differs from production (here targetDepth is
+// small so targetDepth-threshold < n), the read must not consume more than is
+// buffered and must never drive count negative. Without the clamp, actual would
+// stay at n > count and over-read stale data past the write pointer.
+func TestPCMRingBuffer_PopDriftCompensated_NoOverReadInDangerWindow(t *testing.T) {
+	rb := NewPCMRingBuffer(20480)
+	channels := 2
+	n := 1024 * channels // 2048
+	// Small target so targetDepth-threshold (threshold == 1024*channels == n)
+	// is <= 0, breaking the production coincidence targetDepth-threshold == n.
+	target := n // targetDepth - threshold == 0 < n
+
+	// Fill exactly n-channels samples: in the danger window, below n but at the
+	// boundary the line-140 guard (count < n-channels) does NOT reject.
+	fill := make([]float32, n-channels)
+	for i := range fill {
+		fill[i] = 0.5
+	}
+	rb.Push(fill)
+	require.Equal(t, n-channels, rb.Len())
+
+	out := rb.PopDriftCompensated(n, target, channels)
+	require.Len(t, out, n, "must always return exactly requested count")
+	require.GreaterOrEqual(t, rb.Len(), 0, "count must never go negative (no over-read)")
+	// Everything available was a valid frame multiple, so the buffer drains.
+	require.Equal(t, 0, rb.Len(), "should consume only what was buffered, leaving an empty buffer")
+}
+
+// TestPCMRingBuffer_PopDriftCompensated_NoAllocSteadyState verifies that the
+// realtime hot path (called once per channel per output tick) does not allocate
+// on the heap once its scratch buffers are warmed up. This guards the buffer
+// reuse that replaced the previous per-tick make([]float32, ...) calls.
+func TestPCMRingBuffer_PopDriftCompensated_NoAllocSteadyState(t *testing.T) {
+	rb := NewPCMRingBuffer(20480)
+	channels := 2
+	target := 2 * 1024 * channels
+	readN := 1024 * channels
+
+	push := make([]float32, readN)
+	for i := range push {
+		push[i] = 0.25
+	}
+	// Prime so steady-state depth ~= target and warm up scratch buffers.
+	rb.Push(push)
+	rb.Push(push)
+	_ = rb.PopDriftCompensated(readN, target, channels)
+
+	allocs := testing.AllocsPerRun(100, func() {
+		rb.Push(push)
+		_ = rb.PopDriftCompensated(readN, target, channels)
+	})
+	if allocs != 0 {
+		t.Fatalf("PopDriftCompensated allocated %.1f times per call on the steady-state hot path; want 0", allocs)
+	}
+}
+
+// TestPCMRingBuffer_PopDriftCompensated_ReuseCorrectness verifies that returning
+// reused scratch buffers does not leak stale data between calls: each pop must
+// fully reflect the freshly buffered samples.
+func TestPCMRingBuffer_PopDriftCompensated_ReuseCorrectness(t *testing.T) {
+	rb := NewPCMRingBuffer(20480)
+	channels := 2
+	target := 2 * 1024 * channels
+	readN := 1024 * channels
+
+	first := make([]float32, readN)
+	for i := range first {
+		first[i] = 1.0
+	}
+	rb.Push(first)
+	out1 := rb.PopDriftCompensated(readN, target, channels)
+	require.Len(t, out1, readN)
+	for i, v := range out1 {
+		require.Equalf(t, float32(1.0), v, "first pop index %d", i)
+	}
+
+	second := make([]float32, readN)
+	for i := range second {
+		second[i] = -0.5
+	}
+	rb.Push(second)
+	out2 := rb.PopDriftCompensated(readN, target, channels)
+	require.Len(t, out2, readN)
+	for i, v := range out2 {
+		require.Equalf(t, float32(-0.5), v, "second pop index %d (stale scratch?)", i)
+	}
+}
+
 func TestPCMRingBuffer_PopDriftCompensated_Convergence(t *testing.T) {
 	rb := NewPCMRingBuffer(20480)
 	channels := 2

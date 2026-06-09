@@ -13,6 +13,13 @@ import (
 
 const defaultRingCapacity = 10000
 
+// asRunWriteBuffer bounds the number of events queued for durable JSONL
+// writing. Sized to absorb realistic bursts (pod-board fires, item
+// boundaries) while a slow/stalled disk catches up. On sustained overflow the
+// writer drops the oldest queued event rather than blocking the realtime tick
+// goroutine.
+const asRunWriteBuffer = 4096
+
 // AsRunLoggerConfig configures the as-run event logger.
 type AsRunLoggerConfig struct {
 	Dir           string
@@ -37,9 +44,18 @@ type AsRunLogger struct {
 	ring          []AsRunEvent
 	head          int // next write position
 	count         int // number of valid entries (up to cap)
-	file          *os.File
-	enc           *json.Encoder
 	stopRetention chan struct{}
+
+	// Durable JSONL writes are decoupled from the hot path: Log pushes events
+	// onto writeCh, which a dedicated writer goroutine drains and encodes to
+	// disk. This keeps a stalled disk (e.g. NFS as-run dir) off the realtime
+	// tick goroutine and avoids serializing concurrent loggers on file I/O.
+	// file/enc are owned exclusively by the writer goroutine after construction.
+	file      *os.File
+	enc       *json.Encoder
+	writeCh   chan AsRunEvent
+	writerWG  sync.WaitGroup
+	closeOnce sync.Once
 }
 
 // NewAsRunLogger creates a new as-run logger. It creates the output
@@ -62,15 +78,37 @@ func NewAsRunLogger(cfg AsRunLoggerConfig) (*AsRunLogger, error) {
 	}
 
 	l := &AsRunLogger{
-		config: cfg,
-		ring:   make([]AsRunEvent, cfg.RingCapacity),
-		file:   f,
-		enc:    json.NewEncoder(f),
+		config:  cfg,
+		ring:    make([]AsRunEvent, cfg.RingCapacity),
+		file:    f,
+		enc:     json.NewEncoder(f),
+		writeCh: make(chan AsRunEvent, asRunWriteBuffer),
 	}
+
+	l.writerWG.Add(1)
+	// Pass the channel explicitly so the writer ranges over the real channel
+	// value rather than re-reading l.writeCh (which Close sets to nil).
+	go l.runWriter(l.writeCh)
+
 	return l, nil
 }
 
-// Log writes an event to both the ring buffer and the JSONL file.
+// runWriter drains queued events and encodes them to the JSONL file. It owns
+// l.file/l.enc and runs until ch is closed and drained (by Close).
+func (l *AsRunLogger) runWriter(ch <-chan AsRunEvent) {
+	defer l.writerWG.Done()
+	for ev := range ch {
+		if err := l.enc.Encode(ev); err != nil {
+			slog.Error("asrun: write JSONL", "error", err)
+		}
+	}
+}
+
+// Log records an event in the in-memory ring buffer and queues it for durable
+// JSONL writing. The ring update is synchronous; the file write is performed
+// asynchronously by a dedicated writer goroutine so a stalled disk never blocks
+// the realtime tick goroutine. If the write queue is saturated (sustained disk
+// stall), the oldest queued event is dropped to keep Log non-blocking.
 func (l *AsRunLogger) Log(ev AsRunEvent) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -82,9 +120,30 @@ func (l *AsRunLogger) Log(ev AsRunEvent) {
 		l.count++
 	}
 
-	// Write to JSONL file.
-	if err := l.enc.Encode(ev); err != nil {
-		slog.Error("asrun: write JSONL", "error", err)
+	if l.writeCh == nil {
+		return // closed
+	}
+
+	// Queue for durable write. The send is non-blocking (buffered channel +
+	// select/default), so holding l.mu here never stalls on disk I/O — the
+	// writer goroutine performs the actual file write without the lock. Holding
+	// the lock also makes the send safe against Close closing the channel. On
+	// overflow, drop the oldest queued event and retry so the newest event is
+	// still written.
+	select {
+	case l.writeCh <- ev:
+	default:
+		select {
+		case dropped := <-l.writeCh:
+			slog.Warn("asrun: write queue full, dropping oldest event", "type", dropped.Type)
+		default:
+		}
+		select {
+		case l.writeCh <- ev:
+		default:
+			// Still full (other goroutines refilled it); drop this event.
+			slog.Warn("asrun: write queue full, dropping event", "type", ev.Type)
+		}
 	}
 }
 
@@ -232,20 +291,36 @@ func (l *AsRunLogger) StartRetention(interval time.Duration) {
 	}()
 }
 
-// Close flushes and closes the JSONL file and stops the retention goroutine.
+// Close flushes queued events, closes the JSONL file, and stops the retention
+// goroutine. It waits for the writer goroutine to drain all queued events so
+// durability is preserved (events logged before Close are written to disk).
+// Safe to call more than once.
 func (l *AsRunLogger) Close() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	var err error
+	l.closeOnce.Do(func() {
+		l.mu.Lock()
+		if l.stopRetention != nil {
+			close(l.stopRetention)
+			l.stopRetention = nil
+		}
+		// Close the write channel under the lock so it cannot race a concurrent
+		// Log send; setting writeCh to nil first makes later Log calls no-op.
+		ch := l.writeCh
+		l.writeCh = nil
+		l.mu.Unlock()
 
-	if l.stopRetention != nil {
-		close(l.stopRetention)
-		l.stopRetention = nil
-	}
+		if ch != nil {
+			close(ch)
+		}
+		// Wait outside the lock: the writer drains remaining events and exits.
+		l.writerWG.Wait()
 
-	if l.file != nil {
-		err := l.file.Close()
-		l.file = nil
-		return err
-	}
-	return nil
+		l.mu.Lock()
+		if l.file != nil {
+			err = l.file.Close()
+			l.file = nil
+		}
+		l.mu.Unlock()
+	})
+	return err
 }

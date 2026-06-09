@@ -412,3 +412,60 @@ func TestCacheAssetProvider_NilDemuxFn(t *testing.T) {
 		t.Fatal("expected error for nil demuxFn, got nil")
 	}
 }
+
+// TestTrimIterator_Seek verifies Seek positions on the trimmed timeline
+// (frame 0 = in-point), keeps the in/out-point math anchored to the true
+// stream start, and surfaces an error for non-seekable inner iterators.
+func TestTrimIterator_Seek(t *testing.T) {
+	// 120 frames @ 30fps; in=1000ms out=3000ms → trimmed frames 30..89.
+	frames := fakeFramesSized(120, 64, 48, 30.0)
+
+	t.Run("seeks past in-point", func(t *testing.T) {
+		tr := NewTrimIterator(&seekableSliceIterator{frames: frames}, 1000, 3000)
+		if err := tr.Seek(15); err != nil { // 500ms into trimmed timeline
+			t.Fatalf("Seek: %v", err)
+		}
+		f, err := tr.Next()
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if f == nil {
+			t.Fatal("Next returned nil after seek")
+		}
+		if f.PTS != 135000 { // absolute frame 45
+			t.Errorf("PTS after Seek(15) = %d, want 135000", f.PTS)
+		}
+	})
+
+	t.Run("out point honored after seek", func(t *testing.T) {
+		tr := NewTrimIterator(&seekableSliceIterator{frames: frames}, 1000, 3000)
+		if err := tr.Seek(55); err != nil {
+			t.Fatalf("Seek: %v", err)
+		}
+		var last *DecodedFrame
+		for {
+			f, err := tr.Next()
+			if err != nil {
+				t.Fatalf("Next: %v", err)
+			}
+			if f == nil {
+				break
+			}
+			last = f
+		}
+		if last == nil || last.PTS != 267000 { // absolute frame 89
+			var pts int64 = -1
+			if last != nil {
+				pts = last.PTS
+			}
+			t.Errorf("last PTS = %d, want 267000 (out point)", pts)
+		}
+	})
+
+	t.Run("non-seekable inner returns error", func(t *testing.T) {
+		tr := NewTrimIterator(NewSliceIterator(frames), 1000, 3000)
+		if err := tr.Seek(15); err == nil {
+			t.Error("Seek on non-seekable inner iterator should return an error")
+		}
+	})
+}

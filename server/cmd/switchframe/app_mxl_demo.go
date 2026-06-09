@@ -95,7 +95,9 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 		})
 
 		src.Start(ctx, videoReader, audioReader)
-		a.mxlSources = append(a.mxlSources, src)
+		// Track demo sources separately from configured --mxl-sources so the
+		// stop func below tears down only what this demo created.
+		a.demoMXLSources = append(a.demoMXLSources, src)
 
 		// Set label if specified.
 		if labels[i] != "" {
@@ -166,7 +168,7 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 	}()
 
 	return func() {
-		for _, src := range a.mxlSources {
+		for _, src := range a.demoMXLSources {
 			src.Stop()
 		}
 		slog.Info("MXL demo sources stopped", "total_output_frames", sinkFrameCount.Load())

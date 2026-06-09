@@ -160,6 +160,92 @@ func TestHandleCommsStream_WriteLoop(t *testing.T) {
 	}
 }
 
+// blockingWriteCloser blocks every Write until Close is called, then makes the
+// in-flight (and all subsequent) Writes return an error. It models a half-open
+// peer whose transport flow-control window is exhausted: the write goroutine
+// parks inside writable.Write and cannot observe close(done). Close records
+// that it ran so the test can assert the read-loop exit tore the writer down.
+type blockingWriteCloser struct {
+	release   chan struct{} // closed by Close to unblock pending Writes
+	closeOnce sync.Once
+	closed    chan struct{} // closed when Close is invoked
+}
+
+func newBlockingWriteCloser() *blockingWriteCloser {
+	return &blockingWriteCloser{
+		release: make(chan struct{}),
+		closed:  make(chan struct{}),
+	}
+}
+
+func (b *blockingWriteCloser) Write(p []byte) (int, error) {
+	<-b.release
+	return 0, io.ErrClosedPipe
+}
+
+func (b *blockingWriteCloser) Close() error {
+	b.closeOnce.Do(func() {
+		close(b.closed)
+		close(b.release)
+	})
+	return nil
+}
+
+// TestHandleCommsStream_BlockedWriteUnblockedOnReadExit verifies that when the
+// write goroutine is blocked inside writable.Write (flow-control backpressure
+// from a peer that never drains audio), ending the read loop closes the
+// writable side and unblocks the goroutine promptly. Regression for the case
+// where close(done) alone could not interrupt an in-flight Write, pinning the
+// goroutine until the underlying transport timed out.
+func TestHandleCommsStream_BlockedWriteUnblockedOnReadExit(t *testing.T) {
+	mgr := comms.NewManager(nil)
+	defer mgr.Close()
+
+	if err := mgr.Join("op1", "Alice"); err != nil {
+		if errors.Is(err, comms.ErrOpusUnavailable) {
+			t.Skip("opus codec not available")
+		}
+		t.Fatalf("Join: %v", err)
+	}
+
+	writer := newBlockingWriteCloser()
+	readReady := make(chan struct{})
+	blockingReader := &blockingReadCloser{done: readReady}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		handleCommsStreamForTest(mgr, "op1", blockingReader, writer)
+	}()
+
+	// Queue a packet so the write goroutine leaves its select and blocks
+	// inside writer.Write (which parks until Close).
+	if !mgr.SendTestPacket("op1", []byte{0xDE, 0xAD}) {
+		t.Fatal("could not send test packet to participant channel")
+	}
+
+	// End the read loop. handleCommsStream returns, and its deferred
+	// Close on the writable side must unblock the parked Write.
+	close(readReady)
+
+	select {
+	case <-writer.closed:
+		// Writable was closed on read-loop exit — the parked Write is freed.
+	case <-time.After(5 * time.Second):
+		t.Fatal("writable was not closed on read-loop exit; blocked write goroutine would leak")
+	}
+
+	// The handler itself must also have returned.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleCommsStream did not exit within timeout")
+	}
+}
+
 func TestHandleCommsStream_UnknownMsgType(t *testing.T) {
 	mgr := comms.NewManager(nil)
 	defer mgr.Close()

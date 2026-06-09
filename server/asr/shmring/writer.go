@@ -84,12 +84,15 @@ func (w *Writer) Write(pcm []float32, pts int64, sampleRate, channels int) {
 		return
 	}
 
-	// Set metadata on first write.
+	// Set metadata on first write. Published with atomic stores so a
+	// cross-process consumer (the C++ ASR sidecar) observes a consistent,
+	// fully-written value rather than a torn or zero field. These stores are
+	// sequenced before the WritePos advance below, so any consumer that sees
+	// WritePos > 0 is guaranteed to also see the metadata.
 	if !w.initialized {
-		h := (*header)(w.base)
-		h.SampleRate = uint32(sampleRate)
-		h.Channels = uint32(channels)
-		h.BasePTS = pts
+		atomic.StoreUint32(headerSampleRate(w.base), uint32(sampleRate))
+		atomic.StoreUint32(headerChannels(w.base), uint32(channels))
+		atomic.StoreInt64(headerBasePTS(w.base), pts)
 		w.initialized = true
 	}
 
@@ -99,6 +102,26 @@ func (w *Writer) Write(pcm []float32, pts int64, sampleRate, channels int) {
 
 	src := unsafe.Pointer(unsafe.SliceData(pcm))
 	nbytes := uint64(len(pcm) * 4)
+
+	// A single write larger than the ring can hold would overwrite its own
+	// oldest bytes — and, in the wrap branch, write past the end of the mmap'd
+	// segment. Keep only the newest capacityBytes (the older bytes would be
+	// overwritten anyway) while still advancing WritePos by the full logical
+	// amount so the consumer fast-forwards correctly.
+	if nbytes > w.capacityBytes {
+		drop := nbytes - w.capacityBytes
+		src = unsafe.Add(src, int(drop))
+		writePos += drop
+		nbytes = w.capacityBytes
+	}
+
+	// Publish the end position of this write BEFORE copying any bytes
+	// (seqlock-style). A consumer that copied a region overlapping the
+	// physical slots this write targets re-checks WriteReserve after its copy:
+	// if the reserve extends past readPos+capacity, the copied data may be
+	// torn and is discarded. Publishing only after the copy (as WritePos is)
+	// would make an in-flight overwrite invisible to the consumer.
+	atomic.StoreUint64(headerWriteReserve(w.base), writePos+nbytes)
 
 	// Calculate how much space is available before the wrap point.
 	offset := writePos & mask

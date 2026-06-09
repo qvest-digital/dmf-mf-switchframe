@@ -178,10 +178,14 @@ func BlendWipe10(dst, a, b []byte, width, height int, alpha []byte) error {
 	cbOff := ySize * 2
 	crOff := cbOff + chromaSize*2
 
-	// Y plane: per-pixel alpha blend
+	// Y plane: per-pixel alpha blend.
+	// Remap 0-255 alpha to a 0-256 weight (al + al>>7) so alpha=255 yields a
+	// full-B result, matching the 8-bit blendAlpha kernel and BlendMix10's
+	// 0-256 pos. Without this, alpha=255 leaves inv=1 and bleeds 1/256 of A.
 	for i := 0; i < ySize; i++ {
 		off := i * 2
 		al := int32(alpha[i])
+		al += al >> 7
 		inv := int32(256) - al
 		sa := int32(binary.LittleEndian.Uint16(a[off:]))
 		sb := int32(binary.LittleEndian.Uint16(b[off:]))
@@ -196,6 +200,7 @@ func BlendWipe10(dst, a, b []byte, width, height int, alpha []byte) error {
 			a0 := int32(alpha[y*width+x*2])
 			a1 := int32(alpha[y*width+x*2+1])
 			chromaAlpha := (a0 + a1 + 1) >> 1
+			chromaAlpha += chromaAlpha >> 7 // 0-255 -> 0-256 weight (see Y plane)
 			inv := int32(256) - chromaAlpha
 
 			ci := y*chromaW + x
@@ -293,10 +298,14 @@ func BlendStinger10(dst, base, overlay []byte, width, height int, alpha []byte) 
 	cbOff := ySize * 2
 	crOff := cbOff + chromaSize*2
 
-	// Y plane: per-pixel alpha composite
+	// Y plane: per-pixel alpha composite.
+	// Remap 0-255 alpha to a 0-256 weight (al + al>>7) so alpha=255 yields a
+	// fully-opaque overlay, matching the 8-bit blendAlpha kernel. Without this,
+	// a fully-opaque stinger pixel still bleeds 1/256 of the base.
 	for i := 0; i < ySize; i++ {
 		off := i * 2
 		al := int32(alpha[i])
+		al += al >> 7
 		inv := int32(256) - al
 		sb := int32(binary.LittleEndian.Uint16(base[off:]))
 		so := int32(binary.LittleEndian.Uint16(overlay[off:]))
@@ -310,6 +319,7 @@ func BlendStinger10(dst, base, overlay []byte, width, height int, alpha []byte) 
 			a0 := int32(alpha[y*width+x*2])
 			a1 := int32(alpha[y*width+x*2+1])
 			chromaAlpha := (a0 + a1 + 1) >> 1
+			chromaAlpha += chromaAlpha >> 7 // 0-255 -> 0-256 weight (see Y plane)
 			inv := int32(256) - chromaAlpha
 
 			ci := y*chromaW + x

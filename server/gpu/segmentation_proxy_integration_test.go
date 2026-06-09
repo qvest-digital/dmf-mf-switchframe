@@ -178,6 +178,7 @@ func TestSegmentationProxy_EndToEnd(t *testing.T) {
 	if mask.DevPtr == 0 {
 		t.Error("mask DevPtr is zero")
 	}
+	mask.Release()
 
 	// --- Step 10: Disable segmentation and verify cleanup ---
 	proxy.DisableSource("cam1")
@@ -316,6 +317,8 @@ func TestSegmentationProxy_MultiSource(t *testing.T) {
 	if mask1.DevPtr == mask2.DevPtr {
 		t.Error("cam1 and cam2 should have different mask DevPtrs")
 	}
+	mask1.Release()
+	mask2.Release()
 
 	// Disable cam1, cam2 should be unaffected.
 	proxy.DisableSource("cam1")
@@ -328,8 +331,10 @@ func TestSegmentationProxy_MultiSource(t *testing.T) {
 	if proxy.MaskForSource("cam1") != nil {
 		t.Error("cam1 mask should be nil after disable")
 	}
-	if proxy.MaskForSource("cam2") == nil {
+	if m := proxy.MaskForSource("cam2"); m == nil {
 		t.Error("cam2 mask should still exist")
+	} else {
+		m.Release()
 	}
 
 	t.Log("multi-source segmentation proxy test passed")

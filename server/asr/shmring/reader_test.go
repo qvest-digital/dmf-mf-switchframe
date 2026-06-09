@@ -4,6 +4,8 @@ package shmring
 
 import (
 	"math"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"unsafe"
 )
@@ -222,6 +224,41 @@ func TestReaderInvalidMagic(t *testing.T) {
 	_ = w.Close()
 }
 
+// TestReaderRejectsOversizedCapacity is the regression test for the
+// unvalidated-header finding: CapacityBytes comes from shared memory written
+// by another process, and every unsafe read in the reader is bounded by it.
+// A capacity that does not fit the fstat-derived segment size must be
+// rejected, otherwise copyOut reads past the end of the mapping (SIGBUS).
+func TestReaderRejectsOversizedCapacity(t *testing.T) {
+	name := testShmName(t)
+	w, err := NewWriter(name, 1024)
+	if err != nil {
+		skipIfNoShm(t, err)
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	// Corrupt CapacityBytes to a huge power of two — far larger than the
+	// segment — via the writer's mapped header, simulating a stale/corrupt or
+	// version-skewed segment.
+	hdr := (*header)(w.base)
+	origCap := hdr.CapacityBytes
+	hdr.CapacityBytes = 1 << 40
+
+	_, err = NewReader(name)
+	if err == nil {
+		t.Error("NewReader with capacity larger than the segment should return an error")
+	}
+
+	// Restore so writer cleanup and a sanity re-open work.
+	hdr.CapacityBytes = origCap
+	r, err := NewReader(name)
+	if err != nil {
+		t.Fatalf("NewReader after restoring capacity: %v", err)
+	}
+	_ = r.Close()
+	_ = w.Close()
+}
+
 func TestReaderWrapAroundRead(t *testing.T) {
 	name := testShmName(t)
 	// 256 float32 samples = 1024 bytes capacity.
@@ -408,4 +445,268 @@ func TestReaderInternalBase(t *testing.T) {
 	}
 
 	_ = unsafe.Pointer(r.base) // verify base is exported within package
+}
+
+// TestReaderOverflowReturnsCleanDataWhenProducerIdle verifies the seqlock-style
+// re-validation does NOT discard a legitimate overflow recovery: with the
+// producer stopped, the post-copy WritePos re-read matches the entry value, so
+// the full latest capacity is returned intact (the boundary "==" case where the
+// reader is exactly capacityBytes behind an idle producer).
+func TestReaderOverflowReturnsCleanDataWhenProducerIdle(t *testing.T) {
+	name := testShmName(t)
+	const capSamples = 1024
+	w, err := NewWriter(name, capSamples)
+	if err != nil {
+		skipIfNoShm(t, err)
+		t.Fatalf("NewWriter: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	r, err := NewReader(name)
+	if err != nil {
+		skipIfNoShm(t, err)
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	// Write 3x capacity in small chunks (producer then idle); each sample value
+	// == its global index. Chunked writes (<= capacity) match real audio usage
+	// so the physical ring ends holding exactly the last capSamples.
+	const total = capSamples * 3
+	const chunk = 128
+	buf := make([]float32, chunk)
+	for base := 0; base < total; base += chunk {
+		for i := range buf {
+			buf[i] = float32(base + i)
+		}
+		w.Write(buf, 0, 48000, 1)
+	}
+
+	// Producer is now idle. The reader is capSamples behind the latest data.
+	got := r.Read()
+	if len(got) != capSamples {
+		t.Fatalf("overflow Read() = %d samples, want %d (latest capacity)", len(got), capSamples)
+	}
+	// Must be the newest capSamples, contiguous and untorn (idle producer).
+	for i, v := range got {
+		want := float32(total - capSamples + i)
+		if v != want {
+			t.Fatalf("overflow sample[%d] = %v, want %v (clean idle-overflow recovery)", i, v, want)
+		}
+	}
+
+	// Caught up: next read returns nil.
+	if got2 := r.Read(); got2 != nil {
+		t.Errorf("post-overflow Read() = %d samples, want nil", len(got2))
+	}
+}
+
+// TestReaderConcurrentNoGarbageToInference is the regression test for the
+// torn-overflow finding. A producer continuously laps a tiny ring while a
+// consumer reads concurrently. The seqlock-style re-validation guarantees the
+// reader never emits NaN/Inf (the failure mode the finding flags as "potential
+// NaN/garbage fed to inference") and that the consumer makes forward progress
+// and fully drains once the producer stops.
+//
+// Note: this lossy SPSC ring can still return *stale* (previously-valid) values
+// under a continuous concurrent producer — a fully non-lossy reader needs
+// writer-side per-region sequencing. The invariant asserted here is the one the
+// bounded fix actually guarantees and the one inference cares about: finite,
+// in-range samples and liveness.
+func TestReaderConcurrentNoGarbageToInference(t *testing.T) {
+	name := testShmName(t)
+	w, err := NewWriter(name, 1024) // tiny ring => constant lapping
+	if err != nil {
+		skipIfNoShm(t, err)
+		t.Fatalf("NewWriter: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	r, err := NewReader(name)
+	if err != nil {
+		skipIfNoShm(t, err)
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	const totalSamples = 1 << 20 // < 2^24, exactly representable in float32
+	const chunk = 64
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		buf := make([]float32, chunk)
+		for base := 0; base < totalSamples; base += chunk {
+			for i := range buf {
+				// All written values are finite and within [0,totalSamples).
+				buf[i] = float32(base + i)
+			}
+			w.Write(buf, 0, 48000, 1)
+		}
+	}()
+
+	var sawData bool
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			got := r.Read()
+			for i, v := range got {
+				sawData = true
+				if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+					t.Errorf("Read returned NaN/Inf at index %d", i)
+					return
+				}
+				// A torn combination of two valid in-range samples could land
+				// outside [0,totalSamples); assert the inference-relevant bound.
+				if v < 0 || v >= float32(totalSamples) {
+					t.Errorf("Read returned out-of-range sample %v at index %d", v, i)
+					return
+				}
+			}
+			// Liveness/drain: stop once the producer is done and we're caught up.
+			wp := atomic.LoadUint64(headerWritePos(r.base))
+			if wp >= uint64(totalSamples)*4 && r.readPos >= wp {
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	<-done
+	if !sawData {
+		t.Error("consumer never observed any data")
+	}
+}
+
+// TestReaderConcurrentReadsAreUntorn is the regression test for the in-flight
+// torn-write finding: the post-copy WritePos recheck alone cannot see a
+// producer that is mid-copy (already overwriting the reader's region) but has
+// not yet published the new WritePos, so the reader could return a batch that
+// mixes old-lap and new-lap samples.
+//
+// The writer publishes the values 0,1,2,... in order, so every batch a correct
+// reader returns must be an exact contiguous logical span of the written
+// stream: within a batch, each sample is exactly the previous sample + 1, and
+// batches never go backwards. A torn read shows up as a discontinuity inside a
+// single batch.
+func TestReaderConcurrentReadsAreUntorn(t *testing.T) {
+	name := testShmName(t)
+	w, err := NewWriter(name, 1024) // tiny ring => constant lapping
+	if err != nil {
+		skipIfNoShm(t, err)
+		t.Fatalf("NewWriter: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	r, err := NewReader(name)
+	if err != nil {
+		skipIfNoShm(t, err)
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	const totalSamples = 1 << 21 // < 2^24, exactly representable in float32
+	const chunk = 96
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		buf := make([]float32, chunk)
+		for base := 0; base < totalSamples; base += chunk {
+			for i := range buf {
+				buf[i] = float32(base + i)
+			}
+			w.Write(buf, 0, 48000, 1)
+		}
+	}()
+
+	var lastSeen float32 = -1
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			got := r.Read()
+			for i, v := range got {
+				if i == 0 {
+					if v <= lastSeen {
+						t.Errorf("batch went backwards: starts at %v, already saw %v", v, lastSeen)
+						return
+					}
+				} else if v != got[i-1]+1 {
+					t.Errorf("torn batch: sample[%d] = %v, want %v (contiguous with previous)", i, v, got[i-1]+1)
+					return
+				}
+				lastSeen = v
+			}
+			// Liveness/drain: stop once the producer is done and we're caught up.
+			wp := atomic.LoadUint64(headerWritePos(r.base))
+			if wp >= uint64(totalSamples)*4 && r.readPos >= wp {
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	<-done
+	if lastSeen < 0 {
+		t.Error("consumer never observed any data")
+	}
+}
+
+// TestWriterMetadataPublishedAtomically verifies metadata (SampleRate/Channels/
+// BasePTS) is set-once and readable atomically through the exported header
+// accessors, matching the values the producer published on first write.
+func TestWriterMetadataPublishedAtomically(t *testing.T) {
+	name := testShmName(t)
+	w, err := NewWriter(name, 1024)
+	if err != nil {
+		skipIfNoShm(t, err)
+		t.Fatalf("NewWriter: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// Before any write, metadata is zero (atomic loads of a freshly zeroed mmap).
+	if got := atomic.LoadUint32(headerSampleRate(w.base)); got != 0 {
+		t.Errorf("pre-write SampleRate = %d, want 0", got)
+	}
+
+	pcm := make([]float32, 16)
+	w.Write(pcm, 0x0123456789ABCDEF, 48000, 2)
+
+	if got := atomic.LoadUint32(headerSampleRate(w.base)); got != 48000 {
+		t.Errorf("atomic SampleRate = %d, want 48000", got)
+	}
+	if got := atomic.LoadUint32(headerChannels(w.base)); got != 2 {
+		t.Errorf("atomic Channels = %d, want 2", got)
+	}
+	if got := atomic.LoadInt64(headerBasePTS(w.base)); got != 0x0123456789ABCDEF {
+		t.Errorf("atomic BasePTS = 0x%X, want 0x0123456789ABCDEF", got)
+	}
+
+	// Reader observes the same metadata atomically.
+	r, err := NewReader(name)
+	if err != nil {
+		skipIfNoShm(t, err)
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	if got := r.SampleRate(); got != 48000 {
+		t.Errorf("Reader.SampleRate() = %d, want 48000", got)
+	}
+	if got := r.Channels(); got != 2 {
+		t.Errorf("Reader.Channels() = %d, want 2", got)
+	}
+
+	// Second write must not overwrite set-once metadata.
+	w.Write(pcm, 999, 16000, 1)
+	if got := atomic.LoadUint32(headerSampleRate(w.base)); got != 48000 {
+		t.Errorf("SampleRate after second write = %d, want 48000 (set-once)", got)
+	}
+	if got := atomic.LoadInt64(headerBasePTS(w.base)); got != 0x0123456789ABCDEF {
+		t.Errorf("BasePTS after second write changed; want set-once 0x0123456789ABCDEF")
+	}
 }

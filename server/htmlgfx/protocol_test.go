@@ -368,6 +368,39 @@ func TestFrameReadSizeMismatch(t *testing.T) {
 	}
 }
 
+// TestFrameReadDimensionOverflow guards against a uint32 overflow in the
+// pixel-size validation. With width=16385 height=65533 the true pixel count
+// (width*height*4 = 4_295_032_820) wraps to 65524 in 32-bit arithmetic. An
+// attacker can therefore send only 65524 pixel bytes whose length matches the
+// wrapped expected size, slipping past the size check while the header claims
+// huge dimensions. The expected size must be computed in 64-bit so the check
+// stays exact and rejects this frame.
+func TestFrameReadDimensionOverflow(t *testing.T) {
+	var buf bytes.Buffer
+
+	width := uint16(16385)
+	height := uint16(65533)
+
+	// The 32-bit wrapped product (the size an attacker would send).
+	wrappedPixelLen := uint32(width) * uint32(height) * 4
+	if uint64(wrappedPixelLen) == uint64(width)*uint64(height)*4 {
+		t.Fatalf("test setup: dimensions do not actually overflow uint32 (wrapped=%d)", wrappedPixelLen)
+	}
+
+	totalLen := uint32(FrameHeaderSize) + wrappedPixelLen
+	writeBigEndianUint32(&buf, totalLen)
+	buf.WriteByte(0) // browser_id
+	writeBigEndianUint16(&buf, width)
+	writeBigEndianUint16(&buf, height)
+	buf.Write(make([]byte, wrappedPixelLen))
+
+	_, err := ReadFrame(&buf)
+	if err == nil {
+		t.Fatalf("expected error: frame with wrapped pixel size %d but header %dx%d should be rejected",
+			wrappedPixelLen, width, height)
+	}
+}
+
 func TestMultipleFrames(t *testing.T) {
 	var buf bytes.Buffer
 
@@ -476,4 +509,77 @@ func writeBigEndianUint32(buf *bytes.Buffer, v uint32) {
 func writeBigEndianUint16(buf *bytes.Buffer, v uint16) {
 	buf.WriteByte(byte(v >> 8))
 	buf.WriteByte(byte(v))
+}
+
+// TestReadFrameReuse_ReusesBuffer verifies the buffer-reusing read path used
+// by Manager.frameReadLoop: with a sufficiently large caller-owned buffer no
+// per-frame pixel allocation occurs (previously ReadFrame allocated a fresh
+// multi-MB buffer for every sidecar frame on the 30-60fps hot path).
+func TestReadFrameReuse_ReusesBuffer(t *testing.T) {
+	w, h := 64, 32
+	pixels := make([]byte, w*h*4)
+	for i := range pixels {
+		pixels[i] = byte(i * 13)
+	}
+	frame := Frame{BrowserID: 2, Width: uint16(w), Height: uint16(h), Pixels: pixels}
+
+	var wire bytes.Buffer
+	if err := WriteFrame(&wire, frame); err != nil {
+		t.Fatal(err)
+	}
+	data := wire.Bytes()
+
+	// Correctness: identical to ReadFrame.
+	buf := make([]byte, len(pixels))
+	reader := bytes.NewReader(data)
+	got, err := ReadFrameReuse(reader, buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BrowserID != frame.BrowserID || got.Width != frame.Width || got.Height != frame.Height {
+		t.Fatalf("header mismatch: got %+v", got)
+	}
+	if !bytes.Equal(got.Pixels, pixels) {
+		t.Fatal("pixel data mismatch")
+	}
+	// The returned Pixels must alias the caller's buffer.
+	if &got.Pixels[0] != &buf[0] {
+		t.Error("ReadFrameReuse should read into the provided buffer when large enough")
+	}
+
+	// No per-frame pixel allocation once the buffer is warm. Two tiny
+	// fixed-size header arrays (4+5 bytes) escape through io.ReadFull's
+	// io.Reader interface; the multi-MB pixel buffer must not be reallocated.
+	allocs := testing.AllocsPerRun(50, func() {
+		reader.Reset(data)
+		f, err := ReadFrameReuse(reader, buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf = f.Pixels
+	})
+	if allocs > 2 {
+		t.Errorf("ReadFrameReuse allocated %.1f times per frame with a warm buffer, want <= 2 (header scratch only)", allocs)
+	}
+
+	// Undersized buffer: must still return a correct frame (allocating).
+	reader.Reset(data)
+	small := make([]byte, 16)
+	got2, err := ReadFrameReuse(reader, small)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got2.Pixels, pixels) {
+		t.Fatal("pixel data mismatch with undersized buffer")
+	}
+
+	// Nil buffer behaves like ReadFrame.
+	reader.Reset(data)
+	got3, err := ReadFrameReuse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got3.Pixels, pixels) {
+		t.Fatal("pixel data mismatch with nil buffer")
+	}
 }

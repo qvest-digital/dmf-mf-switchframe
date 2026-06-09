@@ -536,27 +536,41 @@ func (p *captionPacer) emitNextWord() {
 	p.emitWord(word)
 }
 
+// pacerOp is a single caption-manager command produced by emitWord's layout
+// pass. text == "" means IngestNewline; otherwise IngestText(text).
+type pacerOp struct {
+	text string
+}
+
 // emitWord sends a word to the caption manager with speaker-change
 // detection and line wrapping. Updates lastEmitTime for auto-clear.
 //
-// Holds p.mu for the entire call to protect linePos from concurrent Flush().
-// Lock ordering: p.mu → captionMgr.mu is safe (caption.Manager never calls
-// back into captionPacer).
+// The layout pass (which reads/mutates linePos) runs under p.mu so it stays
+// consistent with concurrent Flush(); the resulting manager commands are then
+// replayed AFTER releasing p.mu. This keeps the queue mutex off the
+// caption-manager/broadcast-sink path (Manager.IngestText/IngestNewline fan out
+// to Relay.BroadcastCaptions), so a slow subscriber can never stall
+// EnqueueTranscriptWords or Flush. Lock ordering is unchanged and safe:
+// caption.Manager never calls back into captionPacer.
 func (p *captionPacer) emitWord(word pacerWord) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	p.lastEmitTime = time.Now()
 	p.cleared = false
 
+	var ops []pacerOp
+
 	// Speaker change: segment gap exceeds threshold → new line with >> prefix.
 	if word.gapBefore >= p.speakerChangeGap {
-		p.mgr.IngestNewline()
-		p.mgr.IngestText(">> ")
-		p.linePos = 3
+		ops = append(ops, pacerOp{}, pacerOp{text: ">> "})
+		p.linePos = 3 // ">> " is ASCII, so byte count == display cells.
 	}
 
-	wordLen := len(word.text)
+	// Count display cells, not bytes: CEA-608 maps most accented runes (é, ñ)
+	// to a single on-screen cell, so len() over-counts non-English words and
+	// would wrap lines prematurely. DisplayWidth mirrors the encoder's output
+	// width (e.g. "…" -> "..." = 3 cells).
+	wordLen := caption.DisplayWidth(word.text)
 	needSpace := p.linePos > 0
 	spaceNeeded := wordLen
 	if needSpace {
@@ -565,22 +579,37 @@ func (p *captionPacer) emitWord(word pacerWord) {
 
 	// Word-wrap at 32 characters.
 	if p.linePos+spaceNeeded > pacerMaxLineChars && p.linePos > 0 {
-		p.mgr.IngestNewline()
+		ops = append(ops, pacerOp{})
 		p.linePos = 0
 		needSpace = false
 	}
 
 	if needSpace {
-		p.mgr.IngestText(" ")
+		ops = append(ops, pacerOp{text: " "})
 		p.linePos++
 	}
-	p.mgr.IngestText(word.text)
+	ops = append(ops, pacerOp{text: word.text})
 	p.linePos += wordLen
 
 	// Final word: insert newline to close the utterance.
 	if word.isFinal {
-		p.mgr.IngestNewline()
+		ops = append(ops, pacerOp{})
 		p.linePos = 0
+	}
+
+	// Release the queue lock before replaying the layout into the caption
+	// manager: IngestText/IngestNewline fan out to Relay.BroadcastCaptions, and
+	// holding p.mu across them would let a slow subscriber stall
+	// EnqueueTranscriptWords (ASR read loop) and Flush (program-source change).
+	p.mu.Unlock()
+
+	// Replay outside the lock: these calls fan out to network broadcast sinks.
+	for _, op := range ops {
+		if op.text == "" {
+			p.mgr.IngestNewline()
+		} else {
+			p.mgr.IngestText(op.text)
+		}
 	}
 }
 

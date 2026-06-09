@@ -1,5 +1,23 @@
 import { getConfirmMode } from '$lib/state/preferences.svelte';
 
+/**
+ * True when the event target is a text-editing context (INPUT/TEXTAREA/SELECT or a
+ * contenteditable element) where global keyboard shortcuts must NOT fire so typing
+ * and native field behavior (e.g. Escape) are preserved.
+ *
+ * Shared by KeyboardHandler (capture phase) and the page-level handleGlobalShortcuts
+ * (bubble phase) so both layers apply an identical focus guard. Capture-vs-bubble
+ * contract: KeyboardHandler runs first and calls stopPropagation() for keys it
+ * consumes, suppressing the bubble handler for those keys; keys it does not consume
+ * fall through to handleGlobalShortcuts, which must re-check focus itself.
+ */
+export function isEditableTarget(target: EventTarget | null): boolean {
+	const el = target as HTMLElement | null;
+	const tag = el?.tagName;
+	if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+	return el?.isContentEditable === true;
+}
+
 export interface KeyboardActions {
 	onCut: () => void;
 	onSetPreview: (sourceKey: string) => void;
@@ -81,9 +99,7 @@ export class KeyboardHandler {
 		if (e.repeat) return;
 
 		// Ignore when focus is in an input/textarea/select/contenteditable
-		const tag = (e.target as HTMLElement)?.tagName;
-		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-		if ((e.target as HTMLElement)?.isContentEditable) return;
+		if (isEditableTarget(e.target)) return;
 
 		// Ctrl+Digit shortcuts for macro triggers (Ctrl+1-9)
 		if (e.ctrlKey && !e.metaKey && !e.altKey) {

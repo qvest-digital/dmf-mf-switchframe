@@ -2,12 +2,37 @@ package cmdqueue
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
+
+// maxWALLineBytes caps a single WAL line (one JSON-encoded entry). Command
+// payloads are raw client JSON bounded upstream by the HTTP body limit
+// (16MB, control/middleware.go maxCommandBodySize); 32MB leaves generous
+// headroom. Append enforces the cap so an oversized entry can never be
+// written, and readEntries sizes its scanner buffer to match so a large
+// (but legal) entry can never trip bufio.ErrTooLong — with the default
+// 64KB scanner limit, one >64KB payload used to permanently poison every
+// subsequent WAL read until the file was deleted by hand.
+const maxWALLineBytes = 32 << 20
+
+// walCompactMinAppends is how many new lines (command appends + executed
+// tombstones) must accumulate since the last rewrite before
+// MaybeCompactExecuted performs a compaction pass. It bounds steady-state
+// file growth at ~walCompactMinAppends lines beyond the compacted size
+// while keeping the amortized compaction cost negligible.
+const walCompactMinAppends = 1024
+
+// ErrWALEntryTooLarge is returned by Append when a single encoded entry
+// would exceed maxWALLineBytes.
+var ErrWALEntryTooLarge = errors.New("cmdqueue: WAL entry exceeds maximum size")
 
 // walFile is the subset of *os.File operations the WAL uses.  Extracted
 // as an interface so tests can inject a wrapper that counts Sync() calls
@@ -22,13 +47,27 @@ type walFile interface {
 }
 
 // WAL provides crash-recovery for enqueued commands via an append-only
-// JSON-lines file. Commands are appended on Enqueue and marked executed
-// after Drain. On startup, Replay returns un-executed commands that are
-// not stale relative to the provided maxAge.
+// JSON-lines file. Commands are appended on Enqueue, and Drain appends
+// executed tombstone lines (merged with their command entries at read
+// time). On startup, Replay returns un-executed commands that are not
+// stale relative to the provided maxAge.
 type WAL struct {
 	path string
 	mu   sync.Mutex
 	file walFile
+
+	// closed blocks late background compactions from resurrecting the file
+	// handle after Close.
+	closed bool
+	// lines is a best-effort count of the lines currently in the file
+	// (refreshed by reads, advanced by appends, reset by rewrites);
+	// linesAtRewrite is its value just after the last rewrite. Their
+	// difference is the growth that gates MaybeCompactExecuted.
+	lines          int
+	linesAtRewrite int
+	// rewriteGen increments on every rewrite/Truncate so an in-flight
+	// background compaction can detect that its snapshot went stale.
+	rewriteGen uint64
 }
 
 // walEntry is a single line in the WAL file.
@@ -49,41 +88,69 @@ func NewWAL(path string) (*WAL, error) {
 
 // Append writes a new un-executed command entry to the WAL.
 func (w *WAL) Append(cmd Command) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
 	entry := walEntry{Command: cmd, Executed: false}
 	data, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}
+	if len(data)+1 > maxWALLineBytes {
+		return fmt.Errorf("%w: entry is %d bytes, limit is %d", ErrWALEntryTooLarge, len(data), maxWALLineBytes)
+	}
 	data = append(data, '\n')
-	_, err = w.file.Write(data)
-	if err != nil {
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, err := w.file.Write(data); err != nil {
 		return err
 	}
+	w.lines++
 	return w.file.Sync()
 }
 
-// MarkExecuted reads the entire WAL, marks the entry with the matching Seq
-// as executed, and rewrites the file. This is acceptable because the WAL
-// is small (typically <1000 entries between truncations).
+// MarkExecuted marks the entry with the matching Seq as executed.
+//
+// Hot-path callers draining multiple commands per tick must prefer
+// MarkExecutedBatch: this single-seq variant costs one write+fsync per
+// call, so marking N drained commands one-by-one costs N fsyncs.
 func (w *WAL) MarkExecuted(seq uint64) error {
+	return w.MarkExecutedBatch([]uint64{seq})
+}
+
+// MarkExecutedBatch marks every entry whose Seq is in seqs as executed by
+// APPENDING one tombstone line per unique Seq, with a single write and a
+// single fsync — regardless of how many seqs are supplied. Readers merge
+// tombstones with their earlier command entries (see readEntries), so the
+// effect matches rewriting the file, but the Drain hot path never pays an
+// O(file size) read+rewrite, and a torn append can at worst lose the
+// tombstone suffix — never previously committed state. Passing an empty
+// slice is a no-op (no write, no fsync).
+func (w *WAL) MarkExecutedBatch(seqs []uint64) error {
+	if len(seqs) == 0 {
+		return nil
+	}
+
+	var buf bytes.Buffer
+	marked := make(map[uint64]struct{}, len(seqs))
+	for _, s := range seqs {
+		if _, dup := marked[s]; dup {
+			continue
+		}
+		marked[s] = struct{}{}
+		data, err := json.Marshal(walEntry{Command: Command{Seq: s}, Executed: true})
+		if err != nil {
+			return err
+		}
+		buf.Write(data)
+		buf.WriteByte('\n')
+	}
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
-	entries, err := w.readEntriesLocked()
-	if err != nil {
+	if _, err := w.file.Write(buf.Bytes()); err != nil {
 		return err
 	}
-
-	for i := range entries {
-		if entries[i].Command.Seq == seq {
-			entries[i].Executed = true
-		}
-	}
-
-	return w.rewriteLocked(entries)
+	w.lines += len(marked)
+	return w.file.Sync()
 }
 
 // Replay returns all commands that are not executed and not stale (i.e.,
@@ -145,96 +212,328 @@ func (w *WAL) Truncate() error {
 	if err := w.file.Truncate(0); err != nil {
 		return err
 	}
+	w.lines = 0
+	w.linesAtRewrite = 0
+	w.rewriteGen++
 	return w.file.Sync()
 }
 
 // CompactExecuted rewrites the WAL keeping every un-executed entry (for
 // crash-replay) plus the most recent keepRecent executed tombstones (for
 // dedup-map seeding at restart).  Executed tombstones drop the command
-// payload since dedup only needs the Seq — saves disk and makes the
-// per-Drain rewrite cost O(keepRecent) instead of O(uptime).
+// payload since dedup only needs the Seq — saves disk and keeps the file
+// (and thus every full read) bounded instead of O(uptime).
 //
-// Designed to be called at end-of-Drain in place of the old Truncate
-// path: bounded file size prevents MarkExecuted's rewriteLocked (which is
-// O(file size) per call) from degrading over long uptime.  Fsync'd via
-// rewriteLocked.
+// This synchronous variant holds the WAL mutex for the whole pass; the
+// Drain hot path uses MaybeCompactExecuted from a background goroutine
+// instead.  The rewrite is atomic (temp file + fsync + rename), so a crash
+// or I/O failure at any point preserves the previous file.
 func (w *WAL) CompactExecuted(keepRecent int) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return errors.New("cmdqueue: WAL is closed")
+	}
 	entries, err := w.readEntriesLocked()
 	if err != nil {
 		return err
 	}
-	pending := entries[:0:0]
-	executedTomb := make([]walEntry, 0, keepRecent)
-	for _, e := range entries {
-		if e.Executed {
-			executedTomb = append(executedTomb, walEntry{
-				Command:  Command{Seq: e.Command.Seq},
-				Executed: true,
-			})
-		} else {
-			pending = append(pending, e)
-		}
+	return w.rewriteLocked(compactEntries(entries, keepRecent))
+}
+
+// MaybeCompactExecuted compacts like CompactExecuted, but only once at
+// least walCompactMinAppends lines have accumulated since the last rewrite,
+// and it is engineered to run from a background goroutine without stalling
+// the frame loop: the O(file size) read and the bulk temp-file write+fsync
+// happen WITHOUT holding the WAL mutex, so concurrent Append /
+// MarkExecutedBatch calls are blocked only for the final suffix carry-over,
+// an incremental fsync, and the rename+handle swap. Lines appended while
+// the snapshot was being compacted are copied over verbatim; a concurrent
+// rewrite or Truncate aborts the pass (rewriteGen guard).
+func (w *WAL) MaybeCompactExecuted(keepRecent int) error {
+	// Phase 1: snapshot boundaries under the lock (cheap).
+	w.mu.Lock()
+	if w.closed || w.lines-w.linesAtRewrite < walCompactMinAppends {
+		w.mu.Unlock()
+		return nil
 	}
-	if keepRecent >= 0 && len(executedTomb) > keepRecent {
-		executedTomb = executedTomb[len(executedTomb)-keepRecent:]
+	snapSize, err := w.file.Seek(0, io.SeekEnd)
+	if err != nil {
+		w.mu.Unlock()
+		return err
 	}
-	compacted := append(pending, executedTomb...)
-	return w.rewriteLocked(compacted)
+	gen := w.rewriteGen
+	w.mu.Unlock()
+
+	// Phase 2 (unlocked): read, compact, and write the bulk of the new
+	// file. Everything below snapSize is complete, immutable (append-only)
+	// data, so reading it without the lock is safe; the only mutators
+	// (rewrite/Truncate) are caught by the gen check below.
+	entries, _, err := readEntries(w.path, snapSize)
+	if err != nil {
+		return err
+	}
+	compacted := compactEntries(entries, keepRecent)
+
+	tmp, err := os.CreateTemp(filepath.Dir(w.path), filepath.Base(w.path)+".compact-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	discard := func(err error) error {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	lines, err := writeEntries(tmp, compacted)
+	if err != nil {
+		return discard(err)
+	}
+	if err := tmp.Sync(); err != nil { // bulk fsync outside the lock
+		return discard(err)
+	}
+
+	// Phase 3 (locked): carry over lines appended since the snapshot, then
+	// atomically swap the file in.
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed || w.rewriteGen != gen {
+		return discard(nil)
+	}
+	suffixLines, err := copyFileSuffix(tmp, w.path, snapSize)
+	if err != nil {
+		return discard(err)
+	}
+	if err := tmp.Sync(); err != nil { // incremental: only the suffix is dirty
+		return discard(err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return w.replaceFileLocked(tmpPath, lines+suffixLines)
 }
 
 // Close closes the underlying file.
 func (w *WAL) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.closed = true
 	return w.file.Close()
 }
 
 // readEntriesLocked reads all WAL entries from disk. Caller must hold w.mu.
 func (w *WAL) readEntriesLocked() ([]walEntry, error) {
-	f, err := os.Open(w.path)
+	entries, lines, err := readEntries(w.path, -1)
 	if err != nil {
 		return nil, err
 	}
+	if lines > w.lines {
+		w.lines = lines
+	}
+	return entries, nil
+}
+
+// readEntries reads and merges the WAL entries from path. limit >= 0
+// restricts the read to the first limit bytes (used by
+// MaybeCompactExecuted to read a consistent append-only prefix without
+// holding the WAL mutex); limit < 0 reads the whole file.
+//
+// Merge semantics: a line with Executed=true marks every earlier
+// un-executed entry with the same Seq as executed (these are the tombstone
+// lines appended by MarkExecutedBatch); if no earlier entry matches, the
+// line is retained as a standalone executed tombstone (the compacted form
+// that seeds ReplayExecutedSeqs).
+//
+// The scanner buffer is sized to maxWALLineBytes — matching the cap
+// enforced by Append — so a large (but legal) payload can never trip
+// bufio.ErrTooLong and permanently poison reads.
+func readEntries(path string, limit int64) ([]walEntry, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
 	defer func() { _ = f.Close() }()
 
-	var entries []walEntry
-	scanner := bufio.NewScanner(f)
+	var r io.Reader = f
+	if limit >= 0 {
+		r = io.LimitReader(f, limit)
+	}
+
+	var (
+		entries    []walEntry
+		unexecuted = make(map[uint64][]int)
+		lines      int
+	)
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), maxWALLineBytes)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
 		}
+		lines++
 		var e walEntry
 		if err := json.Unmarshal(line, &e); err != nil {
 			continue // skip corrupt lines
 		}
-		entries = append(entries, e)
+		if !e.Executed {
+			unexecuted[e.Command.Seq] = append(unexecuted[e.Command.Seq], len(entries))
+			entries = append(entries, e)
+			continue
+		}
+		if idxs := unexecuted[e.Command.Seq]; len(idxs) > 0 {
+			for _, i := range idxs {
+				entries[i].Executed = true
+			}
+			delete(unexecuted, e.Command.Seq)
+		} else {
+			entries = append(entries, e)
+		}
 	}
-	return entries, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, 0, err
+	}
+	return entries, lines, nil
 }
 
-// rewriteLocked truncates the WAL and rewrites it with the given entries.
-// Caller must hold w.mu.
-func (w *WAL) rewriteLocked(entries []walEntry) error {
-	// Seek to beginning and truncate.
-	if _, err := w.file.Seek(0, 0); err != nil {
-		return err
+// compactEntries keeps every un-executed entry (for crash-replay) plus the
+// most recent keepRecent executed tombstones (for dedup-map seeding at
+// restart). Executed entries drop the command payload since dedup only
+// needs the Seq. Seq-0 tombstones are dropped entirely: dedup ignores
+// Seq 0 (ReplayExecutedSeqs skips them), and rewriting them after pending
+// entries could wrongly mark later Seq-0 commands executed under the
+// tombstone merge in readEntries.
+func compactEntries(entries []walEntry, keepRecent int) []walEntry {
+	pending := entries[:0:0]
+	var executedTomb []walEntry
+	for _, e := range entries {
+		switch {
+		case !e.Executed:
+			pending = append(pending, e)
+		case e.Command.Seq > 0:
+			executedTomb = append(executedTomb, walEntry{
+				Command:  Command{Seq: e.Command.Seq},
+				Executed: true,
+			})
+		}
 	}
-	if err := w.file.Truncate(0); err != nil {
-		return err
+	if keepRecent >= 0 && len(executedTomb) > keepRecent {
+		executedTomb = executedTomb[len(executedTomb)-keepRecent:]
 	}
+	return append(pending, executedTomb...)
+}
 
+// writeEntries writes entries as JSON lines to dst and returns the number
+// of lines written.
+func writeEntries(dst io.Writer, entries []walEntry) (int, error) {
+	bw := bufio.NewWriter(dst)
 	for _, e := range entries {
 		data, err := json.Marshal(e)
 		if err != nil {
-			return err
+			return 0, err
 		}
-		data = append(data, '\n')
-		if _, err := w.file.Write(data); err != nil {
-			return err
+		if _, err := bw.Write(data); err != nil {
+			return 0, err
+		}
+		if err := bw.WriteByte('\n'); err != nil {
+			return 0, err
 		}
 	}
-	return w.file.Sync()
+	if err := bw.Flush(); err != nil {
+		return 0, err
+	}
+	return len(entries), nil
+}
+
+// copyFileSuffix appends the bytes of path beyond offset to dst and returns
+// the number of newline-terminated lines copied.
+func copyFileSuffix(dst io.Writer, path string, offset int64) (int, error) {
+	src, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = src.Close() }()
+	if _, err := src.Seek(offset, io.SeekStart); err != nil {
+		return 0, err
+	}
+	data, err := io.ReadAll(src)
+	if err != nil {
+		return 0, err
+	}
+	if len(data) == 0 {
+		return 0, nil
+	}
+	if _, err := dst.Write(data); err != nil {
+		return 0, err
+	}
+	return bytes.Count(data, []byte{'\n'}), nil
+}
+
+// rewriteLocked atomically rewrites the WAL with the given entries using
+// the temp-file + fsync + rename pattern (mirroring preset/store.go and
+// macro/store.go): a crash or I/O failure at ANY point leaves either the
+// complete old file or the complete new file on disk — never a truncated
+// or torn WAL. The previous in-place Seek+Truncate+Write implementation
+// could persist an empty or arbitrarily torn file on power loss, silently
+// destroying both crash-replay and dedup-tombstone state. Caller must
+// hold w.mu.
+func (w *WAL) rewriteLocked(entries []walEntry) error {
+	tmp, err := os.CreateTemp(filepath.Dir(w.path), filepath.Base(w.path)+".rewrite-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	discard := func(err error) error {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	lines, err := writeEntries(tmp, entries)
+	if err != nil {
+		return discard(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return discard(err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return w.replaceFileLocked(tmpPath, lines)
+}
+
+// replaceFileLocked atomically replaces the WAL file with the fully synced
+// file at tmpPath and swaps the append handle onto the new inode. The new
+// handle is opened BEFORE the rename so a failure at any step leaves the
+// previous file and handle fully intact. Caller must hold w.mu.
+func (w *WAL) replaceFileLocked(tmpPath string, lines int) error {
+	newFile, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_APPEND, 0o644)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, w.path); err != nil {
+		_ = newFile.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	syncDir(filepath.Dir(w.path))
+	old := w.file
+	w.file = newFile
+	_ = old.Close()
+	w.rewriteGen++
+	w.lines = lines
+	w.linesAtRewrite = lines
+	return nil
+}
+
+// syncDir best-effort fsyncs a directory so a rename inside it is durable.
+func syncDir(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	_ = d.Sync()
+	_ = d.Close()
 }

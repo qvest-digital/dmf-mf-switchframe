@@ -77,6 +77,24 @@ export function encodeTransitionPosition(position: number): Uint8Array {
 	return new Uint8Array(buf);
 }
 
+// Max even value representable in a uint16 (65535 is odd, so the wire ceiling is 65534).
+const MAX_EVEN_UINT16 = 65534;
+
+// Round to the nearest even integer and clamp into [min, MAX_EVEN_UINT16] so the encoded
+// value always satisfies the server's constraints (ParseGraphicsLayerPosition rejects odd
+// values, zero dimensions, and anything that doesn't fit a uint16). Without this, setUint16
+// would silently wrap out-of-range coordinates and odd pixels would be dropped on the wire
+// with no UI feedback. `min` is 0 for offsets (x/y) and 2 for dimensions (w/h, zero rejected).
+function clampEven(value: number, min: number): number {
+	if (!Number.isFinite(value)) return min;
+	// Round to nearest, then snap down to the nearest even integer.
+	let v = Math.round(value);
+	v -= v % 2; // even-align (handles negatives consistently before clamping)
+	if (v < min) return min;
+	if (v > MAX_EVEN_UINT16) return MAX_EVEN_UINT16;
+	return v;
+}
+
 export function encodeGraphicsLayerPosition(
 	layerId: number,
 	x: number,
@@ -88,10 +106,10 @@ export function encodeGraphicsLayerPosition(
 	const view = new DataView(buf);
 	view.setUint8(0, MSG_GRAPHICS_LAYER_POSITION);
 	view.setUint16(1, layerId);
-	view.setUint16(3, x);
-	view.setUint16(5, y);
-	view.setUint16(7, w);
-	view.setUint16(9, h);
+	view.setUint16(3, clampEven(x, 0));
+	view.setUint16(5, clampEven(y, 0));
+	view.setUint16(7, clampEven(w, 2));
+	view.setUint16(9, clampEven(h, 2));
 	return new Uint8Array(buf);
 }
 

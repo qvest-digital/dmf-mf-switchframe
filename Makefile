@@ -1,4 +1,4 @@
-.PHONY: build build-server build-server-mxl build-asr-sidecar build-asr-sidecar-whisper dev demo demo-captions demo-cef demo-advanced cef-sidecar mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker docker-cuda clean sync-prism-ts lint format setup-mkcert metal-shaders asr-eval-fixtures asr-eval
+.PHONY: build build-server build-server-mxl build-asr-sidecar build-asr-sidecar-whisper dev demo demo-captions demo-cef demo-advanced cef-sidecar mxl-demo ui-install ui-build ui-test ui-e2e test correctness correctness-vet test-mxl test-all docker docker-cuda clean sync-prism-ts lint format setup-mkcert metal-shaders asr-eval-fixtures asr-eval
 
 EMBED_LINK := server/cmd/switchframe/ui
 
@@ -61,6 +61,17 @@ endif
 # Go tests
 test:
 	cd server && go test ./... -race
+
+# Correctness harness: determinism / frame-exactness / leak suite.
+# Gated behind the `correctness` build tag (~46k lines, slow, needs ffmpeg +
+# ffprobe + pkg-config on PATH). NOT part of `test`; run explicitly or via CI.
+correctness:
+	cd server && go test -tags correctness ./correctness/... -race -timeout=60m
+
+# Compile-only guard for the correctness harness so it cannot bit-rot when the
+# full suite isn't run. Vets every tagged _test.go without executing it.
+correctness-vet:
+	cd server && go vet -tags correctness ./correctness/...
 
 # Auto-install UI deps if missing
 node_modules_check:

@@ -1,6 +1,8 @@
 package transition
 
 import (
+	"fmt"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -300,6 +302,59 @@ func TestBlendWipeMap_Multiply(t *testing.T) {
 	}
 	// With multiply=3, we expect at least 4 transitions (3 repeats = 6 edges, but some merge).
 	require.GreaterOrEqual(t, transitions, 3, "multiply=3 should create repeating pattern")
+}
+
+// TestBlendWipeMap_DegenerateMultiply verifies that out-of-range Multiply values
+// decoded from API/CEF JSON no longer corrupt the transition. Before clamping:
+//   - A Multiply that is a multiple of 256 made byte((g*Multiply)%256)==0 for
+//     every pixel, so at any position>0 the whole frame instantly revealed B
+//     (a degenerate hard cut).
+//   - A near-MaxInt Multiply overflowed int(g)*Multiply to a negative value
+//     before the %256, producing sign-dependent garbage bytes.
+//
+// After clamping to [1, 64], both cases behave like a bounded venetian-blind
+// repeat: the mid-transition frame is a genuine mix of A and B pixels.
+func TestBlendWipeMap_DegenerateMultiply(t *testing.T) {
+	t.Parallel()
+	gradMap := wipemap.GenHorizontal(false)(wipeTestW, wipeTestH)
+	a := makeYUVFrame(wipeTestW, wipeTestH, 200, 128, 128) // A is bright (Y=200)
+	b := makeYUVFrame(wipeTestW, wipeTestH, 50, 128, 128)  // B is dark (Y=50)
+	ySize := wipeTestW * wipeTestH
+
+	countDominant := func(out []byte) (aPixels, bPixels int) {
+		for i := 0; i < ySize; i++ {
+			if out[i] < 125 { // closer to B (Y=50)
+				bPixels++
+			} else { // closer to A (Y=200)
+				aPixels++
+			}
+		}
+		return
+	}
+
+	for _, mul := range []int{256, 256 * 4, math.MaxInt} {
+		mul := mul
+		t.Run(fmt.Sprintf("multiply=%d", mul), func(t *testing.T) {
+			t.Parallel()
+			fb := mustNewFrameBlender(t, wipeTestW, wipeTestH)
+			cfg := wipemap.WipeConfig{PatternID: "h-left", SoftEdge: 0.01, Multiply: mul}
+			out := fb.BlendWipeMap(a, b, 0.5, gradMap, cfg)
+
+			aPixels, bPixels := countDominant(out)
+			// The unguarded code produced aPixels==0 (instant cut to B) for
+			// multiples of 256; with the clamp the frame must contain BOTH
+			// source regions at the midpoint.
+			require.NotZero(t, aPixels, "degenerate Multiply must not instant-cut to B (expected some A pixels)")
+			require.NotZero(t, bPixels, "mid-transition frame must contain some B pixels")
+
+			// The clamped result must match an explicit Multiply==maxMultiply
+			// config byte-for-byte (Multiplier() collapses both to 64).
+			fbRef := mustNewFrameBlender(t, wipeTestW, wipeTestH)
+			cfgRef := wipemap.WipeConfig{PatternID: "h-left", SoftEdge: 0.01, Multiply: 64}
+			ref := fbRef.BlendWipeMap(a, b, 0.5, gradMap, cfgRef)
+			require.Equal(t, ref[:ySize], out[:ySize], "clamped Multiply should equal Multiply=64 output")
+		})
+	}
 }
 
 func TestBlendWipeMap_Position0(t *testing.T) {

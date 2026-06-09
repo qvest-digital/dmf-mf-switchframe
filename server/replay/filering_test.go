@@ -3,10 +3,13 @@ package replay
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -72,7 +75,7 @@ func TestFileRing_WriteAndRead(t *testing.T) {
 	now := time.Now()
 	pts := int64(90000)
 
-	if _, err := ring.Write(data, pts, now, true); err != nil {
+	if _, _, err := ring.Write(data, pts, now, true); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
@@ -82,7 +85,7 @@ func TestFileRing_WriteAndRead(t *testing.T) {
 		t.Fatalf("Frames() len = %d, want 1", len(frames))
 	}
 
-	got, err := ring.Read(frames[0].offset, frames[0].size)
+	got, err := ring.Read(frames[0].offset, frames[0].size, frames[0].writeSeq)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -105,7 +108,7 @@ func TestFileRing_MultipleFrames(t *testing.T) {
 		frameData[i] = make([]byte, 100)
 		_, _ = rand.Read(frameData[i])
 		isIDR := i == 0 || i == 5
-		if _, err := ring.Write(frameData[i], int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), isIDR); err != nil {
+		if _, _, err := ring.Write(frameData[i], int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), isIDR); err != nil {
 			t.Fatalf("Write frame %d: %v", i, err)
 		}
 	}
@@ -117,7 +120,7 @@ func TestFileRing_MultipleFrames(t *testing.T) {
 
 	// Read each frame back and verify.
 	for i, f := range frames {
-		got, err := ring.Read(f.offset, f.size)
+		got, err := ring.Read(f.offset, f.size, f.writeSeq)
 		if err != nil {
 			t.Fatalf("Read frame %d: %v", i, err)
 		}
@@ -145,7 +148,7 @@ func TestFileRing_Wrap(t *testing.T) {
 	for i := range frameData {
 		frameData[i] = make([]byte, 150)
 		_, _ = rand.Read(frameData[i])
-		if _, err := ring.Write(frameData[i], int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), i == 0); err != nil {
+		if _, _, err := ring.Write(frameData[i], int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), i == 0); err != nil {
 			t.Fatalf("Write frame %d: %v", i, err)
 		}
 	}
@@ -163,7 +166,7 @@ func TestFileRing_Wrap(t *testing.T) {
 
 	// Frames 1 and 2 should still be readable.
 	for _, idx := range []int{0, 1} {
-		got, err := ring.Read(frames[idx].offset, frames[idx].size)
+		got, err := ring.Read(frames[idx].offset, frames[idx].size, frames[idx].writeSeq)
 		if err != nil {
 			t.Fatalf("Read post-wrap frame %d: %v", idx, err)
 		}
@@ -173,7 +176,7 @@ func TestFileRing_Wrap(t *testing.T) {
 	}
 
 	// Frame 3 (the wrapped one) should also be readable.
-	got, err := ring.Read(frames[2].offset, frames[2].size)
+	got, err := ring.Read(frames[2].offset, frames[2].size, frames[2].writeSeq)
 	if err != nil {
 		t.Fatalf("Read wrapped frame: %v", err)
 	}
@@ -196,7 +199,7 @@ func TestFileRing_WrapInvalidatesMultiple(t *testing.T) {
 	// Write 3 frames of 100 bytes each (fills the buffer exactly).
 	for i := 0; i < 3; i++ {
 		data := bytes.Repeat([]byte{byte(i)}, 100)
-		if _, err := ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), false); err != nil {
+		if _, _, err := ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), false); err != nil {
 			t.Fatalf("Write frame %d: %v", i, err)
 		}
 	}
@@ -206,7 +209,7 @@ func TestFileRing_WrapInvalidatesMultiple(t *testing.T) {
 
 	// Write a 200-byte frame — wraps to 0, invalidating frames 0 and 1.
 	bigData := bytes.Repeat([]byte{0xFF}, 200)
-	if _, err := ring.Write(bigData, 9000, now.Add(100*time.Millisecond), true); err != nil {
+	if _, _, err := ring.Write(bigData, 9000, now.Add(100*time.Millisecond), true); err != nil {
 		t.Fatalf("Write big frame: %v", err)
 	}
 
@@ -217,7 +220,7 @@ func TestFileRing_WrapInvalidatesMultiple(t *testing.T) {
 
 	// Verify the big frame is readable.
 	frames := ring.Frames()
-	got, err := ring.Read(frames[1].offset, frames[1].size)
+	got, err := ring.Read(frames[1].offset, frames[1].size, frames[1].writeSeq)
 	if err != nil {
 		t.Fatalf("Read big frame: %v", err)
 	}
@@ -240,7 +243,7 @@ func TestFileRing_FrameCount(t *testing.T) {
 
 	now := time.Now()
 	for i := 0; i < 5; i++ {
-		_, _ = ring.Write([]byte("frame"), int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), false)
+		_, _, _ = ring.Write([]byte("frame"), int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), false)
 	}
 	if ring.FrameCount() != 5 {
 		t.Errorf("after 5 writes: FrameCount = %d, want 5", ring.FrameCount())
@@ -250,7 +253,7 @@ func TestFileRing_FrameCount(t *testing.T) {
 	// Buffer is 1024 bytes. 5 frames of 5 bytes = 25 bytes used.
 	// Write a 1020-byte frame — wraps to 0, invalidating all 5 small frames.
 	bigData := make([]byte, 1020)
-	_, _ = ring.Write(bigData, 99000, now.Add(100*time.Millisecond), true)
+	_, _, _ = ring.Write(bigData, 99000, now.Add(100*time.Millisecond), true)
 
 	// The 1020-byte frame at offset 25 doesn't fit (25+1020=1045 > 1024),
 	// so it wraps to 0 and invalidates frames in [0, 1020) = all 5 small frames.
@@ -272,9 +275,9 @@ func TestFileRing_BytesUsed(t *testing.T) {
 	}
 
 	now := time.Now()
-	_, _ = ring.Write(make([]byte, 100), 0, now, false)
-	_, _ = ring.Write(make([]byte, 200), 3000, now.Add(time.Millisecond), false)
-	_, _ = ring.Write(make([]byte, 300), 6000, now.Add(2*time.Millisecond), true)
+	_, _, _ = ring.Write(make([]byte, 100), 0, now, false)
+	_, _, _ = ring.Write(make([]byte, 200), 3000, now.Add(time.Millisecond), false)
+	_, _, _ = ring.Write(make([]byte, 300), 6000, now.Add(2*time.Millisecond), true)
 
 	if ring.BytesUsed() != 600 {
 		t.Errorf("BytesUsed = %d, want 600", ring.BytesUsed())
@@ -292,7 +295,7 @@ func TestFileRing_BytesUsedAfterWrap(t *testing.T) {
 	now := time.Now()
 	// Write 4 x 150 = 600 bytes into 500 byte ring.
 	for i := 0; i < 4; i++ {
-		_, _ = ring.Write(make([]byte, 150), int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), false)
+		_, _, _ = ring.Write(make([]byte, 150), int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), false)
 	}
 
 	// Frame 0 (150 bytes) should be invalidated.
@@ -311,7 +314,7 @@ func TestFileRing_FrameTooLarge(t *testing.T) {
 	defer func() { _ = ring.CloseAndRemove() }()
 
 	data := make([]byte, 101)
-	_, err = ring.Write(data, 0, time.Now(), false)
+	_, _, err = ring.Write(data, 0, time.Now(), false)
 	if err == nil {
 		t.Fatal("expected error for frame too large, got nil")
 	}
@@ -341,7 +344,7 @@ func TestFileRing_ConcurrentReadWrite(t *testing.T) {
 			}
 			data := make([]byte, 100)
 			_, _ = rand.Read(data)
-			_, _ = ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), i%30 == 0)
+			_, _, _ = ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), i%30 == 0)
 		}
 	}()
 
@@ -358,7 +361,7 @@ func TestFileRing_ConcurrentReadWrite(t *testing.T) {
 			frames := ring.Frames()
 			if len(frames) > 0 {
 				f := frames[len(frames)-1]
-				_, _ = ring.Read(f.offset, f.size)
+				_, _ = ring.Read(f.offset, f.size, f.writeSeq)
 			}
 			_ = ring.FrameCount()
 			_ = ring.BytesUsed()
@@ -376,6 +379,121 @@ func TestFileRing_ConcurrentReadWrite(t *testing.T) {
 	}
 }
 
+// TestFileRing_ConcurrentReadOldFrameIntegrity is the regression for the
+// torn-read / silent-corruption finding: a reader that picks an OLD,
+// recyclable-offset frame (not just the newest) while a writer wraps the ring
+// must observe either that frame's own bytes or ErrFrameRecycled — never
+// another frame's (foreign) bytes. The existing concurrent test only reads the
+// newest frame, whose slot the writer cannot be mid-overwriting, so it can't
+// reveal this class of bug.
+//
+// Each frame's payload is a known function of its monotonic write seq: the
+// first 8 bytes encode the seq and the remainder is byte(seq) filler. A
+// successful Read of an old entry is verified byte-for-byte against that
+// entry's writeSeq, so any foreign content (a different seq) is caught here
+// even when the race detector sees nothing.
+func TestFileRing_ConcurrentReadOldFrameIntegrity(t *testing.T) {
+	dir := t.TempDir()
+	// Small ring so the writer wraps repeatedly and recycles old slots while
+	// the reader is reaching back into the index for older frames.
+	ring, err := newFileRing(filepath.Join(dir, "ring.buf"), 4096)
+	if err != nil {
+		t.Fatalf("newFileRing: %v", err)
+	}
+	defer func() { _ = ring.CloseAndRemove() }()
+
+	const frameSize = 256
+	// payloadForSeq builds the deterministic content for a given seq.
+	payloadForSeq := func(seq int64) []byte {
+		b := make([]byte, frameSize)
+		binary.BigEndian.PutUint64(b[:8], uint64(seq))
+		for i := 8; i < len(b); i++ {
+			b[i] = byte(seq)
+		}
+		return b
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Writer: append fixed-size frames whose bytes encode their own seq. The
+	// ring assigns seq = previous nextSeq + 1, i.e. our local counter + 1.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		now := time.Now()
+		for i := int64(0); ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			seq := i + 1 // fileRing increments nextSeq before assigning
+			_, gotSeq, werr := ring.Write(payloadForSeq(seq), seq*3000,
+				now.Add(time.Duration(i)*time.Millisecond), i%30 == 0)
+			if werr == nil && gotSeq != seq {
+				t.Errorf("Write seq = %d, want %d", gotSeq, seq)
+				return
+			}
+		}
+	}()
+
+	// Reader: repeatedly snapshot the index and read an OLD entry (the oldest
+	// resident frame), exercising offsets the writer may be recycling.
+	var reads, recycled int64
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			frames := ring.Frames()
+			if len(frames) == 0 {
+				continue
+			}
+			// Oldest resident frame — most likely to be recycled mid-read.
+			f := frames[0]
+			data, rerr := ring.Read(f.offset, f.size, f.writeSeq)
+			if errors.Is(rerr, ErrFrameRecycled) {
+				atomic.AddInt64(&recycled, 1)
+				continue
+			}
+			if rerr != nil {
+				t.Errorf("unexpected Read error: %v", rerr)
+				return
+			}
+			atomic.AddInt64(&reads, 1)
+			// The bytes must belong to THIS entry's seq, never a foreign one.
+			want := payloadForSeq(f.writeSeq)
+			if !bytes.Equal(data, want) {
+				gotSeq := binary.BigEndian.Uint64(data[:8])
+				t.Errorf("torn/foreign read: entry seq=%d returned bytes for seq=%d",
+					f.writeSeq, gotSeq)
+				return
+			}
+		}
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	if ring.FrameCount() == 0 {
+		t.Error("expected frames to have been written")
+	}
+	// Sanity: the reader actually exercised both successful reads of old frames
+	// and recycled-slot rejections, so the integrity assertion was meaningful.
+	if atomic.LoadInt64(&reads) == 0 {
+		t.Error("reader never successfully read an old frame")
+	}
+	if atomic.LoadInt64(&recycled) == 0 {
+		t.Error("reader never hit a recycled slot — ring may not have wrapped over the oldest frame")
+	}
+}
+
 func TestFileRing_IDRTracking(t *testing.T) {
 	dir := t.TempDir()
 	ring, err := newFileRing(filepath.Join(dir, "ring.buf"), 1024*1024)
@@ -389,7 +507,7 @@ func TestFileRing_IDRTracking(t *testing.T) {
 	idrFlags := []bool{true, false, false, false, true, false, false}
 	for i, isIDR := range idrFlags {
 		data := []byte(fmt.Sprintf("frame-%d", i))
-		_, _ = ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), isIDR)
+		_, _, _ = ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), isIDR)
 	}
 
 	frames := ring.Frames()
@@ -416,7 +534,7 @@ func TestFileRing_WallTimeOrdering(t *testing.T) {
 	// Write frames with increasing wall times.
 	for i := 0; i < 20; i++ {
 		wt := base.Add(time.Duration(i) * 33 * time.Millisecond)
-		_, _ = ring.Write([]byte("x"), int64(i*3000), wt, i%10 == 0)
+		_, _, _ = ring.Write([]byte("x"), int64(i*3000), wt, i%10 == 0)
 	}
 
 	frames := ring.Frames()
@@ -444,7 +562,7 @@ func TestFileRing_PTSPreserved(t *testing.T) {
 	now := time.Now()
 	ptsList := []int64{0, 3000, 6000, 9000, 12000}
 	for i, pts := range ptsList {
-		_, _ = ring.Write([]byte("data"), pts, now.Add(time.Duration(i)*33*time.Millisecond), false)
+		_, _, _ = ring.Write([]byte("data"), pts, now.Add(time.Duration(i)*33*time.Millisecond), false)
 	}
 
 	frames := ring.Frames()
@@ -489,7 +607,7 @@ func TestFileRing_SequentialFill(t *testing.T) {
 	expectedOffset := int64(0)
 	for i, sz := range sizes {
 		data := make([]byte, sz)
-		_, _ = ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), false)
+		_, _, _ = ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), false)
 	}
 
 	frames := ring.Frames()

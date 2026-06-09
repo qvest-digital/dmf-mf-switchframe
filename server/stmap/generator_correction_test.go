@@ -186,6 +186,54 @@ func TestGenerateCornerPin_Shift(t *testing.T) {
 	require.Less(t, dS+dT, 0.05, "un-shifted corner should be near identity")
 }
 
+// TestGenerateInvalidDimensions verifies that static generators reject
+// non-positive and odd dimensions instead of producing corrupt maps. The
+// w==1 case in particular would otherwise divide by w-1==0 in corner_pin,
+// yielding +Inf -> NaN/garbage S/T coordinates.
+func TestGenerateInvalidDimensions(t *testing.T) {
+	cases := []struct {
+		name string
+		w, h int
+	}{
+		{"zero_width", 0, 8},
+		{"zero_height", 8, 0},
+		{"negative_width", -4, 8},
+		{"negative_height", 8, -4},
+		{"odd_width", 7, 8},
+		{"odd_height", 8, 7},
+		{"width_one_corner_pin_divzero", 1, 8},
+		{"height_one", 8, 1},
+		{"both_odd", 5, 5},
+	}
+	gens := []string{"identity", "barrel", "pincushion", "fisheye_to_rectilinear", "corner_pin"}
+	for _, g := range gens {
+		for _, tc := range cases {
+			t.Run(g+"/"+tc.name, func(t *testing.T) {
+				m, err := Generate(g, nil, tc.w, tc.h)
+				require.ErrorIs(t, err, ErrInvalidDimensions)
+				require.Nil(t, m)
+			})
+		}
+	}
+}
+
+// TestGenerateAnimatedInvalidDimensions verifies animated generators apply the
+// same positive+even dimension validation.
+func TestGenerateAnimatedInvalidDimensions(t *testing.T) {
+	for _, g := range ListAnimatedGenerators() {
+		t.Run(g+"/odd_width", func(t *testing.T) {
+			a, err := GenerateAnimated(g, nil, 7, 8, 4)
+			require.ErrorIs(t, err, ErrInvalidDimensions)
+			require.Nil(t, a)
+		})
+		t.Run(g+"/width_one", func(t *testing.T) {
+			a, err := GenerateAnimated(g, nil, 1, 8, 4)
+			require.ErrorIs(t, err, ErrInvalidDimensions)
+			require.Nil(t, a)
+		})
+	}
+}
+
 func TestGenerateUnknownType(t *testing.T) {
 	_, err := Generate("nonexistent", nil, 8, 8)
 	require.Error(t, err)

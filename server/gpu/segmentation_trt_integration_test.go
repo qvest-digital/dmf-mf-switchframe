@@ -189,6 +189,7 @@ func TestSegmentationProxy_RealTRTInference(t *testing.T) {
 	if mask == nil {
 		t.Fatal("MaskForSource returned nil after TRT inference")
 	}
+	defer mask.Release()
 	t.Logf("mask: %dx%d, DevPtr=0x%x", mask.Width, mask.Height, mask.DevPtr)
 
 	if mask.Width != width || mask.Height != height {

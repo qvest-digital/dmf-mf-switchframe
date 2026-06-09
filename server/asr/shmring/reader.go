@@ -70,6 +70,14 @@ func NewReader(name string) (*Reader, error) {
 		return nil, fmt.Errorf("shmring: invalid capacity %d (must be a positive power of 2)", capacityBytes)
 	}
 
+	// CapacityBytes is written by another process; every unsafe read in this
+	// reader is bounded by it, so it must fit the fstat-derived mapping or
+	// copyOut would read past the end of the segment (SIGBUS or garbage).
+	if capacityBytes > uint64(totalSize)-HeaderSize {
+		_ = shmMunmap(base, totalSize)
+		return nil, fmt.Errorf("shmring: capacity %d exceeds segment size %d (header %d)", capacityBytes, totalSize, HeaderSize)
+	}
+
 	// Initialize local readPos from the shared ReadPos field.
 	readPos := atomic.LoadUint64(headerReadPos(base))
 
@@ -84,6 +92,29 @@ func NewReader(name string) (*Reader, error) {
 // Read returns all available samples since the last Read call.
 // If the writer has lapped the reader (overflow), fast-forwards to the latest data.
 // Returns nil if no new data is available (reader is caught up).
+//
+// Torn-read protection (seqlock-style): the single producer writes forward and
+// laps the buffer. A read copies the logical span [readPos, writePos); the
+// producer overwrites the physical slot of logical position p once a write
+// reaches logical position p+capacityBytes. The producer publishes the END of
+// each write to WriteReserve BEFORE copying any bytes, and to WritePos only
+// AFTER the copy completes, so:
+//
+//   - data in [reserve-capacityBytes, writePos) is stable: the in-flight write
+//     (if any) targets the physical slots of [writePos, reserve), which alias
+//     logical positions below reserve-capacityBytes, never this span;
+//   - after copying we re-read WriteReserve: if it extends past
+//     readPos+capacityBytes, a write that began during our copy may have
+//     overwritten the start of the copied region, so we discard the
+//     possibly-torn result and re-sync — the caller simply reads again.
+//
+// Strict ">" in both checks: a reader exactly capacityBytes behind an idle
+// producer (reserve == readPos+capacityBytes) has not had its oldest slot
+// overwritten and is returned intact.
+//
+// This reader is the production consumer (the switchframe-asr sidecar drains
+// the ring with it); the ring is lossy by design under sustained overrun, but
+// every returned batch is an exact, untorn span of the written stream.
 func (r *Reader) Read() []float32 {
 	writePos := atomic.LoadUint64(headerWritePos(r.base))
 	readPos := r.readPos
@@ -92,14 +123,25 @@ func (r *Reader) Read() []float32 {
 		return nil
 	}
 
-	available := writePos - readPos
+	// reserve is the end of the furthest write that may have started; data at
+	// logical positions below reserve-capacityBytes may be mid-overwrite.
+	// max() with writePos keeps compatibility with segments written before
+	// WriteReserve existed (field reads as 0).
+	reserve := max(atomic.LoadUint64(headerWriteReserve(r.base)), writePos)
 
-	// Overflow detection: writer has lapped the reader.
-	if available > r.capacityBytes {
-		// Fast-forward to the oldest still-valid data.
-		readPos = writePos - r.capacityBytes
-		available = r.capacityBytes
+	// Overflow / in-flight overwrite detection: fast-forward past any region
+	// the producer has already (possibly partially) reclaimed.
+	if reserve > readPos+r.capacityBytes {
+		readPos = reserve - r.capacityBytes
+		if writePos <= readPos {
+			// The entire published region is being rewritten; nothing is
+			// safely readable until the producer publishes the new WritePos.
+			r.readPos = readPos
+			atomic.StoreUint64(headerReadPos(r.base), readPos)
+			return nil
+		}
 	}
+	available := writePos - readPos
 
 	// available is in bytes; convert to float32 sample count.
 	nsamples := int(available / 4)
@@ -108,30 +150,17 @@ func (r *Reader) Read() []float32 {
 	}
 
 	result := make([]float32, nsamples)
-	mask := r.capacityBytes - 1
-	dataBase := unsafe.Add(r.base, HeaderSize)
+	r.copyOut(result, readPos, available)
 
-	offset := readPos & mask
-	tailSpace := r.capacityBytes - offset
-	nbytes := available
-
-	if nbytes <= tailSpace {
-		// No wrap: single copy.
-		src := unsafe.Add(dataBase, int(offset))
-		dst := unsafe.Pointer(unsafe.SliceData(result))
-		copyBytes(dst, src, int(nbytes))
-	} else {
-		// Wrap: split into two copies.
-		dst := unsafe.Pointer(unsafe.SliceData(result))
-
-		// First: copy from offset to end of buffer.
-		src1 := unsafe.Add(dataBase, int(offset))
-		copyBytes(dst, src1, int(tailSpace))
-
-		// Second: copy from beginning of buffer.
-		src2 := dataBase
-		dst2 := unsafe.Add(dst, int(tailSpace))
-		copyBytes(dst2, src2, int(nbytes-tailSpace))
+	// Seqlock-style re-validation: if a write that may overwrite the start of
+	// the region we just copied has begun (reserve beyond readPos+capacityBytes),
+	// discard the possibly-torn result and re-sync for the next Read.
+	reserveAfter := max(atomic.LoadUint64(headerWriteReserve(r.base)), atomic.LoadUint64(headerWritePos(r.base)))
+	if reserveAfter > readPos+r.capacityBytes {
+		newReadPos := reserveAfter - r.capacityBytes
+		r.readPos = newReadPos
+		atomic.StoreUint64(headerReadPos(r.base), newReadPos)
+		return nil
 	}
 
 	// Advance readPos (monotonic).
@@ -142,16 +171,46 @@ func (r *Reader) Read() []float32 {
 	return result
 }
 
+// copyOut copies `nbytes` bytes of ring data starting at logical position
+// `from` into result, handling the physical wrap. result must hold at least
+// nbytes/4 float32 samples and from+nbytes must not exceed one capacity span.
+func (r *Reader) copyOut(result []float32, from, nbytes uint64) {
+	mask := r.capacityBytes - 1
+	dataBase := unsafe.Add(r.base, HeaderSize)
+
+	offset := from & mask
+	tailSpace := r.capacityBytes - offset
+	dst := unsafe.Pointer(unsafe.SliceData(result))
+
+	if nbytes <= tailSpace {
+		// No wrap: single copy.
+		src := unsafe.Add(dataBase, int(offset))
+		copyBytes(dst, src, int(nbytes))
+		return
+	}
+
+	// Wrap: split into two copies.
+	// First: copy from offset to end of buffer.
+	src1 := unsafe.Add(dataBase, int(offset))
+	copyBytes(dst, src1, int(tailSpace))
+
+	// Second: copy from beginning of buffer.
+	dst2 := unsafe.Add(dst, int(tailSpace))
+	copyBytes(dst2, dataBase, int(nbytes-tailSpace))
+}
+
 // SampleRate returns the sample rate from the header.
+// Loaded atomically — the producer publishes it once with an atomic store
+// ordered before the first WritePos advance, so any reader that has observed
+// data also observes the correct sample rate.
 func (r *Reader) SampleRate() uint32 {
-	h := (*header)(r.base)
-	return h.SampleRate
+	return atomic.LoadUint32(headerSampleRate(r.base))
 }
 
 // Channels returns the channel count from the header.
+// Loaded atomically for the same publication guarantee as SampleRate.
 func (r *Reader) Channels() uint32 {
-	h := (*header)(r.base)
-	return h.Channels
+	return atomic.LoadUint32(headerChannels(r.base))
 }
 
 // Close unmaps the shared memory segment.

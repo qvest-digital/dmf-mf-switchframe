@@ -248,6 +248,74 @@ func BlendRegion(dst []byte, dstW, dstH int, src []byte, srcW, srcH int, rect im
 	}
 }
 
+// blendWithMaskAlpha alpha-blends src onto dst at the given rect, touching
+// only pixels where mask[i] > 0. This is the translucent counterpart of
+// blendWithMask: background pixels where a rotated source has no coverage
+// (the black AABB padding) must stay untouched instead of being blended at
+// constant alpha, otherwise dissolves on rotated/perspective slots darken
+// the whole bounding box.
+func blendWithMaskAlpha(dst []byte, dstW, dstH int, src, mask []byte, srcW, srcH int, rect image.Rectangle, alpha float64) {
+	if alpha <= 0 {
+		return
+	}
+	if alpha >= 1.0 {
+		blendWithMask(dst, dstW, dstH, src, mask, srcW, srcH, rect)
+		return
+	}
+
+	copyW := srcW
+	copyH := srcH
+	if rect.Min.X+copyW > dstW {
+		copyW = dstW - rect.Min.X
+	}
+	if rect.Min.Y+copyH > dstH {
+		copyH = dstH - rect.Min.Y
+	}
+	if copyW <= 0 || copyH <= 0 || rect.Min.X < 0 || rect.Min.Y < 0 {
+		return
+	}
+
+	pos := int(alpha*256 + 0.5)
+	inv := 256 - pos
+
+	// Y plane.
+	for y := 0; y < copyH; y++ {
+		for x := 0; x < copyW; x++ {
+			if mask[y*srcW+x] > 0 {
+				di := (rect.Min.Y+y)*dstW + rect.Min.X + x
+				dst[di] = byte((int(dst[di])*inv + int(src[y*srcW+x])*pos) >> 8)
+			}
+		}
+	}
+
+	// Chroma planes.
+	dstYSize := dstW * dstH
+	srcYSize := srcW * srcH
+	chromaDstW := dstW / 2
+	chromaSrcW := srcW / 2
+	chromaCopyW := copyW / 2
+	chromaCopyH := copyH / 2
+	chromaX := rect.Min.X / 2
+	chromaY := rect.Min.Y / 2
+
+	for plane := 0; plane < 2; plane++ {
+		dstBase := dstYSize + plane*(chromaDstW*(dstH/2))
+		srcBase := srcYSize + plane*(chromaSrcW*(srcH/2))
+		for y := 0; y < chromaCopyH; y++ {
+			for x := 0; x < chromaCopyW; x++ {
+				// Check if any of the 4 luma pixels in this chroma block are covered.
+				ly := y * 2
+				lx := x * 2
+				if ly < copyH && lx < copyW && mask[ly*srcW+lx] > 0 {
+					dstOff := dstBase + (chromaY+y)*chromaDstW + chromaX + x
+					srcOff := srcBase + y*chromaSrcW + x
+					dst[dstOff] = byte((int(dst[dstOff])*inv + int(src[srcOff])*pos) >> 8)
+				}
+			}
+		}
+	}
+}
+
 // blendWithMask composites src onto dst at the given rect, only copying pixels
 // where mask[i] > 0. This avoids overwriting background pixels where a rotated
 // source has no coverage.

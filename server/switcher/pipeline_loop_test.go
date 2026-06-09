@@ -226,7 +226,7 @@ func TestRebuildPipeline_IncrementsEpoch(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 
 	before := sw.pipelineEpoch.Load()
 	sw.rebuildPipeline()
@@ -244,7 +244,7 @@ func TestSetCompositor_TriggersPipelineRebuild(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 
 	epochBefore := sw.pipelineEpoch.Load()
 	sw.SetCompositor(nil)
@@ -260,7 +260,7 @@ func TestSetKeyBridge_TriggersPipelineRebuild(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 
 	epochBefore := sw.pipelineEpoch.Load()
 	sw.SetKeyBridge(nil)
@@ -276,7 +276,7 @@ func TestSetRawVideoSink_TriggersPipelineRebuild(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 
 	epochBefore := sw.pipelineEpoch.Load()
 	sink := RawVideoSink(func(pf *ProcessingFrame) {})
@@ -294,7 +294,7 @@ func TestSetPipelineFormat_SwapsPipeline(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 	sw.rebuildPipeline()
 	require.NotNil(t, sw.pipeline.Load())
 
@@ -320,7 +320,7 @@ func TestSetPipelineFormat_CallsOnFormatChange(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 	sw.rebuildPipeline()
 
 	// Register callback.
@@ -351,7 +351,7 @@ func TestClose_SwapsNilAndWaits(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 	sw.rebuildPipeline()
 	require.NotNil(t, sw.pipeline.Load())
 
@@ -368,7 +368,7 @@ func TestBuildPipeline_SetsEpoch(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 
 	err := sw.BuildPipeline()
 	require.NoError(t, err)
@@ -387,7 +387,7 @@ func TestAtomicSwap_FullLifecycle(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 
 	err := sw.BuildPipeline()
 	require.NoError(t, err)
@@ -486,7 +486,7 @@ func TestRebuildPipeline_BuildFailurePreservesOld(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 
 	// Build and install initial pipeline.
 	sw.rebuildPipeline()
@@ -531,7 +531,7 @@ func TestSwapPipeline_ConcurrentTriggers(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 	sw.rebuildPipeline()
 
 	// Fire 10 concurrent rebuild triggers — no panics, no races.
@@ -638,7 +638,7 @@ func TestBuildPipeline_WiresMetrics(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 
 	err := sw.BuildPipeline()
 	require.NoError(t, err)
@@ -659,7 +659,7 @@ func TestRebuildPipeline_WiresMetrics(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 
 	sw.rebuildPipeline()
 
@@ -692,19 +692,20 @@ func TestVideoProcessingLoop_RewritesPTSBeforePipelineRun(t *testing.T) {
 	sw := createTestSwitcher(t)
 	defer sw.Close()
 
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 	sw.EnableWallClockVideoPTS()
 
-	// Seed the wall-clock PTS epoch with a known value.
-	// Use the public seeding path to avoid races with videoProcessingLoop.
-	sw.configMu.Lock()
-	sw.wallClockVideoEnabled = true
+	// Seed the wall-clock PTS epoch with a known value, under videoPTSMu
+	// (the lock that guards these fields) to avoid races with the
+	// videoProcessingLoop goroutine. wallClockVideoEnabled is already set via
+	// EnableWallClockVideoPTS() above (which publishes the hotState mirror).
+	sw.videoPTSMu.Lock()
 	sw.videoPTSStart = 1000000 // 90kHz
 	sw.videoPTSEpoch = time.Now()
 	sw.videoPTS = 1000000
 	sw.videoPTSInited = true
 	sw.firstVideoPTSSeeded = true // prevent re-seeding from handleRawVideoFrame
-	sw.configMu.Unlock()
+	sw.videoPTSMu.Unlock()
 
 	// Record what PTS the raw preview sink receives.
 	var sinkPTS atomic.Int64
@@ -777,7 +778,7 @@ func TestRebuildPipeline_RedundantCallsIncrementEpoch(t *testing.T) {
 	sw.configMu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.configMu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
+	sw.framePool.Store(NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit))
 
 	sw.rebuildPipeline()
 	epochAfterFirst := sw.pipelineEpoch.Load()
