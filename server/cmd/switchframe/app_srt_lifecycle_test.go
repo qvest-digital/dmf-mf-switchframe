@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zsiec/switchframe/server/srt"
+	"github.com/zsiec/switchframe/server/switcher"
 )
 
 // nopConn is a stand-in for the SRT connection (srt.NewSource accepts any
@@ -92,4 +93,48 @@ func TestFailSRTSourceStart_RunsOnStoppedCleanup(t *testing.T) {
 func TestFailSRTSourceStart_NilOnStopped(t *testing.T) {
 	src := srt.NewSource(srt.SourceConfig{Key: "srt:nil-onstopped"}, nopConn{}, nil, nil)
 	failSRTSourceStart(src, "srt:nil-onstopped") // must not panic
+}
+
+// TestNewSRTPipelineFrame_ManagedRefcount pins the frame-lifetime contract for
+// SRT pipeline ingest: frames handed to IngestRawVideo are pool-backed AND
+// managed (refs initialized to 1). The frame-sync ring retains the frame (and
+// serves it as the freeze-repeat lastRawVideo) while sync-loop consumers take
+// and release borrowed references. On an unmanaged frame Ref() is a no-op
+// while ReleaseYUV frees immediately, so a consumer-side release would return
+// the pool buffer while the ring still aliased it (use-after-release) and the
+// ring's own release would double-free it.
+func TestNewSRTPipelineFrame_ManagedRefcount(t *testing.T) {
+	pool := switcher.NewFramePool(2, 64, 48, switcher.ColorYUV420_8bit)
+	yuv := pool.Acquire()
+
+	pf := newSRTPipelineFrame(srtVideoJob{yuv: yuv, w: 64, h: 48, pts: 9000}, pool)
+
+	if got := pf.Refs(); got != 1 {
+		t.Fatalf("Refs() = %d, want 1 (frame must be managed so Ref/ReleaseYUV are symmetric)", got)
+	}
+
+	// Borrow + release (what the sync loop does) must NOT free the buffer.
+	pf.Ref()
+	cp := *pf
+	cp.ReleaseYUV()
+	if pf.Data == nil {
+		t.Fatal("borrowed-copy release freed the buffer while the ring still owned it")
+	}
+	if got := pf.Refs(); got != 1 {
+		t.Fatalf("Refs() after borrow/release = %d, want 1", got)
+	}
+
+	// The owner's release drops the last reference and frees the buffer.
+	pf.ReleaseYUV()
+	if pf.Data != nil {
+		t.Fatal("owner release did not free the buffer")
+	}
+
+	// nil pool: still managed, release is a safe no-op on the pool.
+	heap := make([]byte, 64*48*3/2)
+	pf2 := newSRTPipelineFrame(srtVideoJob{yuv: heap, w: 64, h: 48, pts: 0}, nil)
+	if got := pf2.Refs(); got != 1 {
+		t.Fatalf("nil-pool frame Refs() = %d, want 1", got)
+	}
+	pf2.ReleaseYUV()
 }

@@ -964,7 +964,15 @@ func (fs *FrameSynchronizer) Start() {
 		return
 	}
 	fs.wg.Add(1)
-	go fs.tickLoop()
+	// Capture the done channel in the same critical section that launches the
+	// goroutine. SetBufferOnly closes-and-replaces fs.done under fs.mu; if
+	// tickLoop captured fs.done itself after launch, a concurrent SetBufferOnly
+	// could win the lock first, close the old channel, and install a fresh one
+	// — tickLoop would then capture the never-closed replacement and run
+	// forever while SetBufferOnly deadlocks on fs.wg.Wait(). Passing the
+	// channel captured here guarantees the goroutine watches exactly the
+	// channel that existed when it was launched.
+	go fs.tickLoop(fs.done)
 }
 
 // Stop halts the background ticker. Safe to call multiple times.
@@ -1011,14 +1019,15 @@ func (fs *FrameSynchronizer) Stop() {
 // when the program source ingests a fresh frame, the tick fires immediately
 // instead of waiting for the fixed-rate timer. The timer remains as fallback
 // for FRC interpolation, freeze frames, and startup.
-func (fs *FrameSynchronizer) tickLoop() {
+// The done channel is captured by Start in the same critical section that
+// launches this goroutine and passed in as a parameter, so it is fixed at
+// launch time. SetBufferOnly's close-and-replace of fs.done therefore always
+// targets the channel this goroutine is watching, regardless of lock
+// acquisition order between SetBufferOnly and a freshly launched tickLoop.
+func (fs *FrameSynchronizer) tickLoop(done <-chan struct{}) {
 	defer fs.wg.Done()
 	fs.mu.Lock()
 	rate := fs.tickRate
-	// Capture the done channel for this tickLoop generation. SetBufferOnly
-	// closes-and-replaces fs.done under fs.mu; reading the field directly in
-	// the select below would race with that swap (and could miss the close).
-	done := fs.done
 	fs.mu.Unlock()
 
 	timer := time.NewTimer(rate)

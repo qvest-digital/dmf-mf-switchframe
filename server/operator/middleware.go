@@ -86,10 +86,7 @@ var endpointPrefixSubsystemMap = []struct {
 // versioned requests go through the same permission checks.
 func EndpointSubsystem(path string) (Subsystem, bool) {
 	// Normalize /api/v1/... to /api/... so versioned paths are checked.
-	normalized := path
-	if strings.HasPrefix(path, "/api/v1/") {
-		normalized = "/api/" + path[len("/api/v1/"):]
-	}
+	normalized := normalizeAPIPath(path)
 
 	// Exact match first.
 	if sub, ok := endpointSubsystemMap[normalized]; ok {
@@ -113,6 +110,79 @@ func EndpointSubsystem(path string) (Subsystem, bool) {
 	return "", false
 }
 
+// machineAuthPaths lists exact mutating paths that are authenticated by their
+// own handler with a machine credential rather than an operator bearer token.
+// POST /api/peer/force-leader is called by the cloud control plane during a
+// failover and authenticated via the X-Control-Plane-Secret header (see
+// control/api_force_leader.go and its entry in control/auth.go
+// authExemptPaths); the caller never holds an operator token, so routing it
+// through the operator role check would 403 every promotion attempt while
+// operators are registered. The operator middleware must therefore pass these
+// through untouched — the handler itself rejects requests without the correct
+// secret. Keep this an explicit per-path allowlist (no prefix pass-through) so
+// new /api/peer/* mutating routes do not silently bypass operator authz.
+var machineAuthPaths = map[string]bool{
+	"/api/peer/force-leader": true, // X-Control-Plane-Secret enforced in handler
+}
+
+// isMachineAuthPath reports whether a path is handler-authenticated by a
+// machine credential. The /api/v1/ prefix is normalized first so versioned
+// requests are classified identically.
+func isMachineAuthPath(path string) bool {
+	return machineAuthPaths[normalizeAPIPath(path)]
+}
+
+// authenticatedOperatorMutatingPaths lists mutating paths open to ANY
+// registered operator, provided the request carries a valid operator bearer
+// token. These are the dual-engine reconciliation endpoints: the auto-reconcile
+// loop runs unconditionally in EVERY operator's browser (ui
+// dual-api-client.ts / +page.svelte wire it with no role gating), posting with
+// the operator's own token. Restricting them to directors would break engine
+// reconciliation whenever no director has a browser open.
+//
+// Privilege note (re: the deny-by-default rationale in NewMiddleware): yes, a
+// viewer token can push a state snapshot here. That is the pre-hardening
+// behavior — these endpoints are how every browser participates in keeping the
+// two engines converged — but unlike main, which required nothing at all, an
+// identified, registered operator token is now mandatory: anonymous or
+// unknown-token callers are rejected. The reconcile-lock handlers additionally
+// serialize snapshot pushes server-side.
+var authenticatedOperatorMutatingPaths = map[string]bool{
+	"/api/sync/state-snapshot": true, // POST applies a snapshot (GET passes via read-only rule)
+}
+
+// authenticatedOperatorMutatingPrefixes complements the exact-path map above
+// for parameterized reconcile routes (POST /api/sync/reconcile-lock,
+// PUT/DELETE /api/sync/reconcile-lock/{lockId}).
+var authenticatedOperatorMutatingPrefixes = []string{
+	"/api/sync/reconcile-lock",
+}
+
+// isAuthenticatedOperatorMutating reports whether a non-GET path is open to
+// any registered operator that presents a valid token. The /api/v1/ prefix is
+// normalized first so versioned requests are classified identically.
+func isAuthenticatedOperatorMutating(path string) bool {
+	normalized := normalizeAPIPath(path)
+	if authenticatedOperatorMutatingPaths[normalized] {
+		return true
+	}
+	for _, p := range authenticatedOperatorMutatingPrefixes {
+		if strings.HasPrefix(normalized, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeAPIPath rewrites /api/v1/... to /api/... so versioned and
+// unversioned requests are classified identically.
+func normalizeAPIPath(path string) string {
+	if strings.HasPrefix(path, "/api/v1/") {
+		return "/api/" + path[len("/api/v1/"):]
+	}
+	return path
+}
+
 // exemptMutatingPrefixes lists mutating (non-GET) path prefixes that are NOT
 // tied to a lockable subsystem but are intentionally usable by any registered
 // operator, including a viewer. These are coordination / talkback primitives
@@ -128,10 +198,7 @@ var exemptMutatingPrefixes = []string{
 // allowlist (open to any registered operator). The /api/v1/ prefix is
 // normalized first so versioned requests are classified identically.
 func isExemptMutating(path string) bool {
-	normalized := path
-	if strings.HasPrefix(path, "/api/v1/") {
-		normalized = "/api/" + path[len("/api/v1/"):]
-	}
+	normalized := normalizeAPIPath(path)
 	for _, p := range exemptMutatingPrefixes {
 		if strings.HasPrefix(normalized, p) {
 			return true
@@ -149,6 +216,10 @@ func isExemptMutating(path string) bool {
 //  2. GET requests → pass through
 //  3. /api/operator/* routes → exempt
 //  4. Mutating path not mapped to a subsystem:
+//     - machine-authenticated (e.g. peer/force-leader, secret enforced by the
+//     handler itself) → pass through
+//     - dual-engine sync/reconcile endpoints → require any identified
+//     registered operator (any role), else 403
 //     - on the explicit exemption allowlist (e.g. comms) → pass through
 //     - otherwise deny-by-default: require an identified director, else 403
 //  5. Identify operator from bearer token
@@ -159,9 +230,12 @@ func isExemptMutating(path string) bool {
 // Step 4 is deny-by-default for mutating requests: any unmapped POST/PUT/DELETE/
 // PATCH that is not explicitly exempt is treated as privileged and requires the
 // director role. This closes the prior privilege-escalation hole where any
-// unmapped mutating route (e.g. POST /api/sync/state-snapshot, /api/playout/*,
-// /api/colorgrade/*) was reachable by every registered operator, including a
-// read-only viewer.
+// unmapped mutating route (e.g. /api/playout/*, /api/colorgrade/*) was
+// reachable by every registered operator, including a read-only viewer. The
+// sync/reconcile endpoints are an intentional, documented carve-out (see
+// authenticatedOperatorMutatingPaths): they must remain callable by every
+// operator's browser, but unlike on main they now require a valid registered
+// operator token rather than nothing.
 func NewMiddleware(store *Store, sm *SessionManager) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +261,25 @@ func NewMiddleware(store *Store, sm *SessionManager) func(http.Handler) http.Han
 			// 4. Map endpoint to subsystem.
 			sub, mapped := EndpointSubsystem(r.URL.Path)
 			if !mapped {
+				// Machine-authenticated endpoints (X-Control-Plane-Secret)
+				// carry no operator token by design; their handlers enforce
+				// the secret themselves.
+				if isMachineAuthPath(r.URL.Path) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				// Dual-engine sync/reconcile endpoints are driven by the
+				// auto-reconcile loop in every operator's browser: any
+				// identified registered operator may call them, but anonymous
+				// or unknown-token requests are rejected.
+				if isAuthenticatedOperatorMutating(r.URL.Path) {
+					if _, err := store.GetByToken(ExtractBearerToken(r)); err != nil {
+						httperr.Write(w, http.StatusForbidden, "operator not identified")
+						return
+					}
+					next.ServeHTTP(w, r)
+					return
+				}
 				// Explicitly exempt mutating endpoints (e.g. comms) are open to
 				// any registered operator.
 				if isExemptMutating(r.URL.Path) {

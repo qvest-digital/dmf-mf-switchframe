@@ -72,6 +72,57 @@
 	}
 
 	let joining = $state(false);
+	// Set when the operator explicitly leaves; prevents the recovery $effect
+	// from re-creating the audio manager while the server still lists us as a
+	// participant (the leave is confirmed asynchronously via commsState).
+	let leftIntentionally = false;
+	// One recovery attempt per join — prevents the recovery $effect from
+	// looping if audio cannot be started (e.g. no transport available).
+	let audioRecoveryAttempted = false;
+
+	/**
+	 * Create and start the CommsAudioManager for the current join.
+	 * Shared by the JOIN button flow and the remount-recovery $effect.
+	 * In dual-engine mode, connects to the authoritative engine's transport.
+	 */
+	async function startAudio(warnOnNoTransport = true): Promise<void> {
+		const engineToConnect = authoritativeEngine ?? 'A';
+		const transport = getTransportForEngine
+			? getTransportForEngine(engineToConnect)
+			: getTransport?.();
+		if (!transport) {
+			if (warnOnNoTransport) {
+				notify('warning', 'Comms joined (no WebTransport — audio unavailable)');
+			}
+			return;
+		}
+		audioManager = new CommsAudioManager({
+			operatorId,
+			operatorName,
+			getToken: getAuthToken,
+			onError: (msg) => notify('error', msg),
+			onCommsActive,
+			onStreamError: () => {
+				// Stream broke — try reconnecting to the other engine.
+				// Debounce: skip if last reconnect was <5s ago to prevent loops.
+				if (!getTransportForEngine || !audioManager?.isActive) return;
+				const now = Date.now();
+				if (now - lastCommsReconnectTime < 5000) return;
+				lastCommsReconnectTime = now;
+				const otherEngine = connectedEngine === 'A' ? 'B' : 'A';
+				const transport = getTransportForEngine(otherEngine);
+				if (transport) {
+					connectedEngine = otherEngine;
+					audioManager.reconnect(transport).catch(() => {});
+				}
+			},
+		});
+		await audioManager.start(transport);
+		connectedEngine = engineToConnect;
+		// Apply initial volume from slider
+		const normalized = commsVolume / 100;
+		audioManager.setVolume(normalized * normalized * 3.0);
+	}
 
 	async function handleJoin() {
 		if (!operatorId || !operatorName) {
@@ -79,45 +130,11 @@
 			return;
 		}
 		joining = true;
+		leftIntentionally = false;
 		try {
 			await commsJoin(operatorId, operatorName);
-
 			// Start audio after REST join succeeds.
-			// In dual-engine mode, connect to the authoritative engine's transport.
-			const engineToConnect = authoritativeEngine ?? 'A';
-			const transport = getTransportForEngine
-				? getTransportForEngine(engineToConnect)
-				: getTransport?.();
-			if (!transport) {
-				notify('warning', 'Comms joined (no WebTransport — audio unavailable)');
-			} else {
-				audioManager = new CommsAudioManager({
-					operatorId,
-					operatorName,
-					getToken: getAuthToken,
-					onError: (msg) => notify('error', msg),
-					onCommsActive,
-					onStreamError: () => {
-						// Stream broke — try reconnecting to the other engine.
-						// Debounce: skip if last reconnect was <5s ago to prevent loops.
-						if (!getTransportForEngine || !audioManager?.isActive) return;
-						const now = Date.now();
-						if (now - lastCommsReconnectTime < 5000) return;
-						lastCommsReconnectTime = now;
-						const otherEngine = connectedEngine === 'A' ? 'B' : 'A';
-						const transport = getTransportForEngine(otherEngine);
-						if (transport) {
-							connectedEngine = otherEngine;
-							audioManager.reconnect(transport).catch(() => {});
-						}
-					},
-				});
-				await audioManager.start(transport);
-				connectedEngine = engineToConnect;
-				// Apply initial volume from slider
-				const normalized = commsVolume / 100;
-				audioManager.setVolume(normalized * normalized * 3.0);
-			}
+			await startAudio();
 		} catch (e) {
 			notify('error', `Failed to join comms: ${e}`);
 		} finally {
@@ -126,12 +143,50 @@
 	}
 
 	async function handleLeave() {
+		leftIntentionally = true;
 		apiCall(commsLeave(operatorId), 'Leave comms');
 		if (audioManager) {
 			await audioManager.stop();
 			audioManager = null;
 		}
 		connectedEngine = null;
+	}
+
+	// Remount recovery: isJoined is server-derived, so when this component is
+	// destroyed and re-created while still joined (e.g. a layout switch unmounts
+	// the traditional layout), the joined bar renders but onDestroy has torn down
+	// the audio manager — no audio either direction and mute/volume are no-ops.
+	// Re-create and start the manager so the remounted bar reattaches audio to
+	// the existing server-side join.
+	$effect(() => {
+		if (!isJoined) {
+			leftIntentionally = false;
+			audioRecoveryAttempted = false;
+			return;
+		}
+		if (joining || leftIntentionally || audioRecoveryAttempted || audioManager) return;
+		audioRecoveryAttempted = true;
+		recoverAudio();
+	});
+
+	async function recoverAudio() {
+		joining = true;
+		try {
+			// handleJoin already warned if there was no transport; stay quiet here.
+			await startAudio(false);
+			// The server kept our participant (and its mute state) across the
+			// remount — sync the fresh manager's mic state to it.
+			audioManager?.setMuted(isMuted);
+		} catch (e) {
+			notify('error', `Failed to restore comms audio: ${e}`);
+			if (audioManager) {
+				audioManager.stop().catch(() => {});
+				audioManager = null;
+			}
+			connectedEngine = null;
+		} finally {
+			joining = false;
+		}
 	}
 
 	// Release the microphone, AudioContexts, codecs, and the WebTransport bidi

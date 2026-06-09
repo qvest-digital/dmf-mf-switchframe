@@ -148,10 +148,6 @@ func (a *App) initClips() error {
 	// Clips may be any resolution; scale to pipeline format before ingest
 	// (same pattern as MXL/SRT sources which scale before IngestRawVideo).
 	var clipRawFrameCount [clip.MaxPlayers]int64
-	// Per-player persistent scale buffers, reused across frames. Indexed by
-	// player slot because each player invokes this callback from its own
-	// decode goroutine — see scaleClipFrame.
-	var clipScaleBufs [clip.MaxPlayers][]byte
 	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		idx := clipPlayerIDFromKey(key) - 1
 		if idx >= 0 && idx < clip.MaxPlayers {
@@ -170,12 +166,25 @@ func (a *App) initClips() error {
 			}
 		}
 
-		// Scale to pipeline format if clip resolution differs.
+		// Copy (and scale, if the clip resolution differs from the pipeline
+		// format) into a frame buffer acquired per frame. The ingested frame
+		// is retained by the frame-sync ring — and as the freeze-repeat
+		// lastRawVideo — across ticks, so it must not alias any buffer the
+		// decode goroutine reuses (the decoder's scratch/hold buffers, or the
+		// per-player persistent scale buffer this path previously used, which
+		// produced torn frames whenever the next decode overwrote pixels
+		// under the sync loop).
 		pf := a.sw.PipelineFormat()
-		outYUV, outW, outH := yuv, w, h
+		pool := a.sw.GetFramePool()
+		outW, outH := w, h
+		var outYUV []byte
+		var pooled bool
 		if w != pf.Width || h != pf.Height {
-			outYUV = scaleClipFrame(&clipScaleBufs, idx, yuv, w, h, pf.Width, pf.Height)
+			outYUV, pooled = scaleClipFrame(pool, yuv, w, h, pf.Width, pf.Height)
 			outW, outH = pf.Width, pf.Height
+		} else {
+			outYUV, pooled = acquireClipFrameBuf(pool, len(yuv))
+			copy(outYUV, yuv)
 		}
 
 		frame := &switcher.ProcessingFrame{
@@ -186,6 +195,12 @@ func (a *App) initClips() error {
 			DTS:        pts,
 			IsKeyframe: isKeyframe,
 		}
+		if pooled {
+			frame.SetPool(pool)
+		}
+		// Managed lifecycle: the ring owns this reference and sync-loop
+		// consumers borrow their own (see ProcessingFrame.Ref invariant).
+		frame.SetRefs(1)
 		a.sw.IngestReplayVideo(key, frame)
 	})
 
@@ -321,31 +336,30 @@ func (a *App) initClips() error {
 	return nil
 }
 
-// scaleClipFrame scales a decoded clip frame to the target dimensions using
-// the persistent scale buffer for player idx, growing it as needed, and
-// returns the scaled frame.
+// scaleClipFrame scales a decoded clip frame to the target dimensions into a
+// freshly acquired buffer and reports whether that buffer is pool-owned.
 //
-// The buffers MUST be per-player: the raw-video callback runs on each clip
-// player's own decode goroutine (clip.MaxPlayers of them, `go p.run(ctx)`),
-// so a single shared buffer would be concurrently reallocated and written by
-// multiple players, racing and corrupting frames across players (same reason
-// the SRT path allocates per-source buffers in app_srt.go). An out-of-range
-// idx (unparseable key) gets a fresh throwaway buffer.
-func scaleClipFrame(bufs *[clip.MaxPlayers][]byte, idx int, yuv []byte, w, h, targetW, targetH int) []byte {
+// Every call returns an independent buffer (no persistent scratch reuse):
+// the resulting ProcessingFrame is retained by the frame-sync ring and as the
+// freeze-repeat lastRawVideo across ticks, so scaling into a reused
+// per-player buffer would let the decode goroutine mutate pixels under the
+// sync loop, tearing frames whenever the clip resolution differs from the
+// pipeline format. This matches the SRT path, which pool-acquires per frame.
+func scaleClipFrame(pool *switcher.FramePool, yuv []byte, w, h, targetW, targetH int) ([]byte, bool) {
 	targetSize := switcher.ColorYUV420_8bit.FrameSize(targetW, targetH)
-	if idx < 0 || idx >= clip.MaxPlayers {
-		buf := make([]byte, targetSize)
-		transition.ScaleYUV420(yuv, w, h, buf, targetW, targetH)
-		return buf
-	}
-	buf := bufs[idx]
-	if cap(buf) < targetSize {
-		buf = make([]byte, targetSize)
-	}
-	buf = buf[:targetSize]
-	bufs[idx] = buf
+	buf, pooled := acquireClipFrameBuf(pool, targetSize)
 	transition.ScaleYUV420(yuv, w, h, buf, targetW, targetH)
-	return buf
+	return buf, pooled
+}
+
+// acquireClipFrameBuf returns a buffer of exactly size bytes — from the frame
+// pool when it fits, otherwise heap-allocated — and reports whether the buffer
+// came from the pool (so the caller knows whether to SetPool on the frame).
+func acquireClipFrameBuf(pool *switcher.FramePool, size int) ([]byte, bool) {
+	if pool != nil && size <= pool.BufSize() {
+		return pool.Acquire()[:size], true
+	}
+	return make([]byte, size), false
 }
 
 // clipPlayerIDFromKey extracts the player ID from a "clip:N" key.

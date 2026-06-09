@@ -15,6 +15,7 @@
 #include <cstring>
 #include <functional>
 #include <iostream>
+#include <pthread.h>
 #include <sstream>
 #include <string>
 #include <sys/socket.h>
@@ -153,8 +154,8 @@ TEST(ControlSocket_StopWhileReaderActive) {
 
         ASSERT_TRUE(commands.load() >= 1);
 
+        // cs.Stop() already closed the listener fd, which ControlSocket owns.
         close(client_fd);
-        close(listen_fd);
         unlink(path.c_str());
     }
 }
@@ -200,8 +201,123 @@ TEST(ControlSocket_StopUnblocksParkedReader) {
     ASSERT_TRUE(stopped.load());  // Stop() must not hang
     stopper.join();
 
+    // cs.Stop() already closed the listener fd, which ControlSocket owns.
     close(client_fd);
-    close(listen_fd);
+    unlink(path.c_str());
+}
+
+// Regression test for the Darwin shutdown hang: if the Go peer NEVER
+// connects, the reader thread sits parked in accept(). shutdown() on a
+// listening AF_UNIX socket does not wake accept() on macOS (it fails with
+// ENOTCONN) — Stop() must close() the listener so the parked accept()
+// returns and the thread join completes. Before the fix, Stop() hung forever
+// here.
+TEST(ControlSocket_StopReturnsPromptlyWhenNoClientEverConnects) {
+    std::string path = tmp_socket_path();
+    int listen_fd = create_listener(path);
+    ASSERT_TRUE(listen_fd >= 0);
+
+    // Heap-allocate so that on failure (hang) we can leak the object instead
+    // of running a destructor (which calls Stop() again) that would hang the
+    // whole test binary.
+    auto* cs = new ControlSocket(listen_fd, [](const ControlCommand&) {});
+    cs->Start();
+
+    // Give the reader thread time to park in accept(); nothing ever connects.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    std::atomic<bool> stopped{false};
+    std::thread stopper([cs, &stopped]() {
+        cs->Stop();
+        stopped.store(true);
+    });
+
+    // Watchdog: Stop() (which joins the reader) must return promptly.
+    auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!stopped.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    if (!stopped.load()) {
+        // Hung (the pre-fix Darwin behavior): detach the stuck thread and
+        // intentionally leak cs so the test binary itself can keep running.
+        stopper.detach();
+        ASSERT_TRUE(stopped.load());  // fail with a clear assertion
+    }
+    stopper.join();
+    delete cs;
+    unlink(path.c_str());
+}
+
+// EINTR resilience: a signal interrupting the reader's blocked read() must
+// not kill the control channel. Before the fix, readLoop treated any
+// read() < 0 — including EINTR — as fatal and exited, permanently severing
+// the command stream.
+//
+// EINTR injection: install a no-op SIGUSR1 handler WITHOUT SA_RESTART, block
+// SIGUSR1 in the main test thread (the reader thread inherited the default
+// unblocked mask when Start() spawned it), then kill() the process — the
+// kernel must deliver the signal to the reader thread, interrupting its
+// read() with EINTR.
+TEST(ControlSocket_ReadLoopSurvivesEINTR) {
+    struct sigaction sa = {};
+    sa.sa_handler = [](int) {};
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;  // crucially, no SA_RESTART
+    ASSERT_TRUE(sigaction(SIGUSR1, &sa, nullptr) == 0);
+
+    std::string path = tmp_socket_path();
+    int listen_fd = create_listener(path);
+    ASSERT_TRUE(listen_fd >= 0);
+
+    std::atomic<int> commands{0};
+    ControlSocket cs(listen_fd, [&](const ControlCommand&) { commands++; });
+    // The reader thread inherits this thread's signal mask (SIGUSR1
+    // unblocked) at creation.
+    cs.Start();
+
+    int client_fd = connect_to(path);
+    ASSERT_TRUE(client_fd >= 0);
+
+    // Establish the connection and wait until the reader has consumed one
+    // command, so we know it is back parked in read().
+    const std::string line = "{\"cmd\":\"play\",\"id\":1}\n";
+    ASSERT_TRUE(write(client_fd, line.data(), line.size()) ==
+                static_cast<ssize_t>(line.size()));
+    auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (commands.load() == 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(commands.load() == 1);
+
+    // Block SIGUSR1 in this thread so kill() targets the reader thread.
+    sigset_t block_set, old_set;
+    sigemptyset(&block_set);
+    sigaddset(&block_set, SIGUSR1);
+    ASSERT_TRUE(pthread_sigmask(SIG_BLOCK, &block_set, &old_set) == 0);
+
+    // Interrupt the parked read() a few times.
+    for (int i = 0; i < 5; i++) {
+        kill(getpid(), SIGUSR1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    // The channel must still be alive: a further command must be processed.
+    ASSERT_TRUE(write(client_fd, line.data(), line.size()) ==
+                static_cast<ssize_t>(line.size()));
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (commands.load() < 2 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(commands.load() == 2);
+
+    pthread_sigmask(SIG_SETMASK, &old_set, nullptr);
+    cs.Stop();
+    close(client_fd);
     unlink(path.c_str());
 }
 
@@ -255,8 +371,8 @@ TEST(ControlSocket_SendResponseDuringAndAfterStop) {
     shutdown(client_fd, SHUT_RDWR);
     drainer.join();
 
+    // cs.Stop() already closed the listener fd, which ControlSocket owns.
     close(client_fd);
-    close(listen_fd);
     unlink(path.c_str());
 }
 

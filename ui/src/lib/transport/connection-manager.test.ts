@@ -861,6 +861,141 @@ describe('ConnectionManager', () => {
 			expect(mockFetch).not.toHaveBeenCalled();
 		});
 
+		it('does not resurrect polling when disconnect() synchronously reports disconnected during stop()', async () => {
+			// connection.disconnect() fires onConnectionChange('disconnected')
+			// synchronously (real PrismConnection behavior). The handler falls
+			// back to polling when no MoQ pipeline is active — during stop()
+			// that must NOT restart the poll loop we just killed.
+			const { mockConnection, callbacks } = setupMocks();
+			mockConnection.disconnect.mockImplementation(() => {
+				callbacks.onConnectionChange('disconnected');
+			});
+			const mockFetch = makeOkFetch(makeState());
+			vi.stubGlobal('fetch', mockFetch);
+
+			const onConnectionStateChange = vi.fn();
+			const manager = new ConnectionManager({
+				url: 'https://localhost:8080',
+				onStateUpdate: vi.fn(),
+				onConnectionStateChange,
+				onInitialLoadComplete: vi.fn(),
+				onInitialLoadError: vi.fn(),
+			});
+
+			await manager.start();
+			mockFetch.mockClear();
+			onConnectionStateChange.mockClear();
+
+			manager.stop();
+
+			// No timers may survive stop(): even far in the future, the dead
+			// URL must never be fetched again.
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(mockFetch).not.toHaveBeenCalled();
+			expect(onConnectionStateChange).not.toHaveBeenCalledWith('polling');
+		});
+
+		it('does not re-arm polling from the failure path after stop() races an in-flight poll', async () => {
+			setupMocks();
+			const state = makeState();
+			let rejectPoll!: (e: Error) => void;
+			const mockFetch = vi.fn()
+				// initial fetch succeeds
+				.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve(state),
+					text: () => Promise.resolve(''),
+				} as unknown as Response)
+				// first poll hangs until we reject it
+				.mockImplementationOnce(
+					() =>
+						new Promise((_, reject) => {
+							rejectPoll = reject;
+						})
+				);
+			vi.stubGlobal('fetch', mockFetch);
+
+			const manager = new ConnectionManager({
+				url: 'https://localhost:8080',
+				onStateUpdate: vi.fn(),
+				onConnectionStateChange: vi.fn(),
+				onInitialLoadComplete: vi.fn(),
+				onInitialLoadError: vi.fn(),
+			});
+
+			await manager.start();
+			// First poll fires and its fetch stays in flight.
+			await vi.advanceTimersByTimeAsync(500);
+			expect(mockFetch).toHaveBeenCalledTimes(2);
+
+			manager.stop();
+			rejectPoll(new Error('network down'));
+			await vi.advanceTimersByTimeAsync(0); // settle the catch path
+
+			mockFetch.mockClear();
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(mockFetch).not.toHaveBeenCalled();
+		});
+
+		it('keeps a stale in-flight poll inert across a stop()/start() restart', async () => {
+			setupMocks();
+			const state = makeState();
+			const okResponse = () =>
+				({
+					ok: true,
+					json: () => Promise.resolve(state),
+					text: () => Promise.resolve(''),
+				}) as unknown as Response;
+			const pending: Array<(r: unknown) => void> = [];
+			const mockFetch = vi.fn(
+				() =>
+					new Promise((resolve) => {
+						pending.push(resolve);
+					})
+			);
+			vi.stubGlobal('fetch', mockFetch);
+
+			const onStateUpdate = vi.fn();
+			const manager = new ConnectionManager({
+				url: 'https://localhost:8080',
+				onStateUpdate,
+				onConnectionStateChange: vi.fn(),
+				onInitialLoadComplete: vi.fn(),
+				onInitialLoadError: vi.fn(),
+			});
+
+			const starting = manager.start();
+			pending.shift()!(okResponse()); // initial fetch
+			await starting;
+
+			// First poll of the old chain fires; its fetch stays in flight.
+			await vi.advanceTimersByTimeAsync(500);
+			expect(mockFetch).toHaveBeenCalledTimes(2);
+			const stalePoll = pending.shift()!;
+
+			// Restart while the old poll is still in flight.
+			manager.stop();
+			const restarting = manager.start();
+			pending.shift()!(okResponse()); // restart's initial fetch
+			await restarting;
+
+			// The stale poll resolves AFTER the restart. It must neither push
+			// state nor re-arm a second loop (which would overwrite the new
+			// chain's timer id, leaving an unclearable duplicate poll loop).
+			onStateUpdate.mockClear();
+			stalePoll(okResponse());
+			await vi.advanceTimersByTimeAsync(0);
+			expect(onStateUpdate).not.toHaveBeenCalled();
+
+			// Exactly one poll per interval — only the new chain is alive.
+			mockFetch.mockClear();
+			await vi.advanceTimersByTimeAsync(500);
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+			pending.shift()!(okResponse());
+			await vi.advanceTimersByTimeAsync(500);
+			expect(mockFetch).toHaveBeenCalledTimes(2);
+		});
+
 		it('can be restarted after a raced stop()', async () => {
 			setupMocks();
 			const state = makeState();

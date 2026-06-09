@@ -30,6 +30,7 @@ type mockAudioTransHandler struct {
 	positionCalls   []float64
 	completionCount int
 	abortCount      int
+	abortTokens     []uint64
 	programMuted    bool
 }
 
@@ -40,10 +41,14 @@ type audioTransStartCall struct {
 	durationMs int
 }
 
-func (m *mockAudioTransHandler) OnTransitionStart(oldSource, newSource string, mode audio.TransitionMode, durationMs int) {
+func (m *mockAudioTransHandler) OnTransitionStart(oldSource, newSource string, mode audio.TransitionMode, durationMs int) uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.startCalls = append(m.startCalls, audioTransStartCall{oldSource, newSource, mode, durationMs})
+	// Mirror the mixer's token scheme: the token is the sequence number of
+	// the start call, so tests can verify the switcher passes the token of
+	// the transition actually being aborted.
+	return uint64(len(m.startCalls))
 }
 
 func (m *mockAudioTransHandler) OnTransitionPosition(position float64) {
@@ -58,10 +63,11 @@ func (m *mockAudioTransHandler) OnTransitionComplete() {
 	m.completionCount++
 }
 
-func (m *mockAudioTransHandler) OnTransitionAbort() {
+func (m *mockAudioTransHandler) OnTransitionAbort(token uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.abortCount++
+	m.abortTokens = append(m.abortTokens, token)
 }
 
 func (m *mockAudioTransHandler) SetProgramMute(muted bool) {
@@ -491,6 +497,8 @@ func TestSwitcherAbortTransition(t *testing.T) {
 	audioTrans.mu.Lock()
 	require.Equal(t, 1, audioTrans.abortCount, "abort should call OnTransitionAbort")
 	require.Equal(t, 0, audioTrans.completionCount, "abort should not call OnTransitionComplete")
+	require.Equal(t, []uint64{1}, audioTrans.abortTokens,
+		"abort must carry the token returned by this transition's OnTransitionStart")
 	audioTrans.mu.Unlock()
 }
 
@@ -969,6 +977,8 @@ func TestSwitcherFTBAbortCallsOnTransitionAbort(t *testing.T) {
 	audioTrans.mu.Lock()
 	require.Equal(t, 1, audioTrans.abortCount, "FTB abort should call OnTransitionAbort")
 	require.Equal(t, 0, audioTrans.completionCount, "FTB abort should not call OnTransitionComplete")
+	require.Equal(t, []uint64{1}, audioTrans.abortTokens,
+		"FTB abort must carry the token returned by the FTB's OnTransitionStart")
 	require.False(t, audioTrans.programMuted, "FTB abort should not mute program")
 	audioTrans.mu.Unlock()
 

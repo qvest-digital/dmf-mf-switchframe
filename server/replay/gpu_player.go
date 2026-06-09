@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,6 +71,121 @@ func useGPUReplayPlayer(gpuCapable bool, clipFrames int) bool {
 type gpuFrameDrainer interface {
 	SendEOS() error
 	ReceiveFrame() ([]byte, int, int, error)
+}
+
+// gpuClipDecoder is the subset of decoder behavior feedClipToDecoder needs.
+// Implementations that also satisfy gpuFrameDrainer get their B-frame
+// reorder tail drained after the clip has been fed.
+type gpuClipDecoder interface {
+	Decode(data []byte) ([]byte, int, int, error)
+}
+
+// isDecoderBuffering reports whether a Decode error is the expected
+// EAGAIN-style "no output frame yet (buffering)" signal: the packet was
+// consumed and its frame will be emitted later (possibly during the EOS
+// drain). The codec package only exposes this condition as a formatted
+// error string (see FFmpegDecoder.Decode), so match on the message the
+// same way the CPU player's decodeGOP does.
+func isDecoderBuffering(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "buffering")
+}
+
+// feedClipToDecoder converts each clip frame to Annex B, feeds it to the
+// decoder, and emits every decoded frame via emit(yuv, w, h, pts). After
+// feeding, it drains the decoder's B-frame reorder tail (SendEOS +
+// ReceiveFrame) when the decoder supports it, assigning drained frames the
+// PTS of the next fed-but-not-yet-emitted packet.
+//
+// fedPTS records the PTS of packets the decoder accepted (success or
+// EAGAIN buffering). Packets that hard-fail to decode never produce an
+// output frame, so their PTS entry is removed — otherwise every drained
+// reorder-tail frame would be shifted one position early, producing
+// duplicate/non-monotonic timestamps at the clip end.
+//
+// Returns the first keyframe's SPS/PPS (for OnVideoInfo) and ok=false when
+// emit aborted the feed.
+func feedClipToDecoder(
+	clip []bufferedFrame,
+	decoder gpuClipDecoder,
+	emit func(yuv []byte, w, h int, pts int64) bool,
+) (firstSPS, firstPPS []byte, ok bool) {
+	// PTS of every frame the decoder accepted, used to assign timestamps
+	// to frames recovered from the reorder tail during the EOS drain.
+	var fedPTS []int64
+	emitted := 0
+
+	for _, bf := range clip {
+		if bf.wireData == nil {
+			// Ring-backed frame without wireData — skip (only in-memory supported).
+			continue
+		}
+
+		// Convert AVC1 to Annex B for decoder, prepending SPS/PPS for keyframes.
+		annexB := codec.AVC1ToAnnexB(bf.wireData)
+		if len(annexB) == 0 {
+			continue
+		}
+		if bf.isKeyframe {
+			annexB = codec.PrependSPSPPS(bf.sps, bf.pps, annexB)
+			if firstSPS == nil && len(bf.sps) > 0 {
+				firstSPS = make([]byte, len(bf.sps))
+				copy(firstSPS, bf.sps)
+			}
+			if firstPPS == nil && len(bf.pps) > 0 {
+				firstPPS = make([]byte, len(bf.pps))
+				copy(firstPPS, bf.pps)
+			}
+		}
+
+		// NVDEC decode → CPU YUV420p.
+		fedPTS = append(fedPTS, bf.pts)
+		yuv, w, h, decErr := decoder.Decode(annexB)
+		if decErr != nil {
+			if !isDecoderBuffering(decErr) {
+				// Hard decode error: this packet will never produce an
+				// output frame, so drop its just-appended PTS entry to
+				// keep the fed-to-output mapping aligned for the drain.
+				slog.Warn("gpu replay: decode frame failed", "pts", bf.pts, "err", decErr)
+				fedPTS = fedPTS[:len(fedPTS)-1]
+			}
+			// EAGAIN from B-frame buffering is expected; the frame is
+			// output later and its fedPTS entry is consumed then.
+			continue
+		}
+
+		if !emit(yuv, w, h, bf.pts) {
+			return firstSPS, firstPPS, false
+		}
+		emitted++
+	}
+
+	// Drain the decoder's B-frame reorder tail (mirrors the CPU player's
+	// decodeGOP SendEOS+ReceiveFrame drain). Without this, frames the
+	// decoder buffered for reordering are silently dropped from the end of
+	// the replay. The stub GPUDecoder does not implement the drainer.
+	if drainer, canDrain := decoder.(gpuFrameDrainer); canDrain {
+		if eosErr := drainer.SendEOS(); eosErr == nil {
+			for {
+				yuv, w, h, derr := drainer.ReceiveFrame()
+				if derr != nil {
+					break
+				}
+				// Assign the PTS of the next fed-but-not-yet-emitted frame.
+				pts := int64(0)
+				if emitted < len(fedPTS) {
+					pts = fedPTS[emitted]
+				} else if len(fedPTS) > 0 {
+					pts = fedPTS[len(fedPTS)-1]
+				}
+				if !emit(yuv, w, h, pts) {
+					return firstSPS, firstPPS, false
+				}
+				emitted++
+			}
+		}
+	}
+
+	return firstSPS, firstPPS, true
 }
 
 // gpuReplayPlayer decodes a clip on NVDEC, applies NVOFA optical-flow
@@ -284,9 +400,6 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 		}
 	}()
 
-	// Track SPS/PPS from the first keyframe for OnVideoInfo.
-	var firstSPS, firstPPS []byte
-
 	// uploadDecoded acquires a pool frame, uploads the CPU YUV to GPU NV12,
 	// and appends it to decoded. Returns false on failure (already logged).
 	uploadDecoded := func(yuv []byte, w, h int, pts int64) bool {
@@ -309,70 +422,9 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 		return true
 	}
 
-	// PTS of every frame fed to the decoder, used to assign timestamps to
-	// frames recovered from the decoder's reorder tail during the EOS drain.
-	var fedPTS []int64
-
-	for _, bf := range clip {
-		if bf.wireData == nil {
-			// Ring-backed frame without wireData — skip (only in-memory supported).
-			continue
-		}
-
-		// Convert AVC1 to Annex B for decoder, prepending SPS/PPS for keyframes.
-		annexB := codec.AVC1ToAnnexB(bf.wireData)
-		if len(annexB) == 0 {
-			continue
-		}
-		if bf.isKeyframe {
-			annexB = codec.PrependSPSPPS(bf.sps, bf.pps, annexB)
-			if firstSPS == nil && len(bf.sps) > 0 {
-				firstSPS = make([]byte, len(bf.sps))
-				copy(firstSPS, bf.sps)
-			}
-			if firstPPS == nil && len(bf.pps) > 0 {
-				firstPPS = make([]byte, len(bf.pps))
-				copy(firstPPS, bf.pps)
-			}
-		}
-
-		// NVDEC decode → CPU YUV420p.
-		fedPTS = append(fedPTS, bf.pts)
-		yuv, w, h, decErr := decoder.Decode(annexB)
-		if decErr != nil {
-			// EAGAIN from B-frame buffering is expected.
-			continue
-		}
-
-		// Acquire GPU frame and upload CPU YUV → GPU NV12.
-		if !uploadDecoded(yuv, w, h, bf.pts) {
-			return
-		}
-	}
-
-	// Drain the decoder's B-frame reorder tail (mirrors the CPU player's
-	// decodeGOP SendEOS+ReceiveFrame drain). Without this, frames the
-	// decoder buffered for reordering are silently dropped from the end of
-	// the replay. The stub GPUDecoder does not implement the drainer.
-	if drainer, ok := any(decoder).(gpuFrameDrainer); ok {
-		if eosErr := drainer.SendEOS(); eosErr == nil {
-			for {
-				yuv, w, h, derr := drainer.ReceiveFrame()
-				if derr != nil {
-					break
-				}
-				// Assign the PTS of the next fed-but-not-yet-output frame.
-				pts := int64(0)
-				if idx := len(decoded); idx < len(fedPTS) {
-					pts = fedPTS[idx]
-				} else if len(fedPTS) > 0 {
-					pts = fedPTS[len(fedPTS)-1]
-				}
-				if !uploadDecoded(yuv, w, h, pts) {
-					return
-				}
-			}
-		}
+	firstSPS, firstPPS, feedOK := feedClipToDecoder(clip, decoder, uploadDecoded)
+	if !feedOK {
+		return
 	}
 
 	if len(decoded) == 0 {

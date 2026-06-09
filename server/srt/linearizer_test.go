@@ -198,6 +198,93 @@ func TestPTSLinearizer_SharedJumpStillCorrectedAfterOneSidedGap(t *testing.T) {
 		"video-audio alignment must survive a shared jump after a one-sided gap: pre=%d post=%d", preDelta, postDelta)
 }
 
+func TestPTSLinearizer_SharedBackwardRebaseStaysMonotonic(t *testing.T) {
+	// Encoder restart rebasing BOTH streams 0.8s backward — smaller than
+	// crossStreamPTSTolerance (1s). The first stream to see the jump finds
+	// its new raw PTS "consistent" with the other stream's still-pre-jump
+	// lastInput; without the backward-jump guard it passed through and
+	// emitted output PTS 0.8s lower than the previous output. Both outputs
+	// must stay monotonic and A/V alignment must be preserved, regardless
+	// of which stream sees the rebase first.
+	const videoFrameDur = 3750 // 24fps in 90kHz
+	const audioFrameDur = 1920 // 48kHz/1024 in 90kHz
+	const rebaseAt = 360000    // 4s in
+	const rebase = 72000       // 0.8s backward, within crossStreamPTSTolerance
+
+	for _, first := range []StreamType{StreamVideo, StreamAudio} {
+		name := "videoSeesRebaseFirst"
+		if first == StreamAudio {
+			name = "audioSeesRebaseFirst"
+		}
+		t.Run(name, func(t *testing.T) {
+			lin := NewPTSLinearizer()
+
+			var lastVideoOut, lastAudioOut int64 = -1, -1
+			feed := func(raw int64, st StreamType) {
+				out := lin.Linearize(raw, st)
+				if st == StreamVideo {
+					if lastVideoOut >= 0 {
+						require.Greater(t, out, lastVideoOut,
+							"video output PTS must stay monotonic; raw=%d", raw)
+					}
+					lastVideoOut = out
+				} else {
+					if lastAudioOut >= 0 {
+						require.Greater(t, out, lastAudioOut,
+							"audio output PTS must stay monotonic; raw=%d", raw)
+					}
+					lastAudioOut = out
+				}
+			}
+
+			// Interleaved normal progression up to the rebase point.
+			nextVideo, nextAudio := int64(0), int64(0)
+			for nextVideo < rebaseAt || nextAudio < rebaseAt {
+				if nextAudio <= nextVideo && nextAudio < rebaseAt {
+					feed(nextAudio, StreamAudio)
+					nextAudio += audioFrameDur
+				} else {
+					feed(nextVideo, StreamVideo)
+					nextVideo += videoFrameDur
+				}
+			}
+			preDelta := lastVideoOut - lastAudioOut
+
+			// Encoder restart: both timelines continue 0.8s lower than they
+			// would have. `first` delivers the rebased PTS first.
+			vRaw, aRaw := nextVideo-rebase, nextAudio-rebase
+			if first == StreamVideo {
+				feed(vRaw, StreamVideo)
+				feed(aRaw, StreamAudio)
+			} else {
+				feed(aRaw, StreamAudio)
+				feed(vRaw, StreamVideo)
+			}
+			vRaw += videoFrameDur
+			aRaw += audioFrameDur
+
+			// Continue interleaved for 1s after the rebase.
+			endV, endA := vRaw+90000, aRaw+90000
+			for vRaw < endV || aRaw < endA {
+				if aRaw <= vRaw && aRaw < endA {
+					feed(aRaw, StreamAudio)
+					aRaw += audioFrameDur
+				} else {
+					feed(vRaw, StreamVideo)
+					vRaw += videoFrameDur
+				}
+			}
+
+			// A/V relative alignment must survive the rebase (within a
+			// frame or two — the correction continues at lastOutput+frameDur).
+			postDelta := lastVideoOut - lastAudioOut
+			require.Less(t, abs64(postDelta-preDelta), int64(2*videoFrameDur),
+				"video-audio alignment must survive a shared backward rebase: pre=%d post=%d",
+				preDelta, postDelta)
+		})
+	}
+}
+
 func TestPTSLinearizer_StaleOtherStreamFallsBackToJumpCorrection(t *testing.T) {
 	// If the other stream died long ago, its last raw PTS cannot vouch for
 	// the shared timeline. A jump on the live stream must then fall back to

@@ -4,54 +4,93 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
-// TestScaleClipFrame_PerPlayerBuffers verifies that each clip player gets its
-// own persistent scale buffer. The raw-video callback registered in initClips
-// is invoked concurrently from up to clip.MaxPlayers decode goroutines
-// (clip.Manager wires the same callback into every player, and each player
-// runs `go p.run(ctx)`), so a single shared buffer would be concurrently
-// reallocated and overwritten across players, corrupting frames mid-ingest.
-func TestScaleClipFrame_PerPlayerBuffers(t *testing.T) {
-	var bufs [clip.MaxPlayers][]byte
-
+// TestScaleClipFrame_IndependentBuffersPerCall verifies that every call
+// returns an independent buffer. The frames built from these buffers are
+// retained by the frame-sync ring (and as the freeze-repeat lastRawVideo)
+// across ticks, so a reused persistent scratch buffer — the original bug —
+// would let the decode goroutine mutate pixels under the sync loop, tearing
+// frames whenever the clip resolution differs from the pipeline format.
+func TestScaleClipFrame_IndependentBuffersPerCall(t *testing.T) {
 	const srcW, srcH = 64, 48
 	const dstW, dstH = 128, 96
+	pool := switcher.NewFramePool(8, dstW, dstH, switcher.ColorYUV420_8bit)
+	want := switcher.ColorYUV420_8bit.FrameSize(dstW, dstH)
+
 	src := make([]byte, switcher.ColorYUV420_8bit.FrameSize(srcW, srcH))
+	for i := 0; i < srcW*srcH; i++ {
+		src[i] = 40
+	}
 
-	out0 := scaleClipFrame(&bufs, 0, src, srcW, srcH, dstW, dstH)
-	out1 := scaleClipFrame(&bufs, 1, src, srcW, srcH, dstW, dstH)
+	out0, pooled0 := scaleClipFrame(pool, src, srcW, srcH, dstW, dstH)
+	out1, pooled1 := scaleClipFrame(pool, src, srcW, srcH, dstW, dstH)
 
-	if len(out0) == 0 || len(out1) == 0 {
-		t.Fatalf("expected non-empty scaled frames, got %d and %d bytes", len(out0), len(out1))
+	if len(out0) != want || len(out1) != want {
+		t.Fatalf("scaled frame sizes = %d, %d; want %d", len(out0), len(out1), want)
+	}
+	if !pooled0 || !pooled1 {
+		t.Errorf("expected pool-backed buffers when frame fits pool (got %v, %v)", pooled0, pooled1)
 	}
 	if &out0[0] == &out1[0] {
-		t.Fatal("players 0 and 1 share the same scale buffer backing array — " +
-			"concurrent clip players would corrupt each other's frames")
+		t.Fatal("consecutive calls share the same backing array — the next decoded " +
+			"frame would overwrite pixels retained by the frame-sync ring (torn frames)")
 	}
 
-	// Buffers must persist (be reused) per player across frames.
-	out0again := scaleClipFrame(&bufs, 0, src, srcW, srcH, dstW, dstH)
-	if &out0[0] != &out0again[0] {
-		t.Error("player 0 scale buffer was not reused across frames")
+	// Mutating the second frame must not affect the first (retained) frame.
+	prev := out0[0]
+	for i := range out1 {
+		out1[i] = 0xEE
+	}
+	if out0[0] != prev {
+		t.Error("scaling a new frame corrupted the previously returned frame")
 	}
 }
 
-// TestScaleClipFrame_ConcurrentPlayersRace drives scaleClipFrame from
-// clip.MaxPlayers goroutines simultaneously, mimicking concurrent clip
-// playback of resolution-mismatched clips. Run under -race: a shared scale
-// buffer (the original bug) is flagged as a data race on both the slice
-// header and the pixel data.
-func TestScaleClipFrame_ConcurrentPlayersRace(t *testing.T) {
-	var bufs [clip.MaxPlayers][]byte
-
+// TestScaleClipFrame_HeapFallback verifies that when the pool cannot hold the
+// target frame (or no pool is available), a correctly sized heap buffer is
+// returned and reported as not pool-owned, so the caller skips SetPool and
+// ReleaseYUV never pushes a foreign buffer into the pool.
+func TestScaleClipFrame_HeapFallback(t *testing.T) {
 	const srcW, srcH = 64, 48
 	const dstW, dstH = 128, 96
+	want := switcher.ColorYUV420_8bit.FrameSize(dstW, dstH)
+	src := make([]byte, switcher.ColorYUV420_8bit.FrameSize(srcW, srcH))
+
+	// nil pool.
+	out, pooled := scaleClipFrame(nil, src, srcW, srcH, dstW, dstH)
+	if pooled {
+		t.Error("nil pool: buffer reported as pool-owned")
+	}
+	if len(out) != want {
+		t.Errorf("nil pool: scaled frame size = %d, want %d", len(out), want)
+	}
+
+	// Pool too small for the target resolution.
+	smallPool := switcher.NewFramePool(2, 32, 24, switcher.ColorYUV420_8bit)
+	out, pooled = scaleClipFrame(smallPool, src, srcW, srcH, dstW, dstH)
+	if pooled {
+		t.Error("undersized pool: buffer reported as pool-owned")
+	}
+	if len(out) != want {
+		t.Errorf("undersized pool: scaled frame size = %d, want %d", len(out), want)
+	}
+}
+
+// TestScaleClipFrame_ConcurrentPlayersRace drives scaleClipFrame from many
+// goroutines simultaneously, mimicking concurrent clip playback of
+// resolution-mismatched clips (each clip player invokes the raw-video
+// callback from its own decode goroutine). Run under -race: any shared
+// scratch buffer is flagged on both the slice header and the pixel data.
+func TestScaleClipFrame_ConcurrentPlayersRace(t *testing.T) {
+	const srcW, srcH = 64, 48
+	const dstW, dstH = 128, 96
+	const players = 4
+	pool := switcher.NewFramePool(players, dstW, dstH, switcher.ColorYUV420_8bit)
 
 	var wg sync.WaitGroup
-	for idx := 0; idx < clip.MaxPlayers; idx++ {
+	for idx := 0; idx < players; idx++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -63,7 +102,7 @@ func TestScaleClipFrame_ConcurrentPlayersRace(t *testing.T) {
 				src[i] = fill
 			}
 			for frame := 0; frame < 100; frame++ {
-				out := scaleClipFrame(&bufs, idx, src, srcW, srcH, dstW, dstH)
+				out, _ := scaleClipFrame(pool, src, srcW, srcH, dstW, dstH)
 				// Sample a few luma pixels: they must match this player's fill.
 				for _, off := range []int{0, dstW * dstH / 2, dstW*dstH - 1} {
 					if out[off] != fill {
@@ -72,26 +111,32 @@ func TestScaleClipFrame_ConcurrentPlayersRace(t *testing.T) {
 						return
 					}
 				}
+				pool.Release(out)
 			}
 		}(idx)
 	}
 	wg.Wait()
 }
 
-// TestScaleClipFrame_InvalidPlayerIndex verifies that an unparseable clip key
-// (idx out of range) still produces a valid scaled frame without panicking.
-func TestScaleClipFrame_InvalidPlayerIndex(t *testing.T) {
-	var bufs [clip.MaxPlayers][]byte
+// TestAcquireClipFrameBuf verifies the exact-size slicing and pool/heap
+// routing of the per-frame buffer acquisition helper.
+func TestAcquireClipFrameBuf(t *testing.T) {
+	pool := switcher.NewFramePool(2, 128, 96, switcher.ColorYUV420_8bit)
 
-	const srcW, srcH = 64, 48
-	const dstW, dstH = 128, 96
-	src := make([]byte, switcher.ColorYUV420_8bit.FrameSize(srcW, srcH))
+	buf, pooled := acquireClipFrameBuf(pool, 100)
+	if !pooled {
+		t.Error("expected pool buffer for size within pool BufSize")
+	}
+	if len(buf) != 100 {
+		t.Errorf("buffer length = %d, want 100", len(buf))
+	}
 
-	for _, idx := range []int{-1, clip.MaxPlayers} {
-		out := scaleClipFrame(&bufs, idx, src, srcW, srcH, dstW, dstH)
-		want := switcher.ColorYUV420_8bit.FrameSize(dstW, dstH)
-		if len(out) != want {
-			t.Errorf("idx %d: scaled frame size = %d, want %d", idx, len(out), want)
-		}
+	big := pool.BufSize() + 1
+	buf, pooled = acquireClipFrameBuf(pool, big)
+	if pooled {
+		t.Error("expected heap fallback for oversize request")
+	}
+	if len(buf) != big {
+		t.Errorf("buffer length = %d, want %d", len(buf), big)
 	}
 }

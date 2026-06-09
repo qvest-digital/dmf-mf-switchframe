@@ -26,6 +26,7 @@
 // length-prefixed stream never desyncs.
 class FrameSocket {
 public:
+    // Takes ownership of |listen_fd|; Close() shuts it down and closes it.
     explicit FrameSocket(int listen_fd);
     ~FrameSocket();
 
@@ -49,7 +50,12 @@ private:
     // Returns false on error (and marks the socket disconnected).
     bool writeAll(const std::vector<uint8_t>& buf);
 
-    int listen_fd_;
+    // Listening socket, owned by this class. Close() retires it (exchange to
+    // -1) and close()s it — closing is what actually wakes a parked accept()
+    // on macOS, where shutdown() on a listening AF_UNIX socket fails with
+    // ENOTCONN and does not unblock accept(). Atomic because the Accept()
+    // thread reads it while Close() retires it on another thread.
+    std::atomic<int> listen_fd_;
     int conn_fd_ = -1;
     std::atomic<bool> connected_{false};
 

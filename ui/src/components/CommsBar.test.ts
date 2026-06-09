@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => {
 	const instances: Array<{
 		start: ReturnType<typeof vi.fn>;
 		stop: ReturnType<typeof vi.fn>;
+		setMuted: ReturnType<typeof vi.fn>;
 	}> = [];
 	return { instances };
 });
@@ -105,6 +106,78 @@ describe('CommsBar', () => {
 
 		unmount();
 		expect(manager.stop).toHaveBeenCalledOnce();
+	});
+
+	it('re-creates the audio manager when remounted while still joined (layout switch)', async () => {
+		const participants = [
+			{ operatorId: 'op-1', name: 'Operator One', muted: true, speaking: false },
+		];
+		const props = makeProps();
+		const { getByText, rerender, unmount } = render(CommsBar, { props });
+
+		await fireEvent.click(getByText('JOIN'));
+		await waitFor(() => expect(mocks.instances.length).toBe(1));
+		const first = mocks.instances[0];
+
+		// Server confirms the join.
+		await rerender({
+			...props,
+			commsState: { active: true, participants } as unknown as CommsState,
+		});
+
+		// Layout switch destroys the component while still joined server-side.
+		unmount();
+		expect(first.stop).toHaveBeenCalledOnce();
+
+		// Remount (layout switched back): isJoined is server-derived, so the
+		// joined bar renders — recovery must re-create and start a fresh manager.
+		const remount = render(CommsBar, {
+			props: makeProps({
+				commsState: { active: true, participants } as unknown as CommsState,
+			}),
+		});
+		await waitFor(() => expect(mocks.instances.length).toBe(2));
+		const second = mocks.instances[1];
+		expect(second.start).toHaveBeenCalledOnce();
+		// Mic state is synced to the server-side participant (muted).
+		await waitFor(() => expect(second.setMuted).toHaveBeenCalledWith(true));
+
+		// And the recovered manager is owned: destroy stops it.
+		remount.unmount();
+		expect(second.stop).toHaveBeenCalledOnce();
+	});
+
+	it('does not create an audio manager on mount when not joined', async () => {
+		const { unmount } = render(CommsBar, { props: makeProps() });
+
+		// Give any effects a chance to run.
+		await new Promise((r) => setTimeout(r, 10));
+		expect(mocks.instances.length).toBe(0);
+		unmount();
+	});
+
+	it('does not re-create the audio manager after Leave while the server still lists us', async () => {
+		const participants = [
+			{ operatorId: 'op-1', name: 'Operator One', muted: true, speaking: false },
+		];
+		const props = makeProps();
+		const { getByText, rerender } = render(CommsBar, { props });
+
+		await fireEvent.click(getByText('JOIN'));
+		await waitFor(() => expect(mocks.instances.length).toBe(1));
+
+		await rerender({
+			...props,
+			commsState: { active: true, participants } as unknown as CommsState,
+		});
+
+		await fireEvent.click(getByText('LEAVE'));
+		await waitFor(() => expect(mocks.instances[0].stop).toHaveBeenCalledOnce());
+
+		// The leave is confirmed asynchronously; while the server still lists us
+		// as a participant, recovery must not re-join audio.
+		await new Promise((r) => setTimeout(r, 10));
+		expect(mocks.instances.length).toBe(1);
 	});
 
 	it('uses the mocked CommsAudioManager', () => {

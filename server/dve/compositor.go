@@ -58,11 +58,16 @@ type slotAnimation struct {
 	ToAlpha    float64
 	Easing     func(float64) float64
 	OnComplete func()
+	now        func() time.Time // test hook; nil means time.Now
 }
 
 // Progress returns the animation progress [0, 1].
 func (a *slotAnimation) Progress() float64 {
-	elapsed := time.Since(a.StartTime)
+	now := time.Now()
+	if a.now != nil {
+		now = a.now()
+	}
+	elapsed := now.Sub(a.StartTime)
 	t := float64(elapsed) / float64(a.Duration)
 	if t >= 1.0 {
 		return 1.0
@@ -855,19 +860,21 @@ func (c *Compositor) isAnimating(slotIdx int) bool {
 // the lock in that case so the switcher can drop the now-idle DVE node.
 // Must be called with c.mu held.
 func (c *Compositor) tickAnimations() (deactivated bool) {
-	hasCompletions := false
-	for _, anim := range c.animations {
-		if anim.Progress() >= 1.0 && anim.OnComplete != nil {
-			hasCompletions = true
-			break
-		}
-	}
-	wasActive := hasCompletions && c.hasEnabledSlots(c.layout.Load())
-
+	// Progress() re-reads the wall clock, so it must be evaluated exactly once
+	// per animation: a separate precheck scan could miss an animation that
+	// crosses 1.0 between scans, running OnComplete without having captured
+	// wasActive and losing the active-to-inactive transition. Instead, capture
+	// the active state lazily, right before the first completion callback runs.
+	wasActive := false
+	capturedActive := false
 	remaining := c.animations[:0]
 	for _, anim := range c.animations {
 		if anim.Progress() >= 1.0 {
 			if anim.OnComplete != nil {
+				if !capturedActive {
+					capturedActive = true
+					wasActive = c.hasEnabledSlots(c.layout.Load())
+				}
 				anim.OnComplete()
 			}
 			continue

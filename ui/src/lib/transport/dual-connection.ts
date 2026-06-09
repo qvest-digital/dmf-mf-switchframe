@@ -106,14 +106,16 @@ export class DualConnectionManager {
 				// Safe to start immediately — initial load is complete
 				const mgr = this.managers.get(id);
 				mgr?.start();
-			} else if (this._initialLoadFailedEngines.size > 0 && this._initialLoadFailedEngines.size >= this.managers.size - 1) {
-				// All previously-known engines have failed initial load.
+			} else if (this._initialLoadFailedEngines.size > 0 && this._initialLoadFailedEngines.size >= this.startedEngineCount(id)) {
+				// Every engine we actually started has failed initial load.
 				// Start the new engine immediately — it's our best hope.
+				// (Compare against STARTED engines, not managers.size:
+				// deferred engines never start, so they can never fail.)
 				const mgr = this.managers.get(id);
 				mgr?.start();
 			} else {
 				// Defer until initial load completes
-				this._pendingEngineStarts.push(id);
+				this.deferEngineStart(id);
 			}
 		}
 
@@ -122,6 +124,12 @@ export class DualConnectionManager {
 
 	async start(): Promise<void> {
 		this._started = true;
+		// start() is the actual restart entry point for the 401 token-resubmit
+		// flow (+page.svelte submitToken calls start() WITHOUT stop()). Clear
+		// stale failures here as well as in stop() so they can't poison the
+		// all-engines-failed escalation or the deferred-start gating; each
+		// manager's fetchInitialState will re-report real failures.
+		this._initialLoadFailedEngines.clear();
 		const promises = [...this.managers.values()].map((m) => m.start());
 		await Promise.allSettled(promises);
 		this.startClockSync();
@@ -301,11 +309,35 @@ export class DualConnectionManager {
 		if (this._started) {
 			if (this._initialLoadDone) {
 				newMgr.start();
-			} else if (this._initialLoadFailedEngines.size > 0 && this._initialLoadFailedEngines.size >= this.managers.size - 1) {
+			} else if (this._initialLoadFailedEngines.size > 0 && this._initialLoadFailedEngines.size >= this.startedEngineCount(engineId)) {
 				newMgr.start();
 			} else {
-				this._pendingEngineStarts.push(engineId);
+				this.deferEngineStart(engineId);
 			}
+		}
+	}
+
+	/** Number of engines whose ConnectionManager has actually been started —
+	 * i.e. not sitting in _pendingEngineStarts — excluding `excludeId` (the
+	 * engine currently being added/replaced). Only started engines can fail
+	 * their initial load, so "all engines failed" checks must compare against
+	 * this count rather than managers.size. */
+	private startedEngineCount(excludeId?: string): number {
+		let count = 0;
+		for (const id of this.managers.keys()) {
+			if (id === excludeId) continue;
+			if (this._pendingEngineStarts.includes(id)) continue;
+			count++;
+		}
+		return count;
+	}
+
+	/** Queue an engine to be started once the initial load settles
+	 * (deduplicated — an engine replaced while already deferred must not be
+	 * double-counted or double-started). */
+	private deferEngineStart(engineId: string): void {
+		if (!this._pendingEngineStarts.includes(engineId)) {
+			this._pendingEngineStarts.push(engineId);
 		}
 	}
 
@@ -395,10 +427,24 @@ export class DualConnectionManager {
 			},
 			onInitialLoadError: (error, rawError) => {
 				this._initialLoadFailedEngines.add(engineId);
-				// Only escalate to the page once EVERY engine has failed —
-				// retries of a single unreachable engine must not mask a healthy
-				// engine that is still loading.
-				if (this._initialLoadFailedEngines.size >= this.managers.size && !this._initialLoadDone) {
+				if (this._initialLoadDone) return;
+				// Only escalate to the page once every STARTED engine has
+				// failed — retries of a single unreachable engine must not mask
+				// a healthy engine that is still loading. Compare against
+				// started engines, not managers.size: an engine deferred in
+				// _pendingEngineStarts never starts, so it can never fail, and
+				// counting it would make escalation (which drives the 401
+				// token prompt) unreachable.
+				if (this._initialLoadFailedEngines.size >= this.startedEngineCount()) {
+					// Deferral exists to let a started engine's state land
+					// before a late-added engine becomes authoritative — moot
+					// when no started engine can load. Flush pending engines:
+					// they're the best remaining hope of completing the load.
+					const pending = this._pendingEngineStarts;
+					this._pendingEngineStarts = [];
+					for (const pendingId of pending) {
+						this.managers.get(pendingId)?.start();
+					}
 					this.config.onInitialLoadError(error, rawError);
 				}
 			},

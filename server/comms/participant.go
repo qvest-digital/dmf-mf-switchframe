@@ -92,16 +92,19 @@ func newParticipantWithFactory(id, name string, encFactory encoderFactory, decFa
 		decoder: dec,
 		// Sized to the Opus maximum frame (120ms) so a client that negotiates
 		// a 40/60/120ms frame still decodes; the hraban wrapper passes
-		// cap(pcmBuf)/Channels to opus_decode as the output capacity. Frames
-		// are clamped to FrameSize for the 20ms mix path in decodeAudio.
+		// cap(pcmBuf)/Channels to opus_decode as the output capacity. Longer
+		// frames are split into FrameSize blocks for the 20ms mix path in
+		// decodeAudio.
 		pcmBuf: make([]int16, MaxFrameSize),
 		pcmQ:   make(chan []int16, pcmQueueSize),
 		sendCh: make(chan []byte, 4),
 	}, nil
 }
 
-// decodeAudio decodes Opus data into PCM and queues the frame for the mix loop.
-// Returns the decoded samples (for speaking detection). Gates on p.closed
+// decodeAudio decodes Opus data into PCM and queues it for the mix loop as
+// one or more consecutive FrameSize (20ms) blocks, preserving all samples of
+// longer (40/60/120ms) frames. Returns all decoded samples (for speaking
+// detection). Gates on p.closed
 // inside p.mu so the cgo Decode call cannot be dispatched after close() has
 // torn down the participant — matches the trySend idiom.
 func (p *participant) decodeAudio(opusData []byte) ([]int16, error) {
@@ -127,22 +130,39 @@ func (p *participant) decodeAudio(opusData []byte) ([]int16, error) {
 	if n > len(p.pcmBuf) {
 		n = len(p.pcmBuf)
 	}
-	// The mix path is built around 20ms (FrameSize) frames; take the leading
-	// FrameSize samples of any longer frame so downstream sees canonical
-	// 20ms blocks. (The mixer also clamps, but normalizing here keeps the
-	// pcmQ contract simple.)
-	if n > FrameSize {
-		n = FrameSize
-	}
 	// Copy while still holding the lock so pcmBuf can't be overwritten
 	// by a concurrent decode (single-writer today, but defensive).
-	out := make([]int16, n)
-	copy(out, p.pcmBuf[:n])
+	decoded := make([]int16, n)
+	copy(decoded, p.pcmBuf[:n])
 	p.mu.Unlock()
 
-	// Non-blocking enqueue — drop oldest if full.
+	// The mix path is built around 20ms (FrameSize) frames; split a longer
+	// frame (40/60/120ms) into consecutive FrameSize blocks and queue each in
+	// order so no audio is discarded. The consumer (consumePCM → mixer) pops
+	// one block per 20ms mix tick, so a 40ms frame plays out over two ticks.
+	// If the decoder ever returns a sample count that is not a multiple of
+	// FrameSize (unusual for Opus), the final partial block is zero-padded to
+	// FrameSize so downstream always sees canonical 20ms blocks.
+	for off := 0; off < len(decoded); off += FrameSize {
+		block := make([]int16, FrameSize)
+		end := off + FrameSize
+		if end > len(decoded) {
+			end = len(decoded)
+		}
+		copy(block, decoded[off:end])
+		p.enqueuePCM(block)
+	}
+
+	return decoded, nil
+}
+
+// enqueuePCM non-blocking-enqueues one FrameSize PCM block onto pcmQ,
+// dropping the oldest queued block to make room when the queue is full.
+// Every block — including each block of a split multi-20ms frame — goes
+// through this same bounded-queue drop policy.
+func (p *participant) enqueuePCM(block []int16) {
 	select {
-	case p.pcmQ <- out:
+	case p.pcmQ <- block:
 	default:
 		// Queue full — drop oldest frame to make room.
 		select {
@@ -150,12 +170,10 @@ func (p *participant) decodeAudio(opusData []byte) ([]int16, error) {
 		default:
 		}
 		select {
-		case p.pcmQ <- out:
+		case p.pcmQ <- block:
 		default:
 		}
 	}
-
-	return out, nil
 }
 
 // consumePCM returns the next queued PCM frame for mixing.

@@ -12,8 +12,9 @@ const (
 	// The decode scratch buffer is sized to this so a client that negotiates
 	// a 40/60/120ms frame still decodes (opus_decode returns
 	// OPUS_BUFFER_TOO_SMALL when the output capacity is below the frame's
-	// sample count). Decoded frames are still clamped to FrameSize for the
-	// 20ms mix path; see participant.decodeAudio.
+	// sample count). Decoded frames longer than FrameSize are split into
+	// consecutive 20ms FrameSize blocks for the mix path; see
+	// participant.decodeAudio.
 	MaxFrameSize = 5760
 
 	MaxParticipants = 6

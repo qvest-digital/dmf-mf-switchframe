@@ -15,8 +15,28 @@ FrameSocket::~FrameSocket() { Close(); }
 
 bool FrameSocket::Accept() {
     std::cerr << "[frame-socket] Waiting for connection..." << std::endl;
-    int fd = accept(listen_fd_, nullptr, nullptr);
-    if (fd < 0) {
+    int fd = -1;
+    while (true) {
+        int lfd = listen_fd_.load();
+        if (lfd < 0) {
+            // Close() already retired the listener: clean shutdown.
+            return false;
+        }
+        fd = accept(lfd, nullptr, nullptr);
+        if (fd >= 0) {
+            break;
+        }
+        if (errno == EINTR) {
+            // Interrupted by a signal; the listener is still fine.
+            continue;
+        }
+        if (stop_) {
+            // Close() closed the listener out from under us to unblock this
+            // accept(); not an error.
+            std::cerr << "[frame-socket] accept() canceled by Close()"
+                      << std::endl;
+            return false;
+        }
         std::cerr << "[frame-socket] accept() failed: " << strerror(errno)
                   << std::endl;
         return false;
@@ -153,10 +173,21 @@ void FrameSocket::Close() {
     // listener (e.g. the Go server connected the control socket but never the
     // frame socket during a crash/restart race). Without this, join() on the
     // accept thread would hang forever and the sidecar would never exit.
-    // Mirrors ControlSocket::Stop(); the listener fd itself is owned and closed
-    // by main after the join.
-    if (listen_fd_ >= 0) {
-        shutdown(listen_fd_, SHUT_RDWR);
+    //
+    // shutdown() alone is NOT enough: on macOS, shutdown() on a listening
+    // AF_UNIX socket fails with ENOTCONN and does not wake a blocked
+    // accept() — only close() does. Keep the shutdown() first for platforms
+    // where it does wake accept() (e.g. Linux), then close the fd. stop_ is
+    // already set above, so the woken Accept() treats the failure as a clean
+    // shutdown rather than logging an error. The usual close-to-wake fd-reuse
+    // hazard does not apply: at shutdown the listener is used only by the
+    // parked accept() and this class creates no new fds that could recycle
+    // the number before Accept() observes stop_. Mirrors
+    // ControlSocket::Stop().
+    int lfd = listen_fd_.exchange(-1);
+    if (lfd >= 0) {
+        shutdown(lfd, SHUT_RDWR);
+        close(lfd);
     }
 
     // Unblock a writer that is parked inside write() on a full send buffer.

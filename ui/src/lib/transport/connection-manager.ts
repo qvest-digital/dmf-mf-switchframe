@@ -25,6 +25,11 @@ export class ConnectionManager {
 	/** True after stop(); guards in-flight fetches from resurrecting the
 	 * retry/poll loops or pushing state into torn-down consumers. */
 	private stopped = false;
+	/** Generation id of the current polling chain. Bumped by stopPolling()
+	 * and startPolling() so a stale in-flight poll (one that survived a
+	 * stop()/start() cycle or a stopPolling() race) can never re-arm itself
+	 * alongside — or overwrite the timer of — a newer chain. */
+	private pollGen = 0;
 	private pollDelay = 500;
 	private readonly POLL_MIN = 500;
 	private readonly POLL_MAX = 5000;
@@ -46,7 +51,11 @@ export class ConnectionManager {
 					// Don't downgrade to polling if MoQ data is flowing
 					// via the media pipeline (the standalone connection.ts
 					// WebTransport always fails in dev mode).
-					if (!this.hasMoQPipeline) {
+					//
+					// connection.disconnect() inside stop() fires this callback
+					// synchronously — never resurrect polling (or report
+					// 'polling') on a stopped manager.
+					if (!this.hasMoQPipeline && !this.stopped) {
 						this.startPolling();
 						this.setConnectionState('polling');
 					}
@@ -73,15 +82,22 @@ export class ConnectionManager {
 	}
 
 	stop(): void {
+		// Set the stopped flag FIRST: connection.disconnect() below
+		// synchronously fires onConnectionChange('disconnected'), whose
+		// handler would otherwise restart polling we just stopped.
 		this.stopped = true;
 		if (this.retryTimer !== undefined) {
 			clearTimeout(this.retryTimer);
 			this.retryTimer = undefined;
 		}
 		this.stopPolling();
-		this.connection.disconnect();
+		// Reset before disconnect() so the synchronous disconnect callback
+		// never observes stale "MoQ active" state. The callback itself is
+		// also guarded by this.stopped — the ordering here is defense in
+		// depth, not the only line of protection.
 		this.hasMoQPipeline = false;
 		this.initialLoadDone = false;
+		this.connection.disconnect();
 	}
 
 	get transport(): WebTransport | null {
@@ -122,7 +138,14 @@ export class ConnectionManager {
 	}
 
 	private startPolling(): void {
+		// Never start (or resurrect) polling on a stopped manager.
+		if (this.stopped) return;
 		if (this.pollInterval) return;
+		// Capture this chain's generation: only the current generation may
+		// push state or re-arm. stopPolling() bumps pollGen, so an in-flight
+		// poll from a previous chain becomes inert the moment polling is
+		// stopped or restarted.
+		const gen = ++this.pollGen;
 		const poll = async () => {
 			try {
 				const res = await fetch(`${this.config.url}/api/switch/state`, {
@@ -130,7 +153,9 @@ export class ConnectionManager {
 				});
 				if (!res.ok) throw new Error(`Poll failed: ${res.status}`);
 				const state = await res.json() as ControlRoomState;
-				if (this.stopped) return; // stop() raced the in-flight poll
+				// stop() or a stop()/start() restart raced the in-flight poll —
+				// don't push stale state into torn-down/replaced consumers.
+				if (this.stopped || gen !== this.pollGen) return;
 				this.config.onStateUpdate(state);
 				this.pollDelay = this.POLL_MIN; // reset on success
 				// Clear loading overlay if initial fetch failed but polling succeeds.
@@ -142,9 +167,12 @@ export class ConnectionManager {
 				// Backoff on failure
 				this.pollDelay = Math.min(this.pollDelay * 2, this.POLL_MAX);
 			}
-			if (this.pollInterval) {
-				this.pollInterval = setTimeout(poll, this.pollDelay);
-			}
+			// Single re-arm site covering both success and failure paths:
+			// only the current generation may re-arm, and never after stop().
+			// A stale chain re-arming here would overwrite the new chain's
+			// timer id, leaving an unclearable duplicate loop.
+			if (this.stopped || gen !== this.pollGen) return;
+			this.pollInterval = setTimeout(poll, this.pollDelay);
 		};
 		this.pollInterval = setTimeout(poll, this.pollDelay);
 		// Reflect polling state (WebTransport callbacks will override to 'webtransport' if it connects)
@@ -154,6 +182,9 @@ export class ConnectionManager {
 	}
 
 	private stopPolling(): void {
+		// Invalidate any in-flight poll from the current chain so it can
+		// neither push state nor re-arm when its fetch settles.
+		this.pollGen++;
 		if (this.pollInterval) {
 			clearTimeout(this.pollInterval);
 			this.pollInterval = undefined;

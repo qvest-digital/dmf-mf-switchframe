@@ -239,6 +239,76 @@ func TestSegmentationProxy_PoolExhaustion(t *testing.T) {
 	}
 }
 
+// newTestMaskFrame builds a fake IPC-imported mask frame the same way
+// handleMaskReady does: one owning reference held by the proxy and a release
+// hook (standing in for sidecar.CloseIPCHandle) that runs when the last
+// reference is released.
+func newTestMaskFrame(closed *int) *GPUFrame {
+	f := &GPUFrame{
+		Width:     1920,
+		Height:    1080,
+		Pitch:     1920,
+		releaseFn: func() { *closed++ },
+	}
+	f.refs.Store(1)
+	return f
+}
+
+func TestSegmentationProxy_DeferredIPCClose_InFlightReader(t *testing.T) {
+	p := &SegmentationProxy{
+		sources:        make(map[string]*proxySource),
+		pendingConfigs: make(map[string]float32),
+		inFlight:       make(map[int]*GPUFrame),
+	}
+
+	closed := 0
+	frame := newTestMaskFrame(&closed)
+	src := &proxySource{width: 1920, height: 1080, maskDevPtr: 0xBEEF, maskFrame: frame}
+	src.mask.Store(frame)
+	p.sources["cam1"] = src
+
+	// Pipeline takes a reference (kernel still reading the mask).
+	m := p.MaskForSource("cam1")
+	if m == nil {
+		t.Fatal("expected mask frame")
+	}
+
+	// Teardown while the reader holds a ref must NOT close the IPC handle.
+	p.Close()
+	if closed != 0 {
+		t.Fatalf("IPC handle closed while a reader still held a reference (closed=%d)", closed)
+	}
+
+	// The reader's Release drops the last reference and closes the handle.
+	m.Release()
+	if closed != 1 {
+		t.Fatalf("expected IPC handle closed exactly once after last release, got %d", closed)
+	}
+}
+
+func TestSegmentationProxy_CleanupSource_ClosesWhenIdle(t *testing.T) {
+	p := &SegmentationProxy{
+		sources:        make(map[string]*proxySource),
+		pendingConfigs: make(map[string]float32),
+		inFlight:       make(map[int]*GPUFrame),
+	}
+	defer p.Close()
+
+	closed := 0
+	frame := newTestMaskFrame(&closed)
+	src := &proxySource{width: 1920, height: 1080, maskDevPtr: 0xBEEF, maskFrame: frame}
+	src.mask.Store(frame)
+
+	// No in-flight readers: cleanup closes the handle immediately, once.
+	p.cleanupSource(src)
+	if closed != 1 {
+		t.Fatalf("expected IPC handle closed exactly once on idle cleanup, got %d", closed)
+	}
+	if src.maskFrame != nil || src.maskDevPtr != 0 || src.mask.Load() != nil {
+		t.Error("expected mask state cleared after cleanup")
+	}
+}
+
 func TestSegmentationProxy_Close_CleansUp(t *testing.T) {
 	p := &SegmentationProxy{
 		sources:        make(map[string]*proxySource),

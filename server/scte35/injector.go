@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -506,8 +507,11 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 		ae.lastEncodedData = append([]byte(nil), data...) // for pre-roll repetition
 
 		anchorPTS := maskPTS33(inj.ptsFn())
-		if msg.SpliceTimePTS != nil {
-			anchorPTS = maskPTS33(*msg.SpliceTimePTS)
+		if effPTS, ok := msg.EffectiveSplicePTS(); ok {
+			// Use splice_time + pts_adjustment (mod 2^33): upstream cues may
+			// carry a non-zero pts_adjustment, and auto-return must be anchored
+			// to the effective presentation PTS of the splice point.
+			anchorPTS = effPTS
 		}
 		ae.anchorPTS = anchorPTS
 
@@ -570,8 +574,9 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 
 		if firstCueOutID != 0 {
 			anchorPTS := maskPTS33(inj.ptsFn())
-			if msg.SpliceTimePTS != nil {
-				anchorPTS = maskPTS33(*msg.SpliceTimePTS)
+			if effPTS, ok := msg.EffectiveSplicePTS(); ok {
+				// As above: anchor to splice_time + pts_adjustment (mod 2^33).
+				anchorPTS = effPTS
 			}
 			for _, d := range msg.Descriptors {
 				if isSegCueOut(d.SegmentationType) {
@@ -663,6 +668,16 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 // during the pre-roll window until the splice PTS is reached.
 func (inj *Injector) ScheduleCue(msg *CueMessage, preRollMs int64) (uint32, error) {
 	currentPTS := maskPTS33(inj.ptsFn())
+	// Saturate preRollMs BEFORE the ms→ns multiply: for preRollMs larger than
+	// MaxInt64/1e6 (~9.22e12 ms) the multiply itself overflows int64 and wraps
+	// negative, which durationToTicksSat would clamp to 0 — i.e. an immediate
+	// splice instead of saturation. Clamping first keeps the overflow
+	// protection meaningful for unbounded callers (e.g. macro parameters).
+	// The clamped value still saturates ticks at maxPTSTicks below.
+	const maxPreRollMs = math.MaxInt64 / int64(time.Millisecond)
+	if preRollMs > maxPreRollMs {
+		preRollMs = maxPreRollMs
+	}
 	// Saturating ms→ticks (90 kHz) so abusive pre-roll values can't overflow
 	// the multiply and yield a bogus splice PTS. The API boundary already caps
 	// operator input; this protects other callers.

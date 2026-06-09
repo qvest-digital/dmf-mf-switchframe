@@ -82,9 +82,10 @@ func TestParticipantDecodeEncode(t *testing.T) {
 
 // TestParticipantDecodeOversizedFrame verifies that an Opus frame longer than
 // 20ms (here 40ms = 2*FrameSize) decodes instead of being dropped with
-// OPUS_BUFFER_TOO_SMALL. The pcmBuf is sized to MaxFrameSize (120ms) so any
-// valid Opus frame fits; decodeAudio then clamps the result to FrameSize for
-// the 20ms mix path. Regression for the silently-brittle non-20ms-frame case.
+// OPUS_BUFFER_TOO_SMALL, and that ALL decoded samples are preserved:
+// decodeAudio splits the 40ms result into two consecutive FrameSize blocks
+// on pcmQ rather than discarding the trailing half. Regression for both the
+// silently-brittle non-20ms-frame case and the 50% audio-loss truncation bug.
 func TestParticipantDecodeOversizedFrame(t *testing.T) {
 	if !opusAvailable {
 		t.Skip("opus codec not available")
@@ -99,7 +100,11 @@ func TestParticipantDecodeOversizedFrame(t *testing.T) {
 	// Encode a 40ms frame. The hraban encoder derives the frame duration from
 	// the number of PCM samples supplied, so 2*FrameSize samples yields a
 	// 40ms Opus frame — a valid duration a browser encoder might negotiate.
+	// Use a non-silent ramp so the two decoded halves are distinguishable.
 	pcm40ms := make([]int16, 2*FrameSize)
+	for i := range pcm40ms {
+		pcm40ms[i] = int16(i % 8000)
+	}
 	buf := make([]byte, 4096)
 	n, err := p.encoder.Encode(pcm40ms, 2*FrameSize, buf)
 	if err != nil {
@@ -110,9 +115,30 @@ func TestParticipantDecodeOversizedFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeAudio of 40ms frame returned error (frame dropped): %v", err)
 	}
-	// Clamped to the canonical 20ms mix frame.
-	if len(out) != FrameSize {
-		t.Errorf("decoded %d samples, want %d (clamped to FrameSize)", len(out), FrameSize)
+	// All decoded samples are returned for speaking detection.
+	if len(out) != 2*FrameSize {
+		t.Fatalf("decodeAudio returned %d samples, want %d (full 40ms frame)", len(out), 2*FrameSize)
+	}
+
+	// The full frame is queued as two consecutive canonical 20ms blocks whose
+	// concatenation equals the decoded PCM — nothing is discarded.
+	for blockIdx := 0; blockIdx < 2; blockIdx++ {
+		block := p.consumePCM()
+		if block == nil {
+			t.Fatalf("pcmQ block %d missing: 40ms frame must queue 2 blocks", blockIdx)
+		}
+		if len(block) != FrameSize {
+			t.Fatalf("pcmQ block %d has %d samples, want %d", blockIdx, len(block), FrameSize)
+		}
+		for i, s := range block {
+			if want := out[blockIdx*FrameSize+i]; s != want {
+				t.Fatalf("pcmQ block %d sample %d = %d, want %d (samples not preserved in order)",
+					blockIdx, i, s, want)
+			}
+		}
+	}
+	if extra := p.consumePCM(); extra != nil {
+		t.Errorf("pcmQ has unexpected extra block of %d samples after 2 blocks", len(extra))
 	}
 }
 

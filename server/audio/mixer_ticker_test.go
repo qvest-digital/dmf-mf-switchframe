@@ -657,14 +657,14 @@ func TestClockDrivenMixer_OnTransitionAbort(t *testing.T) {
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
-	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
+	token := m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
 	m.OnTransitionPosition(0.5)
 
 	m.mu.RLock()
 	assert.True(t, m.transCrossfadeActive)
 	m.mu.RUnlock()
 
-	m.OnTransitionAbort()
+	m.OnTransitionAbort(token)
 
 	m.mu.RLock()
 	assert.False(t, m.transCrossfadeActive, "should be inactive after abort")

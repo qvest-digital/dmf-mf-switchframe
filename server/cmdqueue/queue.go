@@ -346,10 +346,15 @@ func (q *Queue) Drain() []Command {
 	//
 	// This WAL I/O runs AFTER releasing q.mu so it never blocks concurrent
 	// Enqueue from HTTP handlers nor stalls the frame loop while holding the
-	// queue lock. All drained seqs are marked in a SINGLE MarkExecutedBatch
-	// call, which APPENDS one tombstone line per seq with one fsync — it
-	// never reads or rewrites the file, so the frame-loop cost is
-	// O(drained commands), not O(file size).
+	// queue lock. All drained commands are marked in a SINGLE
+	// MarkExecutedCommands call, which APPENDS one tombstone line per
+	// command with one fsync — it never reads or rewrites the file, so the
+	// frame-loop cost is O(drained commands), not O(file size). The full
+	// commands (not just seqs) are passed so Seq-0 (untimed/legacy,
+	// dedup-exempt) commands get content-correlated tombstones: several
+	// Seq-0 commands can be pending at once, and a bare {Seq:0} tombstone
+	// used to mark ALL of them executed, silently dropping the still-pending
+	// ones at crash replay.
 	//
 	// Compaction — the only O(file size) pass — keeps the file bounded at
 	// roughly the last maxSeen executed tombstones (matching the in-memory
@@ -358,13 +363,9 @@ func (q *Queue) Drain() []Command {
 	// the frame loop never pays a full-file read+rewrite+fsync; the CAS
 	// flag ensures at most one compaction is in flight.
 	if q.wal != nil && len(out) > 0 {
-		seqs := make([]uint64, len(out))
-		for i, cmd := range out {
-			seqs[i] = cmd.Seq
-		}
-		if err := q.wal.MarkExecutedBatch(seqs); err != nil {
-			slog.Warn("cmdqueue: WAL MarkExecutedBatch failed — crash here can replay these commands",
-				"count", len(seqs), "err", err)
+		if err := q.wal.MarkExecutedCommands(out); err != nil {
+			slog.Warn("cmdqueue: WAL MarkExecutedCommands failed — crash here can replay these commands",
+				"count", len(out), "err", err)
 		}
 		if q.compacting.CompareAndSwap(false, true) {
 			go func() {

@@ -94,6 +94,17 @@ func (pf *ProcessingFrame) Refs() int32 {
 
 // Ref increments the reference count, indicating an additional consumer
 // holds a reference to this frame's data buffer. No-op on unmanaged frames.
+//
+// Invariant: Ref and ReleaseYUV are deliberately ASYMMETRIC for unmanaged
+// frames (refs == nil) — Ref is a no-op while ReleaseYUV frees the buffer
+// immediately. An unmanaged frame therefore supports exactly ONE owner that
+// calls ReleaseYUV exactly once. Any pool-backed frame that will be shared
+// with additional holders (e.g., ingested into the frame-sync ring, where it
+// is retained as lastRawVideo while sync-loop consumers take and release
+// borrowed copies) MUST be made managed via SetRefs(1) by its producer.
+// Otherwise a consumer-side ReleaseYUV recycles the pool buffer out from
+// under the retaining owner (use-after-release) and the owner's eventual
+// release returns the same buffer to the pool a second time.
 func (pf *ProcessingFrame) Ref() {
 	if pf.refs == nil {
 		return
@@ -103,7 +114,8 @@ func (pf *ProcessingFrame) Ref() {
 
 // ReleaseYUV returns the data buffer to the pool when the last reference is
 // dropped. For refcounted frames (refs >= 1), decrements and releases only
-// when refs reaches 0. For unmanaged frames (nil refs), releases immediately.
+// when refs reaches 0. For unmanaged frames (nil refs), releases immediately
+// — the caller must be the buffer's sole owner (see Ref for the invariant).
 // Safe to call multiple times; subsequent calls on nil Data are no-ops.
 //
 // Also releases GPUData if it implements GPURefCounter (decrements GPU
@@ -186,6 +198,10 @@ func (pf *ProcessingFrame) MakeWritable(pool *FramePool) {
 // ReleaseYUV will return the buffer to the pool when all references
 // are dropped. Exported so external packages (e.g., SRT wiring in
 // main) can set pool ownership on frames they create.
+//
+// Pool-backed frames that enter shared pipeline paths (frame-sync ring,
+// IngestRawVideo) must also be made managed via SetRefs(1) — see Ref for
+// the single-owner invariant on unmanaged frames.
 func (pf *ProcessingFrame) SetPool(pool *FramePool) {
 	pf.pool = pool
 }

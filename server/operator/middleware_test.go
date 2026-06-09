@@ -131,7 +131,8 @@ func TestEndpointSubsystem(t *testing.T) {
 		// Exempt / unmapped (should return false)
 		{"/api/switch/state", "", false},
 		{"/api/operator/register", "", false},
-		{"/api/sync/state-snapshot", "", false}, // genuinely unmapped (deny-by-default)
+		{"/api/sync/state-snapshot", "", false}, // unmapped; authenticated-operator carve-out
+		{"/api/peer/force-leader", "", false},   // unmapped; machine-auth carve-out
 		{"/api/unknown", "", false},
 	}
 
@@ -543,9 +544,10 @@ func TestMiddleware_UnmappedMutatingEndpointDeniedForNonDirector(t *testing.T) {
 	mw := NewMiddleware(store, sm)
 	wrapped := mw(handler)
 
-	// POST /api/sync/state-snapshot is an unmapped mutating path. Under the
-	// deny-by-default policy a non-director must NOT reach the handler.
-	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", nil)
+	// POST /api/factory-reset is an unmapped mutating path with no explicit
+	// carve-out. Under the deny-by-default policy a non-director must NOT
+	// reach the handler.
+	req := httptest.NewRequest("POST", "/api/factory-reset", nil)
 	req.Header.Set("Authorization", "Bearer "+op.Token)
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
@@ -570,7 +572,7 @@ func TestMiddleware_UnmappedMutatingEndpointAllowedForDirector(t *testing.T) {
 	wrapped := mw(handler)
 
 	// Director retains access to unmapped privileged mutating endpoints.
-	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", nil)
+	req := httptest.NewRequest("POST", "/api/factory-reset", nil)
 	req.Header.Set("Authorization", "Bearer "+op.Token)
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
@@ -633,8 +635,10 @@ func TestMiddleware_ViewerForbiddenOnProgramAffectingEndpoints(t *testing.T) {
 		{"DELETE", "/api/wipes/custom/w1"},
 		// Replay shutter angle.
 		{"PUT", "/api/replay/shutter-angle"},
-		// Full engine state snapshot — the most dangerous (deny-by-default).
-		{"POST", "/api/sync/state-snapshot"},
+		// NOTE: /api/sync/state-snapshot is intentionally absent here. The
+		// dual-engine auto-reconcile loop runs in every operator's browser
+		// (including viewers), so it is carved out for any authenticated
+		// registered operator — see TestMiddleware_SyncEndpoints*.
 	}
 
 	for _, tc := range cases {
@@ -720,39 +724,131 @@ func TestMiddleware_CollectionRootRoutesGuarded(t *testing.T) {
 	}
 }
 
-// TestMiddleware_StateSnapshotRequiresDirector verifies the full state-snapshot
-// apply endpoint is gated behind the director role even for a non-viewer
-// operator (e.g. an audio operator), and that a director is permitted.
-func TestMiddleware_StateSnapshotRequiresDirector(t *testing.T) {
+// TestMiddleware_SyncEndpointsAllowAnyAuthenticatedOperator verifies the
+// dual-engine reconciliation endpoints are callable by every registered
+// operator role, not just directors. The auto-reconcile loop runs in every
+// operator's browser (the UI wires it with no role gating), so gating these
+// behind the director role would break engine reconciliation whenever no
+// director has a browser open.
+func TestMiddleware_SyncEndpointsAllowAnyAuthenticatedOperator(t *testing.T) {
 	store, _ := NewStore(tempStorePath(t))
 	sm := NewSessionManager()
 	defer sm.Close()
 
-	audio, _ := store.Register("Bob", RoleAudio)
-	director, _ := store.Register("Alice", RoleDirector)
-	sm.Connect(audio.ID, audio.Name, audio.Role)
-	sm.Connect(director.ID, director.Name, director.Role)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mw := NewMiddleware(store, sm)
+	wrapped := mw(handler)
+
+	roles := []Role{RoleDirector, RoleAudio, RoleGraphics, RoleCaptioner, RoleViewer}
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{"POST", "/api/sync/state-snapshot"},
+		{"POST", "/api/sync/reconcile-lock"},
+		{"PUT", "/api/sync/reconcile-lock/lock-123"},
+		{"DELETE", "/api/sync/reconcile-lock/lock-123"},
+		// Versioned variants must be classified identically.
+		{"POST", "/api/v1/sync/state-snapshot"},
+		{"POST", "/api/v1/sync/reconcile-lock"},
+	}
+
+	for _, role := range roles {
+		op, err := store.Register("op-"+string(role), role)
+		require.NoError(t, err)
+		sm.Connect(op.ID, op.Name, op.Role)
+
+		for _, ep := range endpoints {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			req.Header.Set("Authorization", "Bearer "+op.Token)
+			rr := httptest.NewRecorder()
+			wrapped.ServeHTTP(rr, req)
+
+			require.Equal(t, http.StatusOK, rr.Code,
+				"expected 200 for role %q on %s %s", role, ep.method, ep.path)
+		}
+	}
+}
+
+// TestMiddleware_SyncEndpointsRejectUnidentifiedCallers verifies the sync
+// carve-out still requires an identified registered operator: missing or
+// unknown bearer tokens are rejected. This is stricter than main, which let
+// these endpoints through with no operator identity at all.
+func TestMiddleware_SyncEndpointsRejectUnidentifiedCallers(t *testing.T) {
+	store, _ := NewStore(tempStorePath(t))
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	// Register an operator so the middleware is active.
+	op, _ := store.Register("Alice", RoleDirector)
+	sm.Connect(op.ID, op.Name, op.Role)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-
 	mw := NewMiddleware(store, sm)
 	wrapped := mw(handler)
 
-	// Audio operator is denied.
-	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", nil)
-	req.Header.Set("Authorization", "Bearer "+audio.Token)
-	rr := httptest.NewRecorder()
-	wrapped.ServeHTTP(rr, req)
-	require.Equal(t, http.StatusForbidden, rr.Code,
-		"expected 403 for audio role on state-snapshot apply")
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{"POST", "/api/sync/state-snapshot"},
+		{"POST", "/api/sync/reconcile-lock"},
+		{"PUT", "/api/sync/reconcile-lock/lock-123"},
+		{"DELETE", "/api/sync/reconcile-lock/lock-123"},
+	}
 
-	// Director is allowed.
-	req = httptest.NewRequest("POST", "/api/sync/state-snapshot", nil)
-	req.Header.Set("Authorization", "Bearer "+director.Token)
-	rr = httptest.NewRecorder()
-	wrapped.ServeHTTP(rr, req)
-	require.Equal(t, http.StatusOK, rr.Code,
-		"expected 200 for director on state-snapshot apply")
+	for _, ep := range endpoints {
+		// No token at all.
+		req := httptest.NewRequest(ep.method, ep.path, nil)
+		rr := httptest.NewRecorder()
+		wrapped.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusForbidden, rr.Code,
+			"expected 403 with no token on %s %s", ep.method, ep.path)
+
+		// Unknown token.
+		req = httptest.NewRequest(ep.method, ep.path, nil)
+		req.Header.Set("Authorization", "Bearer not-a-real-token")
+		rr = httptest.NewRecorder()
+		wrapped.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusForbidden, rr.Code,
+			"expected 403 with unknown token on %s %s", ep.method, ep.path)
+	}
+}
+
+// TestMiddleware_ForceLeaderMachineAuthExempt verifies POST
+// /api/peer/force-leader bypasses the operator role middleware even when
+// operators are registered. The canonical caller is the cloud control plane,
+// which authenticates via the X-Control-Plane-Secret header (enforced inside
+// the handler, control/api_force_leader.go) and never holds an operator
+// bearer token. Requiring a director token here would make failover promotion
+// impossible during a partition.
+func TestMiddleware_ForceLeaderMachineAuthExempt(t *testing.T) {
+	store, _ := NewStore(tempStorePath(t))
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	// Register operators so the middleware is active (the regression only
+	// manifests once Count() > 0).
+	op, _ := store.Register("Alice", RoleDirector)
+	sm.Connect(op.ID, op.Name, op.Role)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mw := NewMiddleware(store, sm)
+	wrapped := mw(handler)
+
+	for _, path := range []string{"/api/peer/force-leader", "/api/v1/peer/force-leader"} {
+		// No Authorization header — exactly how the control plane calls it.
+		req := httptest.NewRequest("POST", path, nil)
+		rr := httptest.NewRecorder()
+		wrapped.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code,
+			"expected 200 (pass-through to secret-checking handler) for POST %s with no bearer token", path)
+	}
 }

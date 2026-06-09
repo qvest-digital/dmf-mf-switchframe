@@ -726,6 +726,70 @@ func TestSlotOff_AnimatedDeactivation_OtherSlotEnabled(t *testing.T) {
 	require.True(t, c.Active(), "compositor still active with second slot enabled")
 }
 
+// TestTickAnimations_ProgressEvaluatedOncePerTick pins that tickAnimations
+// evaluates each animation's progress exactly once per tick. The old
+// implementation did a separate time-based precheck scan before the removal
+// loop; an animation crossing 1.0 between the two clock reads ran OnComplete
+// (disabling the last enabled slot) without the precheck having captured the
+// active state, so the active->inactive transition was silently dropped and
+// the switcher never tore down the idle DVE node.
+func TestTickAnimations_ProgressEvaluatedOncePerTick(t *testing.T) {
+	c := NewCompositor(8, 8)
+	c.SetLayout(&Layout{
+		Name: "pip",
+		Slots: []Slot{
+			{SourceKey: "cam1", Transform: DefaultTransform(0, 0, 4, 4), Enabled: true},
+		},
+	})
+
+	// Clock stub: the first read lands just before completion, every later
+	// read lands after it -- simulating the wall clock crossing the animation
+	// end between two Progress() evaluations within one tick.
+	start := time.Now()
+	var reads int32
+	clock := func() time.Time {
+		if atomic.AddInt32(&reads, 1) == 1 {
+			return start.Add(9 * time.Millisecond)
+		}
+		return start.Add(20 * time.Millisecond)
+	}
+
+	rect := image.Rect(0, 0, 4, 4)
+	c.mu.Lock()
+	c.animations = append(c.animations, &slotAnimation{
+		SlotIndex: 0,
+		StartTime: start,
+		Duration:  10 * time.Millisecond,
+		FromRect:  rect,
+		ToRect:    rect,
+		FromAlpha: 1.0,
+		ToAlpha:   0.0,
+		now:       clock,
+		OnComplete: func() {
+			if cur := c.layout.Load(); cur != nil {
+				up := c.cloneLayout(cur)
+				up.Slots[0].Enabled = false
+				c.layout.Store(up)
+			}
+		},
+	})
+
+	// First tick: the single progress read is pre-completion, so the
+	// animation must survive and the callback must not run.
+	require.False(t, c.tickAnimations(), "incomplete animation must not deactivate")
+	require.Len(t, c.animations, 1, "incomplete animation must not be removed")
+
+	// Second tick: progress now reads post-completion. OnComplete disables
+	// the last enabled slot, and the deactivation must be reported.
+	deactivated := c.tickAnimations()
+	require.Empty(t, c.animations, "completed animation should be removed")
+	c.mu.Unlock()
+
+	require.True(t, deactivated,
+		"completing the last enabled slot's animation must report deactivation")
+	require.False(t, c.Active(), "compositor inactive after callback disabled last slot")
+}
+
 func TestCompositor_SkipsScaleOnSamePTS(t *testing.T) {
 	c := NewCompositor(1920, 1080)
 	l := &Layout{

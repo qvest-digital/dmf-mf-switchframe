@@ -545,3 +545,32 @@ func TestSRTListener_AcceptLoopErrorAfterCloseKeepsStopped(t *testing.T) {
 	require.Equal(t, StateStopped, l.Status().State,
 		"a late accept error must not overwrite StateStopped")
 }
+
+// TestSRTListener_AcceptLoopErrorRacingCloseConvergesToStopped stresses the
+// window where the accept goroutine's Active->Error transition races Close's
+// Store of StateStopped. The transition must be a CompareAndSwap on the loaded
+// state pointer: a plain load-then-store could load StateActive before Close
+// stores StateStopped and then overwrite the terminal state with StateError.
+// After both Close and the accept goroutine finish, the state must always
+// converge to StateStopped.
+func TestSRTListener_AcceptLoopErrorRacingCloseConvergesToStopped(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 200; i++ {
+		l := NewSRTListener(SRTListenerConfig{Port: 9999})
+		l.acceptFn = func(ctx context.Context, config SRTListenerConfig) error {
+			return fmt.Errorf("immediate accept error")
+		}
+
+		// Start spawns the accept goroutine, which errors immediately and
+		// races the Close below for the state transition.
+		require.NoError(t, l.Start(context.Background()))
+		require.NoError(t, l.Close())
+
+		// Transient StateError is allowed (accept goroutine CAS won before
+		// Close stored Stopped), but the final state must be StateStopped.
+		require.Eventually(t, func() bool {
+			return l.Status().State == StateStopped
+		}, 2*time.Second, 100*time.Microsecond,
+			"iteration %d: accept error racing Close must not leave the listener in a non-Stopped state", i)
+	}
+}

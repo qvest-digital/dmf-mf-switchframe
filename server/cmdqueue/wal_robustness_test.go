@@ -363,6 +363,206 @@ func TestWAL_ConcurrentAppendsDuringCompactionCarriedOver(t *testing.T) {
 	}
 }
 
+// ── Finding: Seq-0 tombstones must not mark OTHER pending Seq-0 commands ────
+
+// TestWAL_Seq0TombstoneMarksOnlyExecutedCommand reproduces the reviewed
+// finding: Seq-0 commands are untimed/legacy and dedup-exempt, so several
+// un-executed Seq-0 entries can coexist in the WAL. The old tombstone merge
+// keyed on raw Seq, so executing ONE Seq-0 command flipped EVERY pending
+// Seq-0 entry to executed — silently dropping the still-pending ones at
+// crash replay. The fix correlates Seq-0 tombstones by full command content,
+// so exactly the executed command is marked.
+func TestWAL_Seq0TombstoneMarksOnlyExecutedCommand(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "cmd.wal")
+	w, err := NewWAL(path)
+	require.NoError(t, err)
+
+	// Two pending Seq-0 commands; execute the SECOND-appended one so a
+	// purely positional (oldest-first) merge would also fail this test —
+	// Drain pops in heap (ExecuteAt) order, not WAL append order.
+	require.NoError(t, w.Append(Command{ExecuteAt: 0, Seq: 0, Action: "cut"}))
+	require.NoError(t, w.Append(Command{ExecuteAt: 0, Seq: 0, Action: "ftb"}))
+	require.NoError(t, w.MarkExecutedCommands([]Command{{ExecuteAt: 0, Seq: 0, Action: "ftb"}}))
+
+	cmds, err := w.Replay(DefaultMaxAge)
+	require.NoError(t, err)
+	require.Len(t, cmds, 1,
+		"executing one Seq-0 command must not mark other pending Seq-0 commands executed")
+	require.Equal(t, "cut", cmds[0].Action)
+
+	// Crash: reopen the file by path and replay again.
+	require.NoError(t, w.Close())
+	w2, err := NewWAL(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = w2.Close() })
+	cmds, err = w2.Replay(DefaultMaxAge)
+	require.NoError(t, err)
+	require.Len(t, cmds, 1)
+	require.Equal(t, "cut", cmds[0].Action)
+
+	// Seq-0 entries must never leak into dedup seeding.
+	seqs, err := w2.ReplayExecutedSeqs()
+	require.NoError(t, err)
+	require.Empty(t, seqs)
+}
+
+// TestWAL_Seq0IdenticalDuplicates_ExecuteOneKeepsOne pins the
+// content-correlation tie-break: content-identical Seq-0 commands are
+// interchangeable, so one tombstone must consume exactly one of them
+// (oldest-first), leaving the other pending for crash replay.
+func TestWAL_Seq0IdenticalDuplicates_ExecuteOneKeepsOne(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "cmd.wal")
+	w, err := NewWAL(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = w.Close() })
+
+	payload := json.RawMessage(`{"bus":"pgm"}`)
+	cmd := Command{ExecuteAt: 0, Seq: 0, Action: "cut", Payload: payload}
+	require.NoError(t, w.Append(cmd))
+	require.NoError(t, w.Append(cmd))
+	require.NoError(t, w.MarkExecutedCommands([]Command{cmd}))
+
+	cmds, err := w.Replay(DefaultMaxAge)
+	require.NoError(t, err)
+	require.Len(t, cmds, 1,
+		"one tombstone must consume exactly one of two identical pending Seq-0 commands")
+	require.Equal(t, "cut", cmds[0].Action)
+	require.JSONEq(t, string(payload), string(cmds[0].Payload))
+}
+
+// TestWAL_MarkExecutedBatchSkipsSeq0 pins the write-side guard for callers
+// that only hold seqs: a bare Seq-0 tombstone cannot be correlated with a
+// specific pending entry, so MarkExecutedBatch / MarkExecuted must skip
+// Seq 0 entirely rather than write an uncorrelatable tombstone.
+func TestWAL_MarkExecutedBatchSkipsSeq0(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "cmd.wal")
+	w, err := NewWAL(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = w.Close() })
+
+	require.NoError(t, w.Append(Command{ExecuteAt: 0, Seq: 0, Action: "cut"}))
+	require.NoError(t, w.Append(Command{ExecuteAt: 0, Seq: 0, Action: "ftb"}))
+	require.NoError(t, w.Append(Command{ExecuteAt: 0, Seq: 7, Action: "preview"}))
+
+	require.NoError(t, w.MarkExecuted(0))
+	require.NoError(t, w.MarkExecutedBatch([]uint64{0, 7}))
+
+	cmds, err := w.Replay(DefaultMaxAge)
+	require.NoError(t, err)
+	actions := make([]string, 0, len(cmds))
+	for _, c := range cmds {
+		actions = append(actions, c.Action)
+	}
+	require.ElementsMatch(t, []string{"cut", "ftb"}, actions,
+		"Seq-0 marks must be skipped; the Seq-7 mark must still apply")
+
+	seqs, err := w.ReplayExecutedSeqs()
+	require.NoError(t, err)
+	require.ElementsMatch(t, []uint64{7}, seqs)
+}
+
+// TestWAL_Seq0CompactionConsistent verifies the compaction half of the fix
+// keeps holding: executed Seq-0 state (merged entries and unmatched
+// tombstones) is dropped at compaction, pending Seq-0 entries survive, and
+// a dropped tombstone can never resurface to mark a LATER pending Seq-0
+// command executed.
+func TestWAL_Seq0CompactionConsistent(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "cmd.wal")
+	w, err := NewWAL(path)
+	require.NoError(t, err)
+
+	require.NoError(t, w.Append(Command{ExecuteAt: 0, Seq: 0, Action: "cut"}))
+	require.NoError(t, w.Append(Command{ExecuteAt: 0, Seq: 0, Action: "ftb"}))
+	require.NoError(t, w.Append(Command{ExecuteAt: 0, Seq: 5, Action: "preview"}))
+	require.NoError(t, w.MarkExecutedCommands([]Command{
+		{ExecuteAt: 0, Seq: 0, Action: "ftb"},
+		{ExecuteAt: 0, Seq: 5, Action: "preview"},
+	}))
+
+	require.NoError(t, w.CompactExecuted(10))
+
+	cmds, err := w.Replay(DefaultMaxAge)
+	require.NoError(t, err)
+	require.Len(t, cmds, 1, "compaction must keep the pending Seq-0 entry")
+	require.Equal(t, "cut", cmds[0].Action)
+
+	seqs, err := w.ReplayExecutedSeqs()
+	require.NoError(t, err)
+	require.ElementsMatch(t, []uint64{5}, seqs,
+		"Seq-0 executed state must not leak into dedup tombstones")
+
+	// A NEW pending command with the same content as the compacted-away
+	// executed one must stay pending — the old tombstone is gone for good.
+	require.NoError(t, w.Append(Command{ExecuteAt: 0, Seq: 0, Action: "ftb"}))
+	cmds, err = w.Replay(DefaultMaxAge)
+	require.NoError(t, err)
+	actions := make([]string, 0, len(cmds))
+	for _, c := range cmds {
+		actions = append(actions, c.Action)
+	}
+	require.ElementsMatch(t, []string{"cut", "ftb"}, actions)
+
+	// And all of it must hold across a crash-reopen.
+	require.NoError(t, w.Close())
+	w2, err := NewWAL(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = w2.Close() })
+	cmds, err = w2.Replay(DefaultMaxAge)
+	require.NoError(t, err)
+	require.Len(t, cmds, 2)
+}
+
+// TestQueue_Seq0CrashReplay_OnlyUnexecutedReplays drives the full
+// Enqueue→Drain→crash→New path: two pending Seq-0 commands, one drains
+// (and it is NOT the oldest WAL entry — Drain pops in ExecuteAt order),
+// then a restart must replay exactly the un-executed one. Before the fix,
+// Drain's bare Seq-0 tombstone marked both entries executed and the
+// pending command was silently lost.
+func TestQueue_Seq0CrashReplay_OnlyUnexecutedReplays(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "cmd.wal")
+	w, err := NewWAL(path)
+	require.NoError(t, err)
+
+	now := time.Now().UnixMicro()
+	var clk atomic.Int64
+	clk.Store(now)
+	clock := func() int64 { return clk.Load() }
+
+	q := New(clock, WithWAL(w))
+	// Append order is [future, due]: the command that drains first is the
+	// SECOND WAL entry, so positional (append-order) tombstone matching
+	// would mark the wrong one.
+	future := Command{ExecuteAt: now + 60_000_000, Seq: 0, Action: "ftb"}
+	due := Command{ExecuteAt: now, Seq: 0, Action: "cut"}
+	require.NoError(t, q.Enqueue(future))
+	require.NoError(t, q.Enqueue(due))
+
+	out := q.Drain()
+	require.Len(t, out, 1)
+	require.Equal(t, "cut", out[0].Action)
+
+	// Crash: drop the queue, reopen the WAL by path, rebuild the queue.
+	require.NoError(t, w.Close())
+	w2, err := NewWAL(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = w2.Close() })
+
+	q2 := New(clock, WithWAL(w2))
+	require.Equal(t, 1, q2.Pending(),
+		"exactly the un-executed Seq-0 command must replay after a crash")
+
+	clk.Store(now + 60_000_000)
+	out = q2.Drain()
+	require.Len(t, out, 1)
+	require.Equal(t, "ftb", out[0].Action,
+		"the executed Seq-0 command must not re-execute; the pending one must")
+}
+
 // TestQueue_CompactionRaceWithEnqueueDrain drives repeated forced
 // background compactions concurrently with the Enqueue/Drain hot path and
 // verifies no executed tombstone is ever lost across the file swaps.

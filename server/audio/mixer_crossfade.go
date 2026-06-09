@@ -75,6 +75,11 @@ func (m *Mixer) OnProgramChange(newProgramSource string) {
 			// previous program change. It is the program source again, so it
 			// must not be deactivated when the ramp completes.
 			delete(m.afvDeactivateOnComplete, key)
+			// The program change put this source on program; a later (stale)
+			// OnTransitionAbort must not roll back its activation.
+			if m.transAbortActivated == key {
+				m.transAbortActivated = ""
+			}
 			m.initChannelDecoder(ch)
 		} else if ch.active && m.cutFramesRemaining > 0 {
 			// A crossfade ramp is in progress. Keep every currently-active AFV
@@ -150,12 +155,21 @@ func (m *Mixer) OnCut(oldSource, newSource string) {
 //   - FadeIn: silence->A (fade from black)
 //
 // The new source channel is activated so its audio frames are accepted.
-func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMode, durationMs int) {
+//
+// It returns an ownership token identifying the transition state it just
+// established. The token must be passed to OnTransitionAbort, which is a
+// no-op unless that token still owns the mixer's transition state. The
+// transCrossfades counter doubles as the state generation: every event that
+// establishes new transition/cut crossfade state (OnTransitionStart, OnCut,
+// a ramping OnProgramChange) bumps it, invalidating older tokens. This makes
+// stale aborts — e.g. a pre-empted StartTransition cleaning up after a
+// concurrent Cut already installed its own crossfade — harmless.
+func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMode, durationMs int) uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.transCrossfadeActive = true
-	m.transCrossfades.Add(1)
+	token := uint64(m.transCrossfades.Add(1))
 	m.transCrossfadeFrom = oldSource
 	m.transCrossfadeTo = newSource
 	m.transCrossfadePosition = 0.0
@@ -184,6 +198,8 @@ func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMo
 	// Pre-warm the encoder so the first real output frame doesn't have
 	// MDCT warmup artifacts (audible pop at passthrough->mixing boundary).
 	_ = m.ensureEncoder()
+
+	return token
 }
 
 // OnTransitionPosition updates the crossfade position (0.0 = fully old, 1.0 = fully new).
@@ -221,8 +237,21 @@ func (m *Mixer) OnTransitionComplete() {
 // clears all transition state, rolling back the incoming channel activation
 // performed by OnTransitionStart so preview audio does not keep leaking into
 // program.
-func (m *Mixer) OnTransitionAbort() {
+//
+// token is the ownership token returned by the OnTransitionStart being
+// aborted. The abort is a no-op when the token is stale — i.e. a newer
+// OnTransitionStart, OnCut, or ramping OnProgramChange has since established
+// its own transition state — so a pre-empted transition's late cleanup can
+// never wipe crossfade state (or the deferred AFV deactivations) owned by a
+// concurrent cut or newer transition.
+func (m *Mixer) OnTransitionAbort(token uint64) {
 	m.mu.Lock()
+	if uint64(m.transCrossfades.Load()) != token {
+		// Stale abort: the transition state currently in the mixer was
+		// established by a newer owner. Leave it untouched.
+		m.mu.Unlock()
+		return
+	}
 	// Deactivate the incoming channel if (and only if) OnTransitionStart was
 	// what activated it. The transition never completed, so leaving it active
 	// would mix the preview source into program at full fader gain forever —

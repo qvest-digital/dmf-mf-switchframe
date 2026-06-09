@@ -120,3 +120,70 @@ func TestSyncLoopPopProgramFrameReturnsCountedRef(t *testing.T) {
 	require.Equal(t, int32(1), ss.lastRawVideo.Refs())
 	ss.mu.Unlock()
 }
+
+// TestSyncLoopPopProgramFrameUnmanagedFrameSingleOwner pins the Ref/ReleaseYUV
+// asymmetry guard for UNMANAGED pool-backed frames (refs == nil): Ref() is a
+// no-op but ReleaseYUV really frees, so popProgramFrame's borrowed copy must
+// not be able to return the pool buffer while frame_sync's lastRawVideo still
+// aliases it. Producers are expected to ingest pool frames as managed
+// (SetRefs(1) — see startSRTPipelineIngest), but the sync loop must stay
+// memory-safe for any legacy unmanaged producer: borrowRawVideoRef detaches
+// the borrowed copy from the pool, leaving lastRawVideo the single owner.
+func TestSyncLoopPopProgramFrameUnmanagedFrameSingleOwner(t *testing.T) {
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.configMu.Lock()
+	s.frameSync.AddSource("cam1")
+	fs := s.frameSync
+	s.configMu.Unlock()
+
+	// Ingest an UNMANAGED pool-backed frame (SetPool but no SetRefs), the
+	// shape startSRTPipelineIngest used to produce.
+	pool := s.framePool.Load()
+	const w, h = 320, 240
+	size := w * h * 3 / 2
+	buf := pool.Acquire()[:size]
+	for j := 0; j < size; j++ {
+		buf[j] = 40
+	}
+	pf := &ProcessingFrame{Data: buf, Width: w, Height: h, PTS: 0}
+	pf.SetPool(pool)
+	s.frameSync.IngestRawVideo("cam1", pf)
+
+	got := s.popProgramFrame(fs, "cam1", 3000)
+	require.NotNil(t, got)
+
+	// Caller-side release, as the transition tick and the lastEncodedFrame
+	// swap path do. For an unmanaged frame this used to call
+	// pool.Release(Data) while lastRawVideo still aliased the buffer.
+	got.ReleaseYUV()
+
+	fs.mu.Lock()
+	ss := fs.sources["cam1"]
+	fs.mu.Unlock()
+	require.NotNil(t, ss)
+
+	ss.mu.Lock()
+	require.NotNil(t, ss.lastRawVideo, "freeze-repeat frame must survive the caller-side release")
+	require.NotNil(t, ss.lastRawVideo.Data, "lastRawVideo buffer must not have been released")
+	retained := &ss.lastRawVideo.Data[0]
+	ss.mu.Unlock()
+
+	// Drain the entire pool: if the borrowed copy's release had returned the
+	// buffer to the pool, one of these acquires would hand out the memory
+	// lastRawVideo still aliases (use-after-release).
+	for i := 0; i < 8; i++ {
+		acq := pool.Acquire()
+		require.NotSame(t, retained, &acq[0],
+			"pool handed out a buffer still retained by lastRawVideo (use-after-release)")
+	}
+
+	// Freeze-repeat pop must still serve the intact frame.
+	frozen := s.popProgramFrame(fs, "cam1", 6000)
+	require.NotNil(t, frozen)
+	require.Equal(t, byte(40), frozen.Data[0], "freeze-repeat frame content must be intact")
+	frozen.ReleaseYUV()
+}

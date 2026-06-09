@@ -319,7 +319,10 @@ int main(int argc, char* argv[]) {
     // Run CEF message loop (blocks until CefQuitMessageLoop is called)
     CefRunMessageLoop();
 
-    // Cleanup
+    // Cleanup. Stop()/Close() own the listening fds and close them; closing
+    // (not just shutting down) the listeners is what unblocks the accept()
+    // threads on macOS, so these must run BEFORE the joins below or a sidecar
+    // whose Go peer never connected would hang here forever.
     control_socket->Stop();
     frame_socket->Close();
 
@@ -328,8 +331,6 @@ int main(int argc, char* argv[]) {
         frame_accept.join();
     }
 
-    close(control_fd);
-    close(frame_fd);
     unlink(control_socket_path.c_str());
     unlink(frame_socket_path.c_str());
 

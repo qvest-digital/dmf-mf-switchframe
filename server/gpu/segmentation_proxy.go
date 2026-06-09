@@ -58,10 +58,15 @@ type proxySource struct {
 	smoothing     float32
 
 	// Imported mask device pointer from sidecar's mask_ready message.
-	// Zero until the first mask is received. Closed on DisableSource.
+	// Zero until the first mask is received.
 	maskDevPtr uintptr
 
-	// GPUFrame wrapping maskDevPtr — manually managed (not from pool).
+	// GPUFrame wrapping maskDevPtr. Not from a pool: it carries a release
+	// hook that closes the IPC handle when the last reference is released.
+	// The proxy holds one owning reference, dropped on DisableSource,
+	// sidecar restart (ReenableSources), or mask replacement — never by
+	// closing the handle directly, since a pipeline kernel may still hold
+	// a MaskForSource reference.
 	maskFrame *GPUFrame
 
 	// Latest mask for lock-free pipeline reads.
@@ -299,9 +304,10 @@ func (p *SegmentationProxy) Segment(key string, frame *GPUFrame) {
 // MaskForSource returns the latest segmentation mask for a source with a
 // reference taken; the caller MUST Release() the returned frame when done
 // (matching the SegmentationEngine contract). Proxy mask frames wrap
-// IPC-imported pointers and are created with one owning reference, so a
-// balanced Ref/Release by callers never frees the imported memory —
-// teardown closes the IPC handle explicitly.
+// IPC-imported pointers and carry one owning reference held by the proxy.
+// The caller's ref keeps the IPC mapping alive even if DisableSource (or a
+// sidecar restart) drops the proxy's ref mid-read: the frame's release hook
+// closes the IPC handle only when the last reference is released.
 func (p *SegmentationProxy) MaskForSource(key string) *GPUFrame {
 	if p == nil {
 		return nil
@@ -389,23 +395,34 @@ func (p *SegmentationProxy) handleMaskReady(msg *sidecar.Message) {
 		return
 	}
 
-	// Close any previously imported handle for this source.
-	if src.maskDevPtr != 0 {
-		sidecar.CloseIPCHandle(src.maskDevPtr)
-	}
+	// The previously imported handle (if any) must not be closed here:
+	// a pipeline kernel may still be reading it via a MaskForSource ref.
+	// Drop the proxy's owning reference instead; the frame's release hook
+	// closes the IPC handle once the last reference is gone.
+	prevFrame := src.maskFrame
+
 	src.maskDevPtr = devPtr
 	src.maskFrame = &GPUFrame{
 		DevPtr: devPtrFromUintptr(devPtr),
 		Width:  mh.Width,
 		Height: mh.Height,
 		Pitch:  mh.Width, // uint8 mask, stride = width
+		// IPC-imported memory must be unmapped with cuIpcCloseMemHandle,
+		// not cudaFree. The hook runs when the last reference is released —
+		// either the proxy's owning ref (teardown) or an in-flight
+		// MaskForSource caller's ref, whichever comes last.
+		releaseFn: func() { sidecar.CloseIPCHandle(devPtr) },
 	}
-	// One owning reference: MaskForSource callers Ref/Release around it, so
-	// the count never reaches zero (Release at zero would cudaFree, which is
-	// wrong for IPC-imported memory — teardown uses CloseIPCHandle instead).
+	// One owning reference held by the proxy. MaskForSource callers
+	// Ref/Release around it; the proxy drops this ref on teardown
+	// (cleanupSource/ReenableSources) or when a replacement mask arrives.
 	src.maskFrame.refs.Store(1)
 	src.mask.Store(src.maskFrame)
 	p.mu.Unlock()
+
+	if prevFrame != nil {
+		prevFrame.Release()
+	}
 
 	slog.Info("gpu: segmentation proxy: mask imported",
 		"source", mh.SourceID, "size", [2]int{mh.Width, mh.Height})
@@ -493,14 +510,19 @@ func (p *SegmentationProxy) ReenableSources() {
 
 	for key, src := range sources {
 		// Clear the old imported mask (sidecar's mask buffer is gone).
+		// Drop the proxy's owning reference instead of closing the IPC
+		// handle directly — a pipeline kernel may still hold a
+		// MaskForSource ref; the frame's release hook closes the handle
+		// when the last reference is released.
 		p.mu.Lock()
-		if src.maskDevPtr != 0 {
-			sidecar.CloseIPCHandle(src.maskDevPtr)
-			src.maskDevPtr = 0
-		}
+		oldFrame := src.maskFrame
 		src.maskFrame = nil
+		src.maskDevPtr = 0
 		src.mask.Store(nil)
 		p.mu.Unlock()
+		if oldFrame != nil {
+			oldFrame.Release()
+		}
 
 		// Re-send enable command — sidecar will allocate new mask buffer
 		// and send a fresh mask_ready.
@@ -553,13 +575,18 @@ func (p *SegmentationProxy) Close() {
 // cleanupSource releases GPU resources for a source.
 // The caller must ensure exclusive access to src (either by holding p.mu
 // or by having removed src from p.sources so no concurrent access is possible).
+//
+// The imported mask IPC handle is NOT closed here directly: a pipeline kernel
+// may still be reading the mask via a reference taken by MaskForSource.
+// Dropping the proxy's owning reference lets the frame's release hook close
+// the handle once the last reference (proxy or in-flight caller) is gone.
 func (p *SegmentationProxy) cleanupSource(src *proxySource) {
 	src.mask.Store(nil)
-	if src.maskDevPtr != 0 {
-		sidecar.CloseIPCHandle(src.maskDevPtr)
-		src.maskDevPtr = 0
+	if src.maskFrame != nil {
+		src.maskFrame.Release()
+		src.maskFrame = nil
 	}
-	src.maskFrame = nil
+	src.maskDevPtr = 0
 }
 
 // devPtrFromUintptr converts a uintptr to C.CUdeviceptr.

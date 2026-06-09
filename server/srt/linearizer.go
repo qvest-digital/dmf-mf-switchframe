@@ -92,7 +92,16 @@ func (l *PTSLinearizer) Linearize(rawPTS int64, st StreamType) int64 {
 	delta := rawPTS - ss.lastInput
 	if delta < 0 || delta > ptsJumpThreshold {
 		// PTS discontinuity on this stream's raw input.
-		if consistentWithOtherStream(rawPTS, other, now) {
+		//
+		// The consistent-with-other-stream pass-through only applies to
+		// forward-ish jumps (one-sided gaps: SRT loss burst, decode
+		// errors/stall on this stream while the other keeps flowing). A
+		// backward jump beyond normal reordering noise is different: if the
+		// other stream's raw PTS agrees with ours after we jumped BACKWARD,
+		// the source rebased BOTH timelines (e.g. encoder restart) — exactly
+		// the case the shared-offset correction exists for. Passing it
+		// through would emit non-monotonic output PTS downstream.
+		if delta >= -backwardReorderNoise(ss) && consistentWithOtherStream(rawPTS, other, now) {
 			// The new raw PTS lines up with the other stream's continuous
 			// timeline: either a one-sided gap on this stream only (SRT loss
 			// burst, decode errors/stall) or the tail of a shared jump the
@@ -121,6 +130,18 @@ func (l *PTSLinearizer) Linearize(rawPTS int64, st StreamType) int64 {
 	ss.lastInput = rawPTS
 	ss.lastSeen = now
 	return (rawPTS + l.sharedOffset) & 0x1FFFFFFFF
+}
+
+// backwardReorderNoise returns the largest backward PTS delta (in 90kHz
+// ticks) on a single stream that can still be attributed to normal
+// reordering/interleave noise rather than a timeline rebase: two frame
+// durations, falling back to two 24fps frames when the cadence is unknown.
+func backwardReorderNoise(ss *streamState) int64 {
+	fd := ss.frameDur
+	if fd <= 0 {
+		fd = 3750 // default to 24fps video
+	}
+	return 2 * fd
 }
 
 // consistentWithOtherStream reports whether rawPTS is close enough to the

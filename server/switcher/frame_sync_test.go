@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -3197,5 +3198,45 @@ func TestFrameSyncSetBufferOnlyConcurrentStopNoDoubleClose(t *testing.T) {
 		}()
 		wg.Wait()
 		fs.Stop() // idempotent
+	}
+}
+
+// Regression: tickLoop used to capture fs.done by reading the field (under
+// fs.mu) after the goroutine started. Go mutexes are not FIFO, so a
+// SetBufferOnly(true) racing the freshly launched tickLoop could acquire
+// fs.mu FIRST: it closed the old channel and installed a fresh one, and the
+// tick loop then captured the never-closed replacement and ran forever while
+// SetBufferOnly deadlocked on fs.wg.Wait() (the ref-clock enable path).
+// Start now captures the done channel in the same critical section that
+// launches the goroutine and passes it as a parameter, so the close always
+// targets the channel the goroutine watches.
+//
+// The deadlock reproduces probabilistically, so loop Start/SetBufferOnly/Stop
+// cycles under a watchdog that converts a hang into a test failure.
+func TestFrameSyncStartThenImmediateSetBufferOnlyNoDeadlock(t *testing.T) {
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		for i := 0; i < 1000; i++ {
+			handler := &syncTestHandler{}
+			fs := NewFrameSynchronizer(time.Millisecond, handler.onVideo, handler.onAudio)
+			fs.Start()
+			// Call SetBufferOnly immediately so it races the freshly launched
+			// tickLoop for fs.mu. Add scheduling pressure on alternate
+			// iterations to vary which side wins the lock.
+			if i%2 == 1 {
+				runtime.Gosched()
+			}
+			fs.SetBufferOnly(true)
+			fs.Stop()
+		}
+	}()
+
+	select {
+	case <-finished:
+	case <-time.After(60 * time.Second):
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		t.Fatalf("deadlock: Start/SetBufferOnly/Stop cycles did not complete within 60s\ngoroutine dump:\n%s", buf[:n])
 	}
 }

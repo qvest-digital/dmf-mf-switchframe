@@ -119,10 +119,15 @@ func (l *SRTListener) Start(ctx context.Context) error {
 				// Surface the failure (e.g., port already in use) instead
 				// of reporting StateActive forever while no client can
 				// connect. Only transition from StateActive so a late
-				// error cannot overwrite the terminal StateStopped.
+				// error cannot overwrite the terminal StateStopped. A
+				// plain load-then-store would race Close's Store of
+				// StateStopped; CompareAndSwap on the loaded pointer makes
+				// the transition atomic — every Store publishes a fresh
+				// pointer, so pointer-identity CAS fails if the state
+				// changed after the load.
 				l.lastError.Store(ptrTo(err.Error()))
-				if *l.state.Load() == StateActive {
-					l.state.Store(ptrTo(StateError))
+				if old := l.state.Load(); *old == StateActive {
+					l.state.CompareAndSwap(old, ptrTo(StateError))
 				}
 			}
 		}()

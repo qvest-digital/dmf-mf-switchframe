@@ -28,6 +28,44 @@ typedef struct {
 	int64_t audio_samples; // samples accepted by the audio encoder
 } transcode_result_t;
 
+// transcode_ctx_t carries all state from the open/setup phase
+// (ff_transcode_open) into the frame loop (ff_transcode_run). The split exists
+// so the Go caller can hold FFmpegOpenMu across just the open phase — which
+// performs every avformat_open_input/avcodec_open2 of the transcode — without
+// serializing the long-running frame loop behind the global open lock.
+typedef struct {
+	// Input state
+	AVFormatContext* ifmt_ctx;
+	int video_stream_idx;
+	int audio_stream_idx;
+	AVCodecContext* video_dec_ctx;
+	AVCodecContext* audio_dec_ctx;
+
+	// Output state
+	AVFormatContext* ofmt_ctx;
+	AVCodecContext* video_enc_ctx;
+	AVCodecContext* audio_enc_ctx;
+	AVStream* out_video_stream;
+	AVStream* out_audio_stream;
+	int out_video_idx;
+	int out_audio_idx;
+
+	// Conversion state
+	struct SwsContext* sws_ctx;
+	struct SwrContext* swr_ctx;
+	AVAudioFifo* afifo;     // re-chunks resampled audio to aac_frame_size
+	uint8_t** conv_samples; // temp buffer between swr_convert and the FIFO
+	int conv_capacity;
+	int aac_frame_size;
+
+	// Frame/packet state
+	AVFrame* dec_frame;
+	AVFrame* sws_frame;
+	AVFrame* swr_frame;
+	AVPacket* pkt;
+	AVPacket* enc_pkt;
+} transcode_ctx_t;
+
 // ff_transcode_push_audio resamples decoded audio (or, with in==NULL, flushes
 // the resampler) into the audio FIFO, growing the temporary conversion buffer
 // as needed. The FIFO decouples the source's decoded frame size from the AAC
@@ -128,7 +166,51 @@ static int ff_transcode_drain_audio_fifo(AVAudioFifo* afifo, int frame_size, int
 	return 0;
 }
 
-// ff_transcode_file transcodes any media file FFmpeg can handle into H.264+AAC MPEG-TS.
+// ff_transcode_free releases every resource held by ctx. Safe to call on a
+// zeroed ctx, after a failed open, or after a completed run; it is idempotent
+// because every release nulls the corresponding pointer.
+static void ff_transcode_free(transcode_ctx_t* ctx) {
+	if (ctx->enc_pkt) av_packet_free(&ctx->enc_pkt);
+	if (ctx->pkt) av_packet_free(&ctx->pkt);
+	if (ctx->swr_frame) av_frame_free(&ctx->swr_frame);
+	if (ctx->sws_frame) av_frame_free(&ctx->sws_frame);
+	if (ctx->dec_frame) av_frame_free(&ctx->dec_frame);
+	if (ctx->afifo) {
+		av_audio_fifo_free(ctx->afifo);
+		ctx->afifo = NULL;
+	}
+	if (ctx->conv_samples) {
+		av_freep(&ctx->conv_samples[0]);
+		av_freep(&ctx->conv_samples);
+	}
+	ctx->conv_capacity = 0;
+	if (ctx->swr_ctx) swr_free(&ctx->swr_ctx);
+	if (ctx->sws_ctx) {
+		sws_freeContext(ctx->sws_ctx);
+		ctx->sws_ctx = NULL;
+	}
+	if (ctx->audio_enc_ctx) avcodec_free_context(&ctx->audio_enc_ctx);
+	if (ctx->video_enc_ctx) avcodec_free_context(&ctx->video_enc_ctx);
+	if (ctx->audio_dec_ctx) avcodec_free_context(&ctx->audio_dec_ctx);
+	if (ctx->video_dec_ctx) avcodec_free_context(&ctx->video_dec_ctx);
+	if (ctx->ofmt_ctx) {
+		if (!(ctx->ofmt_ctx->oformat->flags & AVFMT_NOFILE) && ctx->ofmt_ctx->pb) {
+			avio_closep(&ctx->ofmt_ctx->pb);
+		}
+		avformat_free_context(ctx->ofmt_ctx);
+		ctx->ofmt_ctx = NULL;
+		ctx->out_video_stream = NULL;
+		ctx->out_audio_stream = NULL;
+	}
+	if (ctx->ifmt_ctx) avformat_close_input(&ctx->ifmt_ctx);
+}
+
+// ff_transcode_open performs the open/setup phase of a transcode into ctx:
+// input demuxer, decoders, output muxer, encoders, scaler/resampler, and
+// frame/packet allocations. It contains every avformat_open_input and
+// avcodec_open2 call of the transcode (including h264_nvenc, which
+// initializes CUDA inside avcodec_open2), so the Go caller must hold
+// FFmpegOpenMu across this call only — ff_transcode_run performs no opens.
 //
 // Error codes:
 //   -1: cannot open input
@@ -138,121 +220,90 @@ static int ff_transcode_drain_audio_fifo(AVAudioFifo* afifo, int frame_size, int
 //   -5: cannot open video encoder
 //   -6: cannot open audio encoder
 //   -7: cannot open output file
-//   -8: transcode loop error
+//   -8: transcode loop error (returned by ff_transcode_run / setup allocs)
 //   -9: sws_getContext failed
 //  -10: swr init failed
-static int ff_transcode_file(const char* input_path, const char* output_path,
-                              const char* encoder_name, int bitrate,
-                              int* progress_pct,
-                              transcode_result_t* result) {
-	memset(result, 0, sizeof(transcode_result_t));
+//
+// On failure all partially-acquired resources are freed and ctx is safe to
+// pass to ff_transcode_free again (it is idempotent).
+static int ff_transcode_open(const char* input_path, const char* output_path,
+                             const char* encoder_name, int bitrate,
+                             transcode_ctx_t* ctx) {
+	memset(ctx, 0, sizeof(*ctx));
+	ctx->video_stream_idx = -1;
+	ctx->audio_stream_idx = -1;
+	ctx->out_video_idx = -1;
+	ctx->out_audio_idx = -1;
+	ctx->aac_frame_size = 1024;
 
 	int ret = 0;
-	int loop_err = 0;
-	int video_frames = 0;
-	int64_t video_pts = 0;
-	int64_t audio_pts = 0;
-	int64_t audio_samples_sent = 0;
-
-	// Input state
-	AVFormatContext* ifmt_ctx = NULL;
-	int video_stream_idx = -1;
-	int audio_stream_idx = -1;
-	AVCodecContext* video_dec_ctx = NULL;
-	AVCodecContext* audio_dec_ctx = NULL;
-
-	// Output state
-	AVFormatContext* ofmt_ctx = NULL;
-	AVCodecContext* video_enc_ctx = NULL;
-	AVCodecContext* audio_enc_ctx = NULL;
-	AVStream* out_video_stream = NULL;
-	AVStream* out_audio_stream = NULL;
-	int out_video_idx = -1;
-	int out_audio_idx = -1;
-
-	// Conversion state
-	struct SwsContext* sws_ctx = NULL;
-	enum AVPixelFormat last_sws_fmt = AV_PIX_FMT_NONE;
-	int last_sws_w = 0, last_sws_h = 0;
-	struct SwrContext* swr_ctx = NULL;
-	AVAudioFifo* afifo = NULL;     // re-chunks resampled audio to aac_frame_size
-	uint8_t** conv_samples = NULL; // temp buffer between swr_convert and the FIFO
-	int conv_capacity = 0;
-	int aac_frame_size = 1024;
-
-	// Frame/packet state
-	AVFrame* dec_frame = NULL;
-	AVFrame* sws_frame = NULL;
-	AVFrame* swr_frame = NULL;
-	AVPacket* pkt = NULL;
-	AVPacket* enc_pkt = NULL;
 
 	// --- Open input ---
-	ret = avformat_open_input(&ifmt_ctx, input_path, NULL, NULL);
+	ret = avformat_open_input(&ctx->ifmt_ctx, input_path, NULL, NULL);
 	if (ret < 0) {
 		ret = -1;
-		goto cleanup;
+		goto fail;
 	}
 
-	ret = avformat_find_stream_info(ifmt_ctx, NULL);
+	ret = avformat_find_stream_info(ctx->ifmt_ctx, NULL);
 	if (ret < 0) {
-		goto cleanup;
+		goto fail;
 	}
 
 	// --- Find best streams ---
-	video_stream_idx = av_find_best_stream(ifmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
-	if (video_stream_idx < 0) {
+	ctx->video_stream_idx = av_find_best_stream(ctx->ifmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+	if (ctx->video_stream_idx < 0) {
 		ret = -2;
-		goto cleanup;
+		goto fail;
 	}
 
-	audio_stream_idx = av_find_best_stream(ifmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+	ctx->audio_stream_idx = av_find_best_stream(ctx->ifmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
 
 	// --- Open video decoder ---
 	{
-		AVStream* in_vstream = ifmt_ctx->streams[video_stream_idx];
+		AVStream* in_vstream = ctx->ifmt_ctx->streams[ctx->video_stream_idx];
 		const AVCodec* vdec = avcodec_find_decoder(in_vstream->codecpar->codec_id);
 		if (!vdec) {
 			ret = -3;
-			goto cleanup;
+			goto fail;
 		}
-		video_dec_ctx = avcodec_alloc_context3(vdec);
-		if (!video_dec_ctx) {
+		ctx->video_dec_ctx = avcodec_alloc_context3(vdec);
+		if (!ctx->video_dec_ctx) {
 			ret = -3;
-			goto cleanup;
+			goto fail;
 		}
-		avcodec_parameters_to_context(video_dec_ctx, in_vstream->codecpar);
-		video_dec_ctx->thread_count = 0; // auto
-		ret = avcodec_open2(video_dec_ctx, vdec, NULL);
+		avcodec_parameters_to_context(ctx->video_dec_ctx, in_vstream->codecpar);
+		ctx->video_dec_ctx->thread_count = 0; // auto
+		ret = avcodec_open2(ctx->video_dec_ctx, vdec, NULL);
 		if (ret < 0) {
 			ret = -3;
-			goto cleanup;
+			goto fail;
 		}
 	}
 
 	// --- Open audio decoder (optional) ---
-	if (audio_stream_idx >= 0) {
-		AVStream* in_astream = ifmt_ctx->streams[audio_stream_idx];
+	if (ctx->audio_stream_idx >= 0) {
+		AVStream* in_astream = ctx->ifmt_ctx->streams[ctx->audio_stream_idx];
 		const AVCodec* adec = avcodec_find_decoder(in_astream->codecpar->codec_id);
 		if (adec) {
-			audio_dec_ctx = avcodec_alloc_context3(adec);
-			if (audio_dec_ctx) {
-				avcodec_parameters_to_context(audio_dec_ctx, in_astream->codecpar);
-				ret = avcodec_open2(audio_dec_ctx, adec, NULL);
+			ctx->audio_dec_ctx = avcodec_alloc_context3(adec);
+			if (ctx->audio_dec_ctx) {
+				avcodec_parameters_to_context(ctx->audio_dec_ctx, in_astream->codecpar);
+				ret = avcodec_open2(ctx->audio_dec_ctx, adec, NULL);
 				if (ret < 0) {
-					avcodec_free_context(&audio_dec_ctx);
-					audio_dec_ctx = NULL;
-					audio_stream_idx = -1; // proceed without audio
+					avcodec_free_context(&ctx->audio_dec_ctx);
+					ctx->audio_dec_ctx = NULL;
+					ctx->audio_stream_idx = -1; // proceed without audio
 				}
 			}
 		}
 	}
 
 	// --- Create output context ---
-	ret = avformat_alloc_output_context2(&ofmt_ctx, NULL, "mpegts", output_path);
-	if (ret < 0 || !ofmt_ctx) {
+	ret = avformat_alloc_output_context2(&ctx->ofmt_ctx, NULL, "mpegts", output_path);
+	if (ret < 0 || !ctx->ofmt_ctx) {
 		ret = -4;
-		goto cleanup;
+		goto fail;
 	}
 
 	// --- Create output video stream + encoder ---
@@ -266,236 +317,284 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 		}
 		if (!venc) {
 			ret = -5;
-			goto cleanup;
+			goto fail;
 		}
 
-		out_video_stream = avformat_new_stream(ofmt_ctx, NULL);
-		if (!out_video_stream) {
+		ctx->out_video_stream = avformat_new_stream(ctx->ofmt_ctx, NULL);
+		if (!ctx->out_video_stream) {
 			ret = -5;
-			goto cleanup;
+			goto fail;
 		}
-		out_video_idx = out_video_stream->index;
+		ctx->out_video_idx = ctx->out_video_stream->index;
 
-		video_enc_ctx = avcodec_alloc_context3(venc);
-		if (!video_enc_ctx) {
+		ctx->video_enc_ctx = avcodec_alloc_context3(venc);
+		if (!ctx->video_enc_ctx) {
 			ret = -5;
-			goto cleanup;
+			goto fail;
 		}
 
 		// Resolution from input, even-aligned
-		int enc_w = video_dec_ctx->width & ~1;
-		int enc_h = video_dec_ctx->height & ~1;
+		int enc_w = ctx->video_dec_ctx->width & ~1;
+		int enc_h = ctx->video_dec_ctx->height & ~1;
 		if (enc_w <= 0) enc_w = 2;
 		if (enc_h <= 0) enc_h = 2;
 
-		video_enc_ctx->width = enc_w;
-		video_enc_ctx->height = enc_h;
-		video_enc_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+		ctx->video_enc_ctx->width = enc_w;
+		ctx->video_enc_ctx->height = enc_h;
+		ctx->video_enc_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
 
 		// time_base from input stream
-		AVStream* in_vstream = ifmt_ctx->streams[video_stream_idx];
+		AVStream* in_vstream = ctx->ifmt_ctx->streams[ctx->video_stream_idx];
 		if (in_vstream->avg_frame_rate.num > 0 && in_vstream->avg_frame_rate.den > 0) {
-			video_enc_ctx->time_base = av_inv_q(in_vstream->avg_frame_rate);
-			video_enc_ctx->framerate = in_vstream->avg_frame_rate;
+			ctx->video_enc_ctx->time_base = av_inv_q(in_vstream->avg_frame_rate);
+			ctx->video_enc_ctx->framerate = in_vstream->avg_frame_rate;
 		} else if (in_vstream->r_frame_rate.num > 0 && in_vstream->r_frame_rate.den > 0) {
-			video_enc_ctx->time_base = av_inv_q(in_vstream->r_frame_rate);
-			video_enc_ctx->framerate = in_vstream->r_frame_rate;
+			ctx->video_enc_ctx->time_base = av_inv_q(in_vstream->r_frame_rate);
+			ctx->video_enc_ctx->framerate = in_vstream->r_frame_rate;
 		} else {
-			video_enc_ctx->time_base = (AVRational){1, 30};
-			video_enc_ctx->framerate = (AVRational){30, 1};
+			ctx->video_enc_ctx->time_base = (AVRational){1, 30};
+			ctx->video_enc_ctx->framerate = (AVRational){30, 1};
 		}
 
 		// GOP = fps * 2
-		double fps_val = av_q2d(video_enc_ctx->framerate);
+		double fps_val = av_q2d(ctx->video_enc_ctx->framerate);
 		if (fps_val < 1.0) fps_val = 30.0;
-		video_enc_ctx->gop_size = (int)(fps_val * 2.0);
-		video_enc_ctx->max_b_frames = 0;
+		ctx->video_enc_ctx->gop_size = (int)(fps_val * 2.0);
+		ctx->video_enc_ctx->max_b_frames = 0;
 
 		// Bitrate: use param or auto based on resolution
 		if (bitrate > 0) {
-			video_enc_ctx->bit_rate = bitrate;
+			ctx->video_enc_ctx->bit_rate = bitrate;
 		} else {
 			if (enc_w >= 3840) {
-				video_enc_ctx->bit_rate = 20000000;
+				ctx->video_enc_ctx->bit_rate = 20000000;
 			} else if (enc_w >= 1920) {
-				video_enc_ctx->bit_rate = 10000000;
+				ctx->video_enc_ctx->bit_rate = 10000000;
 			} else if (enc_w >= 1280) {
-				video_enc_ctx->bit_rate = 5000000;
+				ctx->video_enc_ctx->bit_rate = 5000000;
 			} else {
-				video_enc_ctx->bit_rate = 2000000;
+				ctx->video_enc_ctx->bit_rate = 2000000;
 			}
 		}
 
 		// BT.709 colorspace signaling
-		video_enc_ctx->color_primaries = AVCOL_PRI_BT709;
-		video_enc_ctx->color_trc = AVCOL_TRC_BT709;
-		video_enc_ctx->colorspace = AVCOL_SPC_BT709;
-		video_enc_ctx->color_range = AVCOL_RANGE_MPEG;
+		ctx->video_enc_ctx->color_primaries = AVCOL_PRI_BT709;
+		ctx->video_enc_ctx->color_trc = AVCOL_TRC_BT709;
+		ctx->video_enc_ctx->colorspace = AVCOL_SPC_BT709;
+		ctx->video_enc_ctx->color_range = AVCOL_RANGE_MPEG;
 
 		// Codec-specific options
 		if (strcmp(venc->name, "libx264") == 0) {
-			av_opt_set(video_enc_ctx->priv_data, "preset", "medium", 0);
-			av_opt_set(video_enc_ctx->priv_data, "profile", "high", 0);
+			av_opt_set(ctx->video_enc_ctx->priv_data, "preset", "medium", 0);
+			av_opt_set(ctx->video_enc_ctx->priv_data, "profile", "high", 0);
 		} else {
 			// Reasonable defaults for other encoders
-			video_enc_ctx->thread_count = 0;
+			ctx->video_enc_ctx->thread_count = 0;
 		}
 
-		if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER) {
-			video_enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+		if (ctx->ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER) {
+			ctx->video_enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 		}
 
-		ret = avcodec_open2(video_enc_ctx, venc, NULL);
+		ret = avcodec_open2(ctx->video_enc_ctx, venc, NULL);
 		if (ret < 0) {
 			ret = -5;
-			goto cleanup;
+			goto fail;
 		}
 
-		avcodec_parameters_from_context(out_video_stream->codecpar, video_enc_ctx);
-		out_video_stream->time_base = video_enc_ctx->time_base;
-		out_video_stream->codecpar->codec_tag = 0;
+		avcodec_parameters_from_context(ctx->out_video_stream->codecpar, ctx->video_enc_ctx);
+		ctx->out_video_stream->time_base = ctx->video_enc_ctx->time_base;
+		ctx->out_video_stream->codecpar->codec_tag = 0;
 	}
 
 	// --- Create output audio stream + encoder (if input has audio) ---
-	if (audio_dec_ctx) {
+	if (ctx->audio_dec_ctx) {
 		const AVCodec* aenc = avcodec_find_encoder(AV_CODEC_ID_AAC);
 		if (!aenc) {
 			ret = -6;
-			goto cleanup;
+			goto fail;
 		}
 
-		out_audio_stream = avformat_new_stream(ofmt_ctx, NULL);
-		if (!out_audio_stream) {
+		ctx->out_audio_stream = avformat_new_stream(ctx->ofmt_ctx, NULL);
+		if (!ctx->out_audio_stream) {
 			ret = -6;
-			goto cleanup;
+			goto fail;
 		}
-		out_audio_idx = out_audio_stream->index;
+		ctx->out_audio_idx = ctx->out_audio_stream->index;
 
-		audio_enc_ctx = avcodec_alloc_context3(aenc);
-		if (!audio_enc_ctx) {
+		ctx->audio_enc_ctx = avcodec_alloc_context3(aenc);
+		if (!ctx->audio_enc_ctx) {
 			ret = -6;
-			goto cleanup;
+			goto fail;
 		}
 
-		audio_enc_ctx->sample_rate = 48000;
-		audio_enc_ctx->sample_fmt = AV_SAMPLE_FMT_FLTP;
-		audio_enc_ctx->bit_rate = 128000;
-		audio_enc_ctx->time_base = (AVRational){1, 48000};
+		ctx->audio_enc_ctx->sample_rate = 48000;
+		ctx->audio_enc_ctx->sample_fmt = AV_SAMPLE_FMT_FLTP;
+		ctx->audio_enc_ctx->bit_rate = 128000;
+		ctx->audio_enc_ctx->time_base = (AVRational){1, 48000};
 
 		// Set stereo channel layout
 		AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
-		av_channel_layout_copy(&audio_enc_ctx->ch_layout, &stereo);
+		av_channel_layout_copy(&ctx->audio_enc_ctx->ch_layout, &stereo);
 
-		if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER) {
-			audio_enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+		if (ctx->ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER) {
+			ctx->audio_enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 		}
 
-		ret = avcodec_open2(audio_enc_ctx, aenc, NULL);
+		ret = avcodec_open2(ctx->audio_enc_ctx, aenc, NULL);
 		if (ret < 0) {
 			ret = -6;
-			goto cleanup;
+			goto fail;
 		}
 
-		avcodec_parameters_from_context(out_audio_stream->codecpar, audio_enc_ctx);
-		out_audio_stream->time_base = audio_enc_ctx->time_base;
-		out_audio_stream->codecpar->codec_tag = 0;
+		avcodec_parameters_from_context(ctx->out_audio_stream->codecpar, ctx->audio_enc_ctx);
+		ctx->out_audio_stream->time_base = ctx->audio_enc_ctx->time_base;
+		ctx->out_audio_stream->codecpar->codec_tag = 0;
 
-		if (audio_enc_ctx->frame_size > 0) {
-			aac_frame_size = audio_enc_ctx->frame_size;
+		if (ctx->audio_enc_ctx->frame_size > 0) {
+			ctx->aac_frame_size = ctx->audio_enc_ctx->frame_size;
 		}
 	}
 
 	// --- Open output file ---
-	if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
-		ret = avio_open(&ofmt_ctx->pb, output_path, AVIO_FLAG_WRITE);
+	if (!(ctx->ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
+		ret = avio_open(&ctx->ofmt_ctx->pb, output_path, AVIO_FLAG_WRITE);
 		if (ret < 0) {
 			ret = -7;
-			goto cleanup;
+			goto fail;
 		}
 	}
 
-	ret = avformat_write_header(ofmt_ctx, NULL);
+	ret = avformat_write_header(ctx->ofmt_ctx, NULL);
 	if (ret < 0) {
 		ret = -7;
-		goto cleanup;
+		goto fail;
 	}
 
 	// --- Create sws context ---
 	{
-		enum AVPixelFormat src_pix_fmt = video_dec_ctx->pix_fmt;
+		enum AVPixelFormat src_pix_fmt = ctx->video_dec_ctx->pix_fmt;
 		// If the decoder hasn't determined the pixel format yet, default to YUV420P
 		if (src_pix_fmt == AV_PIX_FMT_NONE) {
 			src_pix_fmt = AV_PIX_FMT_YUV420P;
 		}
-		sws_ctx = sws_getContext(
-			video_dec_ctx->width, video_dec_ctx->height, src_pix_fmt,
-			video_enc_ctx->width, video_enc_ctx->height, AV_PIX_FMT_YUV420P,
+		ctx->sws_ctx = sws_getContext(
+			ctx->video_dec_ctx->width, ctx->video_dec_ctx->height, src_pix_fmt,
+			ctx->video_enc_ctx->width, ctx->video_enc_ctx->height, AV_PIX_FMT_YUV420P,
 			SWS_BILINEAR, NULL, NULL, NULL);
-		if (!sws_ctx) {
+		if (!ctx->sws_ctx) {
 			ret = -9;
-			goto cleanup;
+			goto fail;
 		}
 	}
 
 	// --- Create swr context (if audio) ---
-	if (audio_dec_ctx && audio_enc_ctx) {
-		ret = swr_alloc_set_opts2(&swr_ctx,
-			&audio_enc_ctx->ch_layout, AV_SAMPLE_FMT_FLTP, 48000,
-			&audio_dec_ctx->ch_layout, audio_dec_ctx->sample_fmt,
-			audio_dec_ctx->sample_rate, 0, NULL);
-		if (ret < 0 || !swr_ctx) {
+	if (ctx->audio_dec_ctx && ctx->audio_enc_ctx) {
+		ret = swr_alloc_set_opts2(&ctx->swr_ctx,
+			&ctx->audio_enc_ctx->ch_layout, AV_SAMPLE_FMT_FLTP, 48000,
+			&ctx->audio_dec_ctx->ch_layout, ctx->audio_dec_ctx->sample_fmt,
+			ctx->audio_dec_ctx->sample_rate, 0, NULL);
+		if (ret < 0 || !ctx->swr_ctx) {
 			ret = -10;
-			goto cleanup;
+			goto fail;
 		}
-		ret = swr_init(swr_ctx);
+		ret = swr_init(ctx->swr_ctx);
 		if (ret < 0) {
 			ret = -10;
-			goto cleanup;
+			goto fail;
 		}
 
-		afifo = av_audio_fifo_alloc(AV_SAMPLE_FMT_FLTP,
-			audio_enc_ctx->ch_layout.nb_channels, aac_frame_size * 4);
-		if (!afifo) {
+		ctx->afifo = av_audio_fifo_alloc(AV_SAMPLE_FMT_FLTP,
+			ctx->audio_enc_ctx->ch_layout.nb_channels, ctx->aac_frame_size * 4);
+		if (!ctx->afifo) {
 			ret = -10;
-			goto cleanup;
+			goto fail;
 		}
 	}
 
 	// --- Allocate frames and packets ---
-	dec_frame = av_frame_alloc();
-	sws_frame = av_frame_alloc();
-	swr_frame = av_frame_alloc();
-	pkt = av_packet_alloc();
-	enc_pkt = av_packet_alloc();
-	if (!dec_frame || !sws_frame || !swr_frame || !pkt || !enc_pkt) {
+	ctx->dec_frame = av_frame_alloc();
+	ctx->sws_frame = av_frame_alloc();
+	ctx->swr_frame = av_frame_alloc();
+	ctx->pkt = av_packet_alloc();
+	ctx->enc_pkt = av_packet_alloc();
+	if (!ctx->dec_frame || !ctx->sws_frame || !ctx->swr_frame || !ctx->pkt || !ctx->enc_pkt) {
 		ret = -8;
-		goto cleanup;
+		goto fail;
 	}
 
 	// Set up sws output frame
-	sws_frame->format = AV_PIX_FMT_YUV420P;
-	sws_frame->width = video_enc_ctx->width;
-	sws_frame->height = video_enc_ctx->height;
-	ret = av_frame_get_buffer(sws_frame, 0);
+	ctx->sws_frame->format = AV_PIX_FMT_YUV420P;
+	ctx->sws_frame->width = ctx->video_enc_ctx->width;
+	ctx->sws_frame->height = ctx->video_enc_ctx->height;
+	ret = av_frame_get_buffer(ctx->sws_frame, 0);
 	if (ret < 0) {
 		ret = -8;
-		goto cleanup;
+		goto fail;
 	}
 
 	// Set up swr output frame (if audio). Sized to exactly one encoder frame;
 	// the FIFO above guarantees we always fill it with aac_frame_size samples
 	// (except for the final partial frame).
-	if (audio_enc_ctx) {
-		swr_frame->format = AV_SAMPLE_FMT_FLTP;
-		swr_frame->sample_rate = 48000;
-		av_channel_layout_copy(&swr_frame->ch_layout, &audio_enc_ctx->ch_layout);
-		swr_frame->nb_samples = aac_frame_size;
-		ret = av_frame_get_buffer(swr_frame, 0);
+	if (ctx->audio_enc_ctx) {
+		ctx->swr_frame->format = AV_SAMPLE_FMT_FLTP;
+		ctx->swr_frame->sample_rate = 48000;
+		av_channel_layout_copy(&ctx->swr_frame->ch_layout, &ctx->audio_enc_ctx->ch_layout);
+		ctx->swr_frame->nb_samples = ctx->aac_frame_size;
+		ret = av_frame_get_buffer(ctx->swr_frame, 0);
 		if (ret < 0) {
 			ret = -8;
-			goto cleanup;
+			goto fail;
 		}
 	}
+
+	return 0;
+
+fail:
+	ff_transcode_free(ctx);
+	return ret;
+}
+
+// ff_transcode_run executes the frame loop of a transcode prepared by
+// ff_transcode_open: demux, decode, scale/resample, encode, mux, flush, and
+// trailer. It performs no avformat_open_input/avcodec_open2 calls, so it must
+// run WITHOUT FFmpegOpenMu held — it can take minutes for long inputs and
+// would otherwise block every other FFmpeg open in the process. The caller
+// must free ctx with ff_transcode_free afterwards. Returns 0 on success or
+// -8 if the transcode loop aborted on a fatal decode/encode/mux error.
+static int ff_transcode_run(transcode_ctx_t* ctx, int* progress_pct,
+                            transcode_result_t* result) {
+	memset(result, 0, sizeof(transcode_result_t));
+
+	int ret = 0;
+	int loop_err = 0;
+	int video_frames = 0;
+	int64_t video_pts = 0;
+	int64_t audio_pts = 0;
+	int64_t audio_samples_sent = 0;
+	enum AVPixelFormat last_sws_fmt = AV_PIX_FMT_NONE;
+	int last_sws_w = 0, last_sws_h = 0;
+
+	AVFormatContext* ifmt_ctx = ctx->ifmt_ctx;
+	int video_stream_idx = ctx->video_stream_idx;
+	int audio_stream_idx = ctx->audio_stream_idx;
+	AVCodecContext* video_dec_ctx = ctx->video_dec_ctx;
+	AVCodecContext* audio_dec_ctx = ctx->audio_dec_ctx;
+	AVFormatContext* ofmt_ctx = ctx->ofmt_ctx;
+	AVCodecContext* video_enc_ctx = ctx->video_enc_ctx;
+	AVCodecContext* audio_enc_ctx = ctx->audio_enc_ctx;
+	AVStream* out_video_stream = ctx->out_video_stream;
+	AVStream* out_audio_stream = ctx->out_audio_stream;
+	int out_video_idx = ctx->out_video_idx;
+	int out_audio_idx = ctx->out_audio_idx;
+	struct SwrContext* swr_ctx = ctx->swr_ctx;
+	AVAudioFifo* afifo = ctx->afifo;
+	int aac_frame_size = ctx->aac_frame_size;
+	AVFrame* dec_frame = ctx->dec_frame;
+	AVFrame* sws_frame = ctx->sws_frame;
+	AVFrame* swr_frame = ctx->swr_frame;
+	AVPacket* pkt = ctx->pkt;
+	AVPacket* enc_pkt = ctx->enc_pkt;
 
 	// --- Main transcode loop ---
 	{
@@ -545,8 +644,8 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 							video_enc_ctx->width, video_enc_ctx->height, AV_PIX_FMT_YUV420P,
 							SWS_BILINEAR, NULL, NULL, NULL);
 						if (new_sws) {
-							sws_freeContext(sws_ctx);
-							sws_ctx = new_sws;
+							sws_freeContext(ctx->sws_ctx);
+							ctx->sws_ctx = new_sws;
 							last_sws_fmt = dec_frame->format;
 							last_sws_w   = dec_frame->width;
 							last_sws_h   = dec_frame->height;
@@ -555,7 +654,7 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 
 					// Scale/convert
 					av_frame_make_writable(sws_frame);
-					sws_scale(sws_ctx,
+					sws_scale(ctx->sws_ctx,
 						(const uint8_t* const*)dec_frame->data, dec_frame->linesize,
 						0, dec_frame->height,
 						sws_frame->data, sws_frame->linesize);
@@ -612,7 +711,7 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 					ret = ff_transcode_push_audio(swr_ctx, afifo,
 						(const uint8_t**)dec_frame->data, dec_frame->nb_samples,
 						audio_enc_ctx->ch_layout.nb_channels,
-						&conv_samples, &conv_capacity);
+						&ctx->conv_samples, &ctx->conv_capacity);
 					av_frame_unref(dec_frame);
 					if (ret < 0) {
 						continue; // skip unconvertible frames
@@ -666,8 +765,8 @@ loop_done:
 				video_enc_ctx->width, video_enc_ctx->height, AV_PIX_FMT_YUV420P,
 				SWS_BILINEAR, NULL, NULL, NULL);
 			if (new_sws) {
-				sws_freeContext(sws_ctx);
-				sws_ctx = new_sws;
+				sws_freeContext(ctx->sws_ctx);
+				ctx->sws_ctx = new_sws;
 				last_sws_fmt = dec_frame->format;
 				last_sws_w   = dec_frame->width;
 				last_sws_h   = dec_frame->height;
@@ -675,7 +774,7 @@ loop_done:
 		}
 
 		av_frame_make_writable(sws_frame);
-		sws_scale(sws_ctx,
+		sws_scale(ctx->sws_ctx,
 			(const uint8_t* const*)dec_frame->data, dec_frame->linesize,
 			0, dec_frame->height,
 			sws_frame->data, sws_frame->linesize);
@@ -741,7 +840,7 @@ loop_done:
 			ret = ff_transcode_push_audio(swr_ctx, afifo,
 				(const uint8_t**)dec_frame->data, dec_frame->nb_samples,
 				audio_enc_ctx->ch_layout.nb_channels,
-				&conv_samples, &conv_capacity);
+				&ctx->conv_samples, &ctx->conv_capacity);
 			av_frame_unref(dec_frame);
 			if (ret < 0) {
 				continue;
@@ -763,7 +862,7 @@ loop_done:
 		if (swr_ctx && afifo) {
 			ff_transcode_push_audio(swr_ctx, afifo, NULL, 0,
 				audio_enc_ctx->ch_layout.nb_channels,
-				&conv_samples, &conv_capacity);
+				&ctx->conv_samples, &ctx->conv_capacity);
 			ff_transcode_drain_audio_fifo(afifo, aac_frame_size, 1,
 				swr_frame, &audio_pts, &audio_samples_sent,
 				audio_enc_ctx, ofmt_ctx, out_audio_stream,
@@ -818,34 +917,7 @@ loop_done:
 		__atomic_store_n(progress_pct, 100, __ATOMIC_RELAXED);
 	}
 
-	ret = loop_err; // 0 on success, -8 if the transcode loop aborted
-
-cleanup:
-	if (enc_pkt) av_packet_free(&enc_pkt);
-	if (pkt) av_packet_free(&pkt);
-	if (swr_frame) av_frame_free(&swr_frame);
-	if (sws_frame) av_frame_free(&sws_frame);
-	if (dec_frame) av_frame_free(&dec_frame);
-	if (afifo) av_audio_fifo_free(afifo);
-	if (conv_samples) {
-		av_freep(&conv_samples[0]);
-		av_freep(&conv_samples);
-	}
-	if (swr_ctx) swr_free(&swr_ctx);
-	if (sws_ctx) sws_freeContext(sws_ctx);
-	if (audio_enc_ctx) avcodec_free_context(&audio_enc_ctx);
-	if (video_enc_ctx) avcodec_free_context(&video_enc_ctx);
-	if (audio_dec_ctx) avcodec_free_context(&audio_dec_ctx);
-	if (video_dec_ctx) avcodec_free_context(&video_dec_ctx);
-	if (ofmt_ctx) {
-		if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE) && ofmt_ctx->pb) {
-			avio_closep(&ofmt_ctx->pb);
-		}
-		avformat_free_context(ofmt_ctx);
-	}
-	if (ifmt_ctx) avformat_close_input(&ifmt_ctx);
-
-	return ret;
+	return loop_err; // 0 on success, -8 if the transcode loop aborted
 }
 */
 import "C"
@@ -914,14 +986,25 @@ func TranscodeFileWithProgress(inputPath, outputPath, encoderName string, bitrat
 		cProgress = (*C.int)(unsafe.Pointer(progressPct))
 	}
 
-	var result C.transcode_result_t
-	rc := C.ff_transcode_file(cInput, cOutput, cEncoder, C.int(bitrate), cProgress, &result)
+	// The open phase performs every avformat_open_input/avcodec_open2 of the
+	// transcode (including h264_nvenc, which initializes CUDA inside
+	// avcodec_open2), so it must hold FFmpegOpenMu like every other open site.
+	// The frame loop below runs without the lock: it does no opens and can
+	// take minutes, and holding the global open lock for its duration would
+	// block every other FFmpeg open (e.g. source connects) in the process.
+	var tctx C.transcode_ctx_t
+	FFmpegOpenMu.Lock()
+	rc := C.ff_transcode_open(cInput, cOutput, cEncoder, C.int(bitrate), &tctx)
+	FFmpegOpenMu.Unlock()
 	if rc != 0 {
-		msg := transcodeErrors[rc]
-		if msg == "" {
-			msg = "unknown error"
-		}
-		return nil, fmt.Errorf("transcode failed: %s (code %d)", msg, int(rc))
+		return nil, transcodeError(rc)
+	}
+	defer C.ff_transcode_free(&tctx)
+
+	var result C.transcode_result_t
+	rc = C.ff_transcode_run(&tctx, cProgress, &result)
+	if rc != 0 {
+		return nil, transcodeError(rc)
 	}
 
 	return &TranscodeResult{
@@ -934,4 +1017,13 @@ func TranscodeFileWithProgress(inputPath, outputPath, encoderName string, bitrat
 		VideoFrames:  int(result.video_frames),
 		AudioSamples: int64(result.audio_samples),
 	}, nil
+}
+
+// transcodeError maps a negative C return code to a descriptive error.
+func transcodeError(rc C.int) error {
+	msg := transcodeErrors[rc]
+	if msg == "" {
+		msg = "unknown error"
+	}
+	return fmt.Errorf("transcode failed: %s (code %d)", msg, int(rc))
 }

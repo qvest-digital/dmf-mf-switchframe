@@ -159,10 +159,10 @@ func newGatedAudioTransHandler() *gatedAudioTransHandler {
 	}
 }
 
-func (g *gatedAudioTransHandler) OnTransitionStart(oldSource, newSource string, mode audio.TransitionMode, durationMs int) {
+func (g *gatedAudioTransHandler) OnTransitionStart(oldSource, newSource string, mode audio.TransitionMode, durationMs int) uint64 {
 	close(g.entered)
 	<-g.release
-	g.mockAudioTransHandler.OnTransitionStart(oldSource, newSource, mode, durationMs)
+	return g.mockAudioTransHandler.OnTransitionStart(oldSource, newSource, mode, durationMs)
 }
 
 func TestCutDuringStartTransitionWindowDoesNotPublishStaleEngine(t *testing.T) {

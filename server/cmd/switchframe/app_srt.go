@@ -774,20 +774,34 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 func (a *App) startSRTPipelineIngest(key string, pipelineCh <-chan srtVideoJob, framePool *switcher.FramePool) {
 	go func() {
 		for job := range pipelineCh {
-			pfr := &switcher.ProcessingFrame{
-				Data:   job.yuv,
-				Width:  job.w,
-				Height: job.h,
-				PTS:    job.pts,
-				DTS:    job.pts,
-				Codec:  "h264",
-			}
-			if framePool != nil {
-				pfr.SetPool(framePool)
-			}
-			a.sw.IngestRawVideo(key, pfr)
+			a.sw.IngestRawVideo(key, newSRTPipelineFrame(job, framePool))
 		}
 	}()
+}
+
+// newSRTPipelineFrame wraps a decoded SRT video job in a managed, pool-backed
+// ProcessingFrame for ingest into the switcher's frame-sync ring.
+//
+// SetRefs(1) is required, not optional: the ring retains the frame (and serves
+// it as the freeze-repeat lastRawVideo) across ticks while sync-loop consumers
+// take and release their own references. On an unmanaged frame Ref() is a
+// no-op while ReleaseYUV frees immediately (see ProcessingFrame.Ref), so a
+// consumer-side release would recycle the pool buffer out from under the ring
+// (use-after-release) and the ring's own release would double-free it.
+func newSRTPipelineFrame(job srtVideoJob, framePool *switcher.FramePool) *switcher.ProcessingFrame {
+	pfr := &switcher.ProcessingFrame{
+		Data:   job.yuv,
+		Width:  job.w,
+		Height: job.h,
+		PTS:    job.pts,
+		DTS:    job.pts,
+		Codec:  "h264",
+	}
+	if framePool != nil {
+		pfr.SetPool(framePool)
+	}
+	pfr.SetRefs(1)
+	return pfr
 }
 
 // startSRTVideoRelayGPUDrain starts a goroutine that drains the relay video

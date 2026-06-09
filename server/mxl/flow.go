@@ -170,9 +170,21 @@ func (inst *Instance) OpenWriter(flowDef string) (DiscreteWriter, error) {
 		return nil, err
 	}
 
+	// Capture the per-slice byte size from the immutable flow config so
+	// WriteGrain can compute the true grain slot capacity. The slot header's
+	// grainSize cannot be used as a capacity: WriteGrain commits the actual
+	// payload length there, so after the ring wraps the reopened header
+	// reports the previous payload's size (see discreteGrainCapacity).
+	cfg := convertFlowConfig(&configInfo)
+	var sliceBytes uint64
+	for _, s := range cfg.SliceSizes {
+		sliceBytes += uint64(s)
+	}
+
 	return &discreteFlowWriter{
-		instance: inst.handle,
-		writer:   writer,
+		instance:   inst.handle,
+		writer:     writer,
+		sliceBytes: sliceBytes,
 	}, nil
 }
 
@@ -402,6 +414,12 @@ func (r *continuousFlowReader) Close() error {
 type discreteFlowWriter struct {
 	instance C.mxlInstance
 	writer   C.mxlFlowWriter
+
+	// sliceBytes is the sum of the flow's immutable per-plane slice sizes
+	// (mxlDiscreteFlowConfigInfo.sliceSizes), captured at OpenWriter time.
+	// Multiplied by a grain's totalSlices it yields the true slot capacity,
+	// independent of the mutable grainSize field in the slot header.
+	sliceBytes uint64
 }
 
 func (w *discreteFlowWriter) WriteGrain(index uint64, data []byte) error {
@@ -417,11 +435,17 @@ func (w *discreteFlowWriter) WriteGrain(index uint64, data []byte) error {
 		return err
 	}
 
-	// Bounds-check the payload against the grain slot capacity BEFORE the
-	// memcpy: an oversized payload (e.g. a flow definition whose resolution
-	// disagrees with the producer's WriterConfig) would otherwise overwrite
-	// adjacent grains/headers in the cross-process shared-memory ring.
-	if err := checkGrainPayloadFits(len(data), uint32(grain.grainSize)); err != nil {
+	// Bounds-check the payload against the true grain slot capacity BEFORE
+	// the memcpy: an oversized payload (e.g. a flow definition whose
+	// resolution disagrees with the producer's WriterConfig) would otherwise
+	// overwrite adjacent grains/headers in the cross-process shared-memory
+	// ring. The capacity is computed from the immutable flow config and the
+	// grain's totalSlices — NOT from grain.grainSize, which after the ring
+	// wraps holds the previous occupant's payload length (the commit below
+	// stores len(data) there for readers; mxlFlowWriterOpenGrain returns the
+	// stored header verbatim). See discreteGrainCapacity.
+	capacity := discreteGrainCapacity(w.sliceBytes, uint16(grain.totalSlices), uint32(grain.grainSize))
+	if err := checkGrainPayloadFits(len(data), capacity); err != nil {
 		// Release the opened grain without publishing it.
 		C.mxlFlowWriterCancelGrain(w.writer)
 		return fmt.Errorf("write grain at index %d: %w", index, err)

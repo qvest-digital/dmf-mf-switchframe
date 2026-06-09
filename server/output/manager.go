@@ -461,8 +461,14 @@ func (m *Manager) StartSRTOutput(config SRTConfig) error {
 		m.mu.Lock()
 		if m.srtOutput == adapter {
 			m.srtOutput = nil
+			// Only remove the stats entry while this adapter still owns the
+			// slot. Adapter IDs are type constants, so a concurrently
+			// restarted output reuses the same stats key and Create replaces
+			// the entry — an unconditional remove here would delete the live
+			// adapter's stats. If a concurrent Stop already claimed the slot,
+			// it removed (or a restart replaced) the entry.
+			m.removeSRTStats(adapter.ID(), "")
 		}
-		m.removeSRTStats(adapter.ID(), "")
 		m.mu.Unlock()
 		return fmt.Errorf("start SRT output: %w", err)
 	}
@@ -841,9 +847,15 @@ func (m *Manager) StartDestination(id string) error {
 			dest.adapter = nil
 			dest.active = false
 			dest.startedAt = nil
+			// Only remove the stats entry while this adapter still owns the
+			// slot. Adapter IDs are type constants, so a concurrently
+			// restarted destination reuses the same stats key and Create
+			// replaces the entry — an unconditional remove here would delete
+			// the live adapter's stats. If a concurrent Stop/Remove already
+			// claimed the slot, it removed (or a restart replaced) the entry.
+			m.removeSRTStats(adapter.ID(), id)
 		}
 		dest.mu.Unlock()
-		m.removeSRTStats(adapter.ID(), id)
 		m.mu.Unlock()
 		return fmt.Errorf("start destination %s: %w", id, err)
 	}

@@ -110,38 +110,77 @@ func (w *WAL) Append(cmd Command) error {
 // MarkExecuted marks the entry with the matching Seq as executed.
 //
 // Hot-path callers draining multiple commands per tick must prefer
-// MarkExecutedBatch: this single-seq variant costs one write+fsync per
+// MarkExecutedCommands: this single-seq variant costs one write+fsync per
 // call, so marking N drained commands one-by-one costs N fsyncs.
+//
+// Seq 0 is a no-op: a bare Seq-0 tombstone cannot be correlated with a
+// specific pending entry (see MarkExecutedCommands).
 func (w *WAL) MarkExecuted(seq uint64) error {
 	return w.MarkExecutedBatch([]uint64{seq})
 }
 
-// MarkExecutedBatch marks every entry whose Seq is in seqs as executed by
-// APPENDING one tombstone line per unique Seq, with a single write and a
-// single fsync — regardless of how many seqs are supplied. Readers merge
-// tombstones with their earlier command entries (see readEntries), so the
-// effect matches rewriting the file, but the Drain hot path never pays an
-// O(file size) read+rewrite, and a torn append can at worst lose the
-// tombstone suffix — never previously committed state. Passing an empty
-// slice is a no-op (no write, no fsync).
+// MarkExecutedBatch marks every entry whose Seq is in seqs as executed.
+// Seq 0 values are silently skipped: Seq-0 commands are untimed/legacy and
+// dedup-exempt, so SEVERAL un-executed Seq-0 entries can coexist in the
+// file — a bare {Seq:0} tombstone cannot be correlated with the one that
+// actually executed, and applying it to all of them (the old behavior)
+// silently dropped still-pending Seq-0 commands at crash replay. Callers
+// that hold the executed commands themselves (Drain) must use
+// MarkExecutedCommands, which writes correlatable full-command tombstones
+// for Seq 0.
 func (w *WAL) MarkExecutedBatch(seqs []uint64) error {
-	if len(seqs) == 0 {
-		return nil
-	}
-
-	var buf bytes.Buffer
-	marked := make(map[uint64]struct{}, len(seqs))
+	cmds := make([]Command, 0, len(seqs))
 	for _, s := range seqs {
-		if _, dup := marked[s]; dup {
+		if s == 0 {
 			continue
 		}
-		marked[s] = struct{}{}
-		data, err := json.Marshal(walEntry{Command: Command{Seq: s}, Executed: true})
+		cmds = append(cmds, Command{Seq: s})
+	}
+	return w.MarkExecutedCommands(cmds)
+}
+
+// MarkExecutedCommands marks every command in cmds as executed by APPENDING
+// tombstone lines, with a single write and a single fsync — regardless of
+// how many commands are supplied. Readers merge tombstones with their
+// earlier command entries (see readEntries), so the effect matches
+// rewriting the file, but the Drain hot path never pays an O(file size)
+// read+rewrite, and a torn append can at worst lose the tombstone suffix —
+// never previously committed state. Passing an empty slice is a no-op (no
+// write, no fsync).
+//
+// Tombstone shape depends on Seq:
+//   - Seq > 0: one slim {Seq, Executed:true} line per unique Seq — dedup
+//     seeding (ReplayExecutedSeqs) only needs the Seq, and at most one
+//     pending entry can carry it.
+//   - Seq == 0: one FULL-command tombstone per command (no dedup — several
+//     identical Seq-0 commands may be pending at once). Seq alone cannot
+//     identify which Seq-0 entry executed, so the merge in readEntries
+//     correlates these by command content instead.
+func (w *WAL) MarkExecutedCommands(cmds []Command) error {
+	var buf bytes.Buffer
+	var lines int
+	marked := make(map[uint64]struct{}, len(cmds))
+	for _, c := range cmds {
+		entry := walEntry{Executed: true}
+		if c.Seq > 0 {
+			if _, dup := marked[c.Seq]; dup {
+				continue
+			}
+			marked[c.Seq] = struct{}{}
+			entry.Command = Command{Seq: c.Seq}
+		} else {
+			entry.Command = c
+		}
+		data, err := json.Marshal(entry)
 		if err != nil {
 			return err
 		}
 		buf.Write(data)
 		buf.WriteByte('\n')
+		lines++
+	}
+	if lines == 0 {
+		return nil
 	}
 
 	w.mu.Lock()
@@ -149,7 +188,7 @@ func (w *WAL) MarkExecutedBatch(seqs []uint64) error {
 	if _, err := w.file.Write(buf.Bytes()); err != nil {
 		return err
 	}
-	w.lines += len(marked)
+	w.lines += lines
 	return w.file.Sync()
 }
 
@@ -339,11 +378,23 @@ func (w *WAL) readEntriesLocked() ([]walEntry, error) {
 // MaybeCompactExecuted to read a consistent append-only prefix without
 // holding the WAL mutex); limit < 0 reads the whole file.
 //
-// Merge semantics: a line with Executed=true marks every earlier
-// un-executed entry with the same Seq as executed (these are the tombstone
-// lines appended by MarkExecutedBatch); if no earlier entry matches, the
-// line is retained as a standalone executed tombstone (the compacted form
-// that seeds ReplayExecutedSeqs).
+// Merge semantics: a line with Executed=true and Seq > 0 marks every
+// earlier un-executed entry with the same Seq as executed (these are the
+// tombstone lines appended by MarkExecutedCommands); if no earlier entry
+// matches, the line is retained as a standalone executed tombstone (the
+// compacted form that seeds ReplayExecutedSeqs).
+//
+// Seq-0 tombstones are NEVER merged by Seq: Seq-0 commands are dedup-exempt,
+// so several un-executed Seq-0 entries can coexist, and flipping them all
+// from one tombstone would silently drop still-pending commands at crash
+// replay. Instead a Seq-0 tombstone carries the full executed command (see
+// MarkExecutedCommands) and marks exactly ONE entry: the oldest un-executed
+// Seq-0 entry with identical command content. Oldest-first is exact —
+// content-equal commands are interchangeable, and a differing command can
+// never be matched by mistake. (Purely positional matching would be wrong:
+// Drain pops Seq-0 commands in heap order — ExecuteAt order, ties arbitrary
+// — not WAL append order.) An unmatched Seq-0 tombstone is retained
+// standalone and dropped at the next compaction; it carries no dedup value.
 //
 // The scanner buffer is sized to maxWALLineBytes — matching the cap
 // enforced by Append — so a large (but legal) payload can never trip
@@ -382,6 +433,27 @@ func readEntries(path string, limit int64) ([]walEntry, int, error) {
 			entries = append(entries, e)
 			continue
 		}
+		if e.Command.Seq == 0 {
+			// Content-correlated merge: mark only the oldest pending Seq-0
+			// entry whose command matches the tombstone exactly. Legacy bare
+			// {Seq:0} tombstones (pre-fix files) match nothing and fall
+			// through to standalone retention — erring toward at-least-once
+			// replay rather than silently dropping pending commands.
+			idxs := unexecuted[0]
+			matched := false
+			for j, i := range idxs {
+				if sameCommand(entries[i].Command, e.Command) {
+					entries[i].Executed = true
+					unexecuted[0] = append(idxs[:j], idxs[j+1:]...)
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				entries = append(entries, e)
+			}
+			continue
+		}
 		if idxs := unexecuted[e.Command.Seq]; len(idxs) > 0 {
 			for _, i := range idxs {
 				entries[i].Executed = true
@@ -397,13 +469,27 @@ func readEntries(path string, limit int64) ([]walEntry, int, error) {
 	return entries, lines, nil
 }
 
+// sameCommand reports whether two commands carry identical content. Used by
+// readEntries to correlate a Seq-0 executed tombstone with the pending entry
+// it belongs to. Both sides of the comparison round-trip through the same
+// JSON encode→file→decode pipeline (Append and MarkExecutedCommands marshal
+// the same in-memory Command, and encoding/json compacts RawMessage on
+// marshal), so byte comparison of payloads is exact.
+func sameCommand(a, b Command) bool {
+	return a.Seq == b.Seq &&
+		a.ExecuteAt == b.ExecuteAt &&
+		a.Action == b.Action &&
+		bytes.Equal(a.Payload, b.Payload)
+}
+
 // compactEntries keeps every un-executed entry (for crash-replay) plus the
 // most recent keepRecent executed tombstones (for dedup-map seeding at
 // restart). Executed entries drop the command payload since dedup only
-// needs the Seq. Seq-0 tombstones are dropped entirely: dedup ignores
-// Seq 0 (ReplayExecutedSeqs skips them), and rewriting them after pending
-// entries could wrongly mark later Seq-0 commands executed under the
-// tombstone merge in readEntries.
+// needs the Seq. Executed Seq-0 entries — both merged command entries and
+// unmatched standalone tombstones — are dropped entirely: dedup ignores
+// Seq 0 (ReplayExecutedSeqs skips them), and rewriting a Seq-0 tombstone
+// after the pending entries could wrongly match a later pending Seq-0
+// command under the content-correlated merge in readEntries.
 func compactEntries(entries []walEntry, keepRecent int) []walEntry {
 	pending := entries[:0:0]
 	var executedTomb []walEntry

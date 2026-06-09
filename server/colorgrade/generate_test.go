@@ -507,6 +507,69 @@ func TestPQToHLG_HighlightsNotCrushed(t *testing.T) {
 	}
 }
 
+// TestPQToSDR_ReferenceWhiteLevel verifies the white-point-preserving tone
+// map in pq-to-sdr: 203-nit content (SDR reference white per BT.2408) must
+// render at ~100% SDR signal, not at the ~71% that plain Reinhard L/(1+L)
+// would produce.
+func TestPQToSDR_ReferenceWhiteLevel(t *testing.T) {
+	// PQ signal for 203 nits.
+	pqWhite := pqOETF(sdrRefWhiteNits / pqPeakNits)
+	sdr := bt709OETF(pqLinearToSDRLinear(pqEOTF(pqWhite)))
+	if math.Abs(float64(sdr)-1.0) > 0.001 {
+		t.Errorf("203-nit PQ white maps to SDR signal %f, want ~1.0", sdr)
+	}
+}
+
+// TestHDRRoundtrip_SDR_PQ_SDR verifies that SDR → PQ → SDR is near-identity.
+// The tone map applied on the way back must be identity at and below
+// reference white, so no SDR signal level shifts through the round trip.
+func TestHDRRoundtrip_SDR_PQ_SDR(t *testing.T) {
+	for i := 0; i <= 32; i++ {
+		in := float32(i) / 32.0
+		// Forward: SDR signal → linear → PQ signal.
+		pq := pqOETF(sdrLinearToPQLinear(bt709EOTF(in)))
+		// Reverse: PQ signal → linear → SDR signal.
+		out := bt709OETF(pqLinearToSDRLinear(pqEOTF(pq)))
+		if math.Abs(float64(out)-float64(in)) > 0.002 {
+			t.Errorf("SDR→PQ→SDR roundtrip of %f = %f, want ~identity", in, out)
+		}
+	}
+
+	// White must survive the round trip (the original Reinhard curve
+	// returned white at ~0.71).
+	pq := pqOETF(sdrLinearToPQLinear(bt709EOTF(1.0)))
+	out := bt709OETF(pqLinearToSDRLinear(pqEOTF(pq)))
+	if math.Abs(float64(out)-1.0) > 0.001 {
+		t.Errorf("SDR→PQ→SDR roundtrip of white = %f, want ~1.0", out)
+	}
+}
+
+// TestKneeToneMap pins the tone-map curve properties: exact identity at the
+// reference level, identity below it, monotonicity, and no output above 1.0
+// for inputs up to PQ peak scaled to SDR-relative light (10000/203 ≈ 49.26).
+func TestKneeToneMap(t *testing.T) {
+	if v := kneeToneMap(1.0); v != 1.0 {
+		t.Errorf("kneeToneMap(1.0) = %f, want exactly 1.0", v)
+	}
+	for _, l := range []float32{0, 0.1, 0.25, 0.5, 0.75, 0.999} {
+		if v := kneeToneMap(l); v != l {
+			t.Errorf("kneeToneMap(%f) = %f, want identity below 1.0", l, v)
+		}
+	}
+	maxInput := float32(pqPeakNits / sdrRefWhiteNits)
+	prev := float32(-1)
+	for l := float32(0); l <= maxInput; l += 0.05 {
+		v := kneeToneMap(l)
+		if v < prev {
+			t.Fatalf("kneeToneMap not monotonic: f(%f) = %f < %f", l, v, prev)
+		}
+		if v > 1.0 {
+			t.Fatalf("kneeToneMap(%f) = %f, want <= 1.0", l, v)
+		}
+		prev = v
+	}
+}
+
 // TestEmbeddedTechnicalLooks_MatchGenerated verifies the embedded .cube files
 // for the PQ technical looks were regenerated with luminance normalization.
 func TestEmbeddedTechnicalLooks_MatchGenerated(t *testing.T) {

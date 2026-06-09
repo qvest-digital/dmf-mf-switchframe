@@ -482,7 +482,7 @@ func TestMixerOnTransitionAbortSnapsPosition(t *testing.T) {
 	m.SetActive("cam1", true)
 
 	// Start transition and move to halfway
-	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
+	token := m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
 	m.OnTransitionPosition(0.5)
 	require.True(t, m.IsInTransitionCrossfade())
 
@@ -497,7 +497,7 @@ func TestMixerOnTransitionAbortSnapsPosition(t *testing.T) {
 	m.IngestFrame("cam2", frame)
 
 	// Now abort — should snap to position 0 and clear state
-	m.OnTransitionAbort()
+	m.OnTransitionAbort(token)
 
 	require.False(t, m.IsInTransitionCrossfade(), "transition should be cleared after abort")
 	require.InDelta(t, 0.0, m.TransitionPosition(), 0.001, "position should be reset after abort")

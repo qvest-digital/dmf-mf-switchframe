@@ -165,10 +165,16 @@ type audioCutHandler interface {
 // audioTransitionHandler is called during transitions to sync audio crossfade
 // with video dissolve progress.
 type audioTransitionHandler interface {
-	OnTransitionStart(oldSource, newSource string, mode audio.TransitionMode, durationMs int)
+	// OnTransitionStart returns an ownership token for the transition state
+	// it established in the mixer. The token must be passed back to
+	// OnTransitionAbort, which ignores the abort when the token is stale —
+	// i.e. a newer cut/program change/transition has since established its
+	// own mixer state. This makes late aborts from a pre-empted transition
+	// setup harmless.
+	OnTransitionStart(oldSource, newSource string, mode audio.TransitionMode, durationMs int) uint64
 	OnTransitionPosition(position float64)
 	OnTransitionComplete()
-	OnTransitionAbort()
+	OnTransitionAbort(token uint64)
 	SetProgramMute(muted bool)
 	SetStingerAudio(audio []float32, sampleRate, channels int)
 }
@@ -310,8 +316,13 @@ type Switcher struct {
 	// newer transition start that landed inside the window is detected and the
 	// stale engine is never published over the live state.
 	transStartGen uint64
-	state         State
-	ftbDurationMs int
+	// audioTransToken is the mixer ownership token returned by the live
+	// transition's OnTransitionStart (guarded by configMu, set when the
+	// transition engine is published). It is passed to OnTransitionAbort so
+	// the mixer can ignore aborts that no longer own its transition state.
+	audioTransToken uint64
+	state           State
+	ftbDurationMs   int
 
 	// transitionAbortThreshold is the T-bar position (in [0.05, 0.5]) below
 	// which a mid-AUTO pull-back internally aborts the transition, provided
@@ -2588,12 +2599,13 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	audioHandler := s.audioTransition
 	s.configMu.Unlock()
 
+	var audioToken uint64
 	if audioHandler != nil {
 		audioMode := audio.Crossfade
 		if tt == transition.Dip {
 			audioMode = audio.DipToSilence
 		}
-		audioHandler.OnTransitionStart(fromSource, sourceKey, audioMode, durationMs)
+		audioToken = audioHandler.OnTransitionStart(fromSource, sourceKey, audioMode, durationMs)
 
 		// Pass stinger audio to mixer for additive overlay
 		if tt == transition.Stinger && topts.stingerData != nil && topts.stingerData.Audio != nil {
@@ -2611,15 +2623,10 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		// Publishing now would install a dead engine over the live hotState
 		// (frames would route to it forever; its completion handler would
 		// early-return on the state guard). Abandon the start instead.
-		s.configMu.Unlock()
-		engine.Stop()
-		if audioHandler != nil {
-			audioHandler.OnTransitionAbort()
-		}
-		s.log.Warn("transition aborted", "type", transType, "reason", "pre-empted during setup")
-		return fmt.Errorf("start transition: pre-empted by concurrent cut/abort")
+		return s.abandonTransitionSetup(engine, audioHandler, audioToken, transType, "start transition")
 	}
 	s.transEngine = engine
+	s.audioTransToken = audioToken
 	s.transTypeOrig = transType // preserve original type string for GPU DVE dispatch
 	s.transitionMaxForward = 0  // fresh transition: reset T-bar pull-back gate
 	// Swap preview to old program at transition start (matches CUT's
@@ -2805,9 +2812,10 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 		// Start audio BEFORE publishing engine (prevents position race).
 		audioHandler := s.audioHandlers.Load().audioTransition
+		var ftbRevAudioToken uint64
 		if audioHandler != nil {
 			audioHandler.SetProgramMute(false)
-			audioHandler.OnTransitionStart(fromSource, "", audio.FadeIn, ftbRevDurMs)
+			ftbRevAudioToken = audioHandler.OnTransitionStart(fromSource, "", audio.FadeIn, ftbRevDurMs)
 		}
 
 		// Now publish the engine.
@@ -2815,15 +2823,10 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		if s.state != StateFTBReversing || s.transStartGen != ftbRevStartGen {
 			// A concurrent Cut/abort pre-empted this FTB reverse during the
 			// unlocked setup window — do not publish the dead engine.
-			s.configMu.Unlock()
-			engine.Stop()
-			if audioHandler != nil {
-				audioHandler.OnTransitionAbort()
-			}
-			s.log.Warn("transition aborted", "type", "ftb_reverse", "reason", "pre-empted during setup")
-			return fmt.Errorf("start FTB reverse: pre-empted by concurrent cut/abort")
+			return s.abandonTransitionSetup(engine, audioHandler, ftbRevAudioToken, "ftb_reverse", "start FTB reverse")
 		}
 		s.transEngine = engine
+		s.audioTransToken = ftbRevAudioToken
 		s.updateHotState(func(hs *hotState) {
 			hs.state = StateFTBReversing
 			hs.transEngine = engine
@@ -2893,8 +2896,9 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 	// Start audio BEFORE publishing engine (prevents position race).
 	audioHandler := s.audioHandlers.Load().audioTransition
+	var ftbFwdAudioToken uint64
 	if audioHandler != nil {
-		audioHandler.OnTransitionStart(fromSource, "", audio.FadeOut, ftbFwdDurMs)
+		ftbFwdAudioToken = audioHandler.OnTransitionStart(fromSource, "", audio.FadeOut, ftbFwdDurMs)
 	}
 
 	// Now publish the engine.
@@ -2902,15 +2906,10 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	if s.state != StateFTBTransitioning || s.transStartGen != ftbFwdStartGen {
 		// A concurrent Cut/abort pre-empted this FTB during the unlocked
 		// setup window — do not publish the dead engine.
-		s.configMu.Unlock()
-		engine.Stop()
-		if audioHandler != nil {
-			audioHandler.OnTransitionAbort()
-		}
-		s.log.Warn("transition aborted", "type", "ftb", "reason", "pre-empted during setup")
-		return fmt.Errorf("start FTB: pre-empted by concurrent cut/abort")
+		return s.abandonTransitionSetup(engine, audioHandler, ftbFwdAudioToken, "ftb", "start FTB")
 	}
 	s.transEngine = engine
+	s.audioTransToken = ftbFwdAudioToken
 	s.updateHotState(func(hs *hotState) {
 		hs.state = StateFTBTransitioning
 		hs.transEngine = engine
@@ -2964,12 +2963,33 @@ func (s *Switcher) rollbackTransitionState(expect State, expectGen uint64, to St
 	s.configMu.Unlock()
 }
 
+// abandonTransitionSetup tears down a transition that was pre-empted during
+// its unlocked setup window: a concurrent Cut/abort (or a newer transition
+// start) moved the switcher state on before the engine could be published, so
+// publishing now would install a dead engine over the live state. The caller
+// must hold configMu; it is released here. audioToken is the mixer ownership
+// token returned by this transition's OnTransitionStart — the mixer treats
+// the abort as a no-op if a newer owner (a cut's crossfade or a newer
+// transition) has since established its own state, so this late cleanup can
+// never wipe state it doesn't own. transType labels the log line and op
+// prefixes the returned error.
+func (s *Switcher) abandonTransitionSetup(engine *transition.Engine, audioHandler audioTransitionHandler, audioToken uint64, transType, op string) error {
+	s.configMu.Unlock()
+	engine.Stop()
+	if audioHandler != nil {
+		audioHandler.OnTransitionAbort(audioToken)
+	}
+	s.log.Warn("transition aborted", "type", transType, "reason", "pre-empted during setup")
+	return fmt.Errorf("%s: pre-empted by concurrent cut/abort", op)
+}
+
 // AbortTransition stops any active transition and restores normal frame routing.
 func (s *Switcher) AbortTransition() {
 	s.configMu.Lock()
 	engine := s.transEngine
 	wasActive := s.state.isInTransition()
 	audioHandler := s.audioTransition
+	audioToken := s.audioTransToken
 	var transType string
 
 	if wasActive {
@@ -3016,7 +3036,7 @@ func (s *Switcher) AbortTransition() {
 		s.log.Warn("transition aborted", "type", transType, "reason", "manual abort")
 
 		if audioHandler != nil {
-			audioHandler.OnTransitionAbort()
+			audioHandler.OnTransitionAbort(audioToken)
 		}
 		s.notifyStateChange(snapshot)
 	}
@@ -3057,6 +3077,7 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	}
 
 	audioHandler := s.audioTransition
+	audioToken := s.audioTransToken
 	var audioCut audioCutHandler
 	var newProgram string
 
@@ -3135,7 +3156,7 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 
 	if audioHandler != nil {
 		if aborted {
-			audioHandler.OnTransitionAbort()
+			audioHandler.OnTransitionAbort(audioToken)
 		} else {
 			audioHandler.OnTransitionComplete()
 		}
@@ -3156,6 +3177,7 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 	}
 
 	audioHandler := s.audioTransition
+	audioToken := s.audioTransToken
 	if aborted {
 		s.transitionState(StateIdle) // Aborted — return to idle
 	} else {
@@ -3183,7 +3205,7 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 
 	if audioHandler != nil {
 		if aborted {
-			audioHandler.OnTransitionAbort()
+			audioHandler.OnTransitionAbort(audioToken)
 		} else {
 			audioHandler.OnTransitionComplete()
 			// FTB completed — screen is black, mute program audio
@@ -3206,6 +3228,7 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	}
 
 	audioHandler := s.audioTransition
+	audioToken := s.audioTransToken
 
 	if aborted {
 		s.transitionState(StateFTB) // Aborted — screen stays black
@@ -3238,7 +3261,7 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	if audioHandler != nil {
 		if aborted {
 			// FTB reverse aborted — screen stays black, re-mute audio
-			audioHandler.OnTransitionAbort()
+			audioHandler.OnTransitionAbort(audioToken)
 			audioHandler.SetProgramMute(true)
 		} else {
 			audioHandler.OnTransitionComplete()
@@ -3559,6 +3582,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	var audioCut audioCutHandler
 	var abortEngine *transition.Engine
 	var abortAudioHandler audioTransitionHandler
+	var abortAudioToken uint64
 	changed := false
 
 	s.configMu.Lock()
@@ -3572,6 +3596,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		if s.state.isInTransition() {
 			abortEngine = s.transEngine
 			abortAudioHandler = s.audioTransition
+			abortAudioToken = s.audioTransToken
 			s.transEngine = nil
 			s.transitionState(StateIdle)
 			// Allow videoProcessingLoop to resume — engine.Stop() never
@@ -3621,7 +3646,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		abortEngine.Stop()
 		s.log.Warn("transition aborted", "reason", "cut override")
 		if abortAudioHandler != nil {
-			abortAudioHandler.OnTransitionAbort()
+			abortAudioHandler.OnTransitionAbort(abortAudioToken)
 		}
 	}
 

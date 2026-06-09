@@ -24,6 +24,7 @@ using CommandHandler = std::function<void(const ControlCommand&)>;
 
 class ControlSocket {
 public:
+    // Takes ownership of |listen_fd|; Stop() shuts it down and closes it.
     ControlSocket(int listen_fd, CommandHandler handler);
     ~ControlSocket();
 
@@ -39,13 +40,25 @@ public:
 private:
     void readLoop();
 
-    int listen_fd_;
+    // Listening socket, owned by this class. Stop() retires it (exchange to
+    // -1) and close()s it — closing is what actually wakes a parked accept()
+    // on macOS, where shutdown() on a listening AF_UNIX socket fails with
+    // ENOTCONN and does not unblock accept(). Atomic because the reader
+    // thread reads it while Stop() retires it on another thread.
+    std::atomic<int> listen_fd_;
     // Shared across the reader thread (accept/read), SendResponse callers,
     // and Stop(); atomic so those accesses are not a data race. The fd is
     // only close()d by Stop() after the reader thread has been joined, so no
     // thread can still be using the descriptor when its number is released
     // for kernel reuse.
     std::atomic<int> conn_fd_{-1};
+    // Set by SendResponse when a write fails partway through a message: a
+    // truncated response prefix may be left on the wire, and writing anything
+    // further would concatenate onto it and desynchronize the
+    // newline-delimited JSON stream. Once set, SendResponse silently drops
+    // all further responses. The fd itself stays open (the reader thread may
+    // still be blocked on it); Stop() closes it after the join.
+    std::atomic<bool> conn_failed_{false};
     CommandHandler handler_;
     std::thread thread_;
     std::atomic<bool> running_{false};

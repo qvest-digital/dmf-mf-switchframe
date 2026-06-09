@@ -558,9 +558,7 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, vide
 		// and recycle the buffer while lastRawVideo still aliases it, and
 		// Pipeline.Run's MakeWritable would see refs==1 and mutate the
 		// retained freeze-repeat frame in place.
-		cp := *newest
-		cp.Ref()
-		return &cp
+		return borrowRawVideoRef(newest)
 	}
 
 	// No fresh frame — freeze-repeat path.
@@ -588,9 +586,7 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, vide
 
 		// Freeze-repeat: use last delivered frame. The copy takes its own
 		// reference (see fresh-frame path above).
-		cp := *ss.lastRawVideo
-		cp.Ref()
-		return &cp
+		return borrowRawVideoRef(ss.lastRawVideo)
 	}
 
 	// No last frame at all — return broadcast black.
@@ -600,6 +596,33 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, vide
 		w, h = pf.Width, pf.Height
 	}
 	return s.makeBroadcastBlack(w, h, videoPTS)
+}
+
+// borrowRawVideoRef returns a value copy of a frame retained by frame_sync
+// (ring newest / lastRawVideo). The caller owns the copy and must release it
+// exactly once (directly via ReleaseYUV, through normalizeResolution's scale
+// path, or by transferring ownership, e.g. to lastEncodedFrame).
+//
+// Managed frames (refs != nil): the copy shares the refs pointer and takes
+// its own reference, so a caller-side ReleaseYUV merely drops that reference
+// while lastRawVideo keeps the buffer alive, and MakeWritable sees refs > 1
+// and copies before any in-place mutation.
+//
+// Unmanaged frames (refs == nil): Ref() is a no-op while ReleaseYUV frees
+// immediately (see the invariant on ProcessingFrame.Ref), so a caller-side
+// release of the copy would return the pool buffer while lastRawVideo still
+// aliases it — use-after-release now, double release when lastRawVideo is
+// replaced. Detach the copy from the pool so frame_sync remains the single
+// owner; the caller's ReleaseYUV then only nils the copy's Data field.
+// Producers should ingest pool-backed frames as managed (SetRefs(1)); this
+// guard keeps any remaining unmanaged producer safe rather than fast.
+func borrowRawVideoRef(src *ProcessingFrame) *ProcessingFrame {
+	cp := *src
+	if cp.refs == nil {
+		cp.pool = nil
+	}
+	cp.Ref()
+	return &cp
 }
 
 // programSourceAtomic reads the program source lock-free via hotState.

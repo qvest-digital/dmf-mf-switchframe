@@ -183,10 +183,22 @@ func pqOETF(y float32) float32 {
 	return float32(math.Pow(num/den, pqM2))
 }
 
-// reinhardToneMap compresses HDR linear light for SDR display using
-// Reinhard tone mapping: L' = L / (1 + L).
-func reinhardToneMap(l float32) float32 {
-	return l / (1.0 + l)
+// kneeToneMap is a white-point-preserving tone map for HDR downconversions:
+// linear light at or below the destination reference level (1.0) passes
+// through unchanged, and the headroom above it is compressed to the
+// reference level — a hard knee at 1.0, equivalent to the direct
+// luminance mapping with clipping described in ITU-R BT.2408.
+//
+// This keeps f(1.0) == 1.0 exactly, so reference white survives a
+// round trip through PQ (plain Reinhard L/(1+L) would render reference
+// white at ~71% signal), it is monotonic, and its output never exceeds
+// 1.0 for any input — including 10,000-nit PQ peak — so the destination
+// OETF is never fed out-of-range linear light.
+func kneeToneMap(l float32) float32 {
+	if l < 1.0 {
+		return l
+	}
+	return 1.0
 }
 
 // Luminance normalization for PQ conversions.
@@ -211,10 +223,12 @@ func sdrLinearToPQLinear(l float32) float32 {
 }
 
 // pqLinearToSDRLinear rescales absolute PQ linear light to display-relative
-// SDR linear light (1.0 = reference white), then Reinhard tone-maps the
-// above-white HDR headroom into the SDR range.
+// SDR linear light (1.0 = reference white), then applies a hard knee at
+// reference white: content at or below 203 nits maps linearly (so SDR
+// reference white renders at full SDR signal and sdr→pq→pq→sdr round trips
+// are identity), and brighter HDR highlights clip to SDR white.
 func pqLinearToSDRLinear(l float32) float32 {
-	return reinhardToneMap(l * (pqPeakNits / sdrRefWhiteNits))
+	return kneeToneMap(l * (pqPeakNits / sdrRefWhiteNits))
 }
 
 // hlgLinearToPQLinear rescales HLG-relative linear light (1.0 = 1,000-nit
@@ -224,10 +238,12 @@ func hlgLinearToPQLinear(l float32) float32 {
 }
 
 // pqLinearToHLGLinear rescales absolute PQ linear light to HLG-relative
-// linear light (1.0 = 1,000-nit nominal peak), Reinhard tone-mapping
-// brighter-than-peak content into range.
+// linear light (1.0 = 1,000-nit nominal peak), applying a hard knee at the
+// nominal peak: content at or below 1,000 nits maps linearly (so
+// hlg→pq→pq→hlg round trips are identity) and brighter-than-peak content
+// clips to the HLG peak.
 func pqLinearToHLGLinear(l float32) float32 {
-	return reinhardToneMap(l * (pqPeakNits / hlgPeakNits))
+	return kneeToneMap(l * (pqPeakNits / hlgPeakNits))
 }
 
 // GenerateHDRLook creates a 3D LUT that converts between color spaces by

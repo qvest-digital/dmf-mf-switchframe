@@ -367,9 +367,8 @@ TEST(FrameSocket_DeliversFrameThroughWriterThread) {
     ASSERT_EQ(hdr.height, uint16_t(2));
     ASSERT_EQ(msg[protocol::kFrameHeaderSize], uint8_t(0x7E));  // B of pixel 0
 
-    fs.Close();
+    fs.Close();  // also closes the listener fd, which FrameSocket owns
     close(client_fd);
-    close(listen_fd);
     unlink(path.c_str());
 }
 
@@ -425,11 +424,11 @@ TEST(FrameSocket_SendFrameDoesNotBlockUnderBackpressure) {
     sender.join();
     ASSERT_TRUE(finished);  // would be false (hung) before the fix
 
-    // Tear down: closing the socket unblocks the drainer's read().
+    // Tear down: closing the socket unblocks the drainer's read(). Close()
+    // also closes the listener fd, which FrameSocket owns.
     fs.Close();
     close(client_fd);
     drainer.join();
-    close(listen_fd);
     unlink(path.c_str());
 }
 
@@ -495,8 +494,8 @@ TEST(FrameSocket_CoalescesStaleFramesPerBrowser) {
     ASSERT_TRUE(received < kFrames);
     ASSERT_EQ(seen_last, last_marker);
 
+    // fs.Close() (in the closer thread) already closed the listener fd.
     close(client_fd);
-    close(listen_fd);
     unlink(path.c_str());
 }
 
@@ -508,8 +507,10 @@ TEST(FrameSocket_CoalescesStaleFramesPerBrowser) {
 // shutdown and races the writer_ std::thread object itself.
 //
 // Deterministic interleaving: the client connection is queued in the listener
-// backlog BEFORE Close() runs, so the subsequent Accept() call returns a real
-// connection even though Close has fully completed.
+// backlog BEFORE Close() runs. Today Close() also retires/closes the listener
+// so Accept() bails out before even calling accept(); if it ever does race
+// through to a successful accept(), the stop_ check must still drop the
+// connection.
 TEST(FrameSocket_AcceptAfterCloseDoesNotResurrect) {
     std::string path = tmp_socket_path();
     int listen_fd = create_listener(path);
@@ -531,8 +532,59 @@ TEST(FrameSocket_AcceptAfterCloseDoesNotResurrect) {
     uint8_t px[4] = {0, 0, 0, 0xFF};
     ASSERT_TRUE(!fs.SendFrame(0, 1, 1, px, sizeof(px)));
 
+    // fs.Close() already closed the listener fd it owns.
     close(client_fd);
-    close(listen_fd);
+    unlink(path.c_str());
+}
+
+// Regression test for the Darwin shutdown hang: if the Go peer NEVER connects
+// the frame socket, the Accept() thread sits parked in accept() forever.
+// shutdown() on a listening AF_UNIX socket does not wake accept() on macOS
+// (it fails with ENOTCONN) — Close() must close() the listener so the parked
+// accept() returns and the thread can be joined. Before the fix, Close()
+// returned but the accept thread never did, and main's join hung forever.
+TEST(FrameSocket_CloseUnblocksAcceptWhenNoClientEverConnects) {
+    std::string path = tmp_socket_path();
+    int listen_fd = create_listener(path);
+    ASSERT_TRUE(listen_fd >= 0);
+
+    // Heap-allocate so that on failure (hang) we can leak the object instead
+    // of running a destructor that would also hang the whole test binary.
+    auto* fs = new FrameSocket(listen_fd);
+
+    std::atomic<bool> accept_returned{false};
+    std::thread accepter([fs, &accept_returned]() {
+        fs->Accept();  // no client ever connects
+        accept_returned.store(true);
+    });
+
+    // Give the accept thread time to park in accept().
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    std::atomic<bool> closed{false};
+    std::thread closer([fs, &closed]() {
+        fs->Close();
+        closed.store(true);
+    });
+
+    // Watchdog: both Close() and the parked Accept() must finish promptly.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while ((!closed.load() || !accept_returned.load()) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    bool ok = closed.load() && accept_returned.load();
+    if (!ok) {
+        // Hung (the pre-fix Darwin behavior): detach the stuck threads and
+        // intentionally leak fs so the test binary itself can keep running.
+        accepter.detach();
+        closer.detach();
+        ASSERT_TRUE(ok);  // fail with a clear assertion
+    }
+    accepter.join();
+    closer.join();
+    delete fs;
     unlink(path.c_str());
 }
 

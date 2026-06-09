@@ -30,6 +30,13 @@ type GPUFrame struct {
 
 	refs atomic.Int32 // reference counting
 	pool *FramePool   // return-to-pool on last release
+
+	// releaseFn, when non-nil, is invoked exactly once when the refcount
+	// reaches zero, instead of returning the frame to a pool or cudaFree'ing
+	// DevPtr. Used for externally managed memory such as CUDA IPC imports,
+	// which must be unmapped with cuIpcCloseMemHandle (not cudaFree) and only
+	// after the last reader has released its reference.
+	releaseFn func()
 }
 
 // Ref increments the reference count.
@@ -54,7 +61,12 @@ func (f *GPUFrame) Release() {
 			"refs", new)
 		return
 	}
-	if f.pool != nil {
+	if f.releaseFn != nil {
+		fn := f.releaseFn
+		f.releaseFn = nil
+		f.DevPtr = 0
+		fn()
+	} else if f.pool != nil {
 		f.pool.release(f)
 	} else if f.DevPtr != 0 {
 		C.cudaFree(unsafe.Pointer(uintptr(f.DevPtr)))

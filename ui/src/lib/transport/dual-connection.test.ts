@@ -1365,5 +1365,67 @@ describe('DualConnectionManager', () => {
 			const instanceB = MockedConnectionManager.mock.results[1].value;
 			expect(instanceB.start).not.toHaveBeenCalled();
 		});
+
+		it('escalates and flushes a deferred engine when every STARTED engine has failed', async () => {
+			const onInitialLoadError = vi.fn();
+			const mgr = new DualConnectionManager(makeSingleConfig({ onInitialLoadError }));
+			await mgr.start();
+
+			// Engine B is discovered while A is still loading — deferred, so it
+			// never starts and therefore can never fail.
+			mgr.addEngine('B', 'https://engine-b.example.com');
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			expect(instanceB.start).not.toHaveBeenCalled();
+
+			// A — the only STARTED engine — fails its initial load. Escalation
+			// must fire (it drives the 401 token prompt); comparing the failure
+			// count against managers.size would make it unreachable while B
+			// sits in the pending queue.
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA._config.onInitialLoadError('401 unauthorized', new Error('401 unauthorized'));
+
+			expect(onInitialLoadError).toHaveBeenCalledWith('401 unauthorized', expect.any(Error));
+			// Waiting for A's state is moot when A can't load — the deferred
+			// engine is flushed as the best remaining hope.
+			expect(instanceB.start).toHaveBeenCalledOnce();
+		});
+
+		it('clears stale failures on start() without stop() (401 token-resubmit flow)', async () => {
+			const onInitialLoadError = vi.fn();
+			const mgr = new DualConnectionManager(makeDualConfig({ onInitialLoadError }));
+			await mgr.start();
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			instanceA._config.onInitialLoadError('401 A', new Error('401 A'));
+			instanceB._config.onInitialLoadError('401 B', new Error('401 B'));
+			expect(onInitialLoadError).toHaveBeenCalledOnce();
+			onInitialLoadError.mockClear();
+
+			// The documented token-resubmit flow calls start() WITHOUT stop().
+			await mgr.start();
+
+			// Only A fails after the restart — B's pre-restart failure is stale
+			// and must not count toward "all engines failed".
+			instanceA._config.onInitialLoadError('still 401 A', new Error('still 401 A'));
+			expect(onInitialLoadError).not.toHaveBeenCalled();
+		});
+
+		it('start() without stop() does not let stale failures defeat deferred-start gating', async () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			await mgr.start();
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA._config.onInitialLoadError('401', new Error('401'));
+
+			// Restart without stop() (token resubmit) — A is loading again.
+			await mgr.start();
+
+			// Engine B discovered while A is loading: A's pre-restart failure
+			// is stale, so B must be deferred, not started immediately.
+			mgr.addEngine('B', 'https://engine-b.example.com');
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			expect(instanceB.start).not.toHaveBeenCalled();
+		});
 	});
 });

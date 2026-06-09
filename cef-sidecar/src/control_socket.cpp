@@ -43,7 +43,7 @@ void ControlSocket::Start() {
 void ControlSocket::SendResponse(const std::string& json_line) {
     std::lock_guard<std::mutex> lock(write_mutex_);
     int fd = conn_fd_.load();
-    if (fd < 0) {
+    if (fd < 0 || conn_failed_.load()) {
         return;
     }
 
@@ -53,8 +53,23 @@ void ControlSocket::SendResponse(const std::string& json_line) {
     while (remaining > 0) {
         ssize_t n = write(fd, data, remaining);
         if (n <= 0) {
+            if (n < 0 && errno == EINTR) {
+                // Interrupted by a signal before anything was written;
+                // retry — the stream is still consistent.
+                continue;
+            }
             std::cerr << "ControlSocket: write failed: " << strerror(errno)
                       << std::endl;
+            // The write may have failed partway through the message, leaving
+            // a truncated response prefix on the wire. Any later response
+            // would concatenate onto it and desynchronize the newline-
+            // delimited JSON stream, so mark the connection dead: all further
+            // SendResponse calls become silent no-ops (callers tolerate this;
+            // the peer is gone or broken anyway). shutdown() — not close() —
+            // tears the connection down while keeping the fd valid for the
+            // reader thread; Stop() closes it after the join.
+            conn_failed_.store(true);
+            shutdown(fd, SHUT_RDWR);
             return;
         }
         data += n;
@@ -75,9 +90,20 @@ void ControlSocket::Stop() {
         shutdown(conn, SHUT_RDWR);
     }
 
-    // Shut down the listener to unblock accept().
-    if (listen_fd_ >= 0) {
-        shutdown(listen_fd_, SHUT_RDWR);
+    // Tear down the listener to unblock a reader parked in accept().
+    // shutdown() alone is NOT enough: on macOS, shutdown() on a listening
+    // AF_UNIX socket fails with ENOTCONN and does not wake a blocked
+    // accept() — only close() does. Keep the shutdown() first for platforms
+    // where it does wake accept() (e.g. Linux), then close the fd. running_
+    // is already false, so the woken readLoop treats the failure as a clean
+    // shutdown rather than logging an error. The usual close-to-wake fd-reuse
+    // hazard does not apply: at shutdown the listener is used only by the
+    // parked accept() and this class creates no new fds that could recycle
+    // the number before readLoop observes running_ == false.
+    int lfd = listen_fd_.exchange(-1);
+    if (lfd >= 0) {
+        shutdown(lfd, SHUT_RDWR);
+        close(lfd);
     }
 
     if (thread_.joinable()) {
@@ -97,8 +123,21 @@ void ControlSocket::Stop() {
 
 void ControlSocket::readLoop() {
     // Accept one connection from the Go server.
-    int fd = accept(listen_fd_, nullptr, nullptr);
-    if (fd < 0) {
+    int fd = -1;
+    while (true) {
+        int lfd = listen_fd_.load();
+        if (lfd < 0) {
+            // Stop() already retired the listener: clean shutdown.
+            return;
+        }
+        fd = accept(lfd, nullptr, nullptr);
+        if (fd >= 0) {
+            break;
+        }
+        if (errno == EINTR) {
+            // Interrupted by a signal; the listener is still fine.
+            continue;
+        }
         if (running_) {
             std::cerr << "ControlSocket: accept() failed: " << strerror(errno)
                       << std::endl;
@@ -120,6 +159,11 @@ void ControlSocket::readLoop() {
     while (running_) {
         ssize_t n = read(fd, chunk, sizeof(chunk));
         if (n <= 0) {
+            if (n < 0 && errno == EINTR) {
+                // Interrupted by a signal — NOT a dead connection. Treating
+                // this as fatal would permanently kill the control channel.
+                continue;
+            }
             if (n < 0 && running_) {
                 std::cerr << "ControlSocket: read() failed: "
                           << strerror(errno) << std::endl;

@@ -1,6 +1,7 @@
 package scte35
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -328,6 +329,140 @@ func TestAutoReturn_AbusiveDurations_ScheduledPTSStaysIn33Bit(t *testing.T) {
 			require.GreaterOrEqual(t, tsSched, int64(0))
 			require.LessOrEqual(t, tsSched, ptsMask,
 				"time_signal scheduledReturnPTS must stay within the 33-bit PTS range")
+		})
+	}
+}
+
+// TestAutoReturn_PTSAdjustmentIncludedInAnchor verifies that auto-return
+// scheduling anchors at the *effective* splice PTS, i.e. splice_time +
+// pts_adjustment (mod 2^33), not splice_time alone. Passthrough cues from
+// upstream may carry a non-zero pts_adjustment; anchoring at the raw
+// splice_time would fire the auto cue-in pts_adjustment ticks early.
+func TestAutoReturn_PTSAdjustmentIncludedInAnchor(t *testing.T) {
+	t.Parallel()
+
+	const (
+		splicePTS = int64(1_000_000)
+		adjust    = uint64(450_000) // 5s of pts_adjustment
+	)
+	breakDur := 2 * time.Second
+	durTicks := durationToTicksSat(breakDur)
+	wantSched := maskPTS33(splicePTS + int64(adjust) + durTicks)
+	wantAnchor := maskPTS33(splicePTS + int64(adjust))
+
+	t.Run("spliceInsert", func(t *testing.T) {
+		t.Parallel()
+
+		ptsFn := func() int64 { return splicePTS }
+		inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, func([]byte) {}, ptsFn)
+		defer inj.Close()
+
+		stPTS := splicePTS
+		msg := &CueMessage{
+			CommandType:   CommandSpliceInsert,
+			EventID:       501,
+			IsOut:         true,
+			AutoReturn:    true,
+			BreakDuration: &breakDur,
+			SpliceTimePTS: &stPTS,
+			PTSAdjustment: adjust,
+			Timing:        "scheduled",
+		}
+		id, err := inj.InjectCue(msg)
+		require.NoError(t, err)
+
+		inj.mu.Lock()
+		ae, ok := inj.activeEvents[id]
+		require.True(t, ok)
+		anchor := ae.anchorPTS
+		sched := ae.scheduledReturnPTS
+		inj.mu.Unlock()
+
+		require.Equal(t, wantAnchor, anchor,
+			"anchorPTS must include pts_adjustment (splice_time + pts_adjustment mod 2^33)")
+		require.Equal(t, wantSched, sched,
+			"scheduledReturnPTS must include pts_adjustment; anchoring at raw splice_time fires the cue-in early")
+	})
+
+	t.Run("timeSignal", func(t *testing.T) {
+		t.Parallel()
+
+		ptsFn := func() int64 { return splicePTS }
+		inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, func([]byte) {}, ptsFn)
+		defer inj.Close()
+
+		stPTS := splicePTS
+		ticks := uint64(durTicks)
+		msg := &CueMessage{
+			CommandType:   CommandTimeSignal,
+			SpliceTimePTS: &stPTS,
+			PTSAdjustment: adjust,
+			Timing:        "scheduled",
+			Descriptors: []SegmentationDescriptor{{
+				SegEventID:       601,
+				SegmentationType: 0x34,
+				DurationTicks:    &ticks,
+			}},
+		}
+		id, err := inj.InjectCue(msg)
+		require.NoError(t, err)
+
+		inj.mu.Lock()
+		ae, ok := inj.activeEvents[id]
+		require.True(t, ok)
+		anchor := ae.anchorPTS
+		sched := ae.scheduledReturnPTS
+		inj.mu.Unlock()
+
+		require.Equal(t, wantAnchor, anchor,
+			"time_signal anchorPTS must include pts_adjustment")
+		require.Equal(t, wantSched, sched,
+			"time_signal scheduledReturnPTS must include pts_adjustment")
+	})
+}
+
+// TestScheduleCue_HugePreRollSaturates verifies that an abusive preRollMs
+// (large enough that the ms→ns multiply alone would overflow int64 and wrap
+// negative) saturates the splice PTS instead of degenerating to an immediate
+// splice. Reachable via unbounded callers (e.g. macro parameters).
+func TestScheduleCue_HugePreRollSaturates(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		preRollMs int64
+	}{
+		// Just past the ms→ns overflow threshold (~9.22e12 ms).
+		{"justPastOverflow", math.MaxInt64/int64(time.Millisecond) + 1},
+		{"maxInt64", math.MaxInt64},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			anchor := int64(900_000)
+			ptsFn := func() int64 { return anchor }
+			inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, func([]byte) {}, ptsFn)
+			defer inj.Close()
+
+			// autoReturn=false: the saturated anchor sits at the edge of the
+			// half-PTS-range, so anchor+breakDuration would exceed ptsReached's
+			// unambiguous window (a separate, documented maxPTSTicks limit).
+			// This test isolates the pre-roll saturation itself.
+			msg := NewSpliceInsert(701, 5*time.Second, true, false)
+			id, err := inj.ScheduleCue(msg, tc.preRollMs)
+			require.NoError(t, err)
+
+			require.NotNil(t, msg.SpliceTimePTS)
+			// The pre-roll must saturate at maxPTSTicks, not wrap negative and
+			// clamp to 0 (which would schedule an immediate splice at anchor).
+			wantPTS := maskPTS33(anchor + maxPTSTicks)
+			require.Equal(t, wantPTS, *msg.SpliceTimePTS,
+				"huge preRollMs must saturate the splice PTS, not fire immediately")
+			require.NotEqual(t, anchor, *msg.SpliceTimePTS,
+				"splice PTS must not collapse to the current PTS (immediate splice)")
+			require.Contains(t, inj.ActiveEventIDs(), id,
+				"scheduled cue-out should be tracked as an active event")
 		})
 	}
 }
