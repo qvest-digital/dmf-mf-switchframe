@@ -356,10 +356,11 @@ func TestPodBoard_Fire(t *testing.T) {
 		return p.State == PodRejoined
 	})
 
-	// onBreakEnd should have been called.
-	if breakEnded.Load() < 1 {
-		t.Error("onBreakEnd should have been called")
-	}
+	// onBreakEnd should have been called. The rejoined state becomes visible
+	// before completePod invokes the callback, so poll rather than assert.
+	waitFor(t, time.Second, func() bool {
+		return breakEnded.Load() >= 1
+	})
 
 	// Should have SCTE-35 cue-in.
 	waitFor(t, time.Second, func() bool {
