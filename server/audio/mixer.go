@@ -268,7 +268,7 @@ func NewMixer(config MixerConfig) *Mixer {
 	if !config.ClockDriven {
 		m.stopTicker = make(chan struct{})
 		m.tickerWg.Add(1)
-		go m.outputTicker()
+		go m.outputTicker(time.Now())
 	}
 	return m
 }

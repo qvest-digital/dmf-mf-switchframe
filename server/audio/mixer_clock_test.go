@@ -255,6 +255,7 @@ func TestClockDrivenMixer_TickerStartedByNewMixer(t *testing.T) {
 	var outputCount int
 
 	enc := &mockTickEncoder{}
+	start := time.Now()
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
@@ -273,14 +274,23 @@ func TestClockDrivenMixer_TickerStartedByNewMixer(t *testing.T) {
 	// load while still bounding the test wall-clock.
 	time.Sleep(300 * time.Millisecond)
 	_ = m.Close()
+	elapsed := time.Since(start)
 
 	mu.Lock()
 	count := outputCount
 	mu.Unlock()
 
-	// The ticker should have produced frames even without any IngestPCM/IngestFrame calls
+	// The ticker should have produced frames even without any IngestPCM/IngestFrame
+	// calls. Bound the count against measured elapsed time, not the nominal 300ms
+	// sleep: on an overloaded CI runner the sleep (and Close) can take several
+	// times longer, and the deadline-tracking ticker correctly produces one frame
+	// per ~21.3ms of real elapsed time.
+	interval := time.Second * 1024 / 48000
+	expected := int(elapsed / interval)
 	assert.GreaterOrEqual(t, count, 2, "outputTicker should produce frames autonomously")
-	assert.LessOrEqual(t, count, 30, "should not produce excessive frames in 300ms")
+	assert.LessOrEqual(t, count, expected+3,
+		"should not produce more than one frame per ~21.3ms elapsed (elapsed %v ⇒ ~%d, got %d)",
+		elapsed, expected, count)
 }
 
 // stubDecoder is a mock AAC decoder that always returns the same PCM.

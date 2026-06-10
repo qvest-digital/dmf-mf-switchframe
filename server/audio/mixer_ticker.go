@@ -12,8 +12,10 @@ import (
 // This goroutine is the sole producer of mixed audio output in the new
 // clock-driven architecture. It reads from per-channel ring buffers
 // (populated by the ingest path) and produces output at a fixed cadence
-// regardless of when source frames arrive.
-func (m *Mixer) outputTicker() {
+// regardless of when source frames arrive. start is the spawn time, taken
+// by the caller so the frame deadline is anchored before any goroutine
+// scheduling delay.
+func (m *Mixer) outputTicker(start time.Time) {
 	defer m.tickerWg.Done()
 
 	interval := time.Duration(float64(time.Second) * 1024.0 / float64(m.sampleRate))
@@ -27,10 +29,17 @@ func (m *Mixer) outputTicker() {
 	// be ~21.3ms of program audio permanently dropped. Tracking the frame
 	// deadline lets a late tick produce the frames it missed (the backlog is
 	// sitting in the per-channel ring buffers).
-	next := time.Now().Add(interval)
+	next := start.Add(interval)
 	for {
 		select {
 		case <-m.stopTicker:
+			// Settle the deadline accounting: if the goroutine was starved
+			// right before shutdown, a backlog of owed frames is pending that
+			// will never be produced. Count it as dropped so produced+dropped
+			// always reflects elapsed wall time.
+			if frames, dropped, _ := tickerCatchUp(time.Now(), next, interval); frames+dropped > 0 {
+				m.tickerFramesDropped.Add(int64(frames + dropped))
+			}
 			return
 		case <-ticker.C:
 			var frames, dropped int
