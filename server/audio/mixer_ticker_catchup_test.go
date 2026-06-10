@@ -20,34 +20,39 @@ func TestTickerCatchUp(t *testing.T) {
 	base := time.Unix(1000, 0)
 
 	t.Run("on time produces one frame", func(t *testing.T) {
-		frames, next := tickerCatchUp(base, base, interval)
+		frames, dropped, next := tickerCatchUp(base, base, interval)
 		assert.Equal(t, 1, frames)
+		assert.Equal(t, 0, dropped)
 		assert.Equal(t, base.Add(interval), next)
 	})
 
 	t.Run("buffered early tick produces nothing", func(t *testing.T) {
 		// time.Ticker buffers one tick; it can be delivered before the next
 		// frame deadline after a catch-up burst. No frame is due.
-		frames, next := tickerCatchUp(base, base.Add(5*time.Millisecond), interval)
+		frames, dropped, next := tickerCatchUp(base, base.Add(5*time.Millisecond), interval)
 		assert.Equal(t, 0, frames)
+		assert.Equal(t, 0, dropped)
 		assert.Equal(t, base.Add(5*time.Millisecond), next)
 	})
 
 	t.Run("late tick catches up missed frames", func(t *testing.T) {
 		// Fire 2.5 intervals past the deadline: the deadline frame plus the
 		// two whole intervals that elapsed are due (3 frames total).
-		frames, next := tickerCatchUp(base.Add(50*time.Millisecond), base, interval)
+		frames, dropped, next := tickerCatchUp(base.Add(50*time.Millisecond), base, interval)
 		assert.Equal(t, 3, frames)
+		assert.Equal(t, 0, dropped)
 		assert.Equal(t, base.Add(3*interval), next)
 		assert.True(t, next.After(base.Add(50*time.Millisecond)), "new deadline must be in the future")
 	})
 
 	t.Run("long stall is bounded and resyncs", func(t *testing.T) {
 		// e.g. system suspend: don't blast hundreds of frames; produce a
-		// bounded burst and realign the deadline to the present.
+		// bounded burst, report the excess as dropped, and realign the
+		// deadline to the present.
 		now := base.Add(1000 * interval)
-		frames, next := tickerCatchUp(now, base, interval)
+		frames, dropped, next := tickerCatchUp(now, base, interval)
 		assert.Equal(t, maxTickerCatchUpFrames, frames)
+		assert.Equal(t, 1001-maxTickerCatchUpFrames, dropped)
 		assert.Equal(t, now.Add(interval), next)
 	})
 }
@@ -96,15 +101,21 @@ func TestOutputTicker_CatchesUpAfterStall(t *testing.T) {
 	count := outputCount
 	mu.Unlock()
 
-	// One output frame is due every ~21.3ms of elapsed wall time. Allow
-	// generous slack for shared CI runners, but require the ~9 frames hidden
-	// behind the stall to have been recovered: without catch-up the deficit
-	// would be at least stall/interval ≈ 9 frames.
+	// One output frame is due every ~21.3ms of elapsed wall time. Frames a
+	// stall hides are either produced by catch-up or — when a stall exceeds
+	// the burst cap (possible on a badly overloaded CI runner) — explicitly
+	// counted as dropped. The pre-fix bug this guards against (time.Ticker
+	// silently coalescing missed ticks) loses frames with NO accounting, so
+	// requiring produced+dropped to track wall time still catches it while
+	// staying immune to runner scheduling stalls.
+	dropped := int(m.tickerFramesDropped.Load())
+	accounted := count + dropped
 	interval := time.Second * 1024 / 48000
 	expected := int(elapsed / interval)
-	assert.GreaterOrEqual(t, count, expected-5,
-		"output frames must track elapsed time (expected ~%d, got %d): missed ticks were not caught up",
-		expected, count)
-	assert.LessOrEqual(t, count, expected+3,
-		"catch-up must not overproduce frames (expected ~%d, got %d)", expected, count)
+	assert.GreaterOrEqual(t, accounted, expected-5,
+		"produced+dropped frames must track elapsed time (expected ~%d, produced %d, dropped %d): missed ticks were not caught up",
+		expected, count, dropped)
+	assert.LessOrEqual(t, accounted, expected+3,
+		"catch-up must not overproduce frames (expected ~%d, produced %d, dropped %d)",
+		expected, count, dropped)
 }

@@ -322,10 +322,7 @@ func TestWorkerRunShutdownUnwindsRecvGoroutine(t *testing.T) {
 	// The Run goroutine plus the internal recv goroutine must both have exited.
 	// Poll instead of asserting once, since goroutine teardown is asynchronous.
 	deadline := time.After(5 * time.Second)
-	for {
-		if runtime.NumGoroutine() <= baseline {
-			break
-		}
+	for runtime.NumGoroutine() > baseline {
 		select {
 		case <-deadline:
 			t.Fatalf("recv goroutine did not unwind: NumGoroutine=%d, baseline=%d",

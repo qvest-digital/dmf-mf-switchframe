@@ -325,6 +325,7 @@ func TestOutputTicker_ProducesFramesAtCadence(t *testing.T) {
 	var outputCount int
 
 	enc := &mockTickEncoder{}
+	start := time.Now()
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
@@ -340,20 +341,27 @@ func TestOutputTicker_ProducesFramesAtCadence(t *testing.T) {
 	// NewMixer already starts the outputTicker — no need to start a second one.
 
 	// Let it run for ~300ms — should produce ~14 frames at ~21.3ms cadence.
-	// 300ms gives shared CI runners enough slack against goroutine scheduling.
 	time.Sleep(300 * time.Millisecond)
 
 	// Stop the ticker
 	_ = m.Close()
+	elapsed := time.Since(start)
 
 	mu.Lock()
 	count := outputCount
 	mu.Unlock()
 
-	// At 48kHz with 1024-sample frames, interval is ~21.3ms.
-	// In 300ms we expect roughly 14 frames; allow slack on both sides.
+	// At 48kHz with 1024-sample frames, one frame is due every ~21.3ms. Bound
+	// the count against measured elapsed time, not the nominal 300ms sleep: on
+	// an overloaded CI runner the sleep (and Close) can take several times
+	// longer, and the deadline-tracking ticker correctly produces one frame
+	// per interval of real elapsed time.
+	interval := time.Second * 1024 / 48000
+	expected := int(elapsed / interval)
 	assert.GreaterOrEqual(t, count, 2, "should produce at least 2 frames")
-	assert.LessOrEqual(t, count, 30, "should not produce more than 30 frames in 300ms")
+	assert.LessOrEqual(t, count, expected+3,
+		"should not produce more than one frame per ~21.3ms elapsed (elapsed %v ⇒ ~%d, got %d)",
+		elapsed, expected, count)
 }
 
 func TestTick_TransitionGainInterpolation(t *testing.T) {

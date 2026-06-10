@@ -225,6 +225,10 @@ type Mixer struct {
 	decodeErrors atomic.Int64
 	encodeErrors atomic.Int64
 
+	// Output frames permanently dropped because a ticker stall exceeded the
+	// catch-up cap (each one is ~21.3ms of program audio lost).
+	tickerFramesDropped atomic.Int64
+
 	// Ring buffer latency: depth of the program source's ring buffer in
 	// samples at the moment each tick reads from it. Converted to 90kHz
 	// ticks for lip-sync offset. Updated every tick.

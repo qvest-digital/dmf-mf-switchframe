@@ -33,8 +33,11 @@ func (m *Mixer) outputTicker() {
 		case <-m.stopTicker:
 			return
 		case <-ticker.C:
-			var frames int
-			frames, next = tickerCatchUp(time.Now(), next, interval)
+			var frames, dropped int
+			frames, dropped, next = tickerCatchUp(time.Now(), next, interval)
+			if dropped > 0 {
+				m.tickerFramesDropped.Add(int64(dropped))
+			}
 			for i := 0; i < frames; i++ {
 				frame := m.tick()
 				if frame != nil {
@@ -53,20 +56,21 @@ func (m *Mixer) outputTicker() {
 const maxTickerCatchUpFrames = 24
 
 // tickerCatchUp returns how many output frames are due for a ticker fire at
-// time now given the next frame deadline, plus the updated deadline. A fire
-// at or past the deadline owes one frame per elapsed interval (minimum one);
-// a buffered tick delivered before the deadline (possible right after a
-// catch-up burst) owes none. Bursts are capped at maxTickerCatchUpFrames,
-// after which the deadline resyncs to now (e.g. system suspend).
-func tickerCatchUp(now, next time.Time, interval time.Duration) (int, time.Time) {
+// time now given the next frame deadline, how many overdue frames were
+// dropped by the burst cap, plus the updated deadline. A fire at or past the
+// deadline owes one frame per elapsed interval (minimum one); a buffered tick
+// delivered before the deadline (possible right after a catch-up burst) owes
+// none. Bursts are capped at maxTickerCatchUpFrames, after which the deadline
+// resyncs to now (e.g. system suspend) and the excess is reported as dropped.
+func tickerCatchUp(now, next time.Time, interval time.Duration) (frames, dropped int, newNext time.Time) {
 	if now.Before(next) {
-		return 0, next
+		return 0, 0, next
 	}
-	frames := 1 + int(now.Sub(next)/interval)
+	frames = 1 + int(now.Sub(next)/interval)
 	if frames > maxTickerCatchUpFrames {
-		return maxTickerCatchUpFrames, now.Add(interval)
+		return maxTickerCatchUpFrames, frames - maxTickerCatchUpFrames, now.Add(interval)
 	}
-	return frames, next.Add(time.Duration(frames) * interval)
+	return frames, 0, next.Add(time.Duration(frames) * interval)
 }
 
 // tick produces one output frame by reading from all active channel ring buffers.

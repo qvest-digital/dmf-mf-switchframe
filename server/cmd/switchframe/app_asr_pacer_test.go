@@ -125,7 +125,7 @@ func TestPacerEmitWordDoesNotHoldQueueLockAcrossManager(t *testing.T) {
 			// Must be able to take the pacer lock from inside a manager/broadcast
 			// callback — proving the pacer lock is released across this call.
 			p.mu.Lock()
-			p.mu.Unlock()
+			p.mu.Unlock() //nolint:staticcheck // SA2001: the empty critical section is the point — only reacquirability matters
 			close(acquired)
 		})
 	})

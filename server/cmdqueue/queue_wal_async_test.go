@@ -103,10 +103,10 @@ func TestEnqueue_ConcurrentSameSeqDuringFsync(t *testing.T) {
 	err1, err2 := <-res, <-res
 	var nils, dups int
 	for _, err := range []error{err1, err2} {
-		switch {
-		case err == nil:
+		switch err {
+		case nil:
 			nils++
-		case err == ErrDuplicateCommand:
+		case ErrDuplicateCommand:
 			dups++
 		default:
 			t.Fatalf("unexpected error: %v", err)

@@ -146,6 +146,7 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 		"trans_crossfade_count":  m.transCrossfades.Load(),
 		"decode_errors":          m.decodeErrors.Load(),
 		"encode_errors":          m.encodeErrors.Load(),
+		"ticker_frames_dropped":  m.tickerFramesDropped.Load(),
 		"max_inter_frame_gap_ms": maxGapMs,
 	}
 
