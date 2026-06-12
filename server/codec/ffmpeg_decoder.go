@@ -540,13 +540,6 @@ static void ffdec_capture_timecode(ffdec_t* h, AVFrame* frame) {
 	h->tc_len = n;
 }
 
-// ffdec_get_timecode returns a pointer to the S12M timecode bytes cached from
-// the most recent decoded frame, setting *out_len to their length (0 if none).
-static const uint8_t* ffdec_get_timecode(ffdec_t* h, int* out_len) {
-	*out_len = h->tc_len;
-	return h->tc_len > 0 ? h->tc_buf : NULL;
-}
-
 // ffdec_decode decodes one packet of Annex B H.264 data to packed YUV420.
 // If dst_buf is non-NULL and dst_cap >= the required size, the frame is
 // written directly into dst_buf (zero-copy to caller). Otherwise a buffer
@@ -582,6 +575,10 @@ static int ffdec_decode(ffdec_t* h, unsigned char* data, int data_len,
 	if (rc < 0) {
 		return -2; // receive failed
 	}
+
+	// Cache the source SMPTE 12M timecode now, while h->frame holds the freshly
+	// decoded frame and before any hw-transfer/unref clears its side data.
+	ffdec_capture_timecode(h, h->frame);
 
 	AVFrame* src_frame = h->frame;
 
@@ -714,6 +711,10 @@ static int ffdec_receive_only(ffdec_t* h, unsigned char* dst_buf, int dst_cap,
 	if (rc < 0) {
 		return -2;
 	}
+
+	// Cache the source SMPTE 12M timecode now, while h->frame holds the freshly
+	// decoded frame and before any hw-transfer/unref clears its side data.
+	ffdec_capture_timecode(h, h->frame);
 
 	AVFrame* src_frame = h->frame;
 
@@ -1218,12 +1219,23 @@ func (d *FFmpegDecoder) LastTimecodeBytes() []byte {
 	if d.closed {
 		return nil
 	}
-	var n C.int
-	p := C.ffdec_get_timecode(&d.handle, &n)
-	if p == nil || n == 0 {
+	// Read the cached bytes straight off the C struct fields. We must NOT hand a
+	// pointer into d.handle to cgo (e.g. via C.GoBytes): d.handle is embedded in
+	// this Go-allocated FFmpegDecoder, which also holds yuvBuf (a Go slice
+	// pointer), so cgocheck would panic on passing that allocation to C. A plain
+	// Go-side copy of the fixed-size array sidesteps the pointer-passing rules.
+	n := int(d.handle.tc_len)
+	if n <= 0 {
 		return nil
 	}
-	return C.GoBytes(unsafe.Pointer(p), C.int(n))
+	if n > len(d.handle.tc_buf) {
+		n = len(d.handle.tc_buf)
+	}
+	out := make([]byte, n)
+	for i := 0; i < n; i++ {
+		out[i] = byte(d.handle.tc_buf[i])
+	}
+	return out
 }
 
 // Close releases the decoder resources. Safe to call multiple times.

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/codec"
 )
 
@@ -61,6 +62,73 @@ func TestEncoder_TimecodePassthroughRoundTrip(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no readable pic_timing SEI with a populated timecode found in any encoded frame")
+	}
+}
+
+// TestFFmpegDecoder_SurfacesPassthroughTimecode guards the decode->capture link
+// that the proxy relies on: feedmonitor reads the source timecode via
+// codec.FFmpegDecoder.LastTimecodeBytes() after each Decode and forwards it to
+// the encoder. The round-trip test above hardcodes the timecode and never
+// touches the decoder, so it cannot catch a decoder that fails to capture the
+// S12M side data (which is exactly how passthrough silently shipped broken).
+// Here we re-encode timecode-bearing frames, then decode the wire output through
+// the real FFmpegDecoder and assert LastTimecodeBytes() surfaces 11:48:54:16.
+func TestFFmpegDecoder_SurfacesPassthroughTimecode(t *testing.T) {
+	skipWithoutEncoder(t)
+
+	const w, h = 640, 360
+	relay := &mockRelay{}
+	enc, err := NewEncoder(Config{
+		SourceKey: "tc-decode",
+		Width:     w,
+		Height:    h,
+		Bitrate:   800_000,
+		FPSNum:    30,
+		FPSDen:    1,
+		Relay:     relay,
+	})
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	tcBytes := []byte{0x01, 0x00, 0x00, 0x00, 0x11, 0x48, 0x54, 0x16} // 11:48:54:16
+	for i := 0; i < 16; i++ {
+		enc.SendWithTimecode(makeYUV420(w, h, byte(16+i)), w, h, int64(i)*3000, tcBytes)
+		time.Sleep(20 * time.Millisecond)
+	}
+	enc.Stop()
+
+	frames := relay.getVideos()
+	if len(frames) == 0 {
+		t.Fatal("no encoded frames produced")
+	}
+
+	dec, err := codec.NewFFmpegDecoder(nil)
+	if err != nil {
+		t.Fatalf("NewFFmpegDecoder: %v", err)
+	}
+	defer dec.Close()
+
+	found := false
+	for _, f := range frames {
+		if _, _, _, derr := dec.Decode(codec.AVC1ToAnnexB(f.WireData)); derr != nil {
+			continue // warmup buffering
+		}
+		tc := dec.LastTimecodeBytes()
+		if len(tc) == 0 {
+			continue
+		}
+		parsed, ok := caption.FromS12MBytes(tc)
+		if !ok {
+			continue
+		}
+		found = true
+		if parsed.Hours != 11 || parsed.Minutes != 48 || parsed.Seconds != 54 || parsed.Frames != 16 {
+			t.Errorf("decoder LastTimecodeBytes = %02d:%02d:%02d:%02d, want 11:48:54:16",
+				parsed.Hours, parsed.Minutes, parsed.Seconds, parsed.Frames)
+		}
+	}
+	if !found {
+		t.Fatal("FFmpegDecoder.LastTimecodeBytes never surfaced the source timecode (decode->capture link broken)")
 	}
 }
 
