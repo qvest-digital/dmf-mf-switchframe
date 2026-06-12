@@ -72,6 +72,7 @@ type encodeJob struct {
 	w       int
 	h       int
 	pts     int64
+	tc      []byte       // optional: raw AV_FRAME_DATA_S12M_TIMECODE side data for pic_timing SEI
 	release func([]byte) // optional: called after yuv is no longer needed
 }
 
@@ -118,6 +119,19 @@ func NewEncoder(cfg Config) (*Encoder, error) {
 // the oldest frame is drained and replaced with the new one.
 // The YUV data is deep-copied so the caller can reuse or release the buffer.
 func (e *Encoder) Send(yuv []byte, w, h int, pts int64) {
+	e.sendCopy(yuv, w, h, pts, nil)
+}
+
+// SendWithTimecode is Send plus the source's raw AV_FRAME_DATA_S12M_TIMECODE
+// side-data bytes (typically straight from codec.FFmpegDecoder.LastTimecodeBytes;
+// nil/empty = none). When present, the timecode is embedded as a pic_timing SEI
+// in the encoded output.
+func (e *Encoder) SendWithTimecode(yuv []byte, w, h int, pts int64, tc []byte) {
+	e.sendCopy(yuv, w, h, pts, tc)
+}
+
+// sendCopy is the shared deep-copy submit path for Send / SendWithTimecode.
+func (e *Encoder) sendCopy(yuv []byte, w, h int, pts int64, tc []byte) {
 	if e.stopped.Load() {
 		return
 	}
@@ -128,7 +142,14 @@ func (e *Encoder) Send(yuv []byte, w, h int, pts int64) {
 	cp := make([]byte, len(yuv))
 	copy(cp, yuv)
 
-	job := encodeJob{yuv: cp, w: w, h: h, pts: pts}
+	// Deep copy the timecode side data too (caller may reuse/overwrite it).
+	var tcCopy []byte
+	if len(tc) > 0 {
+		tcCopy = make([]byte, len(tc))
+		copy(tcCopy, tc)
+	}
+
+	job := encodeJob{yuv: cp, w: w, h: h, pts: pts, tc: tcCopy}
 
 	// Guard against channel close race with Stop().
 	defer func() { _ = recover() }()
@@ -161,6 +182,16 @@ func (e *Encoder) Send(yuv []byte, w, h int, pts int64) {
 // is called after the buffer is no longer needed (after scaling), or
 // immediately if the frame is dropped due to channel overflow.
 func (e *Encoder) SendOwned(yuv []byte, w, h int, pts int64, release func([]byte)) {
+	e.sendOwned(yuv, w, h, pts, nil, release)
+}
+
+// SendOwnedWithTimecode is SendOwned plus the source's raw S12M timecode bytes.
+func (e *Encoder) SendOwnedWithTimecode(yuv []byte, w, h int, pts int64, tc []byte, release func([]byte)) {
+	e.sendOwned(yuv, w, h, pts, tc, release)
+}
+
+// sendOwned is the shared zero-copy submit path for SendOwned / SendOwnedWithTimecode.
+func (e *Encoder) sendOwned(yuv []byte, w, h int, pts int64, tc []byte, release func([]byte)) {
 	if e.stopped.Load() {
 		if release != nil {
 			release(yuv)
@@ -170,7 +201,15 @@ func (e *Encoder) SendOwned(yuv []byte, w, h int, pts int64, release func([]byte
 
 	e.stats.FramesIn.Add(1)
 
-	job := encodeJob{yuv: yuv, w: w, h: h, pts: pts, release: release}
+	// Deep copy the timecode side data (caller may reuse/overwrite it); the YUV
+	// buffer itself is owned per the SendOwned contract.
+	var tcCopy []byte
+	if len(tc) > 0 {
+		tcCopy = make([]byte, len(tc))
+		copy(tcCopy, tc)
+	}
+
+	job := encodeJob{yuv: yuv, w: w, h: h, pts: pts, tc: tcCopy, release: release}
 
 	// Guard against channel close race with Stop().
 	defer func() {
@@ -354,6 +393,17 @@ func (e *Encoder) loop() {
 		avc1 := codec.AnnexBToAVC1(encoded)
 		if len(avc1) == 0 {
 			continue
+		}
+
+		// Replace x264's empty pic_timing SEI with one populated from the
+		// source's SMPTE timecode. ffenc_open_preview sets pic-struct=1, which
+		// makes x264 set pic_struct_present_flag in the SPS and emit an empty
+		// pic_timing SEI shell; FFmpeg's libx264 wrapper does not forward the
+		// S12M_TIMECODE side data into it, so we patch the timecode in here.
+		// No-op when the source carried no timecode (or on encoders/builds with
+		// no pic_timing SEI to replace, e.g. the OpenH264 fallback).
+		if len(job.tc) > 0 {
+			avc1 = rewriteAVC1WithTimecode(avc1, job.tc)
 		}
 
 		if isKeyframe {

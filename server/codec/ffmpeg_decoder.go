@@ -7,6 +7,7 @@ package codec
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/hwcontext.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -18,6 +19,8 @@ typedef struct {
 	AVFrame*        sw_frame;  // for HW→SW transfer
 	AVPacket*       pkt;
 	int             output_10bit_422;  // when 1, preserve 10-bit 422 output instead of downconverting
+	uint8_t         tc_buf[16];        // raw AV_FRAME_DATA_S12M_TIMECODE bytes from last frame (≤4 uint32)
+	int             tc_len;            // bytes captured into tc_buf (0 = no timecode on last frame)
 } ffdec_t;
 
 // Forward declaration.
@@ -516,6 +519,32 @@ static void ffdec_copy_frame(AVFrame* src_frame, unsigned char* dst,
 	} else {
 		ffdec_copy_planar(src_frame, dst, w, h_val, remap_to_limited);
 	}
+}
+
+// ffdec_capture_timecode caches the AV_FRAME_DATA_S12M_TIMECODE side data from
+// the given frame into h->tc_buf, or clears tc_len when the frame carries none.
+// Must be called after avcodec_receive_frame and before av_frame_unref. The
+// side data is libavutil's normalized form: a uint32 array whose first element
+// is the count (1-3) and the rest are packed SMPTE 12M words (≤16 bytes total).
+static void ffdec_capture_timecode(ffdec_t* h, AVFrame* frame) {
+	h->tc_len = 0;
+	AVFrameSideData* sd = av_frame_get_side_data(frame, AV_FRAME_DATA_S12M_TIMECODE);
+	if (!sd || !sd->data || sd->size == 0) {
+		return;
+	}
+	int n = (int)sd->size;
+	if (n > (int)sizeof(h->tc_buf)) {
+		n = (int)sizeof(h->tc_buf);
+	}
+	memcpy(h->tc_buf, sd->data, n);
+	h->tc_len = n;
+}
+
+// ffdec_get_timecode returns a pointer to the S12M timecode bytes cached from
+// the most recent decoded frame, setting *out_len to their length (0 if none).
+static const uint8_t* ffdec_get_timecode(ffdec_t* h, int* out_len) {
+	*out_len = h->tc_len;
+	return h->tc_len > 0 ? h->tc_buf : NULL;
 }
 
 // ffdec_decode decodes one packet of Annex B H.264 data to packed YUV420.
@@ -1174,6 +1203,27 @@ func (d *FFmpegDecoder) ReceiveFrame() ([]byte, int, int, error) {
 	}
 
 	return d.adoptOrCopy(outBuf, outLen, int(outWidth), int(outHeight))
+}
+
+// LastTimecodeBytes returns the raw AV_FRAME_DATA_S12M_TIMECODE side data from
+// the most recent successful Decode or ReceiveFrame, or nil if that frame
+// carried no SMPTE 12M timecode. The bytes are libavutil's normalized form (a
+// host-endian uint32 array: element 0 is the count, the rest are packed SMPTE
+// 12M words). The returned slice is a fresh copy, safe to retain across calls.
+//
+// This is an additive accessor beyond transition.VideoDecoder; callers wanting
+// timecode passthrough type-assert for it. Follows the same single-goroutine
+// contract as Decode/ReceiveFrame (not safe concurrently with Close).
+func (d *FFmpegDecoder) LastTimecodeBytes() []byte {
+	if d.closed {
+		return nil
+	}
+	var n C.int
+	p := C.ffdec_get_timecode(&d.handle, &n)
+	if p == nil || n == 0 {
+		return nil
+	}
+	return C.GoBytes(unsafe.Pointer(p), C.int(n))
 }
 
 // Close releases the decoder resources. Safe to call multiple times.

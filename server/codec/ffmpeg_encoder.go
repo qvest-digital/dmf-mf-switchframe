@@ -335,6 +335,12 @@ static int ffenc_open_preview(ffenc_t* h, int width, int height, int bitrate,
 	av_opt_set(h->ctx->priv_data, "tune", "zerolatency", 0);
 	av_opt_set(h->ctx->priv_data, "sc_threshold", "0", 0);
 	av_opt_set(h->ctx->priv_data, "aud", "1", 0);
+	// pic-struct=1 sets pic_struct_present_flag in the SPS VUI. Without it, a
+	// pic_timing SEI carrying SMPTE timecode is not advertised as present, so a
+	// strict decoder/parser (incl. the operator UI's timecode.js) skips it and
+	// the embedded timecode is lost. The preview's SMPTE timecode passthrough
+	// (preview.rewriteAVC1WithTimecode) relies on this flag being set.
+	av_opt_set(h->ctx->priv_data, "x264-params", "pic-struct=1", 0);
 
 	int rc = avcodec_open2(h->ctx, codec, NULL);
 	if (rc < 0) {
