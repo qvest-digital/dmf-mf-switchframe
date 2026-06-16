@@ -1238,6 +1238,23 @@ func (d *FFmpegDecoder) LastTimecodeBytes() []byte {
 	return out
 }
 
+// Framerate returns the source frame rate as the rational num/den that
+// libavcodec parsed from the bitstream's SPS/VPS VUI timing and stored on the
+// decoder context. Both values are 0 when the stream carried no timing
+// information — VUI timing is optional and is frequently omitted by live
+// contribution encoders — in which case the caller should fall back to an
+// assumed rate.
+//
+// Valid only after at least one successful Decode/ReceiveFrame has parsed the
+// parameter sets. Like Decode/ReceiveFrame, it follows the single-goroutine
+// contract and is not safe to call concurrently with Close.
+func (d *FFmpegDecoder) Framerate() (num, den int) {
+	if d.closed || d.handle.ctx == nil {
+		return 0, 0
+	}
+	return int(d.handle.ctx.framerate.num), int(d.handle.ctx.framerate.den)
+}
+
 // Close releases the decoder resources. Safe to call multiple times.
 func (d *FFmpegDecoder) Close() {
 	d.closeMu.Lock()
