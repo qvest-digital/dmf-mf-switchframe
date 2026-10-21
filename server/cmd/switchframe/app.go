@@ -118,6 +118,9 @@ type App struct {
 	// Output
 	outputMgr     *output.Manager
 	confidenceMon *output.ConfidenceMonitor
+	// Directory of the recording --outputs-config started, offered to clip
+	// import the way a recording started over the API is.
+	startupRecordingDir string
 
 	// Subsystems
 	debugCollector *debug.Collector
@@ -1698,6 +1701,9 @@ func (a *App) initAPI() error {
 	}
 	if a.replayMgr != nil {
 		apiOpts = append(apiOpts, control.WithReplayManager(a.replayMgr))
+	}
+	if a.startupRecordingDir != "" {
+		apiOpts = append(apiOpts, control.WithRecordingDir(a.startupRecordingDir))
 	}
 	if a.scte35Injector != nil {
 		apiOpts = append(apiOpts, control.WithSCTE35(a.scte35Injector, a.scte35Rules))

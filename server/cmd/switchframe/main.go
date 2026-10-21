@@ -140,6 +140,11 @@ type AppConfig struct {
 	ST2110PTP      string // PTP mode (default "auto")
 	ST2110NMOSPort int    // NMOS API HTTP port (default 8090)
 
+	// Outputs started with the process (--outputs-config): SRT and RTMP
+	// destinations and the recording, which otherwise exist only once
+	// created over the API.
+	OutputsConfig string
+
 	// Inter-engine peer health monitoring.
 	PeerEngineURL string // --peer-engine-url (URL of the other engine for health polling)
 
@@ -260,6 +265,9 @@ func run() error {
 		}
 	}
 	if err := app.initSRT(); err != nil {
+		return err
+	}
+	if err := app.initStartupOutputs(); err != nil {
 		return err
 	}
 	// Operator voice comms (always available, no config flag needed).
@@ -383,6 +391,9 @@ func parseConfig() (AppConfig, error) {
 	st2110InputsFlag := flag.Int("st2110-inputs", 4, "Number of ST 2110 input receivers")
 	st2110PTPFlag := flag.String("st2110-ptp", "auto", "PTP mode for ST 2110 (auto, l2, l4, none)")
 	st2110NMOSPortFlag := flag.Int("st2110-nmos-port", 8090, "NMOS API HTTP port for IS-04/IS-05")
+
+	// Outputs started with the process.
+	outputsConfigFlag := flag.String("outputs-config", "", "Path to a JSON file of SRT/RTMP destinations and a recording to start with the process")
 
 	// Peer engine health monitoring.
 	peerEngineURLFlag := flag.String("peer-engine-url", "", "URL of the peer engine for inter-engine health monitoring (e.g., https://engine-b:8080)")
@@ -561,6 +572,7 @@ func parseConfig() (AppConfig, error) {
 		ST2110Inputs:         *st2110InputsFlag,
 		ST2110PTP:            *st2110PTPFlag,
 		ST2110NMOSPort:       *st2110NMOSPortFlag,
+		OutputsConfig:        *outputsConfigFlag,
 		PeerEngineURL:        resolveEnvOrFlag(*peerEngineURLFlag, "SWITCHFRAME_PEER_ENGINE_URL"),
 		PeerCertHash:         resolveEnvOrFlag(*peerCertHashFlag, "SWITCHFRAME_PEER_CERT_HASH"),
 		EngineLabel:          resolveEnvOrFlag(*engineLabelFlag, "SWITCHFRAME_ENGINE_LABEL"),
