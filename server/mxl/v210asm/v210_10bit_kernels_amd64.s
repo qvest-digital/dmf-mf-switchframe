@@ -2,8 +2,8 @@
 
 // AMD64 V210 <-> YUV422P10 lossless 10-bit conversion kernels.
 //
-// v210UnpackRow10Ptr: V210 -> planar YUV422P10 (uint16)
-// v210PackRow10Ptr:   planar YUV422P10 (uint16) -> V210
+// V210UnpackRow10: V210 -> planar YUV422P10 (uint16)
+// V210PackRow10:   planar YUV422P10 (uint16) -> V210
 //
 // Per group: 4 x uint32 words (16 bytes) <-> 6 Y + 3 Cb + 3 Cr (uint16 each).
 // All 10-bit values are preserved losslessly.
@@ -13,7 +13,7 @@
 // func v210UnpackRow10Ptr(yOut, cbOut, crOut *uint16, v210In *byte, groups int)
 // ============================================================================
 // Extracts 10-bit fields from V210 words, stores as uint16 LE.
-TEXT ·v210UnpackRow10Ptr(SB), NOSPLIT, $0-40
+TEXT ·V210UnpackRow10(SB), NOSPLIT, $0-40
 	MOVQ yOut+0(FP), DI       // Y output (uint16*)
 	MOVQ cbOut+8(FP), SI      // Cb output (uint16*)
 	MOVQ crOut+16(FP), DX     // Cr output (uint16*)
@@ -102,7 +102,7 @@ unpack10_done:
 // func v210PackRow10Ptr(v210Out *byte, yIn, cbIn, crIn *uint16, groups int)
 // ============================================================================
 // Packs uint16 Y/Cb/Cr into V210 words. Values are masked to 10-bit.
-TEXT ·v210PackRow10Ptr(SB), NOSPLIT, $0-40
+TEXT ·V210PackRow10(SB), NOSPLIT, $0-40
 	MOVQ v210Out+0(FP), DI    // V210 output (byte*)
 	MOVQ yIn+8(FP), SI        // Y input (uint16*)
 	MOVQ cbIn+16(FP), DX      // Cb input (uint16*)

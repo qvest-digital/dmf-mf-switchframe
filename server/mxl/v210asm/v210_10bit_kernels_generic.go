@@ -1,44 +1,16 @@
 //go:build !arm64 && !amd64
 
-package mxl
+package v210asm
 
 import (
 	"encoding/binary"
 	"unsafe"
 )
 
-// v210UnpackRow10 extracts Y, Cb, Cr from V210 packed data for one row (lossless 10-bit).
-// Each group of 16 bytes (4 uint32 words) produces 6 Y + 3 Cb + 3 Cr uint16 samples.
-// 10-bit values are preserved as-is in uint16 containers.
-func v210UnpackRow10(yOut, cbOut, crOut []uint16, v210In []byte, groups int) {
-	if groups <= 0 {
-		return
-	}
-	v210UnpackRow10Ptr(
-		unsafe.SliceData(yOut),
-		unsafe.SliceData(cbOut),
-		unsafe.SliceData(crOut),
-		unsafe.SliceData(v210In),
-		groups,
-	)
-}
-
-// v210PackRow10 packs Y, Cb, Cr uint16 samples into V210 format for one row (lossless 10-bit).
-// Each group of 6 Y + 3 Cb + 3 Cr produces 16 bytes (4 uint32 words).
-func v210PackRow10(v210Out []byte, yIn, cbIn, crIn []uint16, groups int) {
-	if groups <= 0 {
-		return
-	}
-	v210PackRow10Ptr(
-		unsafe.SliceData(v210Out),
-		unsafe.SliceData(yIn),
-		unsafe.SliceData(cbIn),
-		unsafe.SliceData(crIn),
-		groups,
-	)
-}
-
-func v210UnpackRow10Ptr(yOut, cbOut, crOut *uint16, v210In *byte, groups int) {
+// V210UnpackRow10 extracts Y, Cb, Cr from V210 packed data for one row
+// (lossless 10-bit). Each group of 16 bytes (4 uint32 words) produces
+// 6 Y + 3 Cb + 3 Cr uint16 samples, kept as-is in uint16 containers.
+func V210UnpackRow10(yOut, cbOut, crOut *uint16, v210In *byte, groups int) {
 	v210S := unsafe.Slice(v210In, groups*16)
 	yS := unsafe.Slice(yOut, groups*6)
 	cbS := unsafe.Slice(cbOut, groups*3)
@@ -71,7 +43,9 @@ func v210UnpackRow10Ptr(yOut, cbOut, crOut *uint16, v210In *byte, groups int) {
 	}
 }
 
-func v210PackRow10Ptr(v210Out *byte, yIn, cbIn, crIn *uint16, groups int) {
+// V210PackRow10 packs Y, Cb, Cr uint16 samples into V210 for one row
+// (lossless 10-bit). Each group of 6 Y + 3 Cb + 3 Cr produces 16 bytes.
+func V210PackRow10(v210Out *byte, yIn, cbIn, crIn *uint16, groups int) {
 	v210S := unsafe.Slice(v210Out, groups*16)
 	yS := unsafe.Slice(yIn, groups*6)
 	cbS := unsafe.Slice(cbIn, groups*3)
