@@ -29,6 +29,7 @@ All flags are defined in [`parseConfig`](../../server/cmd/switchframe/main.go). 
 | `--http-addr` | string | `:8081` | HTTP/1.1 fallback listen address (requires `--http-fallback`) |
 | `--tls-cert` | string | `""` | Path to TLS certificate PEM (e.g., from mkcert). Empty → self-signed |
 | `--tls-key` | string | `""` | Path to TLS private key PEM |
+| `--https-self-signed` | bool | `false` | Without `--tls-cert`, also serve the UI and API over HTTPS on the TCP side of `--addr`, with the generated certificate. Loaded from there, the UI is a secure context once the certificate is accepted, which WebTransport needs away from localhost |
 | `--admin-addr` | string | `127.0.0.1:9090` | Admin/metrics server listen address |
 | `--admin-token` | string | `""` (env `SWITCHFRAME_ADMIN_TOKEN`) | Bearer token guarding `/metrics` and `/debug/*`. Empty → unprotected |
 | `--allowed-origins` | string | `""` | Comma-separated CORS origins. Empty → `*` |
@@ -119,6 +120,12 @@ All flags are defined in [`parseConfig`](../../server/cmd/switchframe/main.go). 
 |---|---|---|---|
 | `--srt-listen` | string | `""` | SRT listener address for incoming pushes (e.g., `:6464`) |
 | `--srt-latency` | int (ms) | `120` | Default SRT latency |
+
+### Outputs at startup
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--outputs-config` | string | `""` | JSON file of SRT/RTMP destinations and a recording to start with the process, in the shapes `POST /api/output/destinations` and `POST /api/recording/start` take; `passphraseFile` and `urlFile` read those fields from files. See [`StartupConfig`](../../server/output/startup.go) |
 
 ### SRT output
 

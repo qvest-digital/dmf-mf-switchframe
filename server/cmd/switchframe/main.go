@@ -53,6 +53,7 @@ type AppConfig struct {
 	HTTPAddr         string
 	TLSCert          string
 	TLSKey           string
+	HTTPSSelfSigned  bool   // serve HTTPS on --addr's TCP port with the generated certificate
 	StateDir         string // State directory (env: SWITCHFRAME_STATE_DIR, default: ~/.switchframe)
 
 	// Relay encoding (SRT source → WebTransport).
@@ -308,6 +309,7 @@ func parseConfig() (AppConfig, error) {
 	httpAddrFlag := flag.String("http-addr", ":8081", "HTTP/1.1 fallback listen address (requires --http-fallback)")
 	tlsCertFlag := flag.String("tls-cert", "", "Path to TLS certificate PEM file (e.g. from mkcert)")
 	tlsKeyFlag := flag.String("tls-key", "", "Path to TLS private key PEM file")
+	httpsSelfSignedFlag := flag.Bool("https-self-signed", false, "Without --tls-cert, serve the UI and API over HTTPS on the TCP side of --addr with the generated self-signed certificate")
 
 	// Relay encoding flags.
 	relayBitrateFlag := flag.Int("relay-bitrate", 2000000, "Relay encode bitrate in bps for SRT source WebTransport distribution")
@@ -520,6 +522,7 @@ func parseConfig() (AppConfig, error) {
 		HTTPAddr:             *httpAddrFlag,
 		TLSCert:              *tlsCertFlag,
 		TLSKey:               *tlsKeyFlag,
+		HTTPSSelfSigned:      *httpsSelfSignedFlag,
 		RelayBitrate:         *relayBitrateFlag,
 		RelayResolution:      *relayResolutionFlag,
 		PreviewProxy:         *previewProxyFlag,
