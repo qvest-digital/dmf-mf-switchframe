@@ -25,9 +25,9 @@ func altSvcMiddleware(quicPort string, next http.Handler) http.Handler {
 // startHTTPAPIServer launches an HTTP/1.1 server for curl/scripts and browsers
 // that can't directly speak HTTP/3. Enabled via --http-fallback flag.
 //
-// When TLS cert/key are provided, it also starts a TCP HTTPS server on the
-// same port as the QUIC listener (e.g., 443) with Alt-Svc headers to guide
-// browsers from TCP HTTPS → QUIC WebTransport.
+// When TLS cert/key are provided, or --https-self-signed is set, it also
+// starts a TCP HTTPS server on the same port as the QUIC listener (e.g., 443)
+// with Alt-Svc headers to guide browsers from TCP HTTPS → QUIC WebTransport.
 //
 // Returns a stop function that gracefully shuts down the server(s), or an error
 // if the TCP listener cannot bind.
@@ -89,9 +89,16 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	})
 
 	// TCP HTTPS on the QUIC port (e.g., :443) — browsers land here first,
-	// then upgrade to QUIC via the Alt-Svc header.
-	if a.cfg.TLSCert != "" && a.cfg.TLSKey != "" {
-		cert, loadErr := tls.LoadX509KeyPair(a.cfg.TLSCert, a.cfg.TLSKey)
+	// then upgrade to QUIC via the Alt-Svc header. With --https-self-signed
+	// it serves the generated certificate the QUIC listener uses: a page
+	// loaded over HTTPS is a secure context once the operator accepts the
+	// certificate, which WebTransport needs, while one loaded over plain HTTP
+	// from anywhere but localhost is not.
+	if (a.cfg.TLSCert != "" && a.cfg.TLSKey != "") || a.cfg.HTTPSSelfSigned {
+		cert, loadErr := a.cert.TLSCert, error(nil)
+		if a.cfg.TLSCert != "" && a.cfg.TLSKey != "" {
+			cert, loadErr = tls.LoadX509KeyPair(a.cfg.TLSCert, a.cfg.TLSKey)
+		}
 		if loadErr != nil {
 			slog.Warn("failed to load TLS cert for HTTPS fallback", "error", loadErr)
 		} else {
