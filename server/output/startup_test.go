@@ -43,7 +43,10 @@ func TestLoadStartupConfig_Rejects(t *testing.T) {
 			"passphrase": "a", "passphraseFile": "` + secret + `"}]}`,
 		"missing passphrase file": `{"destinations": [{"type": "srt-caller", "address": "h", "port": 1,
 			"passphraseFile": "/nonexistent/passphrase"}]}`,
-		"relative recording dir": `{"recording": {"outputDir": "recordings"}}`,
+		"relative passphrase file": `{"destinations": [{"type": "srt-caller", "address": "h", "port": 1,
+			"passphraseFile": "passphrase"}]}`,
+		"trailing value":           `{"destinations": []} {"recording": {"outputDir": "/r"}}`,
+		"relative recording dir":   `{"recording": {"outputDir": "recordings"}}`,
 		"traversing recording dir": `{"recording": {"outputDir": "/data/../etc"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -28,7 +28,9 @@ import (
 //	}
 //
 // A destination takes the fields POST /api/output/destinations takes. Every
-// destination listed is started.
+// destination listed is started before the API comes up; an srt-caller dials
+// once with its connect timeout first and keeps reconnecting after, so an
+// unreachable peer delays startup by that timeout rather than failing it.
 type StartupConfig struct {
 	Destinations []StartupDestination `json:"destinations,omitempty"`
 	Recording    *StartupRecording    `json:"recording,omitempty"`
@@ -42,8 +44,9 @@ type StartupDestination struct {
 	PassphraseFile string `json:"passphraseFile,omitempty"`
 }
 
-// StartupRecording takes the fields POST /api/recording/start takes, with the
-// same defaults.
+// StartupRecording takes the fields POST /api/recording/start takes. Unlike
+// the API it has no default directory: a recording declared for a deployment
+// names the volume it writes to.
 type StartupRecording struct {
 	OutputDir       string `json:"outputDir"`
 	RotateAfterMins int    `json:"rotateAfterMins,omitempty"`
@@ -64,6 +67,9 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return cfg, fmt.Errorf("parse outputs config %s: %w", path, err)
 	}
+	if dec.More() {
+		return cfg, fmt.Errorf("parse outputs config %s: more than one JSON value", path)
+	}
 	for i := range cfg.Destinations {
 		d := &cfg.Destinations[i]
 		if d.PassphraseFile == "" {
@@ -71,6 +77,9 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 		}
 		if d.Passphrase != "" {
 			return cfg, fmt.Errorf("outputs config: destination %d sets both passphrase and passphraseFile", i)
+		}
+		if !filepath.IsAbs(d.PassphraseFile) {
+			return cfg, fmt.Errorf("outputs config: destination %d: passphraseFile must be an absolute path", i)
 		}
 		p, err := os.ReadFile(d.PassphraseFile)
 		if err != nil {
