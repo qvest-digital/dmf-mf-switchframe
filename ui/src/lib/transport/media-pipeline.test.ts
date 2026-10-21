@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createMediaPipeline, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
-import { isSourceStalled, clearAllStalls } from './source-errors.svelte';
+import { isSourceStalled, clearAllStalls, clearSourceStall } from './source-errors.svelte';
 
 // Mock all Prism modules since they use Web Workers, WebCodecs,
 // AudioWorklet, and SharedArrayBuffer -- none available in jsdom.
@@ -420,6 +420,76 @@ describe('MediaPipeline stall detection', () => {
 		vi.advanceTimersByTime(4000);
 
 		expect(isSourceStalled('cam1')).toBe(false);
+
+		pipeline.stopStallDetection();
+		pipeline.destroy();
+	});
+
+	// Stall flags are shared by source key across pipelines. During a
+	// failover engine A's program-preview is disconnected while engine B's
+	// is fed; B's frames clear the shared flag, and A's stale arrival time
+	// must not then report a fresh stall that sends video back to A.
+	it('should not report stalls for disconnected sources', () => {
+		const onSourceStalled = vi.fn();
+		const pipeline = createMediaPipeline({ onSourceStalled });
+		pipeline.addSource('program-preview');
+
+		const desc = new Uint8Array([0, 0, 0, 1]);
+		pipeline.feedVideoFrame('program-preview', new Uint8Array([1, 2, 3]), true, 1000, desc);
+
+		pipeline.startStallDetection();
+		vi.advanceTimersByTime(2000);
+		expect(onSourceStalled).toHaveBeenCalledTimes(1);
+
+		pipeline.disconnectSource('program-preview');
+		clearSourceStall('program-preview');
+		vi.advanceTimersByTime(4000);
+
+		expect(onSourceStalled).toHaveBeenCalledTimes(1);
+		expect(isSourceStalled('program-preview')).toBe(false);
+
+		pipeline.stopStallDetection();
+		pipeline.destroy();
+	});
+
+	// After a restore engine A's program-preview is reconnected. If it still
+	// delivers nothing, the stall must be reported so video can leave it.
+	it('should report a stall when a reconnected source stays silent', () => {
+		const onSourceStalled = vi.fn();
+		const pipeline = createMediaPipeline({ onSourceStalled });
+		pipeline.addSource('program-preview');
+
+		const desc = new Uint8Array([0, 0, 0, 1]);
+		pipeline.feedVideoFrame('program-preview', new Uint8Array([1, 2, 3]), true, 1000, desc);
+		pipeline.startStallDetection();
+
+		pipeline.disconnectSource('program-preview');
+		vi.advanceTimersByTime(4000);
+		expect(onSourceStalled).not.toHaveBeenCalled();
+
+		// The reconnect gets 3 s for its handshakes, then the 1.5 s window.
+		pipeline.connectSource('program-preview');
+		vi.advanceTimersByTime(4000);
+		expect(onSourceStalled).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(1000);
+		expect(onSourceStalled).toHaveBeenCalledWith('program-preview');
+
+		pipeline.stopStallDetection();
+		pipeline.destroy();
+	});
+
+	it('should not arm stall detection for a source that never delivered a frame', () => {
+		const onSourceStalled = vi.fn();
+		const pipeline = createMediaPipeline({ onSourceStalled });
+		pipeline.addSource('program-preview');
+		pipeline.startStallDetection();
+
+		pipeline.connectSource('program-preview');
+		pipeline.disconnectSource('program-preview');
+		pipeline.connectSource('program-preview');
+		vi.advanceTimersByTime(4000);
+
+		expect(onSourceStalled).not.toHaveBeenCalled();
 
 		pipeline.stopStallDetection();
 		pipeline.destroy();
