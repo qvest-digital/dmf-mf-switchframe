@@ -1216,6 +1216,8 @@ func (a *App) initMXL() error {
 		videoFlow, err := inst.OpenReader(videoFlowID)
 		if err != nil {
 			slog.Warn("mxl: could not open video flow", "flowID", videoFlowID, "error", err)
+		} else {
+			videoFlow = mxl.NewReopeningReader(videoFlowID, videoFlow, inst.OpenReader, nil)
 		}
 
 		// Open MXL audio flow if specified.
@@ -1225,7 +1227,7 @@ func (a *App) initMXL() error {
 			if err != nil {
 				slog.Warn("mxl: could not open audio flow", "flowID", audioFlowID, "error", err)
 			} else {
-				audioFlow = af
+				audioFlow = mxl.NewReopeningAudioReader(audioFlowID, af, inst.OpenAudioReader, nil)
 			}
 		}
 
@@ -1236,7 +1238,7 @@ func (a *App) initMXL() error {
 			if err != nil {
 				slog.Warn("mxl: could not open data flow", "flowID", dataFlowID, "error", err)
 			} else {
-				dataFlow = df
+				dataFlow = mxl.NewReopeningReader(dataFlowID, df, inst.OpenReader, nil)
 			}
 		}
 
