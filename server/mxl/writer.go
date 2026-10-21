@@ -92,6 +92,10 @@ type Writer struct {
 	// Only accessed from the single mixer output goroutine.
 	lastAudioIndex uint64
 
+	// lastDataIndex is the index of the last data grain committed, 0 before
+	// the first. Guarded by mu, like the write itself.
+	lastDataIndex uint64
+
 	// Reusable de-interleave buffers to avoid per-frame allocation.
 	deinterleaveBuf [][]float32
 
@@ -181,12 +185,19 @@ func (w *Writer) WriteDataGrain(data []byte) error {
 	if CurrentIndex != nil {
 		index = CurrentIndex(ref.rate)
 	}
+	// Two packets in one grain period would share an index, and libmxl
+	// refuses a commit that is not past the last one, so the second is
+	// written to the next grain instead of being lost.
+	if w.lastDataIndex > 0 && index <= w.lastDataIndex {
+		index = w.lastDataIndex + 1
+	}
 
 	if err := ref.writer.WriteGrain(index, data); err != nil {
 		w.log.Error("mxl writer: failed to write data grain",
 			"error", err, "index", index, "len", len(data))
 		return err
 	}
+	w.lastDataIndex = index
 
 	return nil
 }
