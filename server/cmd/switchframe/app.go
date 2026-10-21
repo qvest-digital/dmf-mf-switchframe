@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -2050,7 +2051,7 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).
-	stopAdmin, _ := StartAdminServer(ctx, a.cfg.AdminAddr, a.cfg.Addr, a.cert.FingerprintBase64(), a.externalCert, a.cfg.AdminToken)
+	stopAdmin, _ := StartAdminServer(ctx, a.cfg.AdminAddr, a.advertisedAddr(), a.cert.FingerprintBase64(), a.externalCert, a.cfg.AdminToken)
 	defer stopAdmin()
 
 	// Optionally start HTTP/1.1 fallback for curl/scripts.
@@ -2276,11 +2277,30 @@ func (a *App) closeSubsystems() {
 
 // handleCertHash returns the WebTransport certificate fingerprint and QUIC address.
 // No authentication required — browsers need this to establish WebTransport connections.
+// advertisedAddr is the WebTransport address /api/cert-hash hands the
+// browser: --addr, with the host replaced by --webtransport-host when set.
+func (a *App) advertisedAddr() string {
+	return advertiseAddr(a.cfg.Addr, a.cfg.WebTransportHost)
+}
+
+// advertiseAddr replaces the host of listen address addr with host, keeping
+// its port. An empty host leaves addr as it is.
+func advertiseAddr(addr, host string) string {
+	if host == "" {
+		return addr
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return net.JoinHostPort(host, port)
+}
+
 func (a *App) handleCertHash(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"hash":    a.cert.FingerprintBase64(),
-		"addr":    a.cfg.Addr,
+		"addr":    a.advertisedAddr(),
 		"trusted": a.externalCert,
 	})
 }

@@ -29,6 +29,7 @@ All flags are defined in [`parseConfig`](../../server/cmd/switchframe/main.go). 
 | `--http-addr` | string | `:8081` | HTTP/1.1 fallback listen address (requires `--http-fallback`) |
 | `--tls-cert` | string | `""` | Path to TLS certificate PEM (e.g., from mkcert). Empty → self-signed |
 | `--tls-key` | string | `""` | Path to TLS private key PEM |
+| `--webtransport-host` | string | `""` | Host the browser opens WebTransport on, advertised by `/api/cert-hash`. Empty: the host the UI was loaded from. Set when the UI is served through an HTTP proxy that carries no UDP |
 | `--https-self-signed` | bool | `false` | Without `--tls-cert`, also serve the UI and API over HTTPS on the TCP side of `--addr`, with the generated certificate. Loaded from there, the UI is a secure context once the certificate is accepted, which WebTransport needs away from localhost |
 | `--admin-addr` | string | `127.0.0.1:9090` | Admin/metrics server listen address |
 | `--admin-token` | string | `""` (env `SWITCHFRAME_ADMIN_TOKEN`) | Bearer token guarding `/metrics` and `/debug/*`. Empty → unprotected |
