@@ -54,6 +54,7 @@ vi.mock('./clock-sync', () => {
 
 // Mock reconciler
 vi.mock('$lib/state/reconciler.svelte', () => ({
+	STALE_THRESHOLD_MS: 5_000,
 	createReconciler: vi.fn().mockImplementation(() => {
 		let _state: unknown = null;
 		let _ingestedA: unknown = null;
@@ -83,6 +84,7 @@ vi.mock('$lib/state/reconciler.svelte', () => ({
 			setRecovering: vi.fn(),
 			setTransportAlive: vi.fn(),
 			recordPong: vi.fn(),
+			setEngineBUrl: vi.fn(),
 			tick: vi.fn(),
 			get state() { return _state; },
 			get health() {
@@ -671,6 +673,50 @@ describe('DualConnectionManager', () => {
 
 			const instanceB = MockedConnectionManager.mock.results[1].value;
 			expect(instanceB.start).toHaveBeenCalledOnce();
+		});
+
+		// Engine B is discovered from engine A's state, so A's state has
+		// always arrived before dual mode begins. A reconciler that never saw
+		// it reads B as the only engine and the UI fails video over to B.
+		it('addEngine seeds the reconciler with the state engine A already sent', () => {
+			const onStateUpdate = vi.fn();
+			const mgr = new DualConnectionManager(makeSingleConfig({ onStateUpdate }));
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const stateA = makeState({ programSource: 'cam1', engineBUrl: 'https://engine-b.example.com' });
+			instanceA.simulateStateUpdate(stateA);
+			expect(reconcilerInstance.ingest).not.toHaveBeenCalled();
+
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			expect(reconcilerInstance.ingest).toHaveBeenCalledWith('A', stateA);
+			expect(onStateUpdate).toHaveBeenLastCalledWith(reconcilerInstance.state);
+		});
+
+		it('addEngine leaves out a state older than the stale threshold', () => {
+			vi.useFakeTimers();
+			const onStateUpdate = vi.fn();
+			const mgr = new DualConnectionManager(makeSingleConfig({ onStateUpdate }));
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA.simulateStateUpdate(makeState({ programSource: 'cam1' }));
+			onStateUpdate.mockClear();
+			vi.advanceTimersByTime(6_000);
+
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			expect(reconcilerInstance.ingest).not.toHaveBeenCalled();
+			expect(onStateUpdate).not.toHaveBeenCalled();
+			vi.useRealTimers();
+		});
+
+		it('addEngine tells the reconciler the URL engine B is connected at', () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			expect(reconcilerInstance.setEngineBUrl).toHaveBeenCalledWith('https://engine-b.example.com');
 		});
 
 		it('addEngine sets isDualEngine to true', () => {

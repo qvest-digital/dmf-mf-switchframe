@@ -135,11 +135,17 @@ export interface MediaPipeline {
 const STALL_THRESHOLD_MS = 1500;
 /** How often (ms) to check for stalled sources. */
 const STALL_CHECK_INTERVAL_MS = 500;
+/** Extra time a reconnected source has for its first frame: certificate
+ * lookup, QUIC and MoQ handshakes and the subscriptions come before it. */
+const RECONNECT_GRACE_MS = 3000;
 
 export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline {
 	const sources = new Map<string, SourceMedia>();
 	/** Per-source last video frame arrival time (performance.now()). */
 	const lastFrameTime = new Map<string, number>();
+	/** Sources that delivered frames before disconnectSource; their
+	 * reconnect re-arms stall detection. */
+	const disconnectedWithFrames = new Set<string>();
 	/** Interval handle for stall detection. */
 	let stallCheckInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -425,6 +431,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 		// Clean up stall tracking
 		lastFrameTime.delete(key);
+		disconnectedWithFrames.delete(key);
 		clearSourceStall(key);
 
 		// Clean up transport
@@ -460,6 +467,10 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		const source = sources.get(key);
 		if (!source) return;
 		if (source.transport) return; // already connected
+		// A source that delivered frames before it was disconnected must
+		// deliver again: count its stall window from the reconnect, after
+		// the time the reconnect itself takes.
+		if (disconnectedWithFrames.delete(key)) lastFrameTime.set(key, performance.now() + RECONNECT_GRACE_MS);
 
 		const callbacks = makeCallbacks(key);
 		// program-preview gets high priority (16) so QUIC schedules it
@@ -476,7 +487,11 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 	function disconnectSource(key: string): void {
 		const source = sources.get(key);
-		if (!source || !source.transport) return;
+		if (!source) return;
+		// A disconnected source receives no frames, so it must not read as
+		// stalled; connectSource re-arms it.
+		if (lastFrameTime.delete(key)) disconnectedWithFrames.add(key);
+		if (!source.transport) return;
 
 		source.transport.close();
 		source.transport = null;
@@ -585,6 +600,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			removeSource(key);
 		}
 		lastFrameTime.clear();
+		disconnectedWithFrames.clear();
 	}
 
 	function handleVisibilityChange(): void {

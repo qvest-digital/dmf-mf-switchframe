@@ -179,6 +179,10 @@ export function createReconciler() {
 	let transportAliveB = $state(false);
 	let lastPongA = $state(0);
 	let lastPongB = $state(0);
+	// Each engine's state names its own peer as engineBUrl, so engine B's
+	// names engine A, and engine A's can name a peer other than the one
+	// connected. The UI's engineBUrl is the URL engine B is connected at.
+	let engineBUrl = $state<string | undefined>(undefined);
 
 	// Dual-engine telemetry
 	let authoritySwitchCount = $state(0);
@@ -432,11 +436,15 @@ export function createReconciler() {
 		return heldAuthority;
 	});
 
-	/** The merged state from the authoritative engine. */
+	/** The merged state from the authoritative engine. Its engineBUrl is the
+	 * URL engine B is connected at, so it does not change when authority
+	 * moves between the engines. */
 	const currentState = $derived.by((): ControlRoomState => {
-		if (authoritative === 'A' && stateA) return stateA;
-		if (authoritative === 'B' && stateB) return stateB;
-		return stateA ?? stateB ?? EMPTY_STATE;
+		let st: ControlRoomState;
+		if (authoritative === 'A' && stateA) st = stateA;
+		else if (authoritative === 'B' && stateB) st = stateB;
+		else st = stateA ?? stateB ?? EMPTY_STATE;
+		return engineBUrl && st !== EMPTY_STATE && st.engineBUrl !== engineBUrl ? { ...st, engineBUrl } : st;
 	});
 
 	/** Divergence detection across program-visible fields. */
@@ -753,6 +761,11 @@ export function createReconciler() {
 		else transportAliveB = alive;
 	}
 
+	/** The URL engine B is connected at. */
+	function setEngineBUrl(url: string): void {
+		engineBUrl = url;
+	}
+
 	function recordPong(engine: EngineId): void {
 		if (engine === 'A') lastPongA = Date.now();
 		else lastPongB = Date.now();
@@ -854,6 +867,7 @@ export function createReconciler() {
 		setWarmStandbyDegraded,
 		setTransportAlive,
 		recordPong,
+		setEngineBUrl,
 		get state() {
 			return currentState;
 		},
