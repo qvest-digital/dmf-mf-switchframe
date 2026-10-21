@@ -81,11 +81,17 @@ func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrat
 		slog.Warn("gpu: NVENC hw_frames_ctx failed, falling back to download path", "err", err)
 	}
 
-	// Fallback: download to CPU then encode via NVENC or libx264
-	enc, err := codec.NewFFmpegEncoder("h264_nvenc", width, height, bitrate, fpsNum, fpsDen, gopSecs, nil)
+	// Fallback: download to CPU then encode via NVENC or libx264. Those
+	// encoders take the GOP in whole seconds only, so a GOP given as a frame
+	// count (negative) is rounded up to the seconds that hold it.
+	fallbackGOP := gopSecs
+	if fallbackGOP < 0 {
+		fallbackGOP = max(1, (-fallbackGOP*fpsDen+fpsNum-1)/fpsNum)
+	}
+	enc, err := codec.NewFFmpegEncoder("h264_nvenc", width, height, bitrate, fpsNum, fpsDen, fallbackGOP, nil)
 	if err != nil {
 		slog.Warn("gpu: NVENC encoder unavailable, falling back to libx264", "err", err)
-		enc, err = codec.NewFFmpegEncoder("libx264", width, height, bitrate, fpsNum, fpsDen, gopSecs, nil)
+		enc, err = codec.NewFFmpegEncoder("libx264", width, height, bitrate, fpsNum, fpsDen, fallbackGOP, nil)
 		if err != nil {
 			return nil, fmt.Errorf("gpu: no encoder available: %w", err)
 		}

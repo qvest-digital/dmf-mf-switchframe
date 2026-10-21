@@ -9,6 +9,7 @@ package codec
 #include <libavutil/opt.h>
 #include <libavutil/version.h>
 #include <stdlib.h>
+#include "levels.h"
 #include <string.h>
 #include <unistd.h>
 
@@ -98,28 +99,9 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	if (ncpu > 8) ncpu = 8;
 	h->ctx->thread_count = ncpu;
 
-	// Set explicit H.264 level for downstream decoder compatibility.
-	// HEVC uses a different level numbering scheme (see HEVC section below).
-	float fps_f = (float)fps_num / (float)fps_den;
-	int avc_level;
-	if (width <= 1280 && height <= 720) {
-		avc_level = 31; // Level 3.1
-	} else if (width <= 1920 && height <= 1080 && fps_f <= 30.5f) {
-		avc_level = 40; // Level 4.0
-	} else {
-		avc_level = 42; // Level 4.2
-	}
-
-	// HEVC level: ITU-T H.265 Table A.6. Level values are 30x the level number.
-	// Level 3.1 = 93, Level 4.0 = 120, Level 4.1 = 123.
-	int hevc_level;
-	if (width <= 1280 && height <= 720) {
-		hevc_level = 93;  // Level 3.1
-	} else if (width <= 1920 && height <= 1080 && fps_f <= 30.5f) {
-		hevc_level = 120; // Level 4.0
-	} else {
-		hevc_level = 123; // Level 4.1
-	}
+	// Set explicit levels for downstream decoder compatibility.
+	int avc_level = avc_level_for(width, height, fps_num, fps_den);
+	int hevc_level = hevc_level_for(width, height, fps_num, fps_den);
 
 	// --- H.264 (AVC) codec-specific options ---
 	if (strcmp(codec_name, "libx264") == 0) {
@@ -826,4 +808,14 @@ func (e *FFmpegEncoder) Close() {
 		C.ffenc_close(&e.handle)
 		e.closed = true
 	}
+}
+
+// avcLevel and hevcLevel expose the level selection in levels.h, which
+// cgo-using tests cannot call directly.
+func avcLevel(width, height, fpsNum, fpsDen int) int {
+	return int(C.avc_level_for(C.int(width), C.int(height), C.int(fpsNum), C.int(fpsDen)))
+}
+
+func hevcLevel(width, height, fpsNum, fpsDen int) int {
+	return int(C.hevc_level_for(C.int(width), C.int(height), C.int(fpsNum), C.int(fpsDen)))
 }
