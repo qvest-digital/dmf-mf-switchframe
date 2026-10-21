@@ -3,8 +3,10 @@
 package gpu
 
 /*
+// The kernels are compiled as C++ and need the C++ runtime, which nothing
+// else links when the tensorrt tag is off.
 #cgo CFLAGS: -I/usr/local/cuda/include
-#cgo LDFLAGS: -L${SRCDIR}/cuda -lswitchframe_cuda -L/usr/local/cuda/lib64 -lcuda -lcudart -lnppc -lnppig -lnppidei
+#cgo LDFLAGS: -L${SRCDIR}/cuda -lswitchframe_cuda -L/usr/local/cuda/lib64 -lcuda -lcudart -lnppc -lnppig -lnppidei -lstdc++
 
 #include <cuda.h>
 #include <cuda_runtime.h>
