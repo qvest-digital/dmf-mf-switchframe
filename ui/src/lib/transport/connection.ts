@@ -1,4 +1,4 @@
-import { wtBaseURL } from '$lib/prism/transport-utils';
+import { MoQTransport } from '$lib/prism/moq-transport';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -8,9 +8,22 @@ export interface PrismConnectionConfig {
 	onConnectionChange: (state: ConnectionState) => void;
 }
 
+/**
+ * The stream whose session carries an engine's control track. Every engine
+ * publishes the program preview, and only the control track of it is
+ * subscribed, so the session costs no media.
+ */
+const CONTROL_STREAM = 'program-preview';
+
+/**
+ * A MoQ session to one engine that subscribes to its control track, which
+ * carries every state change. Its transport also takes the fast-control
+ * datagrams sent to that engine. A WebTransport session that never completes
+ * the MoQ handshake is dropped by the engine, so this has to be a MoQ client.
+ */
 export function createPrismConnection(config: PrismConnectionConfig) {
 	let state: ConnectionState = 'disconnected';
-	let transport: WebTransport | null = null;
+	let session: MoQTransport | null = null;
 	let retryTimeout: ReturnType<typeof setTimeout> | null = null;
 	let retryDelay = 2000;
 	let stopped = false;
@@ -22,12 +35,6 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 		config.onConnectionChange(newState);
 	}
 
-	/**
-	 * Handle incoming control data from a dedicated MoQ control connection.
-	 * In practice, control data arrives via per-source MoQ subscriptions
-	 * through the media pipeline (see media-pipeline.ts onControlState).
-	 * This remains for the standalone connection fallback path.
-	 */
 	function _handleControlData(data: Uint8Array) {
 		config.onControlState(data);
 	}
@@ -37,67 +44,53 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 		stopped = false;
 		_setConnectionState('connecting');
 
-		try {
-			// Fetch cert info for WebTransport connection
-			const certRes = await fetch(`${config.url}/api/cert-hash`);
-			const certData = await certRes.json();
-			// disconnect() may have landed while we were suspended on the cert
-			// fetch — creating a WebTransport now would leak it (nothing would
-			// ever close it) and fire a spurious 'connected'.
-			if (stopped) return;
-			const trusted = certData.trusted === true;
-
-			const opts: WebTransportOptions = {};
-			if (!trusted && certData.hash) {
-				const hashBinary = atob(certData.hash);
-				opts.serverCertificateHashes = [
-					{
-						algorithm: 'sha-256',
-						value: Uint8Array.from(hashBinary, (c) => c.charCodeAt(0)).buffer,
-					},
-				];
-			}
-
-			// The QUIC listener is where the engine advertises it, which is not
-			// the page's origin when the page comes through an HTTP proxy.
-			const wtUrl = certData.addr
-				? wtBaseURL({ certHash: new Uint8Array(), addr: certData.addr, trusted }, new URL(config.url).hostname)
-				: config.url;
-			transport = new WebTransport(wtUrl, opts);
-			const t = transport;
-			await t.ready;
-			// disconnect() may have landed while we were suspended on
-			// transport.ready (it already closed t). Stay torn down rather than
-			// reporting 'connected' on a connection the caller abandoned.
-			if (stopped) {
-				t.close();
-				if (transport === t) transport = null;
-				return;
-			}
-			retryDelay = 2000;
-			_setConnectionState('connected');
-
-			// Monitor for close
-			t.closed
-				.then(() => {
-					if (stopped) return;
+		const noop = () => {};
+		const s: MoQTransport = new MoQTransport(
+			CONTROL_STREAM,
+			{
+				onTrackInfo: noop,
+				onVideoFrame: noop,
+				onAudioFrame: noop,
+				onCaptionFrame: noop,
+				onServerStats: noop,
+				onControlState: _handleControlData,
+				onClose: () => {
+					if (stopped || session !== s) return;
+					session = null;
 					_setConnectionState('disconnected');
 					scheduleRetry();
-				})
-				.catch(() => {
-					if (stopped) return;
-					_setConnectionState('error');
-					scheduleRetry();
-				});
+				},
+				onError: noop,
+			},
+			64,
+			config.url,
+			['control'],
+		);
+		session = s;
+		// connect() reports most failures through onError and a null
+		// transport, but throws when the handshake fails after the transport
+		// is up, such as a rejected subscription.
+		let failed = false;
+		try {
+			await s.connect();
 		} catch {
-			// An explicit disconnect() during connect (e.g. ConnectionManager
-			// teardown) rejects transport.ready and lands here. Reporting
-			// 'error' would undo the disconnect: ConnectionManager reacts to
-			// 'error' by resurrecting REST polling on a stopped manager.
-			if (stopped) return;
+			failed = true;
+		}
+		// disconnect() may have landed while connect() was suspended; it
+		// already closed the session.
+		if (stopped || session !== s) {
+			s.close();
+			return;
+		}
+		if (failed || !s.getTransport()) {
+			session = null;
+			s.close();
 			_setConnectionState('error');
 			scheduleRetry();
+			return;
 		}
+		retryDelay = 2000;
+		_setConnectionState('connected');
 	}
 
 	function scheduleRetry() {
@@ -116,8 +109,8 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 			clearTimeout(retryTimeout);
 			retryTimeout = null;
 		}
-		transport?.close();
-		transport = null;
+		session?.close();
+		session = null;
 		_setConnectionState('disconnected');
 	}
 
@@ -125,8 +118,8 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 		get state() {
 			return state;
 		},
-		get transport() {
-			return transport;
+		get transport(): WebTransport | null {
+			return session?.getTransport() ?? null;
 		},
 		connect,
 		disconnect,

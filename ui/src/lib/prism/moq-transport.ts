@@ -119,11 +119,15 @@ export class MoQTransport {
 	/** Optional base URL for connecting to a remote engine (e.g. Engine B). */
 	private baseUrl: string | null;
 
-	constructor(streamKey: string, callbacks: MoQTransportCallbacks, videoPriority = 64, baseUrl?: string) {
+	/** Catalog tracks to subscribe to; every one when null. */
+	private onlyTracks: string[] | null;
+
+	constructor(streamKey: string, callbacks: MoQTransportCallbacks, videoPriority = 64, baseUrl?: string, onlyTracks?: string[]) {
 		this.streamKey = streamKey;
 		this.callbacks = callbacks;
 		this.videoPriority = videoPriority;
 		this.baseUrl = baseUrl ?? null;
+		this.onlyTracks = onlyTracks ?? null;
 	}
 
 	/** Returns the underlying WebTransport session, or null if not connected. */
@@ -232,6 +236,7 @@ export class MoQTransport {
 		const mediaSubscriptions: Promise<number>[] = [];
 		for (const track of catalog.tracks) {
 			if (track.name === "catalog") continue;
+			if (this.onlyTracks && !this.onlyTracks.includes(track.name)) continue;
 			// Audio gets highest priority (0) — broadcast principle: viewers
 			// tolerate a frozen frame but notice audio glitches instantly.
 			// Video priority is per-transport (program=16, multiview=96).
