@@ -15,6 +15,7 @@ package codec
 #include <libavutil/hwcontext_cuda.h>
 #include <stdlib.h>
 #include <string.h>
+#include "levels.h"
 
 // AV_FRAME_FLAG_KEY was added in FFmpeg 6.1 (libavutil 58.29).
 // For older versions (e.g. Debian Bookworm's FFmpeg 5.1), use key_frame field.
@@ -82,15 +83,7 @@ static int ffenc_open_cuda_hw(ffenc_hw_frames_t* h, int width, int height,
 	h->base.ctx->color_range = AVCOL_RANGE_MPEG;
 	h->base.ctx->chroma_sample_location = AVCHROMA_LOC_LEFT;
 
-	// H.264 level
-	float fps_f = (float)fps_num / (float)fps_den;
-	int level;
-	if (width <= 1280 && height <= 720)
-		level = 31;
-	else if (width <= 1920 && height <= 1080 && fps_f <= 30.5f)
-		level = 40;
-	else
-		level = 42;
+	int level = avc_level_for(width, height, fps_num, fps_den);
 
 	// NVENC options: preview mode uses fast preset with no AQ for tight
 	// bitrate control at low targets (480p/750kbps). Program mode uses
@@ -261,15 +254,8 @@ static int ffenc_open_cuda_hw_v2(ffenc_hw_frames_t* h, int width, int height,
 		av_opt_set(h->base.ctx->priv_data, "aud", "1", 0);
 		// H.264 level auto-selection; HEVC auto-levels are fine
 		if (is_h264) {
-			float fps_f = (float)fps_num / (float)fps_den;
-			int level;
-			if (width <= 1280 && height <= 720)
-				level = 31;
-			else if (width <= 1920 && height <= 1080 && fps_f <= 30.5f)
-				level = 40;
-			else
-				level = 42;
-			av_opt_set_int(h->base.ctx->priv_data, "level", level, 0);
+			av_opt_set_int(h->base.ctx->priv_data, "level",
+				avc_level_for(width, height, fps_num, fps_den), 0);
 		}
 	} else {
 		av_opt_set(h->base.ctx->priv_data, "preset", "p4", 0);
@@ -283,15 +269,8 @@ static int ffenc_open_cuda_hw_v2(ffenc_hw_frames_t* h, int width, int height,
 		av_opt_set_int(h->base.ctx->priv_data, "temporal-aq", 0, 0);
 		av_opt_set(h->base.ctx->priv_data, "aud", "1", 0);
 		if (is_h264) {
-			float fps_f = (float)fps_num / (float)fps_den;
-			int level;
-			if (width <= 1280 && height <= 720)
-				level = 31;
-			else if (width <= 1920 && height <= 1080 && fps_f <= 30.5f)
-				level = 40;
-			else
-				level = 42;
-			av_opt_set_int(h->base.ctx->priv_data, "level", level, 0);
+			av_opt_set_int(h->base.ctx->priv_data, "level",
+				avc_level_for(width, height, fps_num, fps_den), 0);
 		}
 	}
 
