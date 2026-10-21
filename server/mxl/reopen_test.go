@@ -83,9 +83,10 @@ func TestReopeningReader_RefusesChangedShape(t *testing.T) {
 		return &closeTracking{DiscreteReader: replacement, closed: &closed}, nil
 	}, nil)
 
-	_, _, err := flow.ReadGrain(0, 0)
-	if !errors.Is(err, ErrTimeout) {
-		t.Fatalf("err = %v, want ErrTimeout while no matching flow exists", err)
+	for range 2 {
+		if _, _, err := flow.ReadGrain(0, 0); !errors.Is(err, ErrTimeout) {
+			t.Fatalf("err = %v, want ErrTimeout while no matching flow exists", err)
+		}
 	}
 	if !closed {
 		t.Error("mismatched flow handle was left open")
@@ -103,8 +104,50 @@ func TestReopeningReader_AcceptsOtherRingDepth(t *testing.T) {
 		return newMockDiscreteReader(nil, deeper), nil
 	}, nil)
 
+	readUntilReopened(t, flow)
+}
+
+// readUntilReopened reads past the invalid handle and expects the next read
+// to report ErrTooLate, which is what moves a reader loop to the new head.
+func readUntilReopened(t *testing.T, flow DiscreteReader) {
+	t.Helper()
+	if _, _, err := flow.ReadGrain(0, 0); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("read of the replaced flow: err = %v, want ErrTimeout", err)
+	}
 	if _, _, err := flow.ReadGrain(0, 0); !errors.Is(err, ErrTooLate) {
-		t.Fatalf("err = %v, want ErrTooLate to resync on the reopened flow", err)
+		t.Fatalf("first read of the reopened flow: err = %v, want ErrTooLate to resync", err)
+	}
+}
+
+// A writer that is down for longer than one attempt: the flow reopens on a
+// later read, and that read still resyncs instead of reading the old index
+// out of the new ring.
+func TestReopeningReader_DelayedReopenStillResyncs(t *testing.T) {
+	fresh := newMockDiscreteReader([]mockGrain{
+		{data: []byte{9}, info: GrainInfo{Index: 7, GrainSize: 1, TotalSlices: 1, ValidSlices: 1}},
+	}, videoShape)
+	present := false
+	flow := NewReopeningReader("f", &invalidDiscreteReader{}, func(string) (DiscreteReader, error) {
+		if !present {
+			return nil, errors.New("flow not found")
+		}
+		return fresh, nil
+	}, nil).(*reopeningReader)
+
+	if _, _, err := flow.ReadGrain(0, 0); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	if _, _, err := flow.ReadGrain(0, 0); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout while the writer is down", err)
+	}
+	present = true
+	flow.r.nextRetry = time.Time{}
+	if _, _, err := flow.ReadGrain(0, 0); !errors.Is(err, ErrTooLate) {
+		t.Fatalf("err = %v, want ErrTooLate on the first read of the reopened flow", err)
+	}
+	data, _, err := flow.ReadGrain(7, 0)
+	if err != nil || data[0] != 9 {
+		t.Fatalf("read after resync = %v, %v; want grain 9", data, err)
 	}
 }
 
@@ -148,6 +191,9 @@ func TestReopeningAudioReader_ReadsRecreatedFlow(t *testing.T) {
 		return fresh, nil
 	}, nil)
 
+	if _, err := flow.ReadSamples(0, 1, 0); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("read of the replaced flow: err = %v, want ErrTimeout", err)
+	}
 	if _, err := flow.ReadSamples(0, 1, 0); !errors.Is(err, ErrTooLate) {
 		t.Fatalf("err = %v, want ErrTooLate to resync on the reopened flow", err)
 	}

@@ -36,6 +36,12 @@ type reopener[T flowHandle] struct {
 	cur       T
 	isOpen    bool
 	nextRetry time.Time
+
+	// fresh is set when a new handle was opened and no read has gone
+	// through it yet. The reader loop's index belongs to the flow that was
+	// replaced, so that first read reports ErrTooLate instead, which sends
+	// the loop to the head of the new ring.
+	fresh bool
 }
 
 // handle returns the current handle, reopening the flow first when there is
@@ -62,7 +68,7 @@ func (r *reopener[T]) handle() (h T, ok bool) {
 			"flowID", r.flowID, "want", r.want, "got", got)
 		return h, false
 	}
-	r.cur, r.isOpen = h, true
+	r.cur, r.isOpen, r.fresh = h, true, true
 	r.log.Info("mxl: flow reopened", "flowID", r.flowID)
 	return h, true
 }
@@ -74,7 +80,7 @@ func (r *reopener[T]) invalidate() {
 	}
 	_ = r.cur.Close()
 	var zero T
-	r.cur, r.isOpen = zero, false
+	r.cur, r.isOpen, r.fresh = zero, false, false
 	r.nextRetry = time.Time{}
 	r.log.Warn("mxl: flow was recreated, reopening", "flowID", r.flowID)
 }
@@ -84,6 +90,14 @@ func (r *reopener[T]) invalidate() {
 func waitNoFlow(timeoutNs uint64, flowID string) error {
 	time.Sleep(time.Duration(timeoutNs))
 	return fmt.Errorf("%w: flow %s is being reopened", ErrTimeout, flowID)
+}
+
+// takeFresh reports whether the current handle has not been read through
+// yet, and marks it read.
+func (r *reopener[T]) takeFresh() bool {
+	f := r.fresh
+	r.fresh = false
+	return f
 }
 
 func (r *reopener[T]) headIndex() (uint64, error) {
@@ -131,22 +145,22 @@ func NewReopeningReader(flowID string, first DiscreteReader, open func(string) (
 }
 
 // ReadGrain reads from the current handle. After the flow was recreated it
-// returns ErrTooLate once the new flow is open, which sends the reader loop
-// back to the head of the new ring, and ErrTimeout until then.
+// returns ErrTimeout until the new flow is open and ErrTooLate on the first
+// read after that, which sends the reader loop to the head of the new ring.
 func (w *reopeningReader) ReadGrain(index, timeoutNs uint64) ([]byte, GrainInfo, error) {
 	h, ok := w.r.handle()
 	if !ok {
 		return nil, GrainInfo{}, waitNoFlow(timeoutNs, w.r.flowID)
 	}
-	data, info, err := h.ReadGrain(index, timeoutNs)
-	if !errors.Is(err, ErrFlowInvalid) {
-		return data, info, err
-	}
-	w.r.invalidate()
-	if _, ok := w.r.handle(); ok {
+	if w.r.takeFresh() {
 		return nil, GrainInfo{}, fmt.Errorf("%w: flow %s reopened", ErrTooLate, w.r.flowID)
 	}
-	return nil, GrainInfo{}, waitNoFlow(timeoutNs, w.r.flowID)
+	data, info, err := h.ReadGrain(index, timeoutNs)
+	if errors.Is(err, ErrFlowInvalid) {
+		w.r.invalidate()
+		return nil, GrainInfo{}, waitNoFlow(0, w.r.flowID)
+	}
+	return data, info, err
 }
 
 func (w *reopeningReader) ConfigInfo() FlowConfig     { return w.r.want }
@@ -178,15 +192,15 @@ func (w *reopeningAudioReader) ReadSamples(index uint64, count int, timeoutNs ui
 	if !ok {
 		return nil, waitNoFlow(timeoutNs, w.r.flowID)
 	}
-	pcm, err := h.ReadSamples(index, count, timeoutNs)
-	if !errors.Is(err, ErrFlowInvalid) {
-		return pcm, err
-	}
-	w.r.invalidate()
-	if _, ok := w.r.handle(); ok {
+	if w.r.takeFresh() {
 		return nil, fmt.Errorf("%w: flow %s reopened", ErrTooLate, w.r.flowID)
 	}
-	return nil, waitNoFlow(timeoutNs, w.r.flowID)
+	pcm, err := h.ReadSamples(index, count, timeoutNs)
+	if errors.Is(err, ErrFlowInvalid) {
+		w.r.invalidate()
+		return nil, waitNoFlow(0, w.r.flowID)
+	}
+	return pcm, err
 }
 
 func (w *reopeningAudioReader) ConfigInfo() FlowConfig     { return w.r.want }
