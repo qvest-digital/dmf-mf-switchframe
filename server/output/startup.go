@@ -22,7 +22,7 @@ import (
 //	    {"type": "srt-caller", "address": "203.0.113.5", "port": 9000,
 //	     "streamID": "program", "encryption": "aes-128",
 //	     "passphraseFile": "/run/secrets/srt-out/passphrase"},
-//	    {"type": "rtmp", "url": "rtmp://ingest.example.com/live/key"}
+//	    {"type": "rtmp", "urlFile": "/run/secrets/rtmp/url"}
 //	  ],
 //	  "recording": {"outputDir": "/recordings", "rotateAfterMins": 30}
 //	}
@@ -36,12 +36,13 @@ type StartupConfig struct {
 	Recording    *StartupRecording    `json:"recording,omitempty"`
 }
 
-// StartupDestination is a DestinationConfig whose passphrase may be read from
-// a file, so the file holding the rest of the configuration need not be
-// secret.
+// StartupDestination is a DestinationConfig whose SRT passphrase and RTMP URL
+// may be read from files, so the file holding the rest of the configuration
+// need not be secret: an RTMP URL usually carries the stream key.
 type StartupDestination struct {
 	DestinationConfig
 	PassphraseFile string `json:"passphraseFile,omitempty"`
+	URLFile        string `json:"urlFile,omitempty"`
 }
 
 // StartupRecording takes the fields POST /api/recording/start takes. Unlike
@@ -72,20 +73,12 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 	}
 	for i := range cfg.Destinations {
 		d := &cfg.Destinations[i]
-		if d.PassphraseFile == "" {
-			continue
-		}
-		if d.Passphrase != "" {
-			return cfg, fmt.Errorf("outputs config: destination %d sets both passphrase and passphraseFile", i)
-		}
-		if !filepath.IsAbs(d.PassphraseFile) {
-			return cfg, fmt.Errorf("outputs config: destination %d: passphraseFile must be an absolute path", i)
-		}
-		p, err := os.ReadFile(d.PassphraseFile)
-		if err != nil {
+		if err := readInto(&d.Passphrase, d.PassphraseFile, "passphrase"); err != nil {
 			return cfg, fmt.Errorf("outputs config: destination %d: %w", i, err)
 		}
-		d.Passphrase = strings.TrimRight(string(p), "\r\n")
+		if err := readInto(&d.URL, d.URLFile, "url"); err != nil {
+			return cfg, fmt.Errorf("outputs config: destination %d: %w", i, err)
+		}
 	}
 	if cfg.Recording != nil {
 		if _, err := cfg.Recording.RecorderConfig(); err != nil {
@@ -93,6 +86,26 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// readInto sets *field from the file at path, without the trailing newline a
+// mounted Secret often carries. An empty path leaves the field alone.
+func readInto(field *string, path, name string) error {
+	if path == "" {
+		return nil
+	}
+	if *field != "" {
+		return fmt.Errorf("sets both %s and %sFile", name, name)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("%sFile must be an absolute path", name)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	*field = strings.TrimRight(string(b), "\r\n")
+	return nil
 }
 
 // RecorderConfig converts the request into the recorder's configuration.

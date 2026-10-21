@@ -34,6 +34,14 @@ func TestLoadStartupConfig_ReadsPassphraseFile(t *testing.T) {
 	require.Equal(t, "203.0.113.5", cfg.Destinations[0].Address)
 }
 
+func TestLoadStartupConfig_ReadsURLFile(t *testing.T) {
+	url := writeFile(t, "url", "rtmp://ingest.example.com/live/streamkey\n")
+	cfg, err := LoadStartupConfig(writeFile(t, "outputs.json",
+		`{"destinations": [{"type": "rtmp", "urlFile": "`+url+`"}]}`))
+	require.NoError(t, err)
+	require.Equal(t, "rtmp://ingest.example.com/live/streamkey", cfg.Destinations[0].URL)
+}
+
 func TestLoadStartupConfig_Rejects(t *testing.T) {
 	secret := writeFile(t, "passphrase", "x")
 	for name, body := range map[string]string{
@@ -45,6 +53,8 @@ func TestLoadStartupConfig_Rejects(t *testing.T) {
 			"passphraseFile": "/nonexistent/passphrase"}]}`,
 		"relative passphrase file": `{"destinations": [{"type": "srt-caller", "address": "h", "port": 1,
 			"passphraseFile": "passphrase"}]}`,
+		"two urls": `{"destinations": [{"type": "rtmp", "url": "rtmp://h/a",
+			"urlFile": "` + secret + `"}]}`,
 		"trailing value":           `{"destinations": []} {"recording": {"outputDir": "/r"}}`,
 		"relative recording dir":   `{"recording": {"outputDir": "recordings"}}`,
 		"traversing recording dir": `{"recording": {"outputDir": "/data/../etc"}}`,
