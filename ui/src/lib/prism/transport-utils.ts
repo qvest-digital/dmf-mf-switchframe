@@ -33,14 +33,19 @@ export async function fetchServerInfo(): Promise<ServerInfo> {
 }
 
 /**
- * Derives the WebTransport base URL from the server info, using the
- * current page hostname and the server's configured port.
+ * Derives the WebTransport base URL from the server info: the host the server
+ * advertises in addr when it names one, else the current page hostname, and
+ * the server's configured port. A page served through an HTTP proxy that
+ * carries no UDP reaches WebTransport on another host than its own.
  */
-export function wtBaseURL(info: ServerInfo): string {
-	// addr is typically ":4443" or "0.0.0.0:4443"
-	const parts = info.addr.split(":");
-	const port = parts[parts.length - 1] || "4443";
-	return `https://${window.location.hostname}:${port}`;
+export function wtBaseURL(info: ServerInfo, pageHost: string = window.location.hostname): string {
+	// addr is ":4443", "0.0.0.0:4443", "[::]:4443" or "wt.example.com:4443"
+	const sep = info.addr.lastIndexOf(":");
+	const port = (sep >= 0 ? info.addr.slice(sep + 1) : "") || "4443";
+	const host = (sep >= 0 ? info.addr.slice(0, sep) : info.addr).replace(/^\[|\]$/g, "");
+	const listenOnly = host === "" || host === "0.0.0.0" || host === "::";
+	const target = listenOnly ? pageHost : host.includes(":") ? `[${host}]` : host;
+	return `https://${target}:${port}`;
 }
 
 /**
