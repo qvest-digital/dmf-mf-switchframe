@@ -309,6 +309,9 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Duration(intervalNs))
 	defer ticker.Stop()
 
+	var last uint64
+	haveLast := false
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -328,9 +331,13 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 				return
 			}
 
-			var index uint64
+			var now uint64
 			if CurrentIndex != nil {
-				index = CurrentIndex(ref.rate)
+				now = CurrentIndex(ref.rate)
+			}
+			index, ok := nextVideoIndex(now, last, haveLast)
+			if !ok {
+				continue
 			}
 
 			// Claim-then-confirm: publish the ring slot we intend to read so
@@ -361,8 +368,34 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 			if err != nil {
 				w.log.Error("mxl writer: failed to write video grain",
 					"error", err, "index", index)
+				continue
 			}
+			last, haveLast = index, true
 		}
+	}
+}
+
+// nextVideoIndex picks the grain index for a tick that fires at wall-clock
+// grain index now, after the writer last committed last. A ticker only keeps
+// the grain period on average, so two ticks can land in one grain period and
+// the next one a period late. Writing the wall-clock index on every tick then
+// repeats an index, which libmxl refuses because it is not past the last
+// commit, and leaves the following index unwritten, which readers get as an
+// invalid grain. The tick after a commit therefore writes the next index
+// unless the clock is already past it, and a tick more than one grain ahead of
+// the clock writes nothing.
+func nextVideoIndex(now, last uint64, haveLast bool) (index uint64, ok bool) {
+	if !haveLast {
+		return now, true
+	}
+	next := last + 1
+	switch {
+	case now > next:
+		return now, true
+	case now+1 < next:
+		return 0, false
+	default:
+		return next, true
 	}
 }
 
