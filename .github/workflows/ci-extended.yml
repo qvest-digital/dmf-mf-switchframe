@@ -55,15 +55,3 @@ jobs:
         with:
           name: benchmark-results
           path: server/benchmark-results.txt
-      - name: Store benchmark results
-        uses: benchmark-action/github-action-benchmark@v1.20.4
-        if: github.ref == 'refs/heads/main'
-        with:
-          tool: 'go'
-          output-file-path: server/benchmark-results.txt
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
-          alert-threshold: '200%'
-          comment-on-alert: true
-          fail-on-alert: false
-          benchmark-data-dir-path: dev/bench
