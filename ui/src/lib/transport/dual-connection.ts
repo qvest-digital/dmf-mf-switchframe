@@ -358,6 +358,7 @@ export class DualConnectionManager {
 
 	/** Create a ConnectionManager for an engine and wire up callbacks. */
 	private createEngineManager(engineId: EngineId, url: string): void {
+		if (engineId === 'B') this.reconciler.setEngineBUrl(url);
 		const mgr = new ConnectionManager({
 			url,
 			onStateUpdate: (update) => {

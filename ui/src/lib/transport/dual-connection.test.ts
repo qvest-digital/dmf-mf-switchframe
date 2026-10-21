@@ -84,6 +84,7 @@ vi.mock('$lib/state/reconciler.svelte', () => ({
 			setRecovering: vi.fn(),
 			setTransportAlive: vi.fn(),
 			recordPong: vi.fn(),
+			setEngineBUrl: vi.fn(),
 			tick: vi.fn(),
 			get state() { return _state; },
 			get health() {
@@ -707,6 +708,15 @@ describe('DualConnectionManager', () => {
 			expect(reconcilerInstance.ingest).not.toHaveBeenCalled();
 			expect(onStateUpdate).not.toHaveBeenCalled();
 			vi.useRealTimers();
+		});
+
+		it('addEngine tells the reconciler the URL engine B is connected at', () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			expect(reconcilerInstance.setEngineBUrl).toHaveBeenCalledWith('https://engine-b.example.com');
 		});
 
 		it('addEngine sets isDualEngine to true', () => {

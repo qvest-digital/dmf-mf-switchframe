@@ -34,6 +34,48 @@ describe('createReconciler', () => {
 		expect(r.health.authoritative).toBe('A');
 	});
 
+	// Engine B's state names engine A as its peer. Handed to the UI as is,
+	// it would point every consumer of engineBUrl, the warm-standby and
+	// failover pipelines among them, at engine A while B is authoritative.
+	it('reports the URL engine B is connected at while engine B is authoritative', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		r.setEngineBUrl('https://engine-b');
+		r.setRTT('A', 180);
+		r.setRTT('B', 30);
+		r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5, engineBUrl: 'https://engine-b' }));
+		r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5, engineBUrl: 'https://engine-a' }));
+		r.tick();
+		vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
+		r.tick();
+		expect(r.health.authoritative).toBe('B');
+		expect(r.state.programSource).toBe('cam2');
+		expect(r.state.engineBUrl).toBe('https://engine-b');
+		vi.useRealTimers();
+	});
+
+	// With engine A down at load, B is found by the control plane or DNS
+	// and A never reports an engineBUrl.
+	it('reports the URL engine B is connected at when engine A never sent one', () => {
+		const r = createReconciler();
+		r.setEngineBUrl('https://engine-b');
+		r.ingest('B', makeState({ lastCommandSeq: 5, engineBUrl: 'https://engine-a' }));
+		expect(r.health.authoritative).toBe('B');
+		expect(r.state.engineBUrl).toBe('https://engine-b');
+	});
+
+	// Engine B found through the control plane or re-provisioned: A still
+	// names another peer. A differing URL per authority would rebuild the
+	// warm-standby pipeline on every authority change.
+	it('reports the URL engine B is connected at while engine A is authoritative', () => {
+		const r = createReconciler();
+		r.setEngineBUrl('https://engine-b');
+		r.ingest('A', makeState({ lastCommandSeq: 5, engineBUrl: 'https://engine-b-old' }));
+		r.ingest('B', makeState({ lastCommandSeq: 5, engineBUrl: 'https://engine-a' }));
+		expect(r.health.authoritative).toBe('A');
+		expect(r.state.engineBUrl).toBe('https://engine-b');
+	});
+
 	it('detects source divergence', () => {
 		const r = createReconciler();
 		r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
