@@ -150,6 +150,10 @@ type AppConfig struct {
 	// Inter-engine peer health monitoring.
 	PeerEngineURL string // --peer-engine-url (URL of the other engine for health polling)
 
+	// PeerPublicURL is the peer engine's origin as the browser reaches it,
+	// handed to the UI for its second engine. Empty: PeerEngineURL.
+	PeerPublicURL string // --peer-public-url or SWITCHFRAME_PEER_PUBLIC_URL
+
 	// PeerCertHash is a comma-separated list of hex SHA-256 leaf-certificate
 	// fingerprints accepted when TLS-connecting to the peer engine. Required
 	// when PeerEngineURL uses an RFC 1918 IP (standard LE certs only cover
@@ -401,6 +405,7 @@ func parseConfig() (AppConfig, error) {
 
 	// Peer engine health monitoring.
 	peerEngineURLFlag := flag.String("peer-engine-url", "", "URL of the peer engine for inter-engine health monitoring (e.g., https://engine-b:8080)")
+	peerPublicURLFlag := flag.String("peer-public-url", "", "Peer engine origin as the browser reaches it, when it differs from --peer-engine-url (e.g. https://engine-b.example.com)")
 	peerCertHashFlag := flag.String("peer-cert-hash", "", "SHA-256 hex of the peer engine's leaf cert DER (comma-separated pair during rotation); required when --peer-engine-url uses a private IP")
 	engineLabelFlag := flag.String("engine-label", "", "engine label for active-active pairs (\"a\" or \"b\"); empty = single-engine")
 	controlPlaneSecretFlag := flag.String("control-plane-secret", "", "shared secret authorizing POST /api/peer/force-leader; empty disables the endpoint")
@@ -581,6 +586,7 @@ func parseConfig() (AppConfig, error) {
 		OutputsConfig:        *outputsConfigFlag,
 		PeerEngineURL:        resolveEnvOrFlag(*peerEngineURLFlag, "SWITCHFRAME_PEER_ENGINE_URL"),
 		PeerCertHash:         resolveEnvOrFlag(*peerCertHashFlag, "SWITCHFRAME_PEER_CERT_HASH"),
+		PeerPublicURL:        resolveEnvOrFlag(*peerPublicURLFlag, "SWITCHFRAME_PEER_PUBLIC_URL"),
 		EngineLabel:          resolveEnvOrFlag(*engineLabelFlag, "SWITCHFRAME_ENGINE_LABEL"),
 		ControlPlaneSecret:   resolveEnvOrFlag(*controlPlaneSecretFlag, "SWITCHFRAME_CONTROL_PLANE_SECRET"),
 		RefClock:             *refClockFlag,

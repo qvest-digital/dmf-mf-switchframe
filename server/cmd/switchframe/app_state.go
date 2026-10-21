@@ -455,9 +455,7 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		if lastSeen := a.peerPoller.PeerLastSeen(); !lastSeen.IsZero() {
 			state.PeerLastSeenMs = lastSeen.UnixMilli()
 		}
-		if a.cfg.PeerEngineURL != "" {
-			state.EngineBURL = a.cfg.PeerEngineURL
-		}
+		state.EngineBURL = peerBrowserURL(a.cfg)
 		state.Role = a.peerPoller.Role().String()
 	} else {
 		state.Role = peer.RoleStandalone.String()
@@ -1217,4 +1215,15 @@ func dveSlotSnapshotFromTransform(slot dve.Slot) internal.DVESlotSnapshot {
 	}
 
 	return ds
+}
+
+// peerBrowserURL is the peer engine's origin as the browser reaches it:
+// --peer-public-url when set, else the --peer-engine-url this engine polls.
+// The two differ where engines reach each other on an internal address the
+// browser cannot.
+func peerBrowserURL(cfg AppConfig) string {
+	if cfg.PeerPublicURL != "" {
+		return cfg.PeerPublicURL
+	}
+	return cfg.PeerEngineURL
 }
