@@ -2,8 +2,8 @@
 
 // ARM64 NEON V210 <-> YUV422P10 lossless 10-bit conversion kernels.
 //
-// v210UnpackRow10Ptr: V210 -> planar YUV422P10 (uint16)
-// v210PackRow10Ptr:   planar YUV422P10 (uint16) -> V210
+// V210UnpackRow10: V210 -> planar YUV422P10 (uint16)
+// V210PackRow10:   planar YUV422P10 (uint16) -> V210
 //
 // Per group: 4 x uint32 words (16 bytes) <-> 6 Y + 3 Cb + 3 Cr (uint16 each).
 // All 10-bit values are preserved losslessly.
@@ -13,7 +13,7 @@
 // ============================================================================
 // Extracts 10-bit fields from V210 words, stores as uint16 LE.
 // Uses scalar register operations with efficient bitfield extraction.
-TEXT ·v210UnpackRow10Ptr(SB), NOSPLIT, $0-40
+TEXT ·V210UnpackRow10(SB), NOSPLIT, $0-40
 	MOVD yOut+0(FP), R0      // Y output pointer (uint16*)
 	MOVD cbOut+8(FP), R1     // Cb output pointer (uint16*)
 	MOVD crOut+16(FP), R2    // Cr output pointer (uint16*)
@@ -113,7 +113,7 @@ unpack10_done:
 // ============================================================================
 // Packs uint16 Y/Cb/Cr into V210 words. Values are masked to 10-bit.
 // Pad bits [31:30] are zeroed automatically by masking.
-TEXT ·v210PackRow10Ptr(SB), NOSPLIT, $0-40
+TEXT ·V210PackRow10(SB), NOSPLIT, $0-40
 	MOVD v210Out+0(FP), R0   // V210 output pointer (byte*)
 	MOVD yIn+8(FP), R1       // Y input pointer (uint16*)
 	MOVD cbIn+16(FP), R2     // Cb input pointer (uint16*)

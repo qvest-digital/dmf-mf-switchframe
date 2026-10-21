@@ -118,6 +118,9 @@ type App struct {
 	// Output
 	outputMgr     *output.Manager
 	confidenceMon *output.ConfidenceMonitor
+	// Directory of the recording --outputs-config started, offered to clip
+	// import the way a recording started over the API is.
+	startupRecordingDir string
 
 	// Subsystems
 	debugCollector *debug.Collector
@@ -1216,6 +1219,8 @@ func (a *App) initMXL() error {
 		videoFlow, err := inst.OpenReader(videoFlowID)
 		if err != nil {
 			slog.Warn("mxl: could not open video flow", "flowID", videoFlowID, "error", err)
+		} else {
+			videoFlow = mxl.NewReopeningReader(videoFlowID, videoFlow, inst.OpenReader, nil)
 		}
 
 		// Open MXL audio flow if specified.
@@ -1225,7 +1230,7 @@ func (a *App) initMXL() error {
 			if err != nil {
 				slog.Warn("mxl: could not open audio flow", "flowID", audioFlowID, "error", err)
 			} else {
-				audioFlow = af
+				audioFlow = mxl.NewReopeningAudioReader(audioFlowID, af, inst.OpenAudioReader, nil)
 			}
 		}
 
@@ -1236,7 +1241,7 @@ func (a *App) initMXL() error {
 			if err != nil {
 				slog.Warn("mxl: could not open data flow", "flowID", dataFlowID, "error", err)
 			} else {
-				dataFlow = df
+				dataFlow = mxl.NewReopeningReader(dataFlowID, df, inst.OpenReader, nil)
 			}
 		}
 
@@ -1696,6 +1701,9 @@ func (a *App) initAPI() error {
 	}
 	if a.replayMgr != nil {
 		apiOpts = append(apiOpts, control.WithReplayManager(a.replayMgr))
+	}
+	if a.startupRecordingDir != "" {
+		apiOpts = append(apiOpts, control.WithRecordingDir(a.startupRecordingDir))
 	}
 	if a.scte35Injector != nil {
 		apiOpts = append(apiOpts, control.WithSCTE35(a.scte35Injector, a.scte35Rules))

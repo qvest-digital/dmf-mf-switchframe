@@ -20,6 +20,12 @@ var (
 	// ErrTooEarly indicates the requested grain/sample index has not been
 	// written yet (the reader is ahead of the writer).
 	ErrTooEarly = errors.New("mxl: too early")
+
+	// ErrFlowInvalid indicates the flow's data file was replaced after the
+	// reader opened it, which is what a writer restart that recreates the
+	// flow leaves behind. The handle never recovers; only a new one reads
+	// the new flow.
+	ErrFlowInvalid = errors.New("mxl: flow invalid")
 )
 
 // FlowMode specifies whether a flow is opened for reading or writing.

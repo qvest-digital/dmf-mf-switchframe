@@ -59,7 +59,7 @@ func statusError(status C.mxlStatus, context string) error {
 	case C.MXL_ERR_PERMISSION_DENIED:
 		return fmt.Errorf("mxl: %s: permission denied", context)
 	case C.MXL_ERR_FLOW_INVALID:
-		return fmt.Errorf("mxl: %s: flow invalid (writer crashed?)", context)
+		return fmt.Errorf("%w: %s", ErrFlowInvalid, context)
 	default:
 		return fmt.Errorf("mxl: %s: error code %d", context, int(status))
 	}

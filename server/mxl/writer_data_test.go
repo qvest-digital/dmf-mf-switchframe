@@ -202,6 +202,13 @@ func TestWriteDataGrain_MultipleWrites(t *testing.T) {
 		if g.data[0] != byte(i) || g.data[1] != byte(i+1) {
 			t.Fatalf("grain[%d] data = %v, want [%d %d]", i, g.data, i, i+1)
 		}
+		// Written faster than one grain period, the packets still land on
+		// distinct, increasing indices: libmxl refuses a commit that is not
+		// past the last one, which would drop all but the first.
+		if i > 0 && g.index <= grains[i-1].index {
+			t.Fatalf("grain[%d] index %d not past grain[%d] index %d",
+				i, g.index, i-1, grains[i-1].index)
+		}
 	}
 }
 
