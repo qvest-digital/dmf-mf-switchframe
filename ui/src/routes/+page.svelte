@@ -74,6 +74,10 @@
 	let engineBDetected = false;
 	let reconcilerInterval: ReturnType<typeof setInterval> | undefined;
 	let videoFailoverActive = false;
+	// Video is on Engine B because Engine A's program preview stalled. Sync
+	// health says nothing about A's media, so the restore on 'synced' must
+	// not undo this; a stall on B brings video back to A.
+	let stallFailover = false;
 	let failoverTimestamps: number[] = [];
 	const FAILOVER_MAX_COUNT = 2;
 	const FAILOVER_WINDOW_MS = 30_000;
@@ -824,14 +828,17 @@
 							}
 							recordFailover();
 							videoFailoverActive = true;
+							stallFailover = true;
 							pipelineManager.failoverToEngineB(inferred, Object.keys(store.state.sources ?? {}))
 								.then(() => {
 									activeEngine = 'B';
+									videoFailoverActive = false;
 									notify('warning', 'Video switched to Engine B — click to resume audio');
 									requestAudioResumeAfterFailover();
 								})
 								.catch(err => {
 									videoFailoverActive = false;
+									stallFailover = false;
 									console.warn('Emergency failover failed:', err);
 									notify('error', 'Video failover to Engine B failed');
 								});
@@ -847,13 +854,17 @@
 				}
 				recordFailover();
 				videoFailoverActive = true;
+				stallFailover = true;
 				pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
 					.then(() => {
 						activeEngine = 'B';
+						videoFailoverActive = false;
 						notify('warning', 'Video switched to Engine B — click to resume audio');
 						requestAudioResumeAfterFailover();
 					})
 					.catch(err => {
+						videoFailoverActive = false;
+						stallFailover = false;
 						console.warn('Media stall failover failed:', err);
 						notify('error', 'Video failover to Engine B failed');
 					});
@@ -866,6 +877,7 @@
 						.then(() => {
 							activeEngine = 'A';
 							videoFailoverActive = false;
+							stallFailover = false;
 							notify('warning', 'Video restored to Engine A — click to resume audio');
 							requestAudioResumeAfterFailover();
 						})
@@ -1319,6 +1331,7 @@
 				}
 				recordFailover();
 				videoFailoverActive = true;
+				stallFailover = false;
 				pipelineManager.failoverToEngineB(engineBUrl, Object.keys(store.state.sources ?? {}))
 					.then(() => {
 						activeEngine = 'B';
@@ -1335,7 +1348,7 @@
 		// Restore: when synced and currently on B, switch back to A.
 		// Restoring to Engine A is a safe operation — do NOT consume
 		// the failover circuit breaker budget.
-		if (status === 'synced' && pipelineManager.activeEngine === 'B' && videoFailoverActive) {
+		if (status === 'synced' && pipelineManager.activeEngine === 'B' && videoFailoverActive && !stallFailover) {
 			videoFailoverActive = false;
 			pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
 				.then(() => {
@@ -1375,6 +1388,7 @@
 				pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
 					.then(() => {
 						activeEngine = 'A';
+						stallFailover = false;
 						notify('info', 'Switched back to Engine A — click to resume audio');
 						requestAudioResumeAfterFailover();
 					})
@@ -1390,6 +1404,7 @@
 				}
 				recordFailover();
 				videoFailoverActive = true;
+				stallFailover = false;
 				pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
 					.then(() => {
 						activeEngine = 'B';
@@ -1500,6 +1515,7 @@
 			pipelineManager.switchProgramToEngineB();
 		} else if (activeEngine === 'A' && pipelineManager.activeEngine === 'B') {
 			pipelineManager.switchProgramToEngineA();
+			stallFailover = false;
 		}
 	});
 
