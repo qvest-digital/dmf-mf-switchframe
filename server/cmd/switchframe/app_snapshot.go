@@ -178,6 +178,14 @@ func (a *App) SetDVELayout(layout internal.LayoutSnapshot) error {
 		return nil
 	}
 
+	// A snapshot of an engine without a layout carries an empty one.
+	// Installing it would leave this engine with an empty layout where the
+	// source has none, so their states would never compare equal.
+	if layout.ActivePreset == "" && len(layout.Slots) == 0 {
+		a.dveCompositor.SetLayout(nil)
+		return nil
+	}
+
 	l := &dve.Layout{
 		Name:  layout.ActivePreset,
 		Slots: make([]dve.Slot, len(layout.Slots)),
