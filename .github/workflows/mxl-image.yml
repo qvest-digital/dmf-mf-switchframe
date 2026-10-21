@@ -1,0 +1,92 @@
+name: MXL image
+
+# Builds the MXL images from Dockerfile.mxl and runs the tests that need
+# libmxl, which the upstream workflows skip. Pull requests build and test
+# without publishing; main and mxl-v* tags publish.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "mxl-v*"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/qvest-digital/dmf-mf-switchframe
+
+jobs:
+  test-mxl:
+    # A repository rename leaves this string behind, and a mismatch skips the
+    # job silently rather than failing it.
+    if: github.repository == 'qvest-digital/dmf-mf-switchframe'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # The build stage carries libmxl and the FFmpeg headers the cgo
+      # packages need, so the tests run in exactly what the image compiles in.
+      - name: Build the test environment
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.mxl
+          target: build-base
+          load: true
+          tags: switchframe-build:test
+          cache-from: type=gha,scope=build-base
+          cache-to: type=gha,scope=build-base,mode=max
+      - name: Test with the mxl build tag
+        run: |
+          docker run --rm switchframe-build:test \
+            go test -tags mxl -race -count=1 ./mxl/... ./output/...
+
+  image:
+    if: github.repository == 'qvest-digital/dmf-mf-switchframe'
+    needs: test-mxl
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: cpu
+            suffix: ""
+          - target: cuda
+            suffix: "-cuda"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Derive image tags
+        id: tags
+        shell: bash
+        run: |
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/mxl-v* ]]; then
+            echo "version=${GITHUB_REF_NAME#mxl-v}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.mxl
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.sha }}${{ matrix.suffix }}
+            ${{ steps.tags.outputs.version && format('{0}:{1}{2}', env.IMAGE, steps.tags.outputs.version, matrix.suffix) || '' }}
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,scope=${{ matrix.target }},mode=max
