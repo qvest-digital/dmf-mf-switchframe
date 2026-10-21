@@ -1,3 +1,5 @@
+import { wtBaseURL } from '$lib/prism/transport-utils';
+
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export interface PrismConnectionConfig {
@@ -56,7 +58,12 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 				];
 			}
 
-			transport = new WebTransport(config.url, opts);
+			// The QUIC listener is where the engine advertises it, which is not
+			// the page's origin when the page comes through an HTTP proxy.
+			const wtUrl = certData.addr
+				? wtBaseURL({ certHash: new Uint8Array(), addr: certData.addr, trusted }, new URL(config.url).hostname)
+				: config.url;
+			transport = new WebTransport(wtUrl, opts);
 			const t = transport;
 			await t.ready;
 			// disconnect() may have landed while we were suspended on

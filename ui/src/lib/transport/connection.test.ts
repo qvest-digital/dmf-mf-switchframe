@@ -244,3 +244,39 @@ describe('PrismConnection', () => {
 		});
 	});
 });
+
+describe('createPrismConnection WebTransport target', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	async function targetFor(pageUrl: string, addr: string | undefined): Promise<string> {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+			json: () => Promise.resolve({ trusted: false, hash: btoa('x'), addr }),
+		} as unknown as Response));
+		const targets: string[] = [];
+		const WebTransportMock = vi.fn(function (url: string) {
+			targets.push(url);
+			return { ready: Promise.resolve(), closed: new Promise<void>(() => {}), close: vi.fn() };
+		});
+		vi.stubGlobal('WebTransport', WebTransportMock);
+		const conn = createPrismConnection({ url: pageUrl, onControlState: vi.fn(), onConnectionChange: vi.fn() });
+		await conn.connect();
+		conn.disconnect();
+		return targets[0];
+	}
+
+	// A page served through an HTTP proxy on 443 has no QUIC listener behind
+	// its origin; the engine says where its listener is.
+	it('opens WebTransport on the host and port the engine advertises', async () => {
+		expect(await targetFor('https://ui.example.com', 'wt.example.com:8080')).toBe('https://wt.example.com:8080');
+	});
+
+	it('keeps the page host for a listen-all address and takes its port', async () => {
+		expect(await targetFor('https://ui.example.com', ':8080')).toBe('https://ui.example.com:8080');
+	});
+
+	it('falls back to the engine URL when no address is advertised', async () => {
+		expect(await targetFor('https://ui.example.com:8080', undefined)).toBe('https://ui.example.com:8080');
+	});
+});

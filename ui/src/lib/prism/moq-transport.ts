@@ -82,17 +82,6 @@ interface MoQCatalog {
 	}[];
 }
 
-/** Extract port from an address string, handling IPv6 bracket notation. */
-function extractPort(addr: string): string {
-	// IPv6 bracket format: [::1]:4443
-	const bracketMatch = addr.match(/]:(\d+)$/);
-	if (bracketMatch) return bracketMatch[1];
-	// IPv4/hostname: 0.0.0.0:4443 or :4443
-	const colonMatch = addr.match(/:(\d+)$/);
-	if (colonMatch) return colonMatch[1];
-	return '4443';
-}
-
 /**
  * MoQ Transport client implementing draft-15. Handles the WebTransport
  * connection, MoQ control handshake, catalog subscription, and incoming
@@ -155,9 +144,8 @@ export class MoQTransport {
 			const hashBinary = atob(data.hash);
 			certHash = Uint8Array.from(hashBinary, (c) => c.charCodeAt(0));
 			trusted = data.trusted === true;
-			const port = extractPort(data.addr ?? ":4443");
-			const hostname = new URL(this.baseUrl).hostname;
-			wtUrl = `https://${hostname}:${port}/moq?stream=${encodeURIComponent(this.streamKey)}`;
+			const info = { certHash, trusted, addr: data.addr ?? ":4443" };
+			wtUrl = `${wtBaseURL(info, new URL(this.baseUrl).hostname)}/moq?stream=${encodeURIComponent(this.streamKey)}`;
 		} else {
 			// Local engine: existing behavior (same origin)
 			const info = await fetchServerInfo();
