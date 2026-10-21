@@ -1,6 +1,6 @@
 import { ConnectionManager, type ConnectionStatus } from './connection-manager';
 import { ClockSync } from './clock-sync';
-import { createReconciler, type SyncHealth, type EngineHealthDetail } from '$lib/state/reconciler.svelte';
+import { createReconciler, STALE_THRESHOLD_MS, type SyncHealth, type EngineHealthDetail } from '$lib/state/reconciler.svelte';
 import type { ControlRoomState, EngineId } from '$lib/api/types';
 
 export interface DualConnectionConfig {
@@ -16,6 +16,10 @@ export class DualConnectionManager {
 	private managers: Map<string, ConnectionManager> = new Map();
 	private engineUrls: Map<string, string> = new Map();
 	private engineStates: Map<string, ConnectionStatus> = new Map();
+	/** The last state each engine sent and when, kept so an engine added
+	 * later can seed the reconciler with the others' state rather than wait
+	 * for them to change. */
+	private lastStates: Map<EngineId, { state: ControlRoomState; at: number }> = new Map();
 	private reconciler = createReconciler();
 	private clockSync = new ClockSync();
 	private _commandSeq = 0;
@@ -89,14 +93,25 @@ export class DualConnectionManager {
 			return;
 		}
 		this.createEngineManager(id, url);
+		const wasDual = this._isDualEngine;
 		this._isDualEngine = this.managers.size > 1;
 
-		// Note: There is a brief window (~200ms) between setting _isDualEngine = true
-		// and the next Engine A state update where the reconciler has no state.
-		// This is harmless because the reconciler returns EMPTY_STATE as a fallback,
-		// and the UI already handles empty state gracefully (loading overlay).
-		// The next MoQ control track update from Engine A will flow through the
-		// reconciler and populate it.
+		// The engines that were already running delivered their state before
+		// the reconciler was in use. Without it, the engine added now is the
+		// only one the reconciler has seen, reads as authoritative, and the
+		// UI fails video over to it on load.
+		// A state older than the stale threshold would read as fresh once
+		// ingested, so it is left out.
+		if (this._isDualEngine && !wasDual) {
+			const now = Date.now();
+			let seeded = false;
+			for (const [engineId, { state, at }] of this.lastStates) {
+				if (now - at > STALE_THRESHOLD_MS) continue;
+				this.reconciler.ingest(engineId, state);
+				seeded = true;
+			}
+			if (seeded) this.config.onStateUpdate(this.reconciler.state);
+		}
 
 		// If we've already started, start the new manager — but only after the
 		// initial load completes to prevent Engine B from briefly becoming
@@ -363,6 +378,7 @@ export class DualConnectionManager {
 					state = update as ControlRoomState;
 				}
 
+				this.lastStates.set(engineId, { state, at: Date.now() });
 				if (this._isDualEngine) {
 					this.reconciler.ingest(engineId, state);
 					this.config.onStateUpdate(this.reconciler.state);
