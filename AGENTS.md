@@ -16,6 +16,9 @@ builds the same way.
   - `.github/workflows/mxl-image.yml`, which tests with the `mxl` build tag
     and publishes the images, and the release train in
     `.github/workflows/release-please.yml`.
+  - Upstream's image publish job and benchmark publishing are removed: they
+    push under the repository's own name. Do not reintroduce them from an
+    upstream merge.
   - Source changes, each a fix or a flag upstream can take as is.
 - No Helm chart lives here.
 
@@ -34,8 +37,9 @@ FFmpeg headers the cgo packages need.
     docker run --rm -v "$PWD/server:/src/server" switchframe-build \
       go test -tags mxl ./mxl/... ./output/...
 
-The CUDA kernels are compiled for every architecture in `CUDA_GENCODE`; a card
-outside that list JIT-compiles the PTX of the newest one at first start.
+The CUDA kernels are compiled to native code for every architecture in
+`CUDA_GENCODE`, plus Turing PTX, which a later card outside that list
+JIT-compiles at first start.
 
 ## Releases
 

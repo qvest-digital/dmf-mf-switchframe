@@ -14,10 +14,10 @@ ARG GO_MXL_TAG=1.1.0-rc.6
 # 13.2 is the newest the 595 driver branch runs without the forward
 # compatibility package.
 ARG CUDA_VERSION=13.2
-# Kernels are compiled to native code for each architecture, plus PTX for the
-# newest so a later card JIT-compiles instead of failing: Turing (T4), Ampere
-# (A10G), Ada (L4) and Blackwell consumer cards.
-ARG CUDA_GENCODE="-gencode arch=compute_75,code=sm_75 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=[sm_120,compute_120]"
+# Kernels are compiled to native code for Turing (T4), Ampere (A10G), Ada (L4)
+# and Blackwell consumer cards, plus Turing PTX, which every later card the
+# list leaves out JIT-compiles at first start.
+ARG CUDA_GENCODE="-gencode arch=compute_75,code=sm_75 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120 -gencode arch=compute_75,code=compute_75"
 
 # ---------- UI ----------
 FROM node:22-bookworm-slim AS ui
@@ -28,7 +28,8 @@ COPY ui/ ./
 RUN npm run build
 
 # ---------- build environment ----------
-FROM ghcr.io/qvest-digital/go-mxl-builder:${GO_MXL_TAG} AS build-base
+# Toolchains come before the source, so a source change rebuilds neither.
+FROM ghcr.io/qvest-digital/go-mxl-builder:${GO_MXL_TAG} AS toolchain
 # fdk-aac is in non-free.
 RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
  && apt-get update && apt-get install -y --no-install-recommends \
@@ -39,15 +40,9 @@ ENV CGO_ENABLED=1
 WORKDIR /src/server
 COPY server/go.mod server/go.sum ./
 RUN go mod download
-COPY server/ ./
-COPY --from=ui /app/ui/build ./cmd/switchframe/ui
 
-FROM build-base AS build-cpu
-RUN go build -tags "embed_ui mxl" -o /out/switchframe ./cmd/switchframe
-
-FROM build-base AS build-cuda
+FROM toolchain AS toolchain-cuda
 ARG CUDA_VERSION
-ARG CUDA_GENCODE
 RUN curl -fsSLo /tmp/keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-keyring_1.1-1_all.deb \
  && dpkg -i /tmp/keyring.deb && rm /tmp/keyring.deb \
  && v=$(echo "${CUDA_VERSION}" | tr . -) \
@@ -55,11 +50,25 @@ RUN curl -fsSLo /tmp/keyring.deb https://developer.download.nvidia.com/compute/c
       cuda-nvcc-$v cuda-cudart-dev-$v cuda-driver-dev-$v libnpp-dev-$v \
  && rm -rf /var/lib/apt/lists/*
 ENV PATH=/usr/local/cuda/bin:${PATH}
+
+# The source without the UI: what the tests run against.
+FROM toolchain AS build-base
+COPY server/ ./
+
+FROM build-base AS build-cpu
+COPY --from=ui /app/ui/build ./cmd/switchframe/ui
+RUN go build -tags "embed_ui mxl" -o /out/switchframe ./cmd/switchframe
+
+FROM toolchain-cuda AS build-cuda
+ARG CUDA_GENCODE
+COPY server/ ./
+COPY --from=ui /app/ui/build ./cmd/switchframe/ui
 RUN make -C gpu/cuda ARCH="${CUDA_GENCODE}" all
 # The headers sit under targets/ only: the include symlink comes with the full
 # toolkit metapackage, which this stage does not install. libcuda comes from
 # the host driver at run time; the toolkit's stub stands in for it at link
-# time only.
+# time only. The NPP libraries are named on the link line but no symbol of
+# theirs is used, so the runtime stage does not carry them.
 RUN CGO_CFLAGS="-I/usr/local/cuda/targets/x86_64-linux/include" \
     CGO_LDFLAGS="-L/usr/local/cuda/lib64/stubs" \
     go build -tags "embed_ui mxl cuda" -o /out/switchframe ./cmd/switchframe
@@ -72,7 +81,7 @@ RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.li
       libx264-164 libfdk-aac2 libopus0 libopusfile0 curl \
  && rm -rf /var/lib/apt/lists/*
 COPY LICENSE /usr/share/doc/switchframe/LICENSE
-EXPOSE 8080/udp 8080/tcp 8081/tcp 9090/tcp
+EXPOSE 8080/udp 8080/tcp 9090/tcp
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:9090/health || exit 1
 # Root, unlike the upstream images: an MXL reader takes a slot in the shared
@@ -89,7 +98,7 @@ RUN curl -fsSLo /tmp/keyring.deb https://developer.download.nvidia.com/compute/c
  && dpkg -i /tmp/keyring.deb && rm /tmp/keyring.deb \
  && v=$(echo "${CUDA_VERSION}" | tr . -) \
  && apt-get update && apt-get install -y --no-install-recommends \
-      cuda-cudart-$v libnpp-$v \
+      cuda-cudart-$v \
  && rm -rf /var/lib/apt/lists/* \
  && echo /usr/local/cuda/lib64 > /etc/ld.so.conf.d/cuda.conf && ldconfig
 # Read by the NVIDIA container runtime: NVENC and NVDEC need the video
