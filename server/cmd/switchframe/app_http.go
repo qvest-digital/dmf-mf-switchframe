@@ -22,6 +22,12 @@ func altSvcMiddleware(quicPort string, next http.Handler) http.Handler {
 	})
 }
 
+// certHashHandler serves /api/cert-hash with the API's CORS headers: the UI
+// of one engine fetches the other engine's before opening WebTransport to it.
+func (a *App) certHashHandler() http.Handler {
+	return control.CORSMiddleware(a.cfg.AllowedOrigins)(http.HandlerFunc(a.handleCertHash))
+}
+
 // startHTTPAPIServer launches an HTTP/1.1 server for curl/scripts and browsers
 // that can't directly speak HTTP/3. Enabled via --http-fallback flag.
 //
@@ -46,7 +52,7 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 
 	// Top-level mux: cert-hash (public) + API routes (authenticated) + UI files (public).
 	topMux := http.NewServeMux()
-	topMux.HandleFunc("GET /api/cert-hash", a.handleCertHash)
+	topMux.Handle("GET /api/cert-hash", a.certHashHandler())
 	topMux.Handle("/api/", apiHandler)
 	if h := uiHandler(); h != nil {
 		topMux.Handle("/", h)

@@ -185,6 +185,7 @@ All flags are defined in [`parseConfig`](../../server/cmd/switchframe/main.go). 
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--peer-engine-url` | string | `""` (env `SWITCHFRAME_PEER_ENGINE_URL`) | URL of peer engine for inter-engine health polling |
+| `--peer-public-url` | string | `""` (env `SWITCHFRAME_PEER_PUBLIC_URL`) | Peer engine origin as the browser reaches it, handed to the UI as its second engine. Empty: `--peer-engine-url`. Set when engines poll each other on an internal address |
 | `--engine-label` | string | `""` (env `SWITCHFRAME_ENGINE_LABEL`) | `"a"`, `"b"`, or `""` (single-engine). Other values rejected |
 | `--control-plane-secret` | string | `""` (env `SWITCHFRAME_CONTROL_PLANE_SECRET`) | Shared secret authorizing `POST /api/peer/force-leader`. Empty disables endpoint |
 
