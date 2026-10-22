@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-rc.14](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.13...mxl-v1.0.0-rc.14) (2026-10-22)
+
+
+### Features
+
+* **nmos:** offer both engines' programs of a pair as senders ([#37](https://github.com/qvest-digital/dmf-mf-switchframe/issues/37)) ([ce2c10e](https://github.com/qvest-digital/dmf-mf-switchframe/commit/ce2c10e43f6c56c556ab83eb5f3700953f5daad8))
+
+
+### Bug Fixes
+
+* **mxl:** keep the old flow until the new one is written on the node ([#38](https://github.com/qvest-digital/dmf-mf-switchframe/issues/38)) ([9a15b34](https://github.com/qvest-digital/dmf-mf-switchframe/commit/9a15b34676e1ac1ea2419f4756ea152caabe6c74))
+
 ## [1.0.0-rc.13](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.12...mxl-v1.0.0-rc.13) (2026-10-22)
 
 
