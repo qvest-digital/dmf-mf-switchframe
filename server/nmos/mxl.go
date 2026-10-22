@@ -600,7 +600,12 @@ func (s *MXLConnectionServer) resolve(e *MXLEndpoint, kind string) error {
 		return &patchError{http.StatusInternalServerError, "mxl_flow_id auto: this sender does not choose its flow"}
 	}
 	if e.MasterEnable && kind == "receivers" && p.FlowID == nil {
-		return &patchError{http.StatusInternalServerError, "master_enable needs an mxl_flow_id to read"}
+		return badRequest("master_enable needs an mxl_flow_id to read")
+	}
+	// An enabled endpoint reads or writes in the node's one domain, and
+	// active shows the value used.
+	if e.MasterEnable && p.DomainID == nil && s.opts.DomainID != "" {
+		p.DomainID = cloneStr(&s.opts.DomainID)
 	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -102,12 +103,56 @@ func (m *mxlInputs) get(name string) (*mxlInput, bool) {
 	return in, ok
 }
 
+// expectMXLFormat refuses a flow of another data format.
+func expectMXLFormat(f mxl.DataFormat) func(mxl.FlowConfig) error {
+	return func(c mxl.FlowConfig) error {
+		if c.Format != f {
+			return fmt.Errorf("format %v, want %v", c.Format, f)
+		}
+		return nil
+	}
+}
+
+// expectMXLVideo refuses a flow that is not video at the pipeline's frame
+// rate, which the switcher does not convert.
+func expectMXLVideo(num, den int) func(mxl.FlowConfig) error {
+	return func(c mxl.FlowConfig) error {
+		if err := expectMXLFormat(mxl.DataFormatVideo)(c); err != nil {
+			return err
+		}
+		if c.GrainRate.Numerator*int64(den) != int64(num)*c.GrainRate.Denominator {
+			return fmt.Errorf("rate %d/%d, the pipeline runs %d/%d",
+				c.GrainRate.Numerator, c.GrainRate.Denominator, num, den)
+		}
+		return nil
+	}
+}
+
 // errNoMXLInput is returned for a name no named MXL input has.
 var errNoMXLInput = errors.New("no such MXL input")
 
 // errNoDataReader is returned when a data flow is named for an input booked
 // without one: its data reader, and the SCTE-104 path it feeds, do not exist.
 var errNoDataReader = errors.New("MXL input has no data reader")
+
+// connectMXLInput moves one essence of a named input to flow, or
+// disconnects it for an empty flow, and returns once that is done or why it
+// cannot be: the flow is not there within ctx or the input cannot read it.
+// The input then keeps what it reads.
+func (a *App) connectMXLInput(ctx context.Context, name string, essence mxlEssence, flow string) error {
+	in, ok := a.namedMXLInputs.get(name)
+	if !ok {
+		return fmt.Errorf("%w: %q", errNoMXLInput, name)
+	}
+	r := map[mxlEssence]mxl.Retargetable{essenceVideo: in.Video, essenceAudio: in.Audio, essenceData: in.Data}[essence]
+	if r == nil {
+		if flow == "" {
+			return nil
+		}
+		return fmt.Errorf("%w: %q", errNoDataReader, name)
+	}
+	return r.Connect(ctx, flow)
+}
 
 // retargetMXLInput moves a named input's readers to other flows. A nil id
 // leaves that essence as it is and an empty one disconnects it. The readers

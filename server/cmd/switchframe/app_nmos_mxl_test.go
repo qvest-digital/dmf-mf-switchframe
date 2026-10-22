@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,14 +28,25 @@ const (
 )
 
 type lockedRetargetable struct {
-	mu  sync.Mutex
-	ids []string
+	mu     sync.Mutex
+	ids    []string
+	refuse error
 }
 
 func (f *lockedRetargetable) Retarget(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ids = append(f.ids, id)
+}
+
+func (f *lockedRetargetable) Connect(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refuse != nil {
+		return f.refuse
+	}
+	f.ids = append(f.ids, id)
+	return nil
 }
 
 func (f *lockedRetargetable) FlowID() string {
@@ -51,11 +64,16 @@ type peerRecorder struct {
 	patches []*http.Request
 	bodies  []string
 	active  map[string]string // receiver id -> /active body
+	down    bool
 }
 
 func (p *peerRecorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.down {
+		http.Error(w, "down", http.StatusServiceUnavailable)
+		return
+	}
 	if r.Method == http.MethodPatch {
 		b, _ := io.ReadAll(r.Body)
 		p.patches = append(p.patches, r)
@@ -102,6 +120,7 @@ func newNMOSTestApp(t *testing.T, query http.Handler, setup ...func(a *App)) *nm
 	t.Cleanup(peerSrv.Close)
 
 	a := &App{sw: sw}
+	a.cfg.APIToken = "session-token"
 	a.cfg.MXLDomain = domain
 	a.cfg.MXLSources = []string{"cam1=" + specV + ":" + specA, "cam2="}
 	a.cfg.MXLNMOS = mxlNMOSConfig{Port: 1, Seed: nmosSeed, Label: "switcher", Host: "switcher-a.p-show"}
@@ -127,7 +146,7 @@ func newNMOSTestApp(t *testing.T, query http.Handler, setup ...func(a *App)) *nm
 	n.peerBase = peerSrv.URL
 	a.mxlNMOS = n
 	tt.n = n
-	tt.srv = httptest.NewServer(n.handler())
+	tt.srv = httptest.NewServer(n.handler(a.cfg.APIToken))
 	t.Cleanup(tt.srv.Close)
 	return tt
 }
@@ -152,6 +171,7 @@ func (tt *nmosTestApp) patch(t *testing.T, rx, body string, forwarded bool) int 
 	req, _ := http.NewRequest(http.MethodPatch, tt.srv.URL+"/x-nmos/connection/v1.1/single/receivers/"+rx+"/staged", strings.NewReader(body))
 	if forwarded {
 		req.Header.Set(peerForwardHeader, "1")
+		req.Header.Set("Authorization", "Bearer session-token")
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -258,9 +278,14 @@ func TestMXLNMOS_ControllerConnectsInput(t *testing.T) {
 	if r := tt.n.store.GetReceiver(rxID("cam2", "video")); !r.Subscription.Active || r.Subscription.SenderID == nil || *r.Subscription.SenderID != nmosSender {
 		t.Errorf("IS-04 subscription %+v", r.Subscription)
 	}
-	waitFor(t, "activation not passed to the peer", func() bool { return tt.peer.count() == 1 })
-	if tt.peer.patches[0].Header.Get(peerForwardHeader) == "" {
-		t.Error("forwarded activation is not marked as such")
+	if tt.app.sendForwards(t.Context()) {
+		t.Fatal("forward to the peer failed")
+	}
+	if n := tt.peer.count(); n != 1 {
+		t.Fatalf("%d forwards, want 1", n)
+	}
+	if h := tt.peer.patches[0].Header; h.Get(peerForwardHeader) == "" || h.Get("Authorization") != "Bearer session-token" {
+		t.Error("forwarded activation is not marked as the peer's")
 	}
 	if !strings.Contains(tt.peer.bodies[0], nmosFlow) {
 		t.Errorf("forwarded body %s lacks the flow", tt.peer.bodies[0])
@@ -296,7 +321,7 @@ func TestMXLNMOS_ForwardedActivationIsNotForwardedBack(t *testing.T) {
 	if got := tt.cam2V.FlowID(); got != nmosFlow {
 		t.Errorf("forwarded activation not applied: %q", got)
 	}
-	time.Sleep(100 * time.Millisecond)
+	tt.app.sendForwards(t.Context())
 	if n := tt.peer.count(); n != 0 {
 		t.Errorf("forwarded activation passed back %d times", n)
 	}
@@ -304,7 +329,7 @@ func TestMXLNMOS_ForwardedActivationIsNotForwardedBack(t *testing.T) {
 
 // An engine starting beside a running peer takes over what a controller
 // connected there, and only that.
-func TestMXLNMOS_CatchUpAdoptsPeerConnections(t *testing.T) {
+func TestMXLNMOS_ReconcileAdoptsLaterPeerConnections(t *testing.T) {
 	tt := newNMOSTestApp(t, nil)
 	tt.peer.mu.Lock()
 	tt.peer.active[rxID("cam2", "video")] = `{"sender_id":"` + nmosSender + `","master_enable":true,
@@ -313,7 +338,7 @@ func TestMXLNMOS_CatchUpAdoptsPeerConnections(t *testing.T) {
 		"transport_params":[{"mxl_domain_id":"` + nmosDomain + `","mxl_flow_id":"` + nmosFlow + `"}]}`
 	tt.peer.mu.Unlock()
 
-	done, err := tt.app.catchUpMXLNMOSOnce(t.Context())
+	done, err := tt.app.reconcileMXLNMOS(t.Context())
 	if !done || err != nil {
 		t.Fatalf("catch-up: %v %v", done, err)
 	}
@@ -422,5 +447,117 @@ func TestMXLInputUnconnected(t *testing.T) {
 	connected.Retarget("")
 	if !a.mxlInputUnconnected("mxl:cam1") {
 		t.Error("cam1 disconnected but not marked unconnected")
+	}
+}
+
+func activationBody(flow string) string {
+	return `{"sender_id": "` + nmosSender + `", "master_enable": true,
+		"activation": {"mode": "activate_immediate"},
+		"transport_params": [{"mxl_domain_id": "auto", "mxl_flow_id": "` + flow + `"}]}`
+}
+
+// A flow the input cannot read fails the activation, and the node goes on
+// saying what the input actually reads: controllers trust /active.
+func TestMXLNMOS_FailedConnectionIsRejected(t *testing.T) {
+	tt := newNMOSTestApp(t, nil)
+	tt.cam2V.refuse = errors.New("flow not open: context deadline exceeded")
+	if code := tt.patch(t, rxID("cam2", "video"), activationBody(nmosFlow), false); code != http.StatusInternalServerError {
+		t.Fatalf("PATCH: %d, want 500", code)
+	}
+	a, _ := tt.n.conn.ReceiverActive(rxID("cam2", "video"))
+	if a.MasterEnable || a.FlowID() != "" {
+		t.Errorf("active %+v after a failed connection, want unchanged", a)
+	}
+	if r := tt.n.store.GetReceiver(rxID("cam2", "video")); r.Subscription.Active {
+		t.Error("IS-04 subscription shows a connection that failed")
+	}
+	tt.app.sendForwards(t.Context())
+	if n := tt.peer.count(); n != 0 {
+		t.Errorf("a failed connection was passed to the peer %d times", n)
+	}
+}
+
+// Only the latest activation of a receiver reaches the peer, so two quick
+// ones cannot arrive in the wrong order; one the peer misses is retried.
+func TestMXLNMOS_ForwardsLatestAndRetries(t *testing.T) {
+	tt := newNMOSTestApp(t, nil)
+	const other = "3494dc19-22c2-4f00-865b-cdbeee7909f0"
+	tt.peer.mu.Lock()
+	tt.peer.down = true
+	tt.peer.mu.Unlock()
+	tt.patch(t, rxID("cam2", "video"), activationBody(nmosFlow), false)
+	tt.patch(t, rxID("cam2", "video"), activationBody(other), false)
+	if !tt.app.sendForwards(t.Context()) {
+		t.Fatal("forward to a peer that is down reported success")
+	}
+	tt.peer.mu.Lock()
+	tt.peer.down = false
+	tt.peer.mu.Unlock()
+	if tt.app.sendForwards(t.Context()) {
+		t.Fatal("retry failed")
+	}
+	if n := tt.peer.count(); n != 1 || !strings.Contains(tt.peer.bodies[0], other) {
+		t.Fatalf("peer got %d forwards %v, want only the latest", n, tt.peer.bodies)
+	}
+	if tt.app.sendForwards(t.Context()); tt.peer.count() != 1 {
+		t.Error("a delivered forward was sent again")
+	}
+}
+
+// Without the peer's token a request marked as forwarded is a controller's
+// like any other and is passed on, so a stray client cannot leave the
+// engines apart.
+func TestMXLNMOS_UnauthorizedForwardMarkIsIgnored(t *testing.T) {
+	tt := newNMOSTestApp(t, nil)
+	req, _ := http.NewRequest(http.MethodPatch, tt.srv.URL+"/x-nmos/connection/v1.1/single/receivers/"+rxID("cam2", "video")+"/staged",
+		strings.NewReader(activationBody(nmosFlow)))
+	req.Header.Set(peerForwardHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	tt.app.sendForwards(t.Context())
+	if n := tt.peer.count(); n != 1 {
+		t.Errorf("%d forwards, want the activation passed on", n)
+	}
+}
+
+// Of two label lookups for one input, the later connection's wins, and a
+// failed lookup shows the input's name rather than a former connection's.
+func TestMXLNMOS_LabelFollowsLatestConnection(t *testing.T) {
+	release := make(chan struct{})
+	const q = "/x-nmos/query/v1.3/"
+	query := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case q + "senders/slow":
+			<-release
+			_, _ = w.Write([]byte(`{"label":"old camera","flow_id":null}`))
+		case q + "senders/fast":
+			_, _ = w.Write([]byte(`{"label":"new camera","flow_id":null}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	tt := newNMOSTestApp(t, query)
+	label := func() string {
+		for _, s := range tt.app.sw.State().Sources {
+			if s.Key == "mxl:cam2" {
+				return s.Label
+			}
+		}
+		return ""
+	}
+	slow, fast, gone := "slow", "fast", "gone"
+	go tt.app.labelMXLInput("cam2", tt.n.nextLabelSeq("cam2"), nmos.NewMXLReceiverEndpoint(&slow, true, nil, nil))
+	tt.app.labelMXLInput("cam2", tt.n.nextLabelSeq("cam2"), nmos.NewMXLReceiverEndpoint(&fast, true, nil, nil))
+	close(release)
+	time.Sleep(100 * time.Millisecond)
+	if got := label(); got != "new camera" {
+		t.Errorf("label %q, want the later connection's", got)
+	}
+	tt.app.labelMXLInput("cam2", tt.n.nextLabelSeq("cam2"), nmos.NewMXLReceiverEndpoint(&gone, true, nil, nil))
+	if got := label(); got != "cam2" {
+		t.Errorf("label %q after a failed lookup, want the input's name", got)
 	}
 }

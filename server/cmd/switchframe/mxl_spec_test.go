@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -58,6 +59,10 @@ func TestParseMXLSourceSpec(t *testing.T) {
 type fakeRetargetable struct{ ids []string }
 
 func (f *fakeRetargetable) Retarget(id string) { f.ids = append(f.ids, id) }
+func (f *fakeRetargetable) Connect(_ context.Context, id string) error {
+	f.Retarget(id)
+	return nil
+}
 func (f *fakeRetargetable) FlowID() string {
 	if len(f.ids) == 0 {
 		return ""

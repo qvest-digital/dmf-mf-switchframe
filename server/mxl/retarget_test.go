@@ -2,6 +2,7 @@ package mxl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -235,7 +236,7 @@ func TestRetarget_RefusesOtherShape(t *testing.T) {
 // ending its reader loop.
 func TestRetargetableReader_WaitsForFirstFlow(t *testing.T) {
 	store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape)})
-	flow := NewRetargetableReader(store.open, nil)
+	flow := NewRetargetableReader(store.open, nil, nil)
 	r := startVideo(t, flow)
 
 	select {
@@ -334,7 +335,7 @@ func TestRetargetableAudioReader_ReadsAfterFirstConnection(t *testing.T) {
 			return nil, fmt.Errorf("flow %s: %w", id, ErrTimeout)
 		}
 		return a, nil
-	}, nil)
+	}, nil, nil)
 	r := NewAudioReader(ReaderConfig{BufSize: 4, TimeoutMs: 1, SamplesPerRead: 8})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
@@ -356,5 +357,89 @@ func TestRetargetableAudioReader_ReadsAfterFirstConnection(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no audio after connecting")
+	}
+}
+
+// A connection that cannot be made fails, so whoever asked for it can say
+// so, and the input keeps the flow it reads.
+func TestConnect_FailsForAFlowThatIsNotThere(t *testing.T) {
+	store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape)})
+	first, _ := store.open("a")
+	flow := NewReopeningReader("a", first, store.open, nil)
+	r := startVideo(t, flow)
+	nextGrain(t, r)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := flow.(Retargetable).Connect(ctx, "missing"); err == nil {
+		t.Fatal("connecting to a flow that is not there succeeded")
+	}
+	if got := flow.(Retargetable).FlowID(); got != "a" {
+		t.Errorf("FlowID = %q after a failed connection, want a", got)
+	}
+	for i := 0; i < 5; i++ {
+		if g := nextGrain(t, r); g.V210[0] != 1 {
+			t.Fatalf("grain from flow %d after a failed connection", g.V210[0])
+		}
+	}
+}
+
+func TestConnect_FailsForAFlowOfAnotherShape(t *testing.T) {
+	other := videoShape
+	other.GrainRate = Rational{25, 1}
+	store := newFlowStore(map[string]*liveFlow{
+		"a": newLiveFlow(1, videoShape),
+		"b": newLiveFlow(2, other),
+	})
+	first, _ := store.open("a")
+	flow := NewReopeningReader("a", first, store.open, nil)
+	startVideo(t, flow)
+
+	err := flow.(Retargetable).Connect(context.Background(), "b")
+	if !errors.Is(err, ErrShape) {
+		t.Fatalf("Connect = %v, want ErrShape", err)
+	}
+	if !store.handle("b").isClosed() {
+		t.Error("handle on the refused flow was not closed")
+	}
+}
+
+// The reader's own check applies to the first flow too, which no earlier
+// flow gives a shape to compare with.
+func TestConnect_ExpectRefusesTheFirstFlow(t *testing.T) {
+	store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape)})
+	flow := NewRetargetableReader(store.open, func(c FlowConfig) error {
+		if c.GrainRate != (Rational{25, 1}) {
+			return fmt.Errorf("rate %v, the pipeline runs 25/1", c.GrainRate)
+		}
+		return nil
+	}, nil)
+	startVideo(t, flow)
+	if err := flow.(Retargetable).Connect(context.Background(), "a"); !errors.Is(err, ErrShape) {
+		t.Fatalf("Connect = %v, want ErrShape", err)
+	}
+	if got := flow.(Retargetable).FlowID(); got != "" {
+		t.Errorf("FlowID = %q, want none", got)
+	}
+}
+
+// Connecting an input to the flow it already reads changes nothing: the
+// flow is not reopened, which would send the reader back to the head.
+func TestConnect_SameFlowIsANoOp(t *testing.T) {
+	store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape)})
+	first, _ := store.open("a")
+	flow := NewReopeningReader("a", first, store.open, nil)
+	startVideo(t, flow)
+	if err := flow.(Retargetable).Connect(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	opens := store.opens["a"]
+	store.mu.Unlock()
+	if opens != 1 {
+		t.Errorf("flow opened %d times, want once", opens)
+	}
+	if first.(*liveFlow).isClosed() {
+		t.Error("the handle being read was replaced")
 	}
 }

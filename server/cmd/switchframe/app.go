@@ -1232,12 +1232,13 @@ func (a *App) initMXL() error {
 			// source runs. Video and audio readers exist even without a
 			// flow, so a later connection has a reader loop to take over.
 			in := &mxlInput{}
-			videoFlow = mxl.NewRetargetableReader(inst.OpenReader, nil)
-			audioFlow = mxl.NewRetargetableAudioReader(inst.OpenAudioReader, nil)
+			pf := a.sw.PipelineFormat()
+			videoFlow = mxl.NewRetargetableReader(inst.OpenReader, expectMXLVideo(pf.FPSNum, pf.FPSDen), nil)
+			audioFlow = mxl.NewRetargetableAudioReader(inst.OpenAudioReader, expectMXLFormat(mxl.DataFormatAudio), nil)
 			in.Video = videoFlow.(mxl.Retargetable)
 			in.Audio = audioFlow.(mxl.Retargetable)
 			if dataFlowID != "" {
-				dataFlow = mxl.NewRetargetableReader(inst.OpenReader, nil)
+				dataFlow = mxl.NewRetargetableReader(inst.OpenReader, expectMXLFormat(mxl.DataFormatData), nil)
 				in.Data = dataFlow.(mxl.Retargetable)
 			}
 			a.namedMXLInputs.add(spec.Name, in)

@@ -165,7 +165,7 @@ func TestMXLReceiver_Rejections(t *testing.T) {
 		"unknown param":          {`{"transport_params":[{"source_ip":"10.0.0.1"}]}`, 400},
 		"transport file":         {`{"transport_file":{"data":"v=0","type":"application/sdp"}}`, 400},
 		"scheduled":              {`{"activation":{"mode":"activate_scheduled_relative","requested_time":"1:0"}}`, 501},
-		"enabled without a flow": {`{"master_enable":true,"activation":{"mode":"activate_immediate"}}`, 500},
+		"enabled without a flow": {`{"master_enable":true,"activation":{"mode":"activate_immediate"}}`, 400},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -240,5 +240,33 @@ func TestMXLConnection_Listing(t *testing.T) {
 	}
 	if code, _ := do(t, s, http.MethodGet, "single/receivers/nope/staged", ""); code != http.StatusNotFound {
 		t.Errorf("unknown receiver: %d", code)
+	}
+}
+
+// A connection naming only the flow reads it in the node's one domain, and
+// active says so.
+func TestMXLReceiver_NullDomainResolvedWhenEnabled(t *testing.T) {
+	s, got := newMXLServer(t, nil)
+	code, _ := do(t, s, http.MethodPatch, "single/receivers/"+rxID+"/staged", `{
+		"master_enable": true, "activation": {"mode": "activate_immediate"},
+		"transport_params": [{"mxl_flow_id": "`+testFlow+`"}]}`)
+	if code != http.StatusOK || len(*got) != 1 {
+		t.Fatalf("code %d, %d activations", code, len(*got))
+	}
+	if d := (*got)[0].active.TransportParams[0].DomainID; d == nil || *d != testDomain {
+		t.Errorf("active domain %v, want %s", d, testDomain)
+	}
+}
+
+func TestCompareVersions(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want int
+	}{
+		{"10:5", "10:5", 0}, {"9:999999999", "10:0", -1}, {"10:10", "10:9", 1}, {"x", "10:0", 0},
+	} {
+		if got := CompareVersions(c.a, c.b); got != c.want {
+			t.Errorf("CompareVersions(%s, %s) = %d, want %d", c.a, c.b, got, c.want)
+		}
 	}
 }
