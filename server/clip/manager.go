@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Manager orchestrates clip player slots, bridging the Store and Players.
@@ -198,6 +199,66 @@ func (m *Manager) LoadByName(playerID int, clipName string) error {
 		return fmt.Errorf("clip %q: %w", clipName, err)
 	}
 	return m.Load(playerID, c.ID)
+}
+
+// SyncPlayer brings a player slot to the given clip name and playback state.
+// It is idempotent: a slot that already holds clipName is not reloaded, and a
+// slot already in the wanted state is left untouched, so applying the same
+// state repeatedly does not interrupt playback. An empty clipName ejects the
+// slot. StateHolding is treated as playing; the slot reaches the hold on its
+// own when the clip ends. Used for cross-engine snapshot restore, where clip
+// IDs can differ between engines but names are consistent.
+func (m *Manager) SyncPlayer(playerID int, clipName string, state PlayerState, speed float64, loop bool) error {
+	if err := validatePlayerID(playerID); err != nil {
+		return err
+	}
+	if clipName == "" || state == StateEmpty {
+		return m.Eject(playerID)
+	}
+
+	if current := m.PlayerStates()[playerID-1]; current.ClipName != clipName {
+		if err := m.LoadByName(playerID, clipName); err != nil {
+			return err
+		}
+	}
+	if err := m.SetLoop(playerID, loop); err != nil {
+		return err
+	}
+	if speed < 0.25 || speed > 2.0 {
+		speed = 1.0
+	}
+
+	current := m.PlayerStates()[playerID-1].State
+	switch state {
+	case StateLoaded:
+		if current != StateLoaded {
+			return m.Stop(playerID)
+		}
+	case StatePlaying, StateHolding:
+		switch current {
+		case StateLoaded:
+			return m.Play(playerID, speed, loop)
+		case StatePaused:
+			return m.Resume(playerID)
+		}
+	case StatePaused:
+		switch current {
+		case StateLoaded:
+			if err := m.Play(playerID, speed, loop); err != nil {
+				return err
+			}
+			// The player goroutine marks itself playing asynchronously and
+			// Pause is a no-op before that, so wait briefly for the start.
+			deadline := time.Now().Add(250 * time.Millisecond)
+			for m.PlayerStates()[playerID-1].State == StateLoaded && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			return m.Pause(playerID)
+		case StatePlaying, StateHolding:
+			return m.Pause(playerID)
+		}
+	}
+	return nil
 }
 
 // Eject stops the player if active, calls onPlayerStop if it was playing,
