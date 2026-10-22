@@ -88,7 +88,7 @@ type nmosTestApp struct {
 	cam2V *lockedRetargetable
 }
 
-func newNMOSTestApp(t *testing.T, query http.Handler) *nmosTestApp {
+func newNMOSTestApp(t *testing.T, query http.Handler, setup ...func(a *App)) *nmosTestApp {
 	t.Helper()
 	sw := switcher.New(distribution.NewRelay())
 	t.Cleanup(sw.Close)
@@ -116,6 +116,9 @@ func newNMOSTestApp(t *testing.T, query http.Handler) *nmosTestApp {
 	sw.RegisterMXLSourceLabeled("mxl:cam1", "cam1")
 	sw.RegisterMXLSourceLabeled("mxl:cam2", "cam2")
 
+	for _, f := range setup {
+		f(a)
+	}
 	n, err := a.newMXLNMOS()
 	if err != nil {
 		t.Fatal(err)
@@ -323,5 +326,76 @@ func TestMXLNMOS_CatchUpAdoptsPeerConnections(t *testing.T) {
 	a, _ := tt.n.conn.ReceiverActive(rxID("cam2", "video"))
 	if a.FlowID() != nmosFlow || a.SenderID == nil {
 		t.Errorf("active state not adopted: %+v", a)
+	}
+}
+
+// The program a booking writes is an MXL Sender a controller can connect
+// other receivers to, with the flow this engine writes and no transport
+// file.
+func TestMXLNMOS_ProgramSenders(t *testing.T) {
+	const pgmVideo = "5f000000-0000-4000-8000-0000000000a1"
+	const pgmAudio = "5f000000-0000-4000-8000-0000000000a2"
+	dir := t.TempDir()
+	videoDef := filepath.Join(dir, "program-video.json")
+	audioDef := filepath.Join(dir, "program-audio.json")
+	_ = os.WriteFile(videoDef, []byte(`{"id":"`+pgmVideo+`","label":"switcher program video",
+		"format":"urn:x-nmos:format:video","media_type":"video/v210",
+		"tags":{"urn:x-nmos:tag:grouphint/v1.0":["switcher program:Video"]},
+		"grain_rate":{"numerator":50,"denominator":1},"frame_width":1920,"frame_height":1080}`), 0o644)
+	_ = os.WriteFile(audioDef, []byte(`{"id":"`+pgmAudio+`","label":"switcher program audio",
+		"format":"urn:x-nmos:format:audio","media_type":"audio/float32",
+		"sample_rate":{"numerator":48000,"denominator":1}}`), 0o644)
+	tt := newNMOSTestApp(t, nil, func(a *App) {
+		a.cfg.MXLOutput = "program"
+		a.cfg.MXLOutputVideoDef = videoDef
+		a.cfg.MXLOutputAudioDef = audioDef
+	})
+
+	var senders []map[string]any
+	tt.getJSON(t, "/x-nmos/node/v1.3/senders", &senders)
+	if len(senders) != 2 {
+		t.Fatalf("%d senders, want program video and audio", len(senders))
+	}
+	var flows []nmos.Flow
+	tt.getJSON(t, "/x-nmos/node/v1.3/flows", &flows)
+	flowByID := map[string]nmos.Flow{}
+	for _, f := range flows {
+		flowByID[f.ID] = f
+	}
+	for _, snd := range senders {
+		if snd["transport"] != nmos.TransportMXL {
+			t.Errorf("sender transport %v", snd["transport"])
+		}
+		if v, ok := snd["manifest_href"]; !ok || v != nil {
+			t.Errorf("manifest_href %v, want present and null", v)
+		}
+		f, ok := flowByID[snd["flow_id"].(string)]
+		if !ok {
+			t.Fatalf("sender's flow %v is not on the node", snd["flow_id"])
+		}
+		if f.ID == pgmVideo || f.ID == pgmAudio {
+			t.Error("IS-04 flow id is the MXL flow id, which differs between engines")
+		}
+		var active map[string]any
+		tt.getJSON(t, "/x-nmos/connection/v1.1/single/senders/"+snd["id"].(string)+"/active", &active)
+		leg := active["transport_params"].([]any)[0].(map[string]any)
+		want := pgmAudio
+		if f.Format == nmos.FormatVideo {
+			want = pgmVideo
+			if f.FrameWidth != 1920 || f.GrainRate == nil || f.GrainRate.Numerator != 50 {
+				t.Errorf("video flow %+v lost the definition's format", f)
+			}
+		}
+		if leg["mxl_flow_id"] != want {
+			t.Errorf("sender writes %v, want %s", leg["mxl_flow_id"], want)
+		}
+	}
+	resp, err := http.Get(tt.srv.URL + "/x-nmos/connection/v1.1/single/senders/" + senders[0]["id"].(string) + "/transportfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("transportfile: %d, want 404", resp.StatusCode)
 	}
 }

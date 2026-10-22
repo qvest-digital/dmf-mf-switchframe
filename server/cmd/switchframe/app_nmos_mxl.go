@@ -311,6 +311,11 @@ func (a *App) buildMXLNMOSResources(n *mxlNMOS) error {
 		}
 	}
 
+	senderIDs, err := a.addMXLNMOSProgramSenders(n, deviceID)
+	if err != nil {
+		return err
+	}
+
 	n.store.SetNode(&nmos.Node{
 		ID:          nodeID,
 		Label:       cfg.Label,
@@ -334,7 +339,7 @@ func (a *App) buildMXLNMOSResources(n *mxlNMOS) error {
 		Tags:      map[string][]string{},
 		Type:      nmos.DeviceTypeGeneric,
 		NodeID:    nodeID,
-		Senders:   []string{},
+		Senders:   senderIDs,
 		Receivers: rxIDs,
 		Controls: []nmos.Control{{
 			Type: nmos.ControlTypeSRCtrl,
@@ -350,6 +355,87 @@ func (a *App) buildMXLNMOSResources(n *mxlNMOS) error {
 		n.store.UpdateReceiverSubscription(b.id, nil, true)
 	}
 	return nil
+}
+
+// addMXLNMOSProgramSenders exposes the program flows this engine writes as
+// MXL Sources, Flows and Senders, as BCP-007-03 requires of every MXL
+// writer, so a controller can connect other receivers to the program. The
+// flows are described by the same definitions the writer creates them
+// from. An engine of a pair writes flows of its own, so the sender a
+// registry shows names the flow of the engine that registered it.
+func (a *App) addMXLNMOSProgramSenders(n *mxlNMOS, deviceID string) ([]string, error) {
+	senders := []string{}
+	if a.cfg.MXLOutput == "" {
+		return senders, nil
+	}
+	defs := []struct {
+		essence mxlEssence
+		path    string
+		format  string
+	}{
+		{essenceVideo, a.cfg.MXLOutputVideoDef, nmos.FormatVideo},
+		{essenceAudio, a.cfg.MXLOutputAudioDef, nmos.FormatAudio},
+	}
+	for _, d := range defs {
+		if d.path == "" {
+			continue
+		}
+		data, err := os.ReadFile(d.path)
+		if err != nil {
+			return nil, fmt.Errorf("mxl nmos: program %s flow definition: %w", d.essence, err)
+		}
+		var flow nmos.Flow
+		if err := json.Unmarshal(data, &flow); err != nil {
+			return nil, fmt.Errorf("mxl nmos: program %s flow definition %s: %w", d.essence, d.path, err)
+		}
+		mxlFlowID := flow.ID
+		if mxlFlowID == "" {
+			return nil, fmt.Errorf("mxl nmos: program %s flow definition %s has no id", d.essence, d.path)
+		}
+		// The IS-04 ids are the node's own, alike on both engines; the
+		// MXL flow id is what each engine writes and what a receiver is
+		// connected to.
+		sourceID := nmos.DeriveID(n.cfg.Seed, "source", "program", string(d.essence))
+		flow.ID = nmos.DeriveID(n.cfg.Seed, "flow", "program", string(d.essence))
+		flow.Version = nmos.NewVersion()
+		flow.SourceID = sourceID
+		flow.DeviceID = deviceID
+		flow.Parents = []string{}
+		flow.Format = d.format
+		if flow.Tags == nil {
+			flow.Tags = map[string][]string{}
+		}
+		n.store.AddSource(&nmos.Source{
+			ID:          sourceID,
+			Version:     nmos.NewVersion(),
+			Label:       flow.Label,
+			Description: flow.Description,
+			Tags:        flow.Tags,
+			Caps:        map[string]interface{}{},
+			Format:      d.format,
+			Parents:     []string{},
+			DeviceID:    deviceID,
+			ClockName:   "clk0",
+		})
+		n.store.AddFlow(&flow)
+		senderID := nmos.DeriveID(n.cfg.Seed, "sender", "program", string(d.essence))
+		n.store.AddSender(&nmos.Sender{
+			ID:                senderID,
+			Version:           nmos.NewVersion(),
+			Label:             flow.Label,
+			Description:       flow.Description,
+			Tags:              flow.Tags,
+			FlowID:            flow.ID,
+			Transport:         nmos.TransportMXL,
+			DeviceID:          deviceID,
+			InterfaceBindings: []string{},
+			Caps:              map[string]interface{}{},
+			Subscription:      nmos.SenderSubscription{Active: true},
+		})
+		n.conn.AddSender(senderID, mxlFlowID)
+		senders = append(senders, senderID)
+	}
+	return senders, nil
 }
 
 func groupRole(e mxlEssence) string {
@@ -586,7 +672,8 @@ func (a *App) registerMXLNMOS(ctx context.Context) error {
 	for _, id := range n.order {
 		rx = append(rx, n.store.GetReceiver(id))
 	}
-	return n.reg.RegisterAll(ctx, node, devices[0], nil, nil, nil, rx)
+	return n.reg.RegisterAll(ctx, node, devices[0], n.store.ListSources(), n.store.ListFlows(),
+		n.store.ListSenders(), rx)
 }
 
 // publishMXLReceiver re-registers a receiver whose subscription changed.
