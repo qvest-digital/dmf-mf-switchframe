@@ -480,6 +480,22 @@ func TestMXLNMOS_PairOffersBothEnginesPrograms(t *testing.T) {
 	}
 }
 
+// The peer's definition given for the engine's own would offer one flow as
+// both programs, the peer's of which nobody writes.
+func TestMXLNMOS_PeerProgramOfTheSameFlowIsRefused(t *testing.T) {
+	def := filepath.Join(t.TempDir(), "program-video.json")
+	_ = os.WriteFile(def, []byte(`{"id":"5f000000-0000-4000-8000-0000000000a1","format":"urn:x-nmos:format:video"}`), 0o644)
+	a := &App{sw: switcher.New(distribution.NewRelay())}
+	t.Cleanup(a.sw.Close)
+	a.cfg.EngineLabel = "a"
+	a.cfg.MXLOutput = "program"
+	a.cfg.MXLOutputVideoDef = def
+	a.cfg.MXLNMOS = mxlNMOSConfig{Port: 1, Seed: nmosSeed, PeerOutputVideoDef: def}
+	if _, err := a.newMXLNMOS(); err == nil || !strings.Contains(err.Error(), "same flow") {
+		t.Errorf("err %v, want one naming the same flow", err)
+	}
+}
+
 // A peer only exists for an engine of a pair.
 func TestMXLNMOS_PeerProgramNeedsEngineLabel(t *testing.T) {
 	a := &App{sw: switcher.New(distribution.NewRelay())}
