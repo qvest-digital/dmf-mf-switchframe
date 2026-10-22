@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0-rc.10](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.9...mxl-v1.0.0-rc.10) (2026-10-22)
+
+
+### Bug Fixes
+
+* **ui:** fetch the invite tokens once per director session ([#26](https://github.com/qvest-digital/dmf-mf-switchframe/issues/26)) ([5c4e971](https://github.com/qvest-digital/dmf-mf-switchframe/commit/5c4e971cf1aa9ffadea98636de6a333921509422))
+* **ui:** keep the preview on engine A when viewing engine B's program ([#27](https://github.com/qvest-digital/dmf-mf-switchframe/issues/27)) ([3171698](https://github.com/qvest-digital/dmf-mf-switchframe/commit/317169845f262c7d7aed5ca9433400730b597226))
+
 ## [1.0.0-rc.9](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.8...mxl-v1.0.0-rc.9) (2026-10-22)
 
 
