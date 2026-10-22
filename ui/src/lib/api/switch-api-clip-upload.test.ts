@@ -81,9 +81,11 @@ describe('uploadClip (dual engine)', () => {
 		expect(sent[1].file?.name).toBe('bunny.mov');
 	});
 
-	it('treats 409 on the secondary as already uploaded', async () => {
+	it('accepts a 409 when the secondary already holds the clip', async () => {
 		const notify = vi.fn();
 		setPartialFailureNotify(notify);
+		const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(clipA) });
+		vi.stubGlobal('fetch', fetchMock);
 		respond = (url) =>
 			url.startsWith('https://engine-b')
 				? { status: 409, body: { error: 'clip: already exists' } }
@@ -91,8 +93,27 @@ describe('uploadClip (dual engine)', () => {
 
 		await uploadClip(new File(['data'], 'bunny.mov'));
 
+		expect(fetchMock).toHaveBeenCalledWith(`https://engine-b.example.com/api/clips/${clipA.id}`, expect.anything());
 		expect(sent.filter((s) => s.url.startsWith('https://engine-b'))).toHaveLength(1);
 		expect(notify).not.toHaveBeenCalled();
+	});
+
+	it('retries a 409 for an upload still in progress and then notifies', async () => {
+		vi.useFakeTimers();
+		const notify = vi.fn();
+		setPartialFailureNotify(notify);
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404, json: () => Promise.resolve({}) }));
+		respond = (url) =>
+			url.startsWith('https://engine-b')
+				? { status: 409, body: { error: 'upload already in progress' } }
+				: { status: 201, body: clipA };
+
+		const done = uploadClip(new File(['data'], 'bunny.mov'));
+		await vi.advanceTimersByTimeAsync(2500);
+		await done;
+
+		expect(sent.filter((s) => s.url.startsWith('https://engine-b'))).toHaveLength(2);
+		expect(notify).toHaveBeenCalledTimes(1);
 	});
 
 	it('notifies when the secondary upload fails twice', async () => {

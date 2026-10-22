@@ -1682,6 +1682,20 @@ function uploadClipToEngine(
 	});
 }
 
+/** Reports whether the engine at baseUrl holds a clip with the same ID and name. */
+async function engineHasClip(baseUrl: string, want: ClipInfo): Promise<boolean> {
+	try {
+		const res = await fetch(`${baseUrl}/api/clips/${encodeURIComponent(want.id)}`, {
+			headers: authHeaders(),
+		});
+		if (!res.ok) return false;
+		const got: ClipInfo = await res.json();
+		return got.id === want.id && got.name === want.name;
+	} catch {
+		return false;
+	}
+}
+
 export async function uploadClip(file: File, onUploadProgress?: (percent: number) => void): Promise<ClipInfo> {
 	const engines = getEngineUrls();
 	const primaryUrl = engines && engines.length > 0
@@ -1703,10 +1717,11 @@ export async function uploadClip(file: File, onUploadProgress?: (percent: number
 			try {
 				await uploadClipToEngine(url, file, undefined, result.id);
 			} catch (err) {
-				// 409: the engine already holds this ID, e.g. an earlier
-				// attempt completed after the client gave up on it.
-				if (err instanceof SwitchApiError && err.status === 409) return;
-				throw err;
+				// The engine may already hold this ID, e.g. an earlier attempt
+				// completed after the client gave up on it. Any other failure,
+				// including a 409 for an upload still in progress, is retried.
+				if (!(err instanceof SwitchApiError && err.status === 409)) throw err;
+				if (!(await engineHasClip(url, result))) throw err;
 			}
 		};
 		const secondaryUploads = engines.slice(1).map(async (engine) => {
