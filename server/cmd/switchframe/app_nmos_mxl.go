@@ -32,6 +32,11 @@ type mxlNMOSConfig struct {
 	Host        string
 	RegistryURL string
 	QueryURL    string
+
+	// The peer engine's program flow definitions, for the senders of the
+	// flows it writes.
+	PeerOutputVideoDef string
+	PeerOutputAudioDef string
 }
 
 // peerForwardHeader marks an IS-05 request one engine of an active-active
@@ -180,6 +185,9 @@ func (a *App) newMXLNMOS() (*mxlNMOS, error) {
 	}
 	if cfg.Label == "" {
 		cfg.Label = "switchframe"
+	}
+	if (cfg.PeerOutputVideoDef != "" || cfg.PeerOutputAudioDef != "") && a.cfg.EngineLabel == "" {
+		return nil, errors.New("--mxl-nmos-peer-output-*-def needs --engine-label: only an engine of a pair has a peer")
 	}
 	domainID, err := readMXLDomainID(a.cfg.MXLDomain)
 	if err != nil {
@@ -387,101 +395,145 @@ func (a *App) buildMXLNMOSResources(n *mxlNMOS) error {
 	return nil
 }
 
-// addMXLNMOSProgramSenders exposes the program flows this engine writes as
-// MXL Sources, Flows and Senders, as BCP-007-03 requires of every MXL
-// writer, so a controller can connect other receivers to the program. The
-// flows are described by the same definitions the writer creates them
-// from. An engine of a pair writes flows of its own, so the sender a
-// registry shows names the flow of the engine that registered it.
+// addMXLNMOSProgramSenders exposes the program flows as MXL Sources, Flows
+// and Senders, as BCP-007-03 requires of every MXL writer, so a controller
+// can connect other receivers to the program. The flows are described by
+// the same definitions the writers create them from.
+//
+// Each engine of a pair writes flows of its own, so both engines' programs
+// are senders, each naming its own engine's flow, and either engine offers
+// both: the sender a receiver was connected to keeps naming the flow that
+// receiver reads whichever engine leads.
 func (a *App) addMXLNMOSProgramSenders(n *mxlNMOS, deviceID string) ([]string, error) {
+	type program struct {
+		engine, video, audio string
+	}
+	var programs []program
+	if a.cfg.MXLOutput != "" {
+		programs = append(programs, program{a.cfg.EngineLabel, a.cfg.MXLOutputVideoDef, a.cfg.MXLOutputAudioDef})
+	}
+	if a.cfg.EngineLabel != "" {
+		programs = append(programs, program{peerEngineLabel(a.cfg.EngineLabel), n.cfg.PeerOutputVideoDef, n.cfg.PeerOutputAudioDef})
+	}
 	senders := []string{}
-	if a.cfg.MXLOutput == "" {
-		return senders, nil
-	}
-	defs := []struct {
-		essence mxlEssence
-		path    string
-		format  string
-	}{
-		{essenceVideo, a.cfg.MXLOutputVideoDef, nmos.FormatVideo},
-		{essenceAudio, a.cfg.MXLOutputAudioDef, nmos.FormatAudio},
-	}
-	for _, d := range defs {
-		if d.path == "" {
-			continue
-		}
-		data, err := os.ReadFile(d.path)
-		if err != nil {
-			return nil, fmt.Errorf("mxl nmos: program %s flow definition: %w", d.essence, err)
-		}
-		var flow nmos.Flow
-		if err := json.Unmarshal(data, &flow); err != nil {
-			return nil, fmt.Errorf("mxl nmos: program %s flow definition %s: %w", d.essence, d.path, err)
-		}
-		var extra struct {
-			ChannelCount int `json:"channel_count"`
-		}
-		_ = json.Unmarshal(data, &extra)
-		// A rational's denominator defaults to 1 and is often left out.
-		for _, r := range []*nmos.Rational{flow.GrainRate, flow.SampleRate} {
-			if r != nil && r.Denominator == 0 {
-				r.Denominator = 1
+	// Two senders of one flow would be two programs a controller cannot
+	// tell apart, one of which nobody writes.
+	written := map[string]string{}
+	for _, p := range programs {
+		for _, d := range []struct {
+			essence mxlEssence
+			path    string
+			format  string
+		}{
+			{essenceVideo, p.video, nmos.FormatVideo},
+			{essenceAudio, p.audio, nmos.FormatAudio},
+		} {
+			if d.path == "" {
+				continue
 			}
+			key := programKey(p.engine)
+			id, flowID, err := a.addMXLNMOSProgramSender(n, deviceID, key, d.essence, d.path, d.format)
+			if err != nil {
+				return nil, err
+			}
+			if other, ok := written[flowID]; ok {
+				return nil, fmt.Errorf("mxl nmos: %s %s and %s name the same flow %s", key, d.essence, other, flowID)
+			}
+			written[flowID] = key + " " + string(d.essence)
+			senders = append(senders, id)
 		}
-		mxlFlowID := flow.ID
-		if mxlFlowID == "" {
-			return nil, fmt.Errorf("mxl nmos: program %s flow definition %s has no id", d.essence, d.path)
-		}
-		// The IS-04 ids are the node's own, alike on both engines; the
-		// MXL flow id is what each engine writes and what a receiver is
-		// connected to.
-		sourceID := nmos.DeriveID(n.cfg.Seed, "source", "program", string(d.essence))
-		flow.ID = nmos.DeriveID(n.cfg.Seed, "flow", "program", string(d.essence))
-		flow.Version = nmos.NewVersion()
-		flow.SourceID = sourceID
-		flow.DeviceID = deviceID
-		flow.Parents = []string{}
-		flow.Format = d.format
-		if flow.Tags == nil {
-			flow.Tags = map[string][]string{}
-		}
-		src := &nmos.Source{
-			ID:          sourceID,
-			Version:     nmos.NewVersion(),
-			Label:       flow.Label,
-			Description: flow.Description,
-			Tags:        flow.Tags,
-			Caps:        map[string]interface{}{},
-			Format:      d.format,
-			Parents:     []string{},
-			DeviceID:    deviceID,
-			ClockName:   "clk0",
-		}
-		if d.format == nmos.FormatAudio {
-			// IS-04 requires an audio source to list its channels; the
-			// definition gives only their number.
-			src.Channels = audioChannels(extra.ChannelCount)
-		}
-		n.store.AddSource(src)
-		n.store.AddFlow(&flow)
-		senderID := nmos.DeriveID(n.cfg.Seed, "sender", "program", string(d.essence))
-		n.store.AddSender(&nmos.Sender{
-			ID:                senderID,
-			Version:           nmos.NewVersion(),
-			Label:             flow.Label,
-			Description:       flow.Description,
-			Tags:              flow.Tags,
-			FlowID:            flow.ID,
-			Transport:         nmos.TransportMXL,
-			DeviceID:          deviceID,
-			InterfaceBindings: []string{},
-			Caps:              map[string]interface{}{},
-			Subscription:      nmos.SenderSubscription{Active: true},
-		})
-		n.conn.AddSender(senderID, mxlFlowID)
-		senders = append(senders, senderID)
 	}
 	return senders, nil
+}
+
+// programKey seeds the ids of an engine's program resources. Engine a's
+// are those of a single engine, which predate pairs.
+func programKey(engine string) string {
+	if engine == "b" {
+		return "program-b"
+	}
+	return "program"
+}
+
+func peerEngineLabel(engine string) string {
+	if engine == "a" {
+		return "b"
+	}
+	return "a"
+}
+
+// addMXLNMOSProgramSender adds the Source, Flow and Sender of one program
+// flow definition and returns the sender's id and the MXL flow it names.
+func (a *App) addMXLNMOSProgramSender(n *mxlNMOS, deviceID, key string, essence mxlEssence, path, format string) (string, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", fmt.Errorf("mxl nmos: %s %s flow definition: %w", key, essence, err)
+	}
+	var flow nmos.Flow
+	if err := json.Unmarshal(data, &flow); err != nil {
+		return "", "", fmt.Errorf("mxl nmos: %s %s flow definition %s: %w", key, essence, path, err)
+	}
+	var extra struct {
+		ChannelCount int `json:"channel_count"`
+	}
+	_ = json.Unmarshal(data, &extra)
+	// A rational's denominator defaults to 1 and is often left out.
+	for _, r := range []*nmos.Rational{flow.GrainRate, flow.SampleRate} {
+		if r != nil && r.Denominator == 0 {
+			r.Denominator = 1
+		}
+	}
+	mxlFlowID := flow.ID
+	if mxlFlowID == "" {
+		return "", "", fmt.Errorf("mxl nmos: %s %s flow definition %s has no id", key, essence, path)
+	}
+	// The IS-04 ids are the node's own, alike on both engines; the MXL flow
+	// id is what the engine writes and what a receiver is connected to.
+	sourceID := nmos.DeriveID(n.cfg.Seed, "source", key, string(essence))
+	flow.ID = nmos.DeriveID(n.cfg.Seed, "flow", key, string(essence))
+	flow.Version = nmos.NewVersion()
+	flow.SourceID = sourceID
+	flow.DeviceID = deviceID
+	flow.Parents = []string{}
+	flow.Format = format
+	if flow.Tags == nil {
+		flow.Tags = map[string][]string{}
+	}
+	src := &nmos.Source{
+		ID:          sourceID,
+		Version:     nmos.NewVersion(),
+		Label:       flow.Label,
+		Description: flow.Description,
+		Tags:        flow.Tags,
+		Caps:        map[string]interface{}{},
+		Format:      format,
+		Parents:     []string{},
+		DeviceID:    deviceID,
+		ClockName:   "clk0",
+	}
+	if format == nmos.FormatAudio {
+		// IS-04 requires an audio source to list its channels; the
+		// definition gives only their number.
+		src.Channels = audioChannels(extra.ChannelCount)
+	}
+	n.store.AddSource(src)
+	n.store.AddFlow(&flow)
+	senderID := nmos.DeriveID(n.cfg.Seed, "sender", key, string(essence))
+	n.store.AddSender(&nmos.Sender{
+		ID:                senderID,
+		Version:           nmos.NewVersion(),
+		Label:             flow.Label,
+		Description:       flow.Description,
+		Tags:              flow.Tags,
+		FlowID:            flow.ID,
+		Transport:         nmos.TransportMXL,
+		DeviceID:          deviceID,
+		InterfaceBindings: []string{},
+		Caps:              map[string]interface{}{},
+		Subscription:      nmos.SenderSubscription{Active: true},
+	})
+	n.conn.AddSender(senderID, mxlFlowID)
+	return senderID, mxlFlowID, nil
 }
 
 // audioChannels labels count channels, as a stereo pair where there are

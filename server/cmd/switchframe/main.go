@@ -385,6 +385,8 @@ func parseConfig() (AppConfig, error) {
 	mxlNMOSHostFlag := flag.String("mxl-nmos-host", "", "host a registry and controllers reach this engine's NMOS node at; empty = hostname (env: SWITCHFRAME_MXL_NMOS_HOST)")
 	mxlNMOSRegistryFlag := flag.String("mxl-nmos-registry-url", "", "origin of the IS-04 Registration API to register with; empty = do not register (env: SWITCHFRAME_MXL_NMOS_REGISTRY_URL)")
 	mxlNMOSQueryFlag := flag.String("mxl-nmos-query-url", "", "origin of the IS-04 Query API connected senders are looked up in; empty = the registry's (env: SWITCHFRAME_MXL_NMOS_QUERY_URL)")
+	mxlNMOSPeerVideoDefFlag := flag.String("mxl-nmos-peer-output-video-def", "", "path to the peer engine's MXL output video flow definition JSON, offered as a sender of the peer's program (env: SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_VIDEO_DEF)")
+	mxlNMOSPeerAudioDefFlag := flag.String("mxl-nmos-peer-output-audio-def", "", "path to the peer engine's MXL output audio flow definition JSON, offered as a sender of the peer's program (env: SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_AUDIO_DEF)")
 	mxlOutputVideoDef := flag.String("mxl-output-video-def", "", "Path to MXL output video flow definition JSON")
 	mxlOutputAudioDef := flag.String("mxl-output-audio-def", "", "Path to MXL output audio flow definition JSON")
 	mxlDomain := flag.String("mxl-domain", "/dev/shm/mxl", "MXL shared memory domain path")
@@ -637,6 +639,9 @@ func parseConfig() (AppConfig, error) {
 			Host:        resolveEnvOrFlag(*mxlNMOSHostFlag, "SWITCHFRAME_MXL_NMOS_HOST"),
 			RegistryURL: resolveEnvOrFlag(*mxlNMOSRegistryFlag, "SWITCHFRAME_MXL_NMOS_REGISTRY_URL"),
 			QueryURL:    resolveEnvOrFlag(*mxlNMOSQueryFlag, "SWITCHFRAME_MXL_NMOS_QUERY_URL"),
+
+			PeerOutputVideoDef: resolveEnvOrFlag(*mxlNMOSPeerVideoDefFlag, "SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_VIDEO_DEF"),
+			PeerOutputAudioDef: resolveEnvOrFlag(*mxlNMOSPeerAudioDefFlag, "SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_AUDIO_DEF"),
 		},
 		PeerCertHash:       resolveEnvOrFlag(*peerCertHashFlag, "SWITCHFRAME_PEER_CERT_HASH"),
 		PeerPublicURL:      resolveEnvOrFlag(*peerPublicURLFlag, "SWITCHFRAME_PEER_PUBLIC_URL"),
