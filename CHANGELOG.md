@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.9](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.8...mxl-v1.0.0-rc.9) (2026-10-22)
+
+
+### Features
+
+* **auth:** sign operators in with OpenID Connect ([#24](https://github.com/qvest-digital/dmf-mf-switchframe/issues/24)) ([112af11](https://github.com/qvest-digital/dmf-mf-switchframe/commit/112af11896632c48cbaf84e4ef4d44e6d0c58f9a))
+
 ## [1.0.0-rc.8](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.7...mxl-v1.0.0-rc.8) (2026-10-22)
 
 
