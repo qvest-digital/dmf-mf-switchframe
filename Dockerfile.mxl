@@ -8,7 +8,7 @@
 # Every reader and writer of one MXL domain has to link the same libmxl, so
 # GO_MXL_TAG is the libmxl the rest of the domain runs, not a free choice.
 # renovate: datasource=docker depName=ghcr.io/qvest-digital/go-mxl-builder
-ARG GO_MXL_TAG=1.1.0-rc.6
+ARG GO_MXL_TAG=1.1.0-rc.7
 
 # CUDA from NVIDIA's Debian 13 repository, the release of the go-mxl images.
 # 13.2 is the newest the 595 driver branch runs without the forward
