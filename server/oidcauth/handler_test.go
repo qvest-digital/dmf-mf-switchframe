@@ -136,7 +136,7 @@ func TestSignIn_ProviderErrorIsNotReflected(t *testing.T) {
 
 	resp, err := noRedirect().Get(engine.URL + "/auth/callback?error=access_denied&error_description=Call+1-800-EVIL")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	body, _ := io.ReadAll(resp.Body)
 	require.NotContains(t, string(body), "EVIL")
@@ -160,7 +160,7 @@ func postRefresh(t *testing.T, engine *httptest.Server, refreshToken string) (in
 	resp, err := http.Post(engine.URL+"/auth/refresh", "application/json",
 		strings.NewReader(`{"refresh_token":"`+refreshToken+`"}`))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var body map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	return resp.StatusCode, body
@@ -193,7 +193,7 @@ func TestConfigEndpoint(t *testing.T) {
 	get := func(s *httptest.Server) {
 		resp, err := http.Get(s.URL + "/auth/config")
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		cfg = nil
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&cfg))
@@ -218,6 +218,6 @@ func TestHandler_DisabledServesOnlyConfig(t *testing.T) {
 	engine := newEngine(t, nil)
 	resp, err := noRedirect().Get(engine.URL + "/auth/login")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }

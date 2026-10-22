@@ -119,7 +119,7 @@ func (k *keySet) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: fetch keys: %v", ErrUnavailable, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%w: fetch keys: %s", ErrUnavailable, resp.Status)
 	}
