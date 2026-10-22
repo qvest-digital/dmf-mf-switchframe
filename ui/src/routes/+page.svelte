@@ -690,10 +690,16 @@
 	function handleInitialLoadError(error: string, rawError?: unknown) {
 		initialLoadRetries++;
 
+		// A 401 is Engine A answering without a token, not Engine A down.
+		// Wiring a discovered Engine B here would fail over to it, and a
+		// guessed URL would then win over the one Engine A's state names once
+		// the token is in.
+		const unauthorized = rawError instanceof SwitchApiError && rawError.status === 401;
+
 		// Use the speculative Engine B discovery that was started in parallel
 		// with the initial state fetch. On first error, consume the result
 		// immediately — no need to start a new discovery round.
-		if (!engineBDetected && speculativeEngineB) {
+		if (!unauthorized && !engineBDetected && speculativeEngineB) {
 			speculativeEngineB.then(result => {
 				if (!engineBDetected && result) {
 					engineBDetected = true;
@@ -704,7 +710,7 @@
 		}
 
 		console.warn('Failed to fetch initial state:', error);
-		if (rawError instanceof SwitchApiError && rawError.status === 401) {
+		if (unauthorized) {
 			tokenRequired = true;
 			initialLoading = false;
 		}
