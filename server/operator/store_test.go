@@ -1,9 +1,11 @@
 package operator
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -483,4 +485,69 @@ func TestStore_Register_ClientID_GetByID(t *testing.T) {
 	got, err := s.Get(clientID)
 	require.NoError(t, err)
 	require.Equal(t, op.Token, got.Token)
+}
+
+// Both engines of a dual-engine pair receive the same registration. With a
+// client-provided token they must accept the same bearer token; with tokens
+// minted per engine, the browser holds one and the other engine rejects it.
+func TestRegisterWithToken_BothEnginesAcceptTheClientToken(t *testing.T) {
+	a, err := NewStore(tempStorePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewStore(tempStorePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := strings.Repeat("ab", 32)
+	for _, s := range []*Store{a, b} {
+		op, err := s.RegisterWithToken("Alice", RoleDirector, "client-id-0001", token)
+		if err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		if op.Token != token {
+			t.Fatalf("token = %q, want the client token", op.Token)
+		}
+	}
+	for name, s := range map[string]*Store{"A": a, "B": b} {
+		if _, err := s.GetByToken(token); err != nil {
+			t.Fatalf("engine %s does not accept the token: %v", name, err)
+		}
+	}
+}
+
+func TestRegisterWithToken_RejectsMalformedOrTakenTokens(t *testing.T) {
+	s, err := NewStore(tempStorePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tok := range []string{"short", strings.Repeat("AB", 32), strings.Repeat("zz", 32)} {
+		if _, err := s.RegisterWithToken("Bob", RoleAudio, "", tok); !errors.Is(err, ErrInvalidToken) {
+			t.Fatalf("token %q: err = %v, want ErrInvalidToken", tok, err)
+		}
+	}
+	tok := strings.Repeat("cd", 32)
+	if _, err := s.RegisterWithToken("Carol", RoleAudio, "", tok); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterWithToken("Dave", RoleAudio, "", tok); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("reused token: err = %v, want ErrInvalidToken", err)
+	}
+}
+
+func TestRegisterWithToken_ReRegistrationNeedsTheSameToken(t *testing.T) {
+	s, err := NewStore(tempStorePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := strings.Repeat("ef", 32)
+	if _, err := s.RegisterWithToken("Erin", RoleViewer, "client-id-0002", tok); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterWithToken("Erin", RoleViewer, "client-id-0002", tok); err != nil {
+		t.Fatalf("idempotent re-registration: %v", err)
+	}
+	if _, err := s.RegisterWithToken("Erin", RoleViewer, "client-id-0002", strings.Repeat("01", 32)); err == nil {
+		t.Fatal("re-registration with another token succeeded")
+	}
 }

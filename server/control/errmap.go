@@ -114,6 +114,7 @@ var errorMappings = []errorMapping{
 	{macro.ErrNoSteps, http.StatusBadRequest},
 	{operator.ErrEmptyName, http.StatusBadRequest},
 	{operator.ErrInvalidRole, http.StatusBadRequest},
+	{operator.ErrInvalidToken, http.StatusBadRequest},
 	{operator.ErrInvalidSubsystem, http.StatusBadRequest},
 	{operator.ErrNotLocked, http.StatusBadRequest},
 	{operator.ErrLockNotOwned, http.StatusBadRequest},

@@ -17,6 +17,7 @@ var (
 	ErrLockNotOwned     = errors.New("operator: lock not owned by this operator")
 	ErrInvalidSubsystem = errors.New("operator: invalid subsystem")
 	ErrSessionNotFound  = errors.New("operator: session not found")
+	ErrInvalidToken     = errors.New("operator: client token must be 64 lowercase hex characters and unused")
 )
 
 // Role defines an operator's permission level.
