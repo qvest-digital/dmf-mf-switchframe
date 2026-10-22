@@ -1,6 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createReconciler, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, AUTHORITY_HOLD_MS, sortedStringify } from './reconciler.svelte';
+import { createReconciler, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, AUTHORITY_HOLD_MS, sortedStringify, SETTLE_MS, SETTLE_MAX_MS } from './reconciler.svelte';
 import type { ControlRoomState, ClipPlayerState } from '$lib/api/types';
+
+/** Let both engines' states sit unchanged for SETTLE_MS, after which a
+ * difference between them counts. */
+function settle(r: ReturnType<typeof createReconciler>) {
+	if (!vi.isFakeTimers()) vi.useFakeTimers();
+	vi.advanceTimersByTime(SETTLE_MS);
+	r.tick();
+}
+
+afterEach(() => {
+	vi.useRealTimers();
+});
+
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
 	return {
@@ -74,6 +87,101 @@ describe('createReconciler', () => {
 		r.ingest('B', makeState({ lastCommandSeq: 5, engineBUrl: 'https://engine-a' }));
 		expect(r.health.authoritative).toBe('A');
 		expect(r.state.engineBUrl).toBe('https://engine-b');
+	});
+
+	// A command reaches the two engines at different moments; without
+	// command seqs both report the same seq meanwhile. Reporting that as a
+	// mismatch starts a full state resync on every cut.
+	it('does not report a mismatch while a command reaches the second engine', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		r.ingest('A', makeState({ previewSource: 'cam1', lastCommandSeq: 0 }));
+		r.ingest('B', makeState({ previewSource: 'cam1', lastCommandSeq: 0 }));
+		vi.advanceTimersByTime(SETTLE_MS);
+		r.tick();
+		expect(r.health.status).toBe('synced');
+
+		r.ingest('A', makeState({ previewSource: 'cam2', lastCommandSeq: 0 }));
+		expect(r.health.status).toBe('synced');
+		vi.advanceTimersByTime(60);
+		r.tick();
+		expect(r.health.status).toBe('synced');
+		r.ingest('B', makeState({ previewSource: 'cam2', lastCommandSeq: 0 }));
+		vi.advanceTimersByTime(SETTLE_MS);
+		r.tick();
+		expect(r.health.status).toBe('synced');
+	});
+
+	// Dragging a fader sends level after level; each engine trails the other
+	// by the command in flight for as long as the drag lasts.
+	it('does not report a divergence while a fader is being dragged', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		const at = (level: number) => makeState({
+			audioChannels: { cam1: { level, trim: 0, muted: false, afv: false } as never },
+		});
+		r.ingest('A', at(0));
+		r.ingest('B', at(0));
+		for (let level = 1; level <= 30; level++) {
+			r.ingest('A', at(level));
+			vi.advanceTimersByTime(50);
+			r.tick();
+			expect(r.health.status).toBe('synced');
+			r.ingest('B', at(level));
+			vi.advanceTimersByTime(50);
+		}
+		vi.advanceTimersByTime(SETTLE_MS);
+		r.tick();
+		expect(r.health.status).toBe('synced');
+	});
+
+	// A field that changes on every update and is compared would still hold
+	// a difference back; the cap bounds that.
+	it('reports a lasting difference within SETTLE_MAX_MS while the engines keep changing', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		for (let i = 0; i <= SETTLE_MAX_MS / 100; i++) {
+			r.ingest('A', makeState({ previewSource: 'cam2', transitionPosition: i / 100 }));
+			r.ingest('B', makeState({ previewSource: 'cam1', transitionPosition: i / 100 }));
+			vi.advanceTimersByTime(100);
+			r.tick();
+		}
+		expect(r.health.status).toBe('mismatch');
+	});
+
+	// A drag longer than SETTLE_MAX_MS keeps one engine a level behind the
+	// other the whole time; it must not count as a lasting difference.
+	it('does not report a mismatch through a fader drag longer than SETTLE_MAX_MS', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		const at = (level: number, muted = false) => makeState({
+			audioChannels: { cam1: { level, trim: 0, muted, afv: false } as never },
+		});
+		r.ingest('A', at(0));
+		r.ingest('B', at(0));
+		// Engine A is always one level ahead: the two never report the same
+		// level at any one moment.
+		for (let level = 2; level <= (SETTLE_MAX_MS / 100) * 2; level++) {
+			r.ingest('A', at(level));
+			vi.advanceTimersByTime(50);
+			r.tick();
+			expect(r.health.status).toBe('synced');
+			r.ingest('B', at(level - 1));
+			vi.advanceTimersByTime(50);
+			r.tick();
+			expect(r.health.status).toBe('synced');
+		}
+	});
+
+	it('reports a difference that outlasts the settle time', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		r.ingest('A', makeState({ previewSource: 'cam2', lastCommandSeq: 0 }));
+		r.ingest('B', makeState({ previewSource: 'cam1', lastCommandSeq: 0 }));
+		expect(r.health.status).toBe('synced');
+		vi.advanceTimersByTime(SETTLE_MS);
+		r.tick();
+		expect(r.health.status).toBe('mismatch');
 	});
 
 	it('detects source divergence', () => {
@@ -285,11 +393,12 @@ describe('createReconciler', () => {
 			expect(r.health.status).toBe('synced');
 		});
 
-		it('reports diverged immediately on field mismatch at different seqs', () => {
+		it('reports diverged once both engines settle on field mismatch at different seqs', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 3 }));
-			// Field mismatch + different seq = diverged immediately
+			settle(r);
+			// Field mismatch + different seq = diverged once both engines settle
 			r.tick();
 			expect(r.health.status).toBe('diverged');
 		});
@@ -302,6 +411,7 @@ describe('createReconciler', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+			settle(r);
 			r.tick();
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -316,6 +426,7 @@ describe('createReconciler', () => {
 				lastCommandSeq: 5,
 				playout: { channels: [{ id: 0, state: 'on_air', currentTitle: 'Bumper', itemIndex: 0, itemCount: 1 }] },
 			}));
+			settle(r);
 			r.tick();
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -343,6 +454,7 @@ describe('createReconciler', () => {
 				lastCommandSeq: 10,
 				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 5, itemCount: 15 }] },
 			}));
+			settle(r);
 			expect(r.health.status).toBe('mismatch');
 		});
 
@@ -380,6 +492,7 @@ describe('createReconciler', () => {
 				lastCommandSeq: 10,
 				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 2, itemCount: 15, currentTitle: 'Interview', itemRemainMs: 19000 }] },
 			}));
+			settle(r);
 			r.tick();
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -431,6 +544,7 @@ describe('createReconciler', () => {
 				lastCommandSeq: 5,
 				recording: { active: false },
 			}));
+			settle(r);
 			r.tick();
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -867,6 +981,7 @@ describe('createReconciler', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({ ftbActive: false, lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ ftbActive: true, lastCommandSeq: 5 }));
+			settle(r);
 			r.tick();
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -875,6 +990,7 @@ describe('createReconciler', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({ previewSource: 'cam1', lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ previewSource: 'cam3', lastCommandSeq: 5 }));
+			settle(r);
 			r.tick();
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -1255,6 +1371,7 @@ describe('createReconciler', () => {
 				lastCommandSeq: 5,
 				audioChannels: { cam1: { level: -12, muted: true, afv: true } } as any,
 			}));
+			settle(r);
 			// audioChannels settings differ, so divergence should be detected
 			const fields = r.health.divergences.map(d => d.field);
 			expect(fields).toContain('audioChannels');
