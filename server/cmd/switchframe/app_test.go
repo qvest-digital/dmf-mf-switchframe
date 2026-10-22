@@ -77,6 +77,61 @@ func TestAnnounceAuth_GeneratedTokenGoesToOwnerOnlyFile(t *testing.T) {
 	require.Contains(t, out, path)
 }
 
+// A token file left from an earlier run with a wider mode must not hold the
+// new token, even briefly, at that mode.
+func TestAnnounceAuth_ReplacesWiderExistingTokenFile(t *testing.T) {
+	const token = "c0ffee5ecret70ken0123456789abcdef"
+	dir := t.TempDir()
+	path := filepath.Join(dir, apiTokenFile)
+	require.NoError(t, os.WriteFile(path, []byte("old\n"), 0o644))
+	require.NoError(t, os.Chmod(path, 0o644))
+	before, err := os.Stat(path)
+	require.NoError(t, err)
+
+	captureStartup(t, func(log *slog.Logger) {
+		require.NoError(t, announceAuth(AppConfig{APIToken: token, APITokenSource: "generated", StateDir: dir}, log))
+	})
+
+	after, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), after.Mode().Perm())
+	require.False(t, os.SameFile(before, after), "the token must go into a new file, not the old one")
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, token+"\n", string(got))
+}
+
+// A symlink at the token path is replaced, not followed: the token must not
+// land in whatever file the link points at.
+func TestAnnounceAuth_ReplacesSymlinkAtTokenPath(t *testing.T) {
+	const token = "c0ffee5ecret70ken0123456789abcdef"
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "elsewhere")
+	require.NoError(t, os.WriteFile(target, []byte("untouched\n"), 0o644))
+	require.NoError(t, os.Chmod(target, 0o644))
+	path := filepath.Join(dir, apiTokenFile)
+	require.NoError(t, os.Symlink(target, path))
+
+	captureStartup(t, func(log *slog.Logger) {
+		require.NoError(t, announceAuth(AppConfig{APIToken: token, APITokenSource: "generated", StateDir: dir}, log))
+	})
+
+	got, err := os.ReadFile(target)
+	require.NoError(t, err)
+	require.Equal(t, "untouched\n", string(got))
+	info, err := os.Stat(target)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o644), info.Mode().Perm())
+
+	linfo, err := os.Lstat(path)
+	require.NoError(t, err)
+	require.True(t, linfo.Mode().IsRegular())
+	require.Equal(t, os.FileMode(0o600), linfo.Mode().Perm())
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "no temporary file may be left behind")
+}
+
 func TestAnnounceAuth_ConfiguredTokenWritesNoFile(t *testing.T) {
 	dir := t.TempDir()
 
@@ -101,6 +156,8 @@ func TestParseConfig_APITokenSource(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("SWITCHFRAME_API_TOKEN", tc.env)
+			args, cmdLine := os.Args, flag.CommandLine
+			t.Cleanup(func() { os.Args, flag.CommandLine = args, cmdLine })
 			os.Args = append([]string{"switchframe"}, tc.args...)
 			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 

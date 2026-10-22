@@ -76,6 +76,30 @@ var errDiscoverExit = errors.New("mxl discover completed")
 // API token, readable by the owner only.
 const apiTokenFile = "api-token"
 
+// writeFileAtomic replaces path with a new owner-only file holding data. The
+// data goes into a temporary file created with mode 0600, which is renamed
+// over path, so an existing file of a wider mode, or a symlink at path, is
+// replaced rather than written through.
+func writeFileAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
 // announceAuth logs how API authentication is set up. The token itself never
 // reaches the log or stdout, which container platforms collect into the same
 // log store. A generated token is written to a file in the state directory
@@ -93,12 +117,8 @@ func announceAuth(cfg AppConfig, log *slog.Logger) error {
 		return fmt.Errorf("create state directory: %w", err)
 	}
 	path := filepath.Join(cfg.StateDir, apiTokenFile)
-	if err := os.WriteFile(path, []byte(cfg.APIToken+"\n"), 0o600); err != nil {
+	if err := writeFileAtomic(path, []byte(cfg.APIToken+"\n")); err != nil {
 		return fmt.Errorf("write generated API token: %w", err)
-	}
-	// WriteFile keeps the mode of an existing file.
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("restrict generated API token file: %w", err)
 	}
 	log.Info("API authentication enabled", "token_source", "generated", "token_file", path)
 	return nil
