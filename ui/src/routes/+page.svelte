@@ -1614,6 +1614,9 @@
 		// for the reconciler's next 2s divergence tick.
 		setOnNewEngineDiscovered((_engineId) => {
 			autoReconcile.forceSnapshotPush(syncHealth?.authoritative ?? 'A');
+			// The operator reconnected before this engine was known. Without
+			// a session there, the engine refuses the operator's locks.
+			if (operatorState.isRegistered()) void operatorState.reconnect();
 		});
 
 		// Fetch initial state, start polling, and attempt WebTransport connection
