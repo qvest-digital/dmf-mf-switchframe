@@ -863,6 +863,31 @@ describe('PipelineManager', () => {
 			expect(pipeline.attachCanvas).toHaveBeenCalledWith('program-preview', 'program', pgmCanvas);
 		});
 
+		// The toggle moves only the program view. Disconnecting Engine A's
+		// other sources left preview and tiles on a dead transport, frozen
+		// until the operator switched back to A.
+		it('switchProgramToEngineB keeps Engine A preview and tiles connected', async () => {
+			await manager.syncSources(makeSources('cam1', 'cam2'));
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam2', pgmCanvas, pvwCanvas);
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			manager.connectSourceB('program-preview');
+			pipeline.disconnectSource.mockClear();
+			pipeline.detachCanvas.mockClear();
+
+			manager.switchProgramToEngineB();
+
+			expect(pipeline.disconnectSource.mock.calls).toEqual([['program-preview']]);
+			expect(pipeline.detachCanvas).not.toHaveBeenCalledWith('cam2', 'preview');
+
+			// Back to A reconnects the program feed; connectSource on the
+			// sources that stayed connected is a no-op in the pipeline.
+			pipeline.connectSource.mockClear();
+			manager.switchProgramToEngineA();
+			expect(pipeline.connectSource).toHaveBeenCalledWith('program-preview');
+		});
+
 		it('activeEngine getter reflects current state', () => {
 			expect(manager.activeEngine).toBe('A');
 
@@ -889,6 +914,25 @@ describe('PipelineManager', () => {
 
 		afterEach(() => {
 			vi.useRealTimers();
+		});
+
+		// A failover moves everything to Engine B, so Engine A's sources
+		// are no longer shown and must stop decoding headless.
+		it('failoverToEngineB disconnects Engine A sources', async () => {
+			await manager.syncSources(makeSources('cam1', 'cam2'));
+			manager.syncProgramPreviewCanvases('cam1', createCanvas(), createCanvas());
+			const bPipelineMock = createMockPipeline();
+			bPipelineMock.getAudioDecoder.mockImplementation((key: string) =>
+				key === 'program-preview' ? ({ getLevels: vi.fn().mockReturnValue({ peak: [0, 0] }) } as any) : null);
+			mockedCreateMediaPipeline.mockReturnValueOnce(bPipelineMock);
+			pipeline.disconnectSource.mockClear();
+
+			const failoverPromise = manager.failoverToEngineB('https://engine-b:8080', ['cam1', 'cam2']);
+			await vi.advanceTimersByTimeAsync(250);
+			await failoverPromise;
+
+			const disconnected = pipeline.disconnectSource.mock.calls.map((c: unknown[]) => c[0]);
+			expect(disconnected).toEqual(expect.arrayContaining(['program-preview', 'cam1', 'cam2']));
 		});
 
 		it('failoverToEngineB creates pipeline B and switches activeEngine', async () => {

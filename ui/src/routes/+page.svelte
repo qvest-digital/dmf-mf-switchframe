@@ -1527,9 +1527,10 @@
 	$effect(() => {
 		if (!isDualEngine || !mounted) return;
 		if (activeEngine === 'B' && store.state.engineBUrl) {
-			// Re-run on every state update; switching again detaches and
-			// disconnects Engine A's sources each time. A destroyed pipeline
-			// leaves activeEngine at 'B', and is recreated below.
+			// Re-run on every state update; switching again detaches the
+			// program canvas and disconnects Engine A's program feed each
+			// time. A destroyed pipeline leaves activeEngine at 'B', and is
+			// recreated below.
 			if (pipelineManager.activeEngine === 'B' && pipelineManager.hasEngineBPipeline) return;
 			if (!pipelineManager.hasEngineBPipeline) {
 				pipelineManager.createEngineBPipeline(store.state.engineBUrl);

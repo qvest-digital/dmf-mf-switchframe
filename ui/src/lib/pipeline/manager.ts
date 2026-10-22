@@ -454,8 +454,8 @@ export class PipelineManager {
 	 * Move the program canvas from Engine A to Engine B.
 	 * Requires an active Engine B pipeline and a program canvas element.
 	 *
-	 * Also disconnects Engine A's MoQ transports to stop headless decoding
-	 * of frames nobody is viewing (saves bandwidth and CPU).
+	 * Also disconnects Engine A's program feed, which nothing views any
+	 * more; tiles and preview stay on Engine A.
 	 */
 	switchProgramToEngineB(): void {
 		if (!this.pipelineB || !this.currentProgramCanvasEl) return;
@@ -465,12 +465,10 @@ export class PipelineManager {
 			this.pipeline.detachCanvas(this.currentProgramCanvas, 'program');
 		}
 
-		// Disconnect Engine A's MoQ transports to stop headless decoding.
-		// Use disconnectSource (not removeSource) so decode state is preserved
-		// for quick restore if we switch back to Engine A.
-		for (const key of this.connectedSources) {
-			this.pipeline.disconnectSource(key);
-		}
+		// Disconnect Engine A's program feed, which nothing shows any more.
+		// Tiles and preview stay on Engine A and keep their transports; a
+		// failover moves them and disconnects the rest. disconnectSource,
+		// not removeSource, keeps decode state for a quick switch back.
 		this.pipeline.disconnectSource('program-preview');
 
 		// Attach to Engine B's program-preview (UI never subscribes to
@@ -546,6 +544,11 @@ export class PipelineManager {
 
 			// Swap tile + preview canvases from A → B
 			this.swapTileAndPreviewCanvases(this.pipeline, this.pipelineB!);
+
+			// Nothing shows Engine A any more: stop decoding it headless.
+			for (const key of this.connectedSources) {
+				this.pipeline.disconnectSource(key);
+			}
 
 			this._activeEngine = 'B';
 
