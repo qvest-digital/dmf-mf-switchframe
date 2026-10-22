@@ -425,6 +425,71 @@ func TestMXLNMOS_ProgramSenders(t *testing.T) {
 	}
 }
 
+// Each engine of a pair writes a program of its own. Both are senders, each
+// naming its own engine's flow, and both engines offer the same ones: were
+// a pair one sender per essence, naming the leader's flow, a failover would
+// move it to the other engine's flow while the receivers connected to it
+// kept reading the first.
+func TestMXLNMOS_PairOffersBothEnginesPrograms(t *testing.T) {
+	const aVideo = "5f000000-0000-4000-8000-0000000000a1"
+	const bVideo = "5f000000-0000-4000-8000-0000000000b1"
+	dir := t.TempDir()
+	def := func(name, id, group string) string {
+		p := filepath.Join(dir, name)
+		_ = os.WriteFile(p, []byte(`{"id":"`+id+`","label":"switcher program video",
+			"format":"urn:x-nmos:format:video","media_type":"video/v210",
+			"tags":{"urn:x-nmos:tag:grouphint/v1.0":["`+group+`:Video"]},
+			"grain_rate":{"numerator":50},"frame_width":1920,"frame_height":1080}`), 0o644)
+		return p
+	}
+	aDef, bDef := def("program-video.json", aVideo, "studio"), def("program-video-b.json", bVideo, "studio-b")
+
+	// What each sender of an engine's node names: its MXL flow and group.
+	offered := func(engine, own, peer string) map[string]string {
+		tt := newNMOSTestApp(t, nil, func(a *App) {
+			a.cfg.EngineLabel = engine
+			a.cfg.MXLOutput = "program"
+			a.cfg.MXLOutputVideoDef = own
+			a.cfg.MXLNMOS.PeerOutputVideoDef = peer
+		})
+		var senders []nmos.Sender
+		tt.getJSON(t, "/x-nmos/node/v1.3/senders", &senders)
+		out := map[string]string{}
+		for _, s := range senders {
+			var active nmos.MXLEndpoint
+			tt.getJSON(t, "/x-nmos/connection/v1.1/single/senders/"+s.ID+"/active", &active)
+			out[s.ID] = active.FlowID() + " " + strings.Join(s.Tags[nmos.GroupHintTag], ",")
+		}
+		return out
+	}
+	onA, onB := offered("a", aDef, bDef), offered("b", bDef, aDef)
+
+	want := map[string]string{
+		nmos.DeriveID(nmosSeed, "sender", "program", "video"):   aVideo + " studio:Video",
+		nmos.DeriveID(nmosSeed, "sender", "program-b", "video"): bVideo + " studio-b:Video",
+	}
+	for engine, got := range map[string]map[string]string{"a": onA, "b": onB} {
+		if len(got) != len(want) {
+			t.Errorf("engine %s offers %v, want %v", engine, got, want)
+		}
+		for id, w := range want {
+			if got[id] != w {
+				t.Errorf("engine %s: sender %s names %q, want %q", engine, id, got[id], w)
+			}
+		}
+	}
+}
+
+// A peer only exists for an engine of a pair.
+func TestMXLNMOS_PeerProgramNeedsEngineLabel(t *testing.T) {
+	a := &App{sw: switcher.New(distribution.NewRelay())}
+	t.Cleanup(a.sw.Close)
+	a.cfg.MXLNMOS = mxlNMOSConfig{Port: 1, Seed: nmosSeed, PeerOutputVideoDef: "program-video-b.json"}
+	if _, err := a.newMXLNMOS(); err == nil || !strings.Contains(err.Error(), "--engine-label") {
+		t.Errorf("err %v, want one naming --engine-label", err)
+	}
+}
+
 // A named input reads as unconnected while no video flow is connected, so
 // the UI does not offer it.
 func TestMXLInputUnconnected(t *testing.T) {

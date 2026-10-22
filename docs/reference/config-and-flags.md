@@ -160,10 +160,12 @@ With `--mxl-output`, the program flows are offered as MXL senders described by t
 | `--mxl-nmos-host` | string | hostname (env `SWITCHFRAME_MXL_NMOS_HOST`) | Host the registry and controllers reach this engine's APIs at |
 | `--mxl-nmos-registry-url` | string | `""` (env `SWITCHFRAME_MXL_NMOS_REGISTRY_URL`) | Origin of the IS-04 Registration API, e.g. `http://registry:8010`. Empty: serve the APIs without registering |
 | `--mxl-nmos-query-url` | string | registry's (env `SWITCHFRAME_MXL_NMOS_QUERY_URL`) | Origin of the IS-04 Query API the connected sender's label is read from |
+| `--mxl-nmos-peer-output-video-def` | string | `""` (env `SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_VIDEO_DEF`) | The peer engine's program video flow definition, offered as a sender of the peer's flow. Needs `--engine-label` |
+| `--mxl-nmos-peer-output-audio-def` | string | `""` (env `SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_AUDIO_DEF`) | The same for the peer's program audio |
 
 `mxl_domain_id` takes the id in `<--mxl-domain>/domain_def.json`; `auto` resolves to it, and another domain is refused. Only immediate activations are supported.
 
-In an active-active pair both engines present the same node, and only the leader registers it. Each engine passes the activations it receives to its peer (on the peer's host from `--peer-engine-url`, at the same NMOS port), retrying until they land, and the two compare their receivers every 30 seconds and adopt the later activation. A forwarded activation carries the session API token, which marks it as the peer's.
+In an active-active pair both engines present the same node, and only the leader registers it. Each engine passes the activations it receives to its peer (on the peer's host from `--peer-engine-url`, at the same NMOS port), retrying until they land, and the two compare their receivers every 30 seconds and adopt the later activation. A forwarded activation carries the session API token, which marks it as the peer's. Each engine writes a program of its own, so with the peer's flow definitions both programs are senders, each naming its own engine's flow, and either engine offers both: a failover moves no sender to another flow. Engine b's resource ids are apart from engine a's, which are those of a single engine.
 
 The APIs are unauthenticated, as IS-04 and IS-05 are: anyone who reaches the port can move an input to any flow in the domain, which changes what an on-air input shows. Restrict the port to the registry, the controllers and the peer engine.
 
