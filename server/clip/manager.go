@@ -29,6 +29,10 @@ type Manager struct {
 	store   *Store
 	config  ManagerConfig
 	players [MaxPlayers]*playerSlot
+	// loading[idx] is the clip a Load on the slot is demuxing, nil when none.
+	// Reported in PlayerStates so a peer engine that already shows the clip
+	// loaded reads this slot as catching up rather than diverged.
+	loading [MaxPlayers]*Clip
 	log     *slog.Logger
 
 	onStateChange func()
@@ -117,6 +121,28 @@ func (m *Manager) Load(playerID int, clipID string) error {
 		return err
 	}
 
+	m.mu.Lock()
+	// A Load queued behind another Load of the same clip, as a snapshot
+	// apply arriving while the operator's load still demuxes, finds the clip
+	// loaded and not started; demuxing it again would only delay the slot.
+	if slot := m.players[idx]; slot != nil && slot.clipID == c.ID && slot.player == nil {
+		m.mu.Unlock()
+		return nil
+	}
+	m.loading[idx] = c
+	m.mu.Unlock()
+	m.notifyStateChange()
+	loaded := false
+	defer func() {
+		if loaded {
+			return
+		}
+		m.mu.Lock()
+		m.loading[idx] = nil
+		m.mu.Unlock()
+		m.notifyStateChange()
+	}()
+
 	// Demux the media file.
 	path := filepath.Join(m.store.Dir(), c.Filename)
 	frames, audio, err := m.config.DemuxFunc(path)
@@ -156,6 +182,8 @@ func (m *Manager) Load(playerID int, clipID string) error {
 		}
 	}
 
+	m.loading[idx] = nil
+	loaded = true
 	m.players[idx] = &playerSlot{
 		clipID:   c.ID,
 		clipName: c.Name,
@@ -697,6 +725,10 @@ func (m *Manager) PlayerStates() []ClipPlayerState {
 		states[i] = ClipPlayerState{
 			ID:    i + 1,
 			State: StateEmpty,
+		}
+		if c := m.loading[i]; c != nil {
+			states[i].LoadingClipID = c.ID
+			states[i].LoadingClipName = c.Name
 		}
 
 		slot := m.players[i]

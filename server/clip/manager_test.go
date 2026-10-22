@@ -1,6 +1,7 @@
 package clip
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -892,4 +893,119 @@ func TestManagerSyncPlayerPrefersClipID(t *testing.T) {
 	// clip already loaded under that name.
 	require.NoError(t, mgr.SyncPlayer(1, "ffffffffffffffffffffffffffffffff", first.Name, StateLoaded, 0, false))
 	assert.Equal(t, first.ID, mgr.PlayerStates()[0].ClipID)
+}
+
+// gatedDemux returns a demux func that blocks until release is closed and
+// counts its calls.
+func gatedDemux(calls *atomic.Int32, started chan<- struct{}, release <-chan struct{}, fail bool) func(string) ([]BufferedFrame, []BufferedAudioFrame, error) {
+	return func(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
+		calls.Add(1)
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		if fail {
+			return nil, nil, errors.New("demux failed")
+		}
+		return mockDemuxFunc(3)(path)
+	}
+}
+
+// A snapshot apply that reaches an engine while the operator's load of the
+// same clip still demuxes queues a second Load behind it. That Load finds the
+// clip loaded and must not demux the whole file again.
+func TestManagerLoadQueuedBehindSameClipDemuxesOnce(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir, 1<<30)
+	require.NoError(t, err)
+	c := addTestClip(t, store, dir)
+
+	var calls atomic.Int32
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	mgr := NewManager(store, ManagerConfig{DemuxFunc: gatedDemux(&calls, started, release, false)})
+	defer mgr.Close()
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	wg.Add(1)
+	go func() { defer wg.Done(); errs[0] = mgr.Load(1, c.ID) }()
+	<-started
+	wg.Add(1)
+	go func() { defer wg.Done(); errs[1] = mgr.Load(1, c.ID) }()
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
+	assert.Equal(t, int32(1), calls.Load())
+	st := mgr.PlayerStates()[0]
+	assert.Equal(t, c.ID, st.ClipID)
+	assert.Equal(t, StateLoaded, st.State)
+}
+
+// An operator loading the clip a slot already plays restarts it.
+func TestManagerLoadSameClipWhilePlayingReloads(t *testing.T) {
+	mgr, store, dir := newTestManager(t)
+	defer mgr.Close()
+	c := addTestClip(t, store, dir)
+
+	require.NoError(t, mgr.Load(1, c.ID))
+	require.NoError(t, mgr.Play(1, 1.0, true))
+	require.NoError(t, mgr.Load(1, c.ID))
+
+	assert.Equal(t, StateLoaded, mgr.PlayerStates()[0].State)
+}
+
+// While a slot demuxes a clip, it reports that clip as loading, so a peer
+// engine that already shows it loaded reads the slot as catching up. The
+// slot keeps reporting its previous content until the load completes.
+func TestManagerPlayerStatesReportLoadingClip(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		name := "succeeds"
+		if fail {
+			name = "fails"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := NewStore(dir, 1<<30)
+			require.NoError(t, err)
+			c := addTestClip(t, store, dir)
+
+			var calls atomic.Int32
+			started := make(chan struct{}, 1)
+			release := make(chan struct{})
+			mgr := NewManager(store, ManagerConfig{DemuxFunc: gatedDemux(&calls, started, release, fail)})
+			defer mgr.Close()
+			var notified atomic.Int32
+			mgr.SetOnStateChange(func() { notified.Add(1) })
+
+			done := make(chan error, 1)
+			go func() { done <- mgr.Load(2, c.ID) }()
+			<-started
+
+			st := mgr.PlayerStates()[1]
+			assert.Equal(t, c.ID, st.LoadingClipID)
+			assert.Equal(t, c.Name, st.LoadingClipName)
+			assert.Equal(t, StateEmpty, st.State)
+			assert.Empty(t, st.ClipID)
+			assert.GreaterOrEqual(t, notified.Load(), int32(1), "the loading state must be broadcast")
+
+			close(release)
+			err = <-done
+			st = mgr.PlayerStates()[1]
+			assert.Empty(t, st.LoadingClipID)
+			assert.Empty(t, st.LoadingClipName)
+			if fail {
+				require.Error(t, err)
+				assert.Equal(t, StateEmpty, st.State)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, StateLoaded, st.State)
+				assert.Equal(t, c.ID, st.ClipID)
+			}
+		})
+	}
 }
