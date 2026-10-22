@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0-rc.12](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.11...mxl-v1.0.0-rc.12) (2026-10-22)
+
+
+### Bug Fixes
+
+* **clip:** keep clip players and clip IDs in step across engines ([#29](https://github.com/qvest-digital/dmf-mf-switchframe/issues/29)) ([9c17b10](https://github.com/qvest-digital/dmf-mf-switchframe/commit/9c17b10b693ff9a42cd0161e5ae42ad9d02c2aea))
+* **nmos:** register the program resources a registry accepts ([#33](https://github.com/qvest-digital/dmf-mf-switchframe/issues/33)) ([cc4080b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/cc4080b3d8aad0f10667e0969397824ec8f0c93b))
+
 ## [1.0.0-rc.11](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.10...mxl-v1.0.0-rc.11) (2026-10-22)
 
 
