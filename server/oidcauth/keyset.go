@@ -23,8 +23,12 @@ var signingAlgs = []jose.SignatureAlgorithm{
 }
 
 // keyRefetchInterval is the shortest time between two fetches of the
-// provider's keys. A variable so tests can shorten it.
-var keyRefetchInterval = 30 * time.Second
+// provider's keys, and keyRetryInterval that after a failed fetch.
+// Variables so tests can shorten them.
+var (
+	keyRefetchInterval = 30 * time.Second
+	keyRetryInterval   = 5 * time.Second
+)
 
 // keySet verifies token signatures against the provider's published keys.
 // It refetches them when a signature matches none, which is how a key
@@ -36,7 +40,8 @@ type keySet struct {
 
 	mu        sync.Mutex
 	keys      []jose.JSONWebKey
-	fetchedAt time.Time
+	nextFetch time.Time
+	lastErr   error // of the last fetch, until one succeeds
 }
 
 func (k *keySet) VerifySignature(ctx context.Context, raw string) ([]byte, error) {
@@ -78,15 +83,29 @@ func verifyWith(jws *jose.JSONWebSignature, keys []jose.JSONWebKey, kid string) 
 	return nil, false
 }
 
-// refetch fetches the key set unless that happened within the last
-// keyRefetchInterval, and returns the current keys either way.
+// refetch fetches the key set unless the last fetch is too recent, and
+// returns the current keys. While fetching fails it returns that error, so
+// an unreachable provider is reported as such rather than as a token that
+// matches no key.
 func (k *keySet) refetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if !k.fetchedAt.IsZero() && time.Since(k.fetchedAt) < keyRefetchInterval {
-		return k.keys, nil
+	if time.Now().Before(k.nextFetch) {
+		return k.keys, k.lastErr
 	}
-	k.fetchedAt = time.Now()
+	keys, err := k.fetch(ctx)
+	if err != nil {
+		k.lastErr = err
+		k.nextFetch = time.Now().Add(keyRetryInterval)
+		return k.keys, err
+	}
+	k.keys, k.lastErr = keys, nil
+	k.nextFetch = time.Now().Add(keyRefetchInterval)
+	return k.keys, nil
+}
+
+// fetch downloads and decodes the key set. Called with k.mu held.
+func (k *keySet) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 
 	// Detached from the request so a cancelled request cannot leave a
 	// half-done fetch, and bounded because the lock is held.
@@ -94,21 +113,21 @@ func (k *keySet) refetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.url, nil)
 	if err != nil {
-		return k.keys, err
+		return nil, err
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return k.keys, fmt.Errorf("%w: fetch keys: %v", ErrUnavailable, err)
+		return nil, fmt.Errorf("%w: fetch keys: %v", ErrUnavailable, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return k.keys, fmt.Errorf("%w: fetch keys: %s", ErrUnavailable, resp.Status)
+		return nil, fmt.Errorf("%w: fetch keys: %s", ErrUnavailable, resp.Status)
 	}
 	var set struct {
 		Keys []json.RawMessage `json:"keys"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&set); err != nil {
-		return k.keys, fmt.Errorf("%w: decode keys: %v", ErrUnavailable, err)
+		return nil, fmt.Errorf("%w: decode keys: %v", ErrUnavailable, err)
 	}
 	// A key this package cannot use, such as an encryption key or one of
 	// an unsupported type, is skipped rather than failing the whole set.
@@ -120,6 +139,5 @@ func (k *keySet) refetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 		}
 		keys = append(keys, key)
 	}
-	k.keys = keys
-	return k.keys, nil
+	return keys, nil
 }

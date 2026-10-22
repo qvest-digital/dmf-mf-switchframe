@@ -157,6 +157,25 @@ func TestAuthenticate_PicksUpRotatedKey(t *testing.T) {
 	require.Equal(t, 2, p.KeyFetches())
 }
 
+// A provider whose key endpoint fails must read as unavailable, not as a
+// forged token, and must not be asked again on every request.
+func TestKeySet_FailedFetchReportsUnavailable(t *testing.T) {
+	var calls int
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(idp.Close)
+	p := oidctest.New(t)
+	ks := &keySet{url: idp.URL}
+
+	for range 3 {
+		_, err := ks.VerifySignature(context.Background(), p.Sign(p.Claims(nil)))
+		require.ErrorIs(t, err, ErrUnavailable)
+	}
+	require.Equal(t, 1, calls)
+}
+
 // One request asks for its operator several times; only the first may pay
 // for verification.
 func TestAuthenticate_CachesVerifiedTokens(t *testing.T) {
