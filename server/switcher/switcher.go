@@ -3428,6 +3428,12 @@ func (s *Switcher) RegisterMXLSource(key string) {
 	s.registerRawSource(key, strings.ToUpper(key), true)
 }
 
+// RegisterMXLSourceLabeled is RegisterMXLSource with the label the source is
+// shown under until one is set.
+func (s *Switcher) RegisterMXLSourceLabeled(key, label string) {
+	s.registerRawSource(key, label, true)
+}
+
 // RegisterSRTSource registers a source that provides raw YUV420p frames
 // via IngestRawVideo (same path as MXL). Used for SRT input sources that
 // are decoded by the srt.Source orchestrator before being fed to the switcher.

@@ -369,7 +369,7 @@ func parseConfig() (AppConfig, error) {
 	domainFlag := flag.String("domain", "", "Public domain for connection URLs (e.g., switchframe.dev)")
 
 	// MXL integration flags.
-	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL source specs as videoUUID or videoUUID:audioUUID or videoUUID:audioUUID:dataUUID (env: SWITCHFRAME_MXL_SOURCES)")
+	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL source specs: videoUUID[:audioUUID[:dataUUID]], keyed by the video flow, or name=[videoUUID[:audioUUID[:dataUUID]]], keyed by the name, which can be moved to other flows while running and may be booked without flows (env: SWITCHFRAME_MXL_SOURCES)")
 	mxlOutput := flag.String("mxl-output", "", "MXL flow name for program output")
 	mxlOutputVideoDef := flag.String("mxl-output-video-def", "", "Path to MXL output video flow definition JSON")
 	mxlOutputAudioDef := flag.String("mxl-output-audio-def", "", "Path to MXL output audio flow definition JSON")

@@ -153,6 +153,9 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 	timeoutNs := uint64(r.config.TimeoutMs) * 1_000_000
 
 	// Start reading from the current head position.
+	if !waitForFlow(ctx, flow) {
+		return
+	}
 	index, err := flow.HeadIndex()
 	if err != nil {
 		log.Error("mxl reader: failed to get head index", "error", err)
@@ -244,6 +247,9 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 	defer close(r.audioCh)
 
 	log := r.config.Logger
+	if !waitForFlow(ctx, flow) {
+		return
+	}
 	config := flow.ConfigInfo()
 
 	// Use a short timeout for audio reads (5ms). The MXL SDK may use a coarse
@@ -341,6 +347,9 @@ func (r *Reader) dataLoop(ctx context.Context, flow DiscreteReader) {
 	timeoutNs := uint64(r.config.TimeoutMs) * 1_000_000
 
 	// Start reading from the current head position.
+	if !waitForFlow(ctx, flow) {
+		return
+	}
 	index, err := flow.HeadIndex()
 	if err != nil {
 		log.Error("mxl data reader: failed to get head index", "error", err)
@@ -417,5 +426,25 @@ func (r *Reader) dataLoop(ctx context.Context, flow DiscreteReader) {
 		}
 
 		index++
+	}
+}
+
+// noFlowPoll is how often a reader loop with no flow checks for one.
+const noFlowPoll = 20 * time.Millisecond
+
+// waitForFlow returns once the flow can report a head index, or with any
+// error other than ErrNoFlow, which the caller handles as before. A
+// retargetable reader names no flow until it is connected, and its loop
+// waits for that rather than ending. False means ctx ended first.
+func waitForFlow(ctx context.Context, flow interface{ HeadIndex() (uint64, error) }) bool {
+	for {
+		if _, err := flow.HeadIndex(); !errors.Is(err, ErrNoFlow) {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(noFlowPoll):
+		}
 	}
 }

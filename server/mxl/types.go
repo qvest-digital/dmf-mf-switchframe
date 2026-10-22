@@ -26,6 +26,11 @@ var (
 	// flow leaves behind. The handle never recovers; only a new one reads
 	// the new flow.
 	ErrFlowInvalid = errors.New("mxl: flow invalid")
+
+	// ErrNoFlow is returned by a retargetable reader while it names no
+	// flow, or the flow it names is not open yet. A reader loop waits for
+	// one instead of stopping.
+	ErrNoFlow = errors.New("mxl: no flow")
 )
 
 // FlowMode specifies whether a flow is opened for reading or writing.

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -23,15 +24,19 @@ type flowHandle interface {
 // the same id, and the handle opened before that keeps pointing at the old
 // data file: it never reads another grain, so the reader loops would give up
 // on it and the source would stay dark until the process restarts.
+//
+// It also moves to another flow when retargeted. The new flow is opened and
+// checked beside the old one, which is read until the new handle is ready,
+// and the reader loop, its grain counter and everything downstream of it
+// stay as they are. An input switched to another flow therefore keeps its
+// stream without a gap; only the pictures and samples change.
+//
+// The handle fields belong to the reader loop's goroutine; mu guards what
+// Retarget shares with it.
 type reopener[T flowHandle] struct {
 	flowID string
 	open   func(flowID string) (T, error)
 	log    *slog.Logger
-
-	// want is the configuration the reader loops were set up for. A
-	// recreated flow with a different format, rate or geometry is not read,
-	// because the loops would misinterpret every grain of it.
-	want FlowConfig
 
 	cur       T
 	isOpen    bool
@@ -42,14 +47,46 @@ type reopener[T flowHandle] struct {
 	// replaced, so that first read reports ErrTooLate instead, which sends
 	// the loop to the head of the new ring.
 	fresh bool
+
+	mu sync.Mutex
+	// want is the configuration the reader loops were set up for. A
+	// recreated or retargeted flow with a different format, rate or
+	// geometry is not read, because the loops would misinterpret every
+	// grain of it. Unset until the first flow is open on a reader created
+	// without one.
+	want    FlowConfig
+	hasWant bool
+	// gen counts retargets, so a slow open for a superseded one is dropped.
+	gen uint64
+	// pending is a retarget ready to take over at the loop's next read.
+	pending *pendingFlow[T]
+	// reading is the flow id the loop reads, for FlowID.
+	reading string
+	closed  bool
 }
 
-// handle returns the current handle, reopening the flow first when there is
-// none and the retry interval has passed. ok is false while the flow cannot
-// be read.
+// pendingFlow is the handle a retarget opened, or none for a disconnect.
+type pendingFlow[T flowHandle] struct {
+	id string
+	h  T
+}
+
+// handle returns the current handle, first taking over a retarget that is
+// ready and reopening the flow when there is none and the retry interval
+// has passed. ok is false while the flow cannot be read.
 func (r *reopener[T]) handle() (h T, ok bool) {
+	r.mu.Lock()
+	p := r.pending
+	r.pending = nil
+	r.mu.Unlock()
+	if p != nil {
+		r.takeOver(p)
+	}
 	if r.isOpen {
 		return r.cur, true
+	}
+	if r.flowID == "" {
+		return h, false
 	}
 	now := time.Now()
 	if now.Before(r.nextRetry) {
@@ -62,15 +99,114 @@ func (r *reopener[T]) handle() (h T, ok bool) {
 		r.log.Debug("mxl: flow not reopened yet", "flowID", r.flowID, "error", err)
 		return h, false
 	}
-	if got := h.ConfigInfo(); !sameShape(got, r.want) {
+	if !r.accept(r.flowID, h) {
 		_ = h.Close()
-		r.log.Error("mxl: recreated flow no longer matches the source, not reading it",
-			"flowID", r.flowID, "want", r.want, "got", got)
 		return h, false
 	}
 	r.cur, r.isOpen, r.fresh = h, true, true
 	r.log.Info("mxl: flow reopened", "flowID", r.flowID)
 	return h, true
+}
+
+// accept reports whether h has the shape the reader loops were set up for,
+// and sets that shape from the first flow when none was known.
+func (r *reopener[T]) accept(id string, h T) bool {
+	got := h.ConfigInfo()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.hasWant {
+		r.want, r.hasWant = got, true
+		return true
+	}
+	if !sameShape(got, r.want) {
+		r.log.Error("mxl: flow does not match the source, not reading it",
+			"flowID", id, "want", r.want, "got", got)
+		return false
+	}
+	return true
+}
+
+// takeOver replaces the current handle with a retarget's.
+func (r *reopener[T]) takeOver(p *pendingFlow[T]) {
+	if r.isOpen {
+		_ = r.cur.Close()
+	}
+	r.log.Info("mxl: input moved to another flow", "from", r.flowID, "to", p.id)
+	r.flowID = p.id
+	r.cur = p.h
+	r.isOpen = p.id != ""
+	r.fresh = r.isOpen
+	r.nextRetry = time.Time{}
+	r.mu.Lock()
+	r.reading = p.id
+	r.mu.Unlock()
+}
+
+// retarget moves the reader to id: at its next read for an empty id, which
+// reads nothing, and otherwise once id is open and has the source's shape.
+// The flow being read is read until then. A flow of another shape is
+// refused and the old one kept.
+func (r *reopener[T]) retarget(id string) {
+	r.mu.Lock()
+	r.gen++
+	gen := r.gen
+	if id == "" {
+		r.replacePending(&pendingFlow[T]{})
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Unlock()
+	go r.prepare(id, gen)
+}
+
+// replacePending sets the retarget to take over, closing one that was
+// waiting. Called with mu held.
+func (r *reopener[T]) replacePending(p *pendingFlow[T]) {
+	if old := r.pending; old != nil && old.id != "" {
+		_ = old.h.Close()
+	}
+	r.pending = p
+}
+
+// prepare opens id for retarget gen, retrying while the flow is not there,
+// until it is open or the retarget is superseded.
+func (r *reopener[T]) prepare(id string, gen uint64) {
+	for {
+		h, err := r.open(id)
+		r.mu.Lock()
+		if r.gen != gen || r.closed {
+			r.mu.Unlock()
+			if err == nil {
+				_ = h.Close()
+			}
+			return
+		}
+		r.mu.Unlock()
+		if err == nil {
+			if !r.accept(id, h) {
+				_ = h.Close()
+				return
+			}
+			r.mu.Lock()
+			if r.gen != gen || r.closed {
+				r.mu.Unlock()
+				_ = h.Close()
+				return
+			}
+			r.replacePending(&pendingFlow[T]{id: id, h: h})
+			r.mu.Unlock()
+			return
+		}
+		r.log.Debug("mxl: retargeted flow not open yet", "flowID", id, "error", err)
+		time.Sleep(reopenInterval)
+	}
+}
+
+// current is the flow id the reader reads.
+func (r *reopener[T]) current() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reading
 }
 
 // invalidate drops the current handle after libmxl reported it invalid.
@@ -103,12 +239,16 @@ func (r *reopener[T]) takeFresh() bool {
 func (r *reopener[T]) headIndex() (uint64, error) {
 	h, ok := r.handle()
 	if !ok {
-		return 0, fmt.Errorf("mxl: flow %s is being reopened", r.flowID)
+		return 0, fmt.Errorf("%w: flow %q is not open", ErrNoFlow, r.flowID)
 	}
 	return h.HeadIndex()
 }
 
 func (r *reopener[T]) close() error {
+	r.mu.Lock()
+	r.closed = true
+	r.replacePending(nil)
+	r.mu.Unlock()
 	if !r.isOpen {
 		return nil
 	}
@@ -140,7 +280,8 @@ func NewReopeningReader(flowID string, first DiscreteReader, open func(string) (
 	}
 	return &reopeningReader{r: reopener[DiscreteReader]{
 		flowID: flowID, open: open, log: log,
-		want: first.ConfigInfo(), cur: first, isOpen: true,
+		want: first.ConfigInfo(), hasWant: true, cur: first, isOpen: true,
+		reading: flowID,
 	}}
 }
 
@@ -167,6 +308,22 @@ func (w *reopeningReader) ConfigInfo() FlowConfig     { return w.r.want }
 func (w *reopeningReader) HeadIndex() (uint64, error) { return w.r.headIndex() }
 func (w *reopeningReader) Close() error               { return w.r.close() }
 
+// Retarget makes the reader read flowID from its next read on, or nothing
+// for an empty id. Safe to call from any goroutine.
+func (w *reopeningReader) Retarget(flowID string) { w.r.retarget(flowID) }
+
+// FlowID is the flow the reader reads, or is moving to.
+func (w *reopeningReader) FlowID() string { return w.r.current() }
+
+// NewRetargetableReader is a reader that names no flow until retargeted.
+// The first flow it opens sets the shape every later one must have.
+func NewRetargetableReader(open func(string) (DiscreteReader, error), log *slog.Logger) DiscreteReader {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &reopeningReader{r: reopener[DiscreteReader]{open: open, log: log}}
+}
+
 // reopeningAudioReader is the ContinuousReader counterpart of
 // reopeningReader.
 type reopeningAudioReader struct {
@@ -182,7 +339,8 @@ func NewReopeningAudioReader(flowID string, first ContinuousReader, open func(st
 	}
 	return &reopeningAudioReader{r: reopener[ContinuousReader]{
 		flowID: flowID, open: open, log: log,
-		want: first.ConfigInfo(), cur: first, isOpen: true,
+		want: first.ConfigInfo(), hasWant: true, cur: first, isOpen: true,
+		reading: flowID,
 	}}
 }
 
@@ -206,3 +364,25 @@ func (w *reopeningAudioReader) ReadSamples(index uint64, count int, timeoutNs ui
 func (w *reopeningAudioReader) ConfigInfo() FlowConfig     { return w.r.want }
 func (w *reopeningAudioReader) HeadIndex() (uint64, error) { return w.r.headIndex() }
 func (w *reopeningAudioReader) Close() error               { return w.r.close() }
+
+// Retarget behaves as reopeningReader.Retarget does.
+func (w *reopeningAudioReader) Retarget(flowID string) { w.r.retarget(flowID) }
+
+// FlowID is the flow the reader reads, or is moving to.
+func (w *reopeningAudioReader) FlowID() string { return w.r.current() }
+
+// NewRetargetableAudioReader is the ContinuousReader counterpart of
+// NewRetargetableReader.
+func NewRetargetableAudioReader(open func(string) (ContinuousReader, error), log *slog.Logger) ContinuousReader {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &reopeningAudioReader{r: reopener[ContinuousReader]{open: open, log: log}}
+}
+
+// Retargetable is a reader that can be moved to another flow while its
+// reader loop runs.
+type Retargetable interface {
+	Retarget(flowID string)
+	FlowID() string
+}
