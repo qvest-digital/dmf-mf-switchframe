@@ -1,0 +1,6 @@
+# graphify reads this file instead of .gitignore.
+#
+# TypeScript lives under ui/ only. A .ts file under test/ or server/ is an
+# MPEG-TS clip, which graphify would otherwise parse as TypeScript.
+/test/**/*.ts
+/server/**/*.ts
