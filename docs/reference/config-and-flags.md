@@ -189,6 +189,21 @@ All flags are defined in [`parseConfig`](../../server/cmd/switchframe/main.go). 
 | `--engine-label` | string | `""` (env `SWITCHFRAME_ENGINE_LABEL`) | `"a"`, `"b"`, or `""` (single-engine). Other values rejected |
 | `--control-plane-secret` | string | `""` (env `SWITCHFRAME_CONTROL_PLANE_SECRET`) | Shared secret authorizing `POST /api/peer/force-leader`. Empty disables endpoint |
 
+### Single sign-on (OpenID Connect)
+
+Sign-in is off unless `--oidc-issuer` is set. See [deployment.md](../operations/deployment.md#single-sign-on-with-openid-connect).
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--oidc-issuer` | string | `""` (env `SWITCHFRAME_OIDC_ISSUER`) | Issuer URL of the OpenID Connect provider. Setting it enables sign-in |
+| `--oidc-client-id` | string | `""` (env `SWITCHFRAME_OIDC_CLIENT_ID`) | Client ID registered with the provider. Required with `--oidc-issuer` |
+| `--oidc-client-secret-file` | string | `""` (env `SWITCHFRAME_OIDC_CLIENT_SECRET_FILE`) | File holding the client secret. Empty: a public client, authenticated by PKCE alone |
+| `--oidc-redirect-url` | string | `""` (env `SWITCHFRAME_OIDC_REDIRECT_URL`) | Callback registered with the provider. Empty: `<scheme>://<request host>/auth/callback` |
+| `--oidc-scopes` | string | `openid,profile,email` (env `SWITCHFRAME_OIDC_SCOPES`) | Comma-separated scopes; `openid` is always requested |
+| `--oidc-role-claim` | string | `groups` (env `SWITCHFRAME_OIDC_ROLE_CLAIM`) | ID token claim holding the user's roles or groups, a string or a list. A dot-separated path reads a nested claim, e.g. `realm_access.roles` |
+| `--oidc-role-map` | string | `""` (env `SWITCHFRAME_OIDC_ROLE_MAP`) | Comma-separated `value=role` pairs mapping claim values to `director`, `audio`, `graphics`, `captioner` or `viewer`. Empty: a value that is itself a role name maps to that role. The most privileged match wins |
+| `--oidc-default-role` | string | `""` (env `SWITCHFRAME_OIDC_DEFAULT_ROLE`) | Role for a signed-in user with no mapped value. Empty: such a user is refused |
+
 ## Environment variables
 
 Most env vars are flag overrides or fallbacks. A few are low-level runtime knobs.
