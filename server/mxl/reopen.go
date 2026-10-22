@@ -14,6 +14,10 @@ import (
 // one per read.
 const reopenInterval = time.Second
 
+// writtenTimeout bounds how long a retarget waits for the flow it opened to
+// be written on this node.
+const writtenTimeout = 5 * time.Second
+
 type flowHandle interface {
 	ConfigInfo() FlowConfig
 	HeadIndex() (uint64, error)
@@ -26,8 +30,9 @@ type flowHandle interface {
 // data file: it never reads another grain, so the reader loops would give up
 // on it and the source would stay dark until the process restarts.
 //
-// It also moves to another flow when retargeted. The new flow is opened and
-// checked beside the old one, which is read until the new handle is ready,
+// It also moves to another flow when retargeted. The new flow is opened,
+// checked and waited on until it is written here beside the old one, which
+// is read until then,
 // and the reader loop, its grain counter and everything downstream of it
 // stay as they are. An input switched to another flow therefore keeps its
 // stream without a gap; only the pictures and samples change.
@@ -173,7 +178,9 @@ func (r *reopener[T]) retarget(id string) {
 	}
 	go func() {
 		for {
-			err := r.prepare(id, gen)
+			ctx, cancel := context.WithTimeout(context.Background(), writtenTimeout)
+			err := r.prepare(ctx, id, gen)
+			cancel()
 			if err == nil || errors.Is(err, ErrShape) || errors.Is(err, errSuperseded) {
 				if errors.Is(err, ErrShape) {
 					r.log.Error("mxl: not moving the input to a flow it cannot read", "error", err)
@@ -200,7 +207,7 @@ func (r *reopener[T]) connect(ctx context.Context, id string) error {
 		return nil
 	}
 	res := make(chan error, 1)
-	go func() { res <- r.prepare(id, gen) }()
+	go func() { res <- r.prepare(ctx, id, gen) }()
 	select {
 	case err := <-res:
 		return err
@@ -252,10 +259,11 @@ func (r *reopener[T]) replacePending(p *pendingFlow[T]) {
 	r.pending = p
 }
 
-// prepare opens id for retarget gen once, checks it and hands it to the
-// reader loop. It returns the open error, a shape error, or errSuperseded
+// prepare opens id for retarget gen once, checks it, waits until it is
+// written here and hands it to the reader loop. It returns the open error,
+// a shape error, the wait's error when ctx ends first, or errSuperseded
 // when a later retarget or close came first.
-func (r *reopener[T]) prepare(id string, gen uint64) error {
+func (r *reopener[T]) prepare(ctx context.Context, id string, gen uint64) error {
 	h, err := r.open(id)
 	if err != nil {
 		return fmt.Errorf("flow %s: %w", id, err)
@@ -264,6 +272,10 @@ func (r *reopener[T]) prepare(id string, gen uint64) error {
 		_ = h.Close()
 		r.supersede(gen)
 		return err
+	}
+	if err := waitWritten(ctx, h); err != nil {
+		_ = h.Close()
+		return fmt.Errorf("flow %s: %w", id, err)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -275,6 +287,30 @@ func (r *reopener[T]) prepare(id string, gen uint64) error {
 	r.preparing = false
 	r.replacePending(&pendingFlow[T]{id: id, h: h})
 	return nil
+}
+
+// waitWritten returns once h holds the grains a reader loop taking it over
+// starts from, two behind the head. A flow mirrored onto this node by its
+// first open has no grains at first, and then starts at the writer's index
+// rather than at 0, so a loop moved to it at once reads grains the node
+// never received and loses the time until the ring wraps past them.
+func waitWritten(ctx context.Context, h flowHandle) error {
+	var first uint64
+	for {
+		if head, err := h.HeadIndex(); err == nil && head > 0 {
+			if first == 0 {
+				first = head
+			}
+			if head >= first+2 {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("not written on this node yet: %w", ctx.Err())
+		case <-time.After(time.Millisecond):
+		}
+	}
 }
 
 // shape is the configuration the reader loops read.
