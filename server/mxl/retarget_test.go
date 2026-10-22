@@ -10,14 +10,22 @@ import (
 )
 
 // liveFlow is a flow whose writer keeps producing grains, each carrying the
-// flow's tag, so a test can tell which flow a grain came from.
+// flow's tag, so a test can tell which flow a grain came from. Its head
+// moves on every look, from 100 on; one with written set has no grains until
+// written is closed, as a flow being mirrored onto the node has none at
+// first.
 type liveFlow struct {
-	tag    byte
-	config FlowConfig
+	tag     byte
+	config  FlowConfig
+	written chan struct{}
 
 	mu     sync.Mutex
 	closed bool
+	head   uint64
 }
+
+// headStep is how far a liveFlow's head moves per look.
+const headStep = 64
 
 func newLiveFlow(tag byte, config FlowConfig) *liveFlow {
 	return &liveFlow{tag: tag, config: config}
@@ -50,8 +58,26 @@ func (f *liveFlow) ReadSamples(_ uint64, count int, _ uint64) ([][]float32, erro
 	return ch, nil
 }
 
-func (f *liveFlow) ConfigInfo() FlowConfig     { return f.config }
-func (f *liveFlow) HeadIndex() (uint64, error) { return 100, nil }
+func (f *liveFlow) ConfigInfo() FlowConfig { return f.config }
+func (f *liveFlow) HeadIndex() (uint64, error) {
+	if f.written != nil {
+		select {
+		case <-f.written:
+		default:
+			return 0, nil
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.head += headStep
+	return 100 + f.head, nil
+}
+
+func (f *liveFlow) lastHead() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return 100 + f.head
+}
 func (f *liveFlow) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -102,6 +128,7 @@ func (s *flowStore) open(id string) (DiscreteReader, error) {
 	}
 	// Each open is a new handle, as with libmxl.
 	h := newLiveFlow(f.tag, f.config)
+	h.written = f.written
 	s.flows[id] = h
 	return h, nil
 }
@@ -200,6 +227,67 @@ func TestRetarget_ReadsOldFlowUntilNewIsOpen(t *testing.T) {
 	for nextGrain(t, r).V210[0] != 2 {
 		if time.Now().After(deadline) {
 			t.Fatal("never moved to flow b once it opened")
+		}
+	}
+}
+
+// A flow mirrored onto the node by the connection has no grains at first
+// and then starts at the writer's index, so the input keeps the flow it
+// reads until the new one is written here, instead of reading grains the
+// node never received.
+func TestConnect_WaitsUntilTheFlowIsWrittenHere(t *testing.T) {
+	b := newLiveFlow(2, videoShape)
+	b.written = make(chan struct{})
+	store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape), "b": b})
+	first, _ := store.open("a")
+	flow := NewReopeningReader("a", first, store.open, nil)
+	r := startVideo(t, flow)
+
+	res := make(chan error, 1)
+	go func() { res <- flow.(Retargetable).Connect(context.Background(), "b") }()
+	for i := 0; i < 20; i++ {
+		if g := nextGrain(t, r); g.V210[0] != 1 {
+			t.Fatalf("grain %d from flow %d before flow b was written", i, g.V210[0])
+		}
+	}
+	select {
+	case err := <-res:
+		t.Fatalf("connected before flow b was written: %v", err)
+	default:
+	}
+	close(b.written)
+	if err := <-res; err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for nextGrain(t, r).V210[0] != 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("never moved to flow b once it was written")
+		}
+	}
+}
+
+// A connection to a flow never written here fails once its time is up and
+// leaves the input on the flow it reads.
+func TestConnect_FailsForAFlowNotWritten(t *testing.T) {
+	b := newLiveFlow(2, videoShape)
+	b.written = make(chan struct{})
+	store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape), "b": b})
+	first, _ := store.open("a")
+	flow := NewReopeningReader("a", first, store.open, nil)
+	r := startVideo(t, flow)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := flow.(Retargetable).Connect(ctx, "b"); err == nil {
+		t.Fatal("connected to a flow never written")
+	}
+	if got := flow.(Retargetable).FlowID(); got != "a" {
+		t.Errorf("FlowID = %q, want a", got)
+	}
+	for i := 0; i < 5; i++ {
+		if g := nextGrain(t, r); g.V210[0] != 1 {
+			t.Fatalf("grain from flow %d after the failed connection", g.V210[0])
 		}
 	}
 }
@@ -357,6 +445,59 @@ func TestRetargetableAudioReader_ReadsAfterFirstConnection(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no audio after connecting")
+	}
+}
+
+// An audio read ends at its index, so the first read after the move covers
+// a whole read before the head; the move waits until the node has received
+// that much of the new flow, or that read would carry samples it never got.
+func TestConnect_AudioWaitsForAWholeReadWritten(t *testing.T) {
+	shape := FlowConfig{Format: DataFormatAudio, GrainRate: Rational{48000, 1}, ChannelCount: 2}
+	b := newLiveFlow(2, shape)
+	flow := NewRetargetableAudioReader(func(id string) (ContinuousReader, error) { return b, nil }, nil, nil)
+	if err := flow.(Retargetable).Connect(context.Background(), "b"); err != nil {
+		t.Fatal(err)
+	}
+	// The first look saw 100+headStep; the move waited for a whole read more.
+	if got := b.lastHead() - (100 + headStep); got < defaultSamplesPerRead {
+		t.Errorf("moved after %d samples were written here, want at least %d", got, defaultSamplesPerRead)
+	}
+}
+
+// A retarget made while an earlier one waits for its flow to be written
+// ends that wait, rather than holding the flow open until it times out.
+func TestRetarget_LaterRetargetEndsTheWait(t *testing.T) {
+	b := newLiveFlow(2, videoShape)
+	b.written = make(chan struct{})
+	store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape), "b": b, "c": newLiveFlow(3, videoShape)})
+	first, _ := store.open("a")
+	flow := NewReopeningReader("a", first, store.open, nil)
+	r := startVideo(t, flow)
+
+	res := make(chan error, 1)
+	go func() { res <- flow.(Retargetable).Connect(context.Background(), "b") }()
+	for deadline := time.Now().Add(time.Second); store.handle("b") == b; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("flow b never opened")
+		}
+	}
+	flow.(Retargetable).Retarget("c")
+	select {
+	case err := <-res:
+		if !errors.Is(err, errSuperseded) {
+			t.Errorf("err %v, want superseded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the wait for flow b outlived the retarget to c")
+	}
+	if !store.handle("b").isClosed() {
+		t.Error("flow b was left open")
+	}
+	deadline := time.Now().Add(time.Second)
+	for nextGrain(t, r).V210[0] != 3 {
+		if time.Now().After(deadline) {
+			t.Fatal("never moved to flow c")
+		}
 	}
 }
 

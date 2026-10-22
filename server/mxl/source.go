@@ -229,7 +229,7 @@ func (s *Source) Start(ctx context.Context, videoFlow DiscreteReader, audioFlow 
 		s.audioReader = NewAudioReader(ReaderConfig{
 			BufSize:        16,
 			TimeoutMs:      100, // overridden by audioLoop's 5ms for actual reads
-			SamplesPerRead: 1024,
+			SamplesPerRead: defaultSamplesPerRead,
 			Logger:         s.log,
 		})
 		s.audioReader.StartAudio(ctx, audioFlow)

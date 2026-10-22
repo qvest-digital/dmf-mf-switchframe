@@ -14,6 +14,10 @@ import (
 // one per read.
 const reopenInterval = time.Second
 
+// writtenTimeout bounds how long a retarget waits for the flow it opened to
+// be written on this node.
+const writtenTimeout = 5 * time.Second
+
 type flowHandle interface {
 	ConfigInfo() FlowConfig
 	HeadIndex() (uint64, error)
@@ -26,8 +30,9 @@ type flowHandle interface {
 // data file: it never reads another grain, so the reader loops would give up
 // on it and the source would stay dark until the process restarts.
 //
-// It also moves to another flow when retargeted. The new flow is opened and
-// checked beside the old one, which is read until the new handle is ready,
+// It also moves to another flow when retargeted. The new flow is opened,
+// checked and waited on until it is written here beside the old one, which
+// is read until then,
 // and the reader loop, its grain counter and everything downstream of it
 // stay as they are. An input switched to another flow therefore keeps its
 // stream without a gap; only the pictures and samples change.
@@ -42,6 +47,9 @@ type reopener[T flowHandle] struct {
 	cur       T
 	isOpen    bool
 	nextRetry time.Time
+	// lookBack is how far behind the head a reader loop moved to this flow
+	// reads first: grains for a discrete flow, samples for a continuous one.
+	lookBack uint64
 
 	// fresh is set when a new handle was opened and no read has gone
 	// through it yet. The reader loop's index belongs to the flow that was
@@ -173,7 +181,9 @@ func (r *reopener[T]) retarget(id string) {
 	}
 	go func() {
 		for {
-			err := r.prepare(id, gen)
+			ctx, cancel := context.WithTimeout(context.Background(), writtenTimeout)
+			err := r.prepare(ctx, id, gen)
+			cancel()
 			if err == nil || errors.Is(err, ErrShape) || errors.Is(err, errSuperseded) {
 				if errors.Is(err, ErrShape) {
 					r.log.Error("mxl: not moving the input to a flow it cannot read", "error", err)
@@ -200,7 +210,7 @@ func (r *reopener[T]) connect(ctx context.Context, id string) error {
 		return nil
 	}
 	res := make(chan error, 1)
-	go func() { res <- r.prepare(id, gen) }()
+	go func() { res <- r.prepare(ctx, id, gen) }()
 	select {
 	case err := <-res:
 		return err
@@ -252,10 +262,11 @@ func (r *reopener[T]) replacePending(p *pendingFlow[T]) {
 	r.pending = p
 }
 
-// prepare opens id for retarget gen once, checks it and hands it to the
-// reader loop. It returns the open error, a shape error, or errSuperseded
+// prepare opens id for retarget gen once, checks it, waits until it is
+// written here and hands it to the reader loop. It returns the open error,
+// a shape error, the wait's error when ctx ends first, or errSuperseded
 // when a later retarget or close came first.
-func (r *reopener[T]) prepare(id string, gen uint64) error {
+func (r *reopener[T]) prepare(ctx context.Context, id string, gen uint64) error {
 	h, err := r.open(id)
 	if err != nil {
 		return fmt.Errorf("flow %s: %w", id, err)
@@ -264,6 +275,10 @@ func (r *reopener[T]) prepare(id string, gen uint64) error {
 		_ = h.Close()
 		r.supersede(gen)
 		return err
+	}
+	if err := r.waitWritten(ctx, h, gen); err != nil {
+		_ = h.Close()
+		return fmt.Errorf("flow %s: %w", id, err)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -275,6 +290,41 @@ func (r *reopener[T]) prepare(id string, gen uint64) error {
 	r.preparing = false
 	r.replacePending(&pendingFlow[T]{id: id, h: h})
 	return nil
+}
+
+// waitWritten returns once h holds what a reader loop taking it over reads
+// first, lookBack behind the head. A flow mirrored onto this node by its
+// first open has nothing at first, and then starts at the writer's index
+// rather than at 0, so a loop moved to it at once reads what the node never
+// received: a stall until the ring wraps past it for grains, a window of
+// silence or stale samples for audio. The resync, which looks at the head
+// later, normally lands no earlier. A later retarget
+// or close ends the wait with errSuperseded.
+func (r *reopener[T]) waitWritten(ctx context.Context, h T, gen uint64) error {
+	tick := time.NewTicker(2 * time.Millisecond)
+	defer tick.Stop()
+	var first uint64
+	for {
+		if head, err := h.HeadIndex(); err == nil && head > 0 {
+			if first == 0 {
+				first = head
+			}
+			if head >= first+r.lookBack {
+				return nil
+			}
+		}
+		r.mu.Lock()
+		stale := r.gen != gen || r.closed
+		r.mu.Unlock()
+		if stale {
+			return errSuperseded
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("not written on this node yet: %w", ctx.Err())
+		case <-tick.C:
+		}
+	}
 }
 
 // shape is the configuration the reader loops read.
@@ -366,7 +416,7 @@ func NewReopeningReader(flowID string, first DiscreteReader, open func(string) (
 		log = slog.Default()
 	}
 	return &reopeningReader{r: reopener[DiscreteReader]{
-		flowID: flowID, open: open, log: log,
+		flowID: flowID, open: open, log: log, lookBack: grainLookBack,
 		want: first.ConfigInfo(), hasWant: true, cur: first, isOpen: true,
 		reading: flowID, done: make(chan struct{}),
 	}}
@@ -417,7 +467,7 @@ func NewRetargetableReader(open func(string) (DiscreteReader, error), expect fun
 	if log == nil {
 		log = slog.Default()
 	}
-	return &reopeningReader{r: reopener[DiscreteReader]{open: open, expect: expect, log: log, done: make(chan struct{})}}
+	return &reopeningReader{r: reopener[DiscreteReader]{open: open, expect: expect, log: log, lookBack: grainLookBack, done: make(chan struct{})}}
 }
 
 // reopeningAudioReader is the ContinuousReader counterpart of
@@ -434,7 +484,7 @@ func NewReopeningAudioReader(flowID string, first ContinuousReader, open func(st
 		log = slog.Default()
 	}
 	return &reopeningAudioReader{r: reopener[ContinuousReader]{
-		flowID: flowID, open: open, log: log,
+		flowID: flowID, open: open, log: log, lookBack: defaultSamplesPerRead,
 		want: first.ConfigInfo(), hasWant: true, cur: first, isOpen: true,
 		reading: flowID, done: make(chan struct{}),
 	}}
@@ -478,7 +528,7 @@ func NewRetargetableAudioReader(open func(string) (ContinuousReader, error), exp
 	if log == nil {
 		log = slog.Default()
 	}
-	return &reopeningAudioReader{r: reopener[ContinuousReader]{open: open, expect: expect, log: log, done: make(chan struct{})}}
+	return &reopeningAudioReader{r: reopener[ContinuousReader]{open: open, expect: expect, log: log, lookBack: defaultSamplesPerRead, done: make(chan struct{})}}
 }
 
 // Retargetable is a reader that can be moved to another flow while its
