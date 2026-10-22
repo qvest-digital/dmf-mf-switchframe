@@ -17,6 +17,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 
 	"github.com/zsiec/switchframe/server/nmos"
+	"github.com/zsiec/switchframe/server/peer"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -670,17 +671,147 @@ func TestMXLNMOS_ProgramResourcesAreSchemaComplete(t *testing.T) {
 
 // An engine of a pair registers only once it knows it leads; before its
 // peer poller exists it does not.
-func TestLeadsMXLNMOS_UnknownRoleDoesNotLead(t *testing.T) {
+func TestRegistersMXLNMOS_UnknownRoleDoesNotRegister(t *testing.T) {
 	a := &App{}
-	if !a.leadsMXLNMOS() {
+	if !a.registersMXLNMOS() {
 		t.Error("a single engine must register")
 	}
 	a.cfg.EngineLabel = "b"
-	if !a.leadsMXLNMOS() {
+	if !a.registersMXLNMOS() {
 		t.Error("an engine with a label but no peer has no pair and must register")
 	}
 	a.cfg.PeerEngineURL = "http://switcher-a:8081"
-	if a.leadsMXLNMOS() {
+	if a.registersMXLNMOS() {
 		t.Error("an engine of a pair registered before it knew its role")
+	}
+}
+
+// fakeRegistry records which node each registration of a node resource
+// advertised, in order.
+type fakeRegistry struct {
+	mu    sync.Mutex
+	hrefs []string
+}
+
+func (f *fakeRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/x-nmos/registration/v1.3/resource" {
+		var body struct {
+			Type string          `json:"type"`
+			Data json.RawMessage `json:"data"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Type == "node" {
+			var node nmos.Node
+			_ = json.Unmarshal(body.Data, &node)
+			f.mu.Lock()
+			f.hrefs = append(f.hrefs, node.ID+" "+node.Href)
+			f.mu.Unlock()
+		}
+		w.WriteHeader(http.StatusCreated)
+		return
+	}
+	w.WriteHeader(http.StatusOK) // heartbeats
+}
+
+func (f *fakeRegistry) nodes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.hrefs...)
+}
+
+// engineOfPair is one engine of a pair registering with reg, its peer in
+// the state set on the returned poller.
+func engineOfPair(t *testing.T, reg string, label, host string) *peer.HealthPoller {
+	t.Helper()
+	tt := newNMOSTestApp(t, nil, func(a *App) {
+		a.cfg.EngineLabel = label
+		a.cfg.PeerEngineURL = "http://switcher-peer:8081"
+		a.cfg.MXLNMOS.RegistryURL = reg
+		a.cfg.MXLNMOS.Host = host
+	})
+	p := peer.NewHealthPoller(tt.app.cfg.PeerEngineURL, peer.WithLocalIdentity(label))
+	tt.app.peerPoller = p
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); tt.app.runMXLNMOSRegistration(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	return p
+}
+
+func withHeartbeatInterval(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := mxlNMOSHeartbeatInterval
+	mxlNMOSHeartbeatInterval = d
+	t.Cleanup(func() { mxlNMOSHeartbeatInterval = old })
+}
+
+// Engine b of a pair follows a reachable engine a and leaves registering to
+// it. Once engine a is gone, b cannot become leader, which needs a forced
+// takeover; it registers anyway within one heartbeat interval, or the
+// switcher would vanish from the registry for as long as a is down.
+func TestMXLNMOS_FollowerRegistersOnceTheLeaderIsUnreachable(t *testing.T) {
+	withHeartbeatInterval(t, 20*time.Millisecond)
+	reg := &fakeRegistry{}
+	srv := httptest.NewServer(reg)
+	t.Cleanup(srv.Close)
+
+	b := engineOfPair(t, srv.URL, "b", "switcher-b.p-show")
+	b.SetPeerStateForTest(true, "a", 0)
+	time.Sleep(5 * mxlNMOSHeartbeatInterval)
+	if got := reg.nodes(); len(got) != 0 {
+		t.Fatalf("follower of a reachable leader registered: %v", got)
+	}
+
+	b.SetPeerStateForTest(false, "a", 0)
+	if b.Role() != peer.RoleFollowerPartitioned {
+		t.Fatalf("role %v, want follower-partitioned", b.Role())
+	}
+	deadline := time.Now().Add(2 * mxlNMOSHeartbeatInterval)
+	for len(reg.nodes()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("engine b did not register within one heartbeat interval of engine a going down")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	want := nmos.DeriveID(nmosSeed, "node") + " http://switcher-b.p-show:1/"
+	if got := reg.nodes()[0]; got != want {
+		t.Errorf("registered %q, want %q", got, want)
+	}
+}
+
+// Two live engines that cannot reach each other both register, the same
+// node, so the registry holds one switcher reachable at either.
+func TestMXLNMOS_PartitionedPairRegistersTheSameNode(t *testing.T) {
+	withHeartbeatInterval(t, 20*time.Millisecond)
+	reg := &fakeRegistry{}
+	srv := httptest.NewServer(reg)
+	t.Cleanup(srv.Close)
+
+	a := engineOfPair(t, srv.URL, "a", "switcher-a.p-show")
+	b := engineOfPair(t, srv.URL, "b", "switcher-b.p-show")
+	a.SetPeerStateForTest(false, "b", 0)
+	b.SetPeerStateForTest(false, "a", 0)
+
+	node := nmos.DeriveID(nmosSeed, "node")
+	want := map[string]bool{
+		node + " http://switcher-a.p-show:1/": true,
+		node + " http://switcher-b.p-show:1/": true,
+	}
+	deadline := time.Now().Add(5 * mxlNMOSHeartbeatInterval)
+	for {
+		seen := map[string]bool{}
+		for _, n := range reg.nodes() {
+			if !want[n] {
+				t.Fatalf("registered %q, want the node at one of %v", n, want)
+			}
+			seen[n] = true
+		}
+		if len(seen) == len(want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("registered %v, want the same node from both engines", reg.nodes())
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
