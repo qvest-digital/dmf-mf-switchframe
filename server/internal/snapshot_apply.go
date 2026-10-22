@@ -123,13 +123,14 @@ type SnapshotMacroApplier interface {
 }
 
 // SnapshotClipApplier is optionally implemented for restoring clip player
-// slots during cross-engine snapshot restore. Clip IDs can differ between
-// engines, so slots are matched by clip name. playerID is 1-based. An empty
-// clipName means the slot is empty and should be ejected. Implementations
-// must be idempotent: a slot already holding clipName in the wanted state
+// slots during cross-engine snapshot restore. playerID is 1-based. clipID is
+// the source engine's ID for the clip; clips can have different IDs on each
+// engine, so implementations fall back to clipName when they do not hold
+// clipID. State "empty" means the slot should be ejected. Implementations
+// must be idempotent: a slot already holding the clip in the wanted state
 // must not be reloaded or restarted.
 type SnapshotClipApplier interface {
-	SyncClipPlayer(playerID int, clipName, state string, speed float64, loop bool) error
+	SyncClipPlayer(playerID int, clipID, clipName, state string, speed float64, loop bool) error
 }
 
 // SnapshotGraphicsHTML5Applier is optionally implemented for HTML5 graphics overlay reload.
@@ -294,8 +295,10 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 	// 13. ST maps — source and program assignments
 	warnings = applySTMaps(snap.STMaps, target, warnings)
 
-	// 14. Clip player state, matched by clip name (IDs can differ between engines).
-	warnings = applyClipPlayers(snap, target, warnings)
+	// 14. Clip player state
+	if applier, ok := target.(SnapshotClipApplier); ok {
+		warnings = append(warnings, ApplyClipPlayers(snap, applier)...)
+	}
 
 	// --- Operational state (optional applier interfaces) ---
 
@@ -548,44 +551,67 @@ func applySTMaps(stmaps *STMapSnapshot, target SnapshotApplyTarget, warnings []s
 	return warnings
 }
 
-// applyClipPlayers restores clip player slots from a snapshot. Slots listed
-// in ClipPlayerPositions are loaded by name and brought to the captured
-// playback state. When the snapshot also lists every player in ClipPlayers,
-// slots without a position entry are empty on the source engine and are
-// ejected on the target.
-func applyClipPlayers(snap FullStateSnapshot, target SnapshotApplyTarget, warnings []string) []string {
-	applier, ok := target.(SnapshotClipApplier)
-	if !ok {
-		return warnings
+// ApplyClipPlayers restores clip player slots from a snapshot and returns
+// warnings for slots that could not be restored. Slots listed in
+// ClipPlayerPositions are brought to the captured clip and playback state.
+// When the snapshot also lists every player in ClipPlayers, slots the source
+// engine reports as empty are ejected on the target.
+func ApplyClipPlayers(snap FullStateSnapshot, applier SnapshotClipApplier) []string {
+	type slotState struct {
+		clipID, clipName, state string
+		speed                   float64
+		loop                    bool
 	}
 
-	wanted := make(map[int]ClipPositionSnapshot, len(snap.ClipPlayerPositions))
+	positions := make(map[int]ClipPositionSnapshot, len(snap.ClipPlayerPositions))
 	for _, cp := range snap.ClipPlayerPositions {
 		if cp.ClipName == "" {
 			continue
 		}
 		// PlayerIndex is 0-based; player IDs are 1-based.
-		wanted[cp.PlayerIndex+1] = cp
+		positions[cp.PlayerIndex+1] = cp
 	}
 
-	var ids []int
+	var warnings []string
+	wanted := make(map[int]slotState, len(snap.ClipPlayers)+len(positions))
 	if len(snap.ClipPlayers) > 0 {
 		for _, p := range snap.ClipPlayers {
-			ids = append(ids, p.ID)
+			cp, ok := positions[p.ID]
+			switch {
+			case ok:
+				clipID := ""
+				if p.State != "empty" {
+					clipID = p.ClipID
+				}
+				wanted[p.ID] = slotState{clipID, cp.ClipName, cp.State, cp.Speed, cp.Loop}
+			case p.State == "empty":
+				wanted[p.ID] = slotState{state: "empty"}
+			default:
+				// ClipPlayers and ClipPlayerPositions are captured separately;
+				// a slot changed in between is left for the next apply.
+				slog.Warn("snapshot apply: clip player has no clip name, skipping",
+					"player", p.ID, "state", p.State)
+				warnings = append(warnings, fmt.Sprintf("clip player %d: state %q without clip name", p.ID, p.State))
+			}
 		}
 	} else {
-		for id := range wanted {
-			ids = append(ids, id)
+		for id, cp := range positions {
+			wanted[id] = slotState{"", cp.ClipName, cp.State, cp.Speed, cp.Loop}
 		}
+	}
+
+	ids := make([]int, 0, len(wanted))
+	for id := range wanted {
+		ids = append(ids, id)
 	}
 	sort.Ints(ids)
 
 	for _, id := range ids {
-		cp := wanted[id]
-		if err := applier.SyncClipPlayer(id, cp.ClipName, cp.State, cp.Speed, cp.Loop); err != nil {
+		w := wanted[id]
+		if err := applier.SyncClipPlayer(id, w.clipID, w.clipName, w.state, w.speed, w.loop); err != nil {
 			slog.Warn("snapshot apply: clip player sync failed",
-				"player", id, "clipName", cp.ClipName, "error", err)
-			warnings = append(warnings, fmt.Sprintf("clip player %d (%q): %v", id, cp.ClipName, err))
+				"player", id, "clipName", w.clipName, "error", err)
+			warnings = append(warnings, fmt.Sprintf("clip player %d (%q): %v", id, w.clipName, err))
 		}
 	}
 	return warnings

@@ -188,7 +188,7 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 	// Optional caller-chosen clip ID. A client uploading the same file to
 	// several engines passes the first engine's ID to the others so that
 	// ID-based operations (delete, pin, load) address the same clip on all
-	// of them. Checked before the file is written or transcoded.
+	// of them. Checked before the upload is stored or transcoded.
 	clipID := r.FormValue("id")
 	if clipID != "" {
 		if !clip.ValidID(clipID) {

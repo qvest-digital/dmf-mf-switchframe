@@ -352,13 +352,13 @@ func (a *App) AssignSTMapProgram(mapName string) error {
 
 // --- Clip player restore ---
 
-// SyncClipPlayer brings a clip player slot to the clip name and playback
-// state captured on the peer engine. playerID is 1-based.
-func (a *App) SyncClipPlayer(playerID int, clipName, state string, speed float64, loop bool) error {
+// SyncClipPlayer brings a clip player slot to the clip and playback state
+// captured on the peer engine. playerID is 1-based.
+func (a *App) SyncClipPlayer(playerID int, clipID, clipName, state string, speed float64, loop bool) error {
 	if a.clipMgr == nil {
 		return nil
 	}
-	return a.clipMgr.SyncPlayer(playerID, clipName, clip.PlayerState(state), speed, loop)
+	return a.clipMgr.SyncPlayer(playerID, clipID, clipName, clip.PlayerState(state), speed, loop)
 }
 
 // --- Optional snapshot applier interfaces (operational state) ---

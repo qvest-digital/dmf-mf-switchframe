@@ -826,6 +826,7 @@ func TestApplyFullSnapshot_AudioChannelDeterministicOrder(t *testing.T) {
 
 type clipSync struct {
 	PlayerID int
+	ClipID   string
 	ClipName string
 	State    string
 	Speed    float64
@@ -846,8 +847,8 @@ func newMockClipApplyTarget() *mockClipApplyTarget {
 	}
 }
 
-func (m *mockClipApplyTarget) SyncClipPlayer(playerID int, clipName, state string, speed float64, loop bool) error {
-	m.clipSyncs = append(m.clipSyncs, clipSync{playerID, clipName, state, speed, loop})
+func (m *mockClipApplyTarget) SyncClipPlayer(playerID int, clipID, clipName, state string, speed float64, loop bool) error {
+	m.clipSyncs = append(m.clipSyncs, clipSync{playerID, clipID, clipName, state, speed, loop})
 	if err, ok := m.clipErrors[clipName]; ok {
 		return err
 	}
@@ -896,8 +897,8 @@ func TestApplyFullSnapshot_ClipPlayerIndexZeroIsPlayerOne(t *testing.T) {
 	}
 }
 
-// When the snapshot lists every player, slots without a position entry are
-// empty on the source engine and must be ejected on the target.
+// When the snapshot lists every player, slots the source engine reports as
+// empty are ejected on the target, and the source clip ID is passed along.
 func TestApplyFullSnapshot_ClipPlayersEjectsEmptySlots(t *testing.T) {
 	mock := newMockClipApplyTarget()
 	snap := FullStateSnapshot{
@@ -912,16 +913,41 @@ func TestApplyFullSnapshot_ClipPlayersEjectsEmptySlots(t *testing.T) {
 		},
 	}
 
-	ApplyFullSnapshot(context.Background(), snap, mock)
+	warnings := ApplyFullSnapshot(context.Background(), snap, mock)
+	if len(warnings) > 0 {
+		t.Errorf("expected no warnings, got: %v", warnings)
+	}
 
 	want := []clipSync{
-		{PlayerID: 1, ClipName: "intro", State: "playing", Speed: 1.0},
-		{PlayerID: 2},
-		{PlayerID: 3},
-		{PlayerID: 4},
+		{PlayerID: 1, ClipID: "a1", ClipName: "intro", State: "playing", Speed: 1.0},
+		{PlayerID: 2, State: "empty"},
+		{PlayerID: 3, State: "empty"},
+		{PlayerID: 4, State: "empty"},
 	}
 	if !reflect.DeepEqual(mock.clipSyncs, want) {
 		t.Errorf("clip syncs:\n got %+v\nwant %+v", mock.clipSyncs, want)
+	}
+}
+
+// A slot listed as occupied in ClipPlayers but missing from
+// ClipPlayerPositions is left alone rather than ejected.
+func TestApplyFullSnapshot_ClipPlayerWithoutPositionIsNotEjected(t *testing.T) {
+	mock := newMockClipApplyTarget()
+	snap := FullStateSnapshot{
+		ClipPlayers: []ClipPlayerSnapshot{
+			{ID: 1, ClipID: "a1", State: "playing"},
+			{ID: 2, State: "empty"},
+		},
+	}
+
+	warnings := ApplyFullSnapshot(context.Background(), snap, mock)
+
+	want := []clipSync{{PlayerID: 2, State: "empty"}}
+	if !reflect.DeepEqual(mock.clipSyncs, want) {
+		t.Errorf("clip syncs:\n got %+v\nwant %+v", mock.clipSyncs, want)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "clip player 1") {
+		t.Errorf("expected one warning for player 1, got %v", warnings)
 	}
 }
 
