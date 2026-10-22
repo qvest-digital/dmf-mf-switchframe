@@ -1802,7 +1802,7 @@
 					activeEngineId={activeEngine}
 					onToggleRedundancyPanel={() => { redundancyPanelVisible = !redundancyPanelVisible; }}
 				/>
-					<div class="header-right">
+					<div class="header-right" class:engine-strip-room={isDualEngine}>
 						<OperatorBadge state={store.effectiveState} onSignOut={oidcConfig.enabled && signedIn ? () => signOut(oidcConfig.logoutUrl) : undefined} />
 						{#if !operatorState.isRegistered() && (store.effectiveState.operators?.length ?? 0) > 0}
 							<button class="register-btn" onclick={() => { showOperatorRegistration = true; }}>Register</button>
@@ -2039,6 +2039,14 @@
 		gap: 6px;
 		margin-left: auto;
 		padding: 0 8px;
+	}
+
+	/* The per-engine status dots are fixed to the top-right corner in dual
+	   mode (ConnectionBanner: two 20px dots, 4px apart, 8px from the edge).
+	   Without this room they cover the operator badge and swallow its
+	   clicks. */
+	.header-right.engine-strip-room {
+		padding-right: 60px;
 	}
 
 	.register-btn {
