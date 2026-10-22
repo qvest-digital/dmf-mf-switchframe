@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import type { ControlRoomState, OperatorRole } from '$lib/api/types';
 	import { operatorInviteTokens } from '$lib/api/switch-api';
 	import { getSession } from '$lib/state/operator.svelte';
@@ -92,14 +91,15 @@
 		}
 	}
 
-	onMount(() => {
-		if (isDirector) {
-			loadInviteTokens();
-		}
-	});
-
+	// Fetched once per director session. An engine with no invite tokens
+	// answers with an empty map, so keying the fetch on the map being empty
+	// refetched on every answer, without end.
+	let loadedFor: string | null = null;
 	$effect(() => {
-		if (isDirector && Object.keys(inviteTokens).length === 0) {
+		const id = isDirector ? session?.id ?? null : null;
+		if (id && id !== loadedFor) {
+			loadedFor = id;
+			inviteTokens = {};
 			loadInviteTokens();
 		}
 	});
