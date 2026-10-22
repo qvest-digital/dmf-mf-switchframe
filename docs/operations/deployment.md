@@ -271,6 +271,17 @@ A second engine takes the same `SWITCHFRAME_OIDC_*` values plus its `--engine-la
 
 The ID token expires on the provider's schedule; the UI refreshes it a minute ahead through `POST /auth/refresh`, at the page's engine or, when that one is down, at its peer.
 
+What to know before running it in production:
+
+- **Revocation is not immediate.** Engines verify the ID token without asking the provider, and remember a verified token for up to 30 seconds. Signing out at the provider, disabling a user or changing their roles takes effect when the current ID token expires, so keep the provider's ID token lifetime short (Keycloak's default is minutes).
+- **One role per user.** A user whose claim maps to several roles gets the most privileged of them, in the order director, audio, graphics, captioner, viewer.
+- **`--oidc-default-role` admits everyone** the provider authenticates for this client, e.g. every user of a Keycloak realm.
+- **One client per environment.** Every engine configured with the same issuer and client ID accepts the same tokens.
+- **Set `--oidc-redirect-url` behind a proxy.** Without it the engine derives its own address from the request, trusting `X-Forwarded-Proto`.
+- **The refresh token is kept in the browser's local storage**, like the API token, so that the peer engine can refresh after a failover. Any script running on the page can read it.
+- **Sign-in does not cover the media stream.** The WebTransport session carrying preview video and control tracks takes no bearer token, with or without OpenID Connect.
+- Deleting a signed-in operator through the API lasts only until that user's next request, which registers them again.
+
 ### Typical production shape
 
 Based on [VISION.md](../VISION.md)'s deployment principles — "systemd / Nomad on bare metal + cloud burst" — the production shape is:

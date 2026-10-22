@@ -201,8 +201,8 @@ Sign-in is off unless `--oidc-issuer` is set. See [deployment.md](../operations/
 | `--oidc-redirect-url` | string | `""` (env `SWITCHFRAME_OIDC_REDIRECT_URL`) | Callback registered with the provider. Empty: `<scheme>://<request host>/auth/callback` |
 | `--oidc-scopes` | string | `openid,profile,email` (env `SWITCHFRAME_OIDC_SCOPES`) | Comma-separated scopes; `openid` is always requested |
 | `--oidc-role-claim` | string | `groups` (env `SWITCHFRAME_OIDC_ROLE_CLAIM`) | ID token claim holding the user's roles or groups, a string or a list. A dot-separated path reads a nested claim, e.g. `realm_access.roles` |
-| `--oidc-role-map` | string | `""` (env `SWITCHFRAME_OIDC_ROLE_MAP`) | Comma-separated `value=role` pairs mapping claim values to `director`, `audio`, `graphics`, `captioner` or `viewer`. Empty: a value that is itself a role name maps to that role. The most privileged match wins |
-| `--oidc-default-role` | string | `""` (env `SWITCHFRAME_OIDC_DEFAULT_ROLE`) | Role for a signed-in user with no mapped value. Empty: such a user is refused |
+| `--oidc-role-map` | string | `""` (env `SWITCHFRAME_OIDC_ROLE_MAP`) | Comma-separated `value=role` pairs mapping claim values to `director`, `audio`, `graphics`, `captioner` or `viewer`. Empty: a value that is itself a role name maps to that role. A user gets one role, the most privileged match |
+| `--oidc-default-role` | string | `""` (env `SWITCHFRAME_OIDC_DEFAULT_ROLE`) | Role for a signed-in user with no mapped value, i.e. for everyone the provider authenticates for this client. Empty: such a user is refused |
 
 ## Environment variables
 
