@@ -1,6 +1,7 @@
 package operator
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -550,4 +551,122 @@ func TestRegisterWithToken_ReRegistrationNeedsTheSameToken(t *testing.T) {
 	if _, err := s.RegisterWithToken("Erin", RoleViewer, "client-id-0002", strings.Repeat("01", 32)); err == nil {
 		t.Fatal("re-registration with another token succeeded")
 	}
+}
+
+func TestStore_Upsert_CreatesWithoutToken(t *testing.T) {
+	t.Parallel()
+	path := tempStorePath(t)
+	s, _ := NewStore(path)
+
+	op, err := s.Upsert("ext-0123456789", "alice", RoleAudio)
+	require.NoError(t, err)
+	require.Equal(t, "ext-0123456789", op.ID)
+	require.Empty(t, op.Token)
+
+	// Persisted, and a request without a bearer token still identifies nobody.
+	s2, err := NewStore(path)
+	require.NoError(t, err)
+	require.Len(t, s2.List(), 1)
+	_, err = s2.GetByToken("")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestStore_Upsert_UpdatesRoleAndName(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	_, err := s.Upsert("ext-0123456789", "alice", RoleViewer)
+	require.NoError(t, err)
+	op, err := s.Upsert("ext-0123456789", "alice.b", RoleDirector)
+	require.NoError(t, err)
+	require.Equal(t, RoleDirector, op.Role)
+	require.Equal(t, "alice.b", op.Name)
+	require.Len(t, s.List(), 1)
+}
+
+func TestStore_Upsert_RejectsNameOfAnotherOperator(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	_, err := s.Register("alice", RoleDirector)
+	require.NoError(t, err)
+	_, err = s.Upsert("ext-0123456789", "alice", RoleAudio)
+	require.ErrorIs(t, err, ErrDuplicateName)
+}
+
+// An operator registered with a token must never share an ID with one the
+// resolver authenticates: the registered token would then act as that
+// user, with their role.
+func TestStore_ExternalIDsAreReserved(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	ext, err := s.Upsert(ExternalIDPrefix+"0123456789", "alice", RoleDirector)
+	require.NoError(t, err)
+
+	// Taking the external ID first, or re-registering onto it later.
+	_, err = s.Register("mallory", RoleViewer, ExternalIDPrefix+"9876543210")
+	require.ErrorIs(t, err, ErrReservedID)
+	_, err = s.Register("alice", RoleDirector, ext.ID)
+	require.ErrorIs(t, err, ErrReservedID)
+	_, err = s.RegisterWithToken("alice", RoleDirector, ext.ID, strings.Repeat("ab", 32))
+	require.ErrorIs(t, err, ErrReservedID)
+
+	// Upsert only takes external IDs.
+	reg, err := s.Register("bob", RoleViewer, "client-id-0003")
+	require.NoError(t, err)
+	_, err = s.Upsert(reg.ID, "bob", RoleDirector)
+	require.Error(t, err)
+	got, err := s.Get(reg.ID)
+	require.NoError(t, err)
+	require.Equal(t, RoleViewer, got.Role)
+}
+
+// An operators file can still hold an external ID with a token, e.g. when
+// edited by hand; Upsert must not hand that record a user's role.
+func TestStore_Upsert_RefusesRecordWithToken(t *testing.T) {
+	t.Parallel()
+	path := tempStorePath(t)
+	data, err := json.Marshal([]Operator{{ID: ExternalIDPrefix + "0123456789", Name: "mallory", Role: RoleViewer, Token: strings.Repeat("cd", 32)}})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	s, err := NewStore(path)
+	require.NoError(t, err)
+
+	_, err = s.Upsert(ExternalIDPrefix+"0123456789", "alice", RoleDirector)
+	require.Error(t, err)
+	op, err := s.GetByToken(strings.Repeat("cd", 32))
+	require.NoError(t, err)
+	require.Equal(t, RoleViewer, op.Role)
+}
+
+func TestStore_GetByToken_FallsBackToResolver(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+	issued, err := s.Register("bob", RoleAudio)
+	require.NoError(t, err)
+
+	var asked []string
+	s.SetTokenResolver(func(token string) (Operator, error) {
+		asked = append(asked, token)
+		if token != "external-token" {
+			return Operator{}, ErrNotFound
+		}
+		return s.Upsert("ext-0123456789", "alice", RoleGraphics)
+	})
+
+	op, err := s.GetByToken("external-token")
+	require.NoError(t, err)
+	require.Equal(t, "alice", op.Name)
+
+	// A store-issued token never reaches the resolver, nor does an empty one.
+	op, err = s.GetByToken(issued.Token)
+	require.NoError(t, err)
+	require.Equal(t, "bob", op.Name)
+	_, err = s.GetByToken("")
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = s.GetByToken("unknown")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	require.Equal(t, []string{"external-token", "unknown"}, asked)
 }

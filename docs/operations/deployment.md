@@ -240,6 +240,48 @@ docker run -d --gpus all --restart unless-stopped \
   --srt-listen :6464
 ```
 
+### Single sign-on with OpenID Connect
+
+With `--oidc-issuer` set, the UI offers **Sign in** above the API token field. The engine runs the authorization code flow with PKCE under `/auth/` and hands the browser the provider's ID token, which the browser sends as its bearer token to every engine. Each engine verifies that token against the provider's published keys on its own, so both engines of an active-active pair accept a sign-in made at either, and nothing is lost when an engine restarts.
+
+A verified user becomes an operator named after `preferred_username` (or `name`), with the role mapped from `--oidc-role-claim` through `--oidc-role-map`. The operator ID is derived from issuer and subject, so both engines hold locks under the same ID. A user with no mapped value is refused with a message, unless `--oidc-default-role` names a role. The session API token, operator tokens and peer polling keep working beside sign-in.
+
+```bash
+docker run -d --name switchframe-a \
+  -p 8080:8080/udp -p 8080:8080/tcp -p 8081:8081/tcp \
+  -v /var/lib/switchframe-a:/home/switchframe/.switchframe \
+  -v /etc/switchframe/oidc-secret:/run/secrets/oidc-secret:ro \
+  -e SWITCHFRAME_OIDC_ISSUER=https://id.example.com/realms/media \
+  -e SWITCHFRAME_OIDC_CLIENT_ID=switchframe \
+  -e SWITCHFRAME_OIDC_CLIENT_SECRET_FILE=/run/secrets/oidc-secret \
+  -e SWITCHFRAME_OIDC_ROLE_CLAIM=roles \
+  -e SWITCHFRAME_OIDC_ROLE_MAP=switchframe-director=director,switchframe-audio=audio,switchframe-graphics=graphics,switchframe-captioner=captioner,switchframe-viewer=viewer \
+  switchframe:latest --http-fallback
+```
+
+A second engine takes the same `SWITCHFRAME_OIDC_*` values plus its `--engine-label` and peer flags.
+
+**Provider setup** (Keycloak shown; any OpenID Connect provider works the same way):
+
+1. Create a client, e.g. `switchframe`, with the standard (authorization code) flow. Make it confidential and pass its secret through `--oidc-client-secret-file`, or public with PKCE (S256) and no secret.
+2. Valid redirect URIs: `https://<engine host>/auth/callback` for every engine the browser reaches.
+3. Valid post-logout redirect URIs: `https://<engine host>/` for every engine. Without them the provider refuses sign-out.
+4. Roles `switchframe-director`, `switchframe-audio`, `switchframe-graphics`, `switchframe-captioner`, `switchframe-viewer`, assigned to users or groups.
+5. A protocol mapper putting the user's roles in the ID token under the claim named by `--oidc-role-claim` (in Keycloak: "User Realm Role", token claim name `roles`, multivalued, added to the ID token).
+
+The ID token expires on the provider's schedule; the UI refreshes it a minute ahead through `POST /auth/refresh`, at the page's engine or, when that one is down, at its peer.
+
+What to know before running it in production:
+
+- **Revocation is not immediate.** Engines verify the ID token without asking the provider, and remember a verified token for up to 30 seconds. Signing out at the provider, disabling a user or changing their roles takes effect when the current ID token expires, so keep the provider's ID token lifetime short (Keycloak's default is minutes).
+- **One role per user.** A user whose claim maps to several roles gets the most privileged of them, in the order director, audio, graphics, captioner, viewer.
+- **`--oidc-default-role` admits everyone** the provider authenticates for this client, e.g. every user of a Keycloak realm.
+- **One client per environment.** Every engine configured with the same issuer and client ID accepts the same tokens.
+- **Set `--oidc-redirect-url` behind a proxy.** Without it the engine derives its own address from the request, trusting `X-Forwarded-Proto`.
+- **The refresh token is kept in the browser's local storage**, like the API token, so that the peer engine can refresh after a failover. Any script running on the page can read it.
+- **Sign-in does not cover the media stream.** The WebTransport session carrying preview video and control tracks takes no bearer token, with or without OpenID Connect.
+- Deleting a signed-in operator through the API lasts only until that user's next request, which registers them again.
+
 ### Typical production shape
 
 Based on [VISION.md](../VISION.md)'s deployment principles — "systemd / Nomad on bare metal + cloud burst" — the production shape is:

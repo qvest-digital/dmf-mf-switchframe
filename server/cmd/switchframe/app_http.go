@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/oidcauth"
 )
 
 // altSvcMiddleware adds the Alt-Svc header to advertise HTTP/3 on the QUIC port.
@@ -26,6 +27,13 @@ func altSvcMiddleware(quicPort string, next http.Handler) http.Handler {
 // of one engine fetches the other engine's before opening WebTransport to it.
 func (a *App) certHashHandler() http.Handler {
 	return control.CORSMiddleware(a.cfg.AllowedOrigins)(http.HandlerFunc(a.handleCertHash))
+}
+
+// authHandler serves the sign-in endpoints outside the API's middleware:
+// they are reached before the browser holds any token. CORS lets the UI
+// refresh its token at the peer engine while its own engine is down.
+func (a *App) authHandler() http.Handler {
+	return control.CORSMiddleware(a.cfg.AllowedOrigins)(oidcauth.Handler(a.oidcAuth))
 }
 
 // startHTTPAPIServer launches an HTTP/1.1 server for curl/scripts and browsers
@@ -50,10 +58,12 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
 	apiHandler = control.CORSMiddleware(a.cfg.AllowedOrigins)(apiHandler)
 
-	// Top-level mux: cert-hash (public) + API routes (authenticated) + UI files (public).
+	// Top-level mux: cert-hash (public) + API routes (authenticated) +
+	// sign-in (public) + UI files (public).
 	topMux := http.NewServeMux()
 	topMux.Handle("GET /api/cert-hash", a.certHashHandler())
 	topMux.Handle("/api/", apiHandler)
+	topMux.Handle("/auth/", a.authHandler())
 	if h := uiHandler(); h != nil {
 		topMux.Handle("/", h)
 	}

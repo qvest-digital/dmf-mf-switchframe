@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { getAuthToken } from '$lib/api/switch-api';
+	import { signInHandoff } from '$lib/api/oidc';
 	import EngineDot from './EngineDot.svelte';
 
 	interface EngineStatus {
@@ -65,7 +66,10 @@
 			const url = new URL(engineFallbackUrl);
 			url.search = window.location.search;
 			const token = getAuthToken();
-			if (token) {
+			const handoff = signInHandoff();
+			if (handoff) {
+				url.hash = handoff;
+			} else if (token) {
 				url.hash = `token=${token}`;
 			} else {
 				url.hash = window.location.hash;

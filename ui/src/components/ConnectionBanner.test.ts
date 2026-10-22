@@ -555,6 +555,29 @@ describe('ConnectionBanner', () => {
 			expect(link.href).toContain('#token=test-token-abc');
 		});
 
+		it('carries a sign-in with its refresh token, so the session outlives the ID token on Engine B', () => {
+			const b64 = (o: unknown) => btoa(JSON.stringify(o)).replace(/=+$/, '');
+			const idToken = `${b64({ alg: 'RS256' })}.${b64({ exp: 2_000_000_000 })}.sig`;
+			localStorage.setItem('switchframe_operator_token', idToken);
+			localStorage.setItem('switchframe_oidc_refresh', 'rt-1');
+			try {
+				const { container } = render(ConnectionBanner, {
+					props: {
+						connectionState: 'disconnected',
+						syncStatus: 'ok',
+						engineFallbackUrl: 'https://engine-b.example.com',
+						servingEngine: 'A',
+					},
+				});
+				const link = container.querySelector('.fallback-link') as HTMLAnchorElement;
+				const frag = new URLSearchParams(new URL(link.href).hash.slice(1));
+				expect(frag.get('id_token')).toBe(idToken);
+				expect(frag.get('refresh_token')).toBe('rt-1');
+			} finally {
+				localStorage.removeItem('switchframe_oidc_refresh');
+			}
+		});
+
 		it('preserves original hash when no auth token exists', () => {
 			localStorage.removeItem('switchframe_operator_token');
 			// Set a hash on the window to verify it's preserved

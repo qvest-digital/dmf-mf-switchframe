@@ -47,6 +47,7 @@ import (
 	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/mxl"
+	"github.com/zsiec/switchframe/server/oidcauth"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/peer"
@@ -259,6 +260,7 @@ type App struct {
 	// API + middleware
 	api        *control.API
 	authMW     func(http.Handler) http.Handler
+	oidcAuth   *oidcauth.Authenticator // nil = OpenID Connect sign-in disabled
 	operatorMW func(http.Handler) http.Handler
 
 	// Background goroutine tracking for clean shutdown
@@ -358,7 +360,7 @@ func (a *App) initInfra() error {
 		a.authMW = control.AuthMiddleware(a.cfg.APIToken, operatorCheck)
 	}
 
-	return nil
+	return a.initOIDC()
 }
 
 // initPrismServer creates the Prism distribution server and registers the
@@ -389,6 +391,7 @@ func (a *App) initPrismServer() error {
 			// on this mux — no need to register it here.
 
 			mux.Handle("/api/", apiHandler)
+			mux.Handle("/auth/", control.SecurityHeadersMiddleware(a.authHandler()))
 
 			if h := uiHandler(); h != nil {
 				mux.Handle("/", control.SecurityHeadersMiddleware(h))
@@ -818,6 +821,9 @@ func (a *App) initSubsystems() error {
 		return fmt.Errorf("create operator store: %w", err)
 	}
 	slog.Info("operator store initialized", "path", operatorPath)
+	if a.oidcAuth != nil {
+		a.operatorStore.SetTokenResolver(a.resolveOIDCOperator)
+	}
 
 	stingerDir := a.statePath("stingers")
 	stingerCacheDir := ""
