@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
@@ -348,20 +349,7 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 
 	// Clip player state.
 	if a.clipMgr != nil {
-		states := a.clipMgr.PlayerStates()
-		clipPlayers := make([]internal.ClipPlayerInfo, len(states))
-		for i, s := range states {
-			clipPlayers[i] = internal.ClipPlayerInfo{
-				ID:       s.ID,
-				ClipID:   s.ClipID,
-				ClipName: s.ClipName,
-				State:    string(s.State),
-				Speed:    s.Speed,
-				Position: s.Position,
-				Loop:     s.Loop,
-			}
-		}
-		state.ClipPlayers = clipPlayers
+		state.ClipPlayers = clipPlayerInfos(a.clipMgr.PlayerStates())
 	}
 	if a.clipStore != nil {
 		state.ClipCount = len(a.clipStore.List())
@@ -1235,4 +1223,24 @@ func peerBrowserURL(cfg AppConfig) string {
 		return cfg.PeerPublicURL
 	}
 	return cfg.PeerEngineURL
+}
+
+// clipPlayerInfos converts the clip manager's player states for the state
+// broadcast.
+func clipPlayerInfos(states []clip.ClipPlayerState) []internal.ClipPlayerInfo {
+	infos := make([]internal.ClipPlayerInfo, len(states))
+	for i, s := range states {
+		infos[i] = internal.ClipPlayerInfo{
+			ID:              s.ID,
+			ClipID:          s.ClipID,
+			ClipName:        s.ClipName,
+			State:           string(s.State),
+			Speed:           s.Speed,
+			Position:        s.Position,
+			Loop:            s.Loop,
+			LoadingClipID:   s.LoadingClipID,
+			LoadingClipName: s.LoadingClipName,
+		}
+	}
+	return infos
 }

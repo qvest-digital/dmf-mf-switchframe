@@ -1,0 +1,11 @@
+{
+	"id": 1,
+	"clipId": "0123456789abcdef0123456789abcdef",
+	"clipName": "bunny",
+	"state": "playing",
+	"speed": 0.5,
+	"position": 0.25,
+	"loop": true,
+	"loadingClipId": "fedcba9876543210fedcba9876543210",
+	"loadingClipName": "other"
+}

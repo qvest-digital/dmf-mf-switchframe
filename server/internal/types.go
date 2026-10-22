@@ -545,6 +545,10 @@ type ClipPlayerInfo struct {
 	Speed    float64 `json:"speed,omitempty"`
 	Position float64 `json:"position,omitempty"`
 	Loop     bool    `json:"loop,omitempty"`
+	// The clip being loaded into the slot while its file is read; the slot
+	// keeps reporting its previous content until the load completes.
+	LoadingClipID   string `json:"loadingClipId,omitempty"`
+	LoadingClipName string `json:"loadingClipName,omitempty"`
 }
 
 // ClipUploadProgress tracks server-side clip upload stages for state broadcast.
