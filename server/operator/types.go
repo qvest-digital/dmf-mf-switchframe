@@ -18,7 +18,14 @@ var (
 	ErrInvalidSubsystem = errors.New("operator: invalid subsystem")
 	ErrSessionNotFound  = errors.New("operator: session not found")
 	ErrInvalidToken     = errors.New("operator: client token must be 64 lowercase hex characters and unused")
+	ErrReservedID       = errors.New("operator: client IDs starting with \"" + ExternalIDPrefix + "\" are reserved")
 )
+
+// ExternalIDPrefix starts the ID of every operator Store.Upsert creates and
+// of no operator Store.Register creates. A registered operator can therefore
+// never hold the ID, and with it the role, of one the TokenResolver
+// authenticates.
+const ExternalIDPrefix = "ext-"
 
 // Role defines an operator's permission level.
 type Role string

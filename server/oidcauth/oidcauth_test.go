@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +54,7 @@ func TestAuthenticate_ValidToken(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, id.OperatorID, again.OperatorID)
 	require.Regexp(t, `^[a-z0-9-]{8,64}$`, id.OperatorID)
+	require.True(t, strings.HasPrefix(id.OperatorID, operator.ExternalIDPrefix), id.OperatorID)
 
 	other, err := a.Authenticate(context.Background(), p.Sign(p.Claims(map[string]any{"sub": "user-2"})))
 	require.NoError(t, err)

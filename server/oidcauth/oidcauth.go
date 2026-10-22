@@ -252,11 +252,13 @@ func ParseRoleMap(s string) (map[string]operator.Role, error) {
 	return m, nil
 }
 
-// operatorID derives a stable operator ID that fits the store's ID rules
-// (8-64 characters, alphanumeric and hyphens) from any subject format.
+// operatorID derives a stable operator ID from any subject format. It
+// carries the store's external ID prefix, which no registered operator's ID
+// can, and fits the store's ID rules (8-64 characters, alphanumeric and
+// hyphens).
 func operatorID(issuer, subject string) string {
 	sum := sha256.Sum256([]byte(issuer + "\x00" + subject))
-	return "oidc-" + hex.EncodeToString(sum[:16])
+	return operator.ExternalIDPrefix + hex.EncodeToString(sum[:16])
 }
 
 func displayName(claims map[string]any, subject string) string {

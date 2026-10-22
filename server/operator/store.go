@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -111,6 +112,9 @@ func (s *Store) RegisterWithToken(name string, role Role, providedID, providedTo
 			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
 				return Operator{}, fmt.Errorf("invalid client ID: must be alphanumeric with hyphens")
 			}
+		}
+		if strings.HasPrefix(providedID, ExternalIDPrefix) {
+			return Operator{}, ErrReservedID
 		}
 	}
 
@@ -254,13 +258,13 @@ func (s *Store) SetTokenResolver(fn TokenResolver) {
 }
 
 // Upsert creates the operator with the given ID, or updates its name and
-// role, and persists the change. An operator created here holds no
-// store-issued token; it is reached through the TokenResolver, which
-// authenticates its bearer token by other means. The file is written only
-// when something changed.
+// role, and persists the change. The ID must start with ExternalIDPrefix.
+// An operator created here holds no store-issued token; it is reached
+// through the TokenResolver, which authenticates its bearer token by other
+// means. The file is written only when something changed.
 func (s *Store) Upsert(id, name string, role Role) (Operator, error) {
-	if id == "" {
-		return Operator{}, ErrNotFound
+	if !strings.HasPrefix(id, ExternalIDPrefix) {
+		return Operator{}, fmt.Errorf("operator: external operator ID %q must start with %q", id, ExternalIDPrefix)
 	}
 	if name == "" {
 		return Operator{}, ErrEmptyName
@@ -268,6 +272,17 @@ func (s *Store) Upsert(id, name string, role Role) (Operator, error) {
 	if !IsValidRole(role) {
 		return Operator{}, ErrInvalidRole
 	}
+
+	// The resolver calls Upsert on every request it authenticates, so the
+	// common case, nothing changed, takes only the read lock.
+	s.mu.RLock()
+	if idx, ok := s.idIdx[id]; ok && s.operators[idx].Token == "" &&
+		s.operators[idx].Name == name && s.operators[idx].Role == role {
+		op := s.operators[idx]
+		s.mu.RUnlock()
+		return op, nil
+	}
+	s.mu.RUnlock()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -279,6 +294,11 @@ func (s *Store) Upsert(id, name string, role Role) (Operator, error) {
 	}
 
 	idx, ok := s.idIdx[id]
+	if ok && s.operators[idx].Token != "" {
+		// Only a hand-edited operators file gets here: the record's
+		// store-issued token would authenticate as the external user.
+		return Operator{}, fmt.Errorf("operator: ID %q belongs to an operator registered with a token", id)
+	}
 	if ok && s.operators[idx].Name == name && s.operators[idx].Role == role {
 		return s.operators[idx], nil
 	}
