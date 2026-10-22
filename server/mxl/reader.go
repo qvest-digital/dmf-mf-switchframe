@@ -45,12 +45,21 @@ type ReaderConfig struct {
 	Width  int
 	Height int
 
-	// Audio samples per read (required for audio flows). Defaults to 1024.
+	// Audio samples per read (required for audio flows). Defaults to
+	// defaultSamplesPerRead.
 	SamplesPerRead int
 
 	// Logger. Defaults to slog.Default().
 	Logger *slog.Logger
 }
+
+// grainLookBack is how many grains behind the head the video and data loops
+// resync to.
+const grainLookBack = 2
+
+// defaultSamplesPerRead is what the audio loop reads at a time. A read ends
+// at its index, so after a resync to the head it reads the samples before.
+const defaultSamplesPerRead = 1024
 
 func (c *ReaderConfig) defaults() {
 	if c.BufSize <= 0 {
@@ -60,7 +69,7 @@ func (c *ReaderConfig) defaults() {
 		c.TimeoutMs = 100
 	}
 	if c.SamplesPerRead <= 0 {
-		c.SamplesPerRead = 1024
+		c.SamplesPerRead = defaultSamplesPerRead
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -185,8 +194,8 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 			if errors.Is(err, ErrTooLate) {
 				if headIdx, hErr := flow.HeadIndex(); hErr == nil {
 					oldIndex := index
-					if headIdx >= 2 {
-						index = headIdx - 2
+					if headIdx >= grainLookBack {
+						index = headIdx - grainLookBack
 					} else {
 						index = headIdx
 					}
@@ -376,8 +385,8 @@ func (r *Reader) dataLoop(ctx context.Context, flow DiscreteReader) {
 			if errors.Is(err, ErrTooLate) {
 				if headIdx, hErr := flow.HeadIndex(); hErr == nil {
 					oldIndex := index
-					if headIdx >= 2 {
-						index = headIdx - 2
+					if headIdx >= grainLookBack {
+						index = headIdx - grainLookBack
 					} else {
 						index = headIdx
 					}

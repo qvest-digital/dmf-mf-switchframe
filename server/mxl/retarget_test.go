@@ -11,8 +11,9 @@ import (
 
 // liveFlow is a flow whose writer keeps producing grains, each carrying the
 // flow's tag, so a test can tell which flow a grain came from. Its head
-// moves on every look; one with written set has no grains until written is
-// closed, as a flow being mirrored onto the node has none at first.
+// moves on every look, from 100 on; one with written set has no grains until
+// written is closed, as a flow being mirrored onto the node has none at
+// first.
 type liveFlow struct {
 	tag     byte
 	config  FlowConfig
@@ -22,6 +23,9 @@ type liveFlow struct {
 	closed bool
 	head   uint64
 }
+
+// headStep is how far a liveFlow's head moves per look.
+const headStep = 64
 
 func newLiveFlow(tag byte, config FlowConfig) *liveFlow {
 	return &liveFlow{tag: tag, config: config}
@@ -65,8 +69,14 @@ func (f *liveFlow) HeadIndex() (uint64, error) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.head++
+	f.head += headStep
 	return 100 + f.head, nil
+}
+
+func (f *liveFlow) lastHead() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return 100 + f.head
 }
 func (f *liveFlow) Close() error {
 	f.mu.Lock()
@@ -435,6 +445,59 @@ func TestRetargetableAudioReader_ReadsAfterFirstConnection(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no audio after connecting")
+	}
+}
+
+// An audio read ends at its index, so the first read after the move covers
+// a whole read before the head; the move waits until the node has received
+// that much of the new flow, or that read would carry samples it never got.
+func TestConnect_AudioWaitsForAWholeReadWritten(t *testing.T) {
+	shape := FlowConfig{Format: DataFormatAudio, GrainRate: Rational{48000, 1}, ChannelCount: 2}
+	b := newLiveFlow(2, shape)
+	flow := NewRetargetableAudioReader(func(id string) (ContinuousReader, error) { return b, nil }, nil, nil)
+	if err := flow.(Retargetable).Connect(context.Background(), "b"); err != nil {
+		t.Fatal(err)
+	}
+	// The first look saw 100+headStep; the move waited for a whole read more.
+	if got := b.lastHead() - (100 + headStep); got < defaultSamplesPerRead {
+		t.Errorf("moved after %d samples were written here, want at least %d", got, defaultSamplesPerRead)
+	}
+}
+
+// A retarget made while an earlier one waits for its flow to be written
+// ends that wait, rather than holding the flow open until it times out.
+func TestRetarget_LaterRetargetEndsTheWait(t *testing.T) {
+	b := newLiveFlow(2, videoShape)
+	b.written = make(chan struct{})
+	store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape), "b": b, "c": newLiveFlow(3, videoShape)})
+	first, _ := store.open("a")
+	flow := NewReopeningReader("a", first, store.open, nil)
+	r := startVideo(t, flow)
+
+	res := make(chan error, 1)
+	go func() { res <- flow.(Retargetable).Connect(context.Background(), "b") }()
+	for deadline := time.Now().Add(time.Second); store.handle("b") == b; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("flow b never opened")
+		}
+	}
+	flow.(Retargetable).Retarget("c")
+	select {
+	case err := <-res:
+		if !errors.Is(err, errSuperseded) {
+			t.Errorf("err %v, want superseded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the wait for flow b outlived the retarget to c")
+	}
+	if !store.handle("b").isClosed() {
+		t.Error("flow b was left open")
+	}
+	deadline := time.Now().Add(time.Second)
+	for nextGrain(t, r).V210[0] != 3 {
+		if time.Now().After(deadline) {
+			t.Fatal("never moved to flow c")
+		}
 	}
 }
 
