@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0-rc.13](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.12...mxl-v1.0.0-rc.13) (2026-10-22)
+
+
+### Bug Fixes
+
+* **auth:** keep the API token out of logs and stdout ([#35](https://github.com/qvest-digital/dmf-mf-switchframe/issues/35)) ([3c4b606](https://github.com/qvest-digital/dmf-mf-switchframe/commit/3c4b60675f92b3a6b5626583eb99a801c5f11bfb))
+* **clip:** keep clip uploads and loads in step across engines ([#34](https://github.com/qvest-digital/dmf-mf-switchframe/issues/34)) ([3c9c205](https://github.com/qvest-digital/dmf-mf-switchframe/commit/3c9c2050ba49eb0d01b1b8c699a9998980bc0fdd))
+
 ## [1.0.0-rc.12](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.11...mxl-v1.0.0-rc.12) (2026-10-22)
 
 
