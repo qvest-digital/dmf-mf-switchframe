@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.15](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.14...mxl-v1.0.0-rc.15) (2026-10-22)
+
+
+### Bug Fixes
+
+* **state:** broadcast the clip a player is loading ([#40](https://github.com/qvest-digital/dmf-mf-switchframe/issues/40)) ([87c4fb9](https://github.com/qvest-digital/dmf-mf-switchframe/commit/87c4fb95f0f7269a15ad48432e2a49ed60b2ffe2))
+
 ## [1.0.0-rc.14](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.13...mxl-v1.0.0-rc.14) (2026-10-22)
 
 
