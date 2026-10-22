@@ -76,7 +76,7 @@ func testStore() *ResourceStore {
 		FlowID:            "flow-001",
 		Transport:         TransportRTP,
 		DeviceID:          "dev-001",
-		ManifestHref:      "http://switchframe.local/sdp/sender-001",
+		ManifestHref:      StringPtr("http://switchframe.local/sdp/sender-001"),
 		InterfaceBindings: []string{"eth0"},
 		Subscription:      SenderSubscription{ReceiverID: nil, Active: false},
 	})

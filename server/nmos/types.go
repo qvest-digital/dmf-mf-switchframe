@@ -167,7 +167,7 @@ type Sender struct {
 	FlowID            string                 `json:"flow_id"`
 	Transport         string                 `json:"transport"`
 	DeviceID          string                 `json:"device_id"`
-	ManifestHref      string                 `json:"manifest_href"`
+	ManifestHref      *string                `json:"manifest_href"`
 	InterfaceBindings []string               `json:"interface_bindings"`
 	Caps              map[string]interface{} `json:"caps"`
 	Subscription      SenderSubscription     `json:"subscription"`
@@ -194,9 +194,13 @@ type Receiver struct {
 	Subscription      ReceiverSubscription `json:"subscription"`
 }
 
-// ReceiverCaps describes the media types a receiver can accept.
+// ReceiverCaps describes the media types a receiver can accept and, per
+// BCP-004-01, the parameter constraint sets it can consume. Version has to
+// change whenever ConstraintSets does.
 type ReceiverCaps struct {
-	MediaTypes []string `json:"media_types,omitempty"`
+	MediaTypes     []string         `json:"media_types,omitempty"`
+	ConstraintSets []map[string]any `json:"constraint_sets,omitempty"`
+	Version        Version          `json:"version,omitempty"`
 }
 
 // ReceiverSubscription tracks which sender a receiver is connected to.
@@ -204,3 +208,6 @@ type ReceiverSubscription struct {
 	SenderID *string `json:"sender_id"`
 	Active   bool    `json:"active"`
 }
+
+// StringPtr returns a pointer to s, for nullable attributes.
+func StringPtr(s string) *string { return &s }
