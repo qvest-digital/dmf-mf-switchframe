@@ -58,11 +58,13 @@
 	import { ControlPlaneDiscovery } from '$lib/transport/control-plane-discovery';
 	import { CaptionRenderer } from '$lib/prism/captions';
 	import type { ControlRoomState, Macro } from '$lib/api/types';
+	import { fetchOIDCConfig, consumeSignInFragment, signIn, signOut, isSignedIn, renewLapsedToken, startTokenRefresh, clearRefreshToken, type OIDCConfig } from '$lib/api/oidc';
 
 	// Extract token from URL fragment BEFORE any connections are created.
 	// Must run at module level, not in onMount, to avoid race conditions
 	// where API calls fire before the token is stored.
 	checkFragmentToken();
+	consumeSignInFragment();
 
 	// Engine A is always the current server. Engine B is discovered from
 	// the initial state response (engineBUrl field set by the control plane).
@@ -117,6 +119,10 @@
 	let connectionError: string | null = $state(null);
 	let tokenRequired = $state(false);
 	let tokenInput = $state('');
+	let oidcConfig = $state<OIDCConfig>({ enabled: false });
+	let signedIn = $state(isSignedIn());
+	let signInMessage = $state<string | null>(null);
+	let stopTokenRefresh: (() => void) | undefined;
 	let showOperatorRegistration = $state(false);
 	let fastControlA = $state<FastControl | null>(null);
 	let fastControlB = $state<FastControl | null>(null);
@@ -1538,6 +1544,8 @@
 
 	async function submitToken() {
 		if (!tokenInput.trim()) return;
+		clearRefreshToken();
+		signedIn = false;
 		setAuthToken(tokenInput.trim());
 		tokenRequired = false;
 		connectionError = null;
@@ -1587,6 +1595,15 @@
 		// Load macro list for keyboard shortcuts
 		refreshMacros();
 
+		fetchOIDCConfig().then((c) => { oidcConfig = c; });
+		const renewed = await renewLapsedToken();
+		if (renewed?.outcome === 'forbidden') signInMessage = renewed.message;
+		stopTokenRefresh = startTokenRefresh((message) => {
+			signedIn = false;
+			signInMessage = message ?? null;
+			tokenRequired = true;
+		});
+
 		// Attempt operator reconnection from stored token
 		if (operatorState.hasStoredToken()) {
 			await operatorState.reconnect();
@@ -1627,6 +1644,7 @@
 		connectionManager.stop();
 		pipeline.destroy();
 		operatorState.destroy();
+		stopTokenRefresh?.();
 		setEngineUrls(null);
 		setDualTimestampProvider(null);
 		setPartialFailureCallback(null);
@@ -1640,7 +1658,15 @@
 {#if tokenRequired}
 	<div class="token-prompt">
 		<div class="token-box">
-			<p>API token required</p>
+			{#if oidcConfig.enabled}
+				{#if signInMessage}
+					<p class="sign-in-message">{signInMessage}</p>
+				{/if}
+				<button type="button" class="sign-in" onclick={signIn}>Sign in</button>
+				<p>or use an API token</p>
+			{:else}
+				<p>API token required</p>
+			{/if}
 			<form onsubmit={(e) => { e.preventDefault(); submitToken(); }}>
 				<input
 					type="password"
@@ -1774,7 +1800,7 @@
 					onToggleRedundancyPanel={() => { redundancyPanelVisible = !redundancyPanelVisible; }}
 				/>
 					<div class="header-right">
-						<OperatorBadge state={store.effectiveState} />
+						<OperatorBadge state={store.effectiveState} onSignOut={oidcConfig.enabled && signedIn ? () => signOut(oidcConfig.logoutUrl) : undefined} />
 						{#if !operatorState.isRegistered() && (store.effectiveState.operators?.length ?? 0) > 0}
 							<button class="register-btn" onclick={() => { showOperatorRegistration = true; }}>Register</button>
 						{:else if !operatorState.isRegistered()}
@@ -2080,6 +2106,17 @@
 
 	.token-box button:hover {
 		background: #1d4ed8;
+	}
+
+	.token-box .sign-in {
+		width: 100%;
+		margin-bottom: 16px;
+		padding: 8px 16px;
+	}
+
+	.token-box .sign-in-message {
+		color: var(--text-secondary, #aaa);
+		font-size: var(--text-sm);
 	}
 
 	.panel-disabled {

@@ -36,6 +36,9 @@ export default defineConfig({
 	},
 	server: {
 		proxy: {
+			'/auth': {
+				target: 'http://localhost:8081',
+			},
 			'/api': {
 				target: 'http://localhost:8081',
 			},

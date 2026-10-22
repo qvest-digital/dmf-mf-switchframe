@@ -2,7 +2,7 @@
 	import type { ControlRoomState, OperatorRole } from '$lib/api/types';
 	import { getSession } from '$lib/state/operator.svelte';
 
-	let { state: crState }: { state: ControlRoomState } = $props();
+	let { state: crState, onSignOut }: { state: ControlRoomState; onSignOut?: () => void } = $props();
 
 	let expanded = $state(false);
 	let wrapperEl = $state<HTMLDivElement>();
@@ -68,6 +68,9 @@
 							<span class="op-role">{op.role}</span>
 						</div>
 					{/each}
+				{/if}
+				{#if onSignOut}
+					<button class="sign-out" role="menuitem" onclick={onSignOut}>Sign out</button>
 				{/if}
 			</div>
 		{/if}
@@ -164,6 +167,23 @@
 	.op-name {
 		flex: 1;
 		color: var(--text-primary, #eee);
+	}
+
+	.sign-out {
+		display: block;
+		width: 100%;
+		padding: 8px 10px;
+		border: none;
+		border-top: 1px solid var(--border-subtle, #333);
+		background: none;
+		color: var(--text-primary, #eee);
+		font-size: var(--text-sm);
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.sign-out:hover {
+		background: rgba(255, 255, 255, 0.05);
 	}
 
 	.op-role {
