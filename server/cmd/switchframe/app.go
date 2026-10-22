@@ -72,16 +72,36 @@ import (
 // calling os.Exit directly (which would skip deferred cleanup).
 var errDiscoverExit = errors.New("mxl discover completed")
 
-// tokenPrefix returns a safe display prefix for an API token.
-func tokenPrefix(token string) string {
-	if len(token) == 0 {
-		return "***"
+// apiTokenFile is the file under the state directory that holds a generated
+// API token, readable by the owner only.
+const apiTokenFile = "api-token"
+
+// announceAuth logs how API authentication is set up. The token itself never
+// reaches the log or stdout, which container platforms collect into the same
+// log store. A generated token is written to a file in the state directory
+// instead, so that it can still be looked up.
+func announceAuth(cfg AppConfig, log *slog.Logger) error {
+	if cfg.Demo {
+		log.Info("demo mode: API authentication disabled")
+		return nil
 	}
-	n := len(token)
-	if n > 8 {
-		n = 8
+	if cfg.APITokenSource != "generated" {
+		log.Info("API authentication enabled", "token_source", cfg.APITokenSource)
+		return nil
 	}
-	return token[:n] + "..."
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		return fmt.Errorf("create state directory: %w", err)
+	}
+	path := filepath.Join(cfg.StateDir, apiTokenFile)
+	if err := os.WriteFile(path, []byte(cfg.APIToken+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write generated API token: %w", err)
+	}
+	// WriteFile keeps the mode of an existing file.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("restrict generated API token file: %w", err)
+	}
+	log.Info("API authentication enabled", "token_source", "generated", "token_file", path)
+	return nil
 }
 
 // App holds all subsystems for the switchframe server. Init methods are called
@@ -308,13 +328,8 @@ func (a *App) initInfra() error {
 	a.appMetrics = metrics.NewMetrics(metrics.GetRegistry())
 
 	slog.Info("switchframe starting", "log_level", a.cfg.LogLevel)
-	if a.cfg.Demo {
-		slog.Info("demo mode: API authentication disabled")
-	} else {
-		slog.Info("API authentication enabled", "token_prefix", tokenPrefix(a.cfg.APIToken))
-		// Print full token to stdout (not stderr) so operators can capture it
-		// without it leaking into log files routed from stderr.
-		_, _ = fmt.Fprintf(os.Stdout, "\n  API Token: %s\n\n", a.cfg.APIToken)
+	if err := announceAuth(a.cfg, slog.Default()); err != nil {
+		return err
 	}
 
 	logSystemTuning(slog.Default())

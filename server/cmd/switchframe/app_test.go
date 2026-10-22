@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,31 +14,101 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestTokenPrefixShortToken(t *testing.T) {
-	// A user-provided API token shorter than 8 characters must not panic.
-	short := "ab"
-	got := tokenPrefix(short)
-	if got == "" {
-		t.Fatal("expected non-empty prefix for short token")
-	}
-	if len(got) > len(short)+3 { // at most "ab..."
-		t.Fatalf("prefix too long: %q", got)
+// captureStartup runs fn with os.Stdout and the default logger redirected
+// and returns everything both received.
+func captureStartup(t *testing.T, fn func(log *slog.Logger)) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	stdout := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = stdout }()
+
+	var logged bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	prev := slog.Default()
+	slog.SetDefault(log)
+	defer slog.SetDefault(prev)
+
+	fn(log)
+
+	require.NoError(t, w.Close())
+	printed, err := io.ReadAll(r)
+	require.NoError(t, err)
+	return logged.String() + string(printed)
+}
+
+// The engine's stdout and stderr land in the cluster's log store, which far
+// more people can read than may drive the switcher. No part of the token may
+// appear there, whichever way it was configured.
+func TestAnnounceAuth_NeverPrintsToken(t *testing.T) {
+	const token = "c0ffee5ecret70ken0123456789abcdef"
+	for _, source := range []string{"flag", "env", "generated"} {
+		t.Run(source, func(t *testing.T) {
+			cfg := AppConfig{APIToken: token, APITokenSource: source, StateDir: t.TempDir()}
+
+			out := captureStartup(t, func(log *slog.Logger) {
+				require.NoError(t, announceAuth(cfg, log))
+			})
+
+			require.Contains(t, out, "API authentication enabled")
+			require.Contains(t, out, "token_source="+source)
+			require.NotContains(t, out, token)
+			require.NotContains(t, out, token[:8])
+		})
 	}
 }
 
-func TestTokenPrefixNormalToken(t *testing.T) {
-	tok := "abcdef1234567890"
-	got := tokenPrefix(tok)
-	expected := "abcdef12..."
-	if got != expected {
-		t.Fatalf("expected %q, got %q", expected, got)
-	}
+func TestAnnounceAuth_GeneratedTokenGoesToOwnerOnlyFile(t *testing.T) {
+	const token = "c0ffee5ecret70ken0123456789abcdef"
+	dir := filepath.Join(t.TempDir(), "state")
+	path := filepath.Join(dir, apiTokenFile)
+
+	out := captureStartup(t, func(log *slog.Logger) {
+		require.NoError(t, announceAuth(AppConfig{APIToken: token, APITokenSource: "generated", StateDir: dir}, log))
+	})
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, token+"\n", string(got))
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	require.Contains(t, out, path)
 }
 
-func TestTokenPrefixEmptyToken(t *testing.T) {
-	got := tokenPrefix("")
-	if got != "***" {
-		t.Fatalf("expected %q for empty token, got %q", "***", got)
+func TestAnnounceAuth_ConfiguredTokenWritesNoFile(t *testing.T) {
+	dir := t.TempDir()
+
+	captureStartup(t, func(log *slog.Logger) {
+		require.NoError(t, announceAuth(AppConfig{APIToken: "x", APITokenSource: "env", StateDir: dir}, log))
+	})
+
+	_, err := os.Stat(filepath.Join(dir, apiTokenFile))
+	require.True(t, os.IsNotExist(err))
+}
+
+func TestParseConfig_APITokenSource(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		env  string
+		want string
+	}{
+		{"flag", []string{"--api-token", "from-flag"}, "from-env", "flag"},
+		{"env", nil, "from-env", "env"},
+		{"generated", nil, "", "generated"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SWITCHFRAME_API_TOKEN", tc.env)
+			os.Args = append([]string{"switchframe"}, tc.args...)
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+			cfg, err := parseConfig()
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.APITokenSource)
+			require.NotEmpty(t, cfg.APIToken)
+		})
 	}
 }
 
