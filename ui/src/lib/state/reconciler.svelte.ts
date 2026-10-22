@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State, ClipUploadProgress, ClipUploadStage } from '$lib/api/types';
+import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State, ClipUploadProgress, ClipUploadStage, ClipPlayerState } from '$lib/api/types';
 
 /** Minimum RTT delta (ms) required to switch authority based on RTT alone. Prevents jitter flapping. */
 export const RTT_HYSTERESIS_MS = 100;
@@ -80,6 +80,17 @@ export function fieldEquals(a: unknown, b: unknown): boolean {
 	if (typeof a !== typeof b) return false;
 	if (typeof a === 'object') return sortedStringify(a) === sortedStringify(b);
 	return false;
+}
+
+/** Reports whether one engine is still loading the clip the other already
+ * holds in the slot, or both are loading the same clip. A clip load reads the
+ * whole file before the slot changes, which takes seconds for a long clip and
+ * longer on one engine than the other; the slot is catching up, not
+ * diverged, and a snapshot push would only queue a second load behind it. */
+export function clipSlotCatchingUp(a: ClipPlayerState, b: ClipPlayerState): boolean {
+	const target = (p: ClipPlayerState) => p.loadingClipName ?? p.clipName;
+	if (!a.loadingClipName && !b.loadingClipName) return false;
+	return target(a) !== undefined && target(a) === target(b);
 }
 
 const UPLOAD_STAGE_ORDER: ClipUploadStage[] = ['uploading', 'analyzing', 'transcoding', 'validating'];
@@ -630,6 +641,7 @@ export function createReconciler() {
 			result.push({ field: 'clipPlayers', engineA: `${clipsA.length} slots`, engineB: `${clipsB.length} slots` });
 		} else {
 			for (let i = 0; i < clipsA.length; i++) {
+				if (clipSlotCatchingUp(clipsA[i], clipsB[i])) continue;
 				if (clipsA[i].state !== clipsB[i].state || clipsA[i].clipName !== clipsB[i].clipName) {
 					result.push({ field: 'clipPlayers', engineA: `${clipsA[i].clipName}:${clipsA[i].state}`, engineB: `${clipsB[i].clipName}:${clipsB[i].state}` });
 					break;

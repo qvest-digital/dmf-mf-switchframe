@@ -1845,26 +1845,39 @@ export async function uploadClip(file: File, onUploadProgress?: (percent: number
 
 	const reason = (results[failedAt] as PromiseRejectedResult).reason;
 	if (targets.length === 1) throw reason;
-	await Promise.allSettled(results.map((r, i) => r.status === 'fulfilled'
-		? fetch(`${targets[i].url}/api/clips/${encodeURIComponent(clipId)}`, { method: 'DELETE', headers: authHeaders() })
-		: Promise.resolve()));
+	const stranded: string[] = [];
+	await Promise.all(results.map(async (r, i) => {
+		if (r.status !== 'fulfilled') return;
+		try {
+			const res = await fetchWithTimeout(`${targets[i].url}/api/clips/${encodeURIComponent(clipId)}`,
+				{ method: 'DELETE', headers: authHeaders() });
+			if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
+		} catch (err) {
+			console.warn(`[dual-api] Could not remove clip ${clipId} from Engine ${targets[i].id} after a failed upload:`, err);
+			stranded.push(targets[i].id);
+		}
+	}));
 	const message = reason instanceof Error ? reason.message : String(reason);
+	const leftover = stranded.length > 0 ? `; clip left on Engine ${stranded.join(', ')}` : '';
 	throw new SwitchApiError(
 		reason instanceof SwitchApiError ? reason.status : 0,
-		`upload failed on Engine ${targets[failedAt].id}: ${message}`,
+		`upload failed on Engine ${targets[failedAt].id}: ${message}${leftover}`,
 	);
 }
 
 /**
- * Lists the clips every reachable engine holds. A clip still being uploaded,
- * by this client or another, is on some engines only, and a load sent for it
- * would find it missing on the others.
+ * Lists the clips every reachable engine holds, matched by name as clip
+ * players load them: replays, imported recordings and older uploads carry a
+ * different ID on each engine. A clip still being uploaded, by this client or
+ * another, is on some engines only, and a load sent for it would find it
+ * missing on the others. An engine that does not answer within the command
+ * timeout counts as unreachable.
  */
 export async function listClipsOnEveryEngine(): Promise<ClipInfo[]> {
 	const engines = getEngineUrls();
 	if (!engines || engines.length <= 1) return listClips();
 	const lists = await Promise.allSettled(engines.map(async (engine) => {
-		const res = await fetch(`${engine.url}/api/clips`, { headers: authHeaders() });
+		const res = await fetchWithTimeout(`${engine.url}/api/clips`, { headers: authHeaders() });
 		if (!res.ok) throw new SwitchApiError(res.status, `HTTP ${res.status}`);
 		return (await res.json()) as ClipInfo[];
 	}));
@@ -1873,7 +1886,7 @@ export async function listClipsOnEveryEngine(): Promise<ClipInfo[]> {
 		.map((l) => l.value);
 	if (answered.length === 0) return listClips();
 	const [first, ...others] = answered;
-	return first.filter((c) => others.every((list) => list.some((o) => o.id === c.id)));
+	return first.filter((c) => others.every((list) => list.some((o) => o.name === c.name)));
 }
 
 export function pinClip(id: string): Promise<ClipInfo> {

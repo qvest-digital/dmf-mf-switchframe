@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createReconciler, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, AUTHORITY_HOLD_MS, sortedStringify, SETTLE_MS, SETTLE_MAX_MS, leastAdvancedUpload } from './reconciler.svelte';
+import { createAutoReconcile } from './auto-reconcile';
+import { createReconciler, clipSlotCatchingUp, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, AUTHORITY_HOLD_MS, sortedStringify, SETTLE_MS, SETTLE_MAX_MS, leastAdvancedUpload } from './reconciler.svelte';
 import type { ControlRoomState, ClipPlayerState } from '$lib/api/types';
 
 /** Let both engines' states sit unchanged for SETTLE_MS, after which a
@@ -2715,6 +2716,66 @@ describe('merged clip count', () => {
 		r.disconnect('B');
 
 		expect(r.state.clipCount).toBe(3);
+	});
+});
+
+// A clip load reads the whole file before the slot changes: 14s for an
+// 8-minute 1080p clip, and an engine can finish seconds after the other.
+// While it does, it reports the clip as loading. Treating that as divergence
+// pushed a snapshot that queued a second load of the same file behind the
+// first and showed the "Resyncing" banner for the length of both.
+describe('clip load on one engine slower than the other', () => {
+	const slot = (p: Partial<ClipPlayerState>): ClipPlayerState => ({ id: 1, state: 'empty', ...p });
+	const players = (first: ClipPlayerState): ClipPlayerState[] => [first, slot({ id: 2 }), slot({ id: 3 }), slot({ id: 4 })];
+
+	it('neither shows a banner nor pushes a snapshot while the slower engine loads', async () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		const pushSnapshot = vi.fn().mockResolvedValue({ warnings: [] });
+		const ar = createAutoReconcile({
+			getSnapshot: vi.fn().mockResolvedValue({}),
+			pushSnapshot,
+		});
+		const statuses = new Set<string>();
+		const loadedA = makeState({ clipPlayers: players(slot({ clipId: 'x', clipName: 'bunny', state: 'loaded' })) });
+		const loadingB = makeState({ clipPlayers: players(slot({ loadingClipId: 'x', loadingClipName: 'bunny' })) });
+
+		r.ingest('A', makeState({ clipPlayers: players(slot({})) }));
+		r.ingest('B', makeState({ clipPlayers: players(slot({})) }));
+		// Both start loading; A finishes, B needs another six seconds.
+		r.ingest('A', loadedA);
+		r.ingest('B', loadingB);
+		for (let t = 0; t < 6000; t += 200) {
+			await vi.advanceTimersByTimeAsync(200);
+			r.ingest('A', loadedA);
+			r.ingest('B', loadingB);
+			r.tick();
+			statuses.add(r.health.status);
+			ar.onSyncStatusChange(r.health.status, r.health.authoritative);
+		}
+		r.ingest('B', makeState({ clipPlayers: players(slot({ clipId: 'x', clipName: 'bunny', state: 'loaded' })) }));
+		r.tick();
+		statuses.add(r.health.status);
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect([...statuses]).toEqual(['synced']);
+		expect(r.health.divergences).toEqual([]);
+		expect(pushSnapshot).not.toHaveBeenCalled();
+	});
+
+	it('still reports a slot loading a different clip than the other engine holds', () => {
+		expect(clipSlotCatchingUp(
+			slot({ clipName: 'bunny', state: 'loaded' }),
+			slot({ loadingClipName: 'other' }),
+		)).toBe(false);
+		expect(clipSlotCatchingUp(
+			slot({ clipName: 'bunny', state: 'loaded' }),
+			slot({ clipName: 'other', state: 'loaded' }),
+		)).toBe(false);
+		expect(clipSlotCatchingUp(
+			slot({ loadingClipName: 'bunny' }),
+			slot({ loadingClipName: 'bunny' }),
+		)).toBe(true);
 	});
 });
 

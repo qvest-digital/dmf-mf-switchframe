@@ -241,6 +241,33 @@ describe('uploadClip (dual engine)', () => {
 		expect(deletes()).toEqual([`https://engine-b.example.com/api/clips/${sent[0].id}`]);
 	});
 
+	it('names an engine the clip could not be removed from', async () => {
+		vi.useFakeTimers();
+		fetchMock.mockImplementation((_url: string, opts?: RequestInit) =>
+			Promise.resolve(opts?.method === 'DELETE'
+				? { ok: false, status: 500, json: () => Promise.resolve({}) }
+				: { ok: false, status: 404, json: () => Promise.resolve({}) }));
+		respond = (url, _attempt, id) => (url === B ? failing(500, 'boom') : stored(id));
+
+		const done = uploadClip(new File(['data'], 'bunny.mov'));
+		const failed = expect(done).rejects.toThrow(/Engine B: boom; clip left on Engine A/);
+		await vi.advanceTimersByTimeAsync(2500);
+		await failed;
+	});
+
+	it('does not wait forever on a rollback that never answers', async () => {
+		vi.useFakeTimers();
+		fetchMock.mockImplementation((_url: string, opts?: RequestInit) => opts?.method === 'DELETE'
+			? new Promise((_resolve, reject) => opts.signal?.addEventListener('abort', () => reject(new Error('aborted'))))
+			: Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) }));
+		respond = (url, _attempt, id) => (url === B ? failing(500, 'boom') : stored(id));
+
+		const done = uploadClip(new File(['data'], 'bunny.mov'));
+		const failed = expect(done).rejects.toThrow(/clip left on Engine A/);
+		await vi.advanceTimersByTimeAsync(2500 + 3000);
+		await failed;
+	});
+
 	it('rejects when no engine stores the clip', async () => {
 		vi.useFakeTimers();
 		respond = () => failing(500, 'boom');
@@ -285,6 +312,31 @@ describe('listClipsOnEveryEngine', () => {
 		};
 
 		expect((await listClipsOnEveryEngine()).map((c) => c.id)).toEqual(['one']);
+	});
+
+	// Replays, imported recordings and clips from before shared IDs carry a
+	// different ID on each engine; players load them by name.
+	it('matches clips by name, not by ID', async () => {
+		lists = {
+			'engine-a.example.com': [{ id: 'a1', name: 'cam1 replay', source: 'replay' }, clip('two')],
+			'engine-b.example.com': [{ id: 'b7', name: 'cam1 replay', source: 'replay' }],
+		};
+
+		expect((await listClipsOnEveryEngine()).map((c) => c.name)).toEqual(['cam1 replay']);
+	});
+
+	it('counts an engine that does not answer as unreachable', async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal('fetch', vi.fn((url: string, opts?: RequestInit) => new Promise((resolve, reject) => {
+			opts?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+			if (url.includes('engine-a')) resolve({ ok: true, status: 200, json: () => Promise.resolve([clip('one')]) });
+		})));
+
+		const listed = listClipsOnEveryEngine();
+		await vi.advanceTimersByTimeAsync(3_000);
+
+		expect((await listed).map((c) => c.id)).toEqual(['one']);
+		vi.useRealTimers();
 	});
 
 	it('lists what the reachable engine holds when the other is down', async () => {
