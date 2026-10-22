@@ -213,7 +213,7 @@ func TestSenderJSON(t *testing.T) {
 		FlowID:            "f-001",
 		Transport:         TransportRTP,
 		DeviceID:          "dev-001",
-		ManifestHref:      "http://node1.local/sdp/s-001",
+		ManifestHref:      StringPtr("http://node1.local/sdp/s-001"),
 		InterfaceBindings: []string{"eth0"},
 		Subscription: SenderSubscription{
 			ReceiverID: &recvID,
@@ -237,7 +237,7 @@ func TestSenderJSON(t *testing.T) {
 	if got.Transport != TransportRTP {
 		t.Errorf("Transport: got %q, want %q", got.Transport, TransportRTP)
 	}
-	if got.ManifestHref != sender.ManifestHref {
+	if *got.ManifestHref != *sender.ManifestHref {
 		t.Errorf("ManifestHref mismatch")
 	}
 	if got.Subscription.ReceiverID == nil || *got.Subscription.ReceiverID != recvID {

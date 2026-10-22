@@ -1,0 +1,865 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/subtle"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/zsiec/switchframe/server/nmos"
+	"github.com/zsiec/switchframe/server/peer"
+)
+
+// mxlNMOSConfig configures the NMOS node for the named MXL inputs
+// (--mxl-nmos-*). Port 0 disables it.
+type mxlNMOSConfig struct {
+	Port        int
+	Seed        string
+	Label       string
+	Host        string
+	RegistryURL string
+	QueryURL    string
+}
+
+// peerForwardHeader marks an IS-05 request one engine of an active-active
+// pair passes on to the other, which applies it without passing it back.
+const peerForwardHeader = "X-Switchframe-Peer-Forward"
+
+type peerForwardKey struct{}
+
+func fromPeer(ctx context.Context) bool {
+	v, _ := ctx.Value(peerForwardKey{}).(bool)
+	return v
+}
+
+// mxlEssence is which reader of a named input a receiver drives.
+type mxlEssence string
+
+const (
+	essenceVideo mxlEssence = "video"
+	essenceAudio mxlEssence = "audio"
+	essenceData  mxlEssence = "data"
+)
+
+type mxlReceiverRef struct {
+	input   string
+	essence mxlEssence
+}
+
+// mxlNMOS is the NMOS node (AMWA IS-04, IS-05 and BCP-007-03) through which
+// a controller connects the named MXL inputs to flows.
+//
+// Each named input is a group of MXL Receivers, one per essence, and a
+// connection moves the input's reader to the flow named, which keeps its
+// stream and source key. Nothing here switches the program: what an input
+// carries changes, not which input is on air.
+//
+// Both engines of an active-active pair present the same node, with ids
+// derived from the same seed. Only the leader registers it, so a controller
+// sees one switcher, and each engine passes the activations it receives to
+// the other, so a failover keeps the inputs as they were connected.
+type mxlNMOS struct {
+	cfg      mxlNMOSConfig
+	domainID string
+	peerBase string
+
+	store     *nmos.ResourceStore
+	conn      *nmos.MXLConnectionServer
+	receivers map[string]mxlReceiverRef
+	order     []string
+	reg       *nmos.RegistrationClient
+	query     *nmos.QueryClient
+	srv       *http.Server
+	http      *http.Client
+
+	mu         sync.Mutex
+	registered bool
+	// forward holds the latest activation of each receiver not yet passed
+	// to the peer engine; forwardKick wakes the sender.
+	forward     map[string]nmos.MXLEndpoint
+	forwardKick chan struct{}
+	// labelSeq counts the video connections of each input, so only the
+	// latest one's label lookup sets the label. labelMu orders the setting.
+	labelSeq map[string]uint64
+	labelMu  sync.Mutex
+}
+
+// readMXLDomainID returns the id in the domain's domain_def.json, which
+// BCP-007-03 has every MXL domain carry.
+func readMXLDomainID(domainPath string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(domainPath, "domain_def.json"))
+	if err != nil {
+		return "", err
+	}
+	var def struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(data, &def); err != nil {
+		return "", fmt.Errorf("domain_def.json: %w", err)
+	}
+	if def.ID == "" {
+		return "", errors.New("domain_def.json has no id")
+	}
+	return def.ID, nil
+}
+
+// initMXLNMOS starts the NMOS node when --mxl-nmos-port is set.
+func (a *App) initMXLNMOS() error {
+	if a.cfg.MXLNMOS.Port == 0 {
+		return nil
+	}
+	n, err := a.newMXLNMOS()
+	if err != nil {
+		return err
+	}
+	a.mxlNMOS = n
+
+	addr := fmt.Sprintf(":%d", n.cfg.Port)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("mxl nmos: listen %s: %w", addr, err)
+	}
+	n.srv = &http.Server{Handler: n.handler(a.cfg.APIToken), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		if err := n.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("mxl nmos: server", "error", err)
+		}
+	}()
+
+	ctx := a.bgCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if n.reg != nil {
+		a.bgWG.Add(1)
+		go func() { defer a.bgWG.Done(); a.runMXLNMOSRegistration(ctx) }()
+	}
+	if n.peerBase != "" {
+		a.bgWG.Add(1)
+		go func() { defer a.bgWG.Done(); a.runMXLNMOSPeer(ctx) }()
+	}
+	slog.Info("mxl nmos: node up", "port", n.cfg.Port, "receivers", len(n.receivers),
+		"registry", n.cfg.RegistryURL, "domain", n.domainID)
+	return nil
+}
+
+// newMXLNMOS builds the node from the configuration and the named inputs.
+func (a *App) newMXLNMOS() (*mxlNMOS, error) {
+	cfg := a.cfg.MXLNMOS
+	if cfg.Seed == "" {
+		return nil, errors.New("--mxl-nmos-seed is required with --mxl-nmos-port: it keeps resource ids stable and both engines of a pair alike")
+	}
+	if cfg.Host == "" {
+		h, err := os.Hostname()
+		if err != nil {
+			return nil, fmt.Errorf("--mxl-nmos-host: %w", err)
+		}
+		cfg.Host = h
+	}
+	if cfg.Label == "" {
+		cfg.Label = "switchframe"
+	}
+	domainID, err := readMXLDomainID(a.cfg.MXLDomain)
+	if err != nil {
+		// Without the id, auto cannot resolve and every connection that
+		// names a domain is refused, but one naming only a flow works.
+		slog.Warn("mxl nmos: MXL domain id unknown", "domain", a.cfg.MXLDomain, "error", err)
+	}
+
+	n := &mxlNMOS{
+		cfg:         cfg,
+		domainID:    domainID,
+		store:       nmos.NewResourceStore(),
+		receivers:   map[string]mxlReceiverRef{},
+		http:        &http.Client{Timeout: 5 * time.Second},
+		forwardKick: make(chan struct{}, 1),
+	}
+	if a.cfg.PeerEngineURL != "" {
+		if u, err := url.Parse(a.cfg.PeerEngineURL); err == nil && u.Hostname() != "" {
+			n.peerBase = "http://" + net.JoinHostPort(u.Hostname(), strconv.Itoa(cfg.Port))
+		}
+	}
+	if cfg.RegistryURL != "" {
+		n.reg = nmos.NewRegistrationClient(cfg.RegistryURL, nmos.DeriveID(cfg.Seed, "node"))
+	}
+	if q := cfg.QueryURL; q != "" || cfg.RegistryURL != "" {
+		if q == "" {
+			q = cfg.RegistryURL
+		}
+		n.query = nmos.NewQueryClient(q)
+	}
+	n.conn = nmos.NewMXLConnectionServer(nmos.MXLConnectionServerOpts{
+		DomainID:           domainID,
+		OnActivateReceiver: a.activateMXLReceiver,
+	})
+	if err := a.buildMXLNMOSResources(n); err != nil {
+		return nil, err
+	}
+	return n, nil
+}
+
+// handler serves the Node API and the Connection API, marking requests the
+// peer engine passed on.
+func (n *mxlNMOS) handler(apiToken string) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/x-nmos/node/", nmos.NewNodeServer(n.store).Handler())
+	conn := n.conn.Handler()
+	mux.Handle("/x-nmos/connection/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(peerForwardHeader) != "" && peerAuthorized(r, apiToken) {
+			r = r.WithContext(context.WithValue(r.Context(), peerForwardKey{}, true))
+		}
+		conn.ServeHTTP(w, r)
+	}))
+	return mux
+}
+
+// peerAuthorized reports whether r carries the session API token both
+// engines of a pair share. Without one configured no request counts as the
+// peer's, and every activation is passed on; the pair still converges, as
+// passing on an activation that changes nothing stops there.
+func peerAuthorized(r *http.Request, apiToken string) bool {
+	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return ok && apiToken != "" && subtle.ConstantTimeCompare([]byte(got), []byte(apiToken)) == 1
+}
+
+func (a *App) closeMXLNMOS() {
+	n := a.mxlNMOS
+	if n == nil || n.srv == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = n.srv.Shutdown(ctx)
+}
+
+// buildMXLNMOSResources creates the node, its device and a receiver per
+// essence of each named input, and records the flows an input was booked
+// with as its receivers' active state.
+func (a *App) buildMXLNMOSResources(n *mxlNMOS) error {
+	cfg := n.cfg
+	base := "http://" + net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	nodeID := nmos.DeriveID(cfg.Seed, "node")
+	deviceID := nmos.DeriveID(cfg.Seed, "device")
+	pf := a.sw.PipelineFormat()
+
+	var specs []mxlSourceSpec
+	for _, raw := range a.cfg.MXLSources {
+		spec, err := parseMXLSourceSpec(raw)
+		if err != nil {
+			return err
+		}
+		if spec.Name != "" {
+			specs = append(specs, spec)
+		}
+	}
+
+	type booked struct {
+		id   string
+		flow string
+	}
+	var initial []booked
+	var rxIDs []string
+	for _, spec := range specs {
+		essences := []mxlEssence{essenceVideo, essenceAudio}
+		if spec.Data != "" {
+			essences = append(essences, essenceData)
+		}
+		for _, e := range essences {
+			id := nmos.DeriveID(cfg.Seed, "receiver", spec.Name, string(e))
+			rx := &nmos.Receiver{
+				ID:                id,
+				Version:           nmos.NewVersion(),
+				Label:             spec.Name + " " + string(e),
+				Description:       fmt.Sprintf("MXL input %s, %s", spec.Name, e),
+				Tags:              map[string][]string{nmos.GroupHintTag: {spec.Name + ":" + groupRole(e)}},
+				Transport:         nmos.TransportMXL,
+				DeviceID:          deviceID,
+				InterfaceBindings: []string{},
+				Subscription:      nmos.ReceiverSubscription{},
+			}
+			switch e {
+			case essenceVideo:
+				rx.Format = nmos.FormatVideo
+				rx.Caps = nmos.ReceiverCaps{
+					MediaTypes: []string{nmos.MediaTypeV210},
+					ConstraintSets: []map[string]any{{
+						nmos.CapMediaType:   map[string]any{"enum": []string{nmos.MediaTypeV210}},
+						nmos.CapFrameWidth:  map[string]any{"enum": []int{pf.Width}},
+						nmos.CapFrameHeight: map[string]any{"enum": []int{pf.Height}},
+						nmos.CapGrainRate: map[string]any{"enum": []map[string]int{
+							{"numerator": pf.FPSNum, "denominator": pf.FPSDen},
+						}},
+					}},
+					Version: nmos.NewVersion(),
+				}
+			case essenceAudio:
+				rx.Format = nmos.FormatAudio
+				rx.Caps = nmos.ReceiverCaps{
+					MediaTypes: []string{nmos.MediaTypeFloat32},
+					ConstraintSets: []map[string]any{{
+						nmos.CapMediaType:  map[string]any{"enum": []string{nmos.MediaTypeFloat32}},
+						nmos.CapSampleRate: map[string]any{"enum": []map[string]int{{"numerator": 48000}}},
+					}},
+					Version: nmos.NewVersion(),
+				}
+			case essenceData:
+				rx.Format = nmos.FormatData
+				rx.Caps = nmos.ReceiverCaps{MediaTypes: []string{nmos.MediaTypeSMPTE291}}
+			}
+			n.store.AddReceiver(rx)
+			n.conn.AddReceiver(id)
+			n.receivers[id] = mxlReceiverRef{input: spec.Name, essence: e}
+			n.order = append(n.order, id)
+			rxIDs = append(rxIDs, id)
+
+			flow := map[mxlEssence]string{essenceVideo: spec.Video, essenceAudio: spec.Audio, essenceData: spec.Data}[e]
+			if flow != "" {
+				initial = append(initial, booked{id, flow})
+			}
+		}
+	}
+
+	senderIDs, err := a.addMXLNMOSProgramSenders(n, deviceID)
+	if err != nil {
+		return err
+	}
+
+	n.store.SetNode(&nmos.Node{
+		ID:          nodeID,
+		Label:       cfg.Label,
+		Description: "switchframe live production switcher",
+		Hostname:    cfg.Host,
+		Tags:        map[string][]string{},
+		Caps:        map[string]interface{}{},
+		Href:        base + "/",
+		API: nmos.NodeAPI{
+			Versions:  []string{"v1.3"},
+			Endpoints: []nmos.APIEndpoint{{Host: cfg.Host, Port: cfg.Port, Protocol: "http"}},
+		},
+		Clocks:     []nmos.Clock{{Name: "clk0", RefType: "internal"}},
+		Interfaces: []nmos.Interface{},
+		Services:   []interface{}{},
+	})
+	n.store.AddDevice(&nmos.Device{
+		ID:        deviceID,
+		Version:   nmos.NewVersion(),
+		Label:     cfg.Label,
+		Tags:      map[string][]string{},
+		Type:      nmos.DeviceTypeGeneric,
+		NodeID:    nodeID,
+		Senders:   senderIDs,
+		Receivers: rxIDs,
+		Controls: []nmos.Control{{
+			Type: nmos.ControlTypeSRCtrl,
+			Href: base + "/x-nmos/connection/v1.1/",
+		}},
+	})
+
+	// What the booking named is connected from the start, with no sender a
+	// controller made the connection from.
+	for _, b := range initial {
+		dom := nonEmptyPtr(n.domainID)
+		n.conn.SetReceiverActive(b.id, nmos.NewMXLReceiverEndpoint(nil, true, dom, &b.flow))
+		n.store.UpdateReceiverSubscription(b.id, nil, true)
+	}
+	return nil
+}
+
+// addMXLNMOSProgramSenders exposes the program flows this engine writes as
+// MXL Sources, Flows and Senders, as BCP-007-03 requires of every MXL
+// writer, so a controller can connect other receivers to the program. The
+// flows are described by the same definitions the writer creates them
+// from. An engine of a pair writes flows of its own, so the sender a
+// registry shows names the flow of the engine that registered it.
+func (a *App) addMXLNMOSProgramSenders(n *mxlNMOS, deviceID string) ([]string, error) {
+	senders := []string{}
+	if a.cfg.MXLOutput == "" {
+		return senders, nil
+	}
+	defs := []struct {
+		essence mxlEssence
+		path    string
+		format  string
+	}{
+		{essenceVideo, a.cfg.MXLOutputVideoDef, nmos.FormatVideo},
+		{essenceAudio, a.cfg.MXLOutputAudioDef, nmos.FormatAudio},
+	}
+	for _, d := range defs {
+		if d.path == "" {
+			continue
+		}
+		data, err := os.ReadFile(d.path)
+		if err != nil {
+			return nil, fmt.Errorf("mxl nmos: program %s flow definition: %w", d.essence, err)
+		}
+		var flow nmos.Flow
+		if err := json.Unmarshal(data, &flow); err != nil {
+			return nil, fmt.Errorf("mxl nmos: program %s flow definition %s: %w", d.essence, d.path, err)
+		}
+		mxlFlowID := flow.ID
+		if mxlFlowID == "" {
+			return nil, fmt.Errorf("mxl nmos: program %s flow definition %s has no id", d.essence, d.path)
+		}
+		// The IS-04 ids are the node's own, alike on both engines; the
+		// MXL flow id is what each engine writes and what a receiver is
+		// connected to.
+		sourceID := nmos.DeriveID(n.cfg.Seed, "source", "program", string(d.essence))
+		flow.ID = nmos.DeriveID(n.cfg.Seed, "flow", "program", string(d.essence))
+		flow.Version = nmos.NewVersion()
+		flow.SourceID = sourceID
+		flow.DeviceID = deviceID
+		flow.Parents = []string{}
+		flow.Format = d.format
+		if flow.Tags == nil {
+			flow.Tags = map[string][]string{}
+		}
+		n.store.AddSource(&nmos.Source{
+			ID:          sourceID,
+			Version:     nmos.NewVersion(),
+			Label:       flow.Label,
+			Description: flow.Description,
+			Tags:        flow.Tags,
+			Caps:        map[string]interface{}{},
+			Format:      d.format,
+			Parents:     []string{},
+			DeviceID:    deviceID,
+			ClockName:   "clk0",
+		})
+		n.store.AddFlow(&flow)
+		senderID := nmos.DeriveID(n.cfg.Seed, "sender", "program", string(d.essence))
+		n.store.AddSender(&nmos.Sender{
+			ID:                senderID,
+			Version:           nmos.NewVersion(),
+			Label:             flow.Label,
+			Description:       flow.Description,
+			Tags:              flow.Tags,
+			FlowID:            flow.ID,
+			Transport:         nmos.TransportMXL,
+			DeviceID:          deviceID,
+			InterfaceBindings: []string{},
+			Caps:              map[string]interface{}{},
+			Subscription:      nmos.SenderSubscription{Active: true},
+		})
+		n.conn.AddSender(senderID, mxlFlowID)
+		senders = append(senders, senderID)
+	}
+	return senders, nil
+}
+
+func groupRole(e mxlEssence) string {
+	switch e {
+	case essenceVideo:
+		return "Video"
+	case essenceAudio:
+		return "Audio"
+	}
+	return "Data"
+}
+
+func nonEmptyPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// connectTimeout bounds how long an activation waits for a flow to open.
+// A flow on another node is mirrored here first, which takes seconds.
+const connectTimeout = 8 * time.Second
+
+// activateMXLReceiver moves an input's reader to the activated flow, or off
+// it, and publishes the new subscription. A flow that cannot be opened in
+// time or has another shape fails the activation, which leaves the active
+// state as it was.
+func (a *App) activateMXLReceiver(ctx context.Context, id string, active nmos.MXLEndpoint) error {
+	n := a.mxlNMOS
+	ref, ok := n.receivers[id]
+	if !ok {
+		return fmt.Errorf("unknown receiver %s", id)
+	}
+	prev, _ := n.conn.ReceiverActive(id)
+	if err := a.applyMXLReceiver(ctx, ref, active); err != nil {
+		return err
+	}
+	n.store.UpdateReceiverSubscription(id, active.SenderID, active.MasterEnable)
+	go a.publishMXLReceiver(id)
+	// One that changes nothing is not passed on, which also ends the
+	// round trip of an activation the peer could not mark as its own.
+	if !fromPeer(ctx) && n.peerBase != "" && !sameConnection(prev, active) {
+		n.queueForward(id, active)
+	}
+	return nil
+}
+
+// applyMXLReceiver connects the input's reader and, for video, sets the
+// input's label to what the connection carries.
+func (a *App) applyMXLReceiver(ctx context.Context, ref mxlReceiverRef, active nmos.MXLEndpoint) error {
+	flow := ""
+	if active.MasterEnable {
+		flow = active.FlowID()
+	}
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), connectTimeout)
+	defer cancel()
+	if err := a.connectMXLInput(cctx, ref.input, ref.essence, flow); err != nil {
+		return fmt.Errorf("input %s %s: %w", ref.input, ref.essence, err)
+	}
+	if ref.essence == essenceVideo {
+		seq := a.mxlNMOS.nextLabelSeq(ref.input)
+		go a.labelMXLInput(ref.input, seq, active)
+	}
+	return nil
+}
+
+func (n *mxlNMOS) nextLabelSeq(input string) uint64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.labelSeq == nil {
+		n.labelSeq = map[string]uint64{}
+	}
+	n.labelSeq[input]++
+	return n.labelSeq[input]
+}
+
+func (n *mxlNMOS) latestLabelSeq(input string, seq uint64) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.labelSeq[input] == seq
+}
+
+// labelMXLInput shows the operator what a video connection carries: the
+// connected sender's source label from the Query API, or the input's name
+// when it is disconnected, names no sender or the lookup fails, so that a
+// former connection's name is never shown for a new one. Of overlapping
+// lookups for one input only the latest connection's sets the label.
+func (a *App) labelMXLInput(input string, seq uint64, active nmos.MXLEndpoint) {
+	n := a.mxlNMOS
+	label := input
+	if active.MasterEnable && active.SenderID != nil && n.query != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		l, err := n.query.SenderLabel(ctx, *active.SenderID)
+		if err != nil {
+			slog.Warn("mxl nmos: label of connected sender not found", "input", input, "sender", *active.SenderID, "error", err)
+		} else if l != "" {
+			label = l
+		}
+	}
+	n.labelMu.Lock()
+	defer n.labelMu.Unlock()
+	if !n.latestLabelSeq(input, seq) {
+		return
+	}
+	if err := a.SetSourceLabel(context.Background(), "mxl:"+input, label); err != nil {
+		slog.Warn("mxl nmos: could not label input", "input", input, "error", err)
+	}
+}
+
+// queueForward records an activation for the peer engine. Only the latest
+// activation of each receiver is sent, so the peer cannot apply two in the
+// wrong order, and one that fails is retried until it lands.
+func (n *mxlNMOS) queueForward(id string, active nmos.MXLEndpoint) {
+	n.mu.Lock()
+	if n.forward == nil {
+		n.forward = map[string]nmos.MXLEndpoint{}
+	}
+	n.forward[id] = active
+	n.mu.Unlock()
+	select {
+	case n.forwardKick <- struct{}{}:
+	default:
+	}
+}
+
+// runMXLNMOSPeer passes queued activations to the peer engine, retrying
+// with backoff, and compares the two engines' receivers periodically, so a
+// forward lost while both ran is caught too.
+func (a *App) runMXLNMOSPeer(ctx context.Context) {
+	n := a.mxlNMOS
+	backoff := time.Second
+	reconcile := time.NewTicker(mxlPeerReconcileInterval)
+	defer reconcile.Stop()
+	// An engine that starts beside a running peer takes over what was
+	// connected there.
+	_, _ = a.reconcileMXLNMOS(ctx)
+	for {
+		failed := a.sendForwards(ctx)
+		wait := mxlPeerReconcileInterval
+		if failed {
+			wait = backoff
+			backoff = min(backoff*2, 30*time.Second)
+		} else {
+			backoff = time.Second
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-n.forwardKick:
+		case <-timer.C:
+		case <-reconcile.C:
+			if _, err := a.reconcileMXLNMOS(ctx); err != nil {
+				slog.Debug("mxl nmos: peer not readable", "error", err)
+			}
+		}
+		timer.Stop()
+	}
+}
+
+// mxlPeerReconcileInterval is how often the engines compare receivers.
+var mxlPeerReconcileInterval = 30 * time.Second
+
+// sendForwards sends every queued activation, keeping those that fail.
+func (a *App) sendForwards(ctx context.Context) (failed bool) {
+	n := a.mxlNMOS
+	n.mu.Lock()
+	batch := make(map[string]nmos.MXLEndpoint, len(n.forward))
+	for id, e := range n.forward {
+		batch[id] = e
+	}
+	n.mu.Unlock()
+	for id, e := range batch {
+		if err := a.forwardMXLActivation(ctx, id, e); err != nil {
+			slog.Warn("mxl nmos: activation not passed to peer yet", "receiver", id, "error", err)
+			failed = true
+			continue
+		}
+		n.mu.Lock()
+		if cur, ok := n.forward[id]; ok && sameActivation(cur, e) {
+			delete(n.forward, id)
+		}
+		n.mu.Unlock()
+	}
+	return failed
+}
+
+func sameActivation(a, b nmos.MXLEndpoint) bool {
+	return a.MasterEnable == b.MasterEnable && a.FlowID() == b.FlowID() &&
+		strPtrEq(a.SenderID, b.SenderID) && strPtrEq(a.Activation.ActivationTime, b.Activation.ActivationTime)
+}
+
+// sameConnection reports whether two receiver states connect the same
+// thing, whenever they were activated.
+func sameConnection(a, b nmos.MXLEndpoint) bool {
+	if !a.MasterEnable && !b.MasterEnable {
+		return true
+	}
+	return a.MasterEnable == b.MasterEnable && a.FlowID() == b.FlowID() && strPtrEq(a.SenderID, b.SenderID)
+}
+
+func strPtrEq(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// forwardMXLActivation passes an activation to the peer engine, which
+// applies it without passing it back. The session API token, which both
+// engines share, vouches that the request comes from the peer.
+func (a *App) forwardMXLActivation(ctx context.Context, id string, active nmos.MXLEndpoint) error {
+	n := a.mxlNMOS
+	leg := map[string]any{nmos.ParamMXLFlowID: active.TransportParams[0].FlowID}
+	if active.TransportParams[0].FlowID != nil {
+		leg[nmos.ParamMXLDomainID] = "auto"
+	}
+	body := map[string]any{
+		"sender_id":        active.SenderID,
+		"master_enable":    active.MasterEnable,
+		"activation":       map[string]any{"mode": "activate_immediate"},
+		"transport_params": []map[string]any{leg},
+	}
+	data, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, n.peerBase+"/x-nmos/connection/v1.1/single/receivers/"+id+"/staged", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(peerForwardHeader, "1")
+	if a.cfg.APIToken != "" {
+		req.Header.Set("Authorization", "Bearer "+a.cfg.APIToken)
+	}
+	resp, err := n.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("peer answered %d: %s", resp.StatusCode, msg)
+	}
+	return nil
+}
+
+// reconcileMXLNMOS compares each receiver with the peer's and adopts the
+// peer's where it connects something else and was activated later. The
+// peer does the same, so the two converge on the latest activation either
+// made. done is false when the peer could not be read.
+func (a *App) reconcileMXLNMOS(ctx context.Context) (done bool, err error) {
+	n := a.mxlNMOS
+	for _, id := range n.order {
+		peerActive, err := n.peerReceiverActive(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		mine, _ := n.conn.ReceiverActive(id)
+		if sameConnection(mine, peerActive) || !laterActivation(peerActive, mine) {
+			continue
+		}
+		n.mu.Lock()
+		_, queued := n.forward[id]
+		n.mu.Unlock()
+		if queued {
+			// This engine's own activation is on its way to the peer.
+			continue
+		}
+		peerActive.TransportParams[0].DomainID = nonEmptyPtr(n.domainID)
+		if !peerActive.MasterEnable {
+			peerActive.TransportParams[0].DomainID = nil
+		}
+		if err := a.applyMXLReceiver(ctx, n.receivers[id], peerActive); err != nil {
+			slog.Warn("mxl nmos: peer connection not adopted", "receiver", id, "error", err)
+			continue
+		}
+		n.conn.SetReceiverActive(id, peerActive)
+		n.store.UpdateReceiverSubscription(id, peerActive.SenderID, peerActive.MasterEnable)
+		go a.publishMXLReceiver(id)
+		slog.Info("mxl nmos: adopted peer connection", "receiver", id, "flow", peerActive.FlowID())
+	}
+	return true, nil
+}
+
+// laterActivation reports whether a was activated after b; a state never
+// activated is the oldest.
+func laterActivation(a, b nmos.MXLEndpoint) bool {
+	ta, tb := a.Activation.ActivationTime, b.Activation.ActivationTime
+	if ta == nil {
+		return false
+	}
+	if tb == nil {
+		return true
+	}
+	return nmos.CompareVersions(*ta, *tb) > 0
+}
+
+func (n *mxlNMOS) peerReceiverActive(ctx context.Context, id string) (nmos.MXLEndpoint, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, n.peerBase+"/x-nmos/connection/v1.1/single/receivers/"+id+"/active", nil)
+	if err != nil {
+		return nmos.MXLEndpoint{}, err
+	}
+	resp, err := n.http.Do(req)
+	if err != nil {
+		return nmos.MXLEndpoint{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var e nmos.MXLEndpoint
+	if resp.StatusCode != http.StatusOK {
+		return e, fmt.Errorf("peer receiver %s: status %d", id, resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+		return e, fmt.Errorf("peer receiver %s: %w", id, err)
+	}
+	return e, nil
+}
+
+// leadsMXLNMOS reports whether this engine registers the node: a single
+// engine always, a pair's leader only.
+func (a *App) leadsMXLNMOS() bool {
+	switch a.peerPoller.Role() {
+	case peer.RoleStandalone, peer.RoleLeader:
+		return true
+	}
+	return false
+}
+
+// runMXLNMOSRegistration keeps the node registered while this engine leads,
+// and leaves it to the peer otherwise. Both register the same ids, so a new
+// leader's registration replaces the old one's, href included.
+func (a *App) runMXLNMOSRegistration(ctx context.Context) {
+	n := a.mxlNMOS
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	for {
+		n.mu.Lock()
+		registered := n.registered
+		n.mu.Unlock()
+		switch {
+		case !a.leadsMXLNMOS():
+			n.setRegistered(false)
+		case !registered:
+			if err := a.registerMXLNMOS(ctx); err != nil {
+				slog.Warn("mxl nmos: registration failed", "registry", n.cfg.RegistryURL, "error", err)
+			} else {
+				n.setRegistered(true)
+				slog.Info("mxl nmos: registered", "registry", n.cfg.RegistryURL)
+			}
+		default:
+			if err := n.reg.Heartbeat(ctx); err != nil {
+				slog.Warn("mxl nmos: heartbeat failed", "error", err)
+				if errors.Is(err, nmos.ErrNodeNotFound) {
+					n.setRegistered(false)
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+func (n *mxlNMOS) setRegistered(v bool) {
+	n.mu.Lock()
+	n.registered = v
+	n.mu.Unlock()
+}
+
+func (a *App) registerMXLNMOS(ctx context.Context) error {
+	n := a.mxlNMOS
+	node := n.store.GetNode()
+	n.store.SetNode(node) // a new version, so the registry takes this href
+	node = n.store.GetNode()
+	devices := n.store.ListDevices()
+	if len(devices) != 1 {
+		return fmt.Errorf("%d devices, want 1", len(devices))
+	}
+	var rx []*nmos.Receiver
+	for _, id := range n.order {
+		rx = append(rx, n.store.GetReceiver(id))
+	}
+	return n.reg.RegisterAll(ctx, node, devices[0], n.store.ListSources(), n.store.ListFlows(),
+		n.store.ListSenders(), rx)
+}
+
+// publishMXLReceiver re-registers a receiver whose subscription changed.
+func (a *App) publishMXLReceiver(id string) {
+	n := a.mxlNMOS
+	if n.reg == nil {
+		return
+	}
+	n.mu.Lock()
+	registered := n.registered
+	n.mu.Unlock()
+	if !registered {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := n.reg.RegisterResource(ctx, "receiver", n.store.GetReceiver(id)); err != nil {
+		slog.Warn("mxl nmos: receiver update not registered", "receiver", id, "error", err)
+	}
+}

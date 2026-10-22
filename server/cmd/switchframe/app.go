@@ -233,7 +233,12 @@ type App struct {
 	// MXL integration
 	mxlInstance *mxl.Instance
 	mxlSources  []*mxl.Source // configured --mxl-sources; teardown owned by closeSubsystems
-	mxlOutput   *mxl.Output
+	// namedMXLInputs holds the readers of --mxl-sources entries given a
+	// name, which can be moved to other flows while they run.
+	namedMXLInputs mxlInputs
+	// mxlNMOS is the NMOS node for the named MXL inputs; nil when off.
+	mxlNMOS   *mxlNMOS
+	mxlOutput *mxl.Output
 
 	// demoMXLSources holds only the synthetic sources created by startMXLDemo.
 	// Tracked separately from mxlSources so stopMXLDemo tears down exactly what
@@ -1201,54 +1206,72 @@ func (a *App) initMXL() error {
 
 	// Register MXL sources.
 	// Each spec is "videoUUID", "videoUUID:audioUUID", or "videoUUID:audioUUID:dataUUID".
-	for _, spec := range a.cfg.MXLSources {
-		parts := strings.SplitN(spec, ":", 3)
-		videoFlowID := parts[0]
-		var audioFlowID, dataFlowID string
-		if len(parts) > 1 {
-			audioFlowID = parts[1]
+	for _, raw := range a.cfg.MXLSources {
+		spec, err := parseMXLSourceSpec(raw)
+		if err != nil {
+			return fmt.Errorf("mxl: %w", err)
 		}
-		if len(parts) > 2 {
-			dataFlowID = parts[2]
-		}
+		videoFlowID, audioFlowID, dataFlowID := spec.Video, spec.Audio, spec.Data
 
-		flowName := "mxl:" + videoFlowID
+		flowName := spec.Key()
 
 		// Register with switcher and mixer.
-		a.sw.RegisterMXLSource(flowName)
+		a.sw.RegisterMXLSourceLabeled(flowName, spec.Label())
 		a.mixer.AddChannel(flowName)
 		_ = a.mixer.SetAFV(flowName, true)
 
 		// Register relay for browser delivery + replay.
 		relay := a.server.RegisterStream(flowName)
 
-		// Open MXL video flow.
-		videoFlow, err := inst.OpenReader(videoFlowID)
-		if err != nil {
-			slog.Warn("mxl: could not open video flow", "flowID", videoFlowID, "error", err)
-		} else {
-			videoFlow = mxl.NewReopeningReader(videoFlowID, videoFlow, inst.OpenReader, nil)
-		}
-
-		// Open MXL audio flow if specified.
+		var videoFlow mxl.DiscreteReader
 		var audioFlow mxl.ContinuousReader
-		if audioFlowID != "" {
-			af, err := inst.OpenAudioReader(audioFlowID)
-			if err != nil {
-				slog.Warn("mxl: could not open audio flow", "flowID", audioFlowID, "error", err)
-			} else {
-				audioFlow = mxl.NewReopeningAudioReader(audioFlowID, af, inst.OpenAudioReader, nil)
-			}
-		}
-
-		// Open MXL data flow if specified (for SCTE-104 ancillary data).
 		var dataFlow mxl.DiscreteReader
-		if dataFlowID != "" {
-			df, err := inst.OpenReader(dataFlowID)
+		if spec.Name != "" {
+			// A named input reads through retargetable readers, which open
+			// their flows themselves and can be moved to others while the
+			// source runs. Video and audio readers exist even without a
+			// flow, so a later connection has a reader loop to take over.
+			in := &mxlInput{}
+			pf := a.sw.PipelineFormat()
+			videoFlow = mxl.NewRetargetableReader(inst.OpenReader, expectMXLVideo(pf.FPSNum, pf.FPSDen), nil)
+			audioFlow = mxl.NewRetargetableAudioReader(inst.OpenAudioReader, expectMXLFormat(mxl.DataFormatAudio), nil)
+			in.Video = videoFlow.(mxl.Retargetable)
+			in.Audio = audioFlow.(mxl.Retargetable)
+			if dataFlowID != "" {
+				dataFlow = mxl.NewRetargetableReader(inst.OpenReader, expectMXLFormat(mxl.DataFormatData), nil)
+				in.Data = dataFlow.(mxl.Retargetable)
+			}
+			a.namedMXLInputs.add(spec.Name, in)
+			if err := a.retargetMXLInput(spec.Name, &videoFlowID, &audioFlowID, &dataFlowID); err != nil {
+				return fmt.Errorf("mxl: %w", err)
+			}
+		} else {
+			// Open MXL video flow.
+			vf, err := inst.OpenReader(videoFlowID)
 			if err != nil {
-				slog.Warn("mxl: could not open data flow", "flowID", dataFlowID, "error", err)
+				slog.Warn("mxl: could not open video flow", "flowID", videoFlowID, "error", err)
 			} else {
-				dataFlow = mxl.NewReopeningReader(dataFlowID, df, inst.OpenReader, nil)
+				videoFlow = mxl.NewReopeningReader(videoFlowID, vf, inst.OpenReader, nil)
+			}
+
+			// Open MXL audio flow if specified.
+			if audioFlowID != "" {
+				af, err := inst.OpenAudioReader(audioFlowID)
+				if err != nil {
+					slog.Warn("mxl: could not open audio flow", "flowID", audioFlowID, "error", err)
+				} else {
+					audioFlow = mxl.NewReopeningAudioReader(audioFlowID, af, inst.OpenAudioReader, nil)
+				}
+			}
+
+			// Open MXL data flow if specified (for SCTE-104 ancillary data).
+			if dataFlowID != "" {
+				df, err := inst.OpenReader(dataFlowID)
+				if err != nil {
+					slog.Warn("mxl: could not open data flow", "flowID", dataFlowID, "error", err)
+				} else {
+					dataFlow = mxl.NewReopeningReader(dataFlowID, df, inst.OpenReader, nil)
+				}
 			}
 		}
 
@@ -2160,6 +2183,8 @@ func (a *App) closeSubsystems() {
 	// to invoke a closed encoder. The switcher's own Close() will stop
 	// the producer goroutine afterward.
 	a.closeBuiltinSourcePreview()
+
+	a.closeMXLNMOS()
 
 	// ST 2110 cleanup (before core engine).
 	a.closeST2110()

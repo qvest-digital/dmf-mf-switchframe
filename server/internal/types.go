@@ -39,6 +39,9 @@ type SourceInfo struct {
 	Corrector   *CorrectorState  `json:"corrector,omitempty"`
 	IsVirtual   bool             `json:"isVirtual,omitempty"`
 	HasCaptions bool             `json:"hasCaptions,omitempty"`
+	// Unconnected marks an input that is connected to nothing, such as a
+	// named MXL input no flow is connected to. The UI does not list it.
+	Unconnected bool `json:"unconnected,omitempty"`
 }
 
 // SRTSourceInfo holds live SRT connection metadata for ControlRoomState broadcast.
