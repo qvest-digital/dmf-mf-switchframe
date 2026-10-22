@@ -296,6 +296,21 @@ describe('switch-api dual-engine routing', () => {
 			expect(notify).toHaveBeenCalledWith(expect.stringContaining('Engine B'));
 		});
 
+		it('retries a load that failed fast, but not one that timed out', async () => {
+			behaviour = { [A]: { after: 0 }, [B]: { after: 0, res: () => errorResponse(404, 'clip not found') } };
+			const first = clipPlayerLoadByName(1, 'bunny');
+			await vi.advanceTimersByTimeAsync(600);
+			await first;
+			expect(fetchCalls.filter(c => c.url.startsWith(B))).toHaveLength(2);
+
+			fetchCalls = [];
+			behaviour = { [A]: { after: 0 }, [B]: 'hang' };
+			const load = clipPlayerLoadByName(1, 'bunny');
+			await vi.advanceTimersByTimeAsync(121_000);
+			await load;
+			expect(fetchCalls.filter(c => c.url.startsWith(B))).toHaveLength(1);
+		});
+
 		it('does not close a circuit that opened while the load was pending', async () => {
 			behaviour = { [A]: { after: 0 }, [B]: { after: 5_000 } };
 			const load = clipPlayerLoadByName(1, 'bunny');

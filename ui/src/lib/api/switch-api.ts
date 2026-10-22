@@ -84,7 +84,7 @@ function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs: number = EN
 /** Best-effort retry of failed engines after 500ms delay. Uses original bodies
  *  (preserving PTP timestamps) to avoid frame drift on timed commands. */
 function retryFailedEngines(
-	results: PromiseSettledResult<Response>[],
+	results: (PromiseSettledResult<Response> | null)[],
 	availableEngines: EngineEndpoint[],
 	url: string,
 	opts: RequestInit,
@@ -92,7 +92,9 @@ function retryFailedEngines(
 ): void {
 	setTimeout(async () => {
 		for (let i = 0; i < results.length; i++) {
-			const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
+			const r = results[i];
+			if (r === null) continue; // not to be retried
+			const ok = r.status === 'fulfilled' && r.value.ok;
 			if (!ok) {
 				try {
 					await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] }, engineFetchTimeoutMs(url));
@@ -108,7 +110,7 @@ interface CircuitState {
 	failures: number;
 	firstFailure: number;
 	openUntil: number; // 0 = closed
-	openedAt: number;  // when the circuit last opened, 0 = never
+	lastFailureAt: number;
 	wasOpen: boolean;  // true after transitioning from open→half-open
 }
 const circuitBreakers = new Map<string, CircuitState>();
@@ -135,7 +137,7 @@ function isCircuitOpen(engineUrl: string): boolean {
 function recordFailure(engineUrl: string): void {
 	let state = circuitBreakers.get(engineUrl);
 	if (!state) {
-		state = { failures: 0, firstFailure: Date.now(), openUntil: 0, openedAt: 0, wasOpen: false };
+		state = { failures: 0, firstFailure: Date.now(), openUntil: 0, lastFailureAt: 0, wasOpen: false };
 		circuitBreakers.set(engineUrl, state);
 	}
 	// Reset window if expired
@@ -144,17 +146,18 @@ function recordFailure(engineUrl: string): void {
 		state.firstFailure = Date.now();
 	}
 	state.failures++;
+	state.lastFailureAt = Date.now();
 	if (state.failures >= CIRCUIT_FAILURE_THRESHOLD) {
-		state.openedAt = Date.now();
-		state.openUntil = state.openedAt + CIRCUIT_OPEN_DURATION_MS;
+		state.openUntil = Date.now() + CIRCUIT_OPEN_DURATION_MS;
 	}
 }
 
 /** Records a success for a request sent at startedAt. A request sent before
- * the circuit last opened says nothing about the failures that opened it. */
+ * a failure of the same engine says nothing about that failure, so it does
+ * not clear it. */
 function recordSuccess(engineUrl: string, startedAt: number = Date.now()): void {
 	const prev = circuitBreakers.get(engineUrl);
-	if (prev && prev.openedAt > startedAt) return;
+	if (prev && prev.lastFailureAt >= startedAt) return;
 	if (prev?.wasOpen) {
 		// Engine recovered from circuit-open state — it missed commands
 		// during the open window. Trigger reconciler check to detect divergence.
@@ -318,8 +321,13 @@ async function fanOutMutation(
 	}
 
 	const startedAt = Date.now();
-	const pending = availableEngines.map((engine, i) =>
-		fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: bodies[i] }, engineFetchTimeoutMs(url)));
+	const settledAt: number[] = availableEngines.map(() => 0);
+	const pending = availableEngines.map((engine, i) => {
+		const p = fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: bodies[i] }, engineFetchTimeoutMs(url));
+		const mark = () => { settledAt[i] = Date.now(); };
+		p.then(mark, mark);
+		return p;
+	});
 	const all = Promise.allSettled(pending);
 
 	if (isSlowPath(url)) {
@@ -339,7 +347,7 @@ async function fanOutMutation(
 			firstOk.then(() => new Promise((r) => setTimeout(r, SLOW_PATH_STRAGGLER_GRACE_MS))),
 		]);
 		if (settled.some((r) => r === undefined)) {
-			void all.then((results) => accountFanOut(results, availableEngines, url, opts, bodies, startedAt));
+			void all.then((results) => accountFanOut(results, availableEngines, url, opts, bodies, startedAt, settledAt));
 			const successful = settled.filter(
 				(r): r is PromiseFulfilledResult<Response> => r?.status === 'fulfilled' && r.value.ok);
 			const failed = settled.filter(
@@ -348,7 +356,7 @@ async function fanOutMutation(
 		}
 	}
 
-	return accountFanOut(await all, availableEngines, url, opts, bodies, startedAt);
+	return accountFanOut(await all, availableEngines, url, opts, bodies, startedAt, settledAt);
 }
 
 /** Records circuit breaker outcomes and handles a partial failure for a
@@ -360,6 +368,7 @@ function accountFanOut(
 	opts: RequestInit,
 	bodies: (BodyInit | null | undefined)[],
 	startedAt: number,
+	settledAt: number[],
 ): FanOutResult {
 	// Track circuit breaker state for each engine.
 	// Only count 5xx server errors and network errors as failures.
@@ -400,7 +409,14 @@ function accountFanOut(
 			.filter((id): id is string => id !== null);
 		if (!isNonIdempotent(url)) {
 			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
-			retryFailedEngines(results, availableEngines, url, opts, bodies);
+			// A slow command that failed only after a long wait, such as a timed
+			// out clip load, is not sent again with another long budget.
+			const retryable = isSlowPath(url)
+				? results.map((r, i) => r.status === 'fulfilled' && r.value.ok
+					? r
+					: settledAt[i] - startedAt <= ENGINE_FETCH_TIMEOUT_MS ? r : null)
+				: results;
+			retryFailedEngines(retryable, availableEngines, url, opts, bodies);
 		} else {
 			// Non-idempotent: skip retry, rely on snapshot push for state reconciliation
 			partialFailureNotify?.(`${failedEngineIds.join(', ')}: non-idempotent operation diverged — check Redundancy panel`);
@@ -1744,15 +1760,21 @@ function uploadClipToEngine(
 	});
 }
 
-/** Returns the clip the engine at baseUrl holds under id, or null. */
-async function engineClip(baseUrl: string, id: string): Promise<ClipInfo | null> {
+/** Returns the clip name an engine derives from an uploaded file's name. */
+export function clipNameFor(fileName: string): string {
+	const dot = fileName.lastIndexOf('.');
+	return (dot >= 0 ? fileName.slice(0, dot) : fileName) || 'untitled';
+}
+
+/** Returns the clip the engine at baseUrl holds under id and name, or null. */
+async function engineClip(baseUrl: string, id: string, name: string): Promise<ClipInfo | null> {
 	try {
 		const res = await fetch(`${baseUrl}/api/clips/${encodeURIComponent(id)}`, {
 			headers: authHeaders(),
 		});
 		if (!res.ok) return null;
 		const got: ClipInfo = await res.json();
-		return got.id === id ? got : null;
+		return got.id === id && got.name === name ? got : null;
 	} catch {
 		return null;
 	}
@@ -1782,10 +1804,10 @@ export async function uploadClip(file: File, onUploadProgress?: (percent: number
 	const clipId = newClipId();
 
 	const sent = targets.map(() => 0);
-	const gaveUp = targets.map(() => false);
+	const uploading = targets.map(() => true);
 	const report = (i: number, percent: number) => {
 		sent[i] = percent;
-		const live = sent.filter((_, j) => !gaveUp[j]);
+		const live = sent.filter((_, j) => uploading[j]);
 		if (live.length > 0) onUploadProgress?.(Math.min(...live));
 	};
 
@@ -1799,7 +1821,7 @@ export async function uploadClip(file: File, onUploadProgress?: (percent: number
 			// after the client gave up on it. Any other failure, including a
 			// 409 for another upload still in progress, is retried.
 			if (!(err instanceof SwitchApiError && err.status === 409)) throw err;
-			const held = await engineClip(url, clipId);
+			const held = await engineClip(url, clipId, clipNameFor(file.name));
 			if (!held) throw err;
 			return held;
 		}
@@ -1807,16 +1829,14 @@ export async function uploadClip(file: File, onUploadProgress?: (percent: number
 
 	const results = await Promise.allSettled(targets.map(async (_engine, i) => {
 		try {
-			return await attempt(i);
-		} catch {
-			await new Promise((r) => setTimeout(r, 2000));
 			try {
 				return await attempt(i);
-			} catch (err) {
-				gaveUp[i] = true;
-				report(i, sent[i]);
-				throw err;
+			} catch {
+				await new Promise((r) => setTimeout(r, 2000));
+				return await attempt(i);
 			}
+		} finally {
+			uploading[i] = false;
 		}
 	}));
 

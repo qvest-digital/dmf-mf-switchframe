@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { setEngineUrls, setApiBaseUrl } from './base-url';
-import { uploadClip, newClipId, listClipsOnEveryEngine, setPartialFailureNotify } from './switch-api';
+import { uploadClip, newClipId, clipNameFor, listClipsOnEveryEngine, setPartialFailureNotify } from './switch-api';
 
 interface SentUpload {
 	url: string;
@@ -184,6 +184,20 @@ describe('uploadClip (dual engine)', () => {
 		expect(notify).not.toHaveBeenCalled();
 	});
 
+	it('does not take a different clip under the same ID for this upload', async () => {
+		vi.useFakeTimers();
+		fetchMock.mockImplementation((url: string, opts?: RequestInit) =>
+			Promise.resolve(opts?.method === 'DELETE'
+				? { ok: true, status: 204, json: () => Promise.resolve({}) }
+				: { ok: true, json: () => Promise.resolve({ id: url.split('/').pop(), name: 'other' }) }));
+		respond = (url, _attempt, id) => (url === B ? failing(409, 'clip: already exists') : stored(id));
+
+		const done = uploadClip(new File(['data'], 'bunny.mov'));
+		const failed = expect(done).rejects.toThrow(/Engine B/);
+		await vi.advanceTimersByTimeAsync(2500);
+		await failed;
+	});
+
 	it('succeeds on a retry after a failed attempt', async () => {
 		vi.useFakeTimers();
 		respond = (url, attempt, id) => (url === B && attempt === 0 ? failing(500, 'boom') : stored(id));
@@ -280,6 +294,16 @@ describe('listClipsOnEveryEngine', () => {
 		};
 
 		expect((await listClipsOnEveryEngine()).map((c) => c.id)).toEqual(['one', 'two']);
+	});
+});
+
+describe('clipNameFor', () => {
+	// Mirrors the engine: the file name without its extension, or "untitled".
+	it('drops the extension as the engine does', () => {
+		expect(clipNameFor('bunny.mov')).toBe('bunny');
+		expect(clipNameFor('a.b.ts')).toBe('a.b');
+		expect(clipNameFor('noext')).toBe('noext');
+		expect(clipNameFor('.mov')).toBe('untitled');
 	});
 });
 
