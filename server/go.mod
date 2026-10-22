@@ -7,6 +7,8 @@ require (
 	github.com/abema/go-mp4 v1.5.0
 	github.com/as/scte v0.0.2
 	github.com/asticode/go-astits v1.15.0
+	github.com/coreos/go-oidc/v3 v3.21.0
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/google/uuid v1.6.0
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/prometheus/client_golang v1.19.1
@@ -17,6 +19,7 @@ require (
 	github.com/zsiec/prism v0.1.6-0.20260406003103-645d92c6cee7
 	github.com/zsiec/srtgo v0.2.5-0.20260320141915-f0f3efc9a40e
 	golang.org/x/image v0.38.0
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sys v0.42.0
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 	gopkg.in/yaml.v3 v3.0.1

@@ -16,6 +16,7 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/comms"
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/oidcauth"
 	"github.com/zsiec/switchframe/server/peer"
 	"github.com/zsiec/switchframe/server/srt"
 )
@@ -105,6 +106,9 @@ type AppConfig struct {
 
 	// Invite tokens: token -> role for O(1) lookup (env: SWITCHFRAME_INVITE_TOKENS).
 	InviteTokens map[string]string
+
+	// OpenID Connect sign-in (--oidc-*); nil = disabled.
+	OIDC *oidcauth.Config
 
 	// MXL integration.
 	MXLSources        []string // Flow UUIDs to subscribe as sources
@@ -410,6 +414,16 @@ func parseConfig() (AppConfig, error) {
 	engineLabelFlag := flag.String("engine-label", "", "engine label for active-active pairs (\"a\" or \"b\"); empty = single-engine")
 	controlPlaneSecretFlag := flag.String("control-plane-secret", "", "shared secret authorizing POST /api/peer/force-leader; empty disables the endpoint")
 
+	// OpenID Connect sign-in.
+	oidcIssuerFlag := flag.String("oidc-issuer", "", "OpenID Connect issuer URL; enables sign-in with that provider (env: SWITCHFRAME_OIDC_ISSUER)")
+	oidcClientIDFlag := flag.String("oidc-client-id", "", "OpenID Connect client ID (env: SWITCHFRAME_OIDC_CLIENT_ID)")
+	oidcClientSecretFileFlag := flag.String("oidc-client-secret-file", "", "File holding the OpenID Connect client secret; omit for a public client (env: SWITCHFRAME_OIDC_CLIENT_SECRET_FILE)")
+	oidcRedirectURLFlag := flag.String("oidc-redirect-url", "", "Callback URL registered with the provider; empty = <scheme>://<request host>/auth/callback (env: SWITCHFRAME_OIDC_REDIRECT_URL)")
+	oidcScopesFlag := flag.String("oidc-scopes", "", "Comma-separated scopes to request; empty = openid,profile,email (env: SWITCHFRAME_OIDC_SCOPES)")
+	oidcRoleClaimFlag := flag.String("oidc-role-claim", "", "ID token claim holding the user's roles or groups, dot-separated for a nested claim; empty = groups (env: SWITCHFRAME_OIDC_ROLE_CLAIM)")
+	oidcRoleMapFlag := flag.String("oidc-role-map", "", "Comma-separated value=role pairs mapping claim values to operator roles; empty = values named like a role (env: SWITCHFRAME_OIDC_ROLE_MAP)")
+	oidcDefaultRoleFlag := flag.String("oidc-default-role", "", "Role for a signed-in user with no mapped claim value; empty = refuse them (env: SWITCHFRAME_OIDC_DEFAULT_ROLE)")
+
 	// Reference clock (experimental).
 	refClockFlag := flag.Bool("ref-clock", false, "Use reference clock for synchronous A/V processing (experimental)")
 
@@ -503,6 +517,20 @@ func parseConfig() (AppConfig, error) {
 		}
 	}
 
+	oidcCfg, err := oidcSettings{
+		Issuer:           resolveEnvOrFlag(*oidcIssuerFlag, "SWITCHFRAME_OIDC_ISSUER"),
+		ClientID:         resolveEnvOrFlag(*oidcClientIDFlag, "SWITCHFRAME_OIDC_CLIENT_ID"),
+		ClientSecretFile: resolveEnvOrFlag(*oidcClientSecretFileFlag, "SWITCHFRAME_OIDC_CLIENT_SECRET_FILE"),
+		RedirectURL:      resolveEnvOrFlag(*oidcRedirectURLFlag, "SWITCHFRAME_OIDC_REDIRECT_URL"),
+		Scopes:           resolveEnvOrFlag(*oidcScopesFlag, "SWITCHFRAME_OIDC_SCOPES"),
+		RoleClaim:        resolveEnvOrFlag(*oidcRoleClaimFlag, "SWITCHFRAME_OIDC_ROLE_CLAIM"),
+		RoleMap:          resolveEnvOrFlag(*oidcRoleMapFlag, "SWITCHFRAME_OIDC_ROLE_MAP"),
+		DefaultRole:      resolveEnvOrFlag(*oidcDefaultRoleFlag, "SWITCHFRAME_OIDC_DEFAULT_ROLE"),
+	}.config()
+	if err != nil {
+		return AppConfig{}, err
+	}
+
 	// Parse allowed origins for CORS.
 	var allowedOrigins []string
 	if *allowedOriginsFlag != "" {
@@ -560,6 +588,7 @@ func parseConfig() (AppConfig, error) {
 		SRTOutputPortEnd:     srtOutputEnd,
 		Domain:               *domainFlag,
 		InviteTokens:         inviteTokens,
+		OIDC:                 oidcCfg,
 		MXLSources:           mxlSources,
 		MXLOutput:            *mxlOutput,
 		MXLOutputVideoDef:    *mxlOutputVideoDef,
