@@ -297,8 +297,8 @@ func (r *reopener[T]) prepare(ctx context.Context, id string, gen uint64) error 
 // first open has nothing at first, and then starts at the writer's index
 // rather than at 0, so a loop moved to it at once reads what the node never
 // received: a stall until the ring wraps past it for grains, a window of
-// silence or stale samples for audio. The head only grows from there, so
-// the resync, which looks at it later, lands no earlier. A later retarget
+// silence or stale samples for audio. The resync, which looks at the head
+// later, normally lands no earlier. A later retarget
 // or close ends the wait with errSuperseded.
 func (r *reopener[T]) waitWritten(ctx context.Context, h T, gen uint64) error {
 	tick := time.NewTicker(2 * time.Millisecond)
