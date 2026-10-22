@@ -1871,7 +1871,9 @@ export async function uploadClip(file: File, onUploadProgress?: (percent: number
  * different ID on each engine. A clip still being uploaded, by this client or
  * another, is on some engines only, and a load sent for it would find it
  * missing on the others. An engine that does not answer within the command
- * timeout counts as unreachable.
+ * timeout counts as unreachable. Engines allow several clips of one name; a
+ * new upload under a name every engine already holds is listed before every
+ * engine has stored it, and a load by that name picks the first clip of it.
  */
 export async function listClipsOnEveryEngine(): Promise<ClipInfo[]> {
 	const engines = getEngineUrls();
