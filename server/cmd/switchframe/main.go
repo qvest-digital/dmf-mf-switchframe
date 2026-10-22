@@ -47,6 +47,7 @@ type AppConfig struct {
 	AdminToken       string   // Bearer token for admin endpoints (/metrics, /debug)
 	AllowedOrigins   []string // CORS allowed origins (empty = wildcard *)
 	APIToken         string
+	APITokenSource   string // where APIToken came from: "flag", "env" or "generated"
 	ReplayBufferSecs int
 	ReplayTmpfsDir   string // Directory for tmpfs-backed replay buffers ("none" to disable)
 	Addr             string
@@ -494,9 +495,9 @@ func parseConfig() (AppConfig, error) {
 	}
 
 	// Resolve API token: flag > env > auto-generate.
-	apiToken := *apiTokenFlag
+	apiToken, apiTokenSource := *apiTokenFlag, "flag"
 	if apiToken == "" {
-		apiToken = os.Getenv("SWITCHFRAME_API_TOKEN")
+		apiToken, apiTokenSource = os.Getenv("SWITCHFRAME_API_TOKEN"), "env"
 	}
 	if apiToken == "" {
 		var genErr error
@@ -504,6 +505,7 @@ func parseConfig() (AppConfig, error) {
 		if genErr != nil {
 			return AppConfig{}, fmt.Errorf("generate API token: %w", genErr)
 		}
+		apiTokenSource = "generated"
 	}
 
 	// Resolve state directory: env > default (~/.switchframe).
@@ -563,6 +565,7 @@ func parseConfig() (AppConfig, error) {
 		AdminToken:           resolveEnvOrFlag(*adminTokenFlag, "SWITCHFRAME_ADMIN_TOKEN"),
 		AllowedOrigins:       allowedOrigins,
 		APIToken:             apiToken,
+		APITokenSource:       apiTokenSource,
 		ReplayBufferSecs:     *replayBufferSecs,
 		ReplayTmpfsDir:       *replayTmpfsDir,
 		Addr:                 *addrFlag,

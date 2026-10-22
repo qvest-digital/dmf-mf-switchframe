@@ -349,7 +349,7 @@ See [metrics.md](../reference/metrics.md) for the `switchframe_cmdqueue_*` and `
 ## Gotchas and invariants
 
 - **Demo mode turns off auth.** `--demo` disables API authentication via [`NoopAuthMiddleware`](../../server/control/auth.go). Never expose a `--demo` instance to the public internet.
-- **The API token is printed on stdout once.** At startup when no token is provided, a fresh 64-char hex token prints to stdout. Capture it from `systemctl status` output or redirect stdout to a secret-readable file.
+- **A generated API token is written to the state dir, never logged.** At startup when no token is provided, a fresh 64-char hex token is written to `api-token` in the state dir with mode `0600`, and startup fails if it cannot be written. Neither the log nor stdout carries the token; startup logs only where it came from (`token_source`).
 - **HTTPS and HTTP/3 share the same port when cert is provided.** With `--tls-cert`, the server listens TCP on `--addr` (for HTTPS fallback) and UDP on `--addr` (for QUIC). Alt-Svc header guides browsers from TCP to QUIC.
 - **Self-signed certs expire after 14 days.** Restart the server or supply an external cert to extend. Production should always use external certs.
 - **State dir must be writable and private.** `~/.switchframe/` is created with `0o700` permissions and holds operator tokens in plain text. Do not make it world-readable.

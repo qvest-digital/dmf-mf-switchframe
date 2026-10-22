@@ -105,7 +105,7 @@ PTP clock sync (0xFE / 0xFF ping / pong) is optional but recommended if the clie
 
 Two token types are accepted on the `Authorization: Bearer <token>` header:
 
-- **Session API token** — a 32-byte hex string minted by the engine at startup (printed to stdout, configurable via `--api-token`). Demo mode and single-operator production deployments use this. No per-operator attribution on commands.
+- **Session API token** — a 32-byte hex string minted by the engine at startup (written to `api-token` in the state directory, configurable via `--api-token`). Demo mode and single-operator production deployments use this. No per-operator attribution on commands.
 - **Operator bearer token** — issued by `POST /api/operator/register` (see [reference/api/operator.md](../reference/api/operator.md)). Each authenticated request records the operator name as `ControlRoomState.LastChangedBy` so the UI can badge the most recent change.
 
 Operator registration optionally takes an `inviteToken` body field; the server maps known invite tokens (configured via `SWITCHFRAME_INVITE_TOKENS`) to roles. See [subsystems/control-plane.md#roles-and-permissions](../subsystems/control-plane.md#roles-and-permissions) for the role matrix (`director`, `audio`, `graphics`, `captioner`, `viewer`).
