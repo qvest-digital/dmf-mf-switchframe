@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-rc.8](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.7...mxl-v1.0.0-rc.8) (2026-10-22)
+
+
+### Bug Fixes
+
+* **operator:** register one operator token on both engines ([#23](https://github.com/qvest-digital/dmf-mf-switchframe/issues/23)) ([4efa6e9](https://github.com/qvest-digital/dmf-mf-switchframe/commit/4efa6e9eb20d3d239c7fe388ef110fd9184d47ff))
+
+
+### Miscellaneous
+
+* keep the MPEG-TS clips out of the code graph ([#21](https://github.com/qvest-digital/dmf-mf-switchframe/issues/21)) ([f89618f](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f89618f7d1ae11b4b984647d5a17b938fccf0d07))
+
 ## [1.0.0-rc.7](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.6...mxl-v1.0.0-rc.7) (2026-10-22)
 
 
