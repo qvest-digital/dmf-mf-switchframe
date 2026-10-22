@@ -56,9 +56,17 @@
 	let thumbUrlA = $state<string>('');
 	let thumbUrlB = $state<string>('');
 
+	// engineHealth is a new object on every reconciler tick. The poll below
+	// reads only these values, so it restarts, and blanks both thumbnails,
+	// only when one of them changes rather than several times a second.
+	const pollVisible = $derived(visible);
+	const pollEngineBUrl = $derived(engineBUrl);
+	const connectedA = $derived(engineHealth.A.connected);
+	const connectedB = $derived(engineHealth.B.connected);
+
 	$effect(() => {
-		if (!visible) return;
-		if (!engineHealth.A.connected) return;
+		if (!pollVisible) return;
+		if (!connectedA) return;
 
 		const abort = new AbortController();
 		let cancelled = false;
@@ -81,9 +89,9 @@
 			} catch { /* aborted or network error */ }
 
 			// Engine B: different origin
-			if (engineBUrl && engineHealth.B.connected) {
+			if (pollEngineBUrl && connectedB) {
 				try {
-					const res = await fetch(`${engineBUrl}/api/output/confidence`, {
+					const res = await fetch(`${pollEngineBUrl}/api/output/confidence`, {
 						headers: authHeaders(),
 						signal: abort.signal,
 					});

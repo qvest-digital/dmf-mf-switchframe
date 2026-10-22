@@ -493,6 +493,35 @@ describe('RedundancyPanel', () => {
 		expect(placeholders[1].textContent).toBe('No signal');
 	});
 
+	// The page hands the panel a new engineHealth object on every reconciler
+	// tick. Restarting the thumbnail poll on each one blanked both
+	// thumbnails and refetched them several times a second.
+	it('keeps its thumbnails and poll across engineHealth updates with unchanged connections', async () => {
+		vi.useFakeTimers();
+		const fetchMock = vi.fn(async () => ({ ok: true, blob: async () => new Blob() }));
+		vi.stubGlobal('fetch', fetchMock);
+		const created = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:thumb');
+		const revoked = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+		const props = makeDefaultProps({ engineBUrl: 'https://engine-b.example.com' });
+		const { container, rerender } = render(RedundancyPanel, { props });
+		await vi.advanceTimersByTimeAsync(10);
+		expect(container.querySelectorAll('.confidence-thumb').length).toBe(2);
+		const fetchesAfterFirst = fetchMock.mock.calls.length;
+
+		for (let i = 0; i < 10; i++) {
+			await rerender({ ...props, engineHealth: { A: makeEngineHealth(), B: makeEngineHealth() } });
+			await vi.advanceTimersByTimeAsync(20);
+			expect(container.querySelectorAll('.thumb-placeholder').length).toBe(0);
+		}
+		// 200 ms of updates: no fetch beyond the first round.
+		expect(fetchMock.mock.calls.length).toBe(fetchesAfterFirst);
+
+		created.mockRestore();
+		revoked.mockRestore();
+		vi.unstubAllGlobals();
+		vi.useRealTimers();
+	});
+
 	// --- Clock divergence warning ---
 
 	it('shows clock divergence warning when warnings include clock_diverged', () => {
