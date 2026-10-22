@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceHealthStatus, EngineId } from '$lib/api/types';
+import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State } from '$lib/api/types';
 
 /** Minimum RTT delta (ms) required to switch authority based on RTT alone. Prevents jitter flapping. */
 export const RTT_HYSTERESIS_MS = 100;
@@ -132,6 +132,56 @@ function audioChannelsSettingsEqual(
 	return true;
 }
 
+/** A divergence field without its live measurements and local timestamps:
+ * the limiter's meters, the elapsed and remaining time of active SCTE-35
+ * events and the CBR muxer's running totals change on every state update,
+ * and SCTE-35 start and log times come from each engine's own clock; they
+ * differ between engines without either being out of step. */
+function comparableField(field: keyof ControlRoomState, value: unknown): unknown {
+	if (value == null || typeof value !== 'object') return value;
+	if (field === 'limiter') {
+		const { threshold, ceiling } = value as LimiterSettings;
+		return { threshold, ceiling };
+	}
+	if (field === 'cbr') {
+		const { enabled, muxrateBps } = value as CBRStatus;
+		return { enabled, muxrateBps };
+	}
+	if (field === 'scte35') {
+		const st = value as SCTE35State;
+		const activeEvents: Record<string, unknown> = {};
+		for (const [id, ev] of Object.entries(st.activeEvents ?? {})) {
+			const { elapsedMs: _e, remainingMs: _r, startedAt: _s, ...rest } = ev;
+			activeEvents[id] = rest;
+		}
+		// Each engine stamps an event's start and log entries from its own
+		// clock.
+		const eventLog = (st.eventLog ?? []).map(({ timestamp: _t, ...rest }) => rest);
+		return { ...st, activeEvents, eventLog };
+	}
+	return value;
+}
+
+/** The fields an engine's state is compared on, in one string: the
+ * divergence fields, the audio settings without metering, whether it
+ * records, and the graphics layers' health. */
+function comparableKey(state: ControlRoomState): string {
+	const audio: Record<string, Record<string, unknown>> = {};
+	for (const [key, ch] of Object.entries(state.audioChannels ?? {})) {
+		const settings: Record<string, unknown> = {};
+		for (const field of AUDIO_SETTING_KEYS) settings[field] = (ch as unknown as Record<string, unknown>)[field];
+		audio[key] = settings;
+	}
+	const fields: Record<string, unknown> = {};
+	for (const field of DIVERGENCE_FIELDS) fields[field] = comparableField(field, state[field]);
+	return sortedStringify({
+		fields,
+		audio,
+		recording: state.recording?.active,
+		layers: (state.graphics?.layers ?? []).map(l => [l.active, l.html5Status]),
+	});
+}
+
 /** Critical fields: mismatch at same seq = deterministic failure. */
 const MISMATCH_FIELDS: (keyof ControlRoomState)[] = [
 	'programSource',
@@ -141,7 +191,15 @@ const MISMATCH_FIELDS: (keyof ControlRoomState)[] = [
 
 /** Thresholds for time-based status detection. */
 const TRANSIENT_THRESHOLD_MS = 500;
+/** How long both engines' compared fields must stay unchanged before a
+ * difference between them counts. A command reaches the two engines at
+ * different moments, and a fader drag sends one command after another. */
+export const SETTLE_MS = TRANSIENT_THRESHOLD_MS;
 const DIVERGED_THRESHOLD_MS = 2000;
+/** Longest a difference between the engines is held back while their
+ * fields keep changing, so a field that changes continuously cannot hide
+ * one. */
+export const SETTLE_MAX_MS = DIVERGED_THRESHOLD_MS;
 export const STALE_THRESHOLD_MS = 5_000;
 const STALE_TRANSPORT_ALIVE_MS = 15_000;
 /** Pong freshness window: 30s = 3x the 10s ping interval. */
@@ -207,6 +265,17 @@ export function createReconciler() {
 	// Track when seq delta first appeared for time-based detection
 	let seqDeltaSince = $state(0);
 
+	// Each engine's compared fields as of its last state, and when either
+	// last changed.
+	let comparableA = '';
+	let comparableB = '';
+	let comparedChangedAt = 0;
+	// Each engine's compared fields before their last change.
+	let previousComparableA = '';
+	let previousComparableB = '';
+	// When the engines' compared fields last started to differ; 0 while equal.
+	let comparedDifferSince = 0;
+
 	// Tick-updated status (time-based)
 	let tickedStatus = $state<SyncStatus>('disconnected');
 
@@ -217,6 +286,24 @@ export function createReconciler() {
 		const now = Date.now();
 		// Capture previous inTransition state for transition lock tracking
 		const prevInTransition = (engine === 'A' ? stateA : stateB)?.inTransition ?? false;
+		const key = comparableKey(update);
+		const ownKey = engine === 'A' ? comparableA : comparableB;
+		// The engine catching up to where the other one was is a command
+		// propagating, as through a long fader drag, where the two are never
+		// equal at any one moment.
+		const catchingUp = key === (engine === 'A' ? previousComparableB : previousComparableA);
+		if (key !== ownKey) {
+			comparedChangedAt = now;
+			if (engine === 'A') previousComparableA = ownKey;
+			else previousComparableB = ownKey;
+		}
+		if (engine === 'A') {
+			comparableA = key;
+		} else {
+			comparableB = key;
+		}
+		if (comparableA === comparableB || catchingUp) comparedDifferSince = 0;
+		if (comparableA !== comparableB && comparedDifferSince === 0) comparedDifferSince = now;
 		if (engine === 'A') {
 			stateA = update;
 			lastSeenA = now;
@@ -454,7 +541,7 @@ export function createReconciler() {
 		for (const field of DIVERGENCE_FIELDS) {
 			const a = stateA[field];
 			const b = stateB[field];
-			if (!fieldEquals(a, b)) {
+			if (!fieldEquals(comparableField(field, a), comparableField(field, b))) {
 				result.push({ field, engineA: a, engineB: b });
 			}
 		}
@@ -654,7 +741,12 @@ export function createReconciler() {
 
 		// Check critical mismatch before recovering — mismatches must surface
 		// even during recovery so auto-reconcile can re-push if needed.
-		if (hasCriticalMismatch()) return 'mismatch';
+		// A difference while either engine is still changing is a command
+		// propagating, not a divergence.
+		const settling = now - comparedChangedAt < SETTLE_MS
+			&& (comparedDifferSince === 0 || now - comparedDifferSince < SETTLE_MAX_MS);
+
+		if (!settling && hasCriticalMismatch()) return 'mismatch';
 		if (recovering) return 'recovering';
 
 		const seqA = stateA!.lastCommandSeq ?? 0;
@@ -662,12 +754,12 @@ export function createReconciler() {
 
 		if (seqA === seqB) {
 			// Seqs match, check divergence on visible fields
-			if (divergences.length > 0) return 'diverged';
+			if (divergences.length > 0 && !settling) return 'diverged';
 			return 'synced';
 		}
 
 		// Seqs differ: check field-level divergence for immediate diverged
-		if (divergences.length > 0) return 'diverged';
+		if (divergences.length > 0 && !settling) return 'diverged';
 
 		// Time-based: how long has seq delta persisted?
 		if (seqDeltaSince === 0) return 'synced';

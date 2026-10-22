@@ -6,8 +6,16 @@
  * would actually occur during dual-engine operation.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createReconciler, RTT_HYSTERESIS_MS, AUTHORITY_HOLD_MS } from './reconciler.svelte';
+import { createReconciler, RTT_HYSTERESIS_MS, AUTHORITY_HOLD_MS, SETTLE_MS } from './reconciler.svelte';
 import type { ControlRoomState, PlayoutChannelState, AudioChannel } from '$lib/api/types';
+
+/** Let both engines' states sit unchanged for SETTLE_MS, after which a
+ * difference between them counts. */
+function settle(r: ReturnType<typeof createReconciler>) {
+	if (!vi.isFakeTimers()) vi.useFakeTimers();
+	vi.advanceTimersByTime(SETTLE_MS);
+	r.tick();
+}
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
 	return {
@@ -410,6 +418,7 @@ describe('reconciler behavioral tests', () => {
 				programSource: 'cam2',
 				lastCommandSeq: 10,
 			}));
+			settle(r);
 
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -431,9 +440,9 @@ describe('reconciler behavioral tests', () => {
 			expect(r.health.status).not.toBe('mismatch');
 		});
 
-		it('reports diverged immediately when visible fields differ at any seq', () => {
+		it('reports diverged once both engines settle when visible fields differ at any seq', () => {
 			// Even if the seq difference just appeared, visible field divergence
-			// should be immediately flagged as diverged.
+			// should be flagged as diverged once both engines settle.
 			const r = createReconciler();
 
 			r.ingest('A', makeState({
@@ -446,8 +455,9 @@ describe('reconciler behavioral tests', () => {
 				ftbActive: false,
 				lastCommandSeq: 8,
 			}));
+			settle(r);
 
-			// ftbActive differs — should be diverged immediately
+			// ftbActive differs — should be diverged once both engines settle
 			expect(r.health.status).toBe('diverged');
 		});
 
@@ -559,6 +569,7 @@ describe('reconciler behavioral tests', () => {
 
 			r.ingest('A', makeState({ playout: playoutA, lastCommandSeq: 10 }));
 			r.ingest('B', makeState({ playout: playoutB, lastCommandSeq: 10 }));
+			settle(r);
 
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -599,6 +610,7 @@ describe('reconciler behavioral tests', () => {
 
 			r.ingest('A', makeState({ playout: playoutA, lastCommandSeq: 10 }));
 			r.ingest('B', makeState({ playout: playoutB, lastCommandSeq: 10 }));
+			settle(r);
 
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -652,6 +664,7 @@ describe('reconciler behavioral tests', () => {
 
 			r.ingest('A', makeState({ playout: playoutA, lastCommandSeq: 10 }));
 			r.ingest('B', makeState({ playout: playoutB, lastCommandSeq: 10 }));
+			settle(r);
 
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -1030,6 +1043,7 @@ describe('reconciler behavioral tests', () => {
 				audioChannels: { cam1: makeAudioChannel({ muted: false }) },
 				lastCommandSeq: 10,
 			}));
+			settle(r);
 
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -1045,6 +1059,7 @@ describe('reconciler behavioral tests', () => {
 				audioChannels: { cam1: makeAudioChannel({ afv: false }) },
 				lastCommandSeq: 10,
 			}));
+			settle(r);
 
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -1108,6 +1123,7 @@ describe('reconciler behavioral tests', () => {
 				},
 				lastCommandSeq: 10,
 			}));
+			settle(r);
 
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -1178,6 +1194,7 @@ describe('reconciler behavioral tests', () => {
 				},
 				lastCommandSeq: 10,
 			}));
+			settle(r);
 
 			// cam2 on both engines with differing muted state — must be detected
 			expect(r.health.status).toBe('mismatch');
