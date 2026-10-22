@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, waitFor } from '@testing-library/svelte';
 import ClipsPanel from './ClipsPanel.svelte';
-import type { ControlRoomState } from '$lib/api/types';
+import type { ControlRoomState, ClipInfo } from '$lib/api/types';
+import { listClipsOnEveryEngine } from '$lib/api/switch-api';
 
 vi.mock('$lib/api/switch-api', () => ({
-	listClips: vi.fn().mockResolvedValue([]),
+	listClipsOnEveryEngine: vi.fn().mockResolvedValue([]),
 	uploadClip: vi.fn(),
 	deleteClip: vi.fn(),
 	pinClip: vi.fn(),
@@ -107,5 +108,20 @@ describe('ClipsPanel', () => {
 		// "Analyze" should be the active stage
 		const activeStages = container.querySelectorAll('.stage-dot.active');
 		expect(activeStages.length).toBeGreaterThan(0);
+	});
+
+	// A clip on one engine only would answer a load with "clip not found" on
+	// the other, so the panel lists what every engine holds.
+	it('lists the clips every engine holds and refreshes when the count moves', async () => {
+		const bunny = { id: 'b', name: 'bunny', filename: 'bunny.ts', source: 'upload' } as ClipInfo;
+		vi.mocked(listClipsOnEveryEngine).mockResolvedValue([]);
+
+		const { container, rerender } = render(ClipsPanel, { props: { state: makeState({ clipCount: 0 }) } });
+		await waitFor(() => expect(listClipsOnEveryEngine).toHaveBeenCalledTimes(1));
+
+		vi.mocked(listClipsOnEveryEngine).mockResolvedValue([bunny]);
+		await rerender({ state: makeState({ clipCount: 1 }) });
+		await waitFor(() => expect(container.querySelector('.clip-name')?.textContent).toBe('bunny'));
+		expect(listClipsOnEveryEngine).toHaveBeenCalledTimes(2);
 	});
 });

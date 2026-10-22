@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State } from '$lib/api/types';
+import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State, ClipUploadProgress, ClipUploadStage, ClipPlayerState } from '$lib/api/types';
 
 /** Minimum RTT delta (ms) required to switch authority based on RTT alone. Prevents jitter flapping. */
 export const RTT_HYSTERESIS_MS = 100;
@@ -80,6 +80,38 @@ export function fieldEquals(a: unknown, b: unknown): boolean {
 	if (typeof a !== typeof b) return false;
 	if (typeof a === 'object') return sortedStringify(a) === sortedStringify(b);
 	return false;
+}
+
+/** Reports whether one engine is still loading the clip the other already
+ * holds in the slot, or both are loading the same clip. A clip load reads the
+ * whole file before the slot changes, which takes seconds for a long clip and
+ * longer on one engine than the other; the slot is catching up, not
+ * diverged, and a snapshot push would only queue a second load behind it. */
+export function clipSlotCatchingUp(a: ClipPlayerState, b: ClipPlayerState): boolean {
+	const target = (p: ClipPlayerState) => p.loadingClipName ?? p.clipName;
+	if (!a.loadingClipName && !b.loadingClipName) return false;
+	return target(a) !== undefined && target(a) === target(b);
+}
+
+const UPLOAD_STAGE_ORDER: ClipUploadStage[] = ['uploading', 'analyzing', 'transcoding', 'validating'];
+
+/** Returns the clip upload furthest behind among the engines processing one.
+ * Each engine stores an upload separately; the clip is usable once the last
+ * of them finishes, so that one is the progress to show. */
+export function leastAdvancedUpload(
+	...uploads: (ClipUploadProgress | undefined)[]
+): ClipUploadProgress | undefined {
+	let least: ClipUploadProgress | undefined;
+	for (const u of uploads) {
+		if (!u) continue;
+		if (!least) {
+			least = u;
+			continue;
+		}
+		const d = UPLOAD_STAGE_ORDER.indexOf(u.stage) - UPLOAD_STAGE_ORDER.indexOf(least.stage);
+		if (d < 0 || (d === 0 && u.percent < least.percent)) least = u;
+	}
+	return least;
 }
 
 /** Fields considered program-visible for divergence comparison. */
@@ -531,7 +563,19 @@ export function createReconciler() {
 		if (authoritative === 'A' && stateA) st = stateA;
 		else if (authoritative === 'B' && stateB) st = stateB;
 		else st = stateA ?? stateB ?? EMPTY_STATE;
-		return engineBUrl && st !== EMPTY_STATE && st.engineBUrl !== engineBUrl ? { ...st, engineBUrl } : st;
+		if (st === EMPTY_STATE) return st;
+		const clipUpload = leastAdvancedUpload(
+			connectedA ? stateA?.clipUpload : undefined,
+			connectedB ? stateB?.clipUpload : undefined,
+		);
+		if (clipUpload !== st.clipUpload) st = { ...st, clipUpload };
+		// A clip is usable once every engine holds it, so the count that clip
+		// lists refresh on moves when the last engine stores or drops one.
+		const counts = [connectedA ? stateA?.clipCount : undefined, connectedB ? stateB?.clipCount : undefined]
+			.filter((c): c is number => c !== undefined);
+		const clipCount = counts.length > 0 ? Math.min(...counts) : st.clipCount;
+		if (clipCount !== st.clipCount) st = { ...st, clipCount };
+		return engineBUrl && st.engineBUrl !== engineBUrl ? { ...st, engineBUrl } : st;
 	});
 
 	/** Divergence detection across program-visible fields. */
@@ -597,6 +641,7 @@ export function createReconciler() {
 			result.push({ field: 'clipPlayers', engineA: `${clipsA.length} slots`, engineB: `${clipsB.length} slots` });
 		} else {
 			for (let i = 0; i < clipsA.length; i++) {
+				if (clipSlotCatchingUp(clipsA[i], clipsB[i])) continue;
 				if (clipsA[i].state !== clipsB[i].state || clipsA[i].clipName !== clipsB[i].clipName) {
 					result.push({ field: 'clipPlayers', engineA: `${clipsA[i].clipName}:${clipsA[i].state}`, engineB: `${clipsB[i].clipName}:${clipsB[i].state}` });
 					break;

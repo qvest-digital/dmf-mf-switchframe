@@ -56,6 +56,10 @@ type ClipPlayerState struct {
 	Speed    float64     `json:"speed,omitempty"`
 	Position float64     `json:"position,omitempty"`
 	Loop     bool        `json:"loop,omitempty"`
+	// The clip being loaded into the slot, while its file is demuxed. The
+	// slot keeps reporting its previous content until the load completes.
+	LoadingClipID   string `json:"loadingClipId,omitempty"`
+	LoadingClipName string `json:"loadingClipName,omitempty"`
 }
 
 // Sentinel errors.

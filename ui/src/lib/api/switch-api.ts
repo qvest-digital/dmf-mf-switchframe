@@ -56,6 +56,25 @@ export function getAuthHeaders(): Record<string, string> {
 
 const ENGINE_FETCH_TIMEOUT_MS = 3_000;
 
+// A clip load demuxes the whole file before it answers: 14s for an 8-minute
+// 1080p clip, so 120s covers about an hour of 1080p. Aborting it earlier
+// reports a failure for a load the engine still completes.
+const CLIP_LOAD_TIMEOUT_MS = 120_000;
+const CLIP_LOAD_PATH = /^\/api\/clips\/players\/\d+\/load$/;
+
+// On a slow path the caller does not wait for a straggling engine longer than
+// this after the first engine succeeded; the straggler settles in the
+// background and is handled as a partial failure if it fails.
+const SLOW_PATH_STRAGGLER_GRACE_MS = 2_000;
+
+function isSlowPath(path: string): boolean {
+	return CLIP_LOAD_PATH.test(path);
+}
+
+function engineFetchTimeoutMs(path: string): number {
+	return isSlowPath(path) ? CLIP_LOAD_TIMEOUT_MS : ENGINE_FETCH_TIMEOUT_MS;
+}
+
 function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs: number = ENGINE_FETCH_TIMEOUT_MS): Promise<Response> {
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -65,7 +84,7 @@ function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs: number = EN
 /** Best-effort retry of failed engines after 500ms delay. Uses original bodies
  *  (preserving PTP timestamps) to avoid frame drift on timed commands. */
 function retryFailedEngines(
-	results: PromiseSettledResult<Response>[],
+	results: (PromiseSettledResult<Response> | null)[],
 	availableEngines: EngineEndpoint[],
 	url: string,
 	opts: RequestInit,
@@ -73,10 +92,12 @@ function retryFailedEngines(
 ): void {
 	setTimeout(async () => {
 		for (let i = 0; i < results.length; i++) {
-			const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
+			const r = results[i];
+			if (r === null) continue; // not to be retried
+			const ok = r.status === 'fulfilled' && r.value.ok;
 			if (!ok) {
 				try {
-					await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] });
+					await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] }, engineFetchTimeoutMs(url));
 				} catch { /* retry is best-effort */ }
 			}
 		}
@@ -89,6 +110,7 @@ interface CircuitState {
 	failures: number;
 	firstFailure: number;
 	openUntil: number; // 0 = closed
+	lastFailureAt: number;
 	wasOpen: boolean;  // true after transitioning from open→half-open
 }
 const circuitBreakers = new Map<string, CircuitState>();
@@ -115,7 +137,7 @@ function isCircuitOpen(engineUrl: string): boolean {
 function recordFailure(engineUrl: string): void {
 	let state = circuitBreakers.get(engineUrl);
 	if (!state) {
-		state = { failures: 0, firstFailure: Date.now(), openUntil: 0, wasOpen: false };
+		state = { failures: 0, firstFailure: Date.now(), openUntil: 0, lastFailureAt: 0, wasOpen: false };
 		circuitBreakers.set(engineUrl, state);
 	}
 	// Reset window if expired
@@ -124,13 +146,18 @@ function recordFailure(engineUrl: string): void {
 		state.firstFailure = Date.now();
 	}
 	state.failures++;
+	state.lastFailureAt = Date.now();
 	if (state.failures >= CIRCUIT_FAILURE_THRESHOLD) {
 		state.openUntil = Date.now() + CIRCUIT_OPEN_DURATION_MS;
 	}
 }
 
-function recordSuccess(engineUrl: string): void {
+/** Records a success for a request sent at startedAt. A request sent before
+ * a failure of the same engine says nothing about that failure, so it does
+ * not clear it. */
+function recordSuccess(engineUrl: string, startedAt: number = Date.now()): void {
 	const prev = circuitBreakers.get(engineUrl);
+	if (prev && prev.lastFailureAt >= startedAt) return;
 	if (prev?.wasOpen) {
 		// Engine recovered from circuit-open state — it missed commands
 		// during the open window. Trigger reconciler check to detect divergence.
@@ -293,12 +320,56 @@ async function fanOutMutation(
 		}
 	}
 
-	const results = await Promise.allSettled(
-		availableEngines.map((engine, i) => {
-			return fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: bodies[i] });
-		})
-	);
+	const startedAt = Date.now();
+	const settledAt: number[] = availableEngines.map(() => 0);
+	const pending = availableEngines.map((engine, i) => {
+		const p = fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: bodies[i] }, engineFetchTimeoutMs(url));
+		const mark = () => { settledAt[i] = Date.now(); };
+		p.then(mark, mark);
+		return p;
+	});
+	const all = Promise.allSettled(pending);
 
+	if (isSlowPath(url)) {
+		// Release the caller shortly after the first success instead of waiting
+		// for an engine that does not answer; that one is accounted for once
+		// it settles.
+		const settled: (PromiseSettledResult<Response> | undefined)[] = pending.map(() => undefined);
+		pending.forEach((p, i) => p.then(
+			(value) => { settled[i] = { status: 'fulfilled', value }; },
+			(reason) => { settled[i] = { status: 'rejected', reason }; },
+		));
+		const firstOk = new Promise<void>((resolve) => {
+			pending.forEach((p) => p.then((res) => { if (res.ok) resolve(); }, () => {}));
+		});
+		await Promise.race([
+			all,
+			firstOk.then(() => new Promise((r) => setTimeout(r, SLOW_PATH_STRAGGLER_GRACE_MS))),
+		]);
+		if (settled.some((r) => r === undefined)) {
+			void all.then((results) => accountFanOut(results, availableEngines, url, opts, bodies, startedAt, settledAt));
+			const successful = settled.filter(
+				(r): r is PromiseFulfilledResult<Response> => r?.status === 'fulfilled' && r.value.ok);
+			const failed = settled.filter(
+				(r): r is PromiseRejectedResult | PromiseFulfilledResult<Response> => r !== undefined && !(r.status === 'fulfilled' && r.value.ok));
+			return { results: settled.filter((r): r is PromiseSettledResult<Response> => r !== undefined), successful, failed, availableEngines };
+		}
+	}
+
+	return accountFanOut(await all, availableEngines, url, opts, bodies, startedAt, settledAt);
+}
+
+/** Records circuit breaker outcomes and handles a partial failure for a
+ * completed fan-out. */
+function accountFanOut(
+	results: PromiseSettledResult<Response>[],
+	availableEngines: EngineEndpoint[],
+	url: string,
+	opts: RequestInit,
+	bodies: (BodyInit | null | undefined)[],
+	startedAt: number,
+	settledAt: number[],
+): FanOutResult {
 	// Track circuit breaker state for each engine.
 	// Only count 5xx server errors and network errors as failures.
 	// 4xx client errors (e.g. 401 Unauthorized) are not engine health problems.
@@ -306,7 +377,7 @@ async function fanOutMutation(
 		const engineUrl = availableEngines[i]?.url;
 		if (!engineUrl) return;
 		if (result.status === 'fulfilled' && result.value.ok) {
-			recordSuccess(engineUrl);
+			recordSuccess(engineUrl, startedAt);
 		} else if (result.status === 'rejected') {
 			// Network error
 			recordFailure(engineUrl);
@@ -338,7 +409,14 @@ async function fanOutMutation(
 			.filter((id): id is string => id !== null);
 		if (!isNonIdempotent(url)) {
 			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
-			retryFailedEngines(results, availableEngines, url, opts, bodies);
+			// A slow command that failed only after a long wait, such as a timed
+			// out clip load, is not sent again with another long budget.
+			const retryable = isSlowPath(url)
+				? results.map((r, i) => r.status === 'fulfilled' && r.value.ok
+					? r
+					: settledAt[i] - startedAt <= ENGINE_FETCH_TIMEOUT_MS ? r : null)
+				: results;
+			retryFailedEngines(retryable, availableEngines, url, opts, bodies);
 		} else {
 			// Non-idempotent: skip retry, rely on snapshot push for state reconciliation
 			partialFailureNotify?.(`${failedEngineIds.join(', ')}: non-idempotent operation diverged — check Redundancy panel`);
@@ -1682,68 +1760,135 @@ function uploadClipToEngine(
 	});
 }
 
-/** Reports whether the engine at baseUrl holds a clip with the same ID and name. */
-async function engineHasClip(baseUrl: string, want: ClipInfo): Promise<boolean> {
+/** Returns the clip name an engine derives from an uploaded file's name. */
+export function clipNameFor(fileName: string): string {
+	const dot = fileName.lastIndexOf('.');
+	return (dot >= 0 ? fileName.slice(0, dot) : fileName) || 'untitled';
+}
+
+/** Returns the clip the engine at baseUrl holds under id and name, or null. */
+async function engineClip(baseUrl: string, id: string, name: string): Promise<ClipInfo | null> {
 	try {
-		const res = await fetch(`${baseUrl}/api/clips/${encodeURIComponent(want.id)}`, {
+		const res = await fetch(`${baseUrl}/api/clips/${encodeURIComponent(id)}`, {
 			headers: authHeaders(),
 		});
-		if (!res.ok) return false;
+		if (!res.ok) return null;
 		const got: ClipInfo = await res.json();
-		return got.id === want.id && got.name === want.name;
+		return got.id === id && got.name === name ? got : null;
 	} catch {
-		return false;
+		return null;
 	}
 }
 
+/** Returns a random clip ID in the form the engines generate. */
+export function newClipId(): string {
+	const b = new Uint8Array(16);
+	crypto.getRandomValues(b);
+	return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Uploads a clip to every engine in parallel under one fresh clip ID, so
+ * ID-based requests fanned out later (load, pin, delete) address the same
+ * clip everywhere. Resolves once every engine has stored it. A clip on only
+ * some engines cannot be loaded on the others, so if any engine fails for
+ * good the clip is deleted from the engines that stored it and the upload
+ * fails. onUploadProgress reports the bytes sent to the engine furthest
+ * behind.
+ */
 export async function uploadClip(file: File, onUploadProgress?: (percent: number) => void): Promise<ClipInfo> {
 	const engines = getEngineUrls();
-	const primaryUrl = engines && engines.length > 0
-		? engines[0].url
-		: resolveApiUrl('');
+	const targets: EngineEndpoint[] = engines && engines.length > 0
+		? engines
+		: [{ id: 'A', url: resolveApiUrl('') }];
+	const clipId = newClipId();
 
-	// Upload to primary engine with progress tracking
-	const uploadStart = Date.now();
-	const result = await uploadClipToEngine(primaryUrl, file, onUploadProgress);
-	const primaryDuration = Date.now() - uploadStart;
+	const sent = targets.map(() => 0);
+	const uploading = targets.map(() => true);
+	const report = (i: number, percent: number) => {
+		sent[i] = percent;
+		const live = sent.filter((_, j) => uploading[j]);
+		if (live.length > 0) onUploadProgress?.(Math.min(...live));
+	};
 
-	// Upload to secondary engine(s); the timeout scales with the primary upload duration.
-	// Secondaries store the clip under the primary's ID so that ID-based
-	// requests (delete, pin, load by ID) fanned out to every engine address
-	// the same clip everywhere.
-	if (engines && engines.length > 1) {
-		const secondaryTimeout = Math.max(primaryDuration * 2, 30_000);
-		const uploadSecondary = async (url: string) => {
+	const attempt = async (i: number): Promise<ClipInfo> => {
+		const url = targets[i].url;
+		report(i, 0);
+		try {
+			return await uploadClipToEngine(url, file, (p) => report(i, p), clipId);
+		} catch (err) {
+			// The engine may already hold this ID: an earlier attempt completed
+			// after the client gave up on it. Any other failure, including a
+			// 409 for another upload still in progress, is retried.
+			if (!(err instanceof SwitchApiError && err.status === 409)) throw err;
+			const held = await engineClip(url, clipId, clipNameFor(file.name));
+			if (!held) throw err;
+			return held;
+		}
+	};
+
+	const results = await Promise.allSettled(targets.map(async (_engine, i) => {
+		try {
 			try {
-				await uploadClipToEngine(url, file, undefined, result.id);
-			} catch (err) {
-				// The engine may already hold this ID, e.g. an earlier attempt
-				// completed after the client gave up on it. Any other failure,
-				// including a 409 for an upload still in progress, is retried.
-				if (!(err instanceof SwitchApiError && err.status === 409)) throw err;
-				if (!(await engineHasClip(url, result))) throw err;
-			}
-		};
-		const secondaryUploads = engines.slice(1).map(async (engine) => {
-			try {
-				await uploadSecondary(engine.url);
+				return await attempt(i);
 			} catch {
-				// Retry once after 2s
-				await new Promise(r => setTimeout(r, 2000));
-				try {
-					await uploadSecondary(engine.url);
-				} catch {
-					partialFailureNotify?.(`Clip upload failed on Engine ${engine.id} — clip only on primary`);
-				}
+				await new Promise((r) => setTimeout(r, 2000));
+				return await attempt(i);
 			}
-		});
-		await Promise.race([
-			Promise.allSettled(secondaryUploads),
-			new Promise(resolve => setTimeout(resolve, secondaryTimeout)),
-		]);
-	}
+		} finally {
+			uploading[i] = false;
+		}
+	}));
 
-	return result;
+	const failedAt = results.findIndex((r) => r.status === 'rejected');
+	if (failedAt < 0) return (results[0] as PromiseFulfilledResult<ClipInfo>).value;
+
+	const reason = (results[failedAt] as PromiseRejectedResult).reason;
+	if (targets.length === 1) throw reason;
+	const stranded: string[] = [];
+	await Promise.all(results.map(async (r, i) => {
+		if (r.status !== 'fulfilled') return;
+		try {
+			const res = await fetchWithTimeout(`${targets[i].url}/api/clips/${encodeURIComponent(clipId)}`,
+				{ method: 'DELETE', headers: authHeaders() });
+			if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
+		} catch (err) {
+			console.warn(`[dual-api] Could not remove clip ${clipId} from Engine ${targets[i].id} after a failed upload:`, err);
+			stranded.push(targets[i].id);
+		}
+	}));
+	const message = reason instanceof Error ? reason.message : String(reason);
+	const leftover = stranded.length > 0 ? `; clip left on Engine ${stranded.join(', ')}` : '';
+	throw new SwitchApiError(
+		reason instanceof SwitchApiError ? reason.status : 0,
+		`upload failed on Engine ${targets[failedAt].id}: ${message}${leftover}`,
+	);
+}
+
+/**
+ * Lists the clips every reachable engine holds, matched by name as clip
+ * players load them: replays, imported recordings and older uploads carry a
+ * different ID on each engine. A clip still being uploaded, by this client or
+ * another, is on some engines only, and a load sent for it would find it
+ * missing on the others. An engine that does not answer within the command
+ * timeout counts as unreachable. Engines allow several clips of one name; a
+ * new upload under a name every engine already holds is listed before every
+ * engine has stored it, and a load by that name picks the first clip of it.
+ */
+export async function listClipsOnEveryEngine(): Promise<ClipInfo[]> {
+	const engines = getEngineUrls();
+	if (!engines || engines.length <= 1) return listClips();
+	const lists = await Promise.allSettled(engines.map(async (engine) => {
+		const res = await fetchWithTimeout(`${engine.url}/api/clips`, { headers: authHeaders() });
+		if (!res.ok) throw new SwitchApiError(res.status, `HTTP ${res.status}`);
+		return (await res.json()) as ClipInfo[];
+	}));
+	const answered = lists
+		.filter((l): l is PromiseFulfilledResult<ClipInfo[]> => l.status === 'fulfilled')
+		.map((l) => l.value);
+	if (answered.length === 0) return listClips();
+	const [first, ...others] = answered;
+	return first.filter((c) => others.every((list) => list.some((o) => o.name === c.name)));
 }
 
 export function pinClip(id: string): Promise<ClipInfo> {

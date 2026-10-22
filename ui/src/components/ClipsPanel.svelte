@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState, ClipInfo, ClipPlayerState, RecordingFileInfo, EngineRecordingGroup, ClipUploadProgress } from '$lib/api/types';
 	import {
-		listClips, uploadClip, deleteClip, pinClip,
+		listClipsOnEveryEngine, uploadClip, deleteClip, pinClip,
 		listRecordingsDualEngine, importRecordingFromEngine,
 		clipPlayerLoadByName, clipPlayerEject, clipPlayerPlay, clipPlayerPause, clipPlayerStop, clipPlayerSeek,
 		apiCall,
@@ -142,7 +142,7 @@
 	// ── Handlers ──
 	async function refreshClips() {
 		try {
-			clips = await listClips();
+			clips = await listClipsOnEveryEngine();
 		} catch {
 			// ignore on load
 		}

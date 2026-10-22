@@ -551,6 +551,10 @@ export interface ClipPlayerState {
 	speed?: number;
 	position?: number;
 	loop?: boolean;
+	/** The clip the engine is loading into the slot, while it reads the file.
+	 * The slot keeps reporting its previous content until the load is done. */
+	loadingClipId?: string;
+	loadingClipName?: string;
 }
 
 export interface ClipInfo {
