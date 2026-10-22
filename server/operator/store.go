@@ -19,7 +19,13 @@ type Store struct {
 	tokenIdx  map[string]int // token → index in operators slice
 	idIdx     map[string]int // id → index in operators slice
 	filePath  string
+	resolver  TokenResolver
 }
+
+// TokenResolver maps a bearer token the store did not issue to an operator,
+// for example by verifying it with an identity provider. It returns an error
+// when the token identifies nobody.
+type TokenResolver func(token string) (Operator, error)
 
 // NewStore creates a Store that persists to the given file path.
 // If the file exists, operators are loaded from it. If it does not exist,
@@ -57,7 +63,11 @@ func (s *Store) rebuildIndices() {
 	s.tokenIdx = make(map[string]int, len(s.operators))
 	s.idIdx = make(map[string]int, len(s.operators))
 	for i, op := range s.operators {
-		s.tokenIdx[op.Token] = i
+		// Operators added by Upsert hold no token; indexing "" would match
+		// every request without an Authorization header.
+		if op.Token != "" {
+			s.tokenIdx[op.Token] = i
+		}
 		s.idIdx[op.ID] = i
 	}
 }
@@ -211,16 +221,88 @@ func (s *Store) Get(id string) (Operator, error) {
 }
 
 // GetByToken returns an operator by their bearer token.
-// Uses a token index map for O(1) lookup.
+// Uses a token index map for O(1) lookup. A token the store did not issue
+// is passed to the TokenResolver, if one is set.
 func (s *Store) GetByToken(token string) (Operator, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	if token == "" {
+		return Operator{}, ErrNotFound
+	}
 
+	s.mu.RLock()
 	idx, ok := s.tokenIdx[token]
 	if ok && idx < len(s.operators) {
+		op := s.operators[idx]
+		s.mu.RUnlock()
+		return op, nil
+	}
+	resolver := s.resolver
+	s.mu.RUnlock()
+
+	if resolver == nil {
+		return Operator{}, ErrNotFound
+	}
+	// Called without the lock: the resolver may Upsert.
+	return resolver(token)
+}
+
+// SetTokenResolver sets the function GetByToken consults for tokens the
+// store did not issue.
+func (s *Store) SetTokenResolver(fn TokenResolver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resolver = fn
+}
+
+// Upsert creates the operator with the given ID, or updates its name and
+// role, and persists the change. An operator created here holds no
+// store-issued token; it is reached through the TokenResolver, which
+// authenticates its bearer token by other means. The file is written only
+// when something changed.
+func (s *Store) Upsert(id, name string, role Role) (Operator, error) {
+	if id == "" {
+		return Operator{}, ErrNotFound
+	}
+	if name == "" {
+		return Operator{}, ErrEmptyName
+	}
+	if !IsValidRole(role) {
+		return Operator{}, ErrInvalidRole
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, op := range s.operators {
+		if op.Name == name && op.ID != id {
+			return Operator{}, ErrDuplicateName
+		}
+	}
+
+	idx, ok := s.idIdx[id]
+	if ok && s.operators[idx].Name == name && s.operators[idx].Role == role {
 		return s.operators[idx], nil
 	}
-	return Operator{}, ErrNotFound
+
+	prev := append([]Operator(nil), s.operators...)
+	if ok {
+		s.operators[idx].Name = name
+		s.operators[idx].Role = role
+	} else {
+		s.operators = append(s.operators, Operator{ID: id, Name: name, Role: role})
+		idx = len(s.operators) - 1
+		s.idIdx[id] = idx
+	}
+
+	data, err := s.marshalLocked()
+	if err == nil {
+		err = s.writeFile(data)
+	}
+	if err != nil {
+		s.operators = prev
+		s.rebuildIndices()
+		return Operator{}, fmt.Errorf("save operators: %w", err)
+	}
+	return s.operators[idx], nil
 }
 
 // Delete removes an operator by ID.

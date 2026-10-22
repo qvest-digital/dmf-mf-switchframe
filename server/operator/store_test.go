@@ -551,3 +551,75 @@ func TestRegisterWithToken_ReRegistrationNeedsTheSameToken(t *testing.T) {
 		t.Fatal("re-registration with another token succeeded")
 	}
 }
+
+func TestStore_Upsert_CreatesWithoutToken(t *testing.T) {
+	t.Parallel()
+	path := tempStorePath(t)
+	s, _ := NewStore(path)
+
+	op, err := s.Upsert("oidc-0123456789", "alice", RoleAudio)
+	require.NoError(t, err)
+	require.Equal(t, "oidc-0123456789", op.ID)
+	require.Empty(t, op.Token)
+
+	// Persisted, and a request without a bearer token still identifies nobody.
+	s2, err := NewStore(path)
+	require.NoError(t, err)
+	require.Len(t, s2.List(), 1)
+	_, err = s2.GetByToken("")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestStore_Upsert_UpdatesRoleAndName(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	_, err := s.Upsert("oidc-0123456789", "alice", RoleViewer)
+	require.NoError(t, err)
+	op, err := s.Upsert("oidc-0123456789", "alice.b", RoleDirector)
+	require.NoError(t, err)
+	require.Equal(t, RoleDirector, op.Role)
+	require.Equal(t, "alice.b", op.Name)
+	require.Len(t, s.List(), 1)
+}
+
+func TestStore_Upsert_RejectsNameOfAnotherOperator(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	_, err := s.Register("alice", RoleDirector)
+	require.NoError(t, err)
+	_, err = s.Upsert("oidc-0123456789", "alice", RoleAudio)
+	require.ErrorIs(t, err, ErrDuplicateName)
+}
+
+func TestStore_GetByToken_FallsBackToResolver(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+	issued, err := s.Register("bob", RoleAudio)
+	require.NoError(t, err)
+
+	var asked []string
+	s.SetTokenResolver(func(token string) (Operator, error) {
+		asked = append(asked, token)
+		if token != "external-token" {
+			return Operator{}, ErrNotFound
+		}
+		return s.Upsert("oidc-0123456789", "alice", RoleGraphics)
+	})
+
+	op, err := s.GetByToken("external-token")
+	require.NoError(t, err)
+	require.Equal(t, "alice", op.Name)
+
+	// A store-issued token never reaches the resolver, nor does an empty one.
+	op, err = s.GetByToken(issued.Token)
+	require.NoError(t, err)
+	require.Equal(t, "bob", op.Name)
+	_, err = s.GetByToken("")
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = s.GetByToken("unknown")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	require.Equal(t, []string{"external-token", "unknown"}, asked)
+}
