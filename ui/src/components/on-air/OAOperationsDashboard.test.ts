@@ -5,7 +5,7 @@ import type { ControlRoomState } from '$lib/api/types';
 
 // Mock the API module
 vi.mock('$lib/api/switch-api', () => ({
-	listClips: vi.fn().mockResolvedValue([]),
+	listClipsOnEveryEngine: vi.fn().mockResolvedValue([]),
 	deleteClip: vi.fn().mockResolvedValue(undefined),
 	uploadClip: vi.fn().mockResolvedValue({ id: 'new-clip', name: 'test.mp4' }),
 	clipPlayerLoad: vi.fn().mockResolvedValue({}),
@@ -24,7 +24,7 @@ vi.mock('$lib/state/notifications.svelte', () => ({
 }));
 
 import {
-	listClips,
+	listClipsOnEveryEngine,
 	deleteClip,
 	uploadClip,
 	clipPlayerLoad,
@@ -116,7 +116,7 @@ describe('OAOperationsDashboard', () => {
 
 	it('persists slates to localStorage when a slate is added via makeSlate', async () => {
 		// Setup: have clips in the list
-		(listClips as Mock).mockResolvedValue([
+		(listClipsOnEveryEngine as Mock).mockResolvedValue([
 			{ id: 'clip-1', name: 'My Clip', durationMs: 5000 },
 		]);
 
@@ -236,7 +236,7 @@ describe('OAOperationsDashboard', () => {
 	// ── Clips: load on mount ──
 
 	it('loads clips from API on mount', async () => {
-		(listClips as Mock).mockResolvedValue([
+		(listClipsOnEveryEngine as Mock).mockResolvedValue([
 			{ id: 'c1', name: 'Clip A', durationMs: 3000 },
 			{ id: 'c2', name: 'Clip B', durationMs: 6000 },
 		]);
@@ -254,7 +254,7 @@ describe('OAOperationsDashboard', () => {
 	// ── Clips: delete ──
 
 	it('deletes a clip and refreshes the list', async () => {
-		(listClips as Mock).mockResolvedValue([
+		(listClipsOnEveryEngine as Mock).mockResolvedValue([
 			{ id: 'c1', name: 'Delete Me', durationMs: 1000 },
 		]);
 		(deleteClip as Mock).mockResolvedValue(undefined);
@@ -281,7 +281,7 @@ describe('OAOperationsDashboard', () => {
 			{ clipId: 'c1', name: 'My Slate' },
 		]));
 
-		(listClips as Mock).mockResolvedValue([
+		(listClipsOnEveryEngine as Mock).mockResolvedValue([
 			{ id: 'c1', name: 'Used Clip', durationMs: 1000 },
 		]);
 		(deleteClip as Mock).mockResolvedValue(undefined);
@@ -424,7 +424,7 @@ describe('OAOperationsDashboard', () => {
 	// ── addSlate via + button ──
 
 	it('addSlate picks first available clip not already a slate', async () => {
-		(listClips as Mock).mockResolvedValue([
+		(listClipsOnEveryEngine as Mock).mockResolvedValue([
 			{ id: 'c1', name: 'Clip A', durationMs: 3000 },
 			{ id: 'c2', name: 'Clip B', durationMs: 6000 },
 		]);
@@ -457,7 +457,7 @@ describe('OAOperationsDashboard', () => {
 	});
 
 	it('addSlate does nothing when prompt is cancelled', async () => {
-		(listClips as Mock).mockResolvedValue([
+		(listClipsOnEveryEngine as Mock).mockResolvedValue([
 			{ id: 'c1', name: 'Clip A', durationMs: 3000 },
 		]);
 

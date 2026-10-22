@@ -558,6 +558,12 @@ export function createReconciler() {
 			connectedB ? stateB?.clipUpload : undefined,
 		);
 		if (clipUpload !== st.clipUpload) st = { ...st, clipUpload };
+		// A clip is usable once every engine holds it, so the count that clip
+		// lists refresh on moves when the last engine stores or drops one.
+		const counts = [connectedA ? stateA?.clipCount : undefined, connectedB ? stateB?.clipCount : undefined]
+			.filter((c): c is number => c !== undefined);
+		const clipCount = counts.length > 0 ? Math.min(...counts) : st.clipCount;
+		if (clipCount !== st.clipCount) st = { ...st, clipCount };
 		return engineBUrl && st.engineBUrl !== engineBUrl ? { ...st, engineBUrl } : st;
 	});
 

@@ -56,14 +56,23 @@ export function getAuthHeaders(): Record<string, string> {
 
 const ENGINE_FETCH_TIMEOUT_MS = 3_000;
 
-// A clip load demuxes the whole file before it answers, which takes 14s for
-// an 8-minute 1080p clip. Aborting it earlier reports a failure for a load
-// the engine still completes.
+// A clip load demuxes the whole file before it answers: 14s for an 8-minute
+// 1080p clip, so 120s covers about an hour of 1080p. Aborting it earlier
+// reports a failure for a load the engine still completes.
 const CLIP_LOAD_TIMEOUT_MS = 120_000;
 const CLIP_LOAD_PATH = /^\/api\/clips\/players\/\d+\/load$/;
 
+// On a slow path the caller does not wait for a straggling engine longer than
+// this after the first engine succeeded; the straggler settles in the
+// background and is handled as a partial failure if it fails.
+const SLOW_PATH_STRAGGLER_GRACE_MS = 2_000;
+
+function isSlowPath(path: string): boolean {
+	return CLIP_LOAD_PATH.test(path);
+}
+
 function engineFetchTimeoutMs(path: string): number {
-	return CLIP_LOAD_PATH.test(path) ? CLIP_LOAD_TIMEOUT_MS : ENGINE_FETCH_TIMEOUT_MS;
+	return isSlowPath(path) ? CLIP_LOAD_TIMEOUT_MS : ENGINE_FETCH_TIMEOUT_MS;
 }
 
 function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs: number = ENGINE_FETCH_TIMEOUT_MS): Promise<Response> {
@@ -99,6 +108,7 @@ interface CircuitState {
 	failures: number;
 	firstFailure: number;
 	openUntil: number; // 0 = closed
+	openedAt: number;  // when the circuit last opened, 0 = never
 	wasOpen: boolean;  // true after transitioning from open→half-open
 }
 const circuitBreakers = new Map<string, CircuitState>();
@@ -125,7 +135,7 @@ function isCircuitOpen(engineUrl: string): boolean {
 function recordFailure(engineUrl: string): void {
 	let state = circuitBreakers.get(engineUrl);
 	if (!state) {
-		state = { failures: 0, firstFailure: Date.now(), openUntil: 0, wasOpen: false };
+		state = { failures: 0, firstFailure: Date.now(), openUntil: 0, openedAt: 0, wasOpen: false };
 		circuitBreakers.set(engineUrl, state);
 	}
 	// Reset window if expired
@@ -135,12 +145,16 @@ function recordFailure(engineUrl: string): void {
 	}
 	state.failures++;
 	if (state.failures >= CIRCUIT_FAILURE_THRESHOLD) {
-		state.openUntil = Date.now() + CIRCUIT_OPEN_DURATION_MS;
+		state.openedAt = Date.now();
+		state.openUntil = state.openedAt + CIRCUIT_OPEN_DURATION_MS;
 	}
 }
 
-function recordSuccess(engineUrl: string): void {
+/** Records a success for a request sent at startedAt. A request sent before
+ * the circuit last opened says nothing about the failures that opened it. */
+function recordSuccess(engineUrl: string, startedAt: number = Date.now()): void {
 	const prev = circuitBreakers.get(engineUrl);
+	if (prev && prev.openedAt > startedAt) return;
 	if (prev?.wasOpen) {
 		// Engine recovered from circuit-open state — it missed commands
 		// during the open window. Trigger reconciler check to detect divergence.
@@ -303,12 +317,50 @@ async function fanOutMutation(
 		}
 	}
 
-	const results = await Promise.allSettled(
-		availableEngines.map((engine, i) => {
-			return fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: bodies[i] }, engineFetchTimeoutMs(url));
-		})
-	);
+	const startedAt = Date.now();
+	const pending = availableEngines.map((engine, i) =>
+		fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: bodies[i] }, engineFetchTimeoutMs(url)));
+	const all = Promise.allSettled(pending);
 
+	if (isSlowPath(url)) {
+		// Release the caller shortly after the first success instead of waiting
+		// for an engine that does not answer; that one is accounted for once
+		// it settles.
+		const settled: (PromiseSettledResult<Response> | undefined)[] = pending.map(() => undefined);
+		pending.forEach((p, i) => p.then(
+			(value) => { settled[i] = { status: 'fulfilled', value }; },
+			(reason) => { settled[i] = { status: 'rejected', reason }; },
+		));
+		const firstOk = new Promise<void>((resolve) => {
+			pending.forEach((p) => p.then((res) => { if (res.ok) resolve(); }, () => {}));
+		});
+		await Promise.race([
+			all,
+			firstOk.then(() => new Promise((r) => setTimeout(r, SLOW_PATH_STRAGGLER_GRACE_MS))),
+		]);
+		if (settled.some((r) => r === undefined)) {
+			void all.then((results) => accountFanOut(results, availableEngines, url, opts, bodies, startedAt));
+			const successful = settled.filter(
+				(r): r is PromiseFulfilledResult<Response> => r?.status === 'fulfilled' && r.value.ok);
+			const failed = settled.filter(
+				(r): r is PromiseRejectedResult | PromiseFulfilledResult<Response> => r !== undefined && !(r.status === 'fulfilled' && r.value.ok));
+			return { results: settled.filter((r): r is PromiseSettledResult<Response> => r !== undefined), successful, failed, availableEngines };
+		}
+	}
+
+	return accountFanOut(await all, availableEngines, url, opts, bodies, startedAt);
+}
+
+/** Records circuit breaker outcomes and handles a partial failure for a
+ * completed fan-out. */
+function accountFanOut(
+	results: PromiseSettledResult<Response>[],
+	availableEngines: EngineEndpoint[],
+	url: string,
+	opts: RequestInit,
+	bodies: (BodyInit | null | undefined)[],
+	startedAt: number,
+): FanOutResult {
 	// Track circuit breaker state for each engine.
 	// Only count 5xx server errors and network errors as failures.
 	// 4xx client errors (e.g. 401 Unauthorized) are not engine health problems.
@@ -316,7 +368,7 @@ async function fanOutMutation(
 		const engineUrl = availableEngines[i]?.url;
 		if (!engineUrl) return;
 		if (result.status === 'fulfilled' && result.value.ok) {
-			recordSuccess(engineUrl);
+			recordSuccess(engineUrl, startedAt);
 		} else if (result.status === 'rejected') {
 			// Network error
 			recordFailure(engineUrl);
@@ -1714,26 +1766,27 @@ export function newClipId(): string {
 }
 
 /**
- * Uploads a clip to every engine in parallel under one clip ID and resolves
- * once each engine has stored it, so ID-based requests fanned out later
- * (load, pin, delete) address the same clip everywhere, and a clip is not
- * offered for loading while an engine is still processing it.
- * onUploadProgress reports the bytes sent to the engine furthest behind.
+ * Uploads a clip to every engine in parallel under one fresh clip ID, so
+ * ID-based requests fanned out later (load, pin, delete) address the same
+ * clip everywhere. Resolves once every engine has stored it. A clip on only
+ * some engines cannot be loaded on the others, so if any engine fails for
+ * good the clip is deleted from the engines that stored it and the upload
+ * fails. onUploadProgress reports the bytes sent to the engine furthest
+ * behind.
  */
-export async function uploadClip(
-	file: File,
-	onUploadProgress?: (percent: number) => void,
-	clipId: string = newClipId(),
-): Promise<ClipInfo> {
+export async function uploadClip(file: File, onUploadProgress?: (percent: number) => void): Promise<ClipInfo> {
 	const engines = getEngineUrls();
 	const targets: EngineEndpoint[] = engines && engines.length > 0
 		? engines
 		: [{ id: 'A', url: resolveApiUrl('') }];
+	const clipId = newClipId();
 
 	const sent = targets.map(() => 0);
+	const gaveUp = targets.map(() => false);
 	const report = (i: number, percent: number) => {
 		sent[i] = percent;
-		onUploadProgress?.(Math.min(...sent));
+		const live = sent.filter((_, j) => !gaveUp[j]);
+		if (live.length > 0) onUploadProgress?.(Math.min(...live));
 	};
 
 	const attempt = async (i: number): Promise<ClipInfo> => {
@@ -1757,18 +1810,50 @@ export async function uploadClip(
 			return await attempt(i);
 		} catch {
 			await new Promise((r) => setTimeout(r, 2000));
-			return attempt(i);
+			try {
+				return await attempt(i);
+			} catch (err) {
+				gaveUp[i] = true;
+				report(i, sent[i]);
+				throw err;
+			}
 		}
 	}));
 
-	const stored = results.filter((r): r is PromiseFulfilledResult<ClipInfo> => r.status === 'fulfilled');
-	if (stored.length === 0) throw (results[0] as PromiseRejectedResult).reason;
-	results.forEach((r, i) => {
-		if (r.status === 'rejected') {
-			partialFailureNotify?.(`Clip upload failed on Engine ${targets[i].id}: clip missing there`);
-		}
-	});
-	return stored[0].value;
+	const failedAt = results.findIndex((r) => r.status === 'rejected');
+	if (failedAt < 0) return (results[0] as PromiseFulfilledResult<ClipInfo>).value;
+
+	const reason = (results[failedAt] as PromiseRejectedResult).reason;
+	if (targets.length === 1) throw reason;
+	await Promise.allSettled(results.map((r, i) => r.status === 'fulfilled'
+		? fetch(`${targets[i].url}/api/clips/${encodeURIComponent(clipId)}`, { method: 'DELETE', headers: authHeaders() })
+		: Promise.resolve()));
+	const message = reason instanceof Error ? reason.message : String(reason);
+	throw new SwitchApiError(
+		reason instanceof SwitchApiError ? reason.status : 0,
+		`upload failed on Engine ${targets[failedAt].id}: ${message}`,
+	);
+}
+
+/**
+ * Lists the clips every reachable engine holds. A clip still being uploaded,
+ * by this client or another, is on some engines only, and a load sent for it
+ * would find it missing on the others.
+ */
+export async function listClipsOnEveryEngine(): Promise<ClipInfo[]> {
+	const engines = getEngineUrls();
+	if (!engines || engines.length <= 1) return listClips();
+	const lists = await Promise.allSettled(engines.map(async (engine) => {
+		const res = await fetch(`${engine.url}/api/clips`, { headers: authHeaders() });
+		if (!res.ok) throw new SwitchApiError(res.status, `HTTP ${res.status}`);
+		return (await res.json()) as ClipInfo[];
+	}));
+	const answered = lists
+		.filter((l): l is PromiseFulfilledResult<ClipInfo[]> => l.status === 'fulfilled')
+		.map((l) => l.value);
+	if (answered.length === 0) return listClips();
+	const [first, ...others] = answered;
+	return first.filter((c) => others.every((list) => list.some((o) => o.id === c.id)));
 }
 
 export function pinClip(id: string): Promise<ClipInfo> {

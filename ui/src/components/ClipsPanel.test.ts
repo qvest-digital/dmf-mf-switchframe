@@ -1,13 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { render, waitFor } from '@testing-library/svelte';
 import ClipsPanel from './ClipsPanel.svelte';
 import type { ControlRoomState, ClipInfo } from '$lib/api/types';
-import { listClips, uploadClip } from '$lib/api/switch-api';
+import { listClipsOnEveryEngine } from '$lib/api/switch-api';
 
 vi.mock('$lib/api/switch-api', () => ({
-	listClips: vi.fn().mockResolvedValue([]),
+	listClipsOnEveryEngine: vi.fn().mockResolvedValue([]),
 	uploadClip: vi.fn(),
-	newClipId: vi.fn(() => '0123456789abcdef0123456789abcdef'),
 	deleteClip: vi.fn(),
 	pinClip: vi.fn(),
 	listRecordingsDualEngine: vi.fn().mockResolvedValue([{ engineId: 'A', engineUrl: '', recordings: [] }]),
@@ -111,33 +110,18 @@ describe('ClipsPanel', () => {
 		expect(activeStages.length).toBeGreaterThan(0);
 	});
 
-	// An engine still processing the upload answers a load with "clip not
-	// found", so the clip is not offered for loading until every engine has it.
-	it('lists an uploading clip only once the upload has finished on every engine', async () => {
-		const bunny = {
-			id: '0123456789abcdef0123456789abcdef',
-			name: 'bunny',
-			filename: 'bunny.ts',
-			source: 'upload',
-		} as ClipInfo;
-		vi.mocked(listClips).mockResolvedValue([bunny]);
-		let finish!: (c: ClipInfo) => void;
-		vi.mocked(uploadClip).mockReturnValue(new Promise((r) => { finish = r; }));
+	// A clip on one engine only would answer a load with "clip not found" on
+	// the other, so the panel lists what every engine holds.
+	it('lists the clips every engine holds and refreshes when the count moves', async () => {
+		const bunny = { id: 'b', name: 'bunny', filename: 'bunny.ts', source: 'upload' } as ClipInfo;
+		vi.mocked(listClipsOnEveryEngine).mockResolvedValue([]);
 
 		const { container, rerender } = render(ClipsPanel, { props: { state: makeState({ clipCount: 0 }) } });
-		const input = container.querySelector('input[type="file"]') as HTMLInputElement;
-		const file = new File(['data'], 'bunny.mov');
-		Object.defineProperty(input, 'files', { value: [file] });
-		await fireEvent.change(input);
+		await waitFor(() => expect(listClipsOnEveryEngine).toHaveBeenCalledTimes(1));
 
-		expect(vi.mocked(uploadClip).mock.calls[0][2]).toBe(bunny.id);
-
-		// The first engine has stored it and its clip count moved.
+		vi.mocked(listClipsOnEveryEngine).mockResolvedValue([bunny]);
 		await rerender({ state: makeState({ clipCount: 1 }) });
-		await waitFor(() => expect(listClips).toHaveBeenCalled());
-		expect(container.querySelector('.clip-name')).toBeNull();
-
-		finish(bunny);
 		await waitFor(() => expect(container.querySelector('.clip-name')?.textContent).toBe('bunny'));
+		expect(listClipsOnEveryEngine).toHaveBeenCalledTimes(2);
 	});
 });

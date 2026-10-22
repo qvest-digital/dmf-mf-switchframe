@@ -3,11 +3,13 @@
  * parallel under one client-chosen clip ID, and the call resolves only once
  * every engine has stored it. ID-based requests fanned out later then address
  * the same clip on all engines, and no engine trails another by a whole
- * upload, which a load sent in that window would find missing.
+ * upload, which a load sent in that window would find missing. A clip that
+ * only some engines stored is removed again, since it could not be loaded on
+ * the others.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { setEngineUrls, setApiBaseUrl } from './base-url';
-import { uploadClip, newClipId, setPartialFailureNotify } from './switch-api';
+import { uploadClip, newClipId, listClipsOnEveryEngine, setPartialFailureNotify } from './switch-api';
 
 interface SentUpload {
 	url: string;
@@ -19,9 +21,11 @@ const A = 'https://engine-a.example.com/api/clips/upload';
 const B = 'https://engine-b.example.com/api/clips/upload';
 
 let sent: SentUpload[];
-let respond: (url: string, attempt: number) => { status: number; body: unknown };
+/** Answers an upload; by default with a clip under the ID that was sent. */
+let respond: (url: string, attempt: number, id: string) => { status: number; body: unknown };
 /** Engines whose upload is held open until release() is called. */
-let held: Map<string, FakeXHR>;
+let held: Map<string, FakeXHR | undefined>;
+let fetchMock: ReturnType<typeof vi.fn>;
 
 class FakeXHR {
 	status = 0;
@@ -32,6 +36,7 @@ class FakeXHR {
 	onabort: (() => void) | null = null;
 	url = '';
 	private attempt = 0;
+	private id = '';
 
 	open(_method: string, url: string) {
 		this.url = url;
@@ -41,11 +46,8 @@ class FakeXHR {
 
 	send(body: FormData) {
 		this.attempt = sent.filter((s) => s.url === this.url).length;
-		sent.push({
-			url: this.url,
-			id: body.get('id') as string | null,
-			file: body.get('file') as File | null,
-		});
+		this.id = body.get('id') as string;
+		sent.push({ url: this.url, id: this.id, file: body.get('file') as File | null });
 		if (held.has(this.url)) {
 			held.set(this.url, this);
 			return;
@@ -58,7 +60,7 @@ class FakeXHR {
 	}
 
 	finish() {
-		const r = respond(this.url, this.attempt);
+		const r = respond(this.url, this.attempt, this.id);
 		this.status = r.status;
 		this.responseText = JSON.stringify(r.body);
 		queueMicrotask(() => this.onload?.());
@@ -66,7 +68,7 @@ class FakeXHR {
 }
 
 function hold(url: string) {
-	held.set(url, undefined as unknown as FakeXHR);
+	held.set(url, undefined);
 }
 
 function release(url: string) {
@@ -75,15 +77,23 @@ function release(url: string) {
 	xhr?.finish();
 }
 
-const clipID = '0123456789abcdef0123456789abcdef';
-const clipA = { id: clipID, name: 'bunny' };
+const stored = (id: string) => ({ status: 201, body: { id, name: 'bunny' } });
+const failing = (status: number, error: string) => ({ status, body: { error } });
+
+function deletes(): string[] {
+	return fetchMock.mock.calls
+		.filter(([, opts]) => (opts as RequestInit | undefined)?.method === 'DELETE')
+		.map(([url]) => url as string);
+}
 
 describe('uploadClip (dual engine)', () => {
 	beforeEach(() => {
 		sent = [];
 		held = new Map();
-		respond = () => ({ status: 201, body: clipA });
+		respond = (_url, _attempt, id) => stored(id);
 		vi.stubGlobal('XMLHttpRequest', FakeXHR);
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204, json: () => Promise.resolve({}) });
+		vi.stubGlobal('fetch', fetchMock);
 		setApiBaseUrl('');
 		setEngineUrls([
 			{ id: 'A', url: 'https://engine-a.example.com' },
@@ -98,30 +108,28 @@ describe('uploadClip (dual engine)', () => {
 		setPartialFailureNotify(null);
 	});
 
-	it('uploads to every engine at once under the same clip ID', async () => {
+	it('uploads to every engine at once under one fresh clip ID', async () => {
 		hold(A);
-		const file = new File(['data'], 'bunny.mov');
-
-		const done = uploadClip(file, undefined, clipID);
+		const done = uploadClip(new File(['data'], 'bunny.mov'));
 		await Promise.resolve();
 
 		// The secondary does not wait for the primary to finish.
 		expect(sent.map((s) => s.url)).toEqual([A, B]);
-		expect(sent.every((s) => s.id === clipID)).toBe(true);
+		expect(sent[0].id).toMatch(/^[0-9a-f]{32}$/);
+		expect(sent[1].id).toBe(sent[0].id);
 		expect(sent[1].file?.name).toBe('bunny.mov');
 
 		release(A);
-		expect((await done).id).toBe(clipID);
+		expect((await done).id).toBe(sent[0].id);
 	});
 
-	it('resolves only once every engine has stored the clip', async () => {
+	it('waits for a secondary that takes longer than the primary, however long', async () => {
+		vi.useFakeTimers();
 		hold(B);
 		let resolved = false;
-		const done = uploadClip(new File(['data'], 'bunny.mov'), undefined, clipID).then(() => {
-			resolved = true;
-		});
+		const done = uploadClip(new File(['data'], 'bunny.mov')).then(() => { resolved = true; });
 
-		await new Promise((r) => setTimeout(r, 0));
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
 		expect(resolved).toBe(false);
 
 		release(B);
@@ -133,7 +141,7 @@ describe('uploadClip (dual engine)', () => {
 		hold(A);
 		hold(B);
 		const progress: number[] = [];
-		const done = uploadClip(new File(['data'], 'bunny.mov'), (p) => progress.push(p), clipID);
+		const done = uploadClip(new File(['data'], 'bunny.mov'), (p) => progress.push(p));
 		await Promise.resolve();
 
 		held.get(A)!.progress(100);
@@ -146,93 +154,132 @@ describe('uploadClip (dual engine)', () => {
 		await done;
 	});
 
-	it('generates a clip ID when none is given', async () => {
-		await uploadClip(new File(['data'], 'bunny.mov'));
+	it('stops reporting the progress of an engine that failed for good', async () => {
+		vi.useFakeTimers();
+		hold(A);
+		respond = (url, _attempt, id) => (url === B ? failing(500, 'boom') : stored(id));
+		const progress: number[] = [];
+		const done = uploadClip(new File(['data'], 'bunny.mov'), (p) => progress.push(p));
+		const failed = expect(done).rejects.toThrow();
+		await vi.advanceTimersByTimeAsync(2500);
 
-		expect(sent[0].id).toMatch(/^[0-9a-f]{32}$/);
-		expect(sent[1].id).toBe(sent[0].id);
+		held.get(A)!.progress(70);
+		expect(progress.at(-1)).toBe(70);
+
+		release(A);
+		await failed;
 	});
 
 	it('accepts a 409 when the engine already holds the clip', async () => {
 		const notify = vi.fn();
 		setPartialFailureNotify(notify);
-		const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(clipA) });
-		vi.stubGlobal('fetch', fetchMock);
-		respond = (url) =>
-			url === B
-				? { status: 409, body: { error: 'clip: already exists' } }
-				: { status: 201, body: clipA };
+		fetchMock.mockImplementation((url: string) =>
+			Promise.resolve({ ok: true, json: () => Promise.resolve({ id: url.split('/').pop(), name: 'bunny' }) }));
+		respond = (url, _attempt, id) => (url === B ? failing(409, 'clip: already exists') : stored(id));
 
-		await uploadClip(new File(['data'], 'bunny.mov'), undefined, clipID);
+		const clip = await uploadClip(new File(['data'], 'bunny.mov'));
 
-		expect(fetchMock).toHaveBeenCalledWith(`https://engine-b.example.com/api/clips/${clipID}`, expect.anything());
+		expect(fetchMock).toHaveBeenCalledWith(`https://engine-b.example.com/api/clips/${clip.id}`, expect.anything());
 		expect(sent.filter((s) => s.url === B)).toHaveLength(1);
 		expect(notify).not.toHaveBeenCalled();
 	});
 
-	it('retries a 409 for an upload still in progress and then notifies', async () => {
-		vi.useFakeTimers();
-		const notify = vi.fn();
-		setPartialFailureNotify(notify);
-		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404, json: () => Promise.resolve({}) }));
-		respond = (url) =>
-			url === B
-				? { status: 409, body: { error: 'upload already in progress' } }
-				: { status: 201, body: clipA };
-
-		const done = uploadClip(new File(['data'], 'bunny.mov'), undefined, clipID);
-		await vi.advanceTimersByTimeAsync(2500);
-		await done;
-
-		expect(sent.filter((s) => s.url === B)).toHaveLength(2);
-		expect(notify).toHaveBeenCalledTimes(1);
-		expect(notify.mock.calls[0][0]).toContain('Engine B');
-	});
-
 	it('succeeds on a retry after a failed attempt', async () => {
 		vi.useFakeTimers();
-		const notify = vi.fn();
-		setPartialFailureNotify(notify);
-		respond = (url, attempt) =>
-			url === B && attempt === 0
-				? { status: 500, body: { error: 'boom' } }
-				: { status: 201, body: clipA };
+		respond = (url, attempt, id) => (url === B && attempt === 0 ? failing(500, 'boom') : stored(id));
 
-		const done = uploadClip(new File(['data'], 'bunny.mov'), undefined, clipID);
+		const done = uploadClip(new File(['data'], 'bunny.mov'));
 		await vi.advanceTimersByTimeAsync(2500);
 		await done;
 
 		const toB = sent.filter((s) => s.url === B);
 		expect(toB).toHaveLength(2);
-		expect(toB.every((s) => s.id === clipID)).toBe(true);
-		expect(notify).not.toHaveBeenCalled();
+		expect(toB[1].id).toBe(toB[0].id);
+		expect(deletes()).toEqual([]);
 	});
 
-	it('returns a stored clip and notifies when the primary fails twice', async () => {
+	it('removes the clip from the engines that stored it when another fails twice', async () => {
 		vi.useFakeTimers();
-		const notify = vi.fn();
-		setPartialFailureNotify(notify);
-		respond = (url) =>
-			url === A
-				? { status: 500, body: { error: 'boom' } }
-				: { status: 201, body: clipA };
+		fetchMock.mockImplementation((_url: string, opts?: RequestInit) =>
+			Promise.resolve(opts?.method === 'DELETE'
+				? { ok: true, status: 204, json: () => Promise.resolve({}) }
+				: { ok: false, status: 404, json: () => Promise.resolve({}) }));
+		respond = (url, _attempt, id) => (url === B ? failing(409, 'upload already in progress') : stored(id));
 
-		const done = uploadClip(new File(['data'], 'bunny.mov'), undefined, clipID);
+		const done = uploadClip(new File(['data'], 'bunny.mov'));
+		const failed = expect(done).rejects.toThrow(/Engine B.*upload already in progress/);
 		await vi.advanceTimersByTimeAsync(2500);
+		await failed;
 
-		expect((await done).id).toBe(clipID);
-		expect(notify).toHaveBeenCalledTimes(1);
-		expect(notify.mock.calls[0][0]).toContain('Engine A');
+		expect(sent.filter((s) => s.url === B)).toHaveLength(2);
+		expect(deletes()).toEqual([`https://engine-a.example.com/api/clips/${sent[0].id}`]);
+	});
+
+	it('fails rather than keep a clip only the secondary stored', async () => {
+		vi.useFakeTimers();
+		respond = (url, _attempt, id) => (url === A ? failing(500, 'boom') : stored(id));
+
+		const done = uploadClip(new File(['data'], 'bunny.mov'));
+		const failed = expect(done).rejects.toThrow(/Engine A/);
+		await vi.advanceTimersByTimeAsync(2500);
+		await failed;
+
+		expect(deletes()).toEqual([`https://engine-b.example.com/api/clips/${sent[0].id}`]);
 	});
 
 	it('rejects when no engine stores the clip', async () => {
 		vi.useFakeTimers();
-		respond = () => ({ status: 500, body: { error: 'boom' } });
+		respond = () => failing(500, 'boom');
 
-		const done = uploadClip(new File(['data'], 'bunny.mov'), undefined, clipID);
+		const done = uploadClip(new File(['data'], 'bunny.mov'));
 		const failed = expect(done).rejects.toThrow('boom');
 		await vi.advanceTimersByTimeAsync(2500);
 		await failed;
+		expect(deletes()).toEqual([]);
+	});
+});
+
+describe('listClipsOnEveryEngine', () => {
+	const clip = (id: string) => ({ id, name: id, source: 'upload' });
+	let lists: Record<string, unknown>;
+
+	beforeEach(() => {
+		setApiBaseUrl('');
+		setEngineUrls([
+			{ id: 'A', url: 'https://engine-a.example.com' },
+			{ id: 'B', url: 'https://engine-b.example.com' },
+		]);
+		vi.stubGlobal('fetch', vi.fn((url: string) => {
+			const body = lists[new URL(url).host];
+			return Promise.resolve(body instanceof Error
+				? Promise.reject(body)
+				: { ok: true, status: 200, json: () => Promise.resolve(body) });
+		}));
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		setEngineUrls(null);
+	});
+
+	// A clip still uploading, from this client or another, is on one engine
+	// only; a load for it would find it missing on the other.
+	it('leaves out a clip one engine does not hold yet', async () => {
+		lists = {
+			'engine-a.example.com': [clip('one'), clip('two')],
+			'engine-b.example.com': [clip('one')],
+		};
+
+		expect((await listClipsOnEveryEngine()).map((c) => c.id)).toEqual(['one']);
+	});
+
+	it('lists what the reachable engine holds when the other is down', async () => {
+		lists = {
+			'engine-a.example.com': [clip('one'), clip('two')],
+			'engine-b.example.com': new Error('network error'),
+		};
+
+		expect((await listClipsOnEveryEngine()).map((c) => c.id)).toEqual(['one', 'two']);
 	});
 });
 

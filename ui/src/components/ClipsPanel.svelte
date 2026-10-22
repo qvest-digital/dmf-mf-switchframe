@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState, ClipInfo, ClipPlayerState, RecordingFileInfo, EngineRecordingGroup, ClipUploadProgress } from '$lib/api/types';
 	import {
-		listClips, uploadClip, newClipId, deleteClip, pinClip,
+		listClipsOnEveryEngine, uploadClip, deleteClip, pinClip,
 		listRecordingsDualEngine, importRecordingFromEngine,
 		clipPlayerLoadByName, clipPlayerEject, clipPlayerPlay, clipPlayerPause, clipPlayerStop, clipPlayerSeek,
 		apiCall,
@@ -23,9 +23,6 @@
 	let recordingGroups = $state<EngineRecordingGroup[]>([]);
 	let uploading = $state(false);
 	let uploadPercent = $state(0);
-	// The clip being uploaded is listed once every engine has stored it; an
-	// engine still processing it would answer a load with "clip not found".
-	let uploadingClipId = $state<string | null>(null);
 	let fileInput: HTMLInputElement | undefined = $state();
 	let playerSpeeds = $state<Record<number, number>>({ 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0 });
 	let playerLoops = $state<Record<number, boolean>>({ 1: false, 2: false, 3: false, 4: false });
@@ -42,7 +39,7 @@
 		{ id: 4, state: 'empty' as const },
 	]);
 
-	const uploadedClips = $derived(clips.filter(c => c.source === 'upload' && c.id !== uploadingClipId));
+	const uploadedClips = $derived(clips.filter(c => c.source === 'upload'));
 	const replayClips = $derived(clips.filter(c => c.source === 'replay'));
 	const totalRecordings = $derived(recordingGroups.reduce((sum, g) => sum + g.recordings.length, 0));
 	const isDualEngine = $derived(recordingGroups.length > 1);
@@ -145,7 +142,7 @@
 	// ── Handlers ──
 	async function refreshClips() {
 		try {
-			clips = await listClips();
+			clips = await listClipsOnEveryEngine();
 		} catch {
 			// ignore on load
 		}
@@ -166,9 +163,8 @@
 	async function uploadSelectedFile(file: File) {
 		uploading = true;
 		uploadPercent = 0;
-		uploadingClipId = newClipId();
 		try {
-			await uploadClip(file, (pct) => { uploadPercent = pct; }, uploadingClipId);
+			await uploadClip(file, (pct) => { uploadPercent = pct; });
 			notify('info', `Uploaded "${file.name}"`);
 			await refreshClips();
 		} catch (err) {
@@ -176,7 +172,6 @@
 		} finally {
 			uploading = false;
 			uploadPercent = 0;
-			uploadingClipId = null;
 		}
 	}
 

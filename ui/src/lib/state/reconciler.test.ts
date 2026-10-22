@@ -2692,6 +2692,32 @@ describe('merged clip upload progress', () => {
 	});
 });
 
+// Clip lists refresh when clipCount moves. A clip counts once every engine
+// holds it, so the merged count is the lowest: it moves when the last engine
+// stores the clip, not when the authoritative one does.
+describe('merged clip count', () => {
+	it('is the lowest count among connected engines', () => {
+		const r = createReconciler();
+		r.ingest('A', makeState({ clipCount: 3 }));
+		r.ingest('B', makeState({ clipCount: 2 }));
+
+		expect(r.health.authoritative).toBe('A');
+		expect(r.state.clipCount).toBe(2);
+
+		r.ingest('B', makeState({ clipCount: 3 }));
+		expect(r.state.clipCount).toBe(3);
+	});
+
+	it('ignores a disconnected engine', () => {
+		const r = createReconciler();
+		r.ingest('A', makeState({ clipCount: 3 }));
+		r.ingest('B', makeState({ clipCount: 1 }));
+		r.disconnect('B');
+
+		expect(r.state.clipCount).toBe(3);
+	});
+});
+
 describe('leastAdvancedUpload', () => {
 	it('orders by stage, then by percent', () => {
 		const transcoding80 = { stage: 'transcoding' as const, percent: 80 };

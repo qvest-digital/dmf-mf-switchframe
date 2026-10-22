@@ -233,17 +233,22 @@ describe('switch-api dual-engine routing', () => {
 	// takes longer than the fan-out timeout for ordinary commands. Aborting it
 	// reports a failure for a load the engine still completes.
 	describe('slow clip load', () => {
+		const A = 'https://engine-a.example.com';
+		const B = 'https://engine-b.example.com';
+		/** Per-engine behaviour: answer after ms, never answer, or fail. */
+		let behaviour: Record<string, { after: number; res?: () => Response } | 'hang'>;
+
 		beforeEach(() => {
 			vi.useFakeTimers();
-			setEngineUrls([
-				{ id: 'A', url: 'https://engine-a.example.com' },
-				{ id: 'B', url: 'https://engine-b.example.com' },
-			]);
+			setEngineUrls([{ id: 'A', url: A }, { id: 'B', url: B }]);
+			behaviour = {};
 			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
 				fetchCalls.push({ url, opts: opts ?? {} });
+				const b = behaviour[url.startsWith(A) ? A : B] ?? { after: 0 };
 				return new Promise((resolve, reject) => {
 					opts?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
-					setTimeout(() => resolve(defaultOkResponse({ programSource: 'cam1' })), 15_000);
+					if (b === 'hang') return;
+					setTimeout(() => resolve((b.res ?? (() => defaultOkResponse({ programSource: 'cam1' })))()), b.after);
 				});
 			});
 		});
@@ -253,6 +258,7 @@ describe('switch-api dual-engine routing', () => {
 		});
 
 		it('waits for a load that takes longer than the command timeout', async () => {
+			behaviour = { [A]: { after: 15_000 }, [B]: { after: 15_000 } };
 			const notify = vi.fn();
 			setPartialFailureNotify(notify);
 
@@ -265,10 +271,51 @@ describe('switch-api dual-engine routing', () => {
 		});
 
 		it('still aborts an ordinary command after the command timeout', async () => {
+			behaviour = { [A]: { after: 15_000 }, [B]: { after: 15_000 } };
 			const done = cut('cam1');
 			const failed = expect(done).rejects.toThrow('All engines unreachable');
 			await vi.advanceTimersByTimeAsync(3_000);
 			await failed;
+		});
+
+		it('does not hold the caller for an engine that never answers', async () => {
+			behaviour = { [A]: { after: 1_000 }, [B]: 'hang' };
+			const notify = vi.fn();
+			setPartialFailureNotify(notify);
+			let resolved = false;
+
+			const done = clipPlayerLoadByName(1, 'bunny').then((r) => { resolved = true; return r; });
+			await vi.advanceTimersByTimeAsync(4_000);
+
+			expect(resolved).toBe(true);
+			await expect(done).resolves.toEqual({ programSource: 'cam1' });
+			expect(notify).not.toHaveBeenCalled();
+
+			// The straggler is still accounted for once it times out.
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(notify).toHaveBeenCalledWith(expect.stringContaining('Engine B'));
+		});
+
+		it('does not close a circuit that opened while the load was pending', async () => {
+			behaviour = { [A]: { after: 0 }, [B]: { after: 5_000 } };
+			const load = clipPlayerLoadByName(1, 'bunny');
+
+			// Engine B now fails three ordinary commands and its circuit opens.
+			behaviour[B] = { after: 0, res: () => errorResponse(500, 'down') };
+			for (let i = 0; i < 3; i++) {
+				const c = cut('cam1');
+				await vi.advanceTimersByTimeAsync(1);
+				await c;
+			}
+			await vi.advanceTimersByTimeAsync(5_000);
+			await load;
+
+			// The load's late success must not reopen B to commands.
+			fetchCalls = [];
+			const c = cut('cam1');
+			await vi.advanceTimersByTimeAsync(1);
+			await c;
+			expect(fetchCalls.map(f => f.url)).toEqual([`${A}/api/switch/cut`]);
 		});
 	});
 

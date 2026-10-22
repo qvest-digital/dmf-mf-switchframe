@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import type { ControlRoomState } from '$lib/api/types';
 	import {
-		listClips, deleteClip, uploadClip,
+		listClipsOnEveryEngine, deleteClip, uploadClip,
 		clipPlayerLoad, clipPlayerPlay,
 		cut,
 		graphicsImageUpload, graphicsAddLayer,
@@ -139,7 +139,7 @@
 	let uploadProgress = $state<{ filename: string; percent: number } | null>(null);
 
 	onMount(() => {
-		listClips().then(result => {
+		listClipsOnEveryEngine().then(result => {
 			clips = result.map(c => ({
 				id: c.id,
 				name: c.name,
@@ -161,7 +161,7 @@
 			});
 			uploadProgress = { filename: file.name, percent: 100 };
 			// Refresh clips list
-			const result = await listClips();
+			const result = await listClipsOnEveryEngine();
 			clips = result.map(c => ({
 				id: c.id,
 				name: c.name,
