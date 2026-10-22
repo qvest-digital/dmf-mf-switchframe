@@ -75,6 +75,7 @@ var (
 	ErrInvalidSpeed    = errors.New("clip: speed must be between 0.25 and 2.0")
 	ErrInvalidSeek     = errors.New("clip: seek position must be between 0.0 and 1.0")
 	ErrAlreadyExists   = errors.New("clip: already exists")
+	ErrInvalidID       = errors.New("clip: invalid clip ID")
 )
 
 // MaxPlayers is the number of clip player slots.

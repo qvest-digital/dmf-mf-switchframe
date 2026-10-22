@@ -1630,9 +1630,15 @@ export function deleteClip(id: string): Promise<void> {
 	return request(`/api/clips/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-function uploadClipToEngine(baseUrl: string, file: File, onUploadProgress?: (percent: number) => void): Promise<ClipInfo> {
+function uploadClipToEngine(
+	baseUrl: string,
+	file: File,
+	onUploadProgress?: (percent: number) => void,
+	clipId?: string,
+): Promise<ClipInfo> {
 	return new Promise((resolve, reject) => {
 		const formData = new FormData();
+		if (clipId) formData.append('id', clipId);
 		formData.append('file', file);
 
 		const xhr = new XMLHttpRequest();
@@ -1687,17 +1693,30 @@ export async function uploadClip(file: File, onUploadProgress?: (percent: number
 	const result = await uploadClipToEngine(primaryUrl, file, onUploadProgress);
 	const primaryDuration = Date.now() - uploadStart;
 
-	// Upload to secondary engine(s) — timeout scales with primary upload duration
+	// Upload to secondary engine(s); the timeout scales with the primary upload duration.
+	// Secondaries store the clip under the primary's ID so that ID-based
+	// requests (delete, pin, load by ID) fanned out to every engine address
+	// the same clip everywhere.
 	if (engines && engines.length > 1) {
 		const secondaryTimeout = Math.max(primaryDuration * 2, 30_000);
+		const uploadSecondary = async (url: string) => {
+			try {
+				await uploadClipToEngine(url, file, undefined, result.id);
+			} catch (err) {
+				// 409: the engine already holds this ID, e.g. an earlier
+				// attempt completed after the client gave up on it.
+				if (err instanceof SwitchApiError && err.status === 409) return;
+				throw err;
+			}
+		};
 		const secondaryUploads = engines.slice(1).map(async (engine) => {
 			try {
-				await uploadClipToEngine(engine.url, file);
+				await uploadSecondary(engine.url);
 			} catch {
 				// Retry once after 2s
 				await new Promise(r => setTimeout(r, 2000));
 				try {
-					await uploadClipToEngine(engine.url, file);
+					await uploadSecondary(engine.url);
 				} catch {
 					partialFailureNotify?.(`Clip upload failed on Engine ${engine.id} — clip only on primary`);
 				}
