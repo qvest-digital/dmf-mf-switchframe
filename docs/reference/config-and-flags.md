@@ -139,12 +139,40 @@ All flags are defined in [`parseConfig`](../../server/cmd/switchframe/main.go). 
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--mxl-sources` | string | `""` (env `SWITCHFRAME_MXL_SOURCES`) | Comma-separated MXL source specs `videoUUID[:audioUUID[:dataUUID]]` |
+| `--mxl-sources` | string | `""` (env `SWITCHFRAME_MXL_SOURCES`) | Comma-separated MXL source specs. `videoUUID[:audioUUID[:dataUUID]]` is keyed `mxl:<videoUUID>`. `name=[videoUUID[:audioUUID[:dataUUID]]]` is keyed `mxl:<name>`, shown under the name, may be booked without flows, and can be moved to other flows while running (see NMOS below) |
 | `--mxl-output` | string | `""` | MXL flow name for program output |
 | `--mxl-output-video-def` | string | `""` | Path to MXL output video flow definition JSON |
 | `--mxl-output-audio-def` | string | `""` | Path to MXL output audio flow definition JSON |
 | `--mxl-domain` | string | `/dev/shm/mxl` | MXL shared memory domain path |
 | `--mxl-discover` | bool | `false` | List available MXL flows and exit |
+
+### NMOS for MXL inputs (BCP-007-03)
+
+Off unless `--mxl-nmos-port` is set. The engine then serves an NMOS Node API (IS-04 v1.3) and Connection API (IS-05 v1.1) on that port, following AMWA BCP-007-03 for MXL. Each named MXL input is a group of MXL receivers, one per essence (video, audio, and data when the input was booked with a data flow), grouped by the `urn:x-nmos:tag:grouphint/v1.0` tag `<name>:Video` and so on. Their BCP-004-01 capabilities state the frame size, frame rate and audio sample rate the pipeline takes. A controller's IS-05 activation moves the input to the flow named by `mxl_flow_id`; the input keeps its stream and source key, so viewers' streams continue with the new pictures. An activation whose flow cannot be opened within 8 seconds, or whose format or rate the input cannot read, fails with 500 and leaves the active state as it was. NMOS never switches program or preview. The connected sender's source label, from the IS-04 Query API, becomes the input's label; a disconnect or a failed lookup gives the input its name back. An input no flow is connected to is left out of the source lists unless it is on program or preview.
+
+With `--mxl-output`, the program flows are offered as MXL senders described by the output flow definitions. What they write is fixed by configuration: a change of `mxl_flow_id` or `master_enable` on a program sender is refused.
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--mxl-nmos-port` | int | `0` (env `SWITCHFRAME_MXL_NMOS_PORT`) | Port of the Node and Connection APIs. 0: off |
+| `--mxl-nmos-seed` | string | `""` (env `SWITCHFRAME_MXL_NMOS_SEED`) | Seed every resource id is derived from. Required with the port. Keep it across restarts, and the same on both engines of a pair |
+| `--mxl-nmos-label` | string | `switchframe` (env `SWITCHFRAME_MXL_NMOS_LABEL`) | Label of the node and device |
+| `--mxl-nmos-host` | string | hostname (env `SWITCHFRAME_MXL_NMOS_HOST`) | Host the registry and controllers reach this engine's APIs at |
+| `--mxl-nmos-registry-url` | string | `""` (env `SWITCHFRAME_MXL_NMOS_REGISTRY_URL`) | Origin of the IS-04 Registration API, e.g. `http://registry:8010`. Empty: serve the APIs without registering |
+| `--mxl-nmos-query-url` | string | registry's (env `SWITCHFRAME_MXL_NMOS_QUERY_URL`) | Origin of the IS-04 Query API the connected sender's label is read from |
+
+`mxl_domain_id` takes the id in `<--mxl-domain>/domain_def.json`; `auto` resolves to it, and another domain is refused. Only immediate activations are supported.
+
+In an active-active pair both engines present the same node, and only the leader registers it. Each engine passes the activations it receives to its peer (on the peer's host from `--peer-engine-url`, at the same NMOS port), retrying until they land, and the two compare their receivers every 30 seconds and adopt the later activation. A forwarded activation carries the session API token, which marks it as the peer's.
+
+The APIs are unauthenticated, as IS-04 and IS-05 are: anyone who reaches the port can move an input to any flow in the domain, which changes what an on-air input shows. Restrict the port to the registry, the controllers and the peer engine.
+
+```bash
+switchframe --mxl-domain /run/mxl/domain \
+  --mxl-sources 'cam1=d4d00000-0000-0000-0000-000000000001:a0d10000-0000-0000-0000-000000000001,cam2=' \
+  --mxl-nmos-port 8092 --mxl-nmos-seed studio-1/switcher \
+  --mxl-nmos-host switcher.studio-1 --mxl-nmos-registry-url http://registry:8010
+```
 
 ### AI inference
 
@@ -312,6 +340,7 @@ See [file-formats.md](./file-formats.md) for field-level schemas.
 | `6464` | UDP | `--srt-listen` | SRT input listener (optional) |
 | `7464`–`7467` | UDP | `--srt-output-ports` | SRT output port range (optional) |
 | `8090` | TCP HTTP/1.1 | `--st2110-nmos-port` | NMOS IS-04/IS-05 API (when ST 2110 enabled) |
+| none | TCP HTTP/1.1 | `--mxl-nmos-port` | NMOS IS-04/IS-05 API for MXL inputs (BCP-007-03, optional) |
 
 ## Gotchas and invariants
 
