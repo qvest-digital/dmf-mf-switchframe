@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.0-rc.7](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.6...mxl-v1.0.0-rc.7) (2026-10-22)
+
+
+### Bug Fixes
+
+* **ui:** keep both Full Compare canvases attached to their engines ([4b12b9b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/4b12b9bbee6690a1a29251da0279b7cf29dfe219))
+* **ui:** leave live meters and local timestamps out of the comparison ([12843ac](https://github.com/qvest-digital/dmf-mf-switchframe/commit/12843ac5eef4a7c065058a848f64689896619013))
+* **ui:** let a command reach both engines before calling them diverged ([12843ac](https://github.com/qvest-digital/dmf-mf-switchframe/commit/12843ac5eef4a7c065058a848f64689896619013))
+* **ui:** stop the redundancy panel's thumbnail poll restarting on each tick ([4b12b9b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/4b12b9bbee6690a1a29251da0279b7cf29dfe219))
+* **ui:** treat a missing API token as a token prompt, not engine A down ([#20](https://github.com/qvest-digital/dmf-mf-switchframe/issues/20)) ([e8fc605](https://github.com/qvest-digital/dmf-mf-switchframe/commit/e8fc605541d560aafcef5c490d1fce1e809015e7))
+
+
+### Build System
+
+* **deps:** move Dockerfile.mxl to go-mxl 1.1.0-rc.7 ([#16](https://github.com/qvest-digital/dmf-mf-switchframe/issues/16)) ([5b6266c](https://github.com/qvest-digital/dmf-mf-switchframe/commit/5b6266c87036053b5a73fa17bf642beab34e2ef4))
+
 ## [1.0.0-rc.6](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.5...mxl-v1.0.0-rc.6) (2026-10-21)
 
 
