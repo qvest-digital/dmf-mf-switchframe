@@ -399,3 +399,28 @@ func TestMXLNMOS_ProgramSenders(t *testing.T) {
 		t.Errorf("transportfile: %d, want 404", resp.StatusCode)
 	}
 }
+
+// A named input reads as unconnected while no video flow is connected, so
+// the UI does not offer it.
+func TestMXLInputUnconnected(t *testing.T) {
+	a := &App{}
+	connected, idle := &lockedRetargetable{}, &lockedRetargetable{}
+	connected.Retarget(specV)
+	a.namedMXLInputs.add("cam1", &mxlInput{Video: connected, Audio: &lockedRetargetable{}})
+	a.namedMXLInputs.add("cam2", &mxlInput{Video: idle, Audio: &lockedRetargetable{}})
+
+	for key, want := range map[string]bool{
+		"mxl:cam1":     false,
+		"mxl:cam2":     true,
+		"mxl:" + specA: false, // keyed by its flow: always connected
+		"srt:cam2":     false,
+	} {
+		if got := a.mxlInputUnconnected(key); got != want {
+			t.Errorf("%s: unconnected %v, want %v", key, got, want)
+		}
+	}
+	connected.Retarget("")
+	if !a.mxlInputUnconnected("mxl:cam1") {
+		t.Error("cam1 disconnected but not marked unconnected")
+	}
+}

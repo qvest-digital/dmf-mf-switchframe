@@ -45,6 +45,7 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	// Enrich sources with type field, SRT info, and per-source corrector.
 	for key, info := range state.Sources {
 		info.Type = sourceType(key)
+		info.Unconnected = a.mxlInputUnconnected(key)
 		if info.Type == "srt" && a.srtStats != nil {
 			cs, ok := a.srtStats.Get(key)
 			if !ok {

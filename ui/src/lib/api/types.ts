@@ -39,6 +39,8 @@ export interface SourceInfo {
 	isVirtual?: boolean;
 	hasCaptions?: boolean;
 	corrector?: CorrectorState;
+	/** Connected to nothing, e.g. a named MXL input no flow is connected to. */
+	unconnected?: boolean;
 }
 
 export interface EQBand {

@@ -132,3 +132,14 @@ func (a *App) retargetMXLInput(name string, video, audio, data *string) error {
 	}
 	return nil
 }
+
+// mxlInputUnconnected reports whether key is a named MXL input whose video
+// reads no flow. An input keyed by its flow always reads one.
+func (a *App) mxlInputUnconnected(key string) bool {
+	name, ok := strings.CutPrefix(key, "mxl:")
+	if !ok {
+		return false
+	}
+	in, ok := a.namedMXLInputs.get(name)
+	return ok && in.Video.FlowID() == ""
+}
