@@ -91,6 +91,48 @@ func (e MXLEndpoint) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
+// NewMXLReceiverEndpoint is a receiver state, e.g. for SetReceiverActive.
+func NewMXLReceiverEndpoint(senderID *string, enable bool, domainID, flowID *string) MXLEndpoint {
+	return MXLEndpoint{
+		SenderID:        cloneStr(senderID),
+		MasterEnable:    enable,
+		TransportFile:   &MXLTransportFile{},
+		TransportParams: []MXLParams{{DomainID: cloneStr(domainID), FlowID: cloneStr(flowID)}},
+		receiver:        true,
+	}
+}
+
+// UnmarshalJSON reads either form MarshalJSON writes.
+func (e *MXLEndpoint) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		SenderID        *string           `json:"sender_id"`
+		ReceiverID      *string           `json:"receiver_id"`
+		MasterEnable    bool              `json:"master_enable"`
+		Activation      Activation        `json:"activation"`
+		TransportFile   *MXLTransportFile `json:"transport_file"`
+		TransportParams []MXLParams       `json:"transport_params"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(data, &fields)
+	_, isReceiver := fields["sender_id"]
+	*e = MXLEndpoint{
+		SenderID:        raw.SenderID,
+		ReceiverID:      raw.ReceiverID,
+		MasterEnable:    raw.MasterEnable,
+		Activation:      raw.Activation,
+		TransportFile:   raw.TransportFile,
+		TransportParams: raw.TransportParams,
+		receiver:        isReceiver,
+	}
+	if len(e.TransportParams) == 0 {
+		e.TransportParams = []MXLParams{{}}
+	}
+	return nil
+}
+
 func (e MXLEndpoint) clone() MXLEndpoint {
 	c := e
 	c.SenderID = cloneStr(e.SenderID)

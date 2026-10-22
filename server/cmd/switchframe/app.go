@@ -236,7 +236,9 @@ type App struct {
 	// namedMXLInputs holds the readers of --mxl-sources entries given a
 	// name, which can be moved to other flows while they run.
 	namedMXLInputs mxlInputs
-	mxlOutput      *mxl.Output
+	// mxlNMOS is the NMOS node for the named MXL inputs; nil when off.
+	mxlNMOS   *mxlNMOS
+	mxlOutput *mxl.Output
 
 	// demoMXLSources holds only the synthetic sources created by startMXLDemo.
 	// Tracked separately from mxlSources so stopMXLDemo tears down exactly what
@@ -2180,6 +2182,8 @@ func (a *App) closeSubsystems() {
 	// to invoke a closed encoder. The switcher's own Close() will stop
 	// the producer goroutine afterward.
 	a.closeBuiltinSourcePreview()
+
+	a.closeMXLNMOS()
 
 	// ST 2110 cleanup (before core engine).
 	a.closeST2110()

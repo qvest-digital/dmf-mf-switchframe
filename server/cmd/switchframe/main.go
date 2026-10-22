@@ -115,8 +115,11 @@ type AppConfig struct {
 	MXLOutput         string   // Flow name for program output (empty = disabled)
 	MXLOutputVideoDef string   // Path to output video flow definition JSON
 	MXLOutputAudioDef string   // Path to output audio flow definition JSON
-	MXLDomain         string   // MXL shared memory domain path
-	MXLDiscover       bool     // List available MXL flows and exit
+
+	// MXLNMOS configures the NMOS node for named MXL inputs (--mxl-nmos-*).
+	MXLNMOS     mxlNMOSConfig
+	MXLDomain   string // MXL shared memory domain path
+	MXLDiscover bool   // List available MXL flows and exit
 
 	// AI inference (segmentation, depth, SAM, tracking — all via sidecar).
 	AISidecarBin string // Path to switchframe-ai sidecar binary (empty = AI disabled)
@@ -250,6 +253,9 @@ func run() error {
 		}
 		return err
 	}
+	if err := app.initMXLNMOS(); err != nil {
+		return err
+	}
 	if err := app.initST2110(context.Background()); err != nil {
 		return err
 	}
@@ -371,6 +377,12 @@ func parseConfig() (AppConfig, error) {
 	// MXL integration flags.
 	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL source specs: videoUUID[:audioUUID[:dataUUID]], keyed by the video flow, or name=[videoUUID[:audioUUID[:dataUUID]]], keyed by the name, which can be moved to other flows while running and may be booked without flows (env: SWITCHFRAME_MXL_SOURCES)")
 	mxlOutput := flag.String("mxl-output", "", "MXL flow name for program output")
+	mxlNMOSPortFlag := flag.Int("mxl-nmos-port", 0, "port of the NMOS node (IS-04, IS-05, BCP-007-03) through which a controller connects the named MXL inputs to flows; 0 = off (env: SWITCHFRAME_MXL_NMOS_PORT)")
+	mxlNMOSSeedFlag := flag.String("mxl-nmos-seed", "", "seed of the NMOS resource ids; the same on both engines of a pair and across restarts (env: SWITCHFRAME_MXL_NMOS_SEED)")
+	mxlNMOSLabelFlag := flag.String("mxl-nmos-label", "", "label of the NMOS node and device; empty = switchframe (env: SWITCHFRAME_MXL_NMOS_LABEL)")
+	mxlNMOSHostFlag := flag.String("mxl-nmos-host", "", "host a registry and controllers reach this engine's NMOS node at; empty = hostname (env: SWITCHFRAME_MXL_NMOS_HOST)")
+	mxlNMOSRegistryFlag := flag.String("mxl-nmos-registry-url", "", "origin of the IS-04 Registration API to register with; empty = do not register (env: SWITCHFRAME_MXL_NMOS_REGISTRY_URL)")
+	mxlNMOSQueryFlag := flag.String("mxl-nmos-query-url", "", "origin of the IS-04 Query API connected senders are looked up in; empty = the registry's (env: SWITCHFRAME_MXL_NMOS_QUERY_URL)")
 	mxlOutputVideoDef := flag.String("mxl-output-video-def", "", "Path to MXL output video flow definition JSON")
 	mxlOutputAudioDef := flag.String("mxl-output-audio-def", "", "Path to MXL output audio flow definition JSON")
 	mxlDomain := flag.String("mxl-domain", "/dev/shm/mxl", "MXL shared memory domain path")
@@ -614,12 +626,20 @@ func parseConfig() (AppConfig, error) {
 		ST2110NMOSPort:       *st2110NMOSPortFlag,
 		OutputsConfig:        *outputsConfigFlag,
 		PeerEngineURL:        resolveEnvOrFlag(*peerEngineURLFlag, "SWITCHFRAME_PEER_ENGINE_URL"),
-		PeerCertHash:         resolveEnvOrFlag(*peerCertHashFlag, "SWITCHFRAME_PEER_CERT_HASH"),
-		PeerPublicURL:        resolveEnvOrFlag(*peerPublicURLFlag, "SWITCHFRAME_PEER_PUBLIC_URL"),
-		EngineLabel:          resolveEnvOrFlag(*engineLabelFlag, "SWITCHFRAME_ENGINE_LABEL"),
-		ControlPlaneSecret:   resolveEnvOrFlag(*controlPlaneSecretFlag, "SWITCHFRAME_CONTROL_PLANE_SECRET"),
-		RefClock:             *refClockFlag,
-		WarmCache:            *warmCacheFlag,
+		MXLNMOS: mxlNMOSConfig{
+			Port:        resolveIntEnvOrFlag(*mxlNMOSPortFlag, "SWITCHFRAME_MXL_NMOS_PORT"),
+			Seed:        resolveEnvOrFlag(*mxlNMOSSeedFlag, "SWITCHFRAME_MXL_NMOS_SEED"),
+			Label:       resolveEnvOrFlag(*mxlNMOSLabelFlag, "SWITCHFRAME_MXL_NMOS_LABEL"),
+			Host:        resolveEnvOrFlag(*mxlNMOSHostFlag, "SWITCHFRAME_MXL_NMOS_HOST"),
+			RegistryURL: resolveEnvOrFlag(*mxlNMOSRegistryFlag, "SWITCHFRAME_MXL_NMOS_REGISTRY_URL"),
+			QueryURL:    resolveEnvOrFlag(*mxlNMOSQueryFlag, "SWITCHFRAME_MXL_NMOS_QUERY_URL"),
+		},
+		PeerCertHash:       resolveEnvOrFlag(*peerCertHashFlag, "SWITCHFRAME_PEER_CERT_HASH"),
+		PeerPublicURL:      resolveEnvOrFlag(*peerPublicURLFlag, "SWITCHFRAME_PEER_PUBLIC_URL"),
+		EngineLabel:        resolveEnvOrFlag(*engineLabelFlag, "SWITCHFRAME_ENGINE_LABEL"),
+		ControlPlaneSecret: resolveEnvOrFlag(*controlPlaneSecretFlag, "SWITCHFRAME_CONTROL_PLANE_SECRET"),
+		RefClock:           *refClockFlag,
+		WarmCache:          *warmCacheFlag,
 	}, nil
 }
 
@@ -637,6 +657,19 @@ func validateEngineLabel(label string) error {
 }
 
 // resolveEnvOrFlag returns the flag value if non-empty, else the env var value.
+// resolveIntEnvOrFlag is resolveEnvOrFlag for an integer flag whose zero
+// value means unset. An unparsable environment value counts as unset.
+func resolveIntEnvOrFlag(flagVal int, envKey string) int {
+	if flagVal != 0 {
+		return flagVal
+	}
+	v, err := strconv.Atoi(os.Getenv(envKey))
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
 func resolveEnvOrFlag(flagVal, envKey string) string {
 	if flagVal != "" {
 		return flagVal
