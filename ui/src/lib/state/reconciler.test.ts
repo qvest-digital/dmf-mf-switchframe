@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createReconciler, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, AUTHORITY_HOLD_MS, sortedStringify, SETTLE_MS, SETTLE_MAX_MS } from './reconciler.svelte';
+import { createReconciler, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, AUTHORITY_HOLD_MS, sortedStringify, SETTLE_MS, SETTLE_MAX_MS, leastAdvancedUpload } from './reconciler.svelte';
 import type { ControlRoomState, ClipPlayerState } from '$lib/api/types';
 
 /** Let both engines' states sit unchanged for SETTLE_MS, after which a
@@ -2657,6 +2657,51 @@ describe('createReconciler', () => {
 			expect(commsDiv?.engineA).toBe(true);
 			expect(commsDiv?.engineB).toBeUndefined();
 		});
+	});
+});
+
+// Each engine stores an uploaded clip on its own; the clip can be loaded only
+// once the slowest engine has it, so the merged state shows that engine's
+// progress rather than the authoritative engine's, which may already be done.
+describe('merged clip upload progress', () => {
+	it('shows the engine still processing when the authoritative one is done', () => {
+		const r = createReconciler();
+		r.ingest('A', makeState());
+		r.ingest('B', makeState({ clipUpload: { stage: 'transcoding', percent: 40, filename: 'bunny.mov' } }));
+
+		expect(r.health.authoritative).toBe('A');
+		expect(r.state.clipUpload).toEqual({ stage: 'transcoding', percent: 40, filename: 'bunny.mov' });
+	});
+
+	it('clears once every engine has finished', () => {
+		const r = createReconciler();
+		r.ingest('A', makeState());
+		r.ingest('B', makeState({ clipUpload: { stage: 'validating', percent: 0 } }));
+		r.ingest('B', makeState());
+
+		expect(r.state.clipUpload).toBeUndefined();
+	});
+
+	it('ignores a disconnected engine', () => {
+		const r = createReconciler();
+		r.ingest('A', makeState());
+		r.ingest('B', makeState({ clipUpload: { stage: 'analyzing', percent: 0 } }));
+		r.disconnect('B');
+
+		expect(r.state.clipUpload).toBeUndefined();
+	});
+});
+
+describe('leastAdvancedUpload', () => {
+	it('orders by stage, then by percent', () => {
+		const transcoding80 = { stage: 'transcoding' as const, percent: 80 };
+		const transcoding20 = { stage: 'transcoding' as const, percent: 20 };
+		const analyzing = { stage: 'analyzing' as const, percent: 90 };
+
+		expect(leastAdvancedUpload(transcoding80, analyzing)).toBe(analyzing);
+		expect(leastAdvancedUpload(transcoding80, transcoding20)).toBe(transcoding20);
+		expect(leastAdvancedUpload(undefined, transcoding80)).toBe(transcoding80);
+		expect(leastAdvancedUpload(undefined, undefined)).toBeUndefined();
 	});
 });
 

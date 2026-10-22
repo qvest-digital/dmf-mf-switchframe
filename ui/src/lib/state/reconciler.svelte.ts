@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State } from '$lib/api/types';
+import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State, ClipUploadProgress, ClipUploadStage } from '$lib/api/types';
 
 /** Minimum RTT delta (ms) required to switch authority based on RTT alone. Prevents jitter flapping. */
 export const RTT_HYSTERESIS_MS = 100;
@@ -80,6 +80,27 @@ export function fieldEquals(a: unknown, b: unknown): boolean {
 	if (typeof a !== typeof b) return false;
 	if (typeof a === 'object') return sortedStringify(a) === sortedStringify(b);
 	return false;
+}
+
+const UPLOAD_STAGE_ORDER: ClipUploadStage[] = ['uploading', 'analyzing', 'transcoding', 'validating'];
+
+/** Returns the clip upload furthest behind among the engines processing one.
+ * Each engine stores an upload separately; the clip is usable once the last
+ * of them finishes, so that one is the progress to show. */
+export function leastAdvancedUpload(
+	...uploads: (ClipUploadProgress | undefined)[]
+): ClipUploadProgress | undefined {
+	let least: ClipUploadProgress | undefined;
+	for (const u of uploads) {
+		if (!u) continue;
+		if (!least) {
+			least = u;
+			continue;
+		}
+		const d = UPLOAD_STAGE_ORDER.indexOf(u.stage) - UPLOAD_STAGE_ORDER.indexOf(least.stage);
+		if (d < 0 || (d === 0 && u.percent < least.percent)) least = u;
+	}
+	return least;
 }
 
 /** Fields considered program-visible for divergence comparison. */
@@ -531,7 +552,13 @@ export function createReconciler() {
 		if (authoritative === 'A' && stateA) st = stateA;
 		else if (authoritative === 'B' && stateB) st = stateB;
 		else st = stateA ?? stateB ?? EMPTY_STATE;
-		return engineBUrl && st !== EMPTY_STATE && st.engineBUrl !== engineBUrl ? { ...st, engineBUrl } : st;
+		if (st === EMPTY_STATE) return st;
+		const clipUpload = leastAdvancedUpload(
+			connectedA ? stateA?.clipUpload : undefined,
+			connectedB ? stateB?.clipUpload : undefined,
+		);
+		if (clipUpload !== st.clipUpload) st = { ...st, clipUpload };
+		return engineBUrl && st.engineBUrl !== engineBUrl ? { ...st, engineBUrl } : st;
 	});
 
 	/** Divergence detection across program-visible fields. */

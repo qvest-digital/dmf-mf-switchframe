@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ClipsPanel from './ClipsPanel.svelte';
-import type { ControlRoomState } from '$lib/api/types';
+import type { ControlRoomState, ClipInfo } from '$lib/api/types';
+import { listClips, uploadClip } from '$lib/api/switch-api';
 
 vi.mock('$lib/api/switch-api', () => ({
 	listClips: vi.fn().mockResolvedValue([]),
 	uploadClip: vi.fn(),
+	newClipId: vi.fn(() => '0123456789abcdef0123456789abcdef'),
 	deleteClip: vi.fn(),
 	pinClip: vi.fn(),
 	listRecordingsDualEngine: vi.fn().mockResolvedValue([{ engineId: 'A', engineUrl: '', recordings: [] }]),
@@ -107,5 +109,35 @@ describe('ClipsPanel', () => {
 		// "Analyze" should be the active stage
 		const activeStages = container.querySelectorAll('.stage-dot.active');
 		expect(activeStages.length).toBeGreaterThan(0);
+	});
+
+	// An engine still processing the upload answers a load with "clip not
+	// found", so the clip is not offered for loading until every engine has it.
+	it('lists an uploading clip only once the upload has finished on every engine', async () => {
+		const bunny = {
+			id: '0123456789abcdef0123456789abcdef',
+			name: 'bunny',
+			filename: 'bunny.ts',
+			source: 'upload',
+		} as ClipInfo;
+		vi.mocked(listClips).mockResolvedValue([bunny]);
+		let finish!: (c: ClipInfo) => void;
+		vi.mocked(uploadClip).mockReturnValue(new Promise((r) => { finish = r; }));
+
+		const { container, rerender } = render(ClipsPanel, { props: { state: makeState({ clipCount: 0 }) } });
+		const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+		const file = new File(['data'], 'bunny.mov');
+		Object.defineProperty(input, 'files', { value: [file] });
+		await fireEvent.change(input);
+
+		expect(vi.mocked(uploadClip).mock.calls[0][2]).toBe(bunny.id);
+
+		// The first engine has stored it and its clip count moved.
+		await rerender({ state: makeState({ clipCount: 1 }) });
+		await waitFor(() => expect(listClips).toHaveBeenCalled());
+		expect(container.querySelector('.clip-name')).toBeNull();
+
+		finish(bunny);
+		await waitFor(() => expect(container.querySelector('.clip-name')?.textContent).toBe('bunny'));
 	});
 });

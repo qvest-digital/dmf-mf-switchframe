@@ -17,7 +17,7 @@ import {
 	setFormat, setEncoderBackend,
 	setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, authHeaders,
 	resetPreferredEngine, resetCircuitBreakers, uploadStinger,
-	startRecording, stopRecording, addDestination,
+	startRecording, stopRecording, addDestination, clipPlayerLoadByName,
 } from './switch-api';
 
 // Track all fetch calls for inspection
@@ -226,6 +226,49 @@ describe('switch-api dual-engine routing', () => {
 			});
 
 			await expect(getState()).rejects.toThrow();
+		});
+	});
+
+	// A clip load demuxes the whole file before the engine answers, which
+	// takes longer than the fan-out timeout for ordinary commands. Aborting it
+	// reports a failure for a load the engine still completes.
+	describe('slow clip load', () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return new Promise((resolve, reject) => {
+					opts?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+					setTimeout(() => resolve(defaultOkResponse({ programSource: 'cam1' })), 15_000);
+				});
+			});
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('waits for a load that takes longer than the command timeout', async () => {
+			const notify = vi.fn();
+			setPartialFailureNotify(notify);
+
+			const done = clipPlayerLoadByName(1, 'bunny');
+			await vi.advanceTimersByTimeAsync(15_000);
+
+			await expect(done).resolves.toEqual({ programSource: 'cam1' });
+			expect(fetchCalls.every(c => !c.opts.signal?.aborted)).toBe(true);
+			expect(notify).not.toHaveBeenCalled();
+		});
+
+		it('still aborts an ordinary command after the command timeout', async () => {
+			const done = cut('cam1');
+			const failed = expect(done).rejects.toThrow('All engines unreachable');
+			await vi.advanceTimersByTimeAsync(3_000);
+			await failed;
 		});
 	});
 

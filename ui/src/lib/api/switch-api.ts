@@ -56,6 +56,16 @@ export function getAuthHeaders(): Record<string, string> {
 
 const ENGINE_FETCH_TIMEOUT_MS = 3_000;
 
+// A clip load demuxes the whole file before it answers, which takes 14s for
+// an 8-minute 1080p clip. Aborting it earlier reports a failure for a load
+// the engine still completes.
+const CLIP_LOAD_TIMEOUT_MS = 120_000;
+const CLIP_LOAD_PATH = /^\/api\/clips\/players\/\d+\/load$/;
+
+function engineFetchTimeoutMs(path: string): number {
+	return CLIP_LOAD_PATH.test(path) ? CLIP_LOAD_TIMEOUT_MS : ENGINE_FETCH_TIMEOUT_MS;
+}
+
 function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs: number = ENGINE_FETCH_TIMEOUT_MS): Promise<Response> {
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -76,7 +86,7 @@ function retryFailedEngines(
 			const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
 			if (!ok) {
 				try {
-					await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] });
+					await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] }, engineFetchTimeoutMs(url));
 				} catch { /* retry is best-effort */ }
 			}
 		}
@@ -295,7 +305,7 @@ async function fanOutMutation(
 
 	const results = await Promise.allSettled(
 		availableEngines.map((engine, i) => {
-			return fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: bodies[i] });
+			return fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: bodies[i] }, engineFetchTimeoutMs(url));
 		})
 	);
 
@@ -1682,68 +1692,83 @@ function uploadClipToEngine(
 	});
 }
 
-/** Reports whether the engine at baseUrl holds a clip with the same ID and name. */
-async function engineHasClip(baseUrl: string, want: ClipInfo): Promise<boolean> {
+/** Returns the clip the engine at baseUrl holds under id, or null. */
+async function engineClip(baseUrl: string, id: string): Promise<ClipInfo | null> {
 	try {
-		const res = await fetch(`${baseUrl}/api/clips/${encodeURIComponent(want.id)}`, {
+		const res = await fetch(`${baseUrl}/api/clips/${encodeURIComponent(id)}`, {
 			headers: authHeaders(),
 		});
-		if (!res.ok) return false;
+		if (!res.ok) return null;
 		const got: ClipInfo = await res.json();
-		return got.id === want.id && got.name === want.name;
+		return got.id === id ? got : null;
 	} catch {
-		return false;
+		return null;
 	}
 }
 
-export async function uploadClip(file: File, onUploadProgress?: (percent: number) => void): Promise<ClipInfo> {
+/** Returns a random clip ID in the form the engines generate. */
+export function newClipId(): string {
+	const b = new Uint8Array(16);
+	crypto.getRandomValues(b);
+	return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Uploads a clip to every engine in parallel under one clip ID and resolves
+ * once each engine has stored it, so ID-based requests fanned out later
+ * (load, pin, delete) address the same clip everywhere, and a clip is not
+ * offered for loading while an engine is still processing it.
+ * onUploadProgress reports the bytes sent to the engine furthest behind.
+ */
+export async function uploadClip(
+	file: File,
+	onUploadProgress?: (percent: number) => void,
+	clipId: string = newClipId(),
+): Promise<ClipInfo> {
 	const engines = getEngineUrls();
-	const primaryUrl = engines && engines.length > 0
-		? engines[0].url
-		: resolveApiUrl('');
+	const targets: EngineEndpoint[] = engines && engines.length > 0
+		? engines
+		: [{ id: 'A', url: resolveApiUrl('') }];
 
-	// Upload to primary engine with progress tracking
-	const uploadStart = Date.now();
-	const result = await uploadClipToEngine(primaryUrl, file, onUploadProgress);
-	const primaryDuration = Date.now() - uploadStart;
+	const sent = targets.map(() => 0);
+	const report = (i: number, percent: number) => {
+		sent[i] = percent;
+		onUploadProgress?.(Math.min(...sent));
+	};
 
-	// Upload to secondary engine(s); the timeout scales with the primary upload duration.
-	// Secondaries store the clip under the primary's ID so that ID-based
-	// requests (delete, pin, load by ID) fanned out to every engine address
-	// the same clip everywhere.
-	if (engines && engines.length > 1) {
-		const secondaryTimeout = Math.max(primaryDuration * 2, 30_000);
-		const uploadSecondary = async (url: string) => {
-			try {
-				await uploadClipToEngine(url, file, undefined, result.id);
-			} catch (err) {
-				// The engine may already hold this ID, e.g. an earlier attempt
-				// completed after the client gave up on it. Any other failure,
-				// including a 409 for an upload still in progress, is retried.
-				if (!(err instanceof SwitchApiError && err.status === 409)) throw err;
-				if (!(await engineHasClip(url, result))) throw err;
-			}
-		};
-		const secondaryUploads = engines.slice(1).map(async (engine) => {
-			try {
-				await uploadSecondary(engine.url);
-			} catch {
-				// Retry once after 2s
-				await new Promise(r => setTimeout(r, 2000));
-				try {
-					await uploadSecondary(engine.url);
-				} catch {
-					partialFailureNotify?.(`Clip upload failed on Engine ${engine.id} — clip only on primary`);
-				}
-			}
-		});
-		await Promise.race([
-			Promise.allSettled(secondaryUploads),
-			new Promise(resolve => setTimeout(resolve, secondaryTimeout)),
-		]);
-	}
+	const attempt = async (i: number): Promise<ClipInfo> => {
+		const url = targets[i].url;
+		report(i, 0);
+		try {
+			return await uploadClipToEngine(url, file, (p) => report(i, p), clipId);
+		} catch (err) {
+			// The engine may already hold this ID: an earlier attempt completed
+			// after the client gave up on it. Any other failure, including a
+			// 409 for another upload still in progress, is retried.
+			if (!(err instanceof SwitchApiError && err.status === 409)) throw err;
+			const held = await engineClip(url, clipId);
+			if (!held) throw err;
+			return held;
+		}
+	};
 
-	return result;
+	const results = await Promise.allSettled(targets.map(async (_engine, i) => {
+		try {
+			return await attempt(i);
+		} catch {
+			await new Promise((r) => setTimeout(r, 2000));
+			return attempt(i);
+		}
+	}));
+
+	const stored = results.filter((r): r is PromiseFulfilledResult<ClipInfo> => r.status === 'fulfilled');
+	if (stored.length === 0) throw (results[0] as PromiseRejectedResult).reason;
+	results.forEach((r, i) => {
+		if (r.status === 'rejected') {
+			partialFailureNotify?.(`Clip upload failed on Engine ${targets[i].id}: clip missing there`);
+		}
+	});
+	return stored[0].value;
 }
 
 export function pinClip(id: string): Promise<ClipInfo> {
