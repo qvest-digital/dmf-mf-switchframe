@@ -17,14 +17,16 @@
 **Request body:**
 
 ```json
-{ "name": "Alice", "role": "director", "id": "optional-stable-id", "inviteToken": "abc123" }
+{ "name": "Alice", "role": "director", "id": "optional-stable-id", "inviteToken": "abc123", "token": "optional-64-hex-chars" }
 ```
 
 Roles: `director`, `audio`, `graphics`, `captioner`, `viewer` — see `operator.Role`.
 
+`id` and `token` are optional and chosen by the client. A dual-engine UI sends the same registration to both engines, so both must store the same ID and the same bearer token; a token minted by each engine would leave the browser holding one the other engine rejects. `token` must be 64 lowercase hex characters (the format the engine generates) and not already in use; omitted, the engine generates one. Re-registering an existing `id` returns that operator only with the same name, role and token.
+
 **Response 200:** `{ "id": "...", "name": "...", "role": "...", "token": "..." }`. The token is the bearer token the operator uses for subsequent calls.
 
-**Errors:** 400 (empty name, `operator.ErrInvalidRole`), 403 (missing / invalid invite token when configured), 409 (`operator.ErrDuplicateName`).
+**Errors:** 400 (empty name, `operator.ErrInvalidRole`, `operator.ErrInvalidToken`), 403 (missing / invalid invite token when configured), 409 (`operator.ErrDuplicateName`).
 
 ---
 

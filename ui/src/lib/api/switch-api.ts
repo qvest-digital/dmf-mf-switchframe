@@ -1446,8 +1446,8 @@ export interface OperatorRegistration {
 	token: string;
 }
 
-export function operatorRegister(name: string, role: OperatorRole, id?: string): Promise<OperatorRegistration> {
-	return post('/api/operator/register', { id, name, role });
+export function operatorRegister(name: string, role: OperatorRole, id?: string, token?: string): Promise<OperatorRegistration> {
+	return post('/api/operator/register', { id, name, role, token });
 }
 
 export function operatorReconnect(): Promise<{ id: string; name: string; role: OperatorRole }> {

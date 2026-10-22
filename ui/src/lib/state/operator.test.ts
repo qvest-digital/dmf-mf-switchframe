@@ -8,7 +8,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	setAuthToken: vi.fn(),
 }));
 
-import { operatorRegister, operatorReconnect, operatorHeartbeat } from '$lib/api/switch-api';
+import { operatorRegister, operatorReconnect, operatorHeartbeat, setAuthToken } from '$lib/api/switch-api';
 
 describe('operator state', () => {
 	beforeEach(() => {
@@ -72,6 +72,24 @@ describe('operator state', () => {
 		expect(parsed.id).toBe('op1');
 		expect(parsed.name).toBe('Alice');
 		expect(parsed.role).toBe('director');
+	});
+
+	// Registration fans out to both engines of a dual-engine pair. Each must
+	// get the same token, the one this browser then sends to both.
+	it('registers with a client-generated token in the engine format', async () => {
+		const mod = await import('./operator.svelte');
+		vi.mocked(operatorRegister).mockImplementationOnce(async (name, role, id, token) => ({ id: id!, name, role, token: token! }));
+		await mod.register('Alice', 'director');
+
+		const [, , id, token] = vi.mocked(operatorRegister).mock.calls.at(-1)!;
+		expect(id).toBeTruthy();
+		expect(token).toMatch(/^[0-9a-f]{64}$/);
+		expect(setAuthToken).toHaveBeenLastCalledWith(token);
+	});
+
+	it('generates a different token for each registration', async () => {
+		const mod = await import('./operator.svelte');
+		expect(mod.newOperatorToken()).not.toBe(mod.newOperatorToken());
 	});
 
 	it('caches session in sessionStorage on successful reconnect', async () => {

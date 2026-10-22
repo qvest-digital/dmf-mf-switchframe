@@ -134,7 +134,7 @@ Each role also has a lock matrix (`operator.roleLockable`) defining which subsys
 
 ### Registration and bearer tokens
 
-`POST /api/operator/register` (unauthenticated) creates an operator with a generated UUID-like ID (`generateID`: 16 random bytes hex-encoded) and a bearer token (`generateToken`: 32 random bytes hex-encoded). When invite tokens are configured, the request body's `inviteToken` field overrides the role based on the token→role map. Session owners (requests authenticated with the session API token) bypass this check.
+`POST /api/operator/register` (unauthenticated) creates an operator with a generated UUID-like ID (`generateID`: 16 random bytes hex-encoded) and a bearer token (`generateToken`: 32 random bytes hex-encoded); the request may supply both instead, which a dual-engine UI does so the two engines hold the same operator under the same token. When invite tokens are configured, the request body's `inviteToken` field overrides the role based on the token→role map. Session owners (requests authenticated with the session API token) bypass this check.
 
 The operator record is persisted to `operators.json` atomically via a temp file + rename in `operator.Store.writeFile`, with rollback on failure so a save that fails mid-flight doesn't leave the in-memory slice inconsistent with the disk file.
 

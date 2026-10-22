@@ -59,11 +59,18 @@ function stopHeartbeat(): void {
 	}
 }
 
+/** A bearer token in the form the engine generates: 32 random bytes as hex. */
+export function newOperatorToken(): string {
+	const bytes = crypto.getRandomValues(new Uint8Array(32));
+	return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export async function register(name: string, role: OperatorRole): Promise<void> {
-	// Generate a client-side ID so both engines in a dual-engine setup
-	// register the same operator ID, preventing lock divergence.
+	// Generate the ID and the token client-side so both engines in a
+	// dual-engine setup register the same operator under the same token:
+	// lock state stays in step, and the token held here is valid on both.
 	const clientId = crypto.randomUUID();
-	const result = await operatorRegister(name, role, clientId);
+	const result = await operatorRegister(name, role, clientId, newOperatorToken());
 	session = {
 		id: result.id,
 		name: result.name,

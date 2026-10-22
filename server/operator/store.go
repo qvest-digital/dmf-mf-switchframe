@@ -2,6 +2,7 @@ package operator
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -67,17 +68,28 @@ func (s *Store) rebuildIndices() {
 // on the operator ID. If an operator with the given clientID already exists,
 // the existing operator is returned (idempotent re-registration).
 func (s *Store) Register(name string, role Role, clientID ...string) (Operator, error) {
-	if name == "" {
-		return Operator{}, ErrEmptyName
-	}
-	if !IsValidRole(role) {
-		return Operator{}, ErrInvalidRole
-	}
-
-	// Extract optional client-provided ID.
 	var providedID string
 	if len(clientID) > 0 {
 		providedID = clientID[0]
+	}
+	return s.RegisterWithToken(name, role, providedID, "")
+}
+
+// RegisterWithToken is Register with an optional client-provided bearer token.
+// In a dual-engine setup the same registration fans out to both engines, and
+// each engine would otherwise mint its own token: the browser keeps one, and
+// the other engine rejects every request it signs. A client-provided token
+// lets both engines accept the same one. It must be 64 lowercase hex
+// characters, the format a generated token has; empty generates one.
+func (s *Store) RegisterWithToken(name string, role Role, providedID, providedToken string) (Operator, error) {
+	if name == "" {
+		return Operator{}, ErrEmptyName
+	}
+	if providedToken != "" && !isTokenFormat(providedToken) {
+		return Operator{}, ErrInvalidToken
+	}
+	if !IsValidRole(role) {
+		return Operator{}, ErrInvalidRole
 	}
 
 	// Validate client-provided ID if present.
@@ -100,7 +112,8 @@ func (s *Store) Register(name string, role Role, clientID ...string) (Operator, 
 	if providedID != "" {
 		if idx, ok := s.idIdx[providedID]; ok && idx < len(s.operators) {
 			existing := s.operators[idx]
-			if existing.Name != name || existing.Role != role {
+			if existing.Name != name || existing.Role != role ||
+				(providedToken != "" && subtle.ConstantTimeCompare([]byte(existing.Token), []byte(providedToken)) != 1) {
 				s.mu.Unlock()
 				return Operator{}, fmt.Errorf("client ID already registered to operator %q with role %q", existing.Name, existing.Role)
 			}
@@ -129,10 +142,17 @@ func (s *Store) Register(name string, role Role, clientID ...string) (Operator, 
 		}
 	}
 
-	token, err := generateToken()
-	if err != nil {
+	token := providedToken
+	if token == "" {
+		var err error
+		token, err = generateToken()
+		if err != nil {
+			s.mu.Unlock()
+			return Operator{}, fmt.Errorf("generate token: %w", err)
+		}
+	} else if _, taken := s.tokenIdx[token]; taken {
 		s.mu.Unlock()
-		return Operator{}, fmt.Errorf("generate token: %w", err)
+		return Operator{}, ErrInvalidToken
 	}
 
 	op := Operator{
@@ -311,6 +331,19 @@ func generateID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// isTokenFormat reports whether t has the form generateToken produces.
+func isTokenFormat(t string) bool {
+	if len(t) != 64 {
+		return false
+	}
+	for _, c := range t {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // generateToken creates a random bearer token (32 bytes hex = 64 chars).

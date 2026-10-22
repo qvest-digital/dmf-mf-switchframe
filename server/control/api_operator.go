@@ -36,6 +36,9 @@ func (a *API) handleOperatorRegister(w http.ResponseWriter, r *http.Request) {
 		Name        string        `json:"name"`
 		Role        operator.Role `json:"role"`
 		InviteToken string        `json:"inviteToken"`
+		// Token is an optional client-chosen operator token, so the two
+		// engines of a dual-engine pair accept the same one.
+		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
@@ -73,7 +76,7 @@ func (a *API) handleOperatorRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	op, err := a.operatorStore.Register(req.Name, req.Role, req.ID)
+	op, err := a.operatorStore.RegisterWithToken(req.Name, req.Role, req.ID, req.Token)
 	if err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
