@@ -135,6 +135,37 @@ describe('createReconciler', () => {
 		expect(r.health.status).toBe('synced');
 	});
 
+	// The limiter's meters change on every state update while program audio
+	// plays. Counted as a change, they would hold every difference back
+	// for as long as the audio runs.
+	it('reports a mismatch while the limiter meters keep moving', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		const at = (previewSource: string, truePeak: number) => makeState({
+			previewSource, lastCommandSeq: 0,
+			limiter: { threshold: -1, ceiling: -0.5, gainReduction: truePeak / 10, truePeak },
+		});
+		for (let i = 0; i < 20; i++) {
+			r.ingest('A', at('cam2', -20 + (i % 7)));
+			r.ingest('B', at('cam1', -21 + (i % 5)));
+			vi.advanceTimersByTime(100);
+			r.tick();
+		}
+		expect(r.health.status).toBe('mismatch');
+	});
+
+	// The meters themselves differ between engines that are in step.
+	it('does not report the limiter meters as a divergence', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		r.ingest('A', makeState({ limiter: { threshold: -1, ceiling: -0.5, gainReduction: 2, truePeak: -3 } }));
+		r.ingest('B', makeState({ limiter: { threshold: -1, ceiling: -0.5, gainReduction: 0, truePeak: -144 } }));
+		vi.advanceTimersByTime(SETTLE_MS);
+		r.tick();
+		expect(r.health.divergences).toEqual([]);
+		expect(r.health.status).toBe('synced');
+	});
+
 	// A field that changes on every update and is compared would still hold
 	// a difference back; the cap bounds that.
 	it('reports a lasting difference within SETTLE_MAX_MS while the engines keep changing', () => {
@@ -171,6 +202,19 @@ describe('createReconciler', () => {
 			r.tick();
 			expect(r.health.status).toBe('synced');
 		}
+	});
+
+	// SCTE-35 start and log times come from each engine's clock.
+	it('does not report SCTE-35 event timestamps as a divergence', () => {
+		vi.useFakeTimers();
+		const ev = (startedAt: number) => ({ eventId: 7, commandType: 'splice_insert', isOut: true, elapsedMs: 0, autoReturn: false, held: false, spliceTimePts: 0, startedAt });
+		const st = (t: number) => ({ enabled: true, activeEvents: { '7': ev(t) }, eventLog: [{ eventId: 7, commandType: 'splice_insert', isOut: true, autoReturn: false, timestamp: t, status: 'injected' }], heartbeatOk: true, config: {} as never });
+		const r = createReconciler();
+		r.ingest('A', makeState({ scte35: st(1000) as never }));
+		r.ingest('B', makeState({ scte35: st(1003) as never }));
+		vi.advanceTimersByTime(SETTLE_MS);
+		r.tick();
+		expect(r.health.divergences).toEqual([]);
 	});
 
 	it('reports a difference that outlasts the settle time', () => {

@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceHealthStatus, EngineId } from '$lib/api/types';
+import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State } from '$lib/api/types';
 
 /** Minimum RTT delta (ms) required to switch authority based on RTT alone. Prevents jitter flapping. */
 export const RTT_HYSTERESIS_MS = 100;
@@ -132,6 +132,36 @@ function audioChannelsSettingsEqual(
 	return true;
 }
 
+/** A divergence field without its live measurements and local timestamps:
+ * the limiter's meters, the elapsed and remaining time of active SCTE-35
+ * events and the CBR muxer's running totals change on every state update,
+ * and SCTE-35 start and log times come from each engine's own clock; they
+ * differ between engines without either being out of step. */
+function comparableField(field: keyof ControlRoomState, value: unknown): unknown {
+	if (value == null || typeof value !== 'object') return value;
+	if (field === 'limiter') {
+		const { threshold, ceiling } = value as LimiterSettings;
+		return { threshold, ceiling };
+	}
+	if (field === 'cbr') {
+		const { enabled, muxrateBps } = value as CBRStatus;
+		return { enabled, muxrateBps };
+	}
+	if (field === 'scte35') {
+		const st = value as SCTE35State;
+		const activeEvents: Record<string, unknown> = {};
+		for (const [id, ev] of Object.entries(st.activeEvents ?? {})) {
+			const { elapsedMs: _e, remainingMs: _r, startedAt: _s, ...rest } = ev;
+			activeEvents[id] = rest;
+		}
+		// Each engine stamps an event's start and log entries from its own
+		// clock.
+		const eventLog = (st.eventLog ?? []).map(({ timestamp: _t, ...rest }) => rest);
+		return { ...st, activeEvents, eventLog };
+	}
+	return value;
+}
+
 /** The fields an engine's state is compared on, in one string: the
  * divergence fields, the audio settings without metering, whether it
  * records, and the graphics layers' health. */
@@ -143,7 +173,7 @@ function comparableKey(state: ControlRoomState): string {
 		audio[key] = settings;
 	}
 	const fields: Record<string, unknown> = {};
-	for (const field of DIVERGENCE_FIELDS) fields[field] = state[field];
+	for (const field of DIVERGENCE_FIELDS) fields[field] = comparableField(field, state[field]);
 	return sortedStringify({
 		fields,
 		audio,
@@ -511,7 +541,7 @@ export function createReconciler() {
 		for (const field of DIVERGENCE_FIELDS) {
 			const a = stateA[field];
 			const b = stateB[field];
-			if (!fieldEquals(a, b)) {
+			if (!fieldEquals(comparableField(field, a), comparableField(field, b))) {
 				result.push({ field, engineA: a, engineB: b });
 			}
 		}
