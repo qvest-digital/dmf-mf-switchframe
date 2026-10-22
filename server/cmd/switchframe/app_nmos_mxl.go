@@ -139,6 +139,18 @@ func (a *App) initMXLNMOS() error {
 		}
 	}()
 
+	slog.Info("mxl nmos: node up", "port", n.cfg.Port, "receivers", len(n.receivers),
+		"registry", n.cfg.RegistryURL, "domain", n.domainID)
+	return nil
+}
+
+// startMXLNMOS starts registration and the peer exchange. It runs after
+// initAPI, which creates the peer poller registration asks for the role.
+func (a *App) startMXLNMOS() {
+	n := a.mxlNMOS
+	if n == nil {
+		return
+	}
 	ctx := a.bgCtx
 	if ctx == nil {
 		ctx = context.Background()
@@ -151,9 +163,6 @@ func (a *App) initMXLNMOS() error {
 		a.bgWG.Add(1)
 		go func() { defer a.bgWG.Done(); a.runMXLNMOSPeer(ctx) }()
 	}
-	slog.Info("mxl nmos: node up", "port", n.cfg.Port, "receivers", len(n.receivers),
-		"registry", n.cfg.RegistryURL, "domain", n.domainID)
-	return nil
 }
 
 // newMXLNMOS builds the node from the configuration and the named inputs.
@@ -409,6 +418,16 @@ func (a *App) addMXLNMOSProgramSenders(n *mxlNMOS, deviceID string) ([]string, e
 		if err := json.Unmarshal(data, &flow); err != nil {
 			return nil, fmt.Errorf("mxl nmos: program %s flow definition %s: %w", d.essence, d.path, err)
 		}
+		var extra struct {
+			ChannelCount int `json:"channel_count"`
+		}
+		_ = json.Unmarshal(data, &extra)
+		// A rational's denominator defaults to 1 and is often left out.
+		for _, r := range []*nmos.Rational{flow.GrainRate, flow.SampleRate} {
+			if r != nil && r.Denominator == 0 {
+				r.Denominator = 1
+			}
+		}
 		mxlFlowID := flow.ID
 		if mxlFlowID == "" {
 			return nil, fmt.Errorf("mxl nmos: program %s flow definition %s has no id", d.essence, d.path)
@@ -426,7 +445,7 @@ func (a *App) addMXLNMOSProgramSenders(n *mxlNMOS, deviceID string) ([]string, e
 		if flow.Tags == nil {
 			flow.Tags = map[string][]string{}
 		}
-		n.store.AddSource(&nmos.Source{
+		src := &nmos.Source{
 			ID:          sourceID,
 			Version:     nmos.NewVersion(),
 			Label:       flow.Label,
@@ -437,7 +456,13 @@ func (a *App) addMXLNMOSProgramSenders(n *mxlNMOS, deviceID string) ([]string, e
 			Parents:     []string{},
 			DeviceID:    deviceID,
 			ClockName:   "clk0",
-		})
+		}
+		if d.format == nmos.FormatAudio {
+			// IS-04 requires an audio source to list its channels; the
+			// definition gives only their number.
+			src.Channels = audioChannels(extra.ChannelCount)
+		}
+		n.store.AddSource(src)
 		n.store.AddFlow(&flow)
 		senderID := nmos.DeriveID(n.cfg.Seed, "sender", "program", string(d.essence))
 		n.store.AddSender(&nmos.Sender{
@@ -457,6 +482,22 @@ func (a *App) addMXLNMOSProgramSenders(n *mxlNMOS, deviceID string) ([]string, e
 		senders = append(senders, senderID)
 	}
 	return senders, nil
+}
+
+// audioChannels labels count channels, as a stereo pair where there are
+// two; an unknown count is taken as the stereo the mixer writes.
+func audioChannels(count int) []nmos.SourceChannel {
+	if count <= 0 {
+		count = 2
+	}
+	if count == 2 {
+		return []nmos.SourceChannel{{Label: "Left", Symbol: "L"}, {Label: "Right", Symbol: "R"}}
+	}
+	ch := make([]nmos.SourceChannel, count)
+	for i := range ch {
+		ch[i] = nmos.SourceChannel{Label: fmt.Sprintf("Channel %d", i+1), Symbol: fmt.Sprintf("U%02d", i+1)}
+	}
+	return ch
 }
 
 func groupRole(e mxlEssence) string {
@@ -778,6 +819,12 @@ func (n *mxlNMOS) peerReceiverActive(ctx context.Context, id string) (nmos.MXLEn
 // leadsMXLNMOS reports whether this engine registers the node: a single
 // engine always, a pair's leader only.
 func (a *App) leadsMXLNMOS() bool {
+	// An engine of a pair whose poller does not exist yet does not know its
+	// role; a nil poller would read as standalone. One with no peer has no
+	// pair and leads.
+	if a.cfg.EngineLabel != "" && a.cfg.PeerEngineURL != "" && a.peerPoller == nil {
+		return false
+	}
 	switch a.peerPoller.Role() {
 	case peer.RoleStandalone, peer.RoleLeader:
 		return true

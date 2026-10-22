@@ -294,6 +294,7 @@ func run() error {
 	if err := app.initAPI(); err != nil {
 		return err
 	}
+	app.startMXLNMOS()
 
 	// ASR engine is initialized but not active — the user enables auto
 	// captions via the UI (Captions panel → Auto button). This prevents

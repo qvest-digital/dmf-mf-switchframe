@@ -369,7 +369,7 @@ func TestMXLNMOS_ProgramSenders(t *testing.T) {
 		"grain_rate":{"numerator":50,"denominator":1},"frame_width":1920,"frame_height":1080}`), 0o644)
 	_ = os.WriteFile(audioDef, []byte(`{"id":"`+pgmAudio+`","label":"switcher program audio",
 		"format":"urn:x-nmos:format:audio","media_type":"audio/float32",
-		"sample_rate":{"numerator":48000,"denominator":1}}`), 0o644)
+		"sample_rate":{"numerator":48000},"channel_count":2,"bit_depth":32}`), 0o644)
 	tt := newNMOSTestApp(t, nil, func(a *App) {
 		a.cfg.MXLOutput = "program"
 		a.cfg.MXLOutputVideoDef = videoDef
@@ -559,5 +559,47 @@ func TestMXLNMOS_LabelFollowsLatestConnection(t *testing.T) {
 	tt.app.labelMXLInput("cam2", tt.n.nextLabelSeq("cam2"), nmos.NewMXLReceiverEndpoint(&gone, true, nil, nil))
 	if got := label(); got != "cam2" {
 		t.Errorf("label %q after a failed lookup, want the input's name", got)
+	}
+}
+
+// A registry validates against the IS-04 schemas: an audio source lists its
+// channels, and a rational the definition gives without a denominator has
+// denominator 1, not 0.
+func TestMXLNMOS_ProgramResourcesAreSchemaComplete(t *testing.T) {
+	dir := t.TempDir()
+	audioDef := filepath.Join(dir, "program-audio.json")
+	_ = os.WriteFile(audioDef, []byte(`{"id":"5f000000-0000-4000-8000-0000000000a2","label":"program audio",
+		"format":"urn:x-nmos:format:audio","media_type":"audio/float32",
+		"sample_rate":{"numerator":48000},"channel_count":2,"bit_depth":32}`), 0o644)
+	tt := newNMOSTestApp(t, nil, func(a *App) {
+		a.cfg.MXLOutput = "program"
+		a.cfg.MXLOutputAudioDef = audioDef
+	})
+	var sources []nmos.Source
+	tt.getJSON(t, "/x-nmos/node/v1.3/sources", &sources)
+	if len(sources) != 1 || len(sources[0].Channels) != 2 {
+		t.Fatalf("audio source channels: %+v", sources)
+	}
+	var flows []nmos.Flow
+	tt.getJSON(t, "/x-nmos/node/v1.3/flows", &flows)
+	if r := flows[0].SampleRate; r == nil || r.Numerator != 48000 || r.Denominator != 1 {
+		t.Errorf("sample_rate %+v, want 48000/1", r)
+	}
+}
+
+// An engine of a pair registers only once it knows it leads; before its
+// peer poller exists it does not.
+func TestLeadsMXLNMOS_UnknownRoleDoesNotLead(t *testing.T) {
+	a := &App{}
+	if !a.leadsMXLNMOS() {
+		t.Error("a single engine must register")
+	}
+	a.cfg.EngineLabel = "b"
+	if !a.leadsMXLNMOS() {
+		t.Error("an engine with a label but no peer has no pair and must register")
+	}
+	a.cfg.PeerEngineURL = "http://switcher-a:8081"
+	if a.leadsMXLNMOS() {
+		t.Error("an engine of a pair registered before it knew its role")
 	}
 }
