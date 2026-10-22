@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -67,7 +68,8 @@ func (a *Authenticator) handleConfig(w http.ResponseWriter, r *http.Request) {
 func (a *Authenticator) handleLogin(w http.ResponseWriter, r *http.Request) {
 	d, err := a.discover(r.Context())
 	if err != nil {
-		http.Error(w, "Sign-in is unavailable: "+err.Error(), http.StatusServiceUnavailable)
+		slog.Warn("oidc: sign-in unavailable", "error", err)
+		http.Error(w, "Sign-in is unavailable: the identity provider cannot be reached.", http.StatusServiceUnavailable)
 		return
 	}
 	state, nonce := randomString(), randomString()
@@ -92,7 +94,10 @@ func (a *Authenticator) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (a *Authenticator) handleCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if e := q.Get("error"); e != "" {
-		http.Error(w, "Sign-in failed: "+e+": "+q.Get("error_description"), http.StatusUnauthorized)
+		// Both values arrive in the URL, so anyone can craft them; they are
+		// logged, never shown on this origin.
+		slog.Info("oidc: provider returned an error", "error", e, "description", q.Get("error_description"))
+		http.Error(w, "Sign-in failed at the identity provider.", http.StatusUnauthorized)
 		return
 	}
 	c, err := r.Cookie(flowCookie)
@@ -108,12 +113,14 @@ func (a *Authenticator) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	d, err := a.discover(r.Context())
 	if err != nil {
-		http.Error(w, "Sign-in is unavailable: "+err.Error(), http.StatusServiceUnavailable)
+		slog.Warn("oidc: sign-in unavailable", "error", err)
+		http.Error(w, "Sign-in is unavailable: the identity provider cannot be reached.", http.StatusServiceUnavailable)
 		return
 	}
 	tok, err := a.oauthConfig(r, d).Exchange(r.Context(), q.Get("code"), oauth2.VerifierOption(parts[2]))
 	if err != nil {
-		http.Error(w, "The identity provider refused the sign-in code: "+err.Error(), http.StatusBadGateway)
+		slog.Warn("oidc: code exchange failed", "error", err)
+		http.Error(w, "The identity provider refused the sign-in code.", http.StatusBadGateway)
 		return
 	}
 	raw, _ := tok.Extra("id_token").(string)
@@ -123,7 +130,8 @@ func (a *Authenticator) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	_, nonce, err := a.verify(r.Context(), raw)
 	if err != nil && !errors.Is(err, ErrNoRole) {
-		http.Error(w, "The ID token failed verification: "+err.Error(), http.StatusUnauthorized)
+		slog.Warn("oidc: ID token failed verification", "error", err)
+		http.Error(w, "The ID token failed verification.", http.StatusUnauthorized)
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(nonce), []byte(parts[1])) != 1 {
@@ -156,7 +164,8 @@ func (a *Authenticator) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	d, err := a.discover(r.Context())
 	if err != nil {
-		httperr.WriteErr(w, http.StatusServiceUnavailable, err)
+		slog.Warn("oidc: refresh unavailable", "error", err)
+		httperr.Write(w, http.StatusServiceUnavailable, "the identity provider cannot be reached")
 		return
 	}
 	tok, err := a.oauthConfig(r, d).TokenSource(r.Context(), &oauth2.Token{RefreshToken: req.RefreshToken}).Token()
@@ -175,7 +184,8 @@ func (a *Authenticator) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		httperr.WriteErr(w, http.StatusUnauthorized, err)
+		slog.Warn("oidc: refreshed ID token failed verification", "error", err)
+		httperr.Write(w, http.StatusUnauthorized, "the refreshed ID token failed verification")
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")

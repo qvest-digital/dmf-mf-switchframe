@@ -35,8 +35,9 @@ type Provider struct {
 	mu sync.Mutex
 	// user is the claims set put into every ID token, besides iss, aud,
 	// iat, exp and nonce.
-	user  map[string]any
-	codes map[string]authRequest
+	user       map[string]any
+	codes      map[string]authRequest
+	keyFetches int
 }
 
 type authRequest struct {
@@ -86,9 +87,31 @@ func (p *Provider) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (p *Provider) handleKeys(w http.ResponseWriter, _ *http.Request) {
+	p.mu.Lock()
+	p.keyFetches++
+	key := p.key
+	p.mu.Unlock()
 	writeJSON(w, jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
-		{Key: &p.key.PublicKey, KeyID: "k1", Algorithm: "RS256", Use: "sig"},
+		{Key: &key.PublicKey, KeyID: "k1", Algorithm: "RS256", Use: "sig"},
 	}})
+}
+
+// KeyFetches reports how often the key set was fetched.
+func (p *Provider) KeyFetches() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.keyFetches
+}
+
+// RotateKey replaces the signing key, as a provider's key rotation does.
+func (p *Provider) RotateKey() {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.key = key
 }
 
 func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +216,10 @@ func (p *Provider) Claims(override map[string]any) map[string]any {
 
 // Sign signs claims with the provider's key.
 func (p *Provider) Sign(claims map[string]any) string {
-	return SignWith(p.t, p.key, claims)
+	p.mu.Lock()
+	key := p.key
+	p.mu.Unlock()
+	return SignWith(p.t, key, claims)
 }
 
 // SignWith signs claims with key, under the provider's key ID.

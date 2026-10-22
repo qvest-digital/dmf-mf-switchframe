@@ -33,6 +33,19 @@ const DefaultRoleClaim = "groups"
 // before the next request tries again.
 const discoveryRetry = 10 * time.Second
 
+// providerTimeout bounds each request to the provider made while a lock is
+// held, so a provider that accepts connections and then stalls holds up
+// other requests for no longer than this. A variable so tests can shorten
+// it.
+var providerTimeout = 10 * time.Second
+
+// verifiedTTL is how long a verified token is served from the cache, and
+// maxVerified how many are kept. The token's own expiry bounds it further.
+const (
+	verifiedTTL = 30 * time.Second
+	maxVerified = 1024
+)
+
 // rolePrecedence orders roles from most to least privileged; a user whose
 // claim maps to several roles gets the first.
 var rolePrecedence = []operator.Role{
@@ -92,6 +105,17 @@ type Authenticator struct {
 	disc    *discovered
 	lastErr error
 	retryAt time.Time
+
+	// verified caches identities by token hash: one request asks for its
+	// operator several times, and each verification costs a signature
+	// check.
+	verifiedMu sync.Mutex
+	verified   map[[sha256.Size]byte]verifiedEntry
+}
+
+type verifiedEntry struct {
+	id    Identity
+	until time.Time
 }
 
 type discovered struct {
@@ -147,33 +171,90 @@ func (a *Authenticator) discover(ctx context.Context) (*discovered, error) {
 		return nil, a.lastErr
 	}
 
-	p, err := oidc.NewProvider(ctx, a.cfg.Issuer)
-	if err != nil {
+	fail := func(err error) (*discovered, error) {
 		a.lastErr = fmt.Errorf("%w: %v", ErrUnavailable, err)
 		a.retryAt = time.Now().Add(discoveryRetry)
 		return nil, a.lastErr
 	}
-	var meta struct {
-		EndSession string `json:"end_session_endpoint"`
+	pctx, cancel := context.WithTimeout(ctx, providerTimeout)
+	defer cancel()
+	p, err := oidc.NewProvider(pctx, a.cfg.Issuer)
+	if err != nil {
+		return fail(err)
 	}
-	_ = p.Claims(&meta)
+	var meta struct {
+		JWKSURL    string   `json:"jwks_uri"`
+		EndSession string   `json:"end_session_endpoint"`
+		Algs       []string `json:"id_token_signing_alg_values_supported"`
+	}
+	if err := p.Claims(&meta); err != nil || meta.JWKSURL == "" {
+		return fail(errors.New("discovery document names no jwks_uri"))
+	}
 
-	// The key set outlives this request, so it must not inherit its
-	// cancellation.
-	keyCtx := context.WithoutCancel(ctx)
 	a.disc = &discovered{
-		verifier:   p.VerifierContext(keyCtx, &oidc.Config{ClientID: a.cfg.ClientID}),
+		verifier: oidc.NewVerifier(a.cfg.Issuer, &keySet{url: meta.JWKSURL}, &oidc.Config{
+			ClientID:             a.cfg.ClientID,
+			SupportedSigningAlgs: supportedAlgs(meta.Algs),
+		}),
 		endpoint:   p.Endpoint(),
 		endSession: meta.EndSession,
 	}
 	return a.disc, nil
 }
 
+// supportedAlgs keeps the provider's advertised algorithms this package
+// verifies. Empty leaves go-oidc's default, RS256.
+func supportedAlgs(advertised []string) []string {
+	var out []string
+	for _, alg := range advertised {
+		for _, ok := range signingAlgs {
+			if alg == string(ok) {
+				out = append(out, alg)
+			}
+		}
+	}
+	return out
+}
+
 // Authenticate verifies a raw ID token - signature, issuer, audience and
-// expiry - and maps it to an Identity.
+// expiry - and maps it to an Identity. A verified token is remembered for
+// up to verifiedTTL, so a change of the user's roles at the provider takes
+// that long to apply.
 func (a *Authenticator) Authenticate(ctx context.Context, rawIDToken string) (Identity, error) {
+	key := sha256.Sum256([]byte(rawIDToken))
+	now := time.Now()
+	a.verifiedMu.Lock()
+	e, ok := a.verified[key]
+	a.verifiedMu.Unlock()
+	if ok && now.Before(e.until) {
+		return e.id, nil
+	}
+
 	id, _, err := a.verify(ctx, rawIDToken)
-	return id, err
+	if err != nil {
+		return id, err
+	}
+	until := now.Add(verifiedTTL)
+	if id.Expiry.Before(until) {
+		until = id.Expiry
+	}
+	a.verifiedMu.Lock()
+	if len(a.verified) >= maxVerified {
+		for k, e := range a.verified {
+			if !now.Before(e.until) {
+				delete(a.verified, k)
+			}
+		}
+		if len(a.verified) >= maxVerified {
+			clear(a.verified)
+		}
+	}
+	if a.verified == nil {
+		a.verified = make(map[[sha256.Size]byte]verifiedEntry)
+	}
+	a.verified[key] = verifiedEntry{id: id, until: until}
+	a.verifiedMu.Unlock()
+	return id, nil
 }
 
 // verify is Authenticate that also returns the token's nonce, which only
@@ -186,6 +267,11 @@ func (a *Authenticator) verify(ctx context.Context, rawIDToken string) (Identity
 	tok, err := d.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		return Identity{}, "", err
+	}
+	if tok.Subject == "" {
+		// The operator ID is derived from the subject; without one, all
+		// such users would share an operator.
+		return Identity{}, "", errors.New("oidc: ID token has no subject")
 	}
 	var claims map[string]any
 	if err := tok.Claims(&claims); err != nil {

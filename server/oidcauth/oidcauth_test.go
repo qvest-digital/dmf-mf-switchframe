@@ -4,10 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 
 	"github.com/zsiec/switchframe/server/oidcauth/oidctest"
@@ -76,6 +82,13 @@ func TestAuthenticate_RejectsInvalidTokens(t *testing.T) {
 		})),
 		"foreign signature": oidctest.SignWith(t, otherKey, p.Claims(nil)),
 		"not a JWT":         "0123456789abcdef",
+		// Unsigned, and signed with a shared secret such as the client
+		// secret: the classic ways to forge a token for a verifier that
+		// trusts the token's own alg header.
+		"alg none": unsignedToken(t, p.Claims(nil)),
+		"HS256":    hmacToken(t, []byte(strings.Repeat(oidctest.ClientSecret, 3)), p.Claims(nil)),
+		// Every subject-less user would share one operator ID.
+		"no subject": p.Sign(p.Claims(map[string]any{"sub": nil})),
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -84,6 +97,118 @@ func TestAuthenticate_RejectsInvalidTokens(t *testing.T) {
 			require.NotErrorIs(t, err, ErrNoRole)
 		})
 	}
+}
+
+func unsignedToken(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	header, _ := json.Marshal(map[string]string{"alg": "none", "typ": "JWT", "kid": "k1"})
+	payload, _ := json.Marshal(claims)
+	enc := base64.RawURLEncoding.EncodeToString
+	return enc(header) + "." + enc(payload) + "."
+}
+
+func hmacToken(t *testing.T, key []byte, claims map[string]any) string {
+	t.Helper()
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: key},
+		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "k1"))
+	require.NoError(t, err)
+	payload, _ := json.Marshal(claims)
+	jws, err := signer.Sign(payload)
+	require.NoError(t, err)
+	raw, err := jws.CompactSerialize()
+	require.NoError(t, err)
+	return raw
+}
+
+// A bearer token is whatever a client sends. If each one with an unknown
+// signature made the engine fetch the provider's keys again, unauthenticated
+// requests would turn into provider traffic one for one.
+func TestAuthenticate_ForgedTokensDoNotRefetchKeys(t *testing.T) {
+	p := oidctest.New(t)
+	a := newTestAuthenticator(t, p, nil)
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	_, err = a.Authenticate(context.Background(), p.Sign(p.Claims(nil)))
+	require.NoError(t, err)
+	require.Equal(t, 1, p.KeyFetches())
+
+	for i := range 20 {
+		forged := oidctest.SignWith(t, otherKey, p.Claims(map[string]any{"jti": i}))
+		_, err := a.Authenticate(context.Background(), forged)
+		require.Error(t, err)
+	}
+	require.Equal(t, 1, p.KeyFetches())
+}
+
+func TestAuthenticate_PicksUpRotatedKey(t *testing.T) {
+	prev := keyRefetchInterval
+	keyRefetchInterval = 0
+	t.Cleanup(func() { keyRefetchInterval = prev })
+
+	p := oidctest.New(t)
+	a := newTestAuthenticator(t, p, nil)
+	_, err := a.Authenticate(context.Background(), p.Sign(p.Claims(nil)))
+	require.NoError(t, err)
+
+	p.RotateKey()
+	_, err = a.Authenticate(context.Background(), p.Sign(p.Claims(nil)))
+	require.NoError(t, err)
+	require.Equal(t, 2, p.KeyFetches())
+}
+
+// One request asks for its operator several times; only the first may pay
+// for verification.
+func TestAuthenticate_CachesVerifiedTokens(t *testing.T) {
+	p := oidctest.New(t)
+	a := newTestAuthenticator(t, p, nil)
+	token := p.Sign(p.Claims(nil))
+	_, err := a.Authenticate(context.Background(), token)
+	require.NoError(t, err)
+
+	// From here on, verification fails for every token.
+	a.disc.verifier = oidc.NewVerifier(p.URL, &keySet{url: p.URL + "/no-keys"},
+		&oidc.Config{ClientID: oidctest.ClientID})
+
+	id, err := a.Authenticate(context.Background(), token)
+	require.NoError(t, err)
+	require.Equal(t, "alice", id.Name)
+	_, err = a.Authenticate(context.Background(), p.Sign(p.Claims(map[string]any{"jti": "other"})))
+	require.Error(t, err)
+}
+
+// The cache must not outlive the token.
+func TestAuthenticate_CacheEndsAtTokenExpiry(t *testing.T) {
+	p := oidctest.New(t)
+	a := newTestAuthenticator(t, p, nil)
+	token := p.Sign(p.Claims(map[string]any{"exp": time.Now().Add(time.Second).Unix()}))
+	_, err := a.Authenticate(context.Background(), token)
+	require.NoError(t, err)
+
+	time.Sleep(2 * time.Second)
+	_, err = a.Authenticate(context.Background(), token)
+	require.Error(t, err)
+}
+
+// Discovery runs under a lock every sign-in and verification waits on, so a
+// provider that accepts the connection and never answers must not hold it
+// for longer than providerTimeout, whatever the caller's context.
+func TestDiscover_StalledProviderTimesOut(t *testing.T) {
+	prev := providerTimeout
+	providerTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { providerTimeout = prev })
+
+	stall := make(chan struct{})
+	idp := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-stall }))
+	t.Cleanup(idp.Close)
+	t.Cleanup(func() { close(stall) })
+
+	a, err := New(Config{Issuer: idp.URL, ClientID: oidctest.ClientID})
+	require.NoError(t, err)
+	start := time.Now()
+	err = a.Discover(context.Background())
+	require.ErrorIs(t, err, ErrUnavailable)
+	require.Less(t, time.Since(start), 2*time.Second)
 }
 
 func TestAuthenticate_RoleMapping(t *testing.T) {

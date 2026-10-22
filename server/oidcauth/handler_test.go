@@ -128,6 +128,21 @@ func TestSignIn_RejectsForgedOrStaleCallbacks(t *testing.T) {
 	})
 }
 
+// The provider's error parameters arrive in the URL, so a crafted link
+// could otherwise put any text on the engine's origin.
+func TestSignIn_ProviderErrorIsNotReflected(t *testing.T) {
+	p := oidctest.New(t)
+	engine := newEngine(t, newTestAuthenticator(t, p, nil))
+
+	resp, err := noRedirect().Get(engine.URL + "/auth/callback?error=access_denied&error_description=Call+1-800-EVIL")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	require.NotContains(t, string(body), "EVIL")
+	require.NotContains(t, string(body), "access_denied")
+}
+
 func TestSignIn_UnmappedUserGetsForbidden(t *testing.T) {
 	p := oidctest.New(t)
 	p.SetUser(map[string]any{"sub": "user-3", "preferred_username": "mallory", "groups": []string{"staff"}})
