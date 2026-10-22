@@ -1035,6 +1035,8 @@
 		if (!mounted) return;
 		tick().then(() => {
 			pipelineManager.syncSources(store.state.sources);
+			// In compare mode ProgramCompare owns the program canvas.
+			if (compareMode) return;
 			pipelineManager.syncProgramPreviewCanvases(store.effectiveState.previewSource, programCanvas, previewCanvas);
 		});
 	});
@@ -1048,7 +1050,10 @@
 		const _preview = store.effectiveState.previewSource;
 		const _pgmCanvas = programCanvas;
 		const _pvwCanvas = previewCanvas;
-		if (!mounted) return;
+		// In compare mode ProgramCompare owns the program canvas; the
+		// ProgramPreview canvas held here is unmounted, and attaching it again
+		// would take the program renderer away from the compare canvas.
+		if (!mounted || compareMode) return;
 
 		// Reset A/V sync tracking on program renderer when source changes
 		// (transition completed). Prevents stale PTS from old source causing
@@ -1482,11 +1487,17 @@
 	// Compare mode: create Engine B pipeline when entering, detach compare canvas on exit.
 	// If warm standby is active, preserve the pipeline (only detach the compare canvas).
 	// If warm standby is not active, destroy the pipeline entirely.
+	// store.state is replaced on every state update; depending on the URL
+	// string alone keeps the cleanup below from detaching the compare canvas
+	// each time.
+	const compareEngineBUrl = $derived(store.state.engineBUrl);
 	$effect(() => {
-		if (compareMode && store.state.engineBUrl) {
-			pipelineManager.createEngineBPipeline(store.state.engineBUrl);
-			pipelineManager.connectSourceB('program-preview');
-		}
+		// The cleanup belongs to a compare that was set up. Returned from a
+		// run outside compare mode, it ran as compare mode began and detached
+		// the canvas ProgramCompare had just attached.
+		if (!compareMode || !compareEngineBUrl) return;
+		pipelineManager.createEngineBPipeline(compareEngineBUrl);
+		pipelineManager.connectSourceB('program-preview');
 		return () => {
 			if (pipelineManager.hasEngineBPipeline) {
 				pipelineManager.detachCanvasB('program-preview', 'compare-b');
