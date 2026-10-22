@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0-rc.11](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.10...mxl-v1.0.0-rc.11) (2026-10-22)
+
+
+### Features
+
+* **mxl:** move a named input to other flows without ending its stream ([513aa7b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/513aa7b93120fd4abf2096c286ae4fbcf5c1f55e))
+* **nmos:** add BCP-007-03 MXL connection management ([513aa7b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/513aa7b93120fd4abf2096c286ae4fbcf5c1f55e))
+* **nmos:** expose the MXL program output as senders ([513aa7b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/513aa7b93120fd4abf2096c286ae4fbcf5c1f55e))
+* **nmos:** let a controller connect named MXL inputs over BCP-007-03 ([513aa7b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/513aa7b93120fd4abf2096c286ae4fbcf5c1f55e))
+* **ui:** leave out inputs no flow is connected to ([513aa7b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/513aa7b93120fd4abf2096c286ae4fbcf5c1f55e))
+
 ## [1.0.0-rc.10](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.9...mxl-v1.0.0-rc.10) (2026-10-22)
 
 
