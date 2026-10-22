@@ -68,9 +68,40 @@ func (s *Store) Add(c *Clip) error {
 	if err != nil {
 		return fmt.Errorf("generate clip ID: %w", err)
 	}
+	return s.add(id, c)
+}
 
+// AddWithID inserts a new clip under a caller-chosen ID, so that engines
+// sharing a clip can refer to it by the same ID. The ID must have the form
+// Add generates (32 lowercase hex characters). Returns ErrInvalidID for a
+// malformed ID and ErrAlreadyExists if the ID is taken.
+func (s *Store) AddWithID(id string, c *Clip) error {
+	if !ValidID(id) {
+		return ErrInvalidID
+	}
+	return s.add(id, c)
+}
+
+// ValidID reports whether id has the form of a generated clip ID.
+func ValidID(id string) bool {
+	if len(id) != 32 {
+		return false
+	}
+	for _, r := range id {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Store) add(id string, c *Clip) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if _, exists := s.clips[id]; exists {
+		return ErrAlreadyExists
+	}
 
 	// Check storage limit for non-ephemeral clips.
 	if !c.Ephemeral {

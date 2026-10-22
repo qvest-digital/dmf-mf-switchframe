@@ -923,17 +923,7 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 	}
 
 	// --- Clip players ---
-	if a.clipMgr != nil {
-		for _, ps := range a.clipMgr.PlayerStates() {
-			snap.ClipPlayers = append(snap.ClipPlayers, internal.ClipPlayerSnapshot{
-				ID:     ps.ID,
-				ClipID: ps.ClipID,
-				State:  string(ps.State),
-				Speed:  ps.Speed,
-				Loop:   ps.Loop,
-			})
-		}
-	}
+	snap.ClipPlayers, snap.ClipPlayerPositions = a.captureClipPlayers()
 
 	// --- Source labels and positions ---
 	if len(state.Sources) > 0 {
@@ -1133,25 +1123,40 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 		}
 	}
 
-	// --- Clip player positions (name-based for cross-engine lookup) ---
-	if a.clipMgr != nil {
-		for _, ps := range a.clipMgr.PlayerStates() {
-			if ps.ClipName == "" {
-				continue
-			}
-			posMs := int64(ps.Position * 1000) // position is 0.0-1.0 progress; convert to approx ms
-			snap.ClipPlayerPositions = append(snap.ClipPlayerPositions, internal.ClipPositionSnapshot{
-				ClipName:    ps.ClipName,
-				PlayerIndex: ps.ID - 1, // 1-based ID to 0-based index
-				PositionMs:  posMs,
-				State:       string(ps.State),
-				Speed:       ps.Speed,
-				Loop:        ps.Loop,
-			})
-		}
-	}
-
 	return snap
+}
+
+// captureClipPlayers records every clip player slot (ClipPlayers) and, for
+// slots holding a clip, its name and playback state (ClipPlayerPositions),
+// from a single read of the player states.
+func (a *App) captureClipPlayers() ([]internal.ClipPlayerSnapshot, []internal.ClipPositionSnapshot) {
+	if a.clipMgr == nil {
+		return nil, nil
+	}
+	var players []internal.ClipPlayerSnapshot
+	var positions []internal.ClipPositionSnapshot
+	for _, ps := range a.clipMgr.PlayerStates() {
+		players = append(players, internal.ClipPlayerSnapshot{
+			ID:     ps.ID,
+			ClipID: ps.ClipID,
+			State:  string(ps.State),
+			Speed:  ps.Speed,
+			Loop:   ps.Loop,
+		})
+		if ps.ClipName == "" {
+			continue
+		}
+		posMs := int64(ps.Position * 1000) // position is 0.0-1.0 progress; convert to approx ms
+		positions = append(positions, internal.ClipPositionSnapshot{
+			ClipName:    ps.ClipName,
+			PlayerIndex: ps.ID - 1, // 1-based ID to 0-based index
+			PositionMs:  posMs,
+			State:       string(ps.State),
+			Speed:       ps.Speed,
+			Loop:        ps.Loop,
+		})
+	}
+	return players, positions
 }
 
 // dveSlotSnapshotFromTransform converts a DVE Slot to a DVESlotSnapshot

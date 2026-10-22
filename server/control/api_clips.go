@@ -185,6 +185,22 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = file.Close() }()
 
+	// Optional caller-chosen clip ID. A client uploading the same file to
+	// several engines passes the first engine's ID to the others so that
+	// ID-based operations (delete, pin, load) address the same clip on all
+	// of them. Checked before the upload is stored or transcoded.
+	clipID := r.FormValue("id")
+	if clipID != "" {
+		if !clip.ValidID(clipID) {
+			httperr.WriteErr(w, errorStatus(clip.ErrInvalidID), clip.ErrInvalidID)
+			return
+		}
+		if _, err := a.clipStore.Get(clipID); err == nil {
+			httperr.WriteErr(w, errorStatus(clip.ErrAlreadyExists), clip.ErrAlreadyExists)
+			return
+		}
+	}
+
 	setProgressFilename("uploading", 50, header.Filename)
 
 	// Validate extension.
@@ -306,8 +322,14 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 		ByteSize:   n,
 	}
 
-	if err := a.clipStore.Add(c); err != nil {
-		httperr.WriteErr(w, errorStatus(err), err)
+	var addErr error
+	if clipID != "" {
+		addErr = a.clipStore.AddWithID(clipID, c)
+	} else {
+		addErr = a.clipStore.Add(c)
+	}
+	if addErr != nil {
+		httperr.WriteErr(w, errorStatus(addErr), addErr)
 		return
 	}
 

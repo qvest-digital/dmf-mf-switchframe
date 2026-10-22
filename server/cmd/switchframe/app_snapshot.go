@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/zsiec/switchframe/server/caption"
+	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
@@ -351,14 +352,13 @@ func (a *App) AssignSTMapProgram(mapName string) error {
 
 // --- Clip player restore ---
 
-// LoadClipByName resolves a clip name to its ID via the store and loads it
-// into the given player slot. Used for cross-engine snapshot restore where
-// clip IDs differ between engines but names are consistent.
-func (a *App) LoadClipByName(slotIndex int, clipName string) error {
+// SyncClipPlayer brings a clip player slot to the clip and playback state
+// captured on the peer engine. playerID is 1-based.
+func (a *App) SyncClipPlayer(playerID int, clipID, clipName, state string, speed float64, loop bool) error {
 	if a.clipMgr == nil {
 		return nil
 	}
-	return a.clipMgr.LoadByName(slotIndex, clipName)
+	return a.clipMgr.SyncPlayer(playerID, clipID, clipName, clip.PlayerState(state), speed, loop)
 }
 
 // --- Optional snapshot applier interfaces (operational state) ---

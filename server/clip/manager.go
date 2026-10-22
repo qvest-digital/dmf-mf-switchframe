@@ -2,10 +2,12 @@ package clip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Manager orchestrates clip player slots, bridging the Store and Players.
@@ -20,7 +22,10 @@ type Manager struct {
 	// overwrite m.players[idx], orphaning the Play-spawned player goroutine
 	// that nothing else holds a cancel for. The per-slot lock makes each
 	// Load's demux-plus-eject transactional against other Loads on the slot.
-	loadMu  [MaxPlayers]sync.Mutex
+	loadMu [MaxPlayers]sync.Mutex
+	// syncMu[idx] serializes SyncPlayer calls on the same slot, so two
+	// snapshot applies cannot interleave their load and transport steps.
+	syncMu  [MaxPlayers]sync.Mutex
 	store   *Store
 	config  ManagerConfig
 	players [MaxPlayers]*playerSlot
@@ -198,6 +203,145 @@ func (m *Manager) LoadByName(playerID int, clipName string) error {
 		return fmt.Errorf("clip %q: %w", clipName, err)
 	}
 	return m.Load(playerID, c.ID)
+}
+
+// SyncPlayer brings a player slot to the given clip and playback state.
+// The clip is resolved by clipID when the store holds that ID, otherwise by
+// clipName, since clips created before IDs were shared between engines have
+// different IDs on each engine. It is idempotent: a slot that already holds
+// the clip is not reloaded, and a slot already in the wanted state is left
+// untouched, so applying the same state repeatedly does not interrupt
+// playback. An empty clip or StateEmpty ejects the slot.
+//
+// A StateHolding target is reached by playing the clip to its end. Playback
+// position is not synchronized.
+func (m *Manager) SyncPlayer(playerID int, clipID, clipName string, state PlayerState, speed float64, loop bool) error {
+	if err := validatePlayerID(playerID); err != nil {
+		return err
+	}
+	switch state {
+	case StateEmpty, StateLoaded, StatePlaying, StatePaused, StateHolding:
+	default:
+		return fmt.Errorf("clip: unsupported player state %q", state)
+	}
+	idx := playerID - 1
+	m.syncMu[idx].Lock()
+	defer m.syncMu[idx].Unlock()
+
+	if (clipID == "" && clipName == "") || state == StateEmpty {
+		return m.Eject(playerID)
+	}
+
+	cur := m.PlayerStates()[idx]
+	if m.hasClip(clipID) {
+		if cur.ClipID != clipID {
+			if err := m.Load(playerID, clipID); err != nil {
+				return err
+			}
+		}
+	} else if cur.ClipName != clipName {
+		if err := m.LoadByName(playerID, clipName); err != nil {
+			return err
+		}
+	}
+
+	cur = m.PlayerStates()[idx]
+	if cur.Loop != loop {
+		if err := m.SetLoop(playerID, loop); err != nil {
+			return err
+		}
+	}
+	if speed < 0.25 || speed > 2.0 {
+		speed = 1.0
+	}
+	if (cur.State == StatePlaying || cur.State == StatePaused) && state != StateLoaded && cur.Speed != speed {
+		if err := m.SetSpeed(playerID, speed); err != nil {
+			return err
+		}
+	}
+
+	switch state {
+	case StateLoaded:
+		if cur.State != StateLoaded {
+			return m.Stop(playerID)
+		}
+	case StatePlaying:
+		switch cur.State {
+		case StateLoaded:
+			return m.playIgnoringBusy(playerID, speed, loop)
+		case StatePaused:
+			return m.Resume(playerID)
+		case StateHolding:
+			// A looping clip restarts on the peer instead of holding, so
+			// restart it here. A non-looping one reaches its hold on the
+			// peer too.
+			if loop {
+				if err := m.Stop(playerID); err != nil {
+					return err
+				}
+				return m.playIgnoringBusy(playerID, speed, loop)
+			}
+		}
+	case StateHolding:
+		switch cur.State {
+		case StateLoaded:
+			return m.playIgnoringBusy(playerID, speed, loop)
+		case StatePaused:
+			return m.Resume(playerID)
+		}
+	case StatePaused:
+		switch cur.State {
+		case StateLoaded:
+			return m.playPaused(playerID, speed, loop)
+		case StatePlaying:
+			return m.Pause(playerID)
+		case StateHolding:
+			// Pause has no effect on a held clip; restart it paused.
+			if err := m.Stop(playerID); err != nil {
+				return err
+			}
+			return m.playPaused(playerID, speed, loop)
+		}
+	}
+	return nil
+}
+
+// hasClip reports whether the store holds a clip with the given ID.
+func (m *Manager) hasClip(clipID string) bool {
+	if clipID == "" {
+		return false
+	}
+	_, err := m.store.Get(clipID)
+	return err == nil
+}
+
+// playIgnoringBusy starts playback, treating a player that is already
+// running (started concurrently by an operator command) as success.
+func (m *Manager) playIgnoringBusy(playerID int, speed float64, loop bool) error {
+	if err := m.Play(playerID, speed, loop); err != nil && !errors.Is(err, ErrPlayerBusy) {
+		return err
+	}
+	return nil
+}
+
+// playStartTimeout bounds how long playPaused waits for a player to start.
+const playStartTimeout = 250 * time.Millisecond
+
+// playPaused starts playback and pauses it once the player is running. The
+// player goroutine marks itself playing asynchronously and Pause has no
+// effect before that.
+func (m *Manager) playPaused(playerID int, speed float64, loop bool) error {
+	if err := m.playIgnoringBusy(playerID, speed, loop); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(playStartTimeout)
+	for m.PlayerStates()[playerID-1].State == StateLoaded {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("clip: player %d did not start within %s", playerID, playStartTimeout)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return m.Pause(playerID)
 }
 
 // Eject stops the player if active, calls onPlayerStop if it was playing,

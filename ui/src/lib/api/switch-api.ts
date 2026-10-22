@@ -1630,9 +1630,15 @@ export function deleteClip(id: string): Promise<void> {
 	return request(`/api/clips/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-function uploadClipToEngine(baseUrl: string, file: File, onUploadProgress?: (percent: number) => void): Promise<ClipInfo> {
+function uploadClipToEngine(
+	baseUrl: string,
+	file: File,
+	onUploadProgress?: (percent: number) => void,
+	clipId?: string,
+): Promise<ClipInfo> {
 	return new Promise((resolve, reject) => {
 		const formData = new FormData();
+		if (clipId) formData.append('id', clipId);
 		formData.append('file', file);
 
 		const xhr = new XMLHttpRequest();
@@ -1676,6 +1682,20 @@ function uploadClipToEngine(baseUrl: string, file: File, onUploadProgress?: (per
 	});
 }
 
+/** Reports whether the engine at baseUrl holds a clip with the same ID and name. */
+async function engineHasClip(baseUrl: string, want: ClipInfo): Promise<boolean> {
+	try {
+		const res = await fetch(`${baseUrl}/api/clips/${encodeURIComponent(want.id)}`, {
+			headers: authHeaders(),
+		});
+		if (!res.ok) return false;
+		const got: ClipInfo = await res.json();
+		return got.id === want.id && got.name === want.name;
+	} catch {
+		return false;
+	}
+}
+
 export async function uploadClip(file: File, onUploadProgress?: (percent: number) => void): Promise<ClipInfo> {
 	const engines = getEngineUrls();
 	const primaryUrl = engines && engines.length > 0
@@ -1687,17 +1707,31 @@ export async function uploadClip(file: File, onUploadProgress?: (percent: number
 	const result = await uploadClipToEngine(primaryUrl, file, onUploadProgress);
 	const primaryDuration = Date.now() - uploadStart;
 
-	// Upload to secondary engine(s) — timeout scales with primary upload duration
+	// Upload to secondary engine(s); the timeout scales with the primary upload duration.
+	// Secondaries store the clip under the primary's ID so that ID-based
+	// requests (delete, pin, load by ID) fanned out to every engine address
+	// the same clip everywhere.
 	if (engines && engines.length > 1) {
 		const secondaryTimeout = Math.max(primaryDuration * 2, 30_000);
+		const uploadSecondary = async (url: string) => {
+			try {
+				await uploadClipToEngine(url, file, undefined, result.id);
+			} catch (err) {
+				// The engine may already hold this ID, e.g. an earlier attempt
+				// completed after the client gave up on it. Any other failure,
+				// including a 409 for an upload still in progress, is retried.
+				if (!(err instanceof SwitchApiError && err.status === 409)) throw err;
+				if (!(await engineHasClip(url, result))) throw err;
+			}
+		};
 		const secondaryUploads = engines.slice(1).map(async (engine) => {
 			try {
-				await uploadClipToEngine(engine.url, file);
+				await uploadSecondary(engine.url);
 			} catch {
 				// Retry once after 2s
 				await new Promise(r => setTimeout(r, 2000));
 				try {
-					await uploadClipToEngine(engine.url, file);
+					await uploadSecondary(engine.url);
 				} catch {
 					partialFailureNotify?.(`Clip upload failed on Engine ${engine.id} — clip only on primary`);
 				}

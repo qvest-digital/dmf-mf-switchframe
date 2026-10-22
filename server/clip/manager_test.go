@@ -720,3 +720,176 @@ func TestClipManager_ConcurrentLoadSameSlotNoLeak(t *testing.T) {
 			baseline, final, final-baseline, buf[:n])
 	}
 }
+
+// waitPlayerState polls until player 1..4 reaches want or the timeout expires.
+func waitPlayerState(t *testing.T, mgr *Manager, playerID int, want PlayerState) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return mgr.PlayerStates()[playerID-1].State == want
+	}, 2*time.Second, 5*time.Millisecond, "player %d never reached %s", playerID, want)
+}
+
+func TestManagerSyncPlayerLoadsByName(t *testing.T) {
+	mgr, store, dir := newTestManager(t)
+	defer mgr.Close()
+	c := addTestClip(t, store, dir)
+
+	require.NoError(t, mgr.SyncPlayer(1, "", c.Name, StateLoaded, 0, false))
+
+	st := mgr.PlayerStates()[0]
+	assert.Equal(t, c.Name, st.ClipName)
+	assert.Equal(t, StateLoaded, st.State)
+}
+
+func TestManagerSyncPlayerMissingClip(t *testing.T) {
+	mgr, _, _ := newTestManager(t)
+	defer mgr.Close()
+
+	assert.ErrorIs(t, mgr.SyncPlayer(1, "", "absent", StateLoaded, 0, false), ErrNotFound)
+	assert.ErrorIs(t, mgr.SyncPlayer(0, "", "absent", StateLoaded, 0, false), ErrInvalidPlayer)
+}
+
+// Applying the same playing state repeatedly must neither reload the clip
+// nor restart playback.
+func TestManagerSyncPlayerIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir, 1<<30)
+	require.NoError(t, err)
+	var demuxes atomic.Int32
+	inner := mockDemuxFunc(30)
+	mgr := NewManager(store, ManagerConfig{DemuxFunc: func(p string) ([]BufferedFrame, []BufferedAudioFrame, error) {
+		demuxes.Add(1)
+		return inner(p)
+	}})
+	defer mgr.Close()
+	c := addTestClip(t, store, dir)
+
+	var starts atomic.Int32
+	mgr.OnPlayerLifecycle(func(int, string) { starts.Add(1) }, func(int, string) {})
+
+	require.NoError(t, mgr.SyncPlayer(2, "", c.Name, StatePlaying, 0.25, true))
+	waitPlayerState(t, mgr, 2, StatePlaying)
+	for range 3 {
+		require.NoError(t, mgr.SyncPlayer(2, "", c.Name, StatePlaying, 0.25, true))
+	}
+
+	assert.Equal(t, int32(1), demuxes.Load(), "clip reloaded")
+	assert.Equal(t, int32(1), starts.Load(), "playback restarted")
+	assert.Equal(t, StatePlaying, mgr.PlayerStates()[1].State)
+	assert.True(t, mgr.PlayerStates()[1].Loop)
+}
+
+func TestManagerSyncPlayerStateTransitions(t *testing.T) {
+	mgr, store, dir := newTestManager(t)
+	defer mgr.Close()
+	c := addTestClip(t, store, dir)
+
+	// loaded -> paused starts playback and pauses it.
+	require.NoError(t, mgr.SyncPlayer(1, "", c.Name, StatePaused, 0.25, true))
+	waitPlayerState(t, mgr, 1, StatePaused)
+
+	// paused -> playing resumes.
+	require.NoError(t, mgr.SyncPlayer(1, "", c.Name, StatePlaying, 0.25, true))
+	waitPlayerState(t, mgr, 1, StatePlaying)
+
+	// playing -> loaded stops but keeps the clip.
+	require.NoError(t, mgr.SyncPlayer(1, "", c.Name, StateLoaded, 0, true))
+	waitPlayerState(t, mgr, 1, StateLoaded)
+	assert.Equal(t, c.Name, mgr.PlayerStates()[0].ClipName)
+
+	// An out-of-range speed falls back to 1x instead of failing.
+	require.NoError(t, mgr.SyncPlayer(1, "", c.Name, StatePlaying, 0, true))
+	waitPlayerState(t, mgr, 1, StatePlaying)
+	assert.Equal(t, 1.0, mgr.PlayerStates()[0].Speed)
+
+	// A speed change on a playing slot is applied without a restart.
+	require.NoError(t, mgr.SyncPlayer(1, "", c.Name, StatePlaying, 0.5, true))
+	assert.Equal(t, 0.5, mgr.PlayerStates()[0].Speed)
+	assert.Equal(t, StatePlaying, mgr.PlayerStates()[0].State)
+
+	// empty ejects.
+	require.NoError(t, mgr.SyncPlayer(1, "", "", StateEmpty, 0, false))
+	assert.Equal(t, StateEmpty, mgr.PlayerStates()[0].State)
+	assert.Empty(t, mgr.PlayerStates()[0].ClipName)
+}
+
+func TestManagerSyncPlayerUnknownState(t *testing.T) {
+	mgr, store, dir := newTestManager(t)
+	defer mgr.Close()
+	c := addTestClip(t, store, dir)
+
+	assert.Error(t, mgr.SyncPlayer(1, "", c.Name, PlayerState("rewinding"), 1, false))
+	assert.Equal(t, StateEmpty, mgr.PlayerStates()[0].State)
+}
+
+// Repeated paused and loaded applies leave the slot as it is.
+func TestManagerSyncPlayerIdempotentPausedAndLoaded(t *testing.T) {
+	mgr, store, dir := newTestManager(t)
+	defer mgr.Close()
+	c := addTestClip(t, store, dir)
+	var starts atomic.Int32
+	mgr.OnPlayerLifecycle(func(int, string) { starts.Add(1) }, func(int, string) {})
+
+	require.NoError(t, mgr.SyncPlayer(1, "", c.Name, StatePaused, 0.25, true))
+	waitPlayerState(t, mgr, 1, StatePaused)
+	for range 3 {
+		require.NoError(t, mgr.SyncPlayer(1, "", c.Name, StatePaused, 0.25, true))
+	}
+	assert.Equal(t, StatePaused, mgr.PlayerStates()[0].State)
+	assert.Equal(t, int32(1), starts.Load())
+
+	require.NoError(t, mgr.SyncPlayer(1, "", c.Name, StateLoaded, 0, true))
+	for range 3 {
+		require.NoError(t, mgr.SyncPlayer(1, "", c.Name, StateLoaded, 0, true))
+	}
+	assert.Equal(t, StateLoaded, mgr.PlayerStates()[0].State)
+	assert.Equal(t, int32(1), starts.Load())
+}
+
+// A slot whose clip already ended (holding) converges to a paused or a
+// looping peer instead of staying in the hold.
+func TestManagerSyncPlayerFromHolding(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir, 1<<30)
+	require.NoError(t, err)
+	mgr := NewManager(store, ManagerConfig{DemuxFunc: mockDemuxFunc(3)})
+	defer mgr.Close()
+	c := addTestClip(t, store, dir)
+
+	require.NoError(t, mgr.SyncPlayer(1, "", c.Name, StatePlaying, 2.0, false))
+	waitPlayerState(t, mgr, 1, StateHolding)
+	require.NoError(t, mgr.SyncPlayer(1, "", c.Name, StatePaused, 0.25, false))
+	waitPlayerState(t, mgr, 1, StatePaused)
+
+	require.NoError(t, mgr.SyncPlayer(2, "", c.Name, StatePlaying, 2.0, false))
+	waitPlayerState(t, mgr, 2, StateHolding)
+	require.NoError(t, mgr.SyncPlayer(2, "", c.Name, StatePlaying, 0.25, true))
+	waitPlayerState(t, mgr, 2, StatePlaying)
+	assert.True(t, mgr.PlayerStates()[1].Loop)
+
+	// A non-looping playing peer leaves the hold alone.
+	require.NoError(t, mgr.SyncPlayer(3, "", c.Name, StatePlaying, 2.0, false))
+	waitPlayerState(t, mgr, 3, StateHolding)
+	require.NoError(t, mgr.SyncPlayer(3, "", c.Name, StatePlaying, 2.0, false))
+	assert.Equal(t, StateHolding, mgr.PlayerStates()[2].State)
+}
+
+// With two clips of the same name, the clip ID picks the right one, and a
+// slot already holding it is not reloaded.
+func TestManagerSyncPlayerPrefersClipID(t *testing.T) {
+	mgr, store, dir := newTestManager(t)
+	defer mgr.Close()
+	first := addTestClip(t, store, dir)
+	second := addTestClip(t, store, dir)
+	require.Equal(t, first.Name, second.Name)
+
+	require.NoError(t, mgr.SyncPlayer(1, second.ID, second.Name, StateLoaded, 0, false))
+	assert.Equal(t, second.ID, mgr.PlayerStates()[0].ClipID)
+	require.NoError(t, mgr.SyncPlayer(1, first.ID, first.Name, StateLoaded, 0, false))
+	assert.Equal(t, first.ID, mgr.PlayerStates()[0].ClipID)
+
+	// An ID this store does not hold falls back to the name and keeps the
+	// clip already loaded under that name.
+	require.NoError(t, mgr.SyncPlayer(1, "ffffffffffffffffffffffffffffffff", first.Name, StateLoaded, 0, false))
+	assert.Equal(t, first.ID, mgr.PlayerStates()[0].ClipID)
+}

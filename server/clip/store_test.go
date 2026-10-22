@@ -2,6 +2,7 @@
 package clip
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -287,5 +288,32 @@ func TestStoreTotalBytes(t *testing.T) {
 
 	if got := s.TotalBytes(); got != 500 {
 		t.Errorf("TotalBytes = %d, want 500", got)
+	}
+}
+
+func TestStoreAddWithID(t *testing.T) {
+	s, err := NewStore(t.TempDir(), 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "00112233445566778899aabbccddeeff"
+
+	if err := s.AddWithID(id, &Clip{Name: "a", ByteSize: 1}); err != nil {
+		t.Fatalf("AddWithID: %v", err)
+	}
+	got, err := s.Get(id)
+	if err != nil || got.Name != "a" {
+		t.Fatalf("Get(%q) = %+v, %v", id, got, err)
+	}
+	if err := s.AddWithID(id, &Clip{Name: "b", ByteSize: 1}); !errors.Is(err, ErrAlreadyExists) {
+		t.Errorf("duplicate id: got %v, want ErrAlreadyExists", err)
+	}
+	if got, _ := s.Get(id); got.Name != "a" {
+		t.Errorf("duplicate id overwrote clip: %+v", got)
+	}
+	for _, bad := range []string{"", "short", "00112233445566778899AABBCCDDEEFF", "../00112233445566778899aabbccdd"} {
+		if err := s.AddWithID(bad, &Clip{Name: "c"}); !errors.Is(err, ErrInvalidID) {
+			t.Errorf("AddWithID(%q): got %v, want ErrInvalidID", bad, err)
+		}
 	}
 }
