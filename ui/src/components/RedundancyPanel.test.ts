@@ -386,7 +386,7 @@ describe('RedundancyPanel', () => {
 		expect(container.querySelector('.audio-ch-diff')?.textContent).toBe('mute, AFV differ');
 	});
 
-	it('shows audio in sync when all channels within tolerance', () => {
+	it('shows audio in sync when no channel differs', () => {
 		const { container } = render(RedundancyPanel, {
 			props: makeDefaultProps({
 				audioComparison: [

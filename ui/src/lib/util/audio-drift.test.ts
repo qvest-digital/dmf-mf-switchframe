@@ -103,7 +103,7 @@ describe('compareAudioChannels', () => {
 		// are equal bits; a tolerance would show in sync what the drift
 		// detector reconciles.
 		const channelsA = { cam1: makeChannel({ level: -6 }) };
-		const channelsB = { cam1: makeChannel({ level: -6.1 }) };
+		const channelsB = { cam1: makeChannel({ level: -6.001 }) };
 		expect(compareAudioChannels(channelsA, channelsB)?.[0].diff).toEqual(['level']);
 		expect(detectAudioConfigDrift(channelsA, channelsB)).not.toBeNull();
 	});
