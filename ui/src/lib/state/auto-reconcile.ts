@@ -5,7 +5,7 @@ import type { EngineId } from '$lib/api/types';
  * Thrown by pushSnapshot when the target engine has advanced past the
  * snapshot's captured seq (HTTP 409). The auto-reconcile loop treats this
  * differently from transport errors: it pushes the target's state back the
- * other way, and escalates only when that is stale too.
+ * other way, and escalates only when that is stale too, twice in a row.
  */
 export class SnapshotStaleError extends Error {
 	constructor(
@@ -31,7 +31,7 @@ export interface AutoReconcileConfig {
 	onRecoveryComplete?: (warnings: string[]) => void;
 	onRecoveryError?: (error: Error) => void;
 	/** Called when a push returns 409 stale and the push back from its target
-	 * does too. Signals that engines can't be reconciled automatically — operator action needed. */
+	 * does too, twice in a row without a successful push in between. Signals that engines can't be reconciled automatically — operator action needed. */
 	onStaleConflict?: (target: EngineId, snapshotSeq: number, currentSeq: number) => void;
 	/** Called when either the source or target lock acquisition failed because
 	 * another browser holds it — the peer is reconciling; this browser backs off.
@@ -68,6 +68,10 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 	// Per-engine cooldown tracking
 	const lastPushTimes = new Map<EngineId, number>();
 	let retryCount = 0;
+	// Pushes refused as stale in both directions since the last successful
+	// one. Commands still arriving on both engines refuse a round once; the
+	// engines need an operator only when it happens again.
+	let doubleStaleCount = 0;
 	// Set while an operator push waits for its retry. Auto pushes follow the
 	// reconciler's authority and would overwrite the state the operator chose
 	// to keep, so none starts in the meantime.
@@ -266,7 +270,10 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 					} catch (reverseErr) {
 						if (reverseErr instanceof SnapshotStaleError) {
 							clearTimeout(timeoutTimer);
-							config.onStaleConflict?.(authoritative, reverseErr.snapshotSeq, reverseErr.currentSeq);
+							doubleStaleCount++;
+							if (doubleStaleCount >= 2) {
+								config.onStaleConflict?.(authoritative, reverseErr.snapshotSeq, reverseErr.currentSeq);
+							}
 							return;
 						}
 						throw reverseErr;
@@ -277,6 +284,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			}
 			clearTimeout(timeoutTimer);
 			retryCount = 0; // reset on success
+			doubleStaleCount = 0;
 			pushSuccesses++;
 			const warnings = result.warnings ?? [];
 			config.onRecoveryComplete?.(warnings);

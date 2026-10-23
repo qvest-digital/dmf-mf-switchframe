@@ -1390,23 +1390,56 @@ describe('createAutoReconcile', () => {
 			reconcile.destroy();
 		});
 
-		it('escalates only when the push back is stale too', async () => {
+		it('escalates only when both directions are stale twice in a row', async () => {
+			// Commands still arriving on both engines refuse one round in both
+			// directions without the engines having diverged; an alarm for
+			// that is one an operator learns to ignore.
 			const onStaleConflict = vi.fn();
 			const config = makeConfig({
 				pushSnapshot: vi.fn()
 					.mockRejectedValueOnce(new SnapshotStaleError(100, 110))
-					.mockRejectedValueOnce(new SnapshotStaleError(105, 108)),
+					.mockRejectedValueOnce(new SnapshotStaleError(105, 108))
+					.mockRejectedValueOnce(new SnapshotStaleError(120, 130))
+					.mockRejectedValueOnce(new SnapshotStaleError(125, 128)),
 				onStaleConflict,
 			});
 			const reconcile = createAutoReconcile(config);
 
 			reconcile.onSyncStatusChange('mismatch', 'A');
 			await vi.advanceTimersByTimeAsync(10);
+			expect(onStaleConflict).not.toHaveBeenCalled();
 
-			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
-			expect(onStaleConflict).toHaveBeenCalledExactlyOnceWith('A', 105, 108);
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(6_000);
+
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(4);
+			expect(onStaleConflict).toHaveBeenCalledExactlyOnceWith('A', 125, 128);
 			// No generic error: stale is handled, not a transport failure.
 			expect(config.onRecoveryError).not.toHaveBeenCalled();
+
+			reconcile.destroy();
+		});
+
+		it('starts the count over after a successful push', async () => {
+			const onStaleConflict = vi.fn();
+			const config = makeConfig({
+				pushSnapshot: vi.fn()
+					.mockRejectedValueOnce(new SnapshotStaleError(100, 110))
+					.mockRejectedValueOnce(new SnapshotStaleError(105, 108))
+					.mockResolvedValueOnce({ warnings: [] })
+					.mockRejectedValueOnce(new SnapshotStaleError(120, 130))
+					.mockRejectedValueOnce(new SnapshotStaleError(125, 128)),
+				onStaleConflict,
+			});
+			const reconcile = createAutoReconcile(config);
+
+			for (let i = 0; i < 3; i++) {
+				reconcile.onSyncStatusChange('mismatch', 'A');
+				await vi.advanceTimersByTimeAsync(6_000);
+			}
+
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(5);
+			expect(onStaleConflict).not.toHaveBeenCalled();
 
 			reconcile.destroy();
 		});
