@@ -1428,18 +1428,42 @@ describe('createAutoReconcile', () => {
 					.mockRejectedValueOnce(new SnapshotStaleError(105, 108))
 					.mockResolvedValueOnce({ warnings: [] })
 					.mockRejectedValueOnce(new SnapshotStaleError(120, 130))
-					.mockRejectedValueOnce(new SnapshotStaleError(125, 128)),
+					.mockRejectedValueOnce(new SnapshotStaleError(125, 128))
+					.mockResolvedValue({ warnings: [] }),
 				onStaleConflict,
 			});
 			const reconcile = createAutoReconcile(config);
 
-			for (let i = 0; i < 3; i++) {
-				reconcile.onSyncStatusChange('mismatch', 'A');
-				await vi.advanceTimersByTimeAsync(6_000);
-			}
+			// A refused round, then the round it schedules succeeds.
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(8_000);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(3);
 
-			expect(config.pushSnapshot).toHaveBeenCalledTimes(5);
+			// The next refused round is a first one again.
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(8_000);
+
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(6);
 			expect(onStaleConflict).not.toHaveBeenCalled();
+
+			reconcile.destroy();
+		});
+
+		it('follows a refused round with another unless the engines report synced', async () => {
+			const config = makeConfig({
+				pushSnapshot: vi.fn()
+					.mockRejectedValueOnce(new SnapshotStaleError(100, 110))
+					.mockRejectedValueOnce(new SnapshotStaleError(105, 108))
+					.mockResolvedValue({ warnings: [] }),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(10);
+			reconcile.onSyncStatusChange('synced', 'A');
+			await vi.advanceTimersByTimeAsync(10_000);
+
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
 
 			reconcile.destroy();
 		});

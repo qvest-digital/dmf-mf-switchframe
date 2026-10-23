@@ -33,6 +33,10 @@ export interface AutoReconcileConfig {
 	/** Called when a push returns 409 stale and the push back from its target
 	 * does too, twice in a row without a successful push in between. Signals that engines can't be reconciled automatically — operator action needed. */
 	onStaleConflict?: (target: EngineId, snapshotSeq: number, currentSeq: number) => void;
+	/** Called when a push and the push back are both refused as stale for the
+	 * first time since a successful push. Ends the round without an alarm;
+	 * another round follows unless the engines report synced first. */
+	onStaleRound?: () => void;
 	/** Called when either the source or target lock acquisition failed because
 	 * another browser holds it — the peer is reconciling; this browser backs off.
 	 * Prevents the AB-vs-BA snapshot stampede that would otherwise silently swap
@@ -273,6 +277,17 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 							doubleStaleCount++;
 							if (doubleStaleCount >= 2) {
 								config.onStaleConflict?.(authoritative, reverseErr.snapshotSeq, reverseErr.currentSeq);
+							} else {
+								config.onStaleRound?.();
+								// A round can start and end between two status ticks,
+								// so no status change is left to start the next one.
+								// Pending until then: a synced status cancels it.
+								if (pendingTimer === null) {
+									pendingTimer = setTimeout(() => {
+										pendingTimer = null;
+										executeSnapshotPush(currentAuthoritative);
+									}, DIVERGE_DELAY_MS);
+								}
 							}
 							return;
 						}
