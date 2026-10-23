@@ -739,6 +739,8 @@
 			connectionError = null;
 		},
 		onInitialLoadError: handleInitialLoadError,
+		// Off by default: commands run on arrival on each engine.
+		timedExecution: localStorage.getItem('switchframe_timed_execution') === '1',
 	});
 
 	// Kick off speculative Engine B discovery in parallel with the initial state
@@ -784,17 +786,7 @@
 			{ id: 'A', url: window.location.origin },
 			{ id: 'B', url: engineBUrl },
 		]);
-		setDualTimestampProvider((engineId?: string) => {
-			if (!connectionManager.clock.isConverged()) {
-				return { execute_at: 0, command_seq: connectionManager.nextCommandSeq() };
-			}
-			return {
-				execute_at: engineId
-					? connectionManager.clock.ptpNowForEngine(engineId as any) + connectionManager.clock.safetyMargin()
-					: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
-				command_seq: connectionManager.nextCommandSeq(),
-			};
-		});
+		setDualTimestampProvider((engineId?: string) => connectionManager.commandTiming(engineId as import('$lib/api/types').EngineId | undefined));
 		setPartialFailureCallback(() => {
 			connectionManager.requestCheck();
 		});

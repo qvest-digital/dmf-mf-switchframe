@@ -12,7 +12,6 @@ import (
 // for transition position updates, graphics position updates, and DVE transforms.
 func (a *App) initFastControl() {
 	a.fastCtrl = fastctrl.NewDispatcher()
-	a.fastCtrlPongCh = make(chan []byte, 16)
 
 	a.fastCtrl.Register(fastctrl.MsgTransitionPosition, a.handleFastTransitionUpdate)
 	a.fastCtrl.Register(fastctrl.MsgGraphicsLayerPosition, a.handleFastGraphicsUpdate)
@@ -173,13 +172,12 @@ func (a *App) handleFastDVEBorder(data []byte) error {
 	return nil
 }
 
+// handleFastPing answers on the control track: a datagram reaches the
+// server without a session to reply on. Every viewer of the control track
+// receives the pong, and a browser matches it to its own ping by seq.
 func (a *App) handleFastPing(data []byte) error {
 	seq, _ := fastctrl.ParsePing(data)
-	pong := fastctrl.BuildPong(clock.Now(), seq)
-	select {
-	case a.fastCtrlPongCh <- pong:
-		a.fastCtrl.RecordPongSent()
-	default: // drop if full
-	}
+	a.controlPub.PublishRaw(fastctrl.BuildPong(clock.Now(), seq))
+	a.fastCtrl.RecordPongSent()
 	return nil
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ClockSync } from './clock-sync';
 
 function buildPongHelper(seq: number, timestampUS: number): Uint8Array {
@@ -14,6 +14,11 @@ function buildPongHelper(seq: number, timestampUS: number): Uint8Array {
 }
 
 describe('ClockSync', () => {
+	beforeEach(() => {
+		// Pings count from 0, as the pongs built here expect.
+		vi.spyOn(Math, 'random').mockReturnValue(0);
+	});
+
 	afterEach(() => {
 		vi.restoreAllMocks();
 	});
@@ -256,6 +261,71 @@ describe('ClockSync', () => {
 			sync.updateOffset('A', 0);
 			sync.updateOffset('B', 100); // 100 us divergence
 			expect(sync.isClockDiverged()).toBe(false);
+		});
+	});
+
+	describe('ping seq', () => {
+		function firstPingSeq(sync: ClockSync): number {
+			let seq = -1;
+			sync.startPeriodicSync(['A'], (_id, data) => {
+				if (seq < 0) seq = new DataView(data.buffer).getUint32(1);
+			});
+			sync.stopPeriodicSync();
+			return seq;
+		}
+
+		it('starts each browser at its own seq', () => {
+			// Every viewer of an engine's control track receives every pong.
+			// Two browsers counting from the same seq would take each other's
+			// pongs for their own and measure a wrong RTT.
+			vi.mocked(Math.random).mockReturnValueOnce(0.25).mockReturnValueOnce(0.75);
+			const a = firstPingSeq(new ClockSync());
+			const b = firstPingSeq(new ClockSync());
+
+			expect(a).toBe(2 ** 30);
+			expect(b).toBe(3 * 2 ** 30);
+		});
+
+		it('keeps the newest pending pings across a seq wrap', () => {
+			// Past the cap the oldest pings are dropped. Ordered by seq, the
+			// newest pings after a wrap would look oldest and their pongs go
+			// unmatched.
+			vi.useFakeTimers();
+			let t = 0;
+			vi.spyOn(performance, 'now').mockImplementation(() => t);
+			vi.mocked(Math.random).mockReturnValueOnce((2 ** 32 - 100) / 2 ** 32);
+			const sync = new ClockSync();
+			let last = 0;
+			sync.startPeriodicSync(['A'], (_id, data) => { last = new DataView(data.buffer).getUint32(1); }, 1000);
+			// 101 pings: 100 before the wrap, then seq 0, which overflows the cap.
+			for (let i = 0; i < 100; i++) {
+				t += 1;
+				vi.advanceTimersByTime(1000);
+			}
+			sync.stopPeriodicSync();
+			vi.useRealTimers();
+
+			expect(last).toBe(0);
+			const pong = new Uint8Array(13);
+			pong[0] = 0xFF;
+			new DataView(pong.buffer).setUint32(1, last);
+			sync.handlePong('A', pong);
+			expect(sync.getOffset('A')).not.toBe(0);
+		});
+
+		it('wraps at the uint32 the ping carries and still matches the pong', () => {
+			vi.mocked(Math.random).mockReturnValueOnce((2 ** 32 - 1) / 2 ** 32);
+			const sync = new ClockSync();
+			const seqs: number[] = [];
+			sync.startPeriodicSync(['A', 'B'], (_id, data) => seqs.push(new DataView(data.buffer).getUint32(1)));
+			sync.stopPeriodicSync();
+
+			expect(seqs).toEqual([2 ** 32 - 1, 0]);
+			const pong = new Uint8Array(13);
+			pong[0] = 0xFF;
+			sync.handlePong('B', pong);
+			// An unmatched pong is dropped and leaves the offset unset.
+			expect(sync.getOffset('B')).not.toBe(0);
 		});
 	});
 

@@ -470,6 +470,28 @@ describe('switch-api dual-engine routing', () => {
 			}
 		});
 
+		it('sends command_seq with execute_at 0 when the command runs on arrival', async () => {
+			// Without a seq the engines' lastCommandSeq stayed 0, and the
+			// redundancy pane and the reconciler had nothing to compare.
+			setDualTimestampProvider(() => ({ execute_at: 0, command_seq: 7 }));
+
+			await cut('cam1');
+
+			for (const call of fetchCalls) {
+				const body = JSON.parse(call.opts.body as string);
+				expect(body).toMatchObject({ source: 'cam1', execute_at: 0, command_seq: 7 });
+			}
+		});
+
+		it('runs a command with an implausible execute_at on arrival', async () => {
+			setDualTimestampProvider(() => ({ execute_at: Date.now() * 1000 + 60_000_000, command_seq: 8 }));
+
+			await cut('cam1');
+
+			const body = JSON.parse(fetchCalls[0].opts.body as string);
+			expect(body).toMatchObject({ execute_at: 0, command_seq: 8 });
+		});
+
 		it('sends one command with the same command_seq to both engines', async () => {
 			// The provider runs once per engine and hands out a new seq each
 			// time; A got N and B N+1, so every command read as B ahead of A.

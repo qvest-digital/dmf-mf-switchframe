@@ -346,12 +346,11 @@ async function fanOutMutation(
 				const ts = dualTimestampProvider(engine.id);
 				commandSeq ??= ts.command_seq;
 				const nowUs = Date.now() * 1000;
-				if (ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000) {
-					const parsed = JSON.parse(engineBody as string);
-					bodies[i] = JSON.stringify({ ...parsed, ...ts, command_seq: commandSeq });
-				} else if (ts.execute_at === 0) {
-					console.warn(`[dual-api] Clock sync not converged for engine ${engine.id} — sending ${url} without PTP timestamp`);
-				}
+				// execute_at 0 runs the command on arrival; the engine still
+				// records its seq, which the reconciler compares.
+				const plausible = ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000;
+				const parsed = JSON.parse(engineBody as string);
+				bodies[i] = JSON.stringify({ ...parsed, execute_at: plausible ? ts.execute_at : 0, command_seq: commandSeq });
 			} catch { /* send without timestamps */ }
 		}
 	}

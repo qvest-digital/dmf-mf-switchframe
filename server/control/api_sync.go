@@ -229,6 +229,7 @@ func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var snap internal.FullStateSnapshot
+	var snapSeq uint64
 	var warnings []string
 
 	force := r.URL.Query().Get("force") == "true"
@@ -240,6 +241,7 @@ func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	if json.Unmarshal(raw, &probe) == nil && probe.Snapshot != nil {
 		// Envelope format.
+		snapSeq = probe.Seq
 		if err := json.Unmarshal(probe.Snapshot, &snap); err != nil {
 			httperr.Write(w, http.StatusBadRequest, "invalid snapshot JSON")
 			if a.appMetrics != nil {
@@ -289,6 +291,15 @@ func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	warnings = append(warnings, internal.ApplyFullSnapshot(r.Context(), snap, a.snapshotProvider.ApplyTarget())...)
+
+	// The engine now holds the source's state as of snapSeq. Without taking
+	// the seq along, a gap between the engines' seqs outlives the push, and
+	// a browser keeps reading the engines as diverged and pushing again.
+	// The tracker keeps the higher of the two, so a forced stale apply
+	// leaves this engine's seq alone.
+	if snapSeq > 0 && a.seqTracker != nil {
+		a.seqTracker(snapSeq)
+	}
 
 	// Record apply duration and result.
 	if a.appMetrics != nil {

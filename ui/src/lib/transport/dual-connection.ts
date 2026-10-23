@@ -10,6 +10,9 @@ export interface DualConnectionConfig {
 	onInitialLoadComplete: () => void;
 	onInitialLoadError: (error: string, rawError?: unknown) => void;
 	onDualEngineReady?: () => void;
+	/** Schedule timed commands at a PTP time on both engines instead of
+	 * running them on arrival. */
+	timedExecution?: boolean;
 }
 
 export class DualConnectionManager {
@@ -53,12 +56,6 @@ export class DualConnectionManager {
 	/** Get the connection status for a specific engine. */
 	engineConnectionState(id: EngineId): ConnectionStatus {
 		return this.engineStates.get(id) ?? 'disconnected';
-	}
-
-	/** Report RTT measurement for an engine. Feeds both reconciler and ClockSync. */
-	reportRTT(engine: EngineId, ms: number): void {
-		this.reconciler.setRTT(engine, ms);
-		this.clockSync.updateRTT(engine, ms * 1000); // ms -> us
 	}
 
 	/** Reconciler mode: 'dual' when both engines have been seen, 'single' otherwise. */
@@ -223,6 +220,16 @@ export class DualConnectionManager {
 		this.reconciler.requestCheck();
 	}
 
+	/** The timing fields of a timed command for one engine. execute_at is 0,
+	 * run on arrival, unless timed execution is on and clock sync has
+	 * converged. */
+	commandTiming(engineId?: EngineId): { execute_at: number; command_seq: number } {
+		const command_seq = this.nextCommandSeq();
+		if (!this.config.timedExecution || !this.clockSync.isConverged()) return { execute_at: 0, command_seq };
+		const now = engineId ? this.clockSync.ptpNowForEngine(engineId) : this.clockSync.ptpNow();
+		return { execute_at: now + this.clockSync.safetyMargin(), command_seq };
+	}
+
 	/** A seq no other browser or earlier page load sends: an engine rejects
 	 * a seq it has executed before, and keeps that record across restarts.
 	 * Wall-clock microseconds, with random low digits for two browsers in the
@@ -234,15 +241,7 @@ export class DualConnectionManager {
 
 	/** Forward MoQ control data to the appropriate engine's connection manager. */
 	handleControlData(engineId: EngineId, data: Uint8Array): void {
-		// Intercept clock sync pong messages
-		if (data.length >= 13 && data[0] === 0xFF) {
-			this.clockSync.handlePong(engineId, data);
-			// Check if clock offset divergence exceeds safety margin
-			this.reconciler.setClockDiverged(this.clockSync.isClockDiverged());
-			// Record pong as proof-of-life for stale detection
-			this.reconciler.recordPong(engineId);
-			return; // don't forward pong to connection manager
-		}
+		if (this.handlePong(engineId, data)) return;
 
 		const mgr = this.managers.get(engineId);
 		if (mgr) {
@@ -266,6 +265,23 @@ export class DualConnectionManager {
 				mgr.notifyMoQActive();
 			}
 		}
+	}
+
+	/** Takes a clock sync pong off the control track. The engine sends it
+	 * there because a datagram has no session to answer on; it reaches a
+	 * media pipeline's control subscription or the engine's own connection,
+	 * whichever carries the control track. */
+	private handlePong(engineId: EngineId, data: Uint8Array): boolean {
+		if (data.length < 13 || data[0] !== 0xFF) return false;
+		this.clockSync.handlePong(engineId, data);
+		// Displayed as is: RTT in ms to 0.1, offset in whole us.
+		this.reconciler.setRTT(engineId, Math.round(this.clockSync.getRTT(engineId) / 100) / 10);
+		this.reconciler.setClockOffset(engineId, Math.round(this.clockSync.getOffset(engineId)));
+		// Check if clock offset divergence exceeds safety margin
+		this.reconciler.setClockDiverged(this.clockSync.isClockDiverged());
+		// Record pong as proof-of-life for stale detection
+		this.reconciler.recordPong(engineId);
+		return true;
 	}
 
 	/** Start periodic clock sync pings if in dual-engine mode. */
@@ -369,6 +385,7 @@ export class DualConnectionManager {
 			onStateUpdate: (update) => {
 				let state: ControlRoomState;
 				const isBytes = ArrayBuffer.isView(update) || update instanceof ArrayBuffer;
+				if (isBytes && this.handlePong(engineId, update as Uint8Array)) return;
 				if (isBytes) {
 					// Control payload from the MoQ control track. A truncated or
 					// malformed payload (realistic during reconnect/relay restart)

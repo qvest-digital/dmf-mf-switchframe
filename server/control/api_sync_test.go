@@ -938,3 +938,36 @@ func TestApplySnapshot_AcceptsForceOverride(t *testing.T) {
 	}
 	require.True(t, hasForceWarning, "expected a warning flagging the forced stale apply, got: %v", resp.Warnings)
 }
+
+// A browser reads engines whose seqs differ as diverged and pushes a
+// snapshot. If the target kept its lower seq after the apply, the gap and
+// the pushes went on until a later command reached both engines.
+func TestApplySnapshot_TakesTheSnapshotSeq(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		engineSeq uint64
+		query     string
+		want      uint64
+	}{
+		{name: "behind the snapshot", engineSeq: 50, want: 100},
+		{name: "forced while ahead of the snapshot", engineSeq: 105, query: "?force=true", want: 105},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sw := switcher.NewTestSwitcher(t, distribution.NewRelay())
+			sw.TrackCommandSeq(tc.engineSeq)
+			api := NewAPI(sw, WithSnapshotProvider(&mockSnapshotProvider{}), WithSeqTracker(sw.TrackCommandSeq))
+
+			body, err := json.Marshal(map[string]any{
+				"snapshot":  json.RawMessage(`{"version":"1","capturedAt":9999,"captionMode":"off"}`),
+				"seq":       uint64(100),
+				"timestamp": time.Now().UnixMicro(),
+			})
+			require.NoError(t, err)
+			rec := httptest.NewRecorder()
+			api.Mux().ServeHTTP(rec, httptest.NewRequest("POST", "/api/sync/state-snapshot"+tc.query, strings.NewReader(string(body))))
+
+			require.Equal(t, http.StatusOK, rec.Code)
+			require.Equal(t, tc.want, api.enrichedState().LastCommandSeq)
+		})
+	}
+}

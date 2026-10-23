@@ -179,7 +179,6 @@ type App struct {
 	dveCompositor  *dve.Compositor
 	dvePresetStore *dve.PresetStore
 	fastCtrl       *fastctrl.Dispatcher
-	fastCtrlPongCh chan []byte
 	stmapRegistry  *stmap.Registry
 	stmapStore     *stmap.Store
 
