@@ -1148,6 +1148,34 @@ func TestSRTCaller_StatsPollingStopsOnClose(t *testing.T) {
 		"stats polling should stop after Close()")
 }
 
+// Each Start ends the previous one's stats poller with its context. The
+// next Start must get a poller of its own, or the caller's ConnStats stop
+// updating for good.
+func TestSRTCaller_StatsPollingResumesAfterRestart(t *testing.T) {
+	t.Parallel()
+	for _, closeFirst := range []bool{true, false} {
+		mock := &mockStatsSRTConn{}
+		c := NewSRTCaller(SRTCallerConfig{Address: "srt.example.com", Port: 9998})
+		c.SetStats(srt.NewConnStats("send", "test-stream", 120))
+		c.connectFn = func(context.Context, SRTCallerConfig) (srtConn, error) {
+			return mock, nil
+		}
+
+		require.NoError(t, c.Start(context.Background()))
+		require.Eventually(t, func() bool { return mock.pollCount.Load() >= 1 },
+			3*time.Second, 50*time.Millisecond)
+		if closeFirst {
+			_ = c.Close()
+		}
+		require.NoError(t, c.Start(context.Background()))
+		polled := mock.pollCount.Load()
+		require.Eventually(t, func() bool { return mock.pollCount.Load() > polled },
+			3*time.Second, 50*time.Millisecond,
+			"stats polling stopped after restart (closeFirst=%v)", closeFirst)
+		_ = c.Close()
+	}
+}
+
 func TestSRTCaller_NoStatsWithoutSetStats(t *testing.T) {
 	t.Parallel()
 	mock := &mockStatsSRTConn{}

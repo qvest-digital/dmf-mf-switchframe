@@ -45,7 +45,6 @@ type SRTCaller struct {
 	bo              backoff.Backoff
 	reconnectDone   chan struct{} // done channel of the running reconnect loop; nil when none runs
 	reconnecting    atomic.Bool   // set while a reconnect loop runs; see startReconnectLoopLocked
-	statsPolling    atomic.Bool   // guards against duplicate pollStats goroutines
 	pendingIDR      atomic.Bool   // when true, drop writes until a keyframe arrives
 	pendingIDRSince atomic.Int64  // UnixMilli timestamp when pendingIDR was set (for timeout)
 	bytesWritten    atomic.Int64
@@ -57,6 +56,9 @@ type SRTCaller struct {
 	// stats tracks SRT connection statistics. When non-nil, a background goroutine
 	// polls the connection for stats every second and calls stats.UpdateSend().
 	stats *srt.ConnStats
+	// statsCtx is the context the running stats poller was started with, so
+	// each Start context gets exactly one poller. Guarded by mu.
+	statsCtx context.Context
 
 	// connectFn is overridden in tests to avoid real network I/O.
 	connectFn func(ctx context.Context, config SRTCallerConfig) (srtConn, error)
@@ -127,9 +129,7 @@ func (c *SRTCaller) Start(ctx context.Context) error {
 	c.state.Store(ptrTo(StateActive))
 	c.bo.Reset()
 
-	if c.stats != nil && c.statsPolling.CompareAndSwap(false, true) {
-		go c.pollStats(c.ctx)
-	}
+	c.startStatsPollingLocked(c.ctx)
 
 	return nil
 }
@@ -334,6 +334,7 @@ func (c *SRTCaller) reconnectLoop(ctx context.Context, done chan struct{}) {
 			c.conn.Close()
 		}
 		c.conn = conn
+		c.startStatsPollingLocked(ctx)
 
 		overflowed := c.ringBuf.Overflowed()
 		c.ringBuf.ReadAll() // discard buffered data
@@ -359,17 +360,23 @@ func (c *SRTCaller) reconnectLoop(ctx context.Context, done chan struct{}) {
 
 		slog.Info("SRT reconnected", "address", c.config.Address, "overflowed", overflowed)
 
-		// Start stats polling if not already running. Uses CAS to prevent
-		// accumulating duplicate goroutines across reconnect cycles.
-		if c.stats != nil && c.statsPolling.CompareAndSwap(false, true) {
-			go c.pollStats(ctx)
-		}
-
 		if c.onReconnect != nil {
 			c.onReconnect(overflowed)
 		}
 		return
 	}
+}
+
+// startStatsPollingLocked starts polling stats under ctx unless a poller
+// already runs under it. A poller ends with its context, so a later Start,
+// whose context is new, gets one of its own, while reconnects within one
+// Start do not add more. c.mu must be held.
+func (c *SRTCaller) startStatsPollingLocked(ctx context.Context) {
+	if c.stats == nil || c.statsCtx == ctx {
+		return
+	}
+	c.statsCtx = ctx
+	go c.pollStats(ctx)
 }
 
 // pollStats polls the SRT connection for stats every second and updates ConnStats.
