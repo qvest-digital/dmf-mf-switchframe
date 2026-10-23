@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.16](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.15...mxl-v1.0.0-rc.16) (2026-10-23)
+
+
+### Bug Fixes
+
+* **nmos:** keep a pair registered while its leader is down ([#43](https://github.com/qvest-digital/dmf-mf-switchframe/issues/43)) ([194f062](https://github.com/qvest-digital/dmf-mf-switchframe/commit/194f062780244d5c628b2aa2edc27ebd58e94718))
+
 ## [1.0.0-rc.15](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.14...mxl-v1.0.0-rc.15) (2026-10-22)
 
 
