@@ -67,6 +67,10 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 	// Per-engine cooldown tracking
 	const lastPushTimes = new Map<EngineId, number>();
 	let retryCount = 0;
+	// Set while an operator push waits for its retry. Auto pushes follow the
+	// reconciler's authority and would overwrite the state the operator chose
+	// to keep, so none starts in the meantime.
+	let operatorRetryPending = false;
 	// Track the latest authoritative engine so timer callbacks use the
 	// current value, not the one captured when the timer was created.
 	let currentAuthoritative: EngineId = 'A';
@@ -308,7 +312,9 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 				retryCount++;
 				const delay = RETRY_BASE_DELAY_MS + Math.random() * RETRY_JITTER_MS;
 				const retryTarget = target;
+				if (overrideStale) operatorRetryPending = true;
 				setTimeout(() => {
+					operatorRetryPending = false;
 					// Clear cooldown for the target so retry can proceed
 					lastPushTimes.delete(retryTarget);
 					// An operator push retries in the direction the operator chose.
@@ -337,6 +343,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 
 		// Always track the latest authoritative engine
 		currentAuthoritative = authoritative;
+		if (operatorRetryPending) return;
 
 		if (status === 'mismatch') {
 			divergenceDetectedTotal++;
@@ -368,6 +375,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 
 	function destroy() {
 		destroyed = true;
+		operatorRetryPending = false;
 		clearPendingTimer();
 	}
 
@@ -379,9 +387,9 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 	 *  Returns false when it could not start because a push is already running. */
 	function forceSnapshotPush(authoritative: EngineId, opts: { overrideStale?: boolean } = {}): boolean {
 		if (destroyed) return false;
-		currentAuthoritative = authoritative;
 		clearPendingTimer();
 		if (pushInFlight) return false;
+		currentAuthoritative = authoritative;
 		lastPushTimes.delete(otherEngine(authoritative));
 		executeSnapshotPush(authoritative, opts.overrideStale);
 		return true;

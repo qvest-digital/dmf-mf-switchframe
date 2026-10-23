@@ -156,6 +156,58 @@ describe('createAutoReconcile', () => {
 			reconcile.destroy();
 		});
 
+		it.each([
+			['mismatch', 0],
+			['diverged', 0.5],
+		] as const)('starts no auto push after a failed operator push (%s, jitter %s)', async (status, jitter) => {
+			// After the failure the status leaves recovering and the page
+			// reports the reconciler's authority. An auto push then ran from
+			// that engine before the operator's retry and overwrote the state
+			// the operator chose to keep.
+			vi.spyOn(Math, 'random').mockReturnValue(jitter);
+			const pushSnapshot = vi.fn()
+				.mockRejectedValueOnce(new Error('network'))
+				.mockResolvedValue({ warnings: [] });
+			let reconcile!: ReturnType<typeof createAutoReconcile>;
+			const config = makeConfig({
+				pushSnapshot,
+				onRecoveryStart: vi.fn(() => reconcile.onSyncStatusChange('recovering', 'A')),
+				onRecoveryError: vi.fn(() => { setTimeout(() => reconcile.onSyncStatusChange(status, 'A'), 200); }),
+			});
+			reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('B', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(3_500);
+
+			expect(pushSnapshot.mock.calls).toEqual([
+				['A', expect.anything(), { force: true }],
+				['A', expect.anything(), { force: true }],
+			]);
+			expect(config.getSnapshot).not.toHaveBeenCalledWith('A');
+
+			reconcile.destroy();
+			vi.mocked(Math.random).mockRestore();
+		});
+
+		it('leaves a running push\'s direction alone when an operator push cannot start', async () => {
+			let release!: () => void;
+			const pushSnapshot = vi.fn()
+				.mockImplementationOnce(() => new Promise((_, reject) => { release = () => reject(new Error('network')); }))
+				.mockResolvedValue({ warnings: [] });
+			const config = makeConfig({ pushSnapshot });
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reconcile.forceSnapshotPush('B', { overrideStale: true })).toBe(false);
+			release();
+			await vi.advanceTimersByTimeAsync(3_500);
+
+			expect(pushSnapshot.mock.calls.map((c) => c[0])).toEqual(['B', 'B']);
+
+			reconcile.destroy();
+		});
+
 		it('does not follow an operator push with a recheck push', async () => {
 			// A forced stale apply always returns a warning, which would start
 			// a recheck push in the reconciler's direction.
