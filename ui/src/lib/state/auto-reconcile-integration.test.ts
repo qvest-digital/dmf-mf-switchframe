@@ -7,7 +7,9 @@
  * in production when engines actually diverge.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createAutoReconcile, type AutoReconcileConfig } from './auto-reconcile';
+import { createAutoReconcile, SnapshotStaleError, type AutoReconcileConfig } from './auto-reconcile';
+import { createReconciler } from './reconciler.svelte';
+import type { ControlRoomState } from '$lib/api/types';
 
 interface TestConfig extends AutoReconcileConfig {
 	getSnapshot: ReturnType<typeof vi.fn> & AutoReconcileConfig['getSnapshot'];
@@ -99,6 +101,113 @@ describe('auto-reconcile integration', () => {
 				'audio channel "mic1" not found on target',
 				'clip player 2 state skipped',
 			]);
+		});
+	});
+
+	// ─── A command that reached one engine ───
+
+	describe('command on one engine only', () => {
+		// Two engines as the server keeps them: a push older than the target's
+		// last command is refused unless forced, and an applied push takes the
+		// snapshot's seq.
+		function engines() {
+			const state = { A: { program: 'cam1', seq: 100 }, B: { program: 'cam1', seq: 100 } };
+			return {
+				state,
+				getSnapshot: vi.fn().mockImplementation((e: 'A' | 'B') => Promise.resolve({ ...state[e] })),
+				pushSnapshot: vi.fn().mockImplementation((e: 'A' | 'B', snap: { program: string; seq: number }, opts?: { force: true }) => {
+					if (state[e].seq > snap.seq && !opts?.force) return Promise.reject(new SnapshotStaleError(snap.seq, state[e].seq));
+					state[e] = { program: snap.program, seq: Math.max(state[e].seq, snap.seq) };
+					return Promise.resolve({ warnings: [] });
+				}),
+			};
+		}
+
+		it('converges on the engine with the newer command, without an alarm', async () => {
+			const sim = engines();
+			sim.state.B = { program: 'cam2', seq: 200 }; // the cut reached B alone
+			const onStaleConflict = vi.fn();
+			const config = createTestConfig({ getSnapshot: sim.getSnapshot, pushSnapshot: sim.pushSnapshot, onStaleConflict });
+			const ar = createAutoReconcile(config);
+
+			// Authority is still held on A, which lacks the cut.
+			ar.onSyncStatusChange('diverged', 'A');
+			await vi.runAllTimersAsync();
+
+			expect(sim.state).toEqual({ A: { program: 'cam2', seq: 200 }, B: { program: 'cam2', seq: 200 } });
+			expect(onStaleConflict).not.toHaveBeenCalled();
+			expect(config.onRecoveryComplete).toHaveBeenCalledOnce();
+		});
+	});
+
+	// ─── Wired to the reconciler as the page wires it ───
+
+	describe('refused rounds with the reconciler', () => {
+		function state(program: string, seq: number): ControlRoomState {
+			return {
+				programSource: program, previewSource: 'cam3', transitionType: 'cut', transitionDurationMs: 500,
+				transitionPosition: 0, inTransition: false, ftbActive: false, audioChannels: undefined, masterLevel: 0,
+				programPeak: [0, 0], tallyState: {}, sources: {}, seq: 1, lastCommandSeq: seq, timestamp: Date.now(),
+			} as ControlRoomState;
+		}
+
+		/** Engines that refuse the first `refuse` pushes as stale, as engines
+		 * still taking commands do, and otherwise behave as the server does. */
+		async function run(refuse: number) {
+			const engines = { A: { program: 'cam1', seq: 100 }, B: { program: 'cam2', seq: 150 } };
+			const r = createReconciler();
+			const broadcast = () => {
+				r.ingest('A', state(engines.A.program, engines.A.seq));
+				r.ingest('B', state(engines.B.program, engines.B.seq));
+			};
+			const onStaleConflict = vi.fn();
+			const ar = createAutoReconcile({
+				getSnapshot: (e) => Promise.resolve({ ...engines[e] }),
+				pushSnapshot: (e, snap) => {
+					const s = snap as { program: string; seq: number };
+					if (refuse > 0 || engines[e].seq > s.seq) {
+						refuse--;
+						return Promise.reject(new SnapshotStaleError(s.seq, engines[e].seq));
+					}
+					engines[e] = { program: s.program, seq: Math.max(engines[e].seq, s.seq) };
+					broadcast();
+					return Promise.resolve({ warnings: [] });
+				},
+				onRecoveryStart: () => r.setRecovering(true),
+				onRecoveryComplete: () => r.setRecovering(false),
+				onRecoveryError: () => r.setRecovering(false),
+				onStaleConflict: (...args) => { r.setRecovering(false); onStaleConflict(...args); },
+				onStaleRound: () => r.setRecovering(false),
+			});
+			let prev = '';
+			for (let t = 0; t < 20_000; t += 200) {
+				if (t % 1000 === 0) broadcast();
+				r.tick();
+				if (r.health.status !== prev) {
+					prev = r.health.status;
+					ar.onSyncStatusChange(r.health.status, r.health.authoritative);
+				}
+				await vi.advanceTimersByTimeAsync(200);
+			}
+			ar.destroy();
+			return { status: r.health.status, engines, onStaleConflict };
+		}
+
+		it('converges after one round refused both ways, without an alarm', async () => {
+			// Ending that round without clearing recovering left the pane in
+			// recovering for good: no further push, no alarm.
+			const { status, engines, onStaleConflict } = await run(2);
+
+			expect(status).toBe('synced');
+			expect(engines.A).toEqual(engines.B);
+			expect(onStaleConflict).not.toHaveBeenCalled();
+		});
+
+		it('raises the alarm once after two rounds refused both ways', async () => {
+			const { status, onStaleConflict } = await run(4);
+
+			expect(onStaleConflict).toHaveBeenCalledOnce();
+			expect(status).not.toBe('recovering');
 		});
 	});
 

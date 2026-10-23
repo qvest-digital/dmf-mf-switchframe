@@ -4,7 +4,8 @@ import type { EngineId } from '$lib/api/types';
 /**
  * Thrown by pushSnapshot when the target engine has advanced past the
  * snapshot's captured seq (HTTP 409). The auto-reconcile loop treats this
- * differently from transport errors: fresh pull + single retry, then escalate.
+ * differently from transport errors: it pushes the target's state back the
+ * other way, and escalates only when that is stale too, twice in a row.
  */
 export class SnapshotStaleError extends Error {
 	constructor(
@@ -29,9 +30,13 @@ export interface AutoReconcileConfig {
 	onRecoveryStart?: () => void;
 	onRecoveryComplete?: (warnings: string[]) => void;
 	onRecoveryError?: (error: Error) => void;
-	/** Called when two consecutive pushes to the same target return 409 stale.
-	 * Signals that engines can't be reconciled automatically — operator action needed. */
+	/** Called when a push returns 409 stale and the push back from its target
+	 * does too, twice in a row without a successful push in between. Signals that engines can't be reconciled automatically — operator action needed. */
 	onStaleConflict?: (target: EngineId, snapshotSeq: number, currentSeq: number) => void;
+	/** Called when a push and the push back are both refused as stale for the
+	 * first time since a successful push. Ends the round without an alarm;
+	 * another round follows unless the engines report synced first. */
+	onStaleRound?: () => void;
 	/** Called when either the source or target lock acquisition failed because
 	 * another browser holds it — the peer is reconciling; this browser backs off.
 	 * Prevents the AB-vs-BA snapshot stampede that would otherwise silently swap
@@ -67,6 +72,10 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 	// Per-engine cooldown tracking
 	const lastPushTimes = new Map<EngineId, number>();
 	let retryCount = 0;
+	// Pushes refused as stale in both directions since the last successful
+	// one. Commands still arriving on both engines refuse a round once; the
+	// engines need an operator only when it happens again.
+	let doubleStaleCount = 0;
 	// Set while an operator push waits for its retry. Auto pushes follow the
 	// reconciler's authority and would overwrite the state the operator chose
 	// to keep, so none starts in the meantime.
@@ -255,25 +264,34 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 					: config.pushSnapshot(target, snapshot));
 			} catch (pushErr) {
 				if (pushErr instanceof SnapshotStaleError) {
-					// Target advanced past our snapshot. Pull fresh from source and retry.
-					const firstGap = pushErr.currentSeq - pushErr.snapshotSeq;
-					snapshot = await timeoutRace((sourceLockId ? config.getSnapshot(authoritative, sourceLockId) : config.getSnapshot(authoritative)));
+					// The target holds a newer command than the source, so its
+					// state is the one to keep: push it the other way. Only when
+					// that is refused too do the engines need an operator.
+					const targetLockId = target === first ? firstLockId : secondLockId;
+					const newer = await timeoutRace(targetLockId ? config.getSnapshot(target, targetLockId) : config.getSnapshot(target));
 					try {
-						result = await timeoutRace(config.pushSnapshot(target, snapshot));
-					} catch (retryErr) {
-						if (retryErr instanceof SnapshotStaleError) {
+						result = await timeoutRace(config.pushSnapshot(authoritative, newer));
+					} catch (reverseErr) {
+						if (reverseErr instanceof SnapshotStaleError) {
 							clearTimeout(timeoutTimer);
-							// Only escalate if the gap didn't narrow. A narrowing gap means
-							// engines are still converging (fan-out latency during a busy
-							// show can 409 a snapshot on arrival without indicating
-							// genuine divergence). Stagnant or widening gap means divergence.
-							const retryGap = retryErr.currentSeq - retryErr.snapshotSeq;
-							if (retryGap >= firstGap) {
-								config.onStaleConflict?.(target, retryErr.snapshotSeq, retryErr.currentSeq);
+							doubleStaleCount++;
+							if (doubleStaleCount >= 2) {
+								config.onStaleConflict?.(authoritative, reverseErr.snapshotSeq, reverseErr.currentSeq);
+							} else {
+								config.onStaleRound?.();
+								// A round can start and end between two status ticks,
+								// so no status change is left to start the next one.
+								// Pending until then: a synced status cancels it.
+								if (pendingTimer === null) {
+									pendingTimer = setTimeout(() => {
+										pendingTimer = null;
+										executeSnapshotPush(currentAuthoritative);
+									}, DIVERGE_DELAY_MS);
+								}
 							}
 							return;
 						}
-						throw retryErr;
+						throw reverseErr;
 					}
 				} else {
 					throw pushErr;
@@ -281,6 +299,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			}
 			clearTimeout(timeoutTimer);
 			retryCount = 0; // reset on success
+			doubleStaleCount = 0;
 			pushSuccesses++;
 			const warnings = result.warnings ?? [];
 			config.onRecoveryComplete?.(warnings);

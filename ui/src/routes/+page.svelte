@@ -322,6 +322,10 @@
 			divergenceLog.add({ type: 'diverged', message: msg });
 			notify('error', msg);
 		},
+		onStaleRound: () => {
+			connectionManager.setRecovering(false);
+			divergenceLog.add({ type: 'transient', message: 'Snapshot push refused both ways while commands arrive; retrying' });
+		},
 		onReconcileBusy: (engine) => {
 			divergenceLog.add({
 				type: 'snapshot',

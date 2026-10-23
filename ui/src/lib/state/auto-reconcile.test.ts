@@ -1351,79 +1351,119 @@ describe('createAutoReconcile', () => {
 		});
 	});
 
-	describe('stale snapshot (409) retry', () => {
-		it('force-pulls and retries once when push returns stale conflict', async () => {
-			let pushCount = 0;
-			let getSnapshotCount = 0;
+	describe('stale snapshot (409)', () => {
+		it('pushes from the target when the target is ahead', async () => {
 			const config = makeConfig({
-				getSnapshot: vi.fn().mockImplementation(() => {
-					getSnapshotCount++;
-					return Promise.resolve({ programSource: 'cam1', fetch: getSnapshotCount });
-				}),
-				pushSnapshot: vi.fn().mockImplementation(() => {
-					pushCount++;
-					if (pushCount === 1) {
-						return Promise.reject(new SnapshotStaleError(100, 105));
-					}
-					return Promise.resolve({ warnings: [] });
-				}),
+				getSnapshot: vi.fn().mockImplementation((engine) => Promise.resolve({ from: engine })),
+				pushSnapshot: vi.fn()
+					.mockRejectedValueOnce(new SnapshotStaleError(100, 105))
+					.mockResolvedValue({ warnings: [] }),
 			});
 			const reconcile = createAutoReconcile(config);
 
 			reconcile.onSyncStatusChange('mismatch', 'A');
-			await vi.advanceTimersByTimeAsync(0);
-
-			// Flush any pending microtasks from the retry chain.
 			await vi.advanceTimersByTimeAsync(10);
 
-			expect(getSnapshotCount).toBe(2);
-			expect(pushCount).toBe(2);
+			expect(config.pushSnapshot).toHaveBeenNthCalledWith(1, 'B', { from: 'A' });
+			expect(config.pushSnapshot).toHaveBeenNthCalledWith(2, 'A', { from: 'B' });
 			expect(config.onRecoveryComplete).toHaveBeenCalledOnce();
 			expect(config.onRecoveryError).not.toHaveBeenCalled();
 
 			reconcile.destroy();
 		});
 
-		it('escalates via notification when retry also returns stale conflict', async () => {
+		it('pulls the target\'s snapshot under the target\'s lock', async () => {
+			const config = makeConfig({
+				acquireLock: vi.fn().mockImplementation((engine) => Promise.resolve({ acquired: true, lockId: `lock-${engine}` })),
+				releaseLock: vi.fn().mockResolvedValue(undefined),
+				pushSnapshot: vi.fn()
+					.mockRejectedValueOnce(new SnapshotStaleError(100, 105))
+					.mockResolvedValue({ warnings: [] }),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(config.getSnapshot).toHaveBeenNthCalledWith(2, 'B', 'lock-B');
+
+			reconcile.destroy();
+		});
+
+		it('escalates only when both directions are stale twice in a row', async () => {
+			// Commands still arriving on both engines refuse one round in both
+			// directions without the engines having diverged; an alarm for
+			// that is one an operator learns to ignore.
 			const onStaleConflict = vi.fn();
 			const config = makeConfig({
-				pushSnapshot: vi.fn().mockRejectedValue(new SnapshotStaleError(100, 110)),
+				pushSnapshot: vi.fn()
+					.mockRejectedValueOnce(new SnapshotStaleError(100, 110))
+					.mockRejectedValueOnce(new SnapshotStaleError(105, 108))
+					.mockRejectedValueOnce(new SnapshotStaleError(120, 130))
+					.mockRejectedValueOnce(new SnapshotStaleError(125, 128)),
 				onStaleConflict,
 			});
 			const reconcile = createAutoReconcile(config);
 
 			reconcile.onSyncStatusChange('mismatch', 'A');
-			await vi.advanceTimersByTimeAsync(0);
 			await vi.advanceTimersByTimeAsync(10);
+			expect(onStaleConflict).not.toHaveBeenCalled();
 
-			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
-			expect(onStaleConflict).toHaveBeenCalledOnce();
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(6_000);
+
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(4);
+			expect(onStaleConflict).toHaveBeenCalledExactlyOnceWith('A', 125, 128);
 			// No generic error: stale is handled, not a transport failure.
 			expect(config.onRecoveryError).not.toHaveBeenCalled();
 
 			reconcile.destroy();
 		});
 
-		it('does not escalate when the seq gap is narrowing between retry attempts', async () => {
+		it('starts the count over after a successful push', async () => {
 			const onStaleConflict = vi.fn();
 			const config = makeConfig({
-				// First push: gap = 110 - 100 = 10. Retry: gap = 108 - 105 = 3 (narrower).
-				// Engines are converging; retry should return without firing the banner.
-				pushSnapshot: vi
-					.fn()
+				pushSnapshot: vi.fn()
 					.mockRejectedValueOnce(new SnapshotStaleError(100, 110))
-					.mockRejectedValueOnce(new SnapshotStaleError(105, 108)),
+					.mockRejectedValueOnce(new SnapshotStaleError(105, 108))
+					.mockResolvedValueOnce({ warnings: [] })
+					.mockRejectedValueOnce(new SnapshotStaleError(120, 130))
+					.mockRejectedValueOnce(new SnapshotStaleError(125, 128))
+					.mockResolvedValue({ warnings: [] }),
 				onStaleConflict,
 			});
 			const reconcile = createAutoReconcile(config);
 
+			// A refused round, then the round it schedules succeeds.
 			reconcile.onSyncStatusChange('mismatch', 'A');
-			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(8_000);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(3);
+
+			// The next refused round is a first one again.
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(8_000);
+
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(6);
+			expect(onStaleConflict).not.toHaveBeenCalled();
+
+			reconcile.destroy();
+		});
+
+		it('follows a refused round with another unless the engines report synced', async () => {
+			const config = makeConfig({
+				pushSnapshot: vi.fn()
+					.mockRejectedValueOnce(new SnapshotStaleError(100, 110))
+					.mockRejectedValueOnce(new SnapshotStaleError(105, 108))
+					.mockResolvedValue({ warnings: [] }),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
 			await vi.advanceTimersByTimeAsync(10);
+			reconcile.onSyncStatusChange('synced', 'A');
+			await vi.advanceTimersByTimeAsync(10_000);
 
 			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
-			expect(onStaleConflict).not.toHaveBeenCalled();
-			expect(config.onRecoveryError).not.toHaveBeenCalled();
 
 			reconcile.destroy();
 		});
