@@ -47,6 +47,8 @@ vi.mock('./clock-sync', () => {
 		this.stopPeriodicSync = vi.fn();
 		this.startPeriodicSync = vi.fn();
 		this.getOffsetDivergence = vi.fn().mockReturnValue(0);
+		this.getRTT = vi.fn().mockReturnValue(4_000);
+		this.getOffset = vi.fn().mockReturnValue(-250);
 		this.isClockDiverged = vi.fn().mockReturnValue(false);
 	});
 	return { ClockSync };
@@ -568,32 +570,37 @@ describe('DualConnectionManager', () => {
 		});
 	});
 
-	describe('RTT feeding to reconciler', () => {
-		it('calls reconciler.setRTT when RTT is reported for an engine', () => {
+	describe('clock sync pong', () => {
+		function pong(): Uint8Array {
+			const data = new Uint8Array(13);
+			data[0] = 0xFF;
+			return data;
+		}
+
+		it('feeds RTT in ms and clock offset in us to the reconciler', () => {
 			const mgr = new DualConnectionManager(makeDualConfig());
 			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
 
-			mgr.reportRTT('A', 25);
+			mgr.handleControlData('B', pong());
 
-			expect(reconcilerInstance.setRTT).toHaveBeenCalledWith('A', 25);
+			expect(reconcilerInstance.setRTT).toHaveBeenCalledWith('B', 4);
+			expect(reconcilerInstance.setClockOffset).toHaveBeenCalledWith('B', -250);
 		});
 
-		it('calls reconciler.setRTT for engine B', () => {
-			const mgr = new DualConnectionManager(makeDualConfig());
-			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
-
-			mgr.reportRTT('B', 42);
-
-			expect(reconcilerInstance.setRTT).toHaveBeenCalledWith('B', 42);
-		});
-
-		it('also updates ClockSync with RTT in microseconds', () => {
-			const mgr = new DualConnectionManager(makeDualConfig());
+		it('takes a pong off the engine\'s own connection', () => {
+			// Engine B's control track arrives on its ConnectionManager, not on
+			// a media pipeline; a pong there must not be parsed as state.
+			const onStateUpdate = vi.fn();
+			const mgr = new DualConnectionManager(makeDualConfig({ onStateUpdate }));
+			const instanceB = MockedConnectionManager.mock.results[1].value;
 			const clockInstance = MockedClockSync.mock.results[0].value;
+			const data = pong();
 
-			mgr.reportRTT('A', 25);
+			instanceB.simulateStateUpdate(data);
 
-			expect(clockInstance.updateRTT).toHaveBeenCalledWith('A', 25000); // ms -> us
+			expect(clockInstance.handlePong).toHaveBeenCalledWith('B', data);
+			expect(mgr.engineHealth.B.rtt).toBe(4);
+			expect(onStateUpdate).not.toHaveBeenCalled();
 		});
 	});
 

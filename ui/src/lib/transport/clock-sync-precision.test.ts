@@ -22,9 +22,12 @@ function buildPongHelper(seq: number, timestampUS: number): Uint8Array {
 
 describe('ClockSync precision', () => {
 	beforeEach(() => {
+		// Pings count from 0, as the pongs built here expect.
+		vi.spyOn(Math, 'random').mockReturnValue(0);
 		vi.useFakeTimers();
 	});
 	afterEach(() => {
+		vi.restoreAllMocks();
 		vi.useRealTimers();
 	});
 

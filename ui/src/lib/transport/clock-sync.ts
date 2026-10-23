@@ -34,7 +34,9 @@ export class ClockSync {
 	private lastRawRTT = new Map<string, number>();
 	private pingSentTimes = new Map<number, number>(); // seq -> sentAt µs
 	private syncInterval: ReturnType<typeof setInterval> | null = null;
-	private pingSeq = 0;
+	// Every viewer of an engine's control track receives every pong, so each
+	// browser starts at its own seq to match only the pongs to its pings.
+	private pingSeq = Math.floor(Math.random() * 2 ** 32);
 	private trackedEngines: EngineId[] = [];
 
 	updateRTT(engineId: EngineId, rttUS: number): void {
@@ -169,7 +171,8 @@ export class ClockSync {
 
 	private doPingRound(sendPing: (engineId: EngineId, data: Uint8Array) => void): void {
 		for (const engineId of this.trackedEngines) {
-			const seq = this.pingSeq++;
+			const seq = this.pingSeq;
+			this.pingSeq = (this.pingSeq + 1) >>> 0; // the ping carries a uint32
 			this.pingSentTimes.set(seq, nowMicros());
 			sendPing(engineId, this.buildPing(seq));
 		}
@@ -182,7 +185,7 @@ export class ClockSync {
 		}
 		// Secondary safety net: keep last MAX_PENDING_PINGS entries
 		if (this.pingSentTimes.size > MAX_PENDING_PINGS) {
-			const entries = [...this.pingSentTimes.entries()].sort((a, b) => a[0] - b[0]);
+			const entries = [...this.pingSentTimes.entries()].sort((a, b) => a[1] - b[1]); // oldest first
 			for (const [key] of entries.slice(0, entries.length - MAX_PENDING_PINGS)) {
 				this.pingSentTimes.delete(key);
 			}

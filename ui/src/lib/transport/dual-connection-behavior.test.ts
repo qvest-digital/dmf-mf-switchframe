@@ -352,20 +352,41 @@ describe('DualConnectionManager behavior', () => {
 
 	// ─── RTT and clock ───
 
-	describe('RTT reporting', () => {
-		it('reportRTT feeds both reconciler and clock sync', () => {
-			const dcm = createDualManager([
-				{ id: 'A', url: 'https://a.example.com' },
-				{ id: 'B', url: 'https://b.example.com' },
-			]);
+	describe('clock sync', () => {
+		it('shows the RTT and clock offset measured from a pong', async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(1_800_000_000_000);
+			const now = vi.spyOn(performance, 'now').mockReturnValue(100);
+			try {
+				const dcm = createDualManager([
+					{ id: 'A', url: 'https://a.example.com' },
+					{ id: 'B', url: 'https://b.example.com' },
+				]);
+				const pings: Uint8Array[] = [];
+				dcm.setDatagramSender('A', (data) => pings.push(data));
+				dcm.setDatagramSender('B', () => {});
+				await dcm.start();
 
-			dcm.reportRTT('A', 15);
+				// The pong arrives 4ms after the ping, stamped with an engine
+				// clock 6ms ahead of the browser: at the round trip's midpoint
+				// the browser read 2ms earlier, so the offset is 4ms.
+				now.mockReturnValue(104);
+				const seq = new DataView(pings[0].buffer).getUint32(1);
+				const engineUs = 1_800_000_000_000 * 1000 + 2_000;
+				const pong = new Uint8Array(13);
+				const view = new DataView(pong.buffer);
+				pong[0] = 0xFF;
+				view.setUint32(1, seq);
+				view.setUint32(5, Math.floor(engineUs / 2 ** 32));
+				view.setUint32(9, engineUs % 2 ** 32);
+				getCreatedManagers()[0]._config.onStateUpdate(pong);
 
-			// Check clock sync got it (in microseconds)
-			expect(dcm.clock.getRTT('A')).toBe(15_000);
-
-			// Check reconciler got it (through engineHealth)
-			expect(dcm.engineHealth.A.rtt).toBe(15);
+				expect(dcm.engineHealth.A.rtt).toBe(4);
+				expect(dcm.engineHealth.A.clockOffset).toBe(4_000);
+				dcm.stop();
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 	});
 

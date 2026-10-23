@@ -121,3 +121,12 @@ func TestChannelPublisherMultipleReads(t *testing.T) {
 		}
 	}
 }
+
+func TestChannelPublisherPublishRawSendsBytesUnchanged(t *testing.T) {
+	pub := NewChannelPublisher(4)
+	pong := []byte{0xFF, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 1}
+
+	pub.PublishRaw(pong)
+
+	require.Equal(t, pong, <-pub.Ch())
+}

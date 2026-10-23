@@ -76,6 +76,13 @@ func (cp *ChannelPublisher) Publish(state internal.ControlRoomState) {
 		slog.Error("failed to marshal state", "error", err)
 		return
 	}
+	cp.PublishRaw(data)
+}
+
+// PublishRaw sends data to the channel as is, dropping the oldest message
+// when the channel is full. It carries the clock-sync pong, which a
+// browser tells apart from state by its first byte.
+func (cp *ChannelPublisher) PublishRaw(data []byte) {
 	for {
 		select {
 		case cp.ch <- data:
