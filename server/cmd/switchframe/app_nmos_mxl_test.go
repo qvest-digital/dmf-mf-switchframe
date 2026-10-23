@@ -687,36 +687,64 @@ func TestRegistersMXLNMOS_UnknownRoleDoesNotRegister(t *testing.T) {
 }
 
 // fakeRegistry records which node each registration of a node resource
-// advertised, in order.
+// advertised, in order, and the controls href of each device it holds.
+// Like an IS-04 registry it refuses a resource whose version is older than
+// the one it holds.
 type fakeRegistry struct {
-	mu    sync.Mutex
-	hrefs []string
+	mu       sync.Mutex
+	hrefs    []string
+	versions map[string]string
+	controls map[string]string
 }
 
 func (f *fakeRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/x-nmos/registration/v1.3/resource" {
-		var body struct {
-			Type string          `json:"type"`
-			Data json.RawMessage `json:"data"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body.Type == "node" {
-			var node nmos.Node
-			_ = json.Unmarshal(body.Data, &node)
-			f.mu.Lock()
-			f.hrefs = append(f.hrefs, node.ID+" "+node.Href)
-			f.mu.Unlock()
-		}
-		w.WriteHeader(http.StatusCreated)
+	if r.URL.Path != "/x-nmos/registration/v1.3/resource" {
+		w.WriteHeader(http.StatusOK) // heartbeats
 		return
 	}
-	w.WriteHeader(http.StatusOK) // heartbeats
+	var body struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	var res struct {
+		ID       string         `json:"id"`
+		Version  string         `json:"version"`
+		Href     string         `json:"href"`
+		Controls []nmos.Control `json:"controls"`
+	}
+	_ = json.Unmarshal(body.Data, &res)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.versions == nil {
+		f.versions, f.controls = map[string]string{}, map[string]string{}
+	}
+	if held, ok := f.versions[res.ID]; ok && nmos.CompareVersions(res.Version, held) < 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	f.versions[res.ID] = res.Version
+	switch body.Type {
+	case "node":
+		f.hrefs = append(f.hrefs, res.ID+" "+res.Href)
+	case "device":
+		if len(res.Controls) > 0 {
+			f.controls[res.ID] = res.Controls[0].Href
+		}
+	}
+	w.WriteHeader(http.StatusCreated)
 }
 
 func (f *fakeRegistry) nodes() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.hrefs...)
+}
+
+func (f *fakeRegistry) deviceControl() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.controls[nmos.DeriveID(nmosSeed, "device")]
 }
 
 // engineOfPair is one engine of a pair registering with reg, its peer in
@@ -856,4 +884,36 @@ func TestMXLNMOS_HealedPartitionReturnsTheNodeToTheLeader(t *testing.T) {
 	a.SetPeerStateForTest(true, "b", 0)
 	b.SetPeerStateForTest(true, "a", 0)
 	waitLast(atA, "healed partition")
+}
+
+// The engine that takes the registration over may have started before the
+// one that held it, so every resource it registers is older than what the
+// registry holds. All of them have to be taken over, not only the node: a
+// device left as the other engine's points controllers at the Connection
+// API of an engine that is down.
+func TestMXLNMOS_TakeoverReplacesEveryResourceOfTheOtherEngine(t *testing.T) {
+	withHeartbeatInterval(t, 20*time.Millisecond)
+	reg := &fakeRegistry{}
+	srv := httptest.NewServer(reg)
+	t.Cleanup(srv.Close)
+
+	b := engineOfPair(t, srv.URL, "b", "switcher-b.p-show")
+	b.SetPeerStateForTest(true, "a", 0)
+	time.Sleep(2 * time.Millisecond)
+	a := engineOfPair(t, srv.URL, "a", "switcher-a.p-show")
+	a.SetPeerStateForTest(true, "b", 0)
+	waitControl := func(want, what string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * mxlNMOSHeartbeatInterval)
+		for reg.deviceControl() != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: device controls at %q, want %q", what, reg.deviceControl(), want)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	waitControl("http://switcher-a.p-show:1/x-nmos/connection/v1.1/", "healthy pair")
+
+	b.SetPeerStateForTest(false, "a", 0)
+	waitControl("http://switcher-b.p-show:1/x-nmos/connection/v1.1/", "engine a down")
 }

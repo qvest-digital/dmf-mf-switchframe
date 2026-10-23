@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 // testStore returns a ResourceStore pre-populated with sample resources.
@@ -702,6 +703,32 @@ func TestResourceStoreAddBumpsVersion(t *testing.T) {
 	}
 	if got.Version == origVersion {
 		t.Error("AddDevice should have bumped the version")
+	}
+}
+
+// Touch moves every resource past any version registered before it, so a
+// registration replaces what another node with the same ids registered.
+func TestResourceStoreTouchBumpsEveryVersion(t *testing.T) {
+	store := NewResourceStore()
+	store.SetNode(&Node{ID: "node-001"})
+	store.AddDevice(&Device{ID: "dev-001"})
+	store.AddSource(&Source{ID: "src-001"})
+	store.AddFlow(&Flow{ID: "flow-001"})
+	store.AddSender(&Sender{ID: "sender-001"})
+	store.AddReceiver(&Receiver{ID: "recv-001"})
+	before := []Version{store.GetNode().Version, store.GetDevice("dev-001").Version,
+		store.GetSource("src-001").Version, store.GetFlow("flow-001").Version,
+		store.GetSender("sender-001").Version, store.GetReceiver("recv-001").Version}
+	// Versions are TAI nanoseconds; let the clock move on.
+	time.Sleep(time.Millisecond)
+	store.Touch()
+	after := []Version{store.GetNode().Version, store.GetDevice("dev-001").Version,
+		store.GetSource("src-001").Version, store.GetFlow("flow-001").Version,
+		store.GetSender("sender-001").Version, store.GetReceiver("recv-001").Version}
+	for i, kind := range []string{"node", "device", "source", "flow", "sender", "receiver"} {
+		if CompareVersions(string(after[i]), string(before[i])) <= 0 {
+			t.Errorf("%s version %s not after %s", kind, after[i], before[i])
+		}
 	}
 }
 

@@ -33,6 +33,32 @@ func (s *ResourceStore) SetNode(n *Node) {
 	s.node = n
 }
 
+// Touch gives every resource a new version. A registry refuses a
+// registration whose version is older than the one it holds, which is what
+// another node presenting the same ids, started later, has registered.
+func (s *ResourceStore) Touch() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.node != nil {
+		s.node.Version = NewVersion()
+	}
+	for _, d := range s.devices {
+		d.Version = NewVersion()
+	}
+	for _, src := range s.sources {
+		src.Version = NewVersion()
+	}
+	for _, f := range s.flows {
+		f.Version = NewVersion()
+	}
+	for _, snd := range s.senders {
+		snd.Version = NewVersion()
+	}
+	for _, r := range s.receivers {
+		r.Version = NewVersion()
+	}
+}
+
 // GetNode returns a shallow copy of the node resource, or nil if unset.
 func (s *ResourceStore) GetNode() *Node {
 	s.mu.RLock()

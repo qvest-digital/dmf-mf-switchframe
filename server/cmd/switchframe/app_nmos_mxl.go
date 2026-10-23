@@ -952,9 +952,10 @@ func (n *mxlNMOS) setRegistered(v bool) {
 
 func (a *App) registerMXLNMOS(ctx context.Context) error {
 	n := a.mxlNMOS
+	// New versions, so the registry takes these resources over the peer
+	// engine's, href and controls included, whichever engine started first.
+	n.store.Touch()
 	node := n.store.GetNode()
-	n.store.SetNode(node) // a new version, so the registry takes this href
-	node = n.store.GetNode()
 	devices := n.store.ListDevices()
 	if len(devices) != 1 {
 		return fmt.Errorf("%d devices, want 1", len(devices))
