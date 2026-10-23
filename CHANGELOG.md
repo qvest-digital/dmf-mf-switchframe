@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.17](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.16...mxl-v1.0.0-rc.17) (2026-10-23)
+
+
+### Bug Fixes
+
+* **output:** give each SRT reconnect loop its own done channel ([#45](https://github.com/qvest-digital/dmf-mf-switchframe/issues/45)) ([cd24b2f](https://github.com/qvest-digital/dmf-mf-switchframe/commit/cd24b2f936a8362d572b178452f46f7a80d46d7f))
+
 ## [1.0.0-rc.16](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.15...mxl-v1.0.0-rc.16) (2026-10-23)
 
 
