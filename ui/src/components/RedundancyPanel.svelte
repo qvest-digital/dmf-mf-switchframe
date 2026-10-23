@@ -41,9 +41,10 @@
 		outputStatus?: OutputStatus | null;
 		playoutComparison?: PlayoutComparison | null;
 		engineBUrl?: string | null;
+		commandLatency?: { A: number | null; B: number | null } | null;
 	}
 
-	let { health, engineHealth, divergenceLog, visible, onclose, onforcereconcile, oncompare, audioComparison = null, outputStatus = null, playoutComparison = null, engineBUrl = null }: Props = $props();
+	let { health, engineHealth, divergenceLog, visible, onclose, onforcereconcile, oncompare, audioComparison = null, outputStatus = null, playoutComparison = null, engineBUrl = null, commandLatency = null }: Props = $props();
 
 	// --- Collapsible section state ---
 	let sourcesExpanded = $state(false);
@@ -183,6 +184,10 @@
 		const hours = Math.floor(totalMinutes / 60);
 		const minutes = totalMinutes % 60;
 		return `${hours}h ${minutes}m`;
+	}
+
+	function fmtLatency(ms: number | null | undefined): string {
+		return ms == null ? '--' : Math.round(ms).toString();
 	}
 
 	function fmtTimestamp(ts: number): string {
@@ -527,7 +532,7 @@
 			{#if commandLatencyExpanded}
 				<div class="collapsible-body">
 					<div class="latency-summary mono">
-						Avg Engine A: --ms | Engine B: --ms
+						Avg Engine A: {fmtLatency(commandLatency?.A)}ms | Engine B: {fmtLatency(commandLatency?.B)}ms
 					</div>
 				</div>
 			{/if}

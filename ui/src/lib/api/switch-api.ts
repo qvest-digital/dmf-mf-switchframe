@@ -147,6 +147,8 @@ function recordFailure(engineUrl: string): void {
 	}
 	state.failures++;
 	state.lastFailureAt = Date.now();
+	// A failing engine's earlier round trips no longer describe it.
+	latencySamples.delete(engineUrl);
 	if (state.failures >= CIRCUIT_FAILURE_THRESHOLD) {
 		state.openUntil = Date.now() + CIRCUIT_OPEN_DURATION_MS;
 	}
@@ -164,6 +166,36 @@ function recordSuccess(engineUrl: string, startedAt: number = Date.now()): void 
 		partialFailureCallback?.();
 	}
 	circuitBreakers.delete(engineUrl);
+}
+
+// ── Command latency: per-engine round trip of fanned-out commands ──
+// Keyed by engine URL: an engine re-provisioned at a new URL starts afresh.
+
+const LATENCY_SAMPLES = 20;
+const latencySamples = new Map<string, number[]>();
+
+function recordCommandLatency(engineUrl: string, ms: number): void {
+	const samples = latencySamples.get(engineUrl) ?? [];
+	samples.push(ms);
+	if (samples.length > LATENCY_SAMPLES) samples.shift();
+	latencySamples.set(engineUrl, samples);
+}
+
+/** Average round trip, in ms, of each engine's last successful commands;
+ * null for an engine that has answered none since its last failure. */
+export function commandLatency(): { A: number | null; B: number | null } {
+	const avg = (id: string) => {
+		const url = getEngineUrls()?.find((e) => e.id === id)?.url;
+		const samples = url ? latencySamples.get(url) : undefined;
+		if (!samples?.length) return null;
+		return samples.reduce((a, b) => a + b, 0) / samples.length;
+	};
+	return { A: avg('A'), B: avg('B') };
+}
+
+/** Reset command latency samples (for testing). */
+export function resetCommandLatency(): void {
+	latencySamples.clear();
 }
 
 // ── Sticky engine routing after failover ──
@@ -382,6 +414,9 @@ function accountFanOut(
 		if (!engineUrl) return;
 		if (result.status === 'fulfilled' && result.value.ok) {
 			recordSuccess(engineUrl, startedAt);
+			// A slow path waits on the engine's own work, such as reading a
+			// clip, not on the command round trip.
+			if (!isSlowPath(url)) recordCommandLatency(engineUrl, settledAt[i] - startedAt);
 		} else if (result.status === 'rejected') {
 			// Network error
 			recordFailure(engineUrl);
