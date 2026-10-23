@@ -227,7 +227,9 @@ export class DualConnectionManager {
 		const command_seq = this.nextCommandSeq();
 		if (!this.config.timedExecution || !this.clockSync.isConverged()) return { execute_at: 0, command_seq };
 		const now = engineId ? this.clockSync.ptpNowForEngine(engineId) : this.clockSync.ptpNow();
-		return { execute_at: now + this.clockSync.safetyMargin(), command_seq };
+		// The engine reads execute_at as an integer and runs a command whose
+		// execute_at it cannot read on arrival.
+		return { execute_at: Math.round(now + this.clockSync.safetyMargin()), command_seq };
 	}
 
 	/** A seq no other browser or earlier page load sends: an engine rejects

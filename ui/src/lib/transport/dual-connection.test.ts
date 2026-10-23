@@ -588,6 +588,15 @@ describe('DualConnectionManager', () => {
 			expect(mgr.commandTiming('B').execute_at).toBe(1_800_000_000_000_000 + 100_000);
 		});
 
+		it('schedules at a whole microsecond', () => {
+			// A fractional execute_at fails to decode into the engine's int64,
+			// and the engine runs the command on arrival without scheduling it.
+			const mgr = new DualConnectionManager(makeDualConfig({ timedExecution: true }));
+			MockedClockSync.mock.results[0].value.safetyMargin.mockReturnValue(41_666.5);
+
+			expect(Number.isInteger(mgr.commandTiming('B').execute_at)).toBe(true);
+		});
+
 		it('runs commands on arrival until clock sync has converged', () => {
 			const mgr = new DualConnectionManager(makeDualConfig({ timedExecution: true }));
 			MockedClockSync.mock.results[0].value.isConverged.mockReturnValue(false);
