@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.0-rc.19](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.18...mxl-v1.0.0-rc.19) (2026-10-23)
+
+
+### Bug Fixes
+
+* **fastctrl:** deliver clock-sync pongs to the browser ([44de68c](https://github.com/qvest-digital/dmf-mf-switchframe/commit/44de68cb05c662e4939b51b359c510c6cbf5df43))
+* **sync:** take the snapshot's command seq when applying it ([44de68c](https://github.com/qvest-digital/dmf-mf-switchframe/commit/44de68cb05c662e4939b51b359c510c6cbf5df43))
+* **ui:** compare audio mix settings across engines, not peak meters ([#49](https://github.com/qvest-digital/dmf-mf-switchframe/issues/49)) ([e62dfd5](https://github.com/qvest-digital/dmf-mf-switchframe/commit/e62dfd5a9750e66d2de3fc0a227602c8bdc50461))
+* **ui:** restart the RTT estimate after a delayed first pong ([#57](https://github.com/qvest-digital/dmf-mf-switchframe/issues/57)) ([e7c4f7b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/e7c4f7b1813d74cd465d8e43218ce4694ab38fc3))
+* **ui:** send one unique command seq per command to both engines ([#52](https://github.com/qvest-digital/dmf-mf-switchframe/issues/52)) ([30ea907](https://github.com/qvest-digital/dmf-mf-switchframe/commit/30ea90729a98cfb25d2c5ae6ae49b8bede7806b7))
+* **ui:** send the command seq with commands that run on arrival ([44de68c](https://github.com/qvest-digital/dmf-mf-switchframe/commit/44de68cb05c662e4939b51b359c510c6cbf5df43))
+* **ui:** show the measured command latency per engine ([#50](https://github.com/qvest-digital/dmf-mf-switchframe/issues/50)) ([0ae2207](https://github.com/qvest-digital/dmf-mf-switchframe/commit/0ae22074ba15306dbc5aebe4f3b2e84471753f31))
+* **ui:** take the reconcile locks for a manual engine push ([#51](https://github.com/qvest-digital/dmf-mf-switchframe/issues/51)) ([522d89a](https://github.com/qvest-digital/dmf-mf-switchframe/commit/522d89a32e8b564f11aedb9dbbca9763e09fedff))
+
 ## [1.0.0-rc.18](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.17...mxl-v1.0.0-rc.18) (2026-10-23)
 
 
