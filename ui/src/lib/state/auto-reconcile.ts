@@ -71,6 +71,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 	// reconciler's authority and would overwrite the state the operator chose
 	// to keep, so none starts in the meantime.
 	let operatorRetryPending = false;
+	let retryTimer: ReturnType<typeof setTimeout> | null = null;
 	// Track the latest authoritative engine so timer callbacks use the
 	// current value, not the one captured when the timer was created.
 	let currentAuthoritative: EngineId = 'A';
@@ -313,7 +314,8 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 				const delay = RETRY_BASE_DELAY_MS + Math.random() * RETRY_JITTER_MS;
 				const retryTarget = target;
 				if (overrideStale) operatorRetryPending = true;
-				setTimeout(() => {
+				retryTimer = setTimeout(() => {
+					retryTimer = null;
 					operatorRetryPending = false;
 					// Clear cooldown for the target so retry can proceed
 					lastPushTimes.delete(retryTarget);
@@ -373,9 +375,15 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		clearPendingTimer();
 	}
 
+	function clearRetry() {
+		if (retryTimer !== null) clearTimeout(retryTimer);
+		retryTimer = null;
+		operatorRetryPending = false;
+	}
+
 	function destroy() {
 		destroyed = true;
-		operatorRetryPending = false;
+		clearRetry();
 		clearPendingTimer();
 	}
 
@@ -390,6 +398,10 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		clearPendingTimer();
 		if (pushInFlight) return false;
 		currentAuthoritative = authoritative;
+		// A newer push supersedes a pending retry of an older one.
+		clearRetry();
+		// A manual push gets its own retry, even after auto pushes used theirs.
+		if (opts.overrideStale) retryCount = 0;
 		lastPushTimes.delete(otherEngine(authoritative));
 		executeSnapshotPush(authoritative, opts.overrideStale);
 		return true;

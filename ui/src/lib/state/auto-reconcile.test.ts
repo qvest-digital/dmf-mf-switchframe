@@ -189,6 +189,57 @@ describe('createAutoReconcile', () => {
 			vi.mocked(Math.random).mockRestore();
 		});
 
+		it('retries a failed operator push even after an auto push used its retry', async () => {
+			// The button is most likely used once auto reconcile has been
+			// failing; without a retry of its own the manual push set no gate,
+			// and the next status change pushed A -> B unforced.
+			const pushSnapshot = vi.fn()
+				.mockRejectedValueOnce(new Error('auto failed'))
+				.mockRejectedValueOnce(new Error('manual failed'))
+				.mockResolvedValue({ warnings: [] });
+			let reconcile!: ReturnType<typeof createAutoReconcile>;
+			let manual = false;
+			const config = makeConfig({
+				pushSnapshot,
+				onRecoveryStart: vi.fn(() => reconcile.onSyncStatusChange('recovering', 'A')),
+				onRecoveryError: vi.fn(() => {
+					if (manual) setTimeout(() => reconcile.onSyncStatusChange('diverged', 'A'), 200);
+				}),
+			});
+			reconcile = createAutoReconcile(config);
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			reconcile.cancel();
+
+			manual = true;
+			reconcile.forceSnapshotPush('B', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(3_500);
+
+			expect(pushSnapshot.mock.calls.slice(1)).toEqual([
+				['A', expect.anything(), { force: true }],
+				['A', expect.anything(), { force: true }],
+			]);
+
+			reconcile.destroy();
+		});
+
+		it('drops a pending operator retry when a newer operator push starts', async () => {
+			const pushSnapshot = vi.fn()
+				.mockRejectedValueOnce(new Error('network'))
+				.mockResolvedValue({ warnings: [] });
+			const config = makeConfig({ pushSnapshot });
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('B', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(1_000);
+			reconcile.forceSnapshotPush('A', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(5_000);
+
+			expect(pushSnapshot.mock.calls.map((c) => c[0])).toEqual(['A', 'B']);
+
+			reconcile.destroy();
+		});
+
 		it('leaves a running push\'s direction alone when an operator push cannot start', async () => {
 			let release!: () => void;
 			const pushSnapshot = vi.fn()
