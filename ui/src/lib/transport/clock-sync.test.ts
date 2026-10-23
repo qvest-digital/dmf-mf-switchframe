@@ -72,12 +72,12 @@ describe('ClockSync', () => {
 			expect(sync.safetyMargin()).toBe(27_000 + 2 * 27_000 * 0.125 + 33_333);
 		});
 
-		it('keeps smoothing an ordinary drop in RTT', () => {
+		it('keeps smoothing a drop short of a quarter', () => {
 			const sync = new ClockSync();
 			sync.updateRTT('A', 40_000);
-			sync.updateRTT('A', 20_000);
+			sync.updateRTT('A', 12_000);
 
-			expect(sync.getRTT('A')).toBe(40_000 * 0.875 + 20_000 * 0.125);
+			expect(sync.getRTT('A')).toBe(40_000 * 0.875 + 12_000 * 0.125);
 		});
 	});
 
