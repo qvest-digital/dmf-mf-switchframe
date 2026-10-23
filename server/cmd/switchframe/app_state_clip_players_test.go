@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -50,4 +51,14 @@ func TestClipPlayerBroadcastMatchesUIFixture(t *testing.T) {
 	got, err := json.Marshal(clipPlayerInfos([]clip.ClipPlayerState{fullClipPlayerState})[0])
 	require.NoError(t, err)
 	require.JSONEq(t, string(fixture), string(got))
+}
+
+// fullClipPlayerState has to set every field, or a field added to
+// clip.ClipPlayerState later is dropped as empty on both sides of the
+// comparisons above and a conversion that leaves it out still passes.
+func TestFullClipPlayerStateSetsEveryField(t *testing.T) {
+	v := reflect.ValueOf(fullClipPlayerState)
+	for i := range v.NumField() {
+		require.False(t, v.Field(i).IsZero(), "fullClipPlayerState leaves %s unset", v.Type().Field(i).Name)
+	}
 }
