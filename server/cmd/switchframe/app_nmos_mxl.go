@@ -73,9 +73,11 @@ type mxlReceiverRef struct {
 // carries changes, not which input is on air.
 //
 // Both engines of an active-active pair present the same node, with ids
-// derived from the same seed. Only the leader registers it, so a controller
-// sees one switcher, and each engine passes the activations it receives to
-// the other, so a failover keeps the inputs as they were connected.
+// derived from the same seed. The leader registers it, so a controller sees
+// one switcher, and so does an engine that cannot reach its peer, so the
+// switcher stays registered while the leader is down. Each engine passes the
+// activations it receives to the other, so a failover keeps the inputs as
+// they were connected.
 type mxlNMOS struct {
 	cfg      mxlNMOSConfig
 	domainID string
@@ -403,7 +405,7 @@ func (a *App) buildMXLNMOSResources(n *mxlNMOS) error {
 // Each engine of a pair writes flows of its own, so both engines' programs
 // are senders, each naming its own engine's flow, and either engine offers
 // both: the sender a receiver was connected to keeps naming the flow that
-// receiver reads whichever engine leads.
+// receiver reads whichever engine registers.
 func (a *App) addMXLNMOSProgramSenders(n *mxlNMOS, deviceID string) ([]string, error) {
 	type program struct {
 		engine, video, audio string
@@ -868,35 +870,56 @@ func (n *mxlNMOS) peerReceiverActive(ctx context.Context, id string) (nmos.MXLEn
 	return e, nil
 }
 
-// leadsMXLNMOS reports whether this engine registers the node: a single
-// engine always, a pair's leader only.
-func (a *App) leadsMXLNMOS() bool {
+// registersMXLNMOS reports whether this engine registers the node: a single
+// engine always; of a pair the leader, and a follower that cannot reach the
+// leader. The peer role gates commands a partition must not run twice, which
+// a registration is not: both engines register the same ids, so a
+// partition between two live engines leaves one node in the registry whose
+// href is whichever engine registered last, while a follower that waited for
+// a leader that is down would leave none.
+func (a *App) registersMXLNMOS() bool {
 	// An engine of a pair whose poller does not exist yet does not know its
 	// role; a nil poller would read as standalone. One with no peer has no
-	// pair and leads.
+	// pair and registers.
 	if a.cfg.EngineLabel != "" && a.cfg.PeerEngineURL != "" && a.peerPoller == nil {
 		return false
 	}
 	switch a.peerPoller.Role() {
-	case peer.RoleStandalone, peer.RoleLeader:
+	case peer.RoleStandalone, peer.RoleLeader, peer.RoleFollowerPartitioned:
 		return true
 	}
 	return false
 }
 
-// runMXLNMOSRegistration keeps the node registered while this engine leads,
-// and leaves it to the peer otherwise. Both register the same ids, so a new
-// leader's registration replaces the old one's, href included.
+// mxlNMOSHeartbeatInterval is how often the registering engine heartbeats,
+// and how often an engine checks whether it should register.
+var mxlNMOSHeartbeatInterval = 5 * time.Second
+
+// runMXLNMOSRegistration keeps the node registered while this engine
+// registers, and leaves it to the peer otherwise. Both register the same
+// ids, so one's registration replaces the other's, href included.
 func (a *App) runMXLNMOSRegistration(ctx context.Context) {
 	n := a.mxlNMOS
-	tick := time.NewTicker(5 * time.Second)
+	tick := time.NewTicker(mxlNMOSHeartbeatInterval)
 	defer tick.Stop()
+	peerWasReachable := true
 	for {
+		// A peer that was unreachable may have registered the node at its
+		// own href meanwhile, and a heartbeat keeps the href as it is, so
+		// the node is registered again once the peer is back; a follower
+		// that reaches the leader then stays silent.
+		if a.peerPoller != nil {
+			reachable := a.peerPoller.PeerReachable()
+			if reachable && !peerWasReachable {
+				n.setRegistered(false)
+			}
+			peerWasReachable = reachable
+		}
 		n.mu.Lock()
 		registered := n.registered
 		n.mu.Unlock()
 		switch {
-		case !a.leadsMXLNMOS():
+		case !a.registersMXLNMOS():
 			n.setRegistered(false)
 		case !registered:
 			if err := a.registerMXLNMOS(ctx); err != nil {
