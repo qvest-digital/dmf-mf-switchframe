@@ -567,4 +567,16 @@ describe('RedundancyPanel', () => {
 		await fireEvent.click(compareBtn!);
 		expect(oncompare).toHaveBeenCalledOnce();
 	});
+
+	it('shows each engine\'s average command latency', async () => {
+		const { container } = render(RedundancyPanel, {
+			props: makeDefaultProps({ commandLatency: { A: 12.4, B: null } }),
+		});
+		const toggle = Array.from(container.querySelectorAll('.section-toggle'))
+			.find(t => t.textContent?.includes('COMMAND LATENCY'));
+		await fireEvent.click(toggle!);
+
+		expect(container.querySelector('.latency-summary')?.textContent?.trim())
+			.toBe('Avg Engine A: 12ms | Engine B: --ms');
+	});
 });

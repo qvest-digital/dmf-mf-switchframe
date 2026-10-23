@@ -34,7 +34,7 @@
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cutToPreview, autoTransitionToPreview } from '$lib/state/switch-actions';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot, scte35Cue, scte35Return, podFire, playoutNext, playoutJump, playoutTakeManual, playoutReturnToAuto, startRecording, stopRecording, playoutPlaylist as fetchPlaylist } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot, scte35Cue, scte35Return, podFire, playoutNext, playoutJump, playoutTakeManual, playoutReturnToAuto, startRecording, stopRecording, playoutPlaylist as fetchPlaylist, commandLatency as readCommandLatency } from '$lib/api/switch-api';
 	import { setEngineUrls, getEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider, setEmergencyEngineBUrl } from '$lib/api/base-url';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
@@ -484,6 +484,15 @@
 			notify('error', `Force reconcile failed: ${e}`);
 		}
 	}
+
+	// Command latency for RedundancyPanel, read while the panel is open
+	let commandLatency = $state<{ A: number | null; B: number | null } | null>(null);
+	$effect(() => {
+		if (!redundancyPanelVisible) return;
+		commandLatency = readCommandLatency();
+		const interval = setInterval(() => { commandLatency = readCommandLatency(); }, 1000);
+		return () => clearInterval(interval);
+	});
 
 	// Compare mode handler for RedundancyPanel
 	function handleCompare() {
@@ -1951,6 +1960,7 @@
 		{audioComparison}
 		{outputStatus}
 		engineBUrl={store.state.engineBUrl}
+		{commandLatency}
 	/>
 {/if}
 <div class="sr-only" aria-live="polite" role="status">{announcement}</div>

@@ -166,6 +166,34 @@ function recordSuccess(engineUrl: string, startedAt: number = Date.now()): void 
 	circuitBreakers.delete(engineUrl);
 }
 
+// ── Command latency: per-engine round trip of fanned-out commands ──
+
+const LATENCY_SAMPLES = 20;
+const latencySamples = new Map<string, number[]>();
+
+function recordCommandLatency(engineId: string, ms: number): void {
+	const samples = latencySamples.get(engineId) ?? [];
+	samples.push(ms);
+	if (samples.length > LATENCY_SAMPLES) samples.shift();
+	latencySamples.set(engineId, samples);
+}
+
+/** Average round trip, in ms, of each engine's last successful commands;
+ * null for an engine that has answered none yet. */
+export function commandLatency(): { A: number | null; B: number | null } {
+	const avg = (id: string) => {
+		const samples = latencySamples.get(id);
+		if (!samples?.length) return null;
+		return samples.reduce((a, b) => a + b, 0) / samples.length;
+	};
+	return { A: avg('A'), B: avg('B') };
+}
+
+/** Reset command latency samples (for testing). */
+export function resetCommandLatency(): void {
+	latencySamples.clear();
+}
+
 // ── Sticky engine routing after failover ──
 // After failover to a secondary engine, keep routing GETs there for a TTL
 // to avoid thundering herd when the primary recovers.
@@ -378,6 +406,9 @@ function accountFanOut(
 		if (!engineUrl) return;
 		if (result.status === 'fulfilled' && result.value.ok) {
 			recordSuccess(engineUrl, startedAt);
+			// A slow path waits on the engine's own work, such as reading a
+			// clip, not on the command round trip.
+			if (!isSlowPath(url)) recordCommandLatency(availableEngines[i].id, settledAt[i] - startedAt);
 		} else if (result.status === 'rejected') {
 			// Network error
 			recordFailure(engineUrl);

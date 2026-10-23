@@ -18,6 +18,7 @@ import {
 	setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, authHeaders,
 	resetPreferredEngine, resetCircuitBreakers, uploadStinger,
 	startRecording, stopRecording, addDestination, clipPlayerLoadByName,
+	commandLatency, resetCommandLatency,
 } from './switch-api';
 
 // Track all fetch calls for inspection
@@ -335,6 +336,71 @@ describe('switch-api dual-engine routing', () => {
 	});
 
 	// ─── PTP timestamp injection ───
+
+	describe('command latency', () => {
+		const A = 'https://engine-a.example.com';
+		const B = 'https://engine-b.example.com';
+		let delay: Record<string, number>;
+		let failB: boolean;
+
+		beforeEach(() => {
+			vi.useFakeTimers();
+			resetCommandLatency();
+			setEngineUrls([{ id: 'A', url: A }, { id: 'B', url: B }]);
+			delay = {};
+			failB = false;
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				const engine = url.startsWith(A) ? A : B;
+				return new Promise((resolve) => {
+					setTimeout(() => resolve(engine === B && failB
+						? errorResponse(500, 'boom')
+						: defaultOkResponse({ programSource: 'cam1' })), delay[engine] ?? 0);
+				});
+			});
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('reports no average before an engine has answered a command', () => {
+			expect(commandLatency()).toEqual({ A: null, B: null });
+		});
+
+		it('averages each engine\'s round trip separately', async () => {
+			delay = { [A]: 10, [B]: 40 };
+			const first = cut('cam1');
+			await vi.advanceTimersByTimeAsync(40);
+			await first;
+			delay = { [A]: 30, [B]: 60 };
+			const second = cut('cam2');
+			await vi.advanceTimersByTimeAsync(60);
+			await second;
+
+			expect(commandLatency()).toEqual({ A: 20, B: 50 });
+		});
+
+		it('leaves out an engine whose command failed', async () => {
+			delay = { [A]: 10, [B]: 10 };
+			failB = true;
+			setPartialFailureNotify(() => {});
+			const done = cut('cam1');
+			await vi.advanceTimersByTimeAsync(10);
+			await done;
+
+			expect(commandLatency()).toEqual({ A: 10, B: null });
+		});
+
+		it('leaves out a clip load, which waits on the engine reading the clip', async () => {
+			delay = { [A]: 5_000, [B]: 5_000 };
+			const done = clipPlayerLoadByName(1, 'bunny');
+			await vi.advanceTimersByTimeAsync(5_000);
+			await done;
+
+			expect(commandLatency()).toEqual({ A: null, B: null });
+		});
+	});
 
 	describe('PTP timestamp injection', () => {
 		beforeEach(() => {
