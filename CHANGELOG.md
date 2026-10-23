@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0-rc.20](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.19...mxl-v1.0.0-rc.20) (2026-10-23)
+
+
+### Bug Fixes
+
+* **ui:** push from the newer engine when an auto push is stale ([#59](https://github.com/qvest-digital/dmf-mf-switchframe/issues/59)) ([2c6edcc](https://github.com/qvest-digital/dmf-mf-switchframe/commit/2c6edcc97d5538a12325f3b7f3f746d769540df6))
+* **ui:** schedule timed commands at a whole microsecond ([#58](https://github.com/qvest-digital/dmf-mf-switchframe/issues/58)) ([0d23294](https://github.com/qvest-digital/dmf-mf-switchframe/commit/0d23294f8f4753c180052049f536a10bca4dd919))
+
 ## [1.0.0-rc.19](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.18...mxl-v1.0.0-rc.19) (2026-10-23)
 
 
