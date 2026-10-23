@@ -10,6 +10,9 @@ export interface DualConnectionConfig {
 	onInitialLoadComplete: () => void;
 	onInitialLoadError: (error: string, rawError?: unknown) => void;
 	onDualEngineReady?: () => void;
+	/** Schedule timed commands at a PTP time on both engines instead of
+	 * running them on arrival. */
+	timedExecution?: boolean;
 }
 
 export class DualConnectionManager {
@@ -215,6 +218,16 @@ export class DualConnectionManager {
 	/** Request immediate reconciler check (e.g. after partial command failure). */
 	requestCheck(): void {
 		this.reconciler.requestCheck();
+	}
+
+	/** The timing fields of a timed command for one engine. execute_at is 0,
+	 * run on arrival, unless timed execution is on and clock sync has
+	 * converged. */
+	commandTiming(engineId?: EngineId): { execute_at: number; command_seq: number } {
+		const command_seq = this.nextCommandSeq();
+		if (!this.config.timedExecution || !this.clockSync.isConverged()) return { execute_at: 0, command_seq };
+		const now = engineId ? this.clockSync.ptpNowForEngine(engineId) : this.clockSync.ptpNow();
+		return { execute_at: now + this.clockSync.safetyMargin(), command_seq };
 	}
 
 	/** A seq no other browser or earlier page load sends: an engine rejects

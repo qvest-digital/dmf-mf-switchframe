@@ -48,6 +48,8 @@ vi.mock('./clock-sync', () => {
 		this.startPeriodicSync = vi.fn();
 		this.getOffsetDivergence = vi.fn().mockReturnValue(0);
 		this.getRTT = vi.fn().mockReturnValue(4_000);
+		this.isConverged = vi.fn().mockReturnValue(true);
+		this.ptpNowForEngine = vi.fn().mockReturnValue(1_800_000_000_000_000);
 		this.getOffset = vi.fn().mockReturnValue(-250);
 		this.isClockDiverged = vi.fn().mockReturnValue(false);
 	});
@@ -567,6 +569,30 @@ describe('DualConnectionManager', () => {
 			instanceA.simulateConnectionChange('webtransport');
 
 			expect(reconcilerInstance.setTransportAlive).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('command timing', () => {
+		it('runs commands on arrival unless timed execution is on', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+
+			const timing = mgr.commandTiming('A');
+
+			expect(timing.execute_at).toBe(0);
+			expect(timing.command_seq).toBeGreaterThan(0);
+		});
+
+		it('schedules a command one safety margin ahead when timed execution is on', () => {
+			const mgr = new DualConnectionManager(makeDualConfig({ timedExecution: true }));
+
+			expect(mgr.commandTiming('B').execute_at).toBe(1_800_000_000_000_000 + 100_000);
+		});
+
+		it('runs commands on arrival until clock sync has converged', () => {
+			const mgr = new DualConnectionManager(makeDualConfig({ timedExecution: true }));
+			MockedClockSync.mock.results[0].value.isConverged.mockReturnValue(false);
+
+			expect(mgr.commandTiming('B').execute_at).toBe(0);
 		});
 	});
 
