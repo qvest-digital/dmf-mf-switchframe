@@ -7,9 +7,9 @@ import (
 )
 
 const (
-	specV = "d4d00000-0000-0000-0000-000000000001"
-	specA = "a0d10000-0000-0000-0000-000000000001"
-	specD = "c3000000-0000-0000-0000-000000000001"
+	specV = "d4d00000-0000-4000-8000-000000000001"
+	specA = "a0d10000-0000-4000-8000-000000000001"
+	specD = "c3000000-0000-4000-8000-000000000001"
 )
 
 func TestParseMXLSourceSpec(t *testing.T) {
@@ -21,7 +21,7 @@ func TestParseMXLSourceSpec(t *testing.T) {
 		wantError bool
 	}{
 		// The original forms stay keyed by the video flow.
-		{spec: specV, want: mxlSourceSpec{Video: specV}, key: "mxl:" + specV, label: "MXL:D4D00000-0000-0000-0000-000000000001"},
+		{spec: specV, want: mxlSourceSpec{Video: specV}, key: "mxl:" + specV, label: "MXL:D4D00000-0000-4000-8000-000000000001"},
 		{spec: specV + ":" + specA + ":" + specD, want: mxlSourceSpec{Video: specV, Audio: specA, Data: specD}, key: "mxl:" + specV},
 		// A named input is keyed by its name, so moving it to other flows
 		// keeps its key.
