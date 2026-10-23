@@ -171,7 +171,7 @@ The APIs are unauthenticated, as IS-04 and IS-05 are: anyone who reaches the por
 
 ```bash
 switchframe --mxl-domain /run/mxl/domain \
-  --mxl-sources 'cam1=d4d00000-0000-0000-0000-000000000001:a0d10000-0000-0000-0000-000000000001,cam2=' \
+  --mxl-sources 'cam1=d4d00000-0000-4000-8000-000000000001:a0d10000-0000-4000-8000-000000000001,cam2=' \
   --mxl-nmos-port 8092 --mxl-nmos-seed studio-1/switcher \
   --mxl-nmos-host switcher.studio-1 --mxl-nmos-registry-url http://registry:8010
 ```

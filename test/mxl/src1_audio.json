@@ -1,6 +1,6 @@
 {
   "description": "Switchframe demo source 1 - stereo audio",
-  "id": "a0000001-0000-0000-0000-000000000002",
+  "id": "a0000001-0000-4000-8000-000000000002",
   "tags": {
     "urn:x-nmos:tag:grouphint/v1.0": [
       "switchframe-src1:audio"
