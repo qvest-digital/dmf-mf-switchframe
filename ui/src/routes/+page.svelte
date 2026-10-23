@@ -49,8 +49,7 @@
 	import { createPFLToggle } from '$lib/audio/pfl-toggle';
 	import { createDivergenceLog } from '$lib/state/divergence-log.svelte';
 	import { createAutoReconcile } from '$lib/state/auto-reconcile';
-	import { compareAudioChannels } from '$lib/state/audio-compare';
-	import { detectAudioConfigDrift } from '$lib/util/audio-drift';
+	import { detectAudioConfigDrift, compareAudioChannels } from '$lib/util/audio-drift';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
 	import { createFastControl, type FastControl } from '$lib/transport/fast-control';
 	import { createDualFastControl } from '$lib/transport/dual-fast-control';
