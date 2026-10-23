@@ -105,6 +105,20 @@ describe('RedundancyPanel', () => {
 		}
 	});
 
+	it('says why the force reconcile buttons are disabled', () => {
+		const synced = render(RedundancyPanel, {
+			props: makeDefaultProps({ health: makeSyncHealth({ status: 'synced' }) }),
+		});
+		expect(synced.container.querySelector('.action-hint')?.textContent?.trim())
+			.toBe('Available while the engines are out of sync');
+
+		const diverged = render(RedundancyPanel, {
+			props: makeDefaultProps({ health: makeSyncHealth({ status: 'diverged' }) }),
+		});
+		expect(diverged.container.querySelector('.action-hint')?.textContent?.trim())
+			.toBe('Push authoritative state to the other engine');
+	});
+
 	it('force reconcile buttons enabled when diverged', () => {
 		const { container } = render(RedundancyPanel, {
 			props: makeDefaultProps({

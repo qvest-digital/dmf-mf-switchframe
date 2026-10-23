@@ -81,10 +81,12 @@ export class DualApiClient {
 
 	async pushStateSnapshot(
 		engineId: EngineId,
-		snapshot: unknown
+		snapshot: unknown,
+		opts?: { force: true }
 	): Promise<{ warnings: string[] }> {
 		const engine = this.findEngine(engineId);
-		const res = await fetch(`${engine.url}/api/sync/state-snapshot`, {
+		const query = opts?.force ? '?force=true' : '';
+		const res = await fetch(`${engine.url}/api/sync/state-snapshot${query}`, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',

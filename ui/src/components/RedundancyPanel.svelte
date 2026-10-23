@@ -594,7 +594,9 @@
 						Force B {'\u2192'} A
 					</button>
 				</div>
-				<div class="action-hint">Push authoritative state to the other engine</div>
+				<div class="action-hint">
+					{canReconcile ? 'Push authoritative state to the other engine' : 'Available while the engines are out of sync'}
+				</div>
 			{/if}
 		</section>
 	</div>

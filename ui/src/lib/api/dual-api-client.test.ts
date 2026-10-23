@@ -152,6 +152,16 @@ describe('DualApiClient', () => {
 		expect(result.warnings).toEqual(['minor drift']);
 	});
 
+	it('pushStateSnapshot asks the engine to apply a stale snapshot when forced', async () => {
+		const mockFetch = vi.fn().mockResolvedValue(new Response('{"warnings":[]}', { status: 200 }));
+		vi.stubGlobal('fetch', mockFetch);
+		const client = new DualApiClient({ engines: [{ id: 'B', url: 'https://b.example.com' }] });
+
+		await client.pushStateSnapshot('B', {}, { force: true });
+
+		expect(mockFetch.mock.calls[0][0]).toBe('https://b.example.com/api/sync/state-snapshot?force=true');
+	});
+
 	it('pushStateSnapshot throws on HTTP error', async () => {
 		const mockFetch = vi
 			.fn()

@@ -106,6 +106,205 @@ describe('createAutoReconcile', () => {
 			reconcile.destroy();
 		});
 
+		it('takes both reconcile locks for an operator push and overrides a stale target', async () => {
+			// The engine serves a snapshot only to the holder of its reconcile
+			// lock, and rejects one older than its own state unless forced. A
+			// manual push that skips either never reaches the target.
+			const config = makeConfig({
+				acquireLock: vi.fn().mockImplementation((engine) => Promise.resolve({ acquired: true, lockId: `lock-${engine}` })),
+				releaseLock: vi.fn().mockResolvedValue(undefined),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('B', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.acquireLock).toHaveBeenCalledWith('A');
+			expect(config.acquireLock).toHaveBeenCalledWith('B');
+			expect(config.getSnapshot).toHaveBeenCalledWith('B', 'lock-B');
+			expect(config.pushSnapshot).toHaveBeenCalledWith('A', expect.anything(), { force: true });
+			expect(config.releaseLock).toHaveBeenCalledWith('A', 'lock-A');
+			expect(config.releaseLock).toHaveBeenCalledWith('B', 'lock-B');
+
+			reconcile.destroy();
+		});
+
+		it('retries a failed operator push in the operator\'s direction, forced', async () => {
+			// The push sets the status to recovering, and the page reports every
+			// status change with the reconciler's authority. A retry taking that
+			// authority pulled from the engine the operator chose to overwrite.
+			const pushSnapshot = vi.fn()
+				.mockRejectedValueOnce(new Error('network'))
+				.mockResolvedValue({ warnings: [] });
+			let reconcile!: ReturnType<typeof createAutoReconcile>;
+			const config = makeConfig({
+				pushSnapshot,
+				onRecoveryStart: vi.fn(() => reconcile.onSyncStatusChange('recovering', 'A')),
+			});
+			reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('B', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(3_100);
+
+			expect(config.getSnapshot).toHaveBeenNthCalledWith(1, 'B');
+			expect(config.getSnapshot).toHaveBeenNthCalledWith(2, 'B');
+			expect(pushSnapshot.mock.calls).toEqual([
+				['A', expect.anything(), { force: true }],
+				['A', expect.anything(), { force: true }],
+			]);
+
+			reconcile.destroy();
+		});
+
+		it.each([
+			['mismatch', 0],
+			['diverged', 0.5],
+		] as const)('starts no auto push after a failed operator push (%s, jitter %s)', async (status, jitter) => {
+			// After the failure the status leaves recovering and the page
+			// reports the reconciler's authority. An auto push then ran from
+			// that engine before the operator's retry and overwrote the state
+			// the operator chose to keep.
+			vi.spyOn(Math, 'random').mockReturnValue(jitter);
+			const pushSnapshot = vi.fn()
+				.mockRejectedValueOnce(new Error('network'))
+				.mockResolvedValue({ warnings: [] });
+			let reconcile!: ReturnType<typeof createAutoReconcile>;
+			const config = makeConfig({
+				pushSnapshot,
+				onRecoveryStart: vi.fn(() => reconcile.onSyncStatusChange('recovering', 'A')),
+				onRecoveryError: vi.fn(() => { setTimeout(() => reconcile.onSyncStatusChange(status, 'A'), 200); }),
+			});
+			reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('B', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(3_500);
+
+			expect(pushSnapshot.mock.calls).toEqual([
+				['A', expect.anything(), { force: true }],
+				['A', expect.anything(), { force: true }],
+			]);
+			expect(config.getSnapshot).not.toHaveBeenCalledWith('A');
+
+			reconcile.destroy();
+			vi.mocked(Math.random).mockRestore();
+		});
+
+		it('retries a failed operator push even after an auto push used its retry', async () => {
+			// The button is most likely used once auto reconcile has been
+			// failing; without a retry of its own the manual push set no gate,
+			// and the next status change pushed A -> B unforced.
+			const pushSnapshot = vi.fn()
+				.mockRejectedValueOnce(new Error('auto failed'))
+				.mockRejectedValueOnce(new Error('manual failed'))
+				.mockResolvedValue({ warnings: [] });
+			let reconcile!: ReturnType<typeof createAutoReconcile>;
+			let manual = false;
+			const config = makeConfig({
+				pushSnapshot,
+				onRecoveryStart: vi.fn(() => reconcile.onSyncStatusChange('recovering', 'A')),
+				onRecoveryError: vi.fn(() => {
+					if (manual) setTimeout(() => reconcile.onSyncStatusChange('diverged', 'A'), 200);
+				}),
+			});
+			reconcile = createAutoReconcile(config);
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			reconcile.cancel();
+
+			manual = true;
+			reconcile.forceSnapshotPush('B', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(3_500);
+
+			expect(pushSnapshot.mock.calls.slice(1)).toEqual([
+				['A', expect.anything(), { force: true }],
+				['A', expect.anything(), { force: true }],
+			]);
+
+			reconcile.destroy();
+		});
+
+		it('drops a pending operator retry when a newer operator push starts', async () => {
+			const pushSnapshot = vi.fn()
+				.mockRejectedValueOnce(new Error('network'))
+				.mockResolvedValue({ warnings: [] });
+			const config = makeConfig({ pushSnapshot });
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('B', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(1_000);
+			reconcile.forceSnapshotPush('A', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(5_000);
+
+			expect(pushSnapshot.mock.calls.map((c) => c[0])).toEqual(['A', 'B']);
+
+			reconcile.destroy();
+		});
+
+		it('leaves a running push\'s direction alone when an operator push cannot start', async () => {
+			let release!: () => void;
+			const pushSnapshot = vi.fn()
+				.mockImplementationOnce(() => new Promise((_, reject) => { release = () => reject(new Error('network')); }))
+				.mockResolvedValue({ warnings: [] });
+			const config = makeConfig({ pushSnapshot });
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reconcile.forceSnapshotPush('B', { overrideStale: true })).toBe(false);
+			release();
+			await vi.advanceTimersByTimeAsync(3_500);
+
+			expect(pushSnapshot.mock.calls.map((c) => c[0])).toEqual(['B', 'B']);
+
+			reconcile.destroy();
+		});
+
+		it('does not follow an operator push with a recheck push', async () => {
+			// A forced stale apply always returns a warning, which would start
+			// a recheck push in the reconciler's direction.
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockResolvedValue({ warnings: ['forced apply: snapshot seq 3 is behind engine seq 5'] }),
+				checkCriticalDivergence: () => true,
+				checkAnyDivergence: () => true,
+			});
+			const reconcile = createAutoReconcile(config);
+			reconcile.onSyncStatusChange('recovering', 'A');
+
+			reconcile.forceSnapshotPush('B', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(1_000);
+
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			reconcile.destroy();
+		});
+
+		it('reports an operator push it could not start', async () => {
+			let release!: () => void;
+			const config = makeConfig({
+				getSnapshot: vi.fn(() => new Promise((resolve) => { release = () => resolve({}); })),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			expect(reconcile.forceSnapshotPush('A')).toBe(true);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reconcile.forceSnapshotPush('B', { overrideStale: true })).toBe(false);
+
+			release();
+			reconcile.destroy();
+		});
+
+		it('does not override a stale target on an engine-discovery push', async () => {
+			const config = makeConfig();
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.pushSnapshot).toHaveBeenCalledWith('B', expect.anything());
+
+			reconcile.destroy();
+		});
+
 		it('cancels a pending 2s divergence timer when forced', async () => {
 			const config = makeConfig();
 			const reconcile = createAutoReconcile(config);

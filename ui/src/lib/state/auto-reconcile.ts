@@ -18,7 +18,8 @@ export class SnapshotStaleError extends Error {
 
 export interface AutoReconcileConfig {
 	getSnapshot: (engine: EngineId, lockId?: string) => Promise<unknown>;
-	pushSnapshot: (engine: EngineId, snapshot: unknown) => Promise<{ warnings: string[] }>;
+	/** force applies the snapshot even when the target has advanced past it. */
+	pushSnapshot: (engine: EngineId, snapshot: unknown, opts?: { force: true }) => Promise<{ warnings: string[] }>;
 	getAuthoritativeState?: () => { inTransition?: boolean } | null;
 	checkCriticalDivergence?: () => boolean;
 	checkAnyDivergence?: () => boolean;
@@ -66,6 +67,11 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 	// Per-engine cooldown tracking
 	const lastPushTimes = new Map<EngineId, number>();
 	let retryCount = 0;
+	// Set while an operator push waits for its retry. Auto pushes follow the
+	// reconciler's authority and would overwrite the state the operator chose
+	// to keep, so none starts in the meantime.
+	let operatorRetryPending = false;
+	let retryTimer: ReturnType<typeof setTimeout> | null = null;
 	// Track the latest authoritative engine so timer callbacks use the
 	// current value, not the one captured when the timer was created.
 	let currentAuthoritative: EngineId = 'A';
@@ -106,7 +112,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		});
 	}
 
-	async function executeSnapshotPush(authoritative: EngineId) {
+	async function executeSnapshotPush(authoritative: EngineId, overrideStale = false) {
 		if (pushInFlight || destroyed) return;
 
 		// Hold the re-entrancy guard continuously from here through the
@@ -244,7 +250,9 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			let snapshot = await timeoutRace((sourceLockId ? config.getSnapshot(authoritative, sourceLockId) : config.getSnapshot(authoritative)));
 			let result: { warnings: string[] };
 			try {
-				result = await timeoutRace(config.pushSnapshot(target, snapshot));
+				result = await timeoutRace(overrideStale
+					? config.pushSnapshot(target, snapshot, { force: true })
+					: config.pushSnapshot(target, snapshot));
 			} catch (pushErr) {
 				if (pushErr instanceof SnapshotStaleError) {
 					// Target advanced past our snapshot. Pull fresh from source and retry.
@@ -277,8 +285,10 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			const warnings = result.warnings ?? [];
 			config.onRecoveryComplete?.(warnings);
 
-			// Partial apply detection: if warnings present, check for remaining divergence
-			if (warnings.length > 0) {
+			// Partial apply detection: if warnings present, check for remaining divergence.
+			// Not after an operator push: a forced stale apply always warns, and a
+			// follow-up would run in the reconciler's direction, not the operator's.
+			if (warnings.length > 0 && !overrideStale) {
 				setTimeout(() => {
 					if (destroyed) return;
 					// First check critical (re-push immediately, bypass cooldown)
@@ -303,10 +313,14 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 				retryCount++;
 				const delay = RETRY_BASE_DELAY_MS + Math.random() * RETRY_JITTER_MS;
 				const retryTarget = target;
-				setTimeout(() => {
+				if (overrideStale) operatorRetryPending = true;
+				retryTimer = setTimeout(() => {
+					retryTimer = null;
+					operatorRetryPending = false;
 					// Clear cooldown for the target so retry can proceed
 					lastPushTimes.delete(retryTarget);
-					executeSnapshotPush(currentAuthoritative);
+					// An operator push retries in the direction the operator chose.
+					executeSnapshotPush(overrideStale ? authoritative : currentAuthoritative, overrideStale);
 				}, delay);
 			}
 		} finally {
@@ -331,6 +345,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 
 		// Always track the latest authoritative engine
 		currentAuthoritative = authoritative;
+		if (operatorRetryPending) return;
 
 		if (status === 'mismatch') {
 			divergenceDetectedTotal++;
@@ -360,20 +375,36 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		clearPendingTimer();
 	}
 
+	function clearRetry() {
+		if (retryTimer !== null) clearTimeout(retryTimer);
+		retryTimer = null;
+		operatorRetryPending = false;
+	}
+
 	function destroy() {
 		destroyed = true;
+		clearRetry();
 		clearPendingTimer();
 	}
 
 	/** Immediate push that bypasses the 2s divergence timer and per-target
 	 *  cooldown. Used on engine discovery so the newly discovered engine
-	 *  catches up on commands it missed during the pre-discovery window. */
-	function forceSnapshotPush(authoritative: EngineId) {
-		if (destroyed) return;
-		currentAuthoritative = authoritative;
+	 *  catches up on commands it missed during the pre-discovery window,
+	 *  and for an operator's manual push, which overrides the target's
+	 *  newer state because the operator chose to overwrite it.
+	 *  Returns false when it could not start because a push is already running. */
+	function forceSnapshotPush(authoritative: EngineId, opts: { overrideStale?: boolean } = {}): boolean {
+		if (destroyed) return false;
 		clearPendingTimer();
+		if (pushInFlight) return false;
+		currentAuthoritative = authoritative;
+		// A newer push supersedes a pending retry of an older one.
+		clearRetry();
+		// A manual push gets its own retry, even after auto pushes used theirs.
+		if (opts.overrideStale) retryCount = 0;
 		lastPushTimes.delete(otherEngine(authoritative));
-		executeSnapshotPush(authoritative);
+		executeSnapshotPush(authoritative, opts.overrideStale);
+		return true;
 	}
 
 	return {
