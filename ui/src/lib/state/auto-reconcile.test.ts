@@ -106,6 +106,41 @@ describe('createAutoReconcile', () => {
 			reconcile.destroy();
 		});
 
+		it('takes both reconcile locks for an operator push and overrides a stale target', async () => {
+			// The engine serves a snapshot only to the holder of its reconcile
+			// lock, and rejects one older than its own state unless forced. A
+			// manual push that skips either never reaches the target.
+			const config = makeConfig({
+				acquireLock: vi.fn().mockImplementation((engine) => Promise.resolve({ acquired: true, lockId: `lock-${engine}` })),
+				releaseLock: vi.fn().mockResolvedValue(undefined),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('B', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.acquireLock).toHaveBeenCalledWith('A');
+			expect(config.acquireLock).toHaveBeenCalledWith('B');
+			expect(config.getSnapshot).toHaveBeenCalledWith('B', 'lock-B');
+			expect(config.pushSnapshot).toHaveBeenCalledWith('A', expect.anything(), { force: true });
+			expect(config.releaseLock).toHaveBeenCalledWith('A', 'lock-A');
+			expect(config.releaseLock).toHaveBeenCalledWith('B', 'lock-B');
+
+			reconcile.destroy();
+		});
+
+		it('does not override a stale target on an engine-discovery push', async () => {
+			const config = makeConfig();
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.pushSnapshot).toHaveBeenCalledWith('B', expect.anything());
+
+			reconcile.destroy();
+		});
+
 		it('cancels a pending 2s divergence timer when forced', async () => {
 			const config = makeConfig();
 			const reconcile = createAutoReconcile(config);

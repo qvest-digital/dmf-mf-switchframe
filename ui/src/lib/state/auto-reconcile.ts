@@ -18,7 +18,8 @@ export class SnapshotStaleError extends Error {
 
 export interface AutoReconcileConfig {
 	getSnapshot: (engine: EngineId, lockId?: string) => Promise<unknown>;
-	pushSnapshot: (engine: EngineId, snapshot: unknown) => Promise<{ warnings: string[] }>;
+	/** force applies the snapshot even when the target has advanced past it. */
+	pushSnapshot: (engine: EngineId, snapshot: unknown, opts?: { force: true }) => Promise<{ warnings: string[] }>;
 	getAuthoritativeState?: () => { inTransition?: boolean } | null;
 	checkCriticalDivergence?: () => boolean;
 	checkAnyDivergence?: () => boolean;
@@ -106,7 +107,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		});
 	}
 
-	async function executeSnapshotPush(authoritative: EngineId) {
+	async function executeSnapshotPush(authoritative: EngineId, overrideStale = false) {
 		if (pushInFlight || destroyed) return;
 
 		// Hold the re-entrancy guard continuously from here through the
@@ -244,7 +245,9 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			let snapshot = await timeoutRace((sourceLockId ? config.getSnapshot(authoritative, sourceLockId) : config.getSnapshot(authoritative)));
 			let result: { warnings: string[] };
 			try {
-				result = await timeoutRace(config.pushSnapshot(target, snapshot));
+				result = await timeoutRace(overrideStale
+					? config.pushSnapshot(target, snapshot, { force: true })
+					: config.pushSnapshot(target, snapshot));
 			} catch (pushErr) {
 				if (pushErr instanceof SnapshotStaleError) {
 					// Target advanced past our snapshot. Pull fresh from source and retry.
@@ -367,13 +370,15 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 
 	/** Immediate push that bypasses the 2s divergence timer and per-target
 	 *  cooldown. Used on engine discovery so the newly discovered engine
-	 *  catches up on commands it missed during the pre-discovery window. */
-	function forceSnapshotPush(authoritative: EngineId) {
+	 *  catches up on commands it missed during the pre-discovery window,
+	 *  and for an operator's manual push, which overrides the target's
+	 *  newer state because the operator chose to overwrite it. */
+	function forceSnapshotPush(authoritative: EngineId, opts: { overrideStale?: boolean } = {}) {
 		if (destroyed) return;
 		currentAuthoritative = authoritative;
 		clearPendingTimer();
 		lastPushTimes.delete(otherEngine(authoritative));
-		executeSnapshotPush(authoritative);
+		executeSnapshotPush(authoritative, opts.overrideStale);
 	}
 
 	return {

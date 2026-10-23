@@ -291,7 +291,7 @@
 	// Auto-reconcile: watches sync status and triggers snapshot push when engines diverge
 	const autoReconcile = createAutoReconcile({
 		getSnapshot: (engine, lockId) => dualApi.getStateSnapshot(engine, lockId),
-		pushSnapshot: (engine, snapshot) => dualApi.pushStateSnapshot(engine, snapshot),
+		pushSnapshot: (engine, snapshot, opts) => dualApi.pushStateSnapshot(engine, snapshot, opts),
 		acquireLock: (engine) => dualApi.acquireReconcileLock(engine),
 		releaseLock: (engine, lockId) => dualApi.releaseReconcileLock(engine, lockId),
 		getAuthoritativeState: () => {
@@ -471,18 +471,11 @@
 		return { recording, destinations };
 	});
 
-	// Force reconcile handler for RedundancyPanel
-	async function handleForceReconcile(direction: 'AtoB' | 'BtoA') {
-		const from = direction === 'AtoB' ? 'A' : 'B';
-		const to = direction === 'AtoB' ? 'B' : 'A';
-		try {
-			const snapshot = await dualApi.getStateSnapshot(from);
-			const result = await dualApi.pushStateSnapshot(to, snapshot);
-			divergenceLog.add({ type: 'snapshot', message: `Force reconcile ${direction} complete`, warnings: result.warnings });
-			notify('info', 'Force reconcile complete');
-		} catch (e) {
-			notify('error', `Force reconcile failed: ${e}`);
-		}
+	// Force reconcile handler for RedundancyPanel. Goes through auto-reconcile
+	// for the reconcile locks both engines require; the outcome lands in the
+	// divergence log through its callbacks.
+	function handleForceReconcile(direction: 'AtoB' | 'BtoA') {
+		autoReconcile.forceSnapshotPush(direction === 'AtoB' ? 'A' : 'B', { overrideStale: true });
 	}
 
 	// Compare mode handler for RedundancyPanel
