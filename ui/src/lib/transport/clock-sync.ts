@@ -20,6 +20,7 @@ const FRAME_DURATION_US = 33_333; // 30fps
 const JITTER_MULTIPLIER = 2;
 const DEFAULT_MARGIN_US = FRAME_DURATION_US * 4;
 const EWMA_ALPHA = 0.125;
+const RTT_RESET_RATIO = 4;
 const DEFAULT_SYNC_INTERVAL_MS = 10_000;
 const STALE_PING_THRESHOLD_US = 30_000_000; // 30s — 3× the sync interval
 const MAX_PENDING_PINGS = 100;
@@ -40,8 +41,17 @@ export class ClockSync {
 	private trackedEngines: EngineId[] = [];
 
 	updateRTT(engineId: EngineId, rttUS: number): void {
-		const prev = this.rtts.get(engineId);
-		const prevRaw = this.lastRawRTT.get(engineId);
+		let prev = this.rtts.get(engineId);
+		let prevRaw = this.lastRawRTT.get(engineId);
+
+		// Delay only ever adds to a round trip, so a sample far below the
+		// estimate shows the estimate came from a delayed one, typically the
+		// first pong of a page still opening its streams. Smoothing would carry
+		// that delay for minutes; start over from this sample instead.
+		if (prev !== undefined && rttUS < prev / RTT_RESET_RATIO) {
+			prev = undefined;
+			prevRaw = undefined;
+		}
 
 		if (prev !== undefined) {
 			// EWMA smoothing
