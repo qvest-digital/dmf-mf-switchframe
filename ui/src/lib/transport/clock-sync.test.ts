@@ -59,6 +59,28 @@ describe('ClockSync', () => {
 		});
 	});
 
+	describe('delayed first sample', () => {
+		it('starts over from a sample far below the estimate', () => {
+			// Measured on a page still opening its streams: the first pong took
+			// 6.7s, the next ones about 30ms. Smoothed, the pane showed seconds
+			// of RTT for minutes, and the safety margin grew with it.
+			const sync = new ClockSync();
+			sync.updateRTT('A', 6_668_000);
+			sync.updateRTT('A', 27_000);
+
+			expect(sync.getRTT('A')).toBe(27_000);
+			expect(sync.safetyMargin()).toBe(27_000 + 2 * 27_000 * 0.125 + 33_333);
+		});
+
+		it('keeps smoothing an ordinary drop in RTT', () => {
+			const sync = new ClockSync();
+			sync.updateRTT('A', 40_000);
+			sync.updateRTT('A', 20_000);
+
+			expect(sync.getRTT('A')).toBe(40_000 * 0.875 + 20_000 * 0.125);
+		});
+	});
+
 	describe('EWMA jitter tracking', () => {
 		it('bootstraps jitter from first RTT sample', () => {
 			const sync = new ClockSync();
