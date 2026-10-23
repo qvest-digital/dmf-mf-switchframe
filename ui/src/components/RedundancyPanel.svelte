@@ -2,14 +2,8 @@
 	import type { SyncHealth, SyncStatus, EngineHealthDetail } from '$lib/state/reconciler.svelte';
 	import type { DivergenceLogEntry } from '$lib/state/divergence-log.svelte';
 	import { authHeaders } from '$lib/api/switch-api';
+	import type { AudioChannelComparison } from '$lib/state/audio-compare';
 	import EngineDot from './EngineDot.svelte';
-
-	interface AudioChannelComparison {
-		channel: string;
-		levelA: number;
-		levelB: number;
-		withinTolerance: boolean;
-	}
 
 	interface OutputStatus {
 		recording: { A: boolean; B: boolean };
