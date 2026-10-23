@@ -815,3 +815,45 @@ func TestMXLNMOS_PartitionedPairRegistersTheSameNode(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// Once a partition heals the leader registers again, as a heartbeat would
+// leave the node at the follower's href it took meanwhile.
+func TestMXLNMOS_HealedPartitionReturnsTheNodeToTheLeader(t *testing.T) {
+	withHeartbeatInterval(t, 20*time.Millisecond)
+	reg := &fakeRegistry{}
+	srv := httptest.NewServer(reg)
+	t.Cleanup(srv.Close)
+
+	a := engineOfPair(t, srv.URL, "a", "switcher-a.p-show")
+	b := engineOfPair(t, srv.URL, "b", "switcher-b.p-show")
+	a.SetPeerStateForTest(true, "b", 0)
+	b.SetPeerStateForTest(true, "a", 0)
+	node := nmos.DeriveID(nmosSeed, "node")
+	atA, atB := node+" http://switcher-a.p-show:1/", node+" http://switcher-b.p-show:1/"
+	last := func() string {
+		got := reg.nodes()
+		if len(got) == 0 {
+			return ""
+		}
+		return got[len(got)-1]
+	}
+	waitLast := func(want, what string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * mxlNMOSHeartbeatInterval)
+		for last() != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: last registration %q, want %q", what, last(), want)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	waitLast(atA, "healthy pair")
+
+	a.SetPeerStateForTest(false, "b", 0)
+	b.SetPeerStateForTest(false, "a", 0)
+	waitLast(atB, "partition")
+
+	a.SetPeerStateForTest(true, "b", 0)
+	b.SetPeerStateForTest(true, "a", 0)
+	waitLast(atA, "healed partition")
+}

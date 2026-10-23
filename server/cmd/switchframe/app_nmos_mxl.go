@@ -902,7 +902,19 @@ func (a *App) runMXLNMOSRegistration(ctx context.Context) {
 	n := a.mxlNMOS
 	tick := time.NewTicker(mxlNMOSHeartbeatInterval)
 	defer tick.Stop()
+	peerWasReachable := true
 	for {
+		// A peer that was unreachable may have registered the node at its
+		// own href meanwhile, and a heartbeat keeps the href as it is, so
+		// the node is registered again once the peer is back; a follower
+		// that reaches the leader then stays silent.
+		if a.peerPoller != nil {
+			reachable := a.peerPoller.PeerReachable()
+			if reachable && !peerWasReachable {
+				n.setRegistered(false)
+			}
+			peerWasReachable = reachable
+		}
 		n.mu.Lock()
 		registered := n.registered
 		n.mu.Unlock()
