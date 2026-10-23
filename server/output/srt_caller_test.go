@@ -2,7 +2,9 @@ package output
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,8 +138,7 @@ func TestSRTCaller_CloseDuringReconnect(t *testing.T) {
 		return lateConn, nil
 	}
 
-	c.reconnecting.Store(true)
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	// Wait until the reconnect goroutine is blocked inside Dial, so Close
 	// observes the in-flight loop and joins it.
@@ -217,8 +218,7 @@ func TestSRTCaller_WriteFailureDuringReconnectWindowRespawnsLoop(t *testing.T) {
 	}
 
 	c.state.Store(ptrTo(StateReconnecting))
-	c.reconnecting.Store(true)
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	// The caller must recover to StateActive via a re-spawned reconnect
 	// loop; without the fix it is stuck in StateReconnecting forever.
@@ -480,7 +480,7 @@ func TestSRTCaller_OnReconnectCalledWithOverflowFalse(t *testing.T) {
 		return mock, nil
 	}
 
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	require.Eventually(t, func() bool {
 		return callbackCalled.Load()
@@ -518,7 +518,7 @@ func TestSRTCaller_OnReconnectCalledWithOverflowTrue(t *testing.T) {
 		return mock, nil
 	}
 
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	require.Eventually(t, func() bool {
 		return callbackCalled.Load()
@@ -551,7 +551,7 @@ func TestSRTCaller_OverflowCountTracked(t *testing.T) {
 		return mock, nil
 	}
 
-	go c.reconnectLoop()
+	startReconnect(c)
 	require.Eventually(t, func() bool {
 		return c.Status().State == StateActive
 	}, 5*time.Second, 50*time.Millisecond)
@@ -565,15 +565,16 @@ func TestSRTCaller_OverflowCountTracked(t *testing.T) {
 		return !c.reconnecting.Load()
 	}, 5*time.Second, 10*time.Millisecond)
 
-	// Simulate a second overflow reconnect
-	c.state.Store(ptrTo(StateReconnecting))
+	// Simulate a second overflow reconnect. The overflowed buffer is in
+	// place before the state says reconnecting, and both change under c.mu,
+	// so a loop the first one re-arms on its way out and the one started
+	// here are the same single loop and both see the overflow.
 	c.mu.Lock()
 	c.ringBuf = newRingBuffer(256)
 	_, _ = c.ringBuf.Write(make([]byte, 512)) // overflow again
+	c.state.Store(ptrTo(StateReconnecting))
+	c.startReconnectLoopLocked()
 	c.mu.Unlock()
-	c.reconnecting.Store(true)
-
-	go c.reconnectLoop()
 	require.Eventually(t, func() bool {
 		return c.Status().State == StateActive
 	}, 5*time.Second, 50*time.Millisecond)
@@ -628,7 +629,7 @@ func TestSRTCaller_OnReconnectNilIsNoop(t *testing.T) {
 		return mock, nil
 	}
 
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	require.Eventually(t, func() bool {
 		return c.Status().State == StateActive
@@ -736,7 +737,7 @@ func TestSRTCaller_IDRGating_DropsAfterOverflow(t *testing.T) {
 	}
 
 	// Trigger reconnect
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	require.Eventually(t, func() bool {
 		return c.Status().State == StateActive
@@ -806,7 +807,7 @@ func TestSRTCaller_IDRGating_AlwaysSetOnReconnect(t *testing.T) {
 		return mock, nil
 	}
 
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	require.Eventually(t, func() bool {
 		return callbackCalled.Load()
@@ -868,7 +869,7 @@ func TestSRTCaller_IDRGating_SetWithoutOverflow(t *testing.T) {
 		callbackCalled.Store(true)
 	}
 
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	require.Eventually(t, func() bool {
 		return callbackCalled.Load()
@@ -983,7 +984,7 @@ func TestSRTCaller_IDRGating_ReconnectSetsPendingIDRSince(t *testing.T) {
 	}
 
 	before := time.Now().UnixMilli()
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	require.Eventually(t, func() bool {
 		return c.Status().State == StateActive
@@ -1224,7 +1225,7 @@ func TestSRTCaller_ReconnectDiscardsBuffer(t *testing.T) {
 	}
 
 	// Trigger reconnect
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	// Wait for reconnect to succeed
 	require.Eventually(t, func() bool {
@@ -1241,4 +1242,42 @@ func TestSRTCaller_ReconnectDiscardsBuffer(t *testing.T) {
 		"pendingIDR should be set after reconnect")
 
 	_ = c.Close()
+}
+
+// Each reconnect loop closes its done channel when it exits. When a loop
+// took that channel from the caller after it had been spawned, a loop spawned
+// just before another start replaced the channel shared it with the newer
+// loop, and the second of them to exit panicked with "close of closed
+// channel", taking the engine down with it.
+func TestSRTCaller_ConcurrentStartsNeverShareReconnectLoop(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 300; i++ {
+		c := NewSRTCaller(SRTCallerConfig{Address: "srt.example.com", Port: 9998})
+		c.bo.Initial = time.Millisecond
+		c.bo.Max = time.Millisecond
+		c.connectFn = func(context.Context, SRTCallerConfig) (srtConn, error) {
+			return nil, errors.New("refused")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		var wg sync.WaitGroup
+		for range 2 {
+			wg.Add(1)
+			go func() { defer wg.Done(); _ = c.Start(ctx) }()
+		}
+		wg.Wait()
+		time.Sleep(2 * time.Millisecond)
+		cancel()
+		_ = c.Close()
+	}
+	// Loops cancelled above exit and close their channels after Close
+	// returned for the newest one; give them time to do so inside the test.
+	time.Sleep(50 * time.Millisecond)
+}
+
+// startReconnect starts a reconnect loop the way the caller does, through
+// the guard that gives every loop its own done channel.
+func startReconnect(c *SRTCaller) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.startReconnectLoopLocked()
 }

@@ -61,7 +61,7 @@ func TestReconnect_RingBufferPreservesData(t *testing.T) {
 		return mock2, nil
 	}
 
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	// Wait for reconnect to succeed.
 	require.Eventually(t, func() bool {
@@ -135,7 +135,7 @@ func TestReconnect_ResumesFromKeyframe(t *testing.T) {
 		callbackCalled.Store(true)
 	}
 
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	require.Eventually(t, func() bool {
 		return c.Status().State == StateActive
@@ -217,7 +217,7 @@ func TestReconnect_OverflowCallback(t *testing.T) {
 		return mock, nil
 	}
 
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	// Wait for the callback to fire.
 	require.Eventually(t, func() bool {
@@ -269,7 +269,7 @@ func TestReconnect_NoOverflowDiscardsAndGates(t *testing.T) {
 		return mock, nil
 	}
 
-	go c.reconnectLoop()
+	startReconnect(c)
 
 	require.Eventually(t, func() bool {
 		mu.Lock()

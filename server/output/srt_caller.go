@@ -43,8 +43,8 @@ type SRTCaller struct {
 	cancel          context.CancelFunc
 	ringBuf         *ringBuffer
 	bo              backoff.Backoff
-	reconnectDone   chan struct{} // closed by reconnectLoop on exit; nil when no loop is running
-	reconnecting    atomic.Bool   // guards against duplicate reconnect goroutines
+	reconnectDone   chan struct{} // done channel of the running reconnect loop; nil when none runs
+	reconnecting    atomic.Bool   // set while a reconnect loop runs; see startReconnectLoopLocked
 	statsPolling    atomic.Bool   // guards against duplicate pollStats goroutines
 	pendingIDR      atomic.Bool   // when true, drop writes until a keyframe arrives
 	pendingIDRSince atomic.Int64  // UnixMilli timestamp when pendingIDR was set (for timeout)
@@ -103,6 +103,11 @@ func (c *SRTCaller) Start(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// A later Start supersedes an earlier one: cancelling its context ends a
+	// reconnect loop still running for it.
+	if c.cancel != nil {
+		c.cancel()
+	}
 	c.ctx, c.cancel = context.WithCancel(ctx)
 	c.startedAt = time.Now()
 	c.bytesWritten.Store(0)
@@ -114,9 +119,7 @@ func (c *SRTCaller) Start(ctx context.Context) error {
 	if err != nil {
 		c.state.Store(ptrTo(StateReconnecting))
 		c.lastError.Store(ptrTo(err.Error()))
-		c.reconnecting.Store(true)
-		c.reconnectDone = make(chan struct{})
-		go c.reconnectLoop()
+		c.startReconnectLoopLocked()
 		return nil // Don't fail start — reconnect will keep trying
 	}
 
@@ -176,12 +179,7 @@ func (c *SRTCaller) Write(tsData []byte) (int, error) {
 			c.lastError.Store(ptrTo(err.Error()))
 			c.mu.Lock()
 			_, _ = c.ringBuf.Write(tsData)
-			// CAS guard prevents duplicate reconnect goroutines. Create the
-			// done channel under c.mu so Close can observe it atomically.
-			if c.reconnecting.CompareAndSwap(false, true) {
-				c.reconnectDone = make(chan struct{})
-				go c.reconnectLoop()
-			}
+			c.startReconnectLoopLocked()
 			c.mu.Unlock()
 			return len(tsData), nil // Don't propagate error to muxer
 		}
@@ -257,21 +255,26 @@ func (c *SRTCaller) SRTStatusSnapshot() SRTStatus {
 	}
 }
 
-// reconnectLoop retries SRT connection with exponential backoff.
+// startReconnectLoopLocked starts a reconnect loop unless one is running.
+// The loop gets its own done channel and the caller's current context here,
+// at spawn time: a loop that read them from the caller once it ran could
+// pick up the channel of a loop started after it, and the second of the two
+// to exit would close an already closed channel. c.mu must be held.
+func (c *SRTCaller) startReconnectLoopLocked() {
+	if !c.reconnecting.CompareAndSwap(false, true) {
+		return
+	}
+	done := make(chan struct{})
+	c.reconnectDone = done
+	go c.reconnectLoop(c.ctx, done)
+}
+
+// reconnectLoop retries SRT connection with exponential backoff until ctx
+// ends or a connection is made, and closes done when it exits.
 // On success, if the ring buffer did not overflow, buffered data is
 // flushed to the new connection. If it did overflow, the data is
 // discarded (the Manager should wait for a keyframe).
-func (c *SRTCaller) reconnectLoop() {
-	// Capture (and lazily create, for direct test invocation) the done
-	// channel so Close can join this goroutine. Closing it on exit lets a
-	// concurrent Close know the loop has finished and will not install a
-	// new connection.
-	c.mu.Lock()
-	if c.reconnectDone == nil {
-		c.reconnectDone = make(chan struct{})
-	}
-	done := c.reconnectDone
-	c.mu.Unlock()
+func (c *SRTCaller) reconnectLoop(ctx context.Context, done chan struct{}) {
 	defer func() {
 		c.mu.Lock()
 		if c.reconnectDone == done {
@@ -288,16 +291,13 @@ func (c *SRTCaller) reconnectLoop() {
 		// forever with no reconnect goroutine.
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if c.ctx != nil && c.ctx.Err() == nil &&
-			*c.state.Load() == StateReconnecting &&
-			c.reconnecting.CompareAndSwap(false, true) {
-			c.reconnectDone = make(chan struct{})
-			go c.reconnectLoop()
+		if c.ctx != nil && c.ctx.Err() == nil && *c.state.Load() == StateReconnecting {
+			c.startReconnectLoopLocked()
 		}
 	}()
 	for {
 		select {
-		case <-c.ctx.Done():
+		case <-ctx.Done():
 			return
 		default:
 		}
@@ -308,12 +308,12 @@ func (c *SRTCaller) reconnectLoop() {
 		slog.Info("SRT reconnecting", "backoff", wait, "address", c.config.Address)
 
 		select {
-		case <-c.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-time.After(wait):
 		}
 
-		conn, err := c.connectFn(c.ctx, c.config)
+		conn, err := c.connectFn(ctx, c.config)
 		if err != nil {
 			c.lastError.Store(ptrTo(err.Error()))
 			continue
@@ -325,7 +325,7 @@ func (c *SRTCaller) reconnectLoop() {
 		// context, close the just-dialed conn instead of leaking it (and
 		// avoid resurrecting a StateActive caller after shutdown).
 		c.mu.Lock()
-		if c.ctx.Err() != nil {
+		if ctx.Err() != nil {
 			c.mu.Unlock()
 			conn.Close()
 			return
@@ -362,7 +362,7 @@ func (c *SRTCaller) reconnectLoop() {
 		// Start stats polling if not already running. Uses CAS to prevent
 		// accumulating duplicate goroutines across reconnect cycles.
 		if c.stats != nil && c.statsPolling.CompareAndSwap(false, true) {
-			go c.pollStats(c.ctx)
+			go c.pollStats(ctx)
 		}
 
 		if c.onReconnect != nil {
