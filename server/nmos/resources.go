@@ -36,6 +36,8 @@ func (s *ResourceStore) SetNode(n *Node) {
 // Touch gives every resource a new version. A registry refuses a
 // registration whose version is older than the one it holds, which is what
 // another node presenting the same ids, started later, has registered.
+// Versions are this host's TAI clock, so that node's clock must not run
+// ahead of this one by more than the time since its last registration.
 func (s *ResourceStore) Touch() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
