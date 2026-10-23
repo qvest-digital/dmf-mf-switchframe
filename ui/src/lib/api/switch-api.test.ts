@@ -1613,7 +1613,10 @@ describe('dual-engine interceptor edge cases', () => {
 			{ id: 'A', url: 'https://a.example.com' },
 			{ id: 'B', url: 'https://b.example.com' },
 		]);
-		setDualTimestampProvider(() => ({ execute_at: Date.now() * 1000 + 4_800_000, command_seq: 8 }));
+		// One instant for both engines: read per call, a millisecond tick
+		// between the two calls gave the bodies different execute_at values.
+		const executeAt = Date.now() * 1000 + 4_800_000;
+		setDualTimestampProvider(() => ({ execute_at: executeAt, command_seq: 8 }));
 
 		const mockFetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({}), { status: 200 }),
