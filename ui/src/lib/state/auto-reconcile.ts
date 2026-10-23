@@ -4,7 +4,8 @@ import type { EngineId } from '$lib/api/types';
 /**
  * Thrown by pushSnapshot when the target engine has advanced past the
  * snapshot's captured seq (HTTP 409). The auto-reconcile loop treats this
- * differently from transport errors: fresh pull + single retry, then escalate.
+ * differently from transport errors: it pushes the target's state back the
+ * other way, and escalates only when that is stale too.
  */
 export class SnapshotStaleError extends Error {
 	constructor(
@@ -29,8 +30,8 @@ export interface AutoReconcileConfig {
 	onRecoveryStart?: () => void;
 	onRecoveryComplete?: (warnings: string[]) => void;
 	onRecoveryError?: (error: Error) => void;
-	/** Called when two consecutive pushes to the same target return 409 stale.
-	 * Signals that engines can't be reconciled automatically — operator action needed. */
+	/** Called when a push returns 409 stale and the push back from its target
+	 * does too. Signals that engines can't be reconciled automatically — operator action needed. */
 	onStaleConflict?: (target: EngineId, snapshotSeq: number, currentSeq: number) => void;
 	/** Called when either the source or target lock acquisition failed because
 	 * another browser holds it — the peer is reconciling; this browser backs off.
@@ -255,25 +256,20 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 					: config.pushSnapshot(target, snapshot));
 			} catch (pushErr) {
 				if (pushErr instanceof SnapshotStaleError) {
-					// Target advanced past our snapshot. Pull fresh from source and retry.
-					const firstGap = pushErr.currentSeq - pushErr.snapshotSeq;
-					snapshot = await timeoutRace((sourceLockId ? config.getSnapshot(authoritative, sourceLockId) : config.getSnapshot(authoritative)));
+					// The target holds a newer command than the source, so its
+					// state is the one to keep: push it the other way. Only when
+					// that is refused too do the engines need an operator.
+					const targetLockId = target === first ? firstLockId : secondLockId;
+					const newer = await timeoutRace(targetLockId ? config.getSnapshot(target, targetLockId) : config.getSnapshot(target));
 					try {
-						result = await timeoutRace(config.pushSnapshot(target, snapshot));
-					} catch (retryErr) {
-						if (retryErr instanceof SnapshotStaleError) {
+						result = await timeoutRace(config.pushSnapshot(authoritative, newer));
+					} catch (reverseErr) {
+						if (reverseErr instanceof SnapshotStaleError) {
 							clearTimeout(timeoutTimer);
-							// Only escalate if the gap didn't narrow. A narrowing gap means
-							// engines are still converging (fan-out latency during a busy
-							// show can 409 a snapshot on arrival without indicating
-							// genuine divergence). Stagnant or widening gap means divergence.
-							const retryGap = retryErr.currentSeq - retryErr.snapshotSeq;
-							if (retryGap >= firstGap) {
-								config.onStaleConflict?.(target, retryErr.snapshotSeq, retryErr.currentSeq);
-							}
+							config.onStaleConflict?.(authoritative, reverseErr.snapshotSeq, reverseErr.currentSeq);
 							return;
 						}
-						throw retryErr;
+						throw reverseErr;
 					}
 				} else {
 					throw pushErr;

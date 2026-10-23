@@ -7,7 +7,7 @@
  * in production when engines actually diverge.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createAutoReconcile, type AutoReconcileConfig } from './auto-reconcile';
+import { createAutoReconcile, SnapshotStaleError, type AutoReconcileConfig } from './auto-reconcile';
 
 interface TestConfig extends AutoReconcileConfig {
 	getSnapshot: ReturnType<typeof vi.fn> & AutoReconcileConfig['getSnapshot'];
@@ -99,6 +99,42 @@ describe('auto-reconcile integration', () => {
 				'audio channel "mic1" not found on target',
 				'clip player 2 state skipped',
 			]);
+		});
+	});
+
+	// ─── A command that reached one engine ───
+
+	describe('command on one engine only', () => {
+		// Two engines as the server keeps them: a push older than the target's
+		// last command is refused unless forced, and an applied push takes the
+		// snapshot's seq.
+		function engines() {
+			const state = { A: { program: 'cam1', seq: 100 }, B: { program: 'cam1', seq: 100 } };
+			return {
+				state,
+				getSnapshot: vi.fn().mockImplementation((e: 'A' | 'B') => Promise.resolve({ ...state[e] })),
+				pushSnapshot: vi.fn().mockImplementation((e: 'A' | 'B', snap: { program: string; seq: number }, opts?: { force: true }) => {
+					if (state[e].seq > snap.seq && !opts?.force) return Promise.reject(new SnapshotStaleError(snap.seq, state[e].seq));
+					state[e] = { program: snap.program, seq: Math.max(state[e].seq, snap.seq) };
+					return Promise.resolve({ warnings: [] });
+				}),
+			};
+		}
+
+		it('converges on the engine with the newer command, without an alarm', async () => {
+			const sim = engines();
+			sim.state.B = { program: 'cam2', seq: 200 }; // the cut reached B alone
+			const onStaleConflict = vi.fn();
+			const config = createTestConfig({ getSnapshot: sim.getSnapshot, pushSnapshot: sim.pushSnapshot, onStaleConflict });
+			const ar = createAutoReconcile(config);
+
+			// Authority is still held on A, which lacks the cut.
+			ar.onSyncStatusChange('diverged', 'A');
+			await vi.runAllTimersAsync();
+
+			expect(sim.state).toEqual({ A: { program: 'cam2', seq: 200 }, B: { program: 'cam2', seq: 200 } });
+			expect(onStaleConflict).not.toHaveBeenCalled();
+			expect(config.onRecoveryComplete).toHaveBeenCalledOnce();
 		});
 	});
 
