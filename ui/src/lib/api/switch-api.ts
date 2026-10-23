@@ -302,17 +302,21 @@ async function fanOutMutation(
 		return opts.body;
 	});
 
-	// Per-engine PTP timestamp injection (before fan-out so bodies[] has final values for retry)
+	// Per-engine PTP timestamp injection (before fan-out so bodies[] has final values for retry).
+	// One command carries one seq on every engine: the reconciler reads a seq
+	// that differs between engines as one engine having missed a command.
+	let commandSeq: number | undefined;
 	for (let i = 0; i < availableEngines.length; i++) {
 		const engine = availableEngines[i];
 		const engineBody = bodies[i];
 		if (isTimedPath(url) && dualTimestampProvider && engineBody && typeof engineBody === 'string') {
 			try {
 				const ts = dualTimestampProvider(engine.id);
+				commandSeq ??= ts.command_seq;
 				const nowUs = Date.now() * 1000;
 				if (ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000) {
 					const parsed = JSON.parse(engineBody as string);
-					bodies[i] = JSON.stringify({ ...parsed, ...ts });
+					bodies[i] = JSON.stringify({ ...parsed, ...ts, command_seq: commandSeq });
 				} else if (ts.execute_at === 0) {
 					console.warn(`[dual-api] Clock sync not converged for engine ${engine.id} — sending ${url} without PTP timestamp`);
 				}

@@ -372,20 +372,36 @@ describe('DualConnectionManager behavior', () => {
 	// ─── Command sequence ───
 
 	describe('command sequence', () => {
-		it('increments monotonically', () => {
+		afterEach(() => {
+			vi.useRealTimers();
+			vi.restoreAllMocks();
+		});
+
+		it('increases within a page, even within one millisecond', () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(1_800_000_000_000);
+			vi.spyOn(Math, 'random').mockReturnValueOnce(0.9).mockReturnValueOnce(0.1);
 			const dcm = createDualManager([{ id: 'A', url: 'https://a.example.com' }]);
 
 			const seq1 = dcm.nextCommandSeq();
 			const seq2 = dcm.nextCommandSeq();
-			const seq3 = dcm.nextCommandSeq();
 
-			expect(seq2).toBe(seq1 + 1);
-			expect(seq3).toBe(seq2 + 1);
+			expect(seq2).toBeGreaterThan(seq1);
 		});
 
-		it('starts from 1', () => {
-			const dcm = createDualManager([{ id: 'A', url: 'https://a.example.com' }]);
-			expect(dcm.nextCommandSeq()).toBe(1);
+		it('starts above the seqs an earlier page load sent', () => {
+			// Each engine rejects a seq it has executed before, so a reloaded
+			// page counting from 1 again had its timed commands refused.
+			vi.useFakeTimers();
+			vi.setSystemTime(1_800_000_000_000);
+			const earlier = createDualManager([{ id: 'A', url: 'https://a.example.com' }]);
+			let last = 0;
+			for (let i = 0; i < 100; i++) last = earlier.nextCommandSeq();
+
+			vi.setSystemTime(1_800_000_001_000);
+			const reloaded = createDualManager([{ id: 'A', url: 'https://a.example.com' }]);
+
+			expect(reloaded.nextCommandSeq()).toBeGreaterThan(last);
 		});
 	});
 

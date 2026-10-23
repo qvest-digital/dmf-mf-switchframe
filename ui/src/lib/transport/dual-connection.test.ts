@@ -443,25 +443,11 @@ describe('DualConnectionManager', () => {
 		});
 	});
 
-	describe('clock and command sequencing', () => {
+	describe('clock', () => {
 		it('exposes a ClockSync instance', () => {
 			const mgr = new DualConnectionManager(makeDualConfig());
 			expect(mgr.clock).toBeDefined();
 			expect(MockedClockSync).toHaveBeenCalledOnce();
-		});
-
-		it('nextCommandSeq increments monotonically', () => {
-			const mgr = new DualConnectionManager(makeDualConfig());
-			expect(mgr.nextCommandSeq()).toBe(1);
-			expect(mgr.nextCommandSeq()).toBe(2);
-			expect(mgr.nextCommandSeq()).toBe(3);
-		});
-
-		it('command sequence starts at 0 and increments on each call', () => {
-			const mgr = new DualConnectionManager(makeDualConfig());
-			const seq1 = mgr.nextCommandSeq();
-			const seq2 = mgr.nextCommandSeq();
-			expect(seq2).toBe(seq1 + 1);
 		});
 	});
 
