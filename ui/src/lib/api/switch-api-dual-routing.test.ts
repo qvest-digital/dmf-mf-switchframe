@@ -362,6 +362,21 @@ describe('switch-api dual-engine routing', () => {
 			}
 		});
 
+		it('sends one command with the same command_seq to both engines', async () => {
+			// The provider runs once per engine and hands out a new seq each
+			// time; A got N and B N+1, so every command read as B ahead of A.
+			let seq = 0;
+			setDualTimestampProvider(() => ({
+				execute_at: Date.now() * 1000 + 100_000,
+				command_seq: ++seq,
+			}));
+
+			await cut('cam1');
+
+			const seqs = fetchCalls.map(c => JSON.parse(c.opts.body as string).command_seq);
+			expect(seqs).toEqual([1, 1]);
+		});
+
 		it('injects on /api/switch/preview', async () => {
 			const realisticTs = Date.now() * 1000 + 1_000_000;
 			setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 1 }));

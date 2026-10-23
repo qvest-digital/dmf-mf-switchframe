@@ -223,8 +223,13 @@ export class DualConnectionManager {
 		this.reconciler.requestCheck();
 	}
 
+	/** A seq no other browser or earlier page load sends: an engine rejects
+	 * a seq it has executed before, and keeps that record across restarts.
+	 * Wall-clock microseconds, with random low digits for two browsers in the
+	 * same millisecond, kept increasing within this page. */
 	nextCommandSeq(): number {
-		return ++this._commandSeq;
+		this._commandSeq = Math.max(this._commandSeq + 1, Date.now() * 1000 + Math.floor(Math.random() * 1000));
+		return this._commandSeq;
 	}
 
 	/** Forward MoQ control data to the appropriate engine's connection manager. */
