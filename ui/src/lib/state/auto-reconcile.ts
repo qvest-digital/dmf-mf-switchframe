@@ -280,8 +280,10 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			const warnings = result.warnings ?? [];
 			config.onRecoveryComplete?.(warnings);
 
-			// Partial apply detection: if warnings present, check for remaining divergence
-			if (warnings.length > 0) {
+			// Partial apply detection: if warnings present, check for remaining divergence.
+			// Not after an operator push: a forced stale apply always warns, and a
+			// follow-up would run in the reconciler's direction, not the operator's.
+			if (warnings.length > 0 && !overrideStale) {
 				setTimeout(() => {
 					if (destroyed) return;
 					// First check critical (re-push immediately, bypass cooldown)
@@ -309,7 +311,8 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 				setTimeout(() => {
 					// Clear cooldown for the target so retry can proceed
 					lastPushTimes.delete(retryTarget);
-					executeSnapshotPush(currentAuthoritative);
+					// An operator push retries in the direction the operator chose.
+					executeSnapshotPush(overrideStale ? authoritative : currentAuthoritative, overrideStale);
 				}, delay);
 			}
 		} finally {
@@ -372,13 +375,16 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 	 *  cooldown. Used on engine discovery so the newly discovered engine
 	 *  catches up on commands it missed during the pre-discovery window,
 	 *  and for an operator's manual push, which overrides the target's
-	 *  newer state because the operator chose to overwrite it. */
-	function forceSnapshotPush(authoritative: EngineId, opts: { overrideStale?: boolean } = {}) {
-		if (destroyed) return;
+	 *  newer state because the operator chose to overwrite it.
+	 *  Returns false when it could not start because a push is already running. */
+	function forceSnapshotPush(authoritative: EngineId, opts: { overrideStale?: boolean } = {}): boolean {
+		if (destroyed) return false;
 		currentAuthoritative = authoritative;
 		clearPendingTimer();
+		if (pushInFlight) return false;
 		lastPushTimes.delete(otherEngine(authoritative));
 		executeSnapshotPush(authoritative, opts.overrideStale);
+		return true;
 	}
 
 	return {

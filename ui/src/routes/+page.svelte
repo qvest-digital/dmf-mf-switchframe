@@ -475,7 +475,12 @@
 	// for the reconcile locks both engines require; the outcome lands in the
 	// divergence log through its callbacks.
 	function handleForceReconcile(direction: 'AtoB' | 'BtoA') {
-		autoReconcile.forceSnapshotPush(direction === 'AtoB' ? 'A' : 'B', { overrideStale: true });
+		const [from, to] = direction === 'AtoB' ? ['A', 'B'] as const : ['B', 'A'] as const;
+		if (autoReconcile.forceSnapshotPush(from, { overrideStale: true })) {
+			divergenceLog.add({ type: 'snapshot', message: `Manual push ${from} -> ${to}` });
+		} else {
+			divergenceLog.add({ type: 'info', message: `Manual push ${from} -> ${to} not started: a snapshot push is already running` });
+		}
 	}
 
 	// Compare mode handler for RedundancyPanel

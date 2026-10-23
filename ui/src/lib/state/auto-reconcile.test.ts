@@ -129,6 +129,67 @@ describe('createAutoReconcile', () => {
 			reconcile.destroy();
 		});
 
+		it('retries a failed operator push in the operator\'s direction, forced', async () => {
+			// The push sets the status to recovering, and the page reports every
+			// status change with the reconciler's authority. A retry taking that
+			// authority pulled from the engine the operator chose to overwrite.
+			const pushSnapshot = vi.fn()
+				.mockRejectedValueOnce(new Error('network'))
+				.mockResolvedValue({ warnings: [] });
+			let reconcile!: ReturnType<typeof createAutoReconcile>;
+			const config = makeConfig({
+				pushSnapshot,
+				onRecoveryStart: vi.fn(() => reconcile.onSyncStatusChange('recovering', 'A')),
+			});
+			reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('B', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(3_100);
+
+			expect(config.getSnapshot).toHaveBeenNthCalledWith(1, 'B');
+			expect(config.getSnapshot).toHaveBeenNthCalledWith(2, 'B');
+			expect(pushSnapshot.mock.calls).toEqual([
+				['A', expect.anything(), { force: true }],
+				['A', expect.anything(), { force: true }],
+			]);
+
+			reconcile.destroy();
+		});
+
+		it('does not follow an operator push with a recheck push', async () => {
+			// A forced stale apply always returns a warning, which would start
+			// a recheck push in the reconciler's direction.
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockResolvedValue({ warnings: ['forced apply: snapshot seq 3 is behind engine seq 5'] }),
+				checkCriticalDivergence: () => true,
+				checkAnyDivergence: () => true,
+			});
+			const reconcile = createAutoReconcile(config);
+			reconcile.onSyncStatusChange('recovering', 'A');
+
+			reconcile.forceSnapshotPush('B', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(1_000);
+
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			reconcile.destroy();
+		});
+
+		it('reports an operator push it could not start', async () => {
+			let release!: () => void;
+			const config = makeConfig({
+				getSnapshot: vi.fn(() => new Promise((resolve) => { release = () => resolve({}); })),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			expect(reconcile.forceSnapshotPush('A')).toBe(true);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reconcile.forceSnapshotPush('B', { overrideStale: true })).toBe(false);
+
+			release();
+			reconcile.destroy();
+		});
+
 		it('does not override a stale target on an engine-discovery push', async () => {
 			const config = makeConfig();
 			const reconcile = createAutoReconcile(config);
