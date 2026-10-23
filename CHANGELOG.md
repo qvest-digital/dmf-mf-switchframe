@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.18](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.17...mxl-v1.0.0-rc.18) (2026-10-23)
+
+
+### Bug Fixes
+
+* **nmos:** take over every resource when re-registering the node ([#46](https://github.com/qvest-digital/dmf-mf-switchframe/issues/46)) ([6d64083](https://github.com/qvest-digital/dmf-mf-switchframe/commit/6d64083727793459c27b000bc3a719595c21c193))
+
 ## [1.0.0-rc.17](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.16...mxl-v1.0.0-rc.17) (2026-10-23)
 
 
