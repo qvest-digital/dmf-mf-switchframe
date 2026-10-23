@@ -392,6 +392,48 @@ describe('switch-api dual-engine routing', () => {
 			expect(commandLatency()).toEqual({ A: 10, B: null });
 		});
 
+		it('drops an engine\'s average once a command to it fails', async () => {
+			// An engine that stops answering would otherwise keep showing the
+			// round trip it had while healthy.
+			setPartialFailureNotify(() => {});
+			delay = { [A]: 10, [B]: 10 };
+			const first = cut('cam1');
+			await vi.advanceTimersByTimeAsync(10);
+			await first;
+			failB = true;
+			const second = cut('cam2');
+			await vi.advanceTimersByTimeAsync(10);
+			await second;
+
+			expect(commandLatency()).toEqual({ A: 10, B: null });
+		});
+
+		it('starts afresh for an engine re-provisioned at a new URL', async () => {
+			delay = { [A]: 10, [B]: 10 };
+			const done = cut('cam1');
+			await vi.advanceTimersByTimeAsync(10);
+			await done;
+
+			setEngineUrls([{ id: 'A', url: A }, { id: 'B', url: 'https://engine-b2.example.com' }]);
+
+			expect(commandLatency()).toEqual({ A: 10, B: null });
+		});
+
+		it('averages the last 20 commands', async () => {
+			delay = { [A]: 1000, [B]: 0 };
+			const slow = cut('cam1');
+			await vi.advanceTimersByTimeAsync(1000);
+			await slow;
+			delay = { [A]: 10, [B]: 0 };
+			for (let i = 0; i < 20; i++) {
+				const done = cut('cam1');
+				await vi.advanceTimersByTimeAsync(10);
+				await done;
+			}
+
+			expect(commandLatency().A).toBe(10);
+		});
+
 		it('leaves out a clip load, which waits on the engine reading the clip', async () => {
 			delay = { [A]: 5_000, [B]: 5_000 };
 			const done = clipPlayerLoadByName(1, 'bunny');
