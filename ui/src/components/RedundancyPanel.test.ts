@@ -377,14 +377,13 @@ describe('RedundancyPanel', () => {
 		const { container } = render(RedundancyPanel, {
 			props: makeDefaultProps({
 				audioComparison: [
-					{ channel: 'CH1', levelA: -12.5, levelB: -12.3, withinTolerance: true },
-					{ channel: 'CH2', levelA: -6.0, levelB: -18.0, withinTolerance: false },
+					{ channel: 'CH1', levelA: -12.5, levelB: -12.5, diff: [] },
+					{ channel: 'CH2', levelA: -6.0, levelB: -6.0, diff: ['mute', 'AFV'] },
 				],
 			}),
 		});
-		// Header should show out of tolerance
 		const text = container.textContent ?? '';
-		expect(text).toContain('1 out of tolerance');
+		expect(text).toContain('1 out of sync');
 
 		// Expand the section
 		const toggles = container.querySelectorAll('.section-toggle');
@@ -397,14 +396,15 @@ describe('RedundancyPanel', () => {
 		expect(expanded).toContain('CH1');
 		expect(expanded).toContain('CH2');
 		expect(expanded).toContain('-12.5dB');
-		expect(expanded).toContain('-18.0dB');
+		// Equal fader levels on a red row need the setting that differs.
+		expect(container.querySelector('.audio-ch-diff')?.textContent).toBe('mute, AFV differ');
 	});
 
-	it('shows audio in sync when all channels within tolerance', () => {
+	it('shows audio in sync when no channel differs', () => {
 		const { container } = render(RedundancyPanel, {
 			props: makeDefaultProps({
 				audioComparison: [
-					{ channel: 'CH1', levelA: -12.5, levelB: -12.3, withinTolerance: true },
+					{ channel: 'CH1', levelA: -12.5, levelB: -12.5, diff: [] },
 				],
 			}),
 		});

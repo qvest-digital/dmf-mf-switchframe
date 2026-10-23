@@ -49,7 +49,7 @@
 	import { createPFLToggle } from '$lib/audio/pfl-toggle';
 	import { createDivergenceLog } from '$lib/state/divergence-log.svelte';
 	import { createAutoReconcile } from '$lib/state/auto-reconcile';
-	import { detectAudioConfigDrift } from '$lib/util/audio-drift';
+	import { detectAudioConfigDrift, compareAudioChannels } from '$lib/util/audio-drift';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
 	import { createFastControl, type FastControl } from '$lib/transport/fast-control';
 	import { createDualFastControl } from '$lib/transport/dual-fast-control';
@@ -423,26 +423,10 @@
 		};
 	});
 
-	// Audio comparison for RedundancyPanel (per-channel peak level delta)
+	// Audio comparison for RedundancyPanel (per-channel mix settings)
 	const audioComparison = $derived.by(() => {
 		if (!isDualEngine || !connectionManager) return null;
-		const stateA = connectionManager.rawStates?.A;
-		const stateB = connectionManager.rawStates?.B;
-		if (!stateA?.audioChannels || !stateB?.audioChannels) return null;
-
-		const result: { channel: string; levelA: number; levelB: number; withinTolerance: boolean }[] = [];
-		for (const [key, chA] of Object.entries(stateA.audioChannels)) {
-			const chB = stateB.audioChannels[key];
-			if (!chB) continue;
-			const delta = Math.abs(chA.peakL - chB.peakL);
-			result.push({
-				channel: key,
-				levelA: chA.peakL,
-				levelB: chB.peakL,
-				withinTolerance: delta <= 3,
-			});
-		}
-		return result.length > 0 ? result : null;
+		return compareAudioChannels(connectionManager.rawStates?.A?.audioChannels, connectionManager.rawStates?.B?.audioChannels);
 	});
 
 	// Output status for RedundancyPanel (recording + destination state per engine)

@@ -2,14 +2,8 @@
 	import type { SyncHealth, SyncStatus, EngineHealthDetail } from '$lib/state/reconciler.svelte';
 	import type { DivergenceLogEntry } from '$lib/state/divergence-log.svelte';
 	import { authHeaders } from '$lib/api/switch-api';
+	import type { AudioChannelComparison } from '$lib/util/audio-drift';
 	import EngineDot from './EngineDot.svelte';
-
-	interface AudioChannelComparison {
-		channel: string;
-		levelA: number;
-		levelB: number;
-		withinTolerance: boolean;
-	}
 
 	interface OutputStatus {
 		recording: { A: boolean; B: boolean };
@@ -401,8 +395,8 @@
 			<button class="section-toggle" onclick={() => audioExpanded = !audioExpanded}>
 				<span class="toggle-arrow">{audioExpanded ? '\u25BE' : '\u25B8'}</span>
 				<span class="section-label inline">AUDIO SYNC</span>
-				{#if audioComparison && audioComparison.some(ch => !ch.withinTolerance)}
-					<span class="section-warn">{audioComparison.filter(ch => !ch.withinTolerance).length} out of tolerance</span>
+				{#if audioComparison && audioComparison.some(ch => ch.diff.length > 0)}
+					<span class="section-warn">{audioComparison.filter(ch => ch.diff.length > 0).length} out of sync</span>
 				{:else}
 					<span class="section-ok">Audio in sync {'\u2713'}</span>
 				{/if}
@@ -412,10 +406,13 @@
 					{#if audioComparison}
 						<div class="audio-comparison">
 							{#each audioComparison as ch}
-								<div class="audio-ch-row" class:out-of-tolerance={!ch.withinTolerance}>
+								<div class="audio-ch-row" class:out-of-tolerance={ch.diff.length > 0}>
 									<span class="audio-ch-name">{ch.channel}</span>
 									<span class="audio-ch-level mono">A: {ch.levelA.toFixed(1)}dB</span>
 									<span class="audio-ch-level mono">B: {ch.levelB.toFixed(1)}dB</span>
+									{#if ch.diff.length > 0}
+										<span class="audio-ch-diff">{ch.diff.join(', ')} differ</span>
+									{/if}
 								</div>
 							{/each}
 						</div>
@@ -1232,6 +1229,11 @@
 	.audio-ch-level {
 		font-size: 10px;
 		color: var(--text-secondary);
+	}
+
+	.audio-ch-diff {
+		font-size: 10px;
+		color: var(--tally-program, #dc2626);
 	}
 
 	/* Output states */
