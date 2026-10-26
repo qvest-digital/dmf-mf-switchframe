@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -969,12 +972,186 @@ func TestMXLNMOS_LeaderTakesBackTheNodeAFollowerRegisteredLast(t *testing.T) {
 	waitFor("follower that has not seen the leader yet", func(got []string) bool {
 		return slices.Contains(got[before:], atB)
 	})
-	b.SetPeerStateForTest(true, "a", 0)
-	waitFor("follower sees the leader", last(atA))
-	// And it stays there: neither engine registers it again.
+	// The leader reaches the follower, so it takes the node back while the
+	// follower still cannot reach it, and the follower, which only
+	// heartbeats once registered, leaves it there.
+	waitFor("leader takes the node back", last(atA))
 	settled := len(reg.nodes())
 	time.Sleep(3 * mxlNMOSHeartbeatInterval)
 	if got := reg.nodes(); len(got) != settled {
-		t.Errorf("registered %v after the node was back at %q", got[settled:], atA)
+		t.Fatalf("registered %v while the follower could not reach the leader", got[settled:])
+	}
+	b.SetPeerStateForTest(true, "a", 0)
+	time.Sleep(3 * mxlNMOSHeartbeatInterval)
+	if got := reg.nodes(); len(got) != settled {
+		t.Errorf("registered %v once the follower saw the leader", got[settled:])
+	}
+}
+
+// Two engines that cannot reach each other and both lead, as after a forced
+// takeover during a partition, each register the node. Neither may read the
+// other's href as a node to take back: each would register on every
+// heartbeat, and the record would swap engines for as long as they cannot
+// reach each other.
+func TestMXLNMOS_PartitionedLeadersDoNotTakeTheNodeFromEachOther(t *testing.T) {
+	withHeartbeatInterval(t, 100*time.Millisecond)
+	reg := &fakeRegistry{}
+	srv := httptest.NewServer(reg)
+	t.Cleanup(srv.Close)
+
+	a := engineOfPair(t, srv.URL, "a", "switcher-a.p-show", false, "b")
+	b := engineOfPair(t, srv.URL, "b", "switcher-b.p-show", false, "a")
+	b.BumpEpoch()
+	if a.Role() != peer.RoleLeader || b.Role() != peer.RoleLeader {
+		t.Fatalf("roles a=%v b=%v, want both leader", a.Role(), b.Role())
+	}
+	deadline := time.Now().Add(5 * mxlNMOSHeartbeatInterval)
+	for len(reg.nodes()) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("registered %v, want both engines", reg.nodes())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	settled := len(reg.nodes())
+	time.Sleep(10 * mxlNMOSHeartbeatInterval)
+	if got := reg.nodes(); len(got) != settled {
+		t.Errorf("registered %v after both engines had", got[settled:])
+	}
+}
+
+// An engine without a pair has no peer to take the node from, and no
+// poller to ask; it heartbeats without reading the node back.
+func TestMXLNMOS_StandaloneEngineHeartbeats(t *testing.T) {
+	withHeartbeatInterval(t, 100*time.Millisecond)
+	reg := &fakeRegistry{}
+	srv := httptest.NewServer(reg)
+	t.Cleanup(srv.Close)
+
+	tt := newNMOSTestApp(t, nil, func(a *App) {
+		a.cfg.MXLNMOS.RegistryURL = srv.URL
+		a.cfg.MXLNMOS.Host = "switcher.p-show"
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); tt.app.runMXLNMOSRegistration(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	time.Sleep(5 * mxlNMOSHeartbeatInterval)
+	if got := reg.nodes(); len(got) != 1 {
+		t.Errorf("registered %v, want once", got)
+	}
+}
+
+// scriptedRegistry is a registry whose Query API does not answer, whose
+// heartbeats fail when told to, and which counts both.
+type scriptedRegistry struct {
+	fakeRegistry
+	failHeartbeats atomic.Bool
+	heartbeats     atomic.Int32
+	queries        atomic.Int32
+}
+
+func (f *scriptedRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case strings.HasPrefix(r.URL.Path, "/x-nmos/query/"):
+		f.queries.Add(1)
+		<-r.Context().Done()
+	case strings.HasPrefix(r.URL.Path, "/x-nmos/registration/v1.3/health/"):
+		f.heartbeats.Add(1)
+		if f.failHeartbeats.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	default:
+		f.fakeRegistry.ServeHTTP(w, r)
+	}
+}
+
+func withQueryTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := mxlNMOSQueryTimeout
+	mxlNMOSQueryTimeout = d
+	t.Cleanup(func() { mxlNMOSQueryTimeout = old })
+}
+
+// The leader's read of its node waits its own short budget, not the
+// client's, which would add its whole timeout to every heartbeat cycle
+// while the Query API does not answer.
+func TestMXLNMOS_SlowQueryAPIDoesNotHoldHeartbeatsBack(t *testing.T) {
+	withHeartbeatInterval(t, 100*time.Millisecond)
+	withQueryTimeout(t, 50*time.Millisecond)
+	reg := &scriptedRegistry{}
+	srv := httptest.NewServer(reg)
+	t.Cleanup(srv.Close)
+
+	engineOfPair(t, srv.URL, "a", "switcher-a.p-show", true, "b")
+	time.Sleep(20 * mxlNMOSHeartbeatInterval)
+	if got := reg.heartbeats.Load(); got < 10 {
+		t.Errorf("%d heartbeats in 20 intervals", got)
+	}
+}
+
+// A heartbeat that fails says nothing about where the node is held, so the
+// leader does not read it back until a heartbeat lands again.
+func TestMXLNMOS_FailedHeartbeatIsNotFollowedByARead(t *testing.T) {
+	withHeartbeatInterval(t, 100*time.Millisecond)
+	withQueryTimeout(t, 10*time.Millisecond)
+	reg := &scriptedRegistry{}
+	reg.failHeartbeats.Store(true)
+	srv := httptest.NewServer(reg)
+	t.Cleanup(srv.Close)
+
+	engineOfPair(t, srv.URL, "a", "switcher-a.p-show", true, "b")
+	time.Sleep(10 * mxlNMOSHeartbeatInterval)
+	if reg.heartbeats.Load() == 0 {
+		t.Fatal("no heartbeats")
+	}
+	if got := reg.queries.Load(); got != 0 {
+		t.Errorf("%d reads after failed heartbeats", got)
+	}
+}
+
+// lockedBuffer is a log sink the registration loop can write while the
+// test reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// A leader that stops reading its node back, because its peer went out of
+// reach, has read nothing, so an unreadable Query API is not reported as
+// readable again.
+func TestMXLNMOS_SkippedReadDoesNotReportTheQueryAPIBack(t *testing.T) {
+	withHeartbeatInterval(t, 100*time.Millisecond)
+	withQueryTimeout(t, 10*time.Millisecond)
+	logged := &lockedBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	reg := &scriptedRegistry{}
+	srv := httptest.NewServer(reg)
+	t.Cleanup(srv.Close)
+
+	a := engineOfPair(t, srv.URL, "a", "switcher-a.p-show", true, "b")
+	waitFor(t, "unreadable node reported", func() bool {
+		return strings.Contains(logged.String(), "registered node not readable")
+	})
+	a.SetPeerStateForTest(false, "b", 0)
+	time.Sleep(5 * mxlNMOSHeartbeatInterval)
+	if strings.Contains(logged.String(), "readable again") {
+		t.Errorf("reported readable again without a read:\n%s", logged.String())
 	}
 }
