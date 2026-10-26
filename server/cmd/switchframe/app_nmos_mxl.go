@@ -934,6 +934,9 @@ func (a *App) runMXLNMOSRegistration(ctx context.Context) {
 				if errors.Is(err, nmos.ErrNodeNotFound) {
 					n.setRegistered(false)
 				}
+			} else if a.mxlNMOSHeldByPeer(ctx) {
+				slog.Info("mxl nmos: registry holds the node at the peer's href, registering anew")
+				n.setRegistered(false)
 			}
 		}
 		select {
@@ -942,6 +945,30 @@ func (a *App) runMXLNMOSRegistration(ctx context.Context) {
 		case <-tick.C:
 		}
 	}
+}
+
+// mxlNMOSHeldByPeer reports whether the leader finds the node registered at
+// another href than its own. A follower that could not reach the leader
+// registers at its own href, and its view of the peer need not change when
+// the leader's does: a leader that restarts reaches the follower and
+// registers before the follower notices it is back, and the follower's
+// registration then lands last. The leader's heartbeats would keep that
+// record alive, href and device controls naming the follower, for as long
+// as both run. Only a leader that reaches its peer checks, so two engines
+// that cannot reach each other and both take themselves for leader do not
+// take the node from each other on every heartbeat.
+func (a *App) mxlNMOSHeldByPeer(ctx context.Context) bool {
+	n := a.mxlNMOS
+	if n.query == nil || a.peerPoller.Role() != peer.RoleLeader || !a.peerPoller.PeerReachable() {
+		return false
+	}
+	node := n.store.GetNode()
+	href, err := n.query.NodeHref(ctx, node.ID)
+	if err != nil {
+		slog.Debug("mxl nmos: registered node not readable", "error", err)
+		return false
+	}
+	return href != node.Href
 }
 
 func (n *mxlNMOS) setRegistered(v bool) {

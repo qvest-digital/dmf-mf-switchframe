@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -689,15 +690,27 @@ func TestRegistersMXLNMOS_UnknownRoleDoesNotRegister(t *testing.T) {
 // fakeRegistry records which node each registration of a node resource
 // advertised, in order, and the controls href of each device it holds.
 // Like an IS-04 registry it refuses a resource whose version is older than
-// the one it holds.
+// the one it holds, and its Query API serves the node at the href held.
 type fakeRegistry struct {
 	mu       sync.Mutex
 	hrefs    []string
+	held     map[string]string
 	versions map[string]string
 	controls map[string]string
 }
 
 func (f *fakeRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if id, ok := strings.CutPrefix(r.URL.Path, "/x-nmos/query/v1.3/nodes/"); ok {
+		f.mu.Lock()
+		href, ok := f.held[id]
+		f.mu.Unlock()
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": id, "href": href})
+		return
+	}
 	if r.URL.Path != "/x-nmos/registration/v1.3/resource" {
 		w.WriteHeader(http.StatusOK) // heartbeats
 		return
@@ -717,7 +730,7 @@ func (f *fakeRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.versions == nil {
-		f.versions, f.controls = map[string]string{}, map[string]string{}
+		f.versions, f.controls, f.held = map[string]string{}, map[string]string{}, map[string]string{}
 	}
 	if held, ok := f.versions[res.ID]; ok && nmos.CompareVersions(res.Version, held) < 0 {
 		w.WriteHeader(http.StatusBadRequest)
@@ -727,6 +740,7 @@ func (f *fakeRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch body.Type {
 	case "node":
 		f.hrefs = append(f.hrefs, res.ID+" "+res.Href)
+		f.held[res.ID] = res.Href
 	case "device":
 		if len(res.Controls) > 0 {
 			f.controls[res.ID] = res.Controls[0].Href
@@ -901,7 +915,7 @@ func TestMXLNMOS_TakeoverReplacesEveryResourceOfTheOtherEngine(t *testing.T) {
 
 	b := engineOfPair(t, srv.URL, "b", "switcher-b.p-show", true, "a")
 	time.Sleep(2 * time.Millisecond)
-	engineOfPair(t, srv.URL, "a", "switcher-a.p-show", true, "b")
+	a := engineOfPair(t, srv.URL, "a", "switcher-a.p-show", true, "b")
 	waitControl := func(want, what string) {
 		t.Helper()
 		deadline := time.Now().Add(5 * mxlNMOSHeartbeatInterval)
@@ -914,6 +928,53 @@ func TestMXLNMOS_TakeoverReplacesEveryResourceOfTheOtherEngine(t *testing.T) {
 	}
 	waitControl("http://switcher-a.p-show:1/x-nmos/connection/v1.1/", "healthy pair")
 
+	// Engine a is down: it reaches nothing, and engine b cannot reach it.
+	a.SetPeerStateForTest(false, "b", 0)
 	b.SetPeerStateForTest(false, "a", 0)
 	waitControl("http://switcher-b.p-show:1/x-nmos/connection/v1.1/", "engine a down")
+}
+
+// A leader that restarts reaches the follower before the follower notices
+// it is back, so the follower's registration at its own href can land after
+// the leader's, and the leader's view of its peer never changes again. The
+// leader takes the node back; otherwise its heartbeats keep the record
+// naming the follower, and once the follower goes the registry points
+// controllers at a Connection API that is gone.
+func TestMXLNMOS_LeaderTakesBackTheNodeAFollowerRegisteredLast(t *testing.T) {
+	withHeartbeatInterval(t, 100*time.Millisecond)
+	reg := &fakeRegistry{}
+	srv := httptest.NewServer(reg)
+	t.Cleanup(srv.Close)
+
+	node := nmos.DeriveID(nmosSeed, "node")
+	atA, atB := node+" http://switcher-a.p-show:1/", node+" http://switcher-b.p-show:1/"
+	waitFor := func(what string, done func([]string) bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * mxlNMOSHeartbeatInterval)
+		for !done(reg.nodes()) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: registered %v", what, reg.nodes())
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	last := func(want string) func([]string) bool {
+		return func(got []string) bool { return len(got) > 0 && got[len(got)-1] == want }
+	}
+
+	engineOfPair(t, srv.URL, "a", "switcher-a.p-show", true, "b")
+	waitFor("leader up", last(atA))
+	before := len(reg.nodes())
+	b := engineOfPair(t, srv.URL, "b", "switcher-b.p-show", false, "a")
+	waitFor("follower that has not seen the leader yet", func(got []string) bool {
+		return slices.Contains(got[before:], atB)
+	})
+	b.SetPeerStateForTest(true, "a", 0)
+	waitFor("follower sees the leader", last(atA))
+	// And it stays there: neither engine registers it again.
+	settled := len(reg.nodes())
+	time.Sleep(3 * mxlNMOSHeartbeatInterval)
+	if got := reg.nodes(); len(got) != settled {
+		t.Errorf("registered %v after the node was back at %q", got[settled:], atA)
+	}
 }
