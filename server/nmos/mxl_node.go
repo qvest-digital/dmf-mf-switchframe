@@ -82,6 +82,17 @@ func (c *QueryClient) get(ctx context.Context, kind, id string, out any) error {
 	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
 }
 
+// NodeHref is the href the registry holds for the node.
+func (c *QueryClient) NodeHref(ctx context.Context, nodeID string) (string, error) {
+	var node struct {
+		Href string `json:"href"`
+	}
+	if err := c.get(ctx, "nodes", nodeID, &node); err != nil {
+		return "", err
+	}
+	return node.Href, nil
+}
+
 // SenderLabel is what a sender carries, for showing the operator what an
 // input is connected to: the label of the sender's source, or of its flow
 // or of the sender itself where the one before is empty or cannot be read.

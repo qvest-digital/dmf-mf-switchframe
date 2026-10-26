@@ -905,6 +905,7 @@ func (a *App) runMXLNMOSRegistration(ctx context.Context) {
 	tick := time.NewTicker(mxlNMOSHeartbeatInterval)
 	defer tick.Stop()
 	peerWasReachable := true
+	queryFailing := false
 	for {
 		// A peer that was unreachable may have registered the node at its
 		// own href meanwhile, and a heartbeat keeps the href as it is, so
@@ -936,6 +937,24 @@ func (a *App) runMXLNMOSRegistration(ctx context.Context) {
 				if errors.Is(err, nmos.ErrNodeNotFound) {
 					n.setRegistered(false)
 				}
+				break
+			}
+			if !a.readsMXLNMOSBack() {
+				break
+			}
+			held, err := a.mxlNMOSHeldByPeer(ctx)
+			switch {
+			case err != nil && !queryFailing:
+				// Without the Query API a follower's registration is not
+				// taken back, which nothing else shows.
+				slog.Warn("mxl nmos: registered node not readable", "error", err)
+			case err == nil && queryFailing:
+				slog.Info("mxl nmos: registered node readable again")
+			}
+			queryFailing = err != nil
+			if held {
+				slog.Info("mxl nmos: registry holds the node at the peer's href, registering anew")
+				n.setRegistered(false)
 			}
 		}
 		select {
@@ -945,6 +964,40 @@ func (a *App) runMXLNMOSRegistration(ctx context.Context) {
 		}
 	}
 }
+
+// readsMXLNMOSBack reports whether the engine reads its node back after a
+// heartbeat. A follower that could not reach the leader registers at its
+// own href, and its view of the peer need not change when the leader's
+// does: a leader that restarts reaches the follower and registers before
+// the follower notices it is back, and the follower's registration then
+// lands last. The leader's heartbeats would keep that record alive, href
+// and device controls naming the follower, for as long as both run. Only a
+// leader that reaches its peer reads, so two engines that cannot reach
+// each other and both take themselves for leader do not take the node from
+// each other on every heartbeat.
+func (a *App) readsMXLNMOSBack() bool {
+	return a.mxlNMOS.query != nil && a.peerPoller.Role() == peer.RoleLeader && a.peerPoller.PeerReachable()
+}
+
+// mxlNMOSHeldByPeer reports whether the registry holds the node at another
+// href than this engine's. The read has a budget of its own, as it runs
+// between heartbeats: a Query API that does not answer would otherwise add
+// the client's whole timeout to the cycle.
+func (a *App) mxlNMOSHeldByPeer(ctx context.Context) (bool, error) {
+	n := a.mxlNMOS
+	ctx, cancel := context.WithTimeout(ctx, mxlNMOSQueryTimeout)
+	defer cancel()
+	node := n.store.GetNode()
+	href, err := n.query.NodeHref(ctx, node.ID)
+	if err != nil {
+		return false, err
+	}
+	return href != node.Href, nil
+}
+
+// mxlNMOSQueryTimeout bounds the leader's read of its node, which runs
+// between heartbeats.
+var mxlNMOSQueryTimeout = 2 * time.Second
 
 func (n *mxlNMOS) setRegistered(v bool) {
 	n.mu.Lock()

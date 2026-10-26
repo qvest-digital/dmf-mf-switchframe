@@ -70,3 +70,22 @@ func TestQueryClient_SenderLabel(t *testing.T) {
 		t.Error("unknown sender: no error")
 	}
 }
+
+// The registering engine compares the href the registry holds with its own,
+// so a missing node has to fail rather than read as an empty href.
+func TestQueryClient_NodeHref(t *testing.T) {
+	srv := queryServer(t, map[string]string{
+		"/x-nmos/query/v1.3/nodes/n1": `{"id":"n1","href":"http://switcher-b.p-show:8092/"}`,
+	})
+	c := NewQueryClient(srv.URL)
+	got, err := c.NodeHref(context.Background(), "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "http://switcher-b.p-show:8092/"; got != want {
+		t.Errorf("href %q, want %q", got, want)
+	}
+	if _, err := c.NodeHref(context.Background(), "missing"); err == nil {
+		t.Error("unknown node: no error")
+	}
+}
