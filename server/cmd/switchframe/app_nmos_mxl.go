@@ -290,7 +290,9 @@ func (a *App) buildMXLNMOSResources(n *mxlNMOS) error {
 		flow string
 	}
 	var initial []booked
-	var rxIDs []string
+	// IS-04 has the device list its receivers as an array, an empty one
+	// for a booking without named inputs; a registry refuses a null.
+	rxIDs := []string{}
 	for _, spec := range specs {
 		essences := []mxlEssence{essenceVideo, essenceAudio}
 		if spec.Data != "" {

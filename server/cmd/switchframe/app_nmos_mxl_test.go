@@ -240,6 +240,23 @@ func TestMXLNMOS_ReceiversPerNamedInput(t *testing.T) {
 // A controller's connection moves the input's reader, labels the input
 // after what is connected, publishes the subscription and reaches the peer
 // engine.
+// A booking without named MXL inputs has no receivers. IS-04 requires the
+// device's receivers to be an array, so a null there has the registry
+// refuse the device with 400, and the switcher is never registered.
+func TestMXLNMOS_DeviceWithoutNamedInputsListsNoReceivers(t *testing.T) {
+	tt := newNMOSTestApp(t, nil, func(a *App) { a.cfg.MXLSources = nil })
+	var devices []map[string]json.RawMessage
+	tt.getJSON(t, "/x-nmos/node/v1.3/devices/", &devices)
+	if len(devices) != 1 {
+		t.Fatalf("%d devices, want 1", len(devices))
+	}
+	for _, key := range []string{"receivers", "senders"} {
+		if got := string(devices[0][key]); got != "[]" {
+			t.Errorf("device %s %s, want []", key, got)
+		}
+	}
+}
+
 func TestMXLNMOS_ControllerConnectsInput(t *testing.T) {
 	const q = "/x-nmos/query/v1.3/"
 	query := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
