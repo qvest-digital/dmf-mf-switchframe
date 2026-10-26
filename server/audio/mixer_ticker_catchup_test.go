@@ -165,15 +165,11 @@ func TestOutputTicker_CloseStopsCatchUpBurst(t *testing.T) {
 	})
 	close(ready)
 
-	for {
+	require.Eventually(t, func() bool {
 		mu.Lock()
-		n := outputCount
-		mu.Unlock()
-		if n >= 2 {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+		defer mu.Unlock()
+		return outputCount >= 2
+	}, 2*time.Second, time.Millisecond, "the ticker never reached the first frame of the catch-up burst")
 	require.NoError(t, m.Close())
 
 	mu.Lock()

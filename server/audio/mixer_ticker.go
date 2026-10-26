@@ -49,11 +49,11 @@ func (m *Mixer) outputTicker(start time.Time) {
 			}
 		burst:
 			for i := 0; i < frames; i++ {
-				// A tick that costs more than the interval keeps every
-				// burst at the cap, and select picks at random between a
-				// closed stopTicker and a ready ticker, so without this
-				// check Close waits out whole bursts. The frames left
-				// unproduced are counted as dropped.
+				// Close must not wait for a burst: a tick that costs more
+				// than the interval keeps every burst at the cap, and
+				// select picks at random between a closed stopTicker and
+				// a ready ticker. Frames left unproduced are counted as
+				// dropped.
 				select {
 				case <-m.stopTicker:
 					m.tickerFramesDropped.Add(int64(frames - i))
