@@ -15,6 +15,11 @@ import (
 // --initial-program-source to deliver frames before it takes another source.
 const initialSourceGrace = 10 * time.Second
 
+// leaderWait is how long an engine that does not lead waits for its leader
+// to go on air: the leader's grace for its initial source, plus two peer
+// polls to see it.
+const leaderWait = initialSourceGrace + 10*time.Second
+
 // startupEngine is the App as peer.RunStartup drives it.
 type startupEngine struct {
 	app *App
@@ -68,16 +73,17 @@ func (e *startupEngine) GoLive(ctx context.Context) bool {
 }
 
 // initialProgramSource picks the source an engine with no peer to follow
-// goes live on: configured once it delivers frames, else, with configured
-// empty or graceOver, the first input delivering frames in source order. An
-// input is an MXL, SRT or demo source; the built-ins, which are virtual,
-// clips, replay and playout are not. "" while there is none.
+// goes live on: configured, any source including a built-in, once it
+// delivers frames, else, with configured empty or graceOver, the first
+// input delivering frames in source order. An input is an MXL, SRT or demo
+// source; the built-ins, which are virtual, clips, replay and playout are
+// not. "" while there is none.
 func initialProgramSource(configured string, sources map[string]internal.SourceInfo, graceOver bool) string {
-	healthy := func(key string, s internal.SourceInfo) bool {
-		return s.Status == string(switcher.SourceHealthy) && !s.IsVirtual && isInputSource(key)
+	healthy := func(s internal.SourceInfo) bool {
+		return s.Status == string(switcher.SourceHealthy)
 	}
 	if configured != "" {
-		if s, ok := sources[configured]; ok && healthy(configured, s) {
+		if s, ok := sources[configured]; ok && healthy(s) {
 			return configured
 		}
 		if !graceOver {
@@ -86,7 +92,7 @@ func initialProgramSource(configured string, sources map[string]internal.SourceI
 	}
 	var keys []string
 	for key, s := range sources {
-		if healthy(key, s) {
+		if healthy(s) && !s.IsVirtual && isInputSource(key) {
 			keys = append(keys, key)
 		}
 	}

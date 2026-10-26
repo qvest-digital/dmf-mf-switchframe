@@ -2115,7 +2115,15 @@ func (a *App) Run(ctx context.Context) error {
 
 	// On air without an operator cut: on a peer's program, else on a
 	// source of this engine's own.
-	go peer.RunStartup(a.bgCtx, a.peerPoller, &startupEngine{app: a}, a.cfg.APIToken, time.Second)
+	a.bgWG.Add(1)
+	go func() {
+		defer a.bgWG.Done()
+		peer.RunStartup(a.bgCtx, a.peerPoller, &startupEngine{app: a}, peer.StartupConfig{
+			Token:      a.cfg.APIToken,
+			Tick:       time.Second,
+			LeaderWait: leaderWait,
+		})
+	}()
 
 	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).
 	stopAdmin, _ := StartAdminServer(ctx, a.cfg.AdminAddr, a.advertisedAddr(), a.cert.FingerprintBase64(), a.externalCert, a.cfg.AdminToken)

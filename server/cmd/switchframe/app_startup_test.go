@@ -38,7 +38,7 @@ func TestInitialProgramSource(t *testing.T) {
 		{"configured input not delivering yet", "mxl:cam1", sources, false, ""},
 		{"configured input still silent after the grace", "mxl:cam1", sources, true, "mxl:cam2"},
 		{"configured key no input has", "mxl:typo", sources, true, "mxl:cam2"},
-		{"configured key is no input", "source:black", sources, false, ""},
+		{"configured built-in", "source:black", sources, false, "source:black"},
 		{"no input delivering", "", map[string]internal.SourceInfo{"mxl:cam1": src("offline", 0), "source:colorbars": {Status: "healthy", IsVirtual: true}}, true, ""},
 		{"key breaks a position tie", "", map[string]internal.SourceInfo{"srt:b": src("healthy", 0), "mxl:a": src("healthy", 0), "cam1": src("healthy", 1)}, false, "mxl:a"},
 		{"demo camera", "", map[string]internal.SourceInfo{"cam1": src("healthy", 0)}, false, "cam1"},
