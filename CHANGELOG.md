@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.21](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.20...mxl-v1.0.0-rc.21) (2026-10-26)
+
+
+### Features
+
+* **peer:** put the program on air at start, following a live peer ([#61](https://github.com/qvest-digital/dmf-mf-switchframe/issues/61)) ([561d5cf](https://github.com/qvest-digital/dmf-mf-switchframe/commit/561d5cfafcaa9d01178f84a84860901817172728))
+
 ## [1.0.0-rc.20](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.19...mxl-v1.0.0-rc.20) (2026-10-23)
 
 
