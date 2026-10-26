@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0-rc.22](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.21...mxl-v1.0.0-rc.22) (2026-10-26)
+
+
+### Bug Fixes
+
+* **nmos:** list no receivers as an empty array, not null ([#64](https://github.com/qvest-digital/dmf-mf-switchframe/issues/64)) ([f05cf85](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f05cf8524362c92550d5520e9e5c256d2b3543e5))
+* **nmos:** take the node back from a follower that registered last ([#63](https://github.com/qvest-digital/dmf-mf-switchframe/issues/63)) ([d0ea1f6](https://github.com/qvest-digital/dmf-mf-switchframe/commit/d0ea1f65be0119a06e110530f125a4ecc2af4c5b))
+
 ## [1.0.0-rc.21](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.20...mxl-v1.0.0-rc.21) (2026-10-26)
 
 
