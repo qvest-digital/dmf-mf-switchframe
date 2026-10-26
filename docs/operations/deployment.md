@@ -331,6 +331,8 @@ WantedBy=multi-user.target
 
 Two engines run in different regions; the `--engine-label a` and `--engine-label b` flags identify them. Each engine has `--peer-engine-url` pointing at the other so they can health-poll each other. A control plane — lightweight HTTP service, not in this repo — issues commands authorized with `--control-plane-secret`. Commands carry a PTP timestamp for deterministic execution order; the [`cmdqueue`](../../server/cmdqueue/queue.go) subsystem drains them at the scheduled time. Split-brain is prevented by an explicit engine-label guard on destination starts and by the control-plane secret gate on `POST /api/peer/force-leader`.
 
+An engine goes on air at start without an operator cut. When its peer is on air, it reads the peer's state snapshot (`GET /api/sync/state-snapshot`, with the API token both engines share) and applies it, then checks on the next peer poll that both carry the same program, following again if the peer cut meanwhile; this holds for a restarted engine whatever its label. With no peer on air, the leader by the role tiebreak goes live on `--initial-program-source`, or the first input delivering frames, and the other engine waits for it and follows. An engine whose peer is unreachable goes live alone. Both engines write MXL program grains at the wall-clock grain index, so an engine that follows writes the same indices as its peer.
+
 See [metrics.md](../reference/metrics.md) for the `switchframe_cmdqueue_*` and `switchframe_snapshot_*` metric families that expose active-active health.
 
 ## Key types and entry points
