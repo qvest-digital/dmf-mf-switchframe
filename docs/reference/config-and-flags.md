@@ -218,6 +218,7 @@ switchframe --mxl-domain /run/mxl/domain \
 | `--peer-public-url` | string | `""` (env `SWITCHFRAME_PEER_PUBLIC_URL`) | Peer engine origin as the browser reaches it, handed to the UI as its second engine. Empty: `--peer-engine-url`. Set when engines poll each other on an internal address |
 | `--engine-label` | string | `""` (env `SWITCHFRAME_ENGINE_LABEL`) | `"a"`, `"b"`, or `""` (single-engine). Other values rejected |
 | `--control-plane-secret` | string | `""` (env `SWITCHFRAME_CONTROL_PLANE_SECRET`) | Shared secret authorizing `POST /api/peer/force-leader`. Empty disables endpoint |
+| `--initial-program-source` | string | `""` (env `SWITCHFRAME_INITIAL_PROGRAM_SOURCE`) | Source key put on air at start when no peer engine is on air to follow, e.g. `mxl:cam1` or `source:colorbars`. Empty, or no frames from it within 10s: the first input delivering frames, in source order. An engine whose peer is on air takes the peer's state instead, read with this engine's API token, so both engines need the same `--api-token` |
 
 ### Single sign-on (OpenID Connect)
 
@@ -255,6 +256,7 @@ Most env vars are flag overrides or fallbacks. A few are low-level runtime knobs
 | `SWITCHFRAME_MXL_SOURCES` | `--mxl-sources` | Comma-separated MXL source specs |
 | `SWITCHFRAME_PEER_ENGINE_URL` | `--peer-engine-url` | Peer engine URL for active-active |
 | `SWITCHFRAME_ENGINE_LABEL` | `--engine-label` | Engine label for active-active pairs |
+| `SWITCHFRAME_INITIAL_PROGRAM_SOURCE` | `--initial-program-source` | Source put on air at start with no peer to follow |
 
 ### Runtime knobs
 

@@ -51,6 +51,12 @@ type PeerStatus struct {
 	PeerLabel      string
 	PeerEpoch      uint64
 	PeerInstanceID string
+
+	// PolledAt is when the last completed poll was sent, and SeenPolledAt
+	// when the last successful one was: what a poll reports is known to be
+	// no older than when it was sent, not than when it came back.
+	PolledAt     time.Time
+	SeenPolledAt time.Time
 }
 
 // Option configures a HealthPoller.
@@ -153,6 +159,8 @@ type HealthPoller struct {
 	peerLabel      string
 	peerEpoch      uint64
 	peerInstanceID string
+	polledAt       time.Time
+	seenPolledAt   time.Time
 
 	cancel  context.CancelFunc
 	stopped atomic.Bool
@@ -226,6 +234,8 @@ func (p *HealthPoller) Status() PeerStatus {
 		PeerLabel:      p.peerLabel,
 		PeerEpoch:      p.peerEpoch,
 		PeerInstanceID: p.peerInstanceID,
+		PolledAt:       p.polledAt,
+		SeenPolledAt:   p.seenPolledAt,
 	}
 }
 
@@ -400,37 +410,43 @@ func (p *HealthPoller) loop(ctx context.Context) {
 }
 
 func (p *HealthPoller) poll(ctx context.Context) {
+	sent := time.Now()
 	url := p.peerURL + "/api/peer/health"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		p.recordFailure(fmt.Sprintf("create request: %v", err))
+		p.recordFailureAt(sent, fmt.Sprintf("create request: %v", err))
 		return
 	}
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.recordFailure(fmt.Sprintf("request failed: %v", err))
+		p.recordFailureAt(sent, fmt.Sprintf("request failed: %v", err))
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		p.recordFailure(fmt.Sprintf("status %d", resp.StatusCode))
+		p.recordFailureAt(sent, fmt.Sprintf("status %d", resp.StatusCode))
 		return
 	}
 
 	var health HealthResponse
 	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
-		p.recordFailure(fmt.Sprintf("decode: %v", err))
+		p.recordFailureAt(sent, fmt.Sprintf("decode: %v", err))
 		return
 	}
 
-	p.recordSuccess(health)
+	p.recordSuccessAt(sent, health)
 }
 
 func (p *HealthPoller) recordSuccess(health HealthResponse) {
+	p.recordSuccessAt(time.Now(), health)
+}
+
+func (p *HealthPoller) recordSuccessAt(sent time.Time, health HealthResponse) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.polledAt, p.seenPolledAt = sent, sent
 
 	wasUnreachable := !p.reachable && p.consecFailures > 0
 	priorPeerEpoch := p.peerEpoch
@@ -475,7 +491,12 @@ func (p *HealthPoller) recordSuccess(health HealthResponse) {
 }
 
 func (p *HealthPoller) recordFailure(reason string) {
+	p.recordFailureAt(time.Now(), reason)
+}
+
+func (p *HealthPoller) recordFailureAt(sent time.Time, reason string) {
 	p.mu.Lock()
+	p.polledAt = sent
 	p.consecFailures++
 	justWentDown := p.consecFailures >= p.failureThreshold && p.reachable
 	if justWentDown {

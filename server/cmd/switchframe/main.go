@@ -178,6 +178,11 @@ type AppConfig struct {
 	// authorize force-takeover. Empty disables the endpoint (returns 501).
 	ControlPlaneSecret string // --control-plane-secret or SWITCHFRAME_CONTROL_PLANE_SECRET
 
+	// InitialProgramSource is the source key an engine goes live on at
+	// start when no peer is on air to follow. Empty: the first input that
+	// delivers frames.
+	InitialProgramSource string // --initial-program-source or SWITCHFRAME_INITIAL_PROGRAM_SOURCE
+
 	// Reference clock: single clock source drives synchronous A/V processing.
 	RefClock bool // --ref-clock (experimental)
 
@@ -429,6 +434,7 @@ func parseConfig() (AppConfig, error) {
 	peerCertHashFlag := flag.String("peer-cert-hash", "", "SHA-256 hex of the peer engine's leaf cert DER (comma-separated pair during rotation); required when --peer-engine-url uses a private IP")
 	engineLabelFlag := flag.String("engine-label", "", "engine label for active-active pairs (\"a\" or \"b\"); empty = single-engine")
 	controlPlaneSecretFlag := flag.String("control-plane-secret", "", "shared secret authorizing POST /api/peer/force-leader; empty disables the endpoint")
+	initialProgramSourceFlag := flag.String("initial-program-source", "", "source key put on air at start when no peer engine is on air to follow, e.g. mxl:cam1; empty = the first input delivering frames (env: SWITCHFRAME_INITIAL_PROGRAM_SOURCE)")
 
 	// OpenID Connect sign-in.
 	oidcIssuerFlag := flag.String("oidc-issuer", "", "OpenID Connect issuer URL; enables sign-in with that provider (env: SWITCHFRAME_OIDC_ISSUER)")
@@ -643,12 +649,13 @@ func parseConfig() (AppConfig, error) {
 			PeerOutputVideoDef: resolveEnvOrFlag(*mxlNMOSPeerVideoDefFlag, "SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_VIDEO_DEF"),
 			PeerOutputAudioDef: resolveEnvOrFlag(*mxlNMOSPeerAudioDefFlag, "SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_AUDIO_DEF"),
 		},
-		PeerCertHash:       resolveEnvOrFlag(*peerCertHashFlag, "SWITCHFRAME_PEER_CERT_HASH"),
-		PeerPublicURL:      resolveEnvOrFlag(*peerPublicURLFlag, "SWITCHFRAME_PEER_PUBLIC_URL"),
-		EngineLabel:        resolveEnvOrFlag(*engineLabelFlag, "SWITCHFRAME_ENGINE_LABEL"),
-		ControlPlaneSecret: resolveEnvOrFlag(*controlPlaneSecretFlag, "SWITCHFRAME_CONTROL_PLANE_SECRET"),
-		RefClock:           *refClockFlag,
-		WarmCache:          *warmCacheFlag,
+		PeerCertHash:         resolveEnvOrFlag(*peerCertHashFlag, "SWITCHFRAME_PEER_CERT_HASH"),
+		PeerPublicURL:        resolveEnvOrFlag(*peerPublicURLFlag, "SWITCHFRAME_PEER_PUBLIC_URL"),
+		EngineLabel:          resolveEnvOrFlag(*engineLabelFlag, "SWITCHFRAME_ENGINE_LABEL"),
+		ControlPlaneSecret:   resolveEnvOrFlag(*controlPlaneSecretFlag, "SWITCHFRAME_CONTROL_PLANE_SECRET"),
+		InitialProgramSource: resolveEnvOrFlag(*initialProgramSourceFlag, "SWITCHFRAME_INITIAL_PROGRAM_SOURCE"),
+		RefClock:             *refClockFlag,
+		WarmCache:            *warmCacheFlag,
 	}, nil
 }
 
