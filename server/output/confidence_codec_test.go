@@ -2,7 +2,6 @@ package output
 
 import (
 	"testing"
-	"time"
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
@@ -59,9 +58,7 @@ func TestConfidenceMonitor_HEVC_UsesCodecAwareConversion(t *testing.T) {
 	}
 
 	cm.IngestVideo(frame)
-
-	// Wait a moment for processing to complete.
-	time.Sleep(50 * time.Millisecond)
+	cm.inFlight.Wait() // join the background decode/encode worker
 
 	thumb := cm.LatestThumbnail()
 	if thumb != nil {
@@ -101,7 +98,7 @@ func TestConfidenceMonitor_H264_StillWorks(t *testing.T) {
 	}
 
 	cm.IngestVideo(frame)
-	time.Sleep(50 * time.Millisecond)
+	cm.inFlight.Wait()
 
 	if cm.LatestThumbnail() == nil {
 		t.Error("confidence monitor failed to decode H.264 keyframe")

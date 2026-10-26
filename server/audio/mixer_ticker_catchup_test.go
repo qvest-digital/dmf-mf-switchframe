@@ -73,7 +73,7 @@ func TestOutputTicker_CatchesUpAfterStall(t *testing.T) {
 	stalled := false
 
 	enc := &mockTickEncoder{}
-	start := time.Now()
+	beforeStart := time.Now()
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
@@ -91,11 +91,13 @@ func TestOutputTicker_CatchesUpAfterStall(t *testing.T) {
 			return enc, nil
 		},
 	})
+	afterStart := time.Now()
 
 	// Run long enough that the post-stall window dominates scheduling noise.
 	time.Sleep(700 * time.Millisecond)
+	beforeClose := time.Now()
 	require.NoError(t, m.Close())
-	elapsed := time.Since(start)
+	afterClose := time.Now()
 
 	mu.Lock()
 	count := outputCount
@@ -108,14 +110,69 @@ func TestOutputTicker_CatchesUpAfterStall(t *testing.T) {
 	// silently coalescing missed ticks) loses frames with NO accounting, so
 	// requiring produced+dropped to track wall time still catches it while
 	// staying immune to runner scheduling stalls.
+	//
+	// The ticker accounts for the window from its start inside NewMixer to
+	// its exit inside Close. Only the bounds of that window are observable
+	// here, and on a starved runner the gaps between them run to several
+	// intervals, so the window it ran is bracketed rather than estimated.
 	dropped := int(m.tickerFramesDropped.Load())
 	accounted := count + dropped
 	interval := time.Second * 1024 / 48000
-	expected := int(elapsed / interval)
-	assert.GreaterOrEqual(t, accounted, expected-5,
-		"produced+dropped frames must track elapsed time (expected ~%d, produced %d, dropped %d): missed ticks were not caught up",
-		expected, count, dropped)
-	assert.LessOrEqual(t, accounted, expected+3,
-		"catch-up must not overproduce frames (expected ~%d, produced %d, dropped %d)",
-		expected, count, dropped)
+	minExpected := int(beforeClose.Sub(afterStart) / interval)
+	maxExpected := int(afterClose.Sub(beforeStart) / interval)
+	assert.GreaterOrEqual(t, accounted, minExpected-5,
+		"produced+dropped frames must track elapsed time (expected %d..%d, produced %d, dropped %d): missed ticks were not caught up",
+		minExpected, maxExpected, count, dropped)
+	assert.LessOrEqual(t, accounted, maxExpected+3,
+		"catch-up must not overproduce frames (expected %d..%d, produced %d, dropped %d)",
+		minExpected, maxExpected, count, dropped)
+}
+
+// TestOutputTicker_CloseStopsCatchUpBurst verifies that Close does not wait
+// out a catch-up burst. A mixer whose tick costs more than the interval runs
+// capped bursts back to back, and select picks at random between a closed
+// stopTicker and a ready ticker, so a shutdown that waits for the burst can
+// exceed Close's timeout on a starved host.
+func TestOutputTicker_CloseStopsCatchUpBurst(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var outputCount int
+	var m *Mixer
+	ready := make(chan struct{})
+	enc := &mockTickEncoder{}
+	m = NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			<-ready
+			mu.Lock()
+			outputCount++
+			n := outputCount
+			mu.Unlock()
+			switch n {
+			case 1:
+				// Owe the next fire a burst of about ten frames.
+				time.Sleep(200 * time.Millisecond)
+			case 2:
+				// First frame of that burst: hold it until Close begins.
+				<-m.stopTicker
+			}
+		},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return enc, nil
+		},
+	})
+	close(ready)
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return outputCount >= 2
+	}, 2*time.Second, time.Millisecond, "the ticker never reached the first frame of the catch-up burst")
+	require.NoError(t, m.Close())
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 2, outputCount, "frames of a catch-up burst were produced after Close")
 }

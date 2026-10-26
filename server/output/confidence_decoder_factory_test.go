@@ -2,7 +2,6 @@ package output
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,7 +41,7 @@ func TestConfidenceMonitor_HEVCKeyframe_WithVPS(t *testing.T) {
 	}
 
 	cm.IngestVideo(frame)
-	time.Sleep(50 * time.Millisecond)
+	cm.inFlight.Wait() // join the background decode/encode worker
 
 	thumb := cm.LatestThumbnail()
 	require.NotNil(t, thumb, "should produce thumbnail from HEVC keyframe")
