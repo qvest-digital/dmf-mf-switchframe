@@ -848,8 +848,19 @@ func TestPodBoardEmitsAsRunEvents(t *testing.T) {
 	}
 	defer func() { _ = logger.Close() }()
 
+	// completePod publishes the terminal state before it emits the return
+	// event, so the test waits on the event rather than on the state.
+	returned := make(chan struct{}, 1)
 	pb := NewPodBoard(1)
-	pb.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
+	pb.SetAsRunLog(func(ev AsRunEvent) {
+		logger.Log(ev)
+		if ev.Operation == "return" {
+			select {
+			case returned <- struct{}{}:
+			default:
+			}
+		}
+	})
 
 	pod, err := pb.CreatePod(PodConfig{
 		Type:       "commercial",
@@ -867,10 +878,14 @@ func TestPodBoardEmitsAsRunEvents(t *testing.T) {
 	}
 
 	// Wait for auto-return to complete.
-	waitFor(t, 2*time.Second, func() bool {
-		p, _ := pb.GetPod(pod.ID)
-		return p.State.IsTerminal()
-	})
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the return as-run event")
+	}
+	if p, _ := pb.GetPod(pod.ID); p.State != PodRejoined {
+		t.Errorf("state = %v, want %v", p.State, PodRejoined)
+	}
 
 	events := logger.Query(AsRunQuery{Type: AsRunPodOperation})
 	fireCount := 0
