@@ -325,25 +325,41 @@ func TestEncodeNode_RefReleaseLifecycle(t *testing.T) {
 	// - Process() adds a ref for the async goroutine
 	// - The goroutine releases its ref after encode
 	// - The caller can independently release its own ref
-	mockEnc := transition.NewMockEncoder()
+	//
+	// The encoder signals that it has started and then blocks until the
+	// in-flight count has been checked: an unblocked goroutine can finish
+	// and drop its ref before the check runs, and a check made before the
+	// goroutine enters Encode cannot tell whether the ref is held during it.
+	unblock := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	var unblockOnce sync.Once
+	release := func() { unblockOnce.Do(func() { close(unblock) }) }
 	codecs := &pipelineCodecs{
 		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-			return mockEnc, nil
+			return &callbackMockEncoder{onEncode: func() {
+				select {
+				case entered <- struct{}{}:
+				default:
+				}
+				<-unblock
+			}}, nil
 		},
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(1)
+	var encoded atomic.Int32
 	var forceIDR atomic.Bool
 	n := &encodeNode{
 		codecs:   codecs,
 		forceIDR: &forceIDR,
 		onEncoded: func(frame *media.VideoFrame) {
-			wg.Done()
+			encoded.Add(1)
 		},
 	}
 	n.start()
-	defer func() { _ = n.Close() }()
+	defer func() {
+		release()
+		_ = n.Close()
+	}()
 
 	pool := NewFramePool(1, 4, 4, ColorYUV420_8bit)
 	buf := pool.Acquire()
@@ -358,17 +374,21 @@ func TestEncodeNode_RefReleaseLifecycle(t *testing.T) {
 	pf.SetRefs(1)
 
 	n.Process(nil, pf)
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("encode did not start")
+	}
 
-	// At this point: refs should be 2 (pipeline + async goroutine)
+	// Encode is in flight: pipeline ref + async goroutine ref.
 	require.Equal(t, int32(2), pf.Refs())
 
-	// Wait for async encode to complete
-	wg.Wait()
-
-	// After encode goroutine finishes: refs should be 1 (pipeline only)
-	require.Eventually(t, func() bool {
-		return pf.Refs() == 1
-	}, time.Second, time.Millisecond)
+	// Close drains the queue and waits for the goroutine, so its deferred
+	// release has run by the time it returns.
+	release()
+	require.NoError(t, n.Close())
+	require.Equal(t, int32(1), encoded.Load(), "frame should have been encoded")
+	require.Equal(t, int32(1), pf.Refs(), "async ref should be released")
 
 	// Pipeline releases its ref
 	pf.ReleaseYUV()
