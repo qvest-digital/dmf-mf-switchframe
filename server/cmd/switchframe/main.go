@@ -143,6 +143,10 @@ type AppConfig struct {
 	// Persistent cache directory for mmap'd LUTs and decoded assets.
 	CacheDir string
 
+	// STMapPrewarm generates the built-in animated ST map caches in
+	// CacheDir in the background at start.
+	STMapPrewarm bool // --stmap-prewarm
+
 	// ST 2110 integration.
 	ST2110Port     string // DPDK port identifier (e.g. "0000:31:00.0")
 	ST2110IP       string // local IP for TX
@@ -417,6 +421,7 @@ func parseConfig() (AppConfig, error) {
 
 	// Persistent cache directory.
 	cacheDirFlag := flag.String("cache-dir", defaultCacheDir(), "persistent cache directory for mmap'd LUTs and decoded assets")
+	stmapPrewarmFlag := flag.Bool("stmap-prewarm", true, "generate the built-in animated ST map caches in --cache-dir in the background at start; false = generate each on first use")
 
 	// ST 2110 integration flags.
 	st2110PortFlag := flag.String("st2110-port", "", "DPDK port identifier for ST 2110 (e.g. 0000:31:00.0)")
@@ -631,6 +636,7 @@ func parseConfig() (AppConfig, error) {
 		CEFBinary:            *cefBinaryFlag,
 		CEFTemplatesDir:      *cefTemplatesDirFlag,
 		CacheDir:             *cacheDirFlag,
+		STMapPrewarm:         *stmapPrewarmFlag,
 		ST2110Port:           *st2110PortFlag,
 		ST2110IP:             *st2110IPFlag,
 		ST2110Inputs:         *st2110InputsFlag,
