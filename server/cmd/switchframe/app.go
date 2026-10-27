@@ -983,11 +983,9 @@ func (a *App) initSubsystems() error {
 		a.sw.SetWipeMapStore(a.wipeMapStore)
 	}
 
-	// Background pre-warm: generate mmap-cached LUTs for built-in animated effects.
-	if a.cfg.CacheDir != "" {
-		a.bgWG.Add(1)
-		go a.prewarmSTMapCache(a.bgCtx)
-	}
+	// Background prewarm of the built-in animated ST map caches, gated on
+	// --cache-dir and --stmap-prewarm.
+	a.startSTMapPrewarm()
 
 	// Color grading store and controller.
 	uploadLooksDir := a.statePath("luts")
@@ -2380,6 +2378,16 @@ func (a *App) handleCertHash(w http.ResponseWriter, _ *http.Request) {
 		"addr":    a.advertisedAddr(),
 		"trusted": a.externalCert,
 	})
+}
+
+// startSTMapPrewarm starts prewarmSTMapCache in the background when a cache
+// directory is set and --stmap-prewarm is on.
+func (a *App) startSTMapPrewarm() {
+	if a.cfg.CacheDir == "" || !a.cfg.STMapPrewarm {
+		return
+	}
+	a.bgWG.Add(1)
+	go a.prewarmSTMapCache(a.bgCtx)
 }
 
 // prewarmSTMapCache pre-generates mmap-cached LUT files for all built-in

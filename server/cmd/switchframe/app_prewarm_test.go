@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -72,5 +73,52 @@ func TestPrewarmSTMapCacheCancelled(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("expected no cache entries after cancelled prewarm, found %d", len(entries))
+	}
+}
+
+// TestStartSTMapPrewarm verifies that --stmap-prewarm=false keeps the
+// startup prewarm from writing ST map caches while a cache directory is
+// set, so that directory stays usable for effects generated on demand.
+func TestStartSTMapPrewarm(t *testing.T) {
+	if len(stmap.AnimatedGeneratorInfoList()) == 0 {
+		t.Skip("no animated generators registered")
+	}
+
+	for _, tc := range []struct {
+		prewarm bool
+		want    bool
+	}{
+		{prewarm: true, want: true},
+		{prewarm: false, want: false},
+	} {
+		t.Run(fmt.Sprintf("prewarm=%v", tc.prewarm), func(t *testing.T) {
+			relay := distribution.NewRelay()
+			sw := switcher.New(relay)
+			defer sw.Close()
+
+			// A small format keeps the prewarm, when it runs, to a few MB.
+			f := switcher.DefaultFormat
+			f.Width, f.Height = 64, 36
+			if err := sw.SetPipelineFormat(f); err != nil {
+				t.Fatalf("set pipeline format: %v", err)
+			}
+
+			cacheDir := t.TempDir()
+			app := &App{
+				sw:    sw,
+				cfg:   AppConfig{CacheDir: cacheDir, STMapPrewarm: tc.prewarm},
+				bgCtx: context.Background(),
+			}
+			app.startSTMapPrewarm()
+			app.bgWG.Wait()
+
+			entries, err := os.ReadDir(filepath.Join(cacheDir, "stmap"))
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatalf("read stmap cache dir: %v", err)
+			}
+			if got := len(entries) > 0; got != tc.want {
+				t.Fatalf("stmap cache written = %v (%d entries), want %v", got, len(entries), tc.want)
+			}
+		})
 	}
 }

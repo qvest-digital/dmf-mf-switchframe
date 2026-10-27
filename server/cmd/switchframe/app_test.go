@@ -289,3 +289,26 @@ func TestValidateSCTE35PID(t *testing.T) {
 		})
 	}
 }
+
+func TestParseConfig_STMapPrewarm(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"default", nil, true},
+		{"false", []string{"--stmap-prewarm=false"}, false},
+		{"true", []string{"--stmap-prewarm=true"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args, cmdLine := os.Args, flag.CommandLine
+			t.Cleanup(func() { os.Args, flag.CommandLine = args, cmdLine })
+			os.Args = append([]string{"switchframe"}, tc.args...)
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+			cfg, err := parseConfig()
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.STMapPrewarm)
+		})
+	}
+}

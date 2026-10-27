@@ -198,6 +198,7 @@ switchframe --mxl-domain /run/mxl/domain \
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--cache-dir` | string | Linux: `/data/switchframe/cache`; macOS: `~/.switchframe/cache` | Persistent mmap-cached LUT / decoded asset cache |
+| `--stmap-prewarm` | bool | `true` | Generate the built-in animated ST map caches in `--cache-dir` in the background at start; `false`: an effect's cache is generated when it is first applied |
 | `--warm-cache` | bool | `false` | Pre-generate caches for all resolutions and exit (used in AMI build) |
 
 ### ST 2110
