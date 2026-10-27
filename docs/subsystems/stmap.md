@@ -157,7 +157,7 @@ The GPU pipeline uses a parallel code path that skips the CPU processor entirely
 - LUT cache: `AnimatedSTMap.BuildProcessorsCached(cacheDir)` writes `.lut` (int32 CPU LUTs) and `.st` (float32 GPU arrays) files; `Processor.Close()` and `AnimatedSTMap.Close()` munmap backing regions
 - SIMD kernels: [`server/stmap/warp_kernels_amd64.s`](../../server/stmap/warp_kernels_amd64.s) (SSE2 + `PREFETCHNTA`), [`server/stmap/warp_kernels_arm64.s`](../../server/stmap/warp_kernels_arm64.s) (NEON + `PRFM`), [`server/stmap/warp_kernels_generic.go`](../../server/stmap/warp_kernels_generic.go) (Go fallback)
 - 10-bit warp: [`server/stmap/warp10_dispatch.go`](../../server/stmap/warp10_dispatch.go) + `warp10_kernels_*`
-- Application wiring: [`server/cmd/switchframe/app.go`](../../server/cmd/switchframe/app.go) (the "ST map registry and file store" init block) — constructs `stmap.NewRegistry()`, opens `stmap.NewStore()`, loads persisted static maps and regenerates animated maps from metadata, pre-warms mmap LUT cache for built-ins, wires registry to switcher via `SetSTMapRegistry`
+- Application wiring: [`server/cmd/switchframe/app.go`](../../server/cmd/switchframe/app.go) (the "ST map registry and file store" init block) — constructs `stmap.NewRegistry()`, opens `stmap.NewStore()`, loads persisted static maps and regenerates animated maps from metadata, pre-warms mmap LUT cache for built-ins unless `--stmap-prewarm=false`, wires registry to switcher via `SetSTMapRegistry`
 
 ## Gotchas and invariants
 

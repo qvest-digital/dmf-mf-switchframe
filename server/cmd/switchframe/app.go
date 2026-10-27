@@ -983,6 +983,8 @@ func (a *App) initSubsystems() error {
 		a.sw.SetWipeMapStore(a.wipeMapStore)
 	}
 
+	// Background prewarm of the built-in animated ST map caches, gated on
+	// --cache-dir and --stmap-prewarm.
 	a.startSTMapPrewarm()
 
 	// Color grading store and controller.
