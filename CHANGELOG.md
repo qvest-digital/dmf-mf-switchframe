@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-rc.23](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.22...mxl-v1.0.0-rc.23) (2026-10-27)
+
+
+### Features
+
+* **stmap:** add --stmap-prewarm to skip the startup cache prewarm ([#70](https://github.com/qvest-digital/dmf-mf-switchframe/issues/70)) ([4c2dfdf](https://github.com/qvest-digital/dmf-mf-switchframe/commit/4c2dfdf799fef39500e7f6d903078061214cde7d))
+
+
+### Bug Fixes
+
+* **audio:** stop a catch-up burst when the mixer closes ([#66](https://github.com/qvest-digital/dmf-mf-switchframe/issues/66)) ([a1a3c89](https://github.com/qvest-digital/dmf-mf-switchframe/commit/a1a3c892c406768628c9087857750089990fcf62))
+
 ## [1.0.0-rc.22](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.21...mxl-v1.0.0-rc.22) (2026-10-26)
 
 
