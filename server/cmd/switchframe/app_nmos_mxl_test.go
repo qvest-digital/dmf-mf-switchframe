@@ -786,6 +786,13 @@ func (f *fakeRegistry) deviceControl() string {
 // later in whatever state is set on the returned poller.
 func engineOfPair(t *testing.T, reg string, label, host string, reachable bool, peerLabel string) *peer.HealthPoller {
 	t.Helper()
+	p, _ := engineOfPairNMOS(t, reg, label, host, reachable, peerLabel)
+	return p
+}
+
+// engineOfPairNMOS is engineOfPair, also returning the engine's NMOS state.
+func engineOfPairNMOS(t *testing.T, reg string, label, host string, reachable bool, peerLabel string) (*peer.HealthPoller, *mxlNMOS) {
+	t.Helper()
 	tt := newNMOSTestApp(t, nil, func(a *App) {
 		a.cfg.EngineLabel = label
 		a.cfg.PeerEngineURL = "http://switcher-peer:8081"
@@ -801,7 +808,7 @@ func engineOfPair(t *testing.T, reg string, label, host string, reachable bool, 
 	done := make(chan struct{})
 	go func() { defer close(done); tt.app.runMXLNMOSRegistration(ctx) }()
 	t.Cleanup(func() { cancel(); <-done })
-	return p
+	return p, tt.n
 }
 
 func withHeartbeatInterval(t *testing.T, d time.Duration) {
@@ -1016,14 +1023,24 @@ func TestMXLNMOS_PartitionedLeadersDoNotTakeTheNodeFromEachOther(t *testing.T) {
 	srv := httptest.NewServer(reg)
 	t.Cleanup(srv.Close)
 
-	a := engineOfPair(t, srv.URL, "a", "switcher-a.p-show", false, "b")
-	b := engineOfPair(t, srv.URL, "b", "switcher-b.p-show", false, "a")
+	a, an := engineOfPairNMOS(t, srv.URL, "a", "switcher-a.p-show", false, "b")
+	b, bn := engineOfPairNMOS(t, srv.URL, "b", "switcher-b.p-show", false, "a")
 	b.BumpEpoch()
 	if a.Role() != peer.RoleLeader || b.Role() != peer.RoleLeader {
 		t.Fatalf("roles a=%v b=%v, want both leader", a.Role(), b.Role())
 	}
+	// Both register the same ids with versions of their own, so when the
+	// two registrations overlap the registry rejects the rest of the one
+	// with the older versions, and that engine registers again on its next
+	// heartbeat. Settled is once each has completed a registration, not
+	// once each has posted its node.
+	registered := func(n *mxlNMOS) bool {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		return n.registered
+	}
 	deadline := time.Now().Add(5 * mxlNMOSHeartbeatInterval)
-	for len(reg.nodes()) < 2 {
+	for !registered(an) || !registered(bn) {
 		if time.Now().After(deadline) {
 			t.Fatalf("registered %v, want both engines", reg.nodes())
 		}
