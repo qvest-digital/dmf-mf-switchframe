@@ -1039,7 +1039,10 @@ func TestMXLNMOS_PartitionedLeadersDoNotTakeTheNodeFromEachOther(t *testing.T) {
 		defer n.mu.Unlock()
 		return n.registered
 	}
-	deadline := time.Now().Add(5 * mxlNMOSHeartbeatInterval)
+	// The wait ends as soon as both have registered. The deadline only
+	// ends a run in which one never does: a registration posts every
+	// resource, and on a starved runner both can take several heartbeats.
+	deadline := time.Now().Add(10 * time.Second)
 	for !registered(an) || !registered(bn) {
 		if time.Now().After(deadline) {
 			t.Fatalf("registered %v, want both engines", reg.nodes())
