@@ -67,11 +67,12 @@ func statusError(status C.mxlStatus, context string) error {
 
 // Instance wraps an MXL SDK instance handle.
 type Instance struct {
-	handle    C.mxlInstance
-	stopGC    chan struct{}  // signals the GC goroutine to stop
-	gcWG      sync.WaitGroup // waits for gcLoop to exit before destroying handle
-	closeOnce sync.Once      // ensures Close is safe for concurrent calls
-	closeErr  error          // captured error from the single Close execution
+	handle     C.mxlInstance
+	stopGC     chan struct{}  // signals the GC goroutine to stop
+	gcInterval time.Duration  // period of the running gcLoop; zero when none runs
+	gcWG       sync.WaitGroup // waits for gcLoop to exit before destroying handle
+	closeOnce  sync.Once      // ensures Close is safe for concurrent calls
+	closeErr   error          // captured error from the single Close execution
 }
 
 // NewInstance creates an MXL instance for the given domain path
@@ -93,6 +94,7 @@ func NewInstanceGC(domain string, gcInterval time.Duration) (*Instance, error) {
 	}
 	inst := &Instance{handle: handle, stopGC: make(chan struct{})}
 	if gcInterval > 0 {
+		inst.gcInterval = gcInterval
 		inst.gcWG.Add(1)
 		go inst.gcLoop(gcInterval)
 	}

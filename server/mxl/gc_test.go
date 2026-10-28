@@ -36,7 +36,9 @@ func TestNewInstanceGC_ZeroNeverCollects(t *testing.T) {
 	}
 	defer inst.Close()
 
-	time.Sleep(200 * time.Millisecond)
+	if inst.gcInterval != 0 {
+		t.Fatalf("a collection loop runs every %v with interval 0", inst.gcInterval)
+	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("a flow no writer holds was collected with collection off: %v", err)
 	}
@@ -49,6 +51,9 @@ func TestNewInstanceGC_CollectsAtTheInterval(t *testing.T) {
 		t.Fatalf("NewInstanceGC: %v", err)
 	}
 	defer inst.Close()
+	if inst.gcInterval != 20*time.Millisecond {
+		t.Fatalf("collection loop interval = %v, want 20ms", inst.gcInterval)
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
