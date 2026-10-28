@@ -15,6 +15,10 @@ export interface DualConnectionConfig {
 	timedExecution?: boolean;
 }
 
+/** How long an engine's snapshots may all be older than the last one taken
+ * before they are taken as those of a restarted engine. */
+export const SNAPSHOT_EPOCH_MS = 2_000;
+
 export class DualConnectionManager {
 	private managers: Map<string, ConnectionManager> = new Map();
 	private engineUrls: Map<string, string> = new Map();
@@ -407,9 +411,12 @@ export class DualConnectionManager {
 				// session (its control session and the media pipeline's
 				// program feed), each snapshot on a stream of its own, so an
 				// older snapshot can arrive after a newer one and would put
-				// back what that one replaced.
+				// back what that one replaced. An engine re-broadcasts its
+				// state several times a second, so one whose snapshots have
+				// all been older for SNAPSHOT_EPOCH_MS was restarted with a
+				// clock behind the old one, and its snapshots are taken.
 				const last = this.lastStates.get(engineId);
-				if (last && state.timestamp < last.state.timestamp) return;
+				if (last && state.timestamp < last.state.timestamp && Date.now() - last.at < SNAPSHOT_EPOCH_MS) return;
 
 				this.lastStates.set(engineId, { state, at: Date.now() });
 				if (this._isDualEngine) {
