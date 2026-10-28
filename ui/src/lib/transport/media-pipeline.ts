@@ -133,7 +133,7 @@ export interface MediaPipeline {
 /** How long (ms) without a video frame before a source is considered stalled. */
 export const STALL_THRESHOLD_MS = 1500;
 /** How often (ms) to check for stalled sources. */
-const STALL_CHECK_INTERVAL_MS = 500;
+export const STALL_CHECK_INTERVAL_MS = 500;
 /** Extra time a reconnected source has for its first frame: certificate
  * lookup, QUIC and MoQ handshakes and the subscriptions come before it. */
 const RECONNECT_GRACE_MS = 3000;
