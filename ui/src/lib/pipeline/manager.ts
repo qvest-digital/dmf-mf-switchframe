@@ -699,35 +699,6 @@ export class PipelineManager {
 		return last > 0 && performance.now() - last <= withinMs;
 	}
 
-	/** Interval re-checking a stall failover refused while Engine B did not deliver. */
-	private stallRetry: ReturnType<typeof setInterval> | null = null;
-
-	/**
-	 * Call onDelivering once Engine B's program feed delivers within
-	 * withinMs, checking every intervalMs for as long as stillStalled holds.
-	 * A stall is reported once, so a failover refused while Engine B did not
-	 * deliver either would otherwise never be tried again. One check runs at
-	 * a time; a later call replaces it.
-	 */
-	retryWhenEngineBDelivers(stillStalled: () => boolean, onDelivering: () => void, withinMs: number, intervalMs: number): void {
-		this.cancelStallRetry();
-		this.stallRetry = setInterval(() => {
-			if (!stillStalled()) {
-				this.cancelStallRetry();
-			} else if (this.engineBDelivering(withinMs)) {
-				this.cancelStallRetry();
-				onDelivering();
-			}
-		}, intervalMs);
-	}
-
-	private cancelStallRetry(): void {
-		if (this.stallRetry !== null) {
-			clearInterval(this.stallRetry);
-			this.stallRetry = null;
-		}
-	}
-
 	/** Pre-warm audio contexts on both pipelines.
 	 *  Call from a user gesture handler so AudioContext.resume() works
 	 *  during automatic failover without requiring another gesture. */
@@ -749,7 +720,6 @@ export class PipelineManager {
 	/** Clean up all state. */
 	destroy(): void {
 		this.stopMetering();
-		this.cancelStallRetry();
 		this.destroyEngineBPipeline();
 		this.pipeline.destroy();
 		this.connectedSources = new Set<string>();

@@ -1193,62 +1193,6 @@ describe('PipelineManager', () => {
 			expect(b.getLastFrameTime).toHaveBeenCalledWith('program-preview');
 		});
 
-		// onSourceStalled fires once per stall: a failover refused because
-		// Engine B was not delivering either must be tried again once B
-		// delivers, as long as Engine A is still stalled.
-		it('retries a refused stall failover once Engine B delivers', () => {
-			manager.createEngineBPipeline('https://engine-b:8080');
-			const b = mockedCreateMediaPipeline.mock.results[0].value;
-			vi.advanceTimersByTime(10_000);
-			b.getLastFrameTime.mockReturnValue(0);
-			const onDelivering = vi.fn();
-
-			manager.retryWhenEngineBDelivers(() => true, onDelivering, 1500, 500);
-			vi.advanceTimersByTime(2000);
-			expect(onDelivering).not.toHaveBeenCalled();
-
-			b.getLastFrameTime.mockReturnValue(performance.now());
-			vi.advanceTimersByTime(500);
-			expect(onDelivering).toHaveBeenCalledTimes(1);
-
-			// The check ends with the failover it triggered.
-			vi.advanceTimersByTime(5000);
-			expect(onDelivering).toHaveBeenCalledTimes(1);
-		});
-
-		it('stops retrying once Engine A recovers', () => {
-			manager.createEngineBPipeline('https://engine-b:8080');
-			const b = mockedCreateMediaPipeline.mock.results[0].value;
-			vi.advanceTimersByTime(10_000);
-			b.getLastFrameTime.mockReturnValue(0);
-			let stalled = true;
-			const onDelivering = vi.fn();
-
-			manager.retryWhenEngineBDelivers(() => stalled, onDelivering, 1500, 500);
-			vi.advanceTimersByTime(1000);
-			stalled = false;
-			vi.advanceTimersByTime(500);
-			b.getLastFrameTime.mockImplementation(() => performance.now());
-			vi.advanceTimersByTime(5000);
-
-			expect(onDelivering).not.toHaveBeenCalled();
-		});
-
-		it('stops retrying on destroy', () => {
-			manager.createEngineBPipeline('https://engine-b:8080');
-			const b = mockedCreateMediaPipeline.mock.results[0].value;
-			vi.advanceTimersByTime(10_000);
-			b.getLastFrameTime.mockReturnValue(0);
-			const onDelivering = vi.fn();
-
-			manager.retryWhenEngineBDelivers(() => true, onDelivering, 1500, 500);
-			manager.destroy();
-			b.getLastFrameTime.mockImplementation(() => performance.now());
-			vi.advanceTimersByTime(5000);
-
-			expect(onDelivering).not.toHaveBeenCalled();
-		});
-
 		it('failoverToEngineB swaps preview canvas to pipeline B', async () => {
 			const pgmCanvas = createCanvas();
 			const pvwCanvas = createCanvas();

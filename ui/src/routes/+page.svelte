@@ -39,11 +39,11 @@
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
 	import { notify } from '$lib/state/notifications.svelte';
-	import { getSourceError, isSourceStalled } from '$lib/transport/source-errors.svelte';
+	import { getSourceError } from '$lib/transport/source-errors.svelte';
 	import { KeyboardHandler, isEditableTarget } from '$lib/keyboard/handler';
 	import { DualConnectionManager } from '$lib/transport/dual-connection';
 	import { DualApiClient } from '$lib/api/dual-api-client';
-	import { createMediaPipeline, STALL_THRESHOLD_MS, STALL_CHECK_INTERVAL_MS } from '$lib/transport/media-pipeline';
+	import { createMediaPipeline, STALL_THRESHOLD_MS } from '$lib/transport/media-pipeline';
 	import { PipelineManager } from '$lib/pipeline/manager';
 	import { createPFLManager } from '$lib/audio/pfl';
 	import { createPFLToggle } from '$lib/audio/pfl-toggle';
@@ -803,108 +803,95 @@
 		onProgramCaptionFrame: (caption, _timestamp) => {
 			captionRenderer?.show(caption);
 		},
-		onSourceStalled: handleSourceStalled,
-	});
+		onSourceStalled: (key) => {
+			// Only trigger failover for program sources — tile stalls don't warrant
+			// switching the entire media pipeline to another engine.
+			if (key !== 'program-preview') return;
+			if (!isDualEngine) return;
+			if (videoFailoverActive) return;
 
-	function handleSourceStalled(key: string): void {
-		// Only trigger failover for program sources — tile stalls don't warrant
-		// switching the entire media pipeline to another engine.
-		if (key !== 'program-preview') return;
-		if (!isDualEngine) return;
-		if (videoFailoverActive) return;
-
-		if (pipelineManager.activeEngine === 'A') {
-			// A stall Engine B's program feed shares is this browser or
-			// its network: a failover would only move it.
-			if (pipelineManager.hasEngineBPipeline && !pipelineManager.engineBDelivering(STALL_THRESHOLD_MS)) {
-				// The stall is reported once; fail over once Engine B delivers
-				// if Engine A is still stalled by then.
-				pipelineManager.retryWhenEngineBDelivers(
-					() => isSourceStalled('program-preview'),
-					() => handleSourceStalled('program-preview'),
-					STALL_THRESHOLD_MS,
-					STALL_CHECK_INTERVAL_MS,
-				);
-				return;
-			}
-			if (!store.state.engineBUrl) {
-				// Attempt emergency engine B discovery via DNS inference
-				const inferred = inferEngineBUrl(window.location.hostname, window.location.protocol);
-				if (inferred && !engineBDetected) {
-					engineBDetected = true;
-					isDualEngine = true;
-					wireEngineBWhenDiscovered(inferred);
-					// Try failover after brief delay for connection setup
-					setTimeout(() => {
-						if (!canFailover()) {
-							console.warn('[failover] Circuit breaker: max failovers reached in window');
-							notify('warning', 'Video failover suppressed — both engines may be degraded');
-							return;
-						}
-						recordFailover();
-						videoFailoverActive = true;
-						stallFailover = true;
-						pipelineManager.failoverToEngineB(inferred, Object.keys(store.state.sources ?? {}))
-							.then(() => {
-								activeEngine = 'B';
-								videoFailoverActive = false;
-								notify('warning', 'Video switched to Engine B — click to resume audio');
-								requestAudioResumeAfterFailover();
-							})
-							.catch(err => {
-								videoFailoverActive = false;
-								stallFailover = false;
-								console.warn('Emergency failover failed:', err);
-								notify('error', 'Video failover to Engine B failed');
-							});
-					}, 500);
+			if (pipelineManager.activeEngine === 'A') {
+				// A stall Engine B's program feed shares is this browser or
+				// its network: a failover would only move it.
+				if (pipelineManager.hasEngineBPipeline && !pipelineManager.engineBDelivering(STALL_THRESHOLD_MS)) return;
+				if (!store.state.engineBUrl) {
+					// Attempt emergency engine B discovery via DNS inference
+					const inferred = inferEngineBUrl(window.location.hostname, window.location.protocol);
+					if (inferred && !engineBDetected) {
+						engineBDetected = true;
+						isDualEngine = true;
+						wireEngineBWhenDiscovered(inferred);
+						// Try failover after brief delay for connection setup
+						setTimeout(() => {
+							if (!canFailover()) {
+								console.warn('[failover] Circuit breaker: max failovers reached in window');
+								notify('warning', 'Video failover suppressed — both engines may be degraded');
+								return;
+							}
+							recordFailover();
+							videoFailoverActive = true;
+							stallFailover = true;
+							pipelineManager.failoverToEngineB(inferred, Object.keys(store.state.sources ?? {}))
+								.then(() => {
+									activeEngine = 'B';
+									videoFailoverActive = false;
+									notify('warning', 'Video switched to Engine B — click to resume audio');
+									requestAudioResumeAfterFailover();
+								})
+								.catch(err => {
+									videoFailoverActive = false;
+									stallFailover = false;
+									console.warn('Emergency failover failed:', err);
+									notify('error', 'Video failover to Engine B failed');
+								});
+						}, 500);
+					}
+					return;
 				}
-				return;
-			}
 
-			if (!canFailover()) {
-				console.warn('[failover] Circuit breaker: max failovers reached in window');
-				notify('warning', 'Video failover suppressed — both engines may be degraded');
-				return;
-			}
-			recordFailover();
-			videoFailoverActive = true;
-			stallFailover = true;
-			pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
-				.then(() => {
-					activeEngine = 'B';
-					videoFailoverActive = false;
-					notify('warning', 'Video switched to Engine B — click to resume audio');
-					requestAudioResumeAfterFailover();
-				})
-				.catch(err => {
-					videoFailoverActive = false;
-					stallFailover = false;
-					console.warn('Media stall failover failed:', err);
-					notify('error', 'Video failover to Engine B failed');
-				});
-		} else if (pipelineManager.activeEngine === 'B') {
-			// Engine B is stalling — try restoring to Engine A if reconnected.
-			// Restoring to Engine A is safe — do NOT consume circuit breaker budget.
-			if (connectionManager.engineConnectionState('A') !== 'disconnected') {
+				if (!canFailover()) {
+					console.warn('[failover] Circuit breaker: max failovers reached in window');
+					notify('warning', 'Video failover suppressed — both engines may be degraded');
+					return;
+				}
+				recordFailover();
 				videoFailoverActive = true;
-				pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
+				stallFailover = true;
+				pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
 					.then(() => {
-						activeEngine = 'A';
+						activeEngine = 'B';
 						videoFailoverActive = false;
-						stallFailover = false;
-						notify('warning', 'Video restored to Engine A — click to resume audio');
+						notify('warning', 'Video switched to Engine B — click to resume audio');
 						requestAudioResumeAfterFailover();
 					})
 					.catch(err => {
 						videoFailoverActive = false;
-						console.warn('Restore to A after B stall failed:', err);
-						notify('error', 'Video restore to Engine A failed');
+						stallFailover = false;
+						console.warn('Media stall failover failed:', err);
+						notify('error', 'Video failover to Engine B failed');
 					});
+			} else if (pipelineManager.activeEngine === 'B') {
+				// Engine B is stalling — try restoring to Engine A if reconnected.
+				// Restoring to Engine A is safe — do NOT consume circuit breaker budget.
+				if (connectionManager.engineConnectionState('A') !== 'disconnected') {
+					videoFailoverActive = true;
+					pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
+						.then(() => {
+							activeEngine = 'A';
+							videoFailoverActive = false;
+							stallFailover = false;
+							notify('warning', 'Video restored to Engine A — click to resume audio');
+							requestAudioResumeAfterFailover();
+						})
+						.catch(err => {
+							videoFailoverActive = false;
+							console.warn('Restore to A after B stall failed:', err);
+							notify('error', 'Video restore to Engine A failed');
+						});
+				}
 			}
-		}
-	}
-
+		},
+	});
 	// Pre-register the program-preview source so ProgramPreview's $effect can
 	// attach the canvas renderer before onMount (which connects the MoQ
 	// transport). The UI renders exclusively from program-preview (low-bitrate,
