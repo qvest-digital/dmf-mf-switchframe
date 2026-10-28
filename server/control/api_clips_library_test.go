@@ -133,3 +133,23 @@ func TestHandleClipRecordingsIncludesArchive(t *testing.T) {
 	api.Mux().ServeHTTP(rec, httptest.NewRequest("POST", "/api/clips/from-recording", bytes.NewReader(body)))
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
+
+// Directories are compared as absolute paths, as the download handler did
+// before the archive was added: a recording directory configured relative
+// to the working directory still serves its files.
+func TestRecordingDirsCompareAbsolutePaths(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	require.NoError(t, os.MkdirAll("recordings", 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join("recordings", "program_a_001.ts"), uploadTestTS(t), 0o644))
+	api, _ := setupLibraryAPI(t, t.TempDir(), WithRecordingDir("recordings"))
+
+	abs := filepath.Join(root, "recordings", "program_a_001.ts")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/api/clips/recordings/download?path="+abs, nil))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	rec = httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/api/clips/recordings/download?path="+filepath.Join(root, "elsewhere.ts"), nil))
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}

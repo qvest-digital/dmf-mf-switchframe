@@ -463,23 +463,36 @@ type RecordingFileInfo struct {
 }
 
 // recordingDirs returns the directories recordings are listed and imported
-// from: where they are written, then where finished ones are archived.
+// from, as absolute paths: where they are written, then where finished ones
+// are archived.
 func (a *API) recordingDirs() []string {
 	var dirs []string
-	if p := a.recordingDir.Load(); p != nil && *p != "" {
-		dirs = append(dirs, filepath.Clean(*p))
-	}
-	if a.recArchiveDir != "" {
-		dirs = append(dirs, filepath.Clean(a.recArchiveDir))
+	for _, d := range []string{a.loadRecordingDir(), a.recArchiveDir} {
+		if d == "" {
+			continue
+		}
+		if abs, err := filepath.Abs(d); err == nil {
+			dirs = append(dirs, abs)
+		}
 	}
 	return dirs
 }
 
-// inRecordingDirs reports whether the absolute, clean path lies within one
-// of recordingDirs.
+func (a *API) loadRecordingDir() string {
+	if p := a.recordingDir.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// inRecordingDirs reports whether path lies within one of recordingDirs.
 func (a *API) inRecordingDirs(path string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
 	for _, d := range a.recordingDirs() {
-		if strings.HasPrefix(path, d+string(filepath.Separator)) {
+		if strings.HasPrefix(abs, d+string(filepath.Separator)) {
 			return true
 		}
 	}
