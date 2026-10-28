@@ -366,8 +366,15 @@ export class PipelineManager {
 		}
 	}
 
-	/** Destroy Engine B pipeline. */
+	/** Destroy Engine B pipeline. Canvases it shows move back to Engine A
+	 * first, which reconnects Engine A's sources: nothing else would. */
 	destroyEngineBPipeline(): void {
+		if (this.pipelineB && this._activeEngine === 'B') {
+			this.switchProgramToEngineA();
+		}
+		if (this.pipelineB && this.viewsOnB) {
+			this.swapTileAndPreviewCanvases(this.pipelineB, this.pipeline);
+		}
 		this.pipelineB?.destroy();
 		this.pipelineB = null;
 		this.engineBUrl = null;
@@ -720,6 +727,9 @@ export class PipelineManager {
 	/** Clean up all state. */
 	destroy(): void {
 		this.stopMetering();
+		// Engine A goes as well: nothing moves back to it first.
+		this._activeEngine = 'A';
+		this.viewsOnB = false;
 		this.destroyEngineBPipeline();
 		this.pipeline.destroy();
 		this.connectedSources = new Set<string>();

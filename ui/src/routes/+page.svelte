@@ -1234,7 +1234,12 @@
 					// Re-check conditions after timeout (state may have changed)
 					const currentBState = connectionManager.engineConnectionState('B');
 					if (currentBState === 'disconnected' && pipelineManager.warmStandbyActive) {
+						// Engine A shows the program again; left at 'B', the
+						// A/B toggle would rebuild a pipeline to the engine
+						// that is gone.
 						pipelineManager.destroyEngineBPipeline();
+						activeEngine = 'A';
+						stallFailover = false;
 						connectionManager.setWarmStandbyDegraded(false);
 						notify('info', 'Engine B offline — warm standby disabled');
 					}

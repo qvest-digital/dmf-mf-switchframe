@@ -1193,6 +1193,47 @@ describe('PipelineManager', () => {
 			expect(b.getLastFrameTime).toHaveBeenCalledWith('program-preview');
 		});
 
+		// Destroying Engine B's pipeline while it shows the program, as when
+		// Engine B stays offline, left Engine A's sources disconnected and
+		// the program canvas on nothing.
+		it('moves every canvas back to Engine A when Engine B is destroyed after a failover', async () => {
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			const b = await failOver(pgmCanvas, pvwCanvas);
+
+			manager.destroyEngineBPipeline();
+
+			expect(manager.activeEngine).toBe('A');
+			expect(b.destroy).toHaveBeenCalled();
+			const connected = pipeline.connectSource.mock.calls.map((c: unknown[]) => c[0]);
+			expect(connected).toEqual(expect.arrayContaining(['program-preview', 'cam1', 'cam2']));
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('program-preview', 'program', pgmCanvas);
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam2', 'preview', pvwCanvas);
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam1', 'tile-cam1', expect.any(HTMLCanvasElement));
+
+			// A later preview change lands on Engine A.
+			pipeline.attachCanvas.mockClear();
+			manager.syncProgramPreviewCanvases('cam1', null, pvwCanvas);
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam1', 'preview', pvwCanvas);
+		});
+
+		it('moves the program back to Engine A when Engine B is destroyed while toggled to it', async () => {
+			await manager.syncSources(makeSources('cam1'));
+			const pgmCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, createCanvas());
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			manager.connectSourceB('program-preview');
+			manager.switchProgramToEngineB();
+			pipeline.attachCanvas.mockClear();
+			pipeline.connectSource.mockClear();
+
+			manager.destroyEngineBPipeline();
+
+			expect(manager.activeEngine).toBe('A');
+			expect(pipeline.connectSource).toHaveBeenCalledWith('program-preview');
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('program-preview', 'program', pgmCanvas);
+		});
+
 		it('failoverToEngineB swaps preview canvas to pipeline B', async () => {
 			const pgmCanvas = createCanvas();
 			const pvwCanvas = createCanvas();
