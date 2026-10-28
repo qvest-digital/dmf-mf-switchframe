@@ -115,6 +115,13 @@ type Player struct {
 
 	sourceFPS float64
 
+	// Pacing: slot paceIdx is due at paceStart + paceIdx frame periods. A
+	// pass that starts with paceIdx 0 anchors paceStart at its first
+	// output; a loop pass whose first frames the previous pass already fed
+	// to the decoder carries both over, so the wrap keeps the cadence.
+	paceStart time.Time
+	paceIdx   int
+
 	// Reusable scratch buffers for decode/re-encode hot path.
 	// annexBBuf and prependBuf must be separate allocations because
 	// PrependSPSPPS reads from annexBBuf while writing to prependBuf.
@@ -317,11 +324,13 @@ func (p *Player) run(ctx context.Context) {
 	outputPTS := p.config.InitialPTS
 	p.outputAudioPTS = p.config.InitialPTS
 
+	startFrame := 0
 	for {
-		cancelled := p.playClip(ctx, clip, sourceFPS, &outputPTS)
+		cancelled, fedNext := p.playClip(ctx, clip, sourceFPS, &outputPTS, startFrame)
 		if cancelled {
 			return
 		}
+		startFrame = fedNext
 
 		if !p.loop.Load() {
 			// Non-loop: transition to holding, notify, then hold loop.
@@ -335,10 +344,12 @@ func (p *Player) run(ctx context.Context) {
 			return
 		}
 
-		// Loop: flush decoder so it can handle the new stream cleanly
-		// (SPS/PPS may differ between playthroughs), then reset indices.
-		if fd, ok := p.config.Decoder.(FlushableDecoder); ok {
-			fd.Flush()
+		// Loop: unless the pass already fed the next one's first frames,
+		// flush the decoder, then reset indices.
+		if startFrame == 0 {
+			if fd, ok := p.config.Decoder.(FlushableDecoder); ok {
+				fd.Flush()
+			}
 		}
 		// Reset decode error tracking so first-error logging triggers again.
 		p.decodeErrors = 0
@@ -354,8 +365,11 @@ func (p *Player) run(ctx context.Context) {
 	}
 }
 
-// playClip plays through all frames once. Returns true if context was cancelled.
-func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS float64, outputPTS *int64) bool {
+// playClip plays through all frames once, starting with frame startFrame:
+// the frames before it the previous pass has already fed to the decoder.
+// Returns true if the context was cancelled, and how many frames of the next
+// pass it fed to the decoder to get its own last pictures out.
+func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS float64, outputPTS *int64, startFrame int) (cancelled bool, fedNext int) {
 	totalClipFrames := len(clip)
 
 	srcNum, srcDen := clipRational(sourceFPS)
@@ -380,9 +394,13 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		<-timer.C
 	}
 
-	playbackStart := time.Now()
-	pacingIdx := 0
+	if startFrame == 0 {
+		p.paceIdx = 0
+	}
 	outputIdx := 0
+	// Frames fed to the decoder whose pictures have not come out; the
+	// previous pass fed this one's first startFrame frames.
+	held := startFrame
 	pic := 0 // pictures of this pass output or skipped, in presentation order
 
 	// -1 = no rewind in flight; otherwise exclusive end of the decode-only
@@ -401,10 +419,10 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 			// starts: a threaded decoder returns its first picture several
 			// calls in, and slots counted from before that would be spent
 			// already and go out back to back.
-			if pacingIdx == 0 {
-				playbackStart = time.Now()
+			if p.paceIdx == 0 {
+				p.paceStart = time.Now()
 			}
-			if p.outputFrame(ctx, frameData, fw, fh, srcKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, outputPTS, ptsPerFrame, frameDuration, timer, playbackStart, &pacingIdx) {
+			if p.outputFrame(ctx, frameData, fw, fh, srcKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, outputPTS, ptsPerFrame, frameDuration, timer, p.paceStart, &p.paceIdx) {
 				return true
 			}
 
@@ -447,7 +465,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		return false
 	}
 
-	for frameIdx := 0; frameIdx < totalClipFrames; {
+	for frameIdx := startFrame; frameIdx < totalClipFrames; {
 		// Check for seek requests (non-blocking).
 		select {
 		case pos := <-p.seekCh:
@@ -471,13 +489,13 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 			if fd, ok := p.config.Decoder.(FlushableDecoder); ok {
 				fd.Flush()
 			}
+			held = 0
 			frameIdx = keyframeIdx
 			primeUntilIdx = targetIdx
 			pic = targetIdx
 			outputIdx = cad.start(pic)
 			// Reset pacing to avoid a burst of catch-up frames.
-			playbackStart = time.Now()
-			pacingIdx = 0
+			p.paceIdx = 0
 			// Update audio index proportionally.
 			if len(p.config.AudioClip) > 0 {
 				p.audioIdx = targetIdx * len(p.config.AudioClip) / totalClipFrames
@@ -499,8 +517,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 				totalFrames = cad.start(totalClipFrames)
 				p.totalOutputFrames = totalFrames
 				outputIdx = cad.start(pic)
-				playbackStart = time.Now()
-				pacingIdx = 0
+				p.paceIdx = 0
 			}
 		}
 
@@ -509,61 +526,9 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		// Decode video to YUV420 for the switcher pipeline.
 		// Wire data forwarding to the browser relay is independent of decode
 		// success — the browser has its own decoder and always gets frames.
-		var frameData []byte // nil when decode fails (browser relay still works)
-		buffered := false    // the decoder kept this frame back for reordering
-		fw, fh := p.config.Width, p.config.Height
-		isHEVC := f.IsHEVC()
-		if p.config.DecodeFrame != nil {
-			// Convert wire format to Annex B for the decoder (reuses buffer).
-			p.annexBBuf = codec.WireToAnnexBInto(f.wireData, p.annexBBuf[:0])
-			if len(p.annexBBuf) > 0 {
-				// Prepend parameter sets for keyframes so the decoder can initialize.
-				// Use prependBuf as a separate destination to avoid aliasing.
-				decoderInput := p.annexBBuf
-				if f.isKeyframe && len(f.sps) > 0 {
-					if isHEVC {
-						p.prependBuf = codec.PrependVPSSPSPPSInto(f.vps, f.sps, f.pps, p.annexBBuf, p.prependBuf[:0])
-					} else {
-						p.prependBuf = codec.PrependSPSPPSInto(f.sps, f.pps, p.annexBBuf, p.prependBuf[:0])
-					}
-					decoderInput = p.prependBuf
-				}
-
-				p.decodeAttempts++
-				decoded, dw, dh, err := p.config.DecodeFrame(decoderInput)
-				if err == nil {
-					p.decodeSuccesses++
-					// Deep-copy: decoder may reuse its output buffer.
-					frameData = make([]byte, len(decoded))
-					copy(frameData, decoded)
-					fw, fh = dw, dh
-				} else {
-					errMsg := err.Error()
-					// EAGAIN ("buffering") is expected for B-frame reordering —
-					// the decoder needs reference frames before it can output.
-					if strings.Contains(errMsg, "buffering") {
-						p.decodeBuffering++
-						buffered = true
-					} else {
-						p.decodeErrors++
-						if p.decodeErrorFirst == "" {
-							p.decodeErrorFirst = errMsg
-							slog.Warn("clip: decode error",
-								"error", err,
-								"frameIdx", frameIdx,
-								"isKeyframe", f.isKeyframe,
-								"wireDataLen", len(f.wireData),
-								"annexBLen", len(p.annexBBuf),
-								"hasSPS", len(f.sps) > 0,
-								"codec", f.Codec(),
-							)
-						}
-					}
-				}
-			}
-		} else {
-			// No decoder (testing) — pass wire data through as frame data.
-			frameData = f.wireData
+		frameData, fw, fh, buffered := p.decodeClipFrame(f, frameIdx)
+		if buffered {
+			held++
 		}
 
 		// A frame the decoder kept back comes out of a later Decode call or
@@ -622,7 +587,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		if priming {
 			select {
 			case <-ctx.Done():
-				return true
+				return true, 0
 			default:
 			}
 			if p.config.VideoOutput != nil {
@@ -634,13 +599,45 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		}
 
 		if emit(slots, frameData, fw, fh, f.isKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS) {
-			return true
+			return true, 0
 		}
 		frameIdx++
 	}
 
-	// Drain remaining buffered frames from the decoder (B-frame reordering).
-	if p.config.Decoder != nil {
+	// The last pictures are still in the decoder. Looping, feed it the next
+	// pass's first frames until they come out, so the wrap neither drains
+	// nor restarts the decoder: a restarted frame-threaded decoder returns
+	// nothing for its first calls, which held the last picture and left a
+	// gap in the audio at every loop. The next pass starts after the frames
+	// fed here.
+	if p.loop.Load() && held > 0 && p.config.DecodeFrame != nil && totalClipFrames > 2*held {
+		for held > 0 && fedNext < totalClipFrames {
+			select {
+			case <-ctx.Done():
+				return true, 0
+			default:
+			}
+			frameData, fw, fh, buffered := p.decodeClipFrame(clip[fedNext], fedNext)
+			fedNext++
+			if buffered {
+				continue
+			}
+			held--
+			if frameData == nil {
+				continue
+			}
+			slots := cad.slots(pic)
+			pic++
+			if slots == 0 {
+				continue
+			}
+			wd, kf, sps, pps := p.reencodeForBrowser(frameData, fw, fh, *outputPTS, false)
+			if emit(slots, frameData, fw, fh, false, wd, kf, sps, pps) {
+				return true, 0
+			}
+		}
+	} else if p.config.Decoder != nil {
+		// Drain remaining buffered frames from the decoder (B-frame reordering).
 		if drainable, ok := p.config.Decoder.(DrainableDecoder); ok {
 			_ = drainable.SendEOS()
 			for {
@@ -660,7 +657,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 				// without a browser encoder they reach only the pipeline.
 				wd, kf, sps, pps := p.reencodeForBrowser(frameData, dw, dh, *outputPTS, false)
 				if emit(slots, frameData, dw, dh, false, wd, kf, sps, pps) {
-					return true
+					return true, 0
 				}
 			}
 		}
@@ -680,7 +677,69 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 	// Mark final progress.
 	p.progress.Store(1000)
 
-	return false
+	return false, fedNext
+}
+
+// decodeClipFrame feeds frame f to the decoder and returns the picture it
+// gives back: nil when decoding failed, buffered when the decoder kept the
+// frame and returned nothing. Without a decoder (tests) the wire data is
+// the picture.
+func (p *Player) decodeClipFrame(f BufferedFrame, frameIdx int) (frameData []byte, fw, fh int, buffered bool) {
+	fw, fh = p.config.Width, p.config.Height
+	isHEVC := f.IsHEVC()
+	if p.config.DecodeFrame != nil {
+		// Convert wire format to Annex B for the decoder (reuses buffer).
+		p.annexBBuf = codec.WireToAnnexBInto(f.wireData, p.annexBBuf[:0])
+		if len(p.annexBBuf) > 0 {
+			// Prepend parameter sets for keyframes so the decoder can initialize.
+			// Use prependBuf as a separate destination to avoid aliasing.
+			decoderInput := p.annexBBuf
+			if f.isKeyframe && len(f.sps) > 0 {
+				if isHEVC {
+					p.prependBuf = codec.PrependVPSSPSPPSInto(f.vps, f.sps, f.pps, p.annexBBuf, p.prependBuf[:0])
+				} else {
+					p.prependBuf = codec.PrependSPSPPSInto(f.sps, f.pps, p.annexBBuf, p.prependBuf[:0])
+				}
+				decoderInput = p.prependBuf
+			}
+
+			p.decodeAttempts++
+			decoded, dw, dh, err := p.config.DecodeFrame(decoderInput)
+			if err == nil {
+				p.decodeSuccesses++
+				// Deep-copy: decoder may reuse its output buffer.
+				frameData = make([]byte, len(decoded))
+				copy(frameData, decoded)
+				fw, fh = dw, dh
+			} else {
+				errMsg := err.Error()
+				// EAGAIN ("buffering") is expected for B-frame reordering —
+				// the decoder needs reference frames before it can output.
+				if strings.Contains(errMsg, "buffering") {
+					p.decodeBuffering++
+					buffered = true
+				} else {
+					p.decodeErrors++
+					if p.decodeErrorFirst == "" {
+						p.decodeErrorFirst = errMsg
+						slog.Warn("clip: decode error",
+							"error", err,
+							"frameIdx", frameIdx,
+							"isKeyframe", f.isKeyframe,
+							"wireDataLen", len(f.wireData),
+							"annexBLen", len(p.annexBBuf),
+							"hasSPS", len(f.sps) > 0,
+							"codec", f.Codec(),
+						)
+					}
+				}
+			}
+		}
+	} else {
+		// No decoder (testing) — pass wire data through as frame data.
+		frameData = f.wireData
+	}
+	return frameData, fw, fh, buffered
 }
 
 // outputFrame outputs a single decoded frame, handling pause and pacing.
