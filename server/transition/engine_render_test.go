@@ -119,7 +119,10 @@ func TestIngestRawFrame_SlowRenderRepeatsFrames(t *testing.T) {
 	require.True(t, e.overrunNoted.Load())
 }
 
-func TestBlendRawInto_SlowRenderRepeatsFrames(t *testing.T) {
+// BlendRawInto's caller processes the returned buffer in place (keyers,
+// grading), so it must render every frame afresh rather than hand back the
+// processed frame as a repeat after a slow render.
+func TestBlendRawInto_SlowRenderStillRendersEveryFrame(t *testing.T) {
 	calls := 0
 	e := NewEngine(EngineConfig{Render: slowRender(&calls, 25*time.Millisecond), FramePeriod: 10 * time.Millisecond})
 	e.StartSync("", "", Mix, 1000)
@@ -130,9 +133,13 @@ func TestBlendRawInto_SlowRenderRepeatsFrames(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		buf, _, _ = e.BlendRawInto(buf, a, w, h, b, w, h, 0.5)
 		got = append(got, buf[0])
+		for j := range buf {
+			buf[j] += 100 // an in-place pipeline node
+		}
 	}
-	require.Equal(t, []byte{1, 1, 1, 2}, got)
-	require.Equal(t, 2, calls)
+	require.Equal(t, []byte{1, 2, 3, 4}, got)
+	require.Equal(t, 4, calls)
+	require.True(t, e.overrunNoted.Load(), "the overrun is still logged")
 }
 
 func TestRender_NoPacingWithoutFramePeriod(t *testing.T) {
