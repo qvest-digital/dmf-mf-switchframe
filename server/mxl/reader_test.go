@@ -881,3 +881,74 @@ func TestSentinelErrors_WrappedErrorsMatchWithErrorsIs(t *testing.T) {
 		}
 	}
 }
+
+// liveRing is a flow whose head advances one grain per period from start,
+// keeping the last size grains: ReadGrain of a later grain waits for it,
+// and of an overwritten one fails with ErrTooLate.
+type liveRing struct {
+	start  time.Time
+	period time.Duration
+	size   uint64
+
+	mu      sync.Mutex
+	tooLate int
+	maxLag  uint64
+}
+
+func (r *liveRing) head() uint64 { return uint64(time.Since(r.start) / r.period) }
+
+func (r *liveRing) ReadGrain(index uint64, timeoutNs uint64) ([]byte, GrainInfo, error) {
+	deadline := time.Now().Add(time.Duration(timeoutNs))
+	for r.head() < index {
+		if time.Now().After(deadline) {
+			return nil, GrainInfo{}, fmt.Errorf("%w: read grain", ErrTimeout)
+		}
+		time.Sleep(r.period / 4)
+	}
+	head := r.head()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if head >= index+r.size {
+		r.tooLate++
+		return nil, GrainInfo{}, fmt.Errorf("%w: grain expired", ErrTooLate)
+	}
+	if lag := head - index; lag > r.maxLag {
+		r.maxLag = lag
+	}
+	return []byte{0}, GrainInfo{Index: index, GrainSize: 1, TotalSlices: 1, ValidSlices: 1}, nil
+}
+
+func (r *liveRing) ConfigInfo() FlowConfig     { return FlowConfig{Format: DataFormatVideo} }
+func (r *liveRing) HeadIndex() (uint64, error) { return r.head(), nil }
+func (r *liveRing) Close() error               { return nil }
+
+// A consumer slower than the flow loses grains one at a time a few grains
+// behind the head, and never lets the ring overwrite the reader's position:
+// a re-sync after a wrap drops the whole ring at once, and the latency
+// before it grows to the full ring.
+func TestReader_SlowConsumerStaysNearHead(t *testing.T) {
+	ring := &liveRing{start: time.Now(), period: 4 * time.Millisecond, size: 20}
+	r := NewVideoReader(ReaderConfig{TimeoutMs: 100})
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+	r.StartVideo(ctx, ring)
+
+	got := 0
+	for range r.Video() {
+		got++
+		time.Sleep(6 * time.Millisecond) // two thirds of the flow's rate
+	}
+	r.Wait()
+
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+	if got == 0 {
+		t.Fatal("no grains delivered")
+	}
+	if ring.tooLate != 0 {
+		t.Fatalf("the ring overwrote the reader's position %d times", ring.tooLate)
+	}
+	if ring.maxLag > videoMaxLag+2 {
+		t.Fatalf("reader fell %d grains behind the head, bound %d", ring.maxLag, videoMaxLag)
+	}
+}

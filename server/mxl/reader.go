@@ -53,6 +53,12 @@ type ReaderConfig struct {
 	Logger *slog.Logger
 }
 
+// videoMaxLag is how many grains the video loop may fall behind the head
+// before it skips ahead. A consumer slower than the flow then loses single
+// grains as it goes, at a latency of a few grains, rather than falling a
+// whole ring behind and losing the ring at once on a re-sync.
+const videoMaxLag = 3
+
 // grainLookBack is how many grains behind the head the video and data loops
 // resync to.
 const grainLookBack = 2
@@ -180,11 +186,22 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 	consecutiveErrors := 0
 	const maxConsecutiveErrors = 50
 
+	var skipped uint64
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
+		}
+
+		// The send below waits for the consumer; skip what it cannot take.
+		if headIdx, hErr := flow.HeadIndex(); hErr == nil && headIdx > index+videoMaxLag {
+			n := headIdx - videoMaxLag - index
+			index = headIdx - videoMaxLag
+			if skipped += n; skipped == n || skipped/500 != (skipped-n)/500 {
+				log.Warn("mxl video reader: consumer behind, skipping grains",
+					"skipped_total", skipped)
+			}
 		}
 
 		data, info, err := flow.ReadGrain(index, timeoutNs)
