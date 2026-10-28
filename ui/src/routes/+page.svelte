@@ -43,7 +43,7 @@
 	import { KeyboardHandler, isEditableTarget } from '$lib/keyboard/handler';
 	import { DualConnectionManager } from '$lib/transport/dual-connection';
 	import { DualApiClient } from '$lib/api/dual-api-client';
-	import { createMediaPipeline, STALL_THRESHOLD_MS } from '$lib/transport/media-pipeline';
+	import { createMediaPipeline } from '$lib/transport/media-pipeline';
 	import { PipelineManager } from '$lib/pipeline/manager';
 	import { createPFLManager } from '$lib/audio/pfl';
 	import { createPFLToggle } from '$lib/audio/pfl-toggle';
@@ -813,7 +813,7 @@
 			if (pipelineManager.activeEngine === 'A') {
 				// A stall Engine B's program feed shares is this browser or
 				// its network: a failover would only move it.
-				if (pipelineManager.hasEngineBPipeline && !pipelineManager.engineBDelivering(STALL_THRESHOLD_MS)) return;
+				if (pipelineManager.refusesStallFailover()) return;
 				if (!store.state.engineBUrl) {
 					// Attempt emergency engine B discovery via DNS inference
 					const inferred = inferEngineBUrl(window.location.hostname, window.location.protocol);

@@ -1175,6 +1175,22 @@ describe('PipelineManager', () => {
 			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam1', 'preview', pvwCanvas);
 		});
 
+		// Without an Engine B pipeline the failover builds one; with one,
+		// it needs Engine B's program feed to deliver.
+		it('refuses a stall failover only while an Engine B pipeline delivers nothing', () => {
+			expect(manager.refusesStallFailover()).toBe(false);
+			manager.createEngineBPipeline('https://engine-b:8080');
+			const b = mockedCreateMediaPipeline.mock.results[0].value;
+			vi.advanceTimersByTime(10_000);
+
+			b.getLastFrameTime.mockReturnValue(0);
+			expect(manager.refusesStallFailover()).toBe(true);
+			b.getLastFrameTime.mockReturnValue(performance.now() - 1000);
+			expect(manager.refusesStallFailover()).toBe(false);
+			b.getLastFrameTime.mockReturnValue(performance.now() - 2000);
+			expect(manager.refusesStallFailover()).toBe(true);
+		});
+
 		// A program stall that Engine B shares is this browser or its
 		// network; failing over to B would only move it.
 		it('engineBDelivering reports whether Engine B program frames arrive', () => {
