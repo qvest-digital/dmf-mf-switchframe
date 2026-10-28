@@ -1005,8 +1005,17 @@ func (a *App) initSubsystems() error {
 		)
 	}
 
-	// Per-source color corrector manager (GPU per-source color grading).
+	// Per-source color corrector manager, graded on the GPU source manager
+	// when there is one and at CPU ingest otherwise.
 	a.sourceCorrectors = colorgrade.NewSourceCorrectorManager()
+
+	// The CPU pipeline grades the program when no GPU pipeline does.
+	var programGrader switcher.ProgramGrader
+	if a.colorGradeCtrl != nil {
+		a.colorGradeCtrl.onEnabledChange = a.sw.RebuildPipeline
+		programGrader = a.colorGradeCtrl
+	}
+	a.sw.SetColorGraders(programGrader, a.sourceCorrectors)
 
 	// Upstream key processor (chroma/luma keying).
 	a.keyProcessor = graphics.NewKeyProcessor()

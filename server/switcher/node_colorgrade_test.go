@@ -1,0 +1,167 @@
+package switcher
+
+import (
+	"bytes"
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/colorgrade"
+	"github.com/zsiec/switchframe/server/transition"
+)
+
+type stubProgramGrader struct {
+	g         *colorgrade.Grader
+	intensity float32
+}
+
+func (s *stubProgramGrader) ProgramGrader() (*colorgrade.Grader, float32) { return s.g, s.intensity }
+
+type stubSourceGrader map[string]*colorgrade.Grader
+
+func (s stubSourceGrader) SourceGrader(key string) *colorgrade.Grader { return s[key] }
+
+func noirGrader(t *testing.T) *colorgrade.Grader {
+	t.Helper()
+	for _, p := range colorgrade.BuiltinLooks() {
+		if p.Name == "noir" {
+			lut := colorgrade.GenerateLook(p)
+			g, err := colorgrade.NewGrader(lut.Data, lut.Size)
+			require.NoError(t, err)
+			return g
+		}
+	}
+	t.Fatal("no noir look")
+	return nil
+}
+
+// barsFrame is a 4:2:0 frame of saturated colour columns.
+func barsFrame(w, h int) []byte {
+	f := make([]byte, ColorYUV420_8bit.FrameSize(w, h))
+	bars := [][3]byte{{168, 44, 136}, {145, 147, 44}, {63, 193, 204}, {51, 109, 212}}
+	cw := w / 2
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			f[y*w+x] = bars[x*len(bars)/w][0]
+		}
+	}
+	for y := 0; y < h/2; y++ {
+		for x := 0; x < cw; x++ {
+			b := bars[x*len(bars)/cw]
+			f[w*h+y*cw+x] = b[1]
+			f[w*h+(w/2)*(h/2)+y*cw+x] = b[2]
+		}
+	}
+	return f
+}
+
+func graded(t *testing.T, g *colorgrade.Grader, src []byte, w, h int, intensity float32) []byte {
+	t.Helper()
+	out := append([]byte(nil), src...)
+	require.NoError(t, g.ApplyYUV420(out, w, h, intensity))
+	return out
+}
+
+func TestColorGradeNode_InactiveWithoutGrade(t *testing.T) {
+	require.False(t, (&colorGradeNode{}).Active())
+	require.False(t, (&colorGradeNode{grader: &stubProgramGrader{}}).Active(),
+		"a program grader with grading off must not add the node")
+	require.True(t, (&colorGradeNode{grader: &stubProgramGrader{g: noirGrader(t), intensity: 1}}).Active())
+}
+
+func TestColorGradeNode_Process10Bit(t *testing.T) {
+	g := noirGrader(t)
+	const w, h = 8, 4
+	data := make([]byte, ColorYUV422_10bit.FrameSize(w, h))
+	for i := 0; i < len(data); i += 2 {
+		data[i], data[i+1] = byte(i*7), 0x01
+	}
+	want := append([]byte(nil), data...)
+	require.NoError(t, g.ApplyYUV422P10(want, w, h, 1))
+
+	n := &colorGradeNode{grader: &stubProgramGrader{g: g, intensity: 1}}
+	pf := &ProcessingFrame{Data: data, Format: ColorYUV422_10bit, Width: w, Height: h}
+	require.Same(t, pf, n.Process(nil, pf))
+	require.Equal(t, want, pf.Data)
+	require.NoError(t, n.Err())
+}
+
+// gradeTestSwitcher builds a switcher with cam1 on program and returns the
+// frames the MXL raw sink sees.
+func gradeTestSwitcher(t *testing.T, program ProgramGrader, sources SourceGrader) (*Switcher, func() [][]byte) {
+	t.Helper()
+	sw := newTestSwitcher(t, newTestRelay())
+	t.Cleanup(sw.Close)
+	sw.SetPipelineCodecs(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+		return transition.NewMockEncoder(), nil
+	})
+	var mu sync.Mutex
+	var got [][]byte
+	sw.SetRawVideoSink(func(pf *ProcessingFrame) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, append([]byte(nil), pf.Data...))
+	})
+	sw.SetColorGraders(program, sources)
+	require.NoError(t, sw.BuildPipeline())
+	sw.RegisterSource("cam1", newTestRelay())
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	return sw, func() [][]byte {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([][]byte(nil), got...)
+	}
+}
+
+func ingest(sw *Switcher, data []byte, w, h int, pts int64) {
+	sw.IngestRawVideo("cam1", &ProcessingFrame{
+		Data: data, Format: ColorYUV420_8bit, Width: w, Height: h, PTS: pts, Codec: "h264",
+	})
+}
+
+// TestCPUPipeline_GradesProgram is the CPU-build failure an operator saw: a
+// look selected on an engine without a GPU changed nothing on program.
+func TestCPUPipeline_GradesProgram(t *testing.T) {
+	g := noirGrader(t)
+	sw, got := gradeTestSwitcher(t, &stubProgramGrader{g: g, intensity: 1}, nil)
+	pf := sw.PipelineFormat()
+	w, h := pf.Width, pf.Height
+	src := barsFrame(w, h)
+	ingest(sw, append([]byte(nil), src...), w, h, 1)
+
+	require.Eventually(t, func() bool { return len(got()) >= 1 }, time.Second, 5*time.Millisecond)
+	out := got()[0]
+	require.Equal(t, graded(t, g, src, w, h, 1), out, "program output must carry the look")
+	require.False(t, bytes.Equal(src, out), "noir must change saturated bars")
+}
+
+func TestCPUPipeline_GradesSourceOnACopy(t *testing.T) {
+	g := noirGrader(t)
+	sw, got := gradeTestSwitcher(t, nil, stubSourceGrader{"cam1": g})
+	pf := sw.PipelineFormat()
+	w, h := pf.Width, pf.Height
+	src := barsFrame(w, h)
+	in := append([]byte(nil), src...)
+	ingest(sw, in, w, h, 1)
+
+	require.Eventually(t, func() bool { return len(got()) >= 1 }, time.Second, 5*time.Millisecond)
+	require.Equal(t, graded(t, g, src, w, h, 1), got()[0], "program output must carry the source correction")
+	// A replay producer hands the same buffer in again for a slow-motion
+	// repeat; grading it in place would grade the repeat twice.
+	require.Equal(t, src, in, "the producer's buffer must be left as it was")
+
+	ingest(sw, in, w, h, 2)
+	require.Eventually(t, func() bool { return len(got()) >= 2 }, time.Second, 5*time.Millisecond)
+	require.Equal(t, got()[0], got()[1], "a repeated buffer must grade the same")
+}
+
+func TestCPUPipeline_UngradedSourcePassesThrough(t *testing.T) {
+	sw, got := gradeTestSwitcher(t, nil, stubSourceGrader{"cam2": noirGrader(t)})
+	pf := sw.PipelineFormat()
+	src := barsFrame(pf.Width, pf.Height)
+	ingest(sw, append([]byte(nil), src...), pf.Width, pf.Height, 1)
+	require.Eventually(t, func() bool { return len(got()) >= 1 }, time.Second, 5*time.Millisecond)
+	require.Equal(t, src, got()[0])
+}
