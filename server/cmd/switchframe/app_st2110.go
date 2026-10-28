@@ -35,7 +35,13 @@ type st2110State struct {
 	// txMu serialises what changes the program TX: sender activation and
 	// deactivation, which the Connection API runs per sender, and the
 	// restart on a pipeline format change.
-	txMu      sync.Mutex
+	txMu sync.Mutex
+
+	// newVideoTx and newAudioTx create the program TX sessions; nil uses
+	// the MTL instance.
+	newVideoTx func(st2110.TxVideoConfig) (st2110.VideoTransmitter, error)
+	newAudioTx func(st2110.TxAudioConfig) (st2110.AudioTransmitter, error)
+
 	output    *st2110.Output
 	dnsSDStop nmos.StopFunc
 
@@ -429,10 +435,13 @@ func (a *App) closeST2110() {
 		src.Stop()
 	}
 
-	// Stop output.
+	// Stop output. Under txMu, so a format change cannot create a TX
+	// between this and the instance closing.
+	state.txMu.Lock()
 	if state.output != nil {
 		state.output.Stop()
 	}
+	state.txMu.Unlock()
 
 	// Stop NMOS HTTP server.
 	if state.httpServer != nil {
@@ -800,6 +809,30 @@ func (a *App) activateST2110Sender(id string, params nmos.StagedParams) error {
 	return nil
 }
 
+// createVideoTx opens a program video TX session.
+func (s *st2110State) createVideoTx(cfg st2110.TxVideoConfig) (st2110.VideoTransmitter, error) {
+	if s.newVideoTx != nil {
+		return s.newVideoTx(cfg)
+	}
+	tx, err := s.instance.CreateVideoTx(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return tx, nil
+}
+
+// createAudioTx opens a program audio TX session.
+func (s *st2110State) createAudioTx(cfg st2110.TxAudioConfig) (st2110.AudioTransmitter, error) {
+	if s.newAudioTx != nil {
+		return s.newAudioTx(cfg)
+	}
+	tx, err := s.instance.CreateAudioTx(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return tx, nil
+}
+
 // startOrRestartST2110Output creates (or recreates) the st2110.Output and wires
 // the switcher raw video sink and mixer raw audio sink. Called when either the
 // video or audio sender is activated. If an output already exists it is stopped
@@ -819,7 +852,7 @@ func (a *App) startOrRestartST2110Output() error {
 	var audioTx st2110.AudioTransmitter
 
 	if state.videoTxCfg != nil {
-		vtx, err := state.instance.CreateVideoTx(*state.videoTxCfg)
+		vtx, err := state.createVideoTx(*state.videoTxCfg)
 		if err != nil {
 			return fmt.Errorf("create video TX: %w", err)
 		}
@@ -827,7 +860,7 @@ func (a *App) startOrRestartST2110Output() error {
 	}
 
 	if state.audioTxCfg != nil {
-		atx, err := state.instance.CreateAudioTx(*state.audioTxCfg)
+		atx, err := state.createAudioTx(*state.audioTxCfg)
 		if err != nil {
 			// Clean up video TX if we already created it.
 			if videoTx != nil {
@@ -839,10 +872,16 @@ func (a *App) startOrRestartST2110Output() error {
 	}
 
 	pf := a.sw.PipelineFormat()
-	state.output = st2110.NewOutput(st2110.OutputConfig{
+	cfg := st2110.OutputConfig{
 		FPSNum: pf.FPSNum,
 		FPSDen: pf.FPSDen,
-	})
+	}
+	if state.videoTxCfg != nil {
+		// The TX converter is sized at creation; the size guard keeps frames
+		// of another size, from a format change still under way, off it.
+		cfg.Width, cfg.Height = state.videoTxCfg.Format.Width, state.videoTxCfg.Format.Height
+	}
+	state.output = st2110.NewOutput(cfg)
 	state.output.Start(videoTx, audioTx, nil)
 
 	// Wire switcher raw video sink to the output.
@@ -929,6 +968,38 @@ func (a *App) wireFormatChange(gpu bool) {
 	a.sw.SetOnFormatChange(a.onPipelineFormatChange)
 }
 
+// dropST2110ProgramVideo takes the program video off the air after its TX
+// could not be created again, the way a failed activation leaves it: no
+// video configuration, no video sink, and the Sender inactive on the
+// Connection API rather than reported active with nothing sent. A running
+// audio Sender is started again alone, since the restart stopped it too.
+// Called with txMu held.
+func (a *App) dropST2110ProgramVideo() {
+	state := a.st2110State
+	sender := state.videoSenderID
+	state.videoTxCfg = nil
+	state.videoSenderID = ""
+	a.sw.SetRawVideoSink(nil)
+	a.updateGPURawVideoSink()
+	if state.connServer != nil && sender != "" {
+		state.connServer.SetSenderInactive(sender)
+	}
+	if state.audioTxCfg == nil {
+		return
+	}
+	if err := a.startOrRestartST2110Output(); err != nil {
+		slog.Error("ST 2110: restarting program audio alone failed", "error", err)
+		if state.connServer != nil && state.audioSenderID != "" {
+			state.connServer.SetSenderInactive(state.audioSenderID)
+		}
+		state.audioTxCfg = nil
+		state.audioSenderID = ""
+		if a.mixer != nil {
+			a.mixer.SetRawAudioSink(nil)
+		}
+	}
+}
+
 // onPipelineFormatChange is the switcher's OnFormatChange callback.
 func (a *App) onPipelineFormatChange(width, height, fpsNum, fpsDen int) {
 	if a.gpuRebuildOnFormat {
@@ -965,6 +1036,7 @@ func (a *App) updateST2110ProgramFormat() {
 			slog.Error("ST 2110: restarting the program output at the new format failed",
 				"format", fmt.Sprintf("%dx%d@%d/%d", pf.Width, pf.Height, pf.FPSNum, pf.FPSDen),
 				"error", err)
+			a.dropST2110ProgramVideo()
 		}
 	}
 
