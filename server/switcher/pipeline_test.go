@@ -700,7 +700,7 @@ func TestEnqueueVideoWork_DroppedFrameReleasesPool(t *testing.T) {
 
 func TestBuildNodeList_Ordering(t *testing.T) {
 	// The node ordering is architecturally critical:
-	// upstream-key → dve-compositor → compositor → colorgrade → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode
+	// upstream-key -> dve-compositor -> compositor -> colorgrade -> stmap-program -> raw-sink-mxl -> raw-sink-preview -> h264-encode
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(t, programRelay)
 

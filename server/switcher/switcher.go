@@ -378,6 +378,9 @@ type Switcher struct {
 	// pipeline or GPU source manager grades instead.
 	programGrader ProgramGrader
 	sourceGrader  atomic.Pointer[SourceGrader]
+	// sourceGradeErrLogged holds the sources whose correction has failed,
+	// so the failure is logged once per source, not once per frame.
+	sourceGradeErrLogged sync.Map
 
 	// Thumbnail cache — pipeline routing view JPEG thumbnails.
 	// Created in New(), passed to each sourceDecoder and tapped in
@@ -1251,7 +1254,7 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(vps, sps, pps []byte, wi
 //
 // CPU pipeline order:
 //
-//	[upstream-key → dve-compositor → compositor → colorgrade → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode]
+//	[upstream-key -> dve-compositor -> compositor -> colorgrade -> stmap-program -> raw-sink-mxl -> raw-sink-preview -> h264-encode]
 func (s *Switcher) buildNodeList() []PipelineNode {
 	return []PipelineNode{
 		&upstreamKeyNode{bridge: s.keyBridge},

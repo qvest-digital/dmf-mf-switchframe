@@ -27,11 +27,8 @@ type colorGradeController struct {
 	lutGen    uint64
 
 	// grade is the CPU pipeline's view of the same state: nil while grading
-	// is off. Read lock-free per frame.
+	// is off. Read lock-free per frame, written under mu with enabled.
 	grade atomic.Pointer[programGrade]
-	// onEnabledChange runs, outside mu, when grading turns on or off, so
-	// the CPU pipeline can add or drop its color grade node.
-	onEnabledChange func()
 }
 
 type programGrade struct {
@@ -45,24 +42,6 @@ func (c *colorGradeController) ProgramGrader() (*colorgrade.Grader, float32) {
 		return p.grader, p.intensity
 	}
 	return nil, 0
-}
-
-// notifyEnabled is deferred ahead of mu.Lock by every mutator, so it runs
-// after the unlock.
-func (c *colorGradeController) notifyEnabled(was bool) {
-	c.mu.RLock()
-	now := c.enabled
-	fn := c.onEnabledChange
-	c.mu.RUnlock()
-	if now != was && fn != nil {
-		fn()
-	}
-}
-
-func (c *colorGradeController) isEnabled() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.enabled
 }
 
 func newColorGradeController(store *colorgrade.Store) *colorGradeController {
@@ -87,7 +66,6 @@ func (c *colorGradeController) SetColorGrade(lookName string, intensity float32)
 		return fmt.Errorf("look %q not found: %w", lookName, err)
 	}
 
-	defer c.notifyEnabled(c.isEnabled())
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lookName = lookName
@@ -98,7 +76,6 @@ func (c *colorGradeController) SetColorGrade(lookName string, intensity float32)
 }
 
 func (c *colorGradeController) DisableColorGrade() {
-	defer c.notifyEnabled(c.isEnabled())
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.enabled = false
@@ -159,7 +136,6 @@ func (c *colorGradeController) UploadLUT(name string, data io.Reader) error {
 }
 
 func (c *colorGradeController) DeleteLUT(name string) error {
-	defer c.notifyEnabled(c.isEnabled())
 	c.mu.Lock()
 	// If the deleted look is currently active, clear the look but keep corrector.
 	if c.lookName == name {
@@ -176,7 +152,6 @@ func (c *colorGradeController) DeleteLUT(name string) error {
 
 // SetCorrector updates the color corrector state and regenerates the combined LUT.
 func (c *colorGradeController) SetCorrector(state colorgrade.CorrectorState) {
-	defer c.notifyEnabled(c.isEnabled())
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.corrector = state
@@ -192,7 +167,6 @@ func (c *colorGradeController) GetCorrector() colorgrade.CorrectorState {
 
 // ResetCorrector resets the corrector to the neutral default and regenerates the LUT.
 func (c *colorGradeController) ResetCorrector() {
-	defer c.notifyEnabled(c.isEnabled())
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.corrector = colorgrade.DefaultCorrectorState()

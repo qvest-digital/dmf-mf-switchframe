@@ -3,7 +3,10 @@ package switcher
 import (
 	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -64,11 +67,55 @@ func graded(t *testing.T, g *colorgrade.Grader, src []byte, w, h int, intensity 
 	return out
 }
 
-func TestColorGradeNode_InactiveWithoutGrade(t *testing.T) {
+func TestColorGradeNode_ActiveWithAGrader(t *testing.T) {
 	require.False(t, (&colorGradeNode{}).Active())
-	require.False(t, (&colorGradeNode{grader: &stubProgramGrader{}}).Active(),
-		"a program grader with grading off must not add the node")
-	require.True(t, (&colorGradeNode{grader: &stubProgramGrader{g: noirGrader(t), intensity: 1}}).Active())
+	// With grading off the node stays in and passes frames through, so
+	// turning grading on needs no rebuild.
+	n := &colorGradeNode{grader: &stubProgramGrader{}}
+	require.True(t, n.Active())
+	data := barsFrame(8, 4)
+	pf := &ProcessingFrame{Data: append([]byte(nil), data...), Format: ColorYUV420_8bit, Width: 8, Height: 4}
+	require.Same(t, pf, n.Process(nil, pf))
+	require.Equal(t, data, pf.Data)
+}
+
+// togglingGrader turns grading on and off under a running pipeline.
+type togglingGrader struct {
+	g atomic.Pointer[colorgrade.Grader]
+}
+
+func (t *togglingGrader) ProgramGrader() (*colorgrade.Grader, float32) {
+	if g := t.g.Load(); g != nil {
+		return g, 1
+	}
+	return nil, 0
+}
+
+// TestCPUPipeline_GradingFollowsToggleWithoutRebuild: the pipeline is built
+// once and grading follows the grader frame by frame.
+func TestCPUPipeline_GradingFollowsToggleWithoutRebuild(t *testing.T) {
+	g := noirGrader(t)
+	tg := &togglingGrader{}
+	sw, got := gradeTestSwitcher(t, tg, nil)
+	pf := sw.PipelineFormat()
+	w, h := pf.Width, pf.Height
+	src := barsFrame(w, h)
+	epoch := sw.pipelineEpoch.Load()
+
+	ingest(sw, append([]byte(nil), src...), w, h, 1)
+	require.Eventually(t, func() bool { return len(got()) >= 1 }, time.Second, 5*time.Millisecond)
+	require.Equal(t, src, got()[0], "grading off: frame untouched")
+
+	tg.g.Store(g)
+	ingest(sw, append([]byte(nil), src...), w, h, 2)
+	require.Eventually(t, func() bool { return len(got()) >= 2 }, time.Second, 5*time.Millisecond)
+	require.Equal(t, graded(t, g, src, w, h, 1), got()[1], "grading on: frame graded")
+
+	tg.g.Store(nil)
+	ingest(sw, append([]byte(nil), src...), w, h, 3)
+	require.Eventually(t, func() bool { return len(got()) >= 3 }, time.Second, 5*time.Millisecond)
+	require.Equal(t, src, got()[2], "grading off again: frame untouched")
+	require.Equal(t, epoch, sw.pipelineEpoch.Load(), "no rebuild")
 }
 
 func TestColorGradeNode_Process10Bit(t *testing.T) {
@@ -164,4 +211,21 @@ func TestCPUPipeline_UngradedSourcePassesThrough(t *testing.T) {
 	ingest(sw, append([]byte(nil), src...), pf.Width, pf.Height, 1)
 	require.Eventually(t, func() bool { return len(got()) >= 1 }, time.Second, 5*time.Millisecond)
 	require.Equal(t, src, got()[0])
+}
+
+type failingSourceGrader struct{ g *colorgrade.Grader }
+
+func (f failingSourceGrader) SourceGrader(string) *colorgrade.Grader { return f.g }
+
+func TestCPUPipeline_SourceGradeFailureLogsOnce(t *testing.T) {
+	var buf bytes.Buffer
+	sw, _ := gradeTestSwitcher(t, nil, failingSourceGrader{noirGrader(t)})
+	sw.log = slog.New(slog.NewTextHandler(&buf, nil))
+	// Odd dimensions make the 4:2:0 grade fail.
+	for i := 0; i < 5; i++ {
+		pf := &ProcessingFrame{Data: make([]byte, 64), Format: ColorYUV420_8bit, Width: 7, Height: 3, PTS: int64(i)}
+		out := sw.gradeSourceFrame("cam1", pf)
+		require.Same(t, pf, out, "an ungradable frame passes on unchanged")
+	}
+	require.Equal(t, 1, strings.Count(buf.String(), "source color correction skipped"))
 }

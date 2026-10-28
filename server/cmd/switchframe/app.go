@@ -1012,7 +1012,6 @@ func (a *App) initSubsystems() error {
 	// The CPU pipeline grades the program when no GPU pipeline does.
 	var programGrader switcher.ProgramGrader
 	if a.colorGradeCtrl != nil {
-		a.colorGradeCtrl.onEnabledChange = a.sw.RebuildPipeline
 		programGrader = a.colorGradeCtrl
 	}
 	a.sw.SetColorGraders(programGrader, a.sourceCorrectors)
