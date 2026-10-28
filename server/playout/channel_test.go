@@ -649,6 +649,73 @@ func TestChannel_StartRequiresCued(t *testing.T) {
 	}
 }
 
+// A stopped channel keeps its playlist, and the operator's play button is
+// enabled on it: starting it again plays that playlist from the top.
+func TestChannel_Start_AfterStopPlaysPlaylistAgain(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider:        fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
+	})
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(holdClipItem("a"), clipItem("b"))))
+	require.NoError(t, ch.Start())
+	require.NoError(t, ch.Next())
+	ch.Stop()
+	ch.itemProgress.Store(500) // where the stopped run left item "b"
+	ch.itemRemainMs.Store(1000)
+
+	require.NoError(t, ch.Start())
+	defer ch.Stop()
+
+	require.Equal(t, StateOnAir, ch.State())
+	st := ch.Status()
+	require.Equal(t, "a", st.CurrentItemID)
+	// The new run's own ticks may have moved them on already; a three
+	// frame item never reads half done or a second left.
+	require.NotEqual(t, 0.5, st.ItemProgress, "progress of the stopped run")
+	require.NotEqual(t, int64(1000), st.ItemRemainMs, "remaining time of the stopped run")
+}
+
+// Stop() ends the playlist through the scheduler before the run goroutine
+// sees its context cancelled, so a tick can land in between and find the
+// playlist complete. That tick must leave the stopped channel stopped.
+func TestChannel_TickAfterStopKeepsChannelStopped(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider:        fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
+	})
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(clipItem("a"))))
+	var states []ChannelState
+	ch.SetOnStateChange(func(s ChannelState) { states = append(states, s) })
+
+	// What Stop() does under the lock, without the run goroutine.
+	ch.mu.Lock()
+	ch.state = StateStopped
+	ch.scheduler.Stop()
+	ch.mu.Unlock()
+
+	require.True(t, ch.tick(time.Now()), "a stopped scheduler ends the run")
+	require.Equal(t, StateStopped, ch.State())
+	require.Empty(t, states)
+}
+
+// A playlist that has run out leaves the channel completed with the
+// playlist still loaded; starting it again plays it from the top.
+func TestChannel_Start_AfterCompletedPlaysPlaylistAgain(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider:        fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
+	})
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(clipItem("a"))))
+	require.NoError(t, ch.Start())
+	waitFor(t, 5*time.Second, func() bool { return ch.State() == StateCompleted })
+
+	require.NoError(t, ch.Start())
+	defer ch.Stop()
+
+	require.Equal(t, StateOnAir, ch.State())
+	waitFor(t, 5*time.Second, func() bool { return ch.State() == StateCompleted })
+}
+
 func TestChannel_JumpTo_NotFound(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider:        fakeProvider(3),
@@ -3181,4 +3248,68 @@ func TestChannel_EndAnchoredSecondaryEvents_FirstClip_FiresAtClipEnd(t *testing.
 		t.Fatalf("end-anchored event fired at tick %d (~%dms), want ~tick 45 (~1500ms): fired with stale/zero item duration",
 			firedTick, firedTick*33)
 	}
+}
+
+// stopGateIterator yields frames forever; once gate is armed, Next blocks
+// until it is released, holding the run goroutine inside a tick.
+type stopGateIterator struct {
+	gate    chan struct{}
+	blocked chan struct{}
+	armed   *atomic.Bool
+}
+
+func (g *stopGateIterator) Next() (*DecodedFrame, error) {
+	if g.armed.Load() && g.armed.CompareAndSwap(true, false) {
+		close(g.blocked)
+		<-g.gate
+	}
+	f := fakeFrames(1)[0]
+	return &f, nil
+}
+func (g *stopGateIterator) EstimateFPS() float64 { return 30 }
+func (g *stopGateIterator) TotalFrames() int     { return -1 }
+func (g *stopGateIterator) Close()               {}
+
+type stopGateProvider struct{ it *stopGateIterator }
+
+func (p stopGateProvider) Open(string) (FrameIterator, error) { return p.it, nil }
+
+// A Start that arrives while Stop() waits for the run goroutine must not
+// start a run until Stop() is done: Stop's onStop callback, which the app
+// uses to take the channel off the switcher, would otherwise land after the
+// new run's onStart and leave an on-air channel unregistered, and the old
+// run's cleanup would close the new run's clip iterator.
+func TestChannel_StartDuringStopWaitsForStop(t *testing.T) {
+	var armed atomic.Bool
+	it := &stopGateIterator{gate: make(chan struct{}), blocked: make(chan struct{}), armed: &armed}
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider:        stopGateProvider{it},
+		AllowedLocalPrefixes: []string{"/"},
+	})
+	var mu sync.Mutex
+	var events []string
+	ch.SetOnStart(func(string) { mu.Lock(); events = append(events, "start"); mu.Unlock() })
+	ch.SetOnStop(func(string) { mu.Lock(); events = append(events, "stop"); mu.Unlock() })
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(clipItem("a"))))
+	require.NoError(t, ch.Start())
+	defer ch.Stop()
+
+	// Hold the run goroutine inside a tick, then stop: Stop() waits for it.
+	armed.Store(true)
+	<-it.blocked
+	stopped := make(chan struct{})
+	go func() { ch.Stop(); close(stopped) }()
+	waitFor(t, time.Second, func() bool { return ch.State() == StateStopped })
+
+	started := make(chan error, 1)
+	go func() { started <- ch.Start() }()
+	time.Sleep(20 * time.Millisecond) // a Start that does not wait is done by now
+	close(it.gate)
+	<-stopped
+	require.NoError(t, <-started)
+
+	require.Equal(t, StateOnAir, ch.State())
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"start", "stop", "start"}, events)
 }
