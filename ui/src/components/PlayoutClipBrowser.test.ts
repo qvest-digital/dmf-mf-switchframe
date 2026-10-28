@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import PlayoutClipBrowser from './PlayoutClipBrowser.svelte';
+import { playoutClips } from '$lib/api/switch-api';
 import type { PlayoutClip } from '$lib/api/types';
 
 const mockClips: PlayoutClip[] = [
@@ -27,6 +28,21 @@ describe('PlayoutClipBrowser', () => {
 
 	afterEach(() => {
 		vi.useRealTimers();
+	});
+
+	// The list is fetched on mount and again when a clip is stored or
+	// removed, not on any other state change the panel receives.
+	it('fetches again only when the clip count moves', async () => {
+		const { rerender } = render(PlayoutClipBrowser, {
+			props: { onSelect: vi.fn(), clipCount: 2 },
+		});
+		expect(playoutClips).toHaveBeenCalledTimes(1);
+
+		await rerender({ onSelect: vi.fn(), clipCount: 2 });
+		expect(playoutClips).toHaveBeenCalledTimes(1);
+
+		await rerender({ onSelect: vi.fn(), clipCount: 3 });
+		expect(playoutClips).toHaveBeenCalledTimes(2);
 	});
 
 	it('renders with header', () => {
