@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.0.0-rc.26](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.25...mxl-v1.0.0-rc.26) (2026-10-28)
+
+
+### Features
+
+* **nmos:** state BCP-004-02 sender caps on MXL program senders ([#79](https://github.com/qvest-digital/dmf-mf-switchframe/issues/79)) ([830d4d8](https://github.com/qvest-digital/dmf-mf-switchframe/commit/830d4d8bd0729316d695256339c3a3fd26d50024))
+* **nmos:** state BCP-004-02 sender caps on ST 2110 program senders ([#81](https://github.com/qvest-digital/dmf-mf-switchframe/issues/81)) ([7f75665](https://github.com/qvest-digital/dmf-mf-switchframe/commit/7f75665f06a668613b7ffb8bfea7e7ec03ec7ba8))
+
+
+### Bug Fixes
+
+* **nmos:** record a successful sender activation as active again ([#87](https://github.com/qvest-digital/dmf-mf-switchframe/issues/87)) ([80a269d](https://github.com/qvest-digital/dmf-mf-switchframe/commit/80a269d55ba0444f9d38fa86af1d875e5de54e73))
+* **nmos:** republish the ST 2110 program Flow on a format change ([#82](https://github.com/qvest-digital/dmf-mf-switchframe/issues/82)) ([74dcd31](https://github.com/qvest-digital/dmf-mf-switchframe/commit/74dcd31ecd5ec5e4816cb6f42d96b4a61bbf2ba1))
+* **prism:** let a keyframe displace a full viewer queue ([#90](https://github.com/qvest-digital/dmf-mf-switchframe/issues/90)) ([3689a48](https://github.com/qvest-digital/dmf-mf-switchframe/commit/3689a48d839af15f540ade30934065fa781e8b14))
+* **switcher:** give every state snapshot a later timestamp ([c0b59d3](https://github.com/qvest-digital/dmf-mf-switchframe/commit/c0b59d38ba5c4e853a26e89f91e3e73e5b755805))
+* **ui:** close video frames no canvas shows and stop headless decode ([#83](https://github.com/qvest-digital/dmf-mf-switchframe/issues/83)) ([0be290a](https://github.com/qvest-digital/dmf-mf-switchframe/commit/0be290aa706ef823c920e90df5bbf06f3843e2f0))
+* **ui:** decode every source's audio into one AudioContext per engine ([#86](https://github.com/qvest-digital/dmf-mf-switchframe/issues/86)) ([20fc8b1](https://github.com/qvest-digital/dmf-mf-switchframe/commit/20fc8b16ce7beef8376553515a0046c458398230))
+* **ui:** ignore a state snapshot older than an engine's last one ([c0b59d3](https://github.com/qvest-digital/dmf-mf-switchframe/commit/c0b59d38ba5c4e853a26e89f91e3e73e5b755805))
+* **ui:** keep tiles and preview on the engine a failover moved them to ([#85](https://github.com/qvest-digital/dmf-mf-switchframe/issues/85)) ([094585c](https://github.com/qvest-digital/dmf-mf-switchframe/commit/094585cb8c354d8f3bbd8c3b0090981985fd0222))
+* **ui:** leave no audio decoder or context behind a destroyed pipeline ([#88](https://github.com/qvest-digital/dmf-mf-switchframe/issues/88)) ([8e63242](https://github.com/qvest-digital/dmf-mf-switchframe/commit/8e632423ad2a53f0da8031bc8f6ac258fba933be))
+* **ui:** move canvases back to engine A when engine B's pipeline goes ([#94](https://github.com/qvest-digital/dmf-mf-switchframe/issues/94)) ([02c9314](https://github.com/qvest-digital/dmf-mf-switchframe/commit/02c93148dc63fc5b38eeaf3c0af52d5df3743466))
+* **ui:** show the engine's upload progress in other browsers ([c0b59d3](https://github.com/qvest-digital/dmf-mf-switchframe/commit/c0b59d38ba5c4e853a26e89f91e3e73e5b755805))
+
 ## [1.0.0-rc.25](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.24...mxl-v1.0.0-rc.25) (2026-10-28)
 
 
