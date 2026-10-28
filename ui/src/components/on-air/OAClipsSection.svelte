@@ -1,8 +1,12 @@
 <script lang="ts">
+	import { deleteConfirmation } from '$lib/clips/delete-confirm';
+	import ConfirmDialog from '../ConfirmDialog.svelte';
+
 	interface ClipItem {
 		id: string;
 		name: string;
 		durationMs?: number;
+		libraryPath?: string;
 	}
 
 	interface Props {
@@ -16,6 +20,21 @@
 	let { clips, onUploadClip, onMakeSlate, onDeleteClip, uploadProgress }: Props = $props();
 
 	let fileInput: HTMLInputElement | undefined = $state();
+
+	// A library clip waiting for the operator to confirm its deletion.
+	let pendingDelete = $state<ClipItem | null>(null);
+	const pendingConfirm = $derived(pendingDelete ? deleteConfirmation(pendingDelete) : null);
+
+	function requestDelete(clip: ClipItem) {
+		if (deleteConfirmation(clip)) pendingDelete = clip;
+		else onDeleteClip(clip.id);
+	}
+
+	function confirmDelete() {
+		const clip = pendingDelete;
+		pendingDelete = null;
+		if (clip) onDeleteClip(clip.id);
+	}
 
 	function formatDuration(ms: number | undefined): string {
 		if (ms == null) return '--:--';
@@ -81,7 +100,7 @@
 					</button>
 					<button
 						class="clip-action delete-action"
-						onclick={() => onDeleteClip(clip.id)}
+						onclick={() => requestDelete(clip)}
 						title="Delete clip"
 					>
 						&times;
@@ -91,6 +110,15 @@
 		</div>
 	{/if}
 </div>
+
+<ConfirmDialog
+	open={pendingConfirm !== null}
+	title={pendingConfirm?.title ?? ''}
+	message={pendingConfirm?.message ?? ''}
+	confirmLabel="Delete"
+	onconfirm={confirmDelete}
+	oncancel={() => { pendingDelete = null; }}
+/>
 
 <style>
 	.clips-section {

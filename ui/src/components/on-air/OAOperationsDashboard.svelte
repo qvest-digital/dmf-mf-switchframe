@@ -24,6 +24,7 @@
 		id: string;
 		name: string;
 		durationMs?: number;
+		libraryPath?: string;
 	}
 
 	interface Props {
@@ -144,6 +145,7 @@
 				id: c.id,
 				name: c.name,
 				durationMs: c.durationMs,
+				libraryPath: c.libraryPath,
 			}));
 		}).catch(() => {
 			notify('warning', 'Failed to load clip library');
@@ -166,6 +168,7 @@
 				id: c.id,
 				name: c.name,
 				durationMs: c.durationMs,
+				libraryPath: c.libraryPath,
 			}));
 			setTimeout(() => { uploadProgress = null; }, 2000);
 		} catch {

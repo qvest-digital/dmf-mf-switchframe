@@ -575,6 +575,9 @@ export interface ClipInfo {
 	loop: boolean;
 	createdAt: string;
 	ephemeral: boolean;
+	/** Where the clip lives in the shared clip library; absent for a clip
+	 * stored only in this switcher. Deleting a library clip deletes it there. */
+	libraryPath?: string;
 }
 
 export interface RecordingFileInfo {
