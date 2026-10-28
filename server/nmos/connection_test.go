@@ -1558,3 +1558,64 @@ func TestConnectionConcurrentReceiverPatchesSerialized(t *testing.T) {
 		t.Error("active.master_enable should be false after the final deactivate")
 	}
 }
+
+// A transmission that stops on its own records its sender inactive. Where
+// that lands while an activation of the same sender is under way, the
+// activation's success is what the sender does afterwards, so /active reads
+// master_enable true rather than the stop that preceded it.
+func TestConnectionSenderActivationOutlastsAnInactiveMark(t *testing.T) {
+	var cs *ConnectionServer
+	cs = NewConnectionServer(ConnectionServerOpts{
+		OnActivateSender: func(id string, params StagedParams) error {
+			cs.SetSenderInactive(id)
+			return nil
+		},
+	})
+	cs.AddSender("sender-001", "")
+	ts := httptest.NewServer(cs.Handler())
+	defer ts.Close()
+
+	body := `{"master_enable":true,"activation":{"mode":"activate_immediate"},` +
+		`"transport_params":[{"destination_ip":"239.1.1.1","destination_port":5004}]}`
+	req, _ := http.NewRequest(http.MethodPatch,
+		ts.URL+"/x-nmos/connection/v1.1/single/senders/sender-001/staged", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH: %d", resp.StatusCode)
+	}
+
+	resp, err = http.Get(ts.URL + "/x-nmos/connection/v1.1/single/senders/sender-001/active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var active StagedParams
+	if err := json.NewDecoder(resp.Body).Decode(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active.MasterEnable == nil || !*active.MasterEnable {
+		t.Error("/active reads master_enable false after a successful activation")
+	}
+}
+
+// SetSenderInactive alone turns master_enable off and leaves the rest.
+func TestConnectionSetSenderInactive(t *testing.T) {
+	cs := NewConnectionServer(ConnectionServerOpts{})
+	cs.AddSender("sender-001", "")
+	cs.SetSenderInactive("sender-001")
+	cs.SetSenderInactive("unknown")
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	st := cs.senderStates["sender-001"]
+	if st.Active.MasterEnable == nil || *st.Active.MasterEnable {
+		t.Errorf("master_enable %v, want false", st.Active.MasterEnable)
+	}
+	if len(st.Active.TransportParams) != 1 {
+		t.Errorf("transport params %v changed", st.Active.TransportParams)
+	}
+}
