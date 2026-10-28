@@ -131,7 +131,7 @@ export interface MediaPipeline {
  * frames through PrismVideoDecoder -> VideoRenderBuffer -> PrismRenderer.
  */
 /** How long (ms) without a video frame before a source is considered stalled. */
-const STALL_THRESHOLD_MS = 1500;
+export const STALL_THRESHOLD_MS = 1500;
 /** How often (ms) to check for stalled sources. */
 const STALL_CHECK_INTERVAL_MS = 500;
 /** Extra time a reconnected source has for its first frame: certificate

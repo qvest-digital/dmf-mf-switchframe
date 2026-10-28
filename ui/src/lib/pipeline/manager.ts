@@ -41,6 +41,10 @@ export class PipelineManager {
 	/** Last time warm standby health check found a valid decoder (ms since epoch). */
 	private _warmStandbyLastHealthy = 0;
 
+	/** Whether a failover moved the tiles and the preview canvas to
+	 * Engine B. The A/B toggle moves only the program canvas. */
+	private viewsOnB = false;
+
 	/** Track which sources are connected to avoid duplicate work. */
 	private connectedSources = new Set<string>();
 	/** Track which tile canvases are attached. */
@@ -87,7 +91,9 @@ export class PipelineManager {
 		for (const key of stateSourceKeys) {
 			if (!this.connectedSources.has(key)) {
 				this.pipeline.addSource(key);
-				this.pipeline.connectSource(key);
+				// After a failover nothing shows Engine A; restoring to it
+				// connects every source.
+				if (!this.viewsOnB) this.pipeline.connectSource(key);
 				this.connectedSources.add(key);
 			}
 		}
@@ -96,6 +102,7 @@ export class PipelineManager {
 		for (const key of this.connectedSources) {
 			if (!(key in sources)) {
 				this.pipeline.removeSource(key);
+				if (this.viewsOnB && this.connectedSourcesB.delete(key)) this.pipelineB?.removeSource(key);
 				this.connectedSources.delete(key);
 				this.attachedCanvases.delete(key);
 			}
@@ -106,7 +113,7 @@ export class PipelineManager {
 			if (!this.attachedCanvases.has(key)) {
 				const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;
 				if (canvas) {
-					this.pipeline.attachCanvas(key, `tile-${key}`, canvas);
+					this.attachView(key, `tile-${key}`, canvas);
 					this.attachedCanvases.add(key);
 				}
 			}
@@ -116,7 +123,7 @@ export class PipelineManager {
 		// wasn't in the pipeline yet (race between effects and source sync).
 		if (this.pendingPreview) {
 			const { source, canvas } = this.pendingPreview;
-			const attached = this.pipeline.attachCanvas(source, 'preview', canvas);
+			const attached = this.attachView(source, 'preview', canvas);
 			if (attached) {
 				this.currentPreviewCanvas = source;
 				this.currentPreviewCanvasEl = canvas;
@@ -160,10 +167,11 @@ export class PipelineManager {
 
 		if (needsProgramAttach) {
 			if (this.currentProgramCanvas) {
-				this.pipeline.detachCanvas(this.currentProgramCanvas, 'program');
+				this.detachEverywhere(this.currentProgramCanvas, 'program');
 			}
 			if (programCanvasEl) {
-				this.pipeline.attachCanvas(programKey, 'program', programCanvasEl);
+				const pgm = this._activeEngine === 'B' && this.pipelineB ? this.pipelineB : this.pipeline;
+				pgm.attachCanvas(programKey, 'program', programCanvasEl);
 				this.currentProgramCanvas = programKey;
 				this.currentProgramCanvasEl = programCanvasEl;
 			} else {
@@ -182,10 +190,10 @@ export class PipelineManager {
 		if (needsPreviewAttach) {
 			// Detach old preview renderer from previous source
 			if (this.currentPreviewCanvas) {
-				this.pipeline.detachCanvas(this.currentPreviewCanvas, 'preview');
+				this.detachEverywhere(this.currentPreviewCanvas, 'preview');
 			}
 			if (previewCanvasEl && previewSource) {
-				const attached = this.pipeline.attachCanvas(previewSource, 'preview', previewCanvasEl);
+				const attached = this.attachView(previewSource, 'preview', previewCanvasEl);
 				if (!attached) {
 					// Source not in pipeline yet — store pending attachment
 					// so syncSources can retry after adding the source.
@@ -234,15 +242,15 @@ export class PipelineManager {
 	onLayoutChange(): void {
 		// Detach all tile canvases
 		for (const key of this.attachedCanvases) {
-			this.pipeline.detachCanvas(key, `tile-${key}`);
+			this.detachEverywhere(key, `tile-${key}`);
 		}
 		// Detach program canvas
 		if (this.currentProgramCanvas) {
-			this.pipeline.detachCanvas(this.currentProgramCanvas, 'program');
+			this.detachEverywhere(this.currentProgramCanvas, 'program');
 		}
 		// Detach preview canvas
 		if (this.currentPreviewCanvas) {
-			this.pipeline.detachCanvas(this.currentPreviewCanvas, 'preview');
+			this.detachEverywhere(this.currentPreviewCanvas, 'preview');
 		}
 		// Reset tracking
 		this.attachedCanvases = new Set<string>();
@@ -251,6 +259,30 @@ export class PipelineManager {
 		this.currentPreviewCanvas = null;
 		this.currentPreviewCanvasEl = null;
 		this.pendingPreview = null;
+	}
+
+	/**
+	 * Attach a tile or preview canvas on the engine that shows them: Engine
+	 * B after a failover, which subscribes the source there if it has not
+	 * yet, else Engine A.
+	 */
+	private attachView(key: string, canvasId: string, canvas: HTMLCanvasElement): boolean {
+		if (this.viewsOnB && this.pipelineB) {
+			if (!this.connectedSourcesB.has(key)) {
+				this.pipelineB.addSource(key);
+				this.pipelineB.connectSource(key);
+				this.connectedSourcesB.add(key);
+			}
+			return this.pipelineB.attachCanvas(key, canvasId, canvas);
+		}
+		return this.pipeline.attachCanvas(key, canvasId, canvas);
+	}
+
+	/** Detach a canvas from both engines: a renderer left on the other one
+	 * would go on drawing its source onto the same canvas. */
+	private detachEverywhere(key: string, canvasId: string): void {
+		this.pipeline.detachCanvas(key, canvasId);
+		this.pipelineB?.detachCanvas(key, canvasId);
 	}
 
 	/** Start the rAF audio metering loop. */
@@ -342,6 +374,7 @@ export class PipelineManager {
 		this.connectedSourcesB = new Set<string>();
 		this._warmStandbyActive = false;
 		this._warmStandbyLastHealthy = 0;
+		this.viewsOnB = false;
 	}
 
 	/**
@@ -531,9 +564,11 @@ export class PipelineManager {
 				for (const key of sourceKeys) {
 					this.pipelineB.addSource(key);
 					this.pipelineB.connectSource(key);
+					this.connectedSourcesB.add(key);
 				}
 				this.pipelineB.addSource('program-preview');
 				this.pipelineB.connectSource('program-preview');
+				this.connectedSourcesB.add('program-preview');
 
 				// Wait for Engine B to have media (up to 1.5s)
 				await this.waitForPipelineReady(this.pipelineB, 1500);
@@ -544,6 +579,7 @@ export class PipelineManager {
 
 			// Swap tile + preview canvases from A → B
 			this.swapTileAndPreviewCanvases(this.pipeline, this.pipelineB!);
+			this.viewsOnB = true;
 
 			// Nothing shows Engine A any more: stop decoding it headless.
 			for (const key of this.connectedSources) {
@@ -578,6 +614,7 @@ export class PipelineManager {
 
 			// Swap tile + preview canvases from B → A
 			this.swapTileAndPreviewCanvases(this.pipelineB, this.pipeline);
+			this.viewsOnB = false;
 
 			this._activeEngine = 'A';
 
@@ -650,6 +687,16 @@ export class PipelineManager {
 		// If was recently healthy (within 5s), still consider healthy
 		// (decoder or video may be briefly absent during stream renegotiation)
 		return Date.now() - this._warmStandbyLastHealthy < 5000;
+	}
+
+	/**
+	 * Whether Engine B's program feed delivered a frame within the last
+	 * withinMs. A program stall seen on both engines is this browser or its
+	 * network, not Engine A, and a failover would only move it.
+	 */
+	engineBDelivering(withinMs: number): boolean {
+		const last = this.pipelineB?.getLastFrameTime('program-preview') ?? 0;
+		return last > 0 && performance.now() - last <= withinMs;
 	}
 
 	/** Pre-warm audio contexts on both pipelines.
