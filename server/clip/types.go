@@ -45,6 +45,9 @@ type Clip struct {
 	Loop       bool       `json:"loop"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	Ephemeral  bool       `json:"ephemeral"`
+	// LibraryPath is where the media lives in the store's clip library,
+	// relative to it. Empty for a clip stored only locally under Filename.
+	LibraryPath string `json:"libraryPath,omitempty"`
 }
 
 // ClipPlayerState is broadcast in ControlRoomState.

@@ -2,7 +2,9 @@ package output
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zsiec/switchframe/server/internal/createonly"
 	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
@@ -19,6 +22,13 @@ type RecorderConfig struct {
 	RotateAfter    time.Duration // Rotate after this duration; default 1h, 0 = disabled.
 	MaxFileSize    int64         // Rotate after this many bytes; default 0 (unlimited).
 	FilenamePrefix string        // Optional prefix for recording files; default "program".
+	// ArchiveDir, when set, receives every finished file, copied there
+	// front to back as a new file once it is closed, and the local copy is
+	// then removed. It suits a create-only directory such as an
+	// object-store mount, which the recorder could not write to directly:
+	// the periodic fsync would end the upload. Files a previous run left in
+	// Dir are archived when recording starts.
+	ArchiveDir string
 }
 
 // syncBytesThreshold is the number of bytes written between periodic fsync
@@ -46,6 +56,10 @@ type FileRecorder struct {
 	cachedPATMPT   []byte    // cached PAT+PMT packets from stream for rotated files
 	bytesSinceSync int64     // bytes written since last fsync
 	lastSyncTime   time.Time // time of last periodic fsync
+
+	// Copies into ArchiveDir in flight, and the files they copy.
+	archiving sync.WaitGroup
+	inArchive map[string]bool
 }
 
 // NewFileRecorder creates a FileRecorder with the given configuration.
@@ -84,12 +98,95 @@ func (r *FileRecorder) Start(_ context.Context) error {
 	r.bytes.Store(0)
 	r.errMsg = ""
 
+	r.archiveLeftoversLocked()
 	if err := r.openFileLocked(now); err != nil {
 		return err
 	}
 
 	r.state = StateActive
 	return nil
+}
+
+// archiveLeftoversLocked archives the recordings a previous run left in
+// Dir, such as one cut short by a restart. Must be called with r.mu held,
+// before the new file is opened.
+func (r *FileRecorder) archiveLeftoversLocked() {
+	if r.config.ArchiveDir == "" {
+		return
+	}
+	entries, err := os.ReadDir(r.config.Dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".ts" {
+			continue
+		}
+		r.archiveLocked(filepath.Join(r.config.Dir, e.Name()))
+	}
+}
+
+// archiveLocked copies a closed recording into ArchiveDir in the
+// background, then removes it from Dir. On failure the file stays in Dir
+// and the next Start retries it. Must be called with r.mu held.
+func (r *FileRecorder) archiveLocked(path string) {
+	if r.config.ArchiveDir == "" || r.inArchive[path] {
+		return
+	}
+	if r.inArchive == nil {
+		r.inArchive = map[string]bool{}
+	}
+	r.inArchive[path] = true
+	dst := filepath.Join(r.config.ArchiveDir, filepath.Base(path))
+	r.archiving.Add(1)
+	go func() {
+		defer r.archiving.Done()
+		err := archiveRecording(dst, path)
+		r.mu.Lock()
+		delete(r.inArchive, path)
+		r.mu.Unlock()
+		if err != nil {
+			slog.Error("recording not archived", "file", path, "archive", dst, "err", err)
+			return
+		}
+		slog.Info("recording archived", "file", path, "archive", dst)
+	}()
+}
+
+// archiveRecording copies src to the new file dst and removes src. A dst
+// that already exists is an earlier archive of the same file: complete when
+// it has src's size, and the local removal is what did not happen; cut
+// short by a restart otherwise, since a copy that dies still leaves a file
+// in an object store, and then replaced. Only this recorder's engine
+// writes into its archive directory, so nothing else owns that file.
+func archiveRecording(dst, src string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	err := createonly.Copy(dst, src)
+	if errors.Is(err, fs.ErrExist) {
+		si, serr := os.Stat(src)
+		di, derr := os.Stat(dst)
+		switch {
+		case serr != nil:
+			err = serr
+		case derr == nil && si.Size() == di.Size():
+			err = nil
+		default:
+			if err = os.Remove(dst); err == nil {
+				err = createonly.Copy(dst, src)
+			}
+		}
+	}
+	if err != nil {
+		return err
+	}
+	return os.Remove(src)
+}
+
+// WaitArchived blocks until every archive copy started so far is done.
+func (r *FileRecorder) WaitArchived() {
+	r.archiving.Wait()
 }
 
 // openFileLocked creates a new file for recording. Must be called with r.mu held.
@@ -154,6 +251,8 @@ func (r *FileRecorder) rotateLocked() error {
 		}
 		if err := r.file.Close(); err != nil {
 			slog.Error("error closing rotated file", "file", r.filename, "err", err)
+		} else {
+			r.archiveLocked(filepath.Join(r.config.Dir, r.filename))
 		}
 		// Clear the handle now that the old file is closed. If
 		// openFileLocked below fails, r.file must not point at the
@@ -296,6 +395,9 @@ func (r *FileRecorder) Close() error {
 	closeErr := r.file.Close()
 	r.file = nil
 	r.state = StateStopped
+	if closeErr == nil {
+		r.archiveLocked(filepath.Join(r.config.Dir, r.filename))
+	}
 	if syncErr != nil {
 		if closeErr != nil {
 			return fmt.Errorf("%w; close: %v", syncErr, closeErr)

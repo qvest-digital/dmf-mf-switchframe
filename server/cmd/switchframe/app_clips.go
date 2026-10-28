@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -29,6 +30,35 @@ func (a *App) initClips() error {
 		return fmt.Errorf("create clip store: %w", err)
 	}
 	slog.Info("clip store initialized", "path", clipDir, "maxBytes", a.cfg.ClipStorageMax)
+	if dir := a.cfg.ClipLibraryDir; dir != "" {
+		if err := store.AttachLibrary(dir, a.cfg.EngineLabel); err != nil {
+			return err
+		}
+		res, err := store.ScanLibrary()
+		if err != nil {
+			return err
+		}
+		slog.Info("clip library attached", "path", dir,
+			"added", res.Added, "removed", res.Removed, "skipped", res.Skipped)
+		// Clips a restart caught before they reached the library, copied
+		// in the background: they play from local storage meanwhile. The
+		// store may still be completing the upload the restart cut short,
+		// and refuses to replace it until then, so a few more tries follow.
+		go func() {
+			for try := 0; try < 6; try++ {
+				if try > 0 {
+					time.Sleep(10 * time.Second)
+				}
+				n, left := store.PublishLocal()
+				if n > 0 {
+					slog.Info("clips: copied into the clip library after a restart", "clips", n)
+				}
+				if left == 0 {
+					return
+				}
+			}
+		}()
+	}
 
 	// Use native 10-bit decoders for clips when the pipeline is professional mode,
 	// preserving 10-bit quality through the clip decode path.
@@ -424,6 +454,12 @@ func (a *App) handleReplayClipExported(source string, tempFile string, store *cl
 		"duration_ms", c.DurationMs,
 		"size", c.ByteSize,
 	)
+
+	if err := store.PublishSoon(c.ID); errors.Is(err, clip.ErrPublishPending) {
+		slog.Info("clips: replay clip copied into the clip library once the other engine's copy ends", "clipID", c.ID)
+	} else if err != nil {
+		slog.Warn("clips: replay clip not copied into the clip library", "clipID", c.ID, "error", err)
+	}
 
 	// Broadcast state change so UI updates.
 	a.clearLastOperator()
