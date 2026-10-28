@@ -301,7 +301,8 @@ type Switcher struct {
 	programSource       string
 	previewSource       string
 	programRelay        *distribution.Relay
-	seq                 uint64 // always use atomic ops, even under s.configMu, to prevent races on lock-free read paths
+	seq                 uint64       // always use atomic ops, even under s.configMu, to prevent races on lock-free read paths
+	lastStateStamp      atomic.Int64 // Timestamp of the latest state snapshot; see stateStamp
 	stateCallbacks      []func(internal.ControlRoomState)
 	health              *healthMonitor
 	audioHandler        func(sourceKey string, frame *media.AudioFrame)
@@ -3808,6 +3809,23 @@ func (s *Switcher) State() internal.ControlRoomState {
 	return state
 }
 
+// stateStamp returns the time in Unix milliseconds, but later than any
+// stamp it returned before. A browser keeps the state snapshot with the
+// latest Timestamp: snapshots are built on several goroutines, and each
+// reaches the browser on a stream of its own, so they can arrive out of
+// order. Two snapshots built within one millisecond would tie, and the
+// browser could keep the one built first.
+func (s *Switcher) stateStamp() int64 {
+	now := time.Now().UnixMilli()
+	for {
+		last := s.lastStateStamp.Load()
+		stamp := max(now, last+1)
+		if s.lastStateStamp.CompareAndSwap(last, stamp) {
+			return stamp
+		}
+	}
+}
+
 // DebugSnapshot returns a map of debug instrumentation data for diagnostics.
 func (s *Switcher) DebugSnapshot() map[string]any {
 	s.configMu.Lock()
@@ -4094,6 +4112,9 @@ func (s *Switcher) publishClockSyncMetrics(info internal.ClockSyncInfo) {
 }
 
 func (s *Switcher) buildStateLocked() internal.ControlRoomState {
+	// Stamped before anything is read, so a later stamp never carries
+	// older contents.
+	stamp := s.stateStamp()
 	srcMap := *s.sourcesAtomic.Load()
 	tally := make(map[string]string, len(srcMap))
 	sources := make(map[string]internal.SourceInfo, len(srcMap))
@@ -4170,7 +4191,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		TallyState:               tally,
 		Sources:                  sources,
 		Seq:                      atomic.LoadUint64(&s.seq),
-		Timestamp:                time.Now().UnixMilli(),
+		Timestamp:                stamp,
 		LastCommandSeq:           s.lastCommandSeq.Load(),
 		LastExecutedSeq:          s.lastExecutedSeq.Load(),
 		ClockSync:                clockSyncAsInfo(clock.GetSyncState()),
