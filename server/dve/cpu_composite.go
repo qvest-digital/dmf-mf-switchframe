@@ -28,6 +28,8 @@ func CompositeCPU(dst []byte, dstW, dstH int, src []byte, srcW, srcH int,
 		if len(dst) < f.FrameSize(dstW, dstH) || len(src) < f.FrameSize(srcW, srcH) {
 			return
 		}
+		// The planes are little-endian uint16, read in place: every target
+		// this builds for (amd64, arm64) is little-endian.
 		d := unsafe.Slice((*uint16)(unsafe.Pointer(&dst[0])), len(dst)/2)
 		s := unsafe.Slice((*uint16)(unsafe.Pointer(&src[0])), len(src)/2)
 		composite(d, dstW, dstH, s, srcW, srcH, &depth10, t, inv, aabb)
