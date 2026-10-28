@@ -1,6 +1,12 @@
 package mxl
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
+
+// DefaultGCInterval is how often NewInstance collects the domain.
+const DefaultGCInterval = 30 * time.Second
 
 // ErrMXLNotAvailable is returned by stub constructors when the mxl build tag
 // is not set. Callers should check for this at startup and provide a clear

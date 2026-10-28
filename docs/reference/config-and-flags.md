@@ -145,6 +145,7 @@ All flags are defined in [`parseConfig`](../../server/cmd/switchframe/main.go). 
 | `--mxl-output-audio-def` | string | `""` | Path to MXL output audio flow definition JSON |
 | `--mxl-domain` | string | `/dev/shm/mxl` | MXL shared memory domain path |
 | `--mxl-discover` | bool | `false` | List available MXL flows and exit |
+| `--mxl-gc-interval` | duration | `30s` | How often to remove every flow in the MXL domain that no writer holds, including flows other processes only read. `0`: never |
 
 ### NMOS for MXL inputs (BCP-007-03)
 

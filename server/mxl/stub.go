@@ -29,6 +29,11 @@ func NewInstance(domain string) (*Instance, error) {
 	return nil, ErrMXLNotAvailable
 }
 
+// NewInstanceGC returns ErrMXLNotAvailable when the mxl build tag is not set.
+func NewInstanceGC(domain string, gcInterval time.Duration) (*Instance, error) {
+	return nil, ErrMXLNotAvailable
+}
+
 // OpenReader returns ErrMXLNotAvailable.
 func (i *Instance) OpenReader(flowID string) (DiscreteReader, error) {
 	return nil, ErrMXLNotAvailable
