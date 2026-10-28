@@ -890,13 +890,23 @@ type liveRing struct {
 	period time.Duration
 	size   uint64
 	data   []byte // every grain's payload; one byte when nil
+	burst  uint64 // grains committed at once, every burst periods; 1 when 0
 
 	mu      sync.Mutex
 	tooLate int
 	maxLag  uint64
+	read    int    // grains read
+	last    uint64 // index of the last grain read
+	skips   int    // reads that did not follow the previous index
 }
 
-func (r *liveRing) head() uint64 { return uint64(time.Since(r.start) / r.period) }
+func (r *liveRing) head() uint64 {
+	n := uint64(time.Since(r.start) / r.period)
+	if r.burst > 1 {
+		n -= n % r.burst
+	}
+	return n
+}
 
 func (r *liveRing) ReadGrain(index uint64, timeoutNs uint64) ([]byte, GrainInfo, error) {
 	deadline := time.Now().Add(time.Duration(timeoutNs))
@@ -916,6 +926,11 @@ func (r *liveRing) ReadGrain(index uint64, timeoutNs uint64) ([]byte, GrainInfo,
 	if lag := head - index; lag > r.maxLag {
 		r.maxLag = lag
 	}
+	if r.read > 0 && index != r.last+1 {
+		r.skips++
+	}
+	r.read++
+	r.last = index
 	data := r.data
 	if data == nil {
 		data = []byte{0}
@@ -923,7 +938,9 @@ func (r *liveRing) ReadGrain(index uint64, timeoutNs uint64) ([]byte, GrainInfo,
 	return data, GrainInfo{Index: index, GrainSize: uint32(len(data)), TotalSlices: 1, ValidSlices: 1}, nil
 }
 
-func (r *liveRing) ConfigInfo() FlowConfig     { return FlowConfig{Format: DataFormatVideo} }
+func (r *liveRing) ConfigInfo() FlowConfig {
+	return FlowConfig{Format: DataFormatVideo, GrainRate: Rational{int64(time.Second / r.period), 1}}
+}
 func (r *liveRing) HeadIndex() (uint64, error) { return r.head(), nil }
 func (r *liveRing) Close() error               { return nil }
 
@@ -955,5 +972,33 @@ func TestReader_SlowConsumerStaysNearHead(t *testing.T) {
 	}
 	if ring.maxLag > videoMaxLag+2 {
 		t.Fatalf("reader fell %d grains behind the head, bound %d", ring.maxLag, videoMaxLag)
+	}
+}
+
+// A producer that commits in bursts, as a mirrored flow or a jittery source
+// does, leaves the head several grains ahead of a reader whose consumer
+// keeps up. None of those grains is skipped: the consumer drains the burst.
+func TestReader_FastConsumerKeepsEveryGrainOfABurst(t *testing.T) {
+	for _, burst := range []uint64{6, 12} {
+		t.Run(fmt.Sprint(burst), func(t *testing.T) {
+			ring := &liveRing{start: time.Now(), period: 4 * time.Millisecond, size: 40, burst: burst}
+			r := NewVideoReader(ReaderConfig{TimeoutMs: 100})
+			ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+			defer cancel()
+			r.StartVideo(ctx, ring)
+			for range r.Video() {
+			}
+			r.Wait()
+
+			ring.mu.Lock()
+			defer ring.mu.Unlock()
+			if ring.read < 100 {
+				t.Fatalf("only %d grains read", ring.read)
+			}
+			if ring.skips != 0 || ring.tooLate != 0 {
+				t.Fatalf("a consumer that keeps up lost grains: %d skips, %d re-syncs over %d reads",
+					ring.skips, ring.tooLate, ring.read)
+			}
+		})
 	}
 }
