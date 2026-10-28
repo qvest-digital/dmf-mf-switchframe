@@ -7,6 +7,10 @@ const (
 	CapColorspace    = "urn:x-nmos:cap:format:colorspace"
 	CapChannelCount  = "urn:x-nmos:cap:format:channel_count"
 	CapSampleDepth   = "urn:x-nmos:cap:format:sample_depth"
+
+	CapColorSampling  = "urn:x-nmos:cap:format:color_sampling"
+	CapComponentDepth = "urn:x-nmos:cap:format:component_depth"
+	CapPacketTime     = "urn:x-nmos:cap:transport:packet_time"
 )
 
 // SenderCaps is a Sender's caps per BCP-004-02: one constraint set stating
@@ -53,4 +57,21 @@ func SenderCaps(f *Flow, channels int, version Version) map[string]any {
 		"constraint_sets": []map[string]any{set},
 		"version":         version,
 	}
+}
+
+// ST2110SenderCaps is SenderCaps for an ST 2110 Sender, which also states
+// what its transmitted stream fixes whatever the flow: a picture goes out as
+// 10-bit YCbCr 4:2:2 and audio as packets of packetTimeMs milliseconds.
+func ST2110SenderCaps(f *Flow, channels int, packetTimeMs float64, version Version) map[string]any {
+	caps := SenderCaps(f, channels, version)
+	set := caps["constraint_sets"].([]map[string]any)[0]
+	one := func(v any) map[string]any { return map[string]any{"enum": []any{v}} }
+	switch f.Format {
+	case FormatVideo:
+		set[CapColorSampling] = one("YCbCr-4:2:2")
+		set[CapComponentDepth] = one(10)
+	case FormatAudio:
+		set[CapPacketTime] = one(packetTimeMs)
+	}
+	return caps
 }

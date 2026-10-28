@@ -1251,7 +1251,7 @@ func TestMXLNMOS_ProgramSendersStateTheirCaps(t *testing.T) {
 	}
 	for _, snd := range senders {
 		caps, _ := snd["caps"].(map[string]any)
-		if v, _ := caps["version"].(string); v == "" || v > snd["version"].(string) {
+		if v, _ := caps["version"].(string); v == "" || nmos.CompareVersions(v, snd["version"].(string)) > 0 {
 			t.Errorf("sender %s caps version %q, resource version %v", snd["id"], v, snd["version"])
 		}
 		sets, _ := caps["constraint_sets"].([]any)
