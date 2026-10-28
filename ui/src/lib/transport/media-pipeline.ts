@@ -204,7 +204,10 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	 * gesture; resumeAllAudio resumes it.
 	 */
 	let audioContext: AudioContext | null = null;
+	/** Set by destroy: nothing may create a context it would not close. */
+	let destroyed = false;
 	function sharedAudioContext(): AudioContext {
+		if (destroyed) throw new Error('media pipeline destroyed');
 		if (!audioContext) {
 			audioContext = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
 			if (audioContext.state === 'running') void audioContext.suspend();
@@ -216,7 +219,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		return {
 			onTrackInfo(tracks: TrackInfo[]) {
 				const source = sources.get(key);
-				if (!source) return;
+				if (!source || destroyed) return;
 
 				// Notify once that MoQ is active (catalog received = WebTransport
 				// + MoQ handshake succeeded, control data will flow on state changes).
@@ -243,6 +246,13 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 						const channels = track.channels || 2;
 						const audioDecoder = new PrismAudioDecoder();
 						audioDecoder.configure(codec, sampleRate, channels, sharedAudioContext()).then(() => {
+							// The source was removed, or the pipeline destroyed,
+							// while the decoder was configuring: nothing would
+							// ever reset it.
+							if (sources.get(key) !== source) {
+								audioDecoder.reset();
+								return;
+							}
 							audioDecoder.setMuted(!unmutedSources.has(key));
 							audioDecoder.enableMetering();
 							source.audioDecoder = audioDecoder;
@@ -617,6 +627,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	}
 
 	function destroy(): void {
+		destroyed = true;
 		stopStallDetection();
 		document.removeEventListener("visibilitychange", handleVisibilityChange);
 		window.removeEventListener("focus", handleWindowFocus);
