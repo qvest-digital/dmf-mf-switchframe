@@ -15,6 +15,10 @@ import (
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
+// st2110PacketTimeMs is the packet time program audio is transmitted at,
+// which its Sender's caps state.
+const st2110PacketTimeMs = 1
+
 // st2110State holds all ST 2110 subsystem state for the application lifecycle.
 type st2110State struct {
 	instance   *st2110.Instance
@@ -245,7 +249,7 @@ func (a *App) initST2110(ctx context.Context) error {
 		Parents:   []string{},
 	})
 
-	store.AddFlow(&nmos.Flow{
+	pgmVideoFlow := &nmos.Flow{
 		ID:          pgmVideoFlowID,
 		Label:       "Program Video Flow",
 		Format:      nmos.FormatVideo,
@@ -261,7 +265,8 @@ func (a *App) initST2110(ctx context.Context) error {
 			Numerator:   int64(pf.FPSNum),
 			Denominator: int64(pf.FPSDen),
 		},
-	})
+	}
+	store.AddFlow(pgmVideoFlow)
 
 	store.AddSender(&nmos.Sender{
 		ID:                pgmVideoSenderID,
@@ -273,6 +278,7 @@ func (a *App) initST2110(ctx context.Context) error {
 		ManifestHref:      nmos.StringPtr(fmt.Sprintf("http://%s:%d/x-nmos/connection/v1.1/single/senders/%s/transportfile", a.cfg.ST2110IP, a.cfg.ST2110NMOSPort, pgmVideoSenderID)),
 		Tags:              map[string][]string{},
 		InterfaceBindings: []string{},
+		Caps:              nmos.ST2110SenderCaps(pgmVideoFlow, 0, st2110PacketTimeMs, nmos.NewVersion()),
 		Subscription:      nmos.SenderSubscription{},
 	})
 	senderIDs = append(senderIDs, pgmVideoSenderID)
@@ -292,7 +298,7 @@ func (a *App) initST2110(ctx context.Context) error {
 		},
 	})
 
-	store.AddFlow(&nmos.Flow{
+	pgmAudioFlow := &nmos.Flow{
 		ID:        pgmAudioFlowID,
 		Label:     "Program Audio Flow",
 		Format:    nmos.FormatAudio,
@@ -306,7 +312,8 @@ func (a *App) initST2110(ctx context.Context) error {
 			Denominator: 1,
 		},
 		BitDepth: 24,
-	})
+	}
+	store.AddFlow(pgmAudioFlow)
 
 	store.AddSender(&nmos.Sender{
 		ID:                pgmAudioSenderID,
@@ -318,6 +325,7 @@ func (a *App) initST2110(ctx context.Context) error {
 		ManifestHref:      nmos.StringPtr(fmt.Sprintf("http://%s:%d/x-nmos/connection/v1.1/single/senders/%s/transportfile", a.cfg.ST2110IP, a.cfg.ST2110NMOSPort, pgmAudioSenderID)),
 		Tags:              map[string][]string{},
 		InterfaceBindings: []string{},
+		Caps:              nmos.ST2110SenderCaps(pgmAudioFlow, 2, st2110PacketTimeMs, nmos.NewVersion()),
 		Subscription:      nmos.SenderSubscription{},
 	})
 	senderIDs = append(senderIDs, pgmAudioSenderID)
@@ -766,7 +774,7 @@ func (a *App) activateST2110Sender(id string, params nmos.StagedParams) error {
 				SampleRate:   48000,
 				Channels:     2,
 				BitDepth:     24,
-				PacketTimeUs: 1000,
+				PacketTimeUs: st2110PacketTimeMs * 1000,
 			},
 			FrameBuffers: 3,
 		}
