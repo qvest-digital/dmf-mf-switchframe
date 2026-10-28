@@ -19,7 +19,6 @@ function createMockPipeline() {
 		removeSource: vi.fn(),
 		connectSource: vi.fn(),
 		disconnectSource: vi.fn(),
-		getVideoBuffer: vi.fn().mockReturnValue(null),
 		getAudioDecoder: vi.fn().mockReturnValue(null),
 		attachCanvas: vi.fn().mockReturnValue(true),
 		detachCanvas: vi.fn(),
