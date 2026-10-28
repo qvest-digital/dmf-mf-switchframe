@@ -184,6 +184,22 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	/** Set once after the first MoQ catalog is received. */
 	let moqActiveNotified = false;
 
+	/**
+	 * One AudioContext for the audio of every source. Each context is an
+	 * audio output stream and an audio rendering thread of its own, and a
+	 * context per source made one tab hold one per source and engine.
+	 * Created suspended, as a browser lets one run only after a user
+	 * gesture; resumeAllAudio resumes it.
+	 */
+	let audioContext: AudioContext | null = null;
+	function sharedAudioContext(): AudioContext {
+		if (!audioContext) {
+			audioContext = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+			if (audioContext.state === 'running') void audioContext.suspend();
+		}
+		return audioContext;
+	}
+
 	function makeCallbacks(key: string): MoQTransportCallbacks {
 		return {
 			onTrackInfo(tracks: TrackInfo[]) {
@@ -214,7 +230,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 						const sampleRate = track.sampleRate || 48000;
 						const channels = track.channels || 2;
 						const audioDecoder = new PrismAudioDecoder();
-						audioDecoder.configure(codec, sampleRate, channels).then(() => {
+						audioDecoder.configure(codec, sampleRate, channels, sharedAudioContext()).then(() => {
 							audioDecoder.setMuted(!unmutedSources.has(key));
 							audioDecoder.enableMetering();
 							source.audioDecoder = audioDecoder;
@@ -599,6 +615,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		for (const key of Array.from(sources.keys())) {
 			removeSource(key);
 		}
+		void audioContext?.close();
+		audioContext = null;
 		lastFrameTime.clear();
 		disconnectedWithFrames.clear();
 	}
