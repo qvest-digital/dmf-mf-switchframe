@@ -640,7 +640,7 @@
 					<div class="no-selection">Select an item in the timeline to edit</div>
 				{/if}
 
-				<PlayoutClipBrowser onSelect={handleClipSelect} />
+				<PlayoutClipBrowser onSelect={handleClipSelect} clipCount={crState.clipCount} />
 			</div>
 
 			<!-- Right: Transport + Status -->

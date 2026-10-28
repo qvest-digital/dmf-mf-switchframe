@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.27](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.26...mxl-v1.0.0-rc.27) (2026-10-28)
+
+
+### Bug Fixes
+
+* **ui:** stop requests subscribing their effect to engine health ([#96](https://github.com/qvest-digital/dmf-mf-switchframe/issues/96)) ([d1be55e](https://github.com/qvest-digital/dmf-mf-switchframe/commit/d1be55ef1616a5ff956ab0ef40fe950d49db6da6))
+
 ## [1.0.0-rc.26](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.25...mxl-v1.0.0-rc.26) (2026-10-28)
 
 

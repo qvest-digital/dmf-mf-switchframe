@@ -120,10 +120,13 @@ export function setAuthoritativeEngineProvider(provider: (() => string | null) |
 	authoritativeEngineProvider = provider;
 }
 
+/**
+ * The engine the reconciler holds authoritative, read without subscribing:
+ * every request reads it, and the reconciler's health changes on each state
+ * snapshot, so a request issued from an effect would otherwise re-run that
+ * effect, and issue the request again, on every snapshot.
+ */
 export function getAuthoritativeEngine(): string | null {
-	// GET routing runs inside whatever effect issued the request. The provider
-	// reads reconciler health, which changes on every state message; read
-	// untracked, or that effect re-runs and re-issues its GET on each one.
 	return untrack(() => authoritativeEngineProvider?.() ?? null);
 }
 
