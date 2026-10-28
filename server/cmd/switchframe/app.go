@@ -289,6 +289,10 @@ type App struct {
 	// ST 2110 integration
 	st2110State *st2110State
 
+	// gpuRebuildOnFormat is whether a pipeline format change rebuilds the
+	// GPU pipeline, which it does where one was initialised.
+	gpuRebuildOnFormat bool
+
 	// A/V sync: gate relay audio until the first video keyframe has been
 	// broadcast, preventing the browser from playing audio before video is
 	// decodable. Set true by broadcastOwnedToProgram (video path) on the
@@ -1032,12 +1036,10 @@ func (a *App) initSubsystems() error {
 	a.setGPUState(gs)
 	wireGPUPipeline(gs, a.sw, a)
 
-	// Rebuild GPU pipeline on format change (e.g., 1080p → 720p).
-	// Full teardown + recreate: pool, encoder, pipeline, source manager
-	// all need to match the new dimensions.
-	if gs != nil {
-		a.sw.SetOnFormatChange(a.rebuildGPUPipelineForFormat)
-	}
+	// Follow a pipeline format change (e.g. 1080p -> 720p) wherever the
+	// format is baked in: the GPU pipeline where one was initialised, and
+	// the ST 2110 program output and its NMOS resources.
+	a.wireFormatChange(gs != nil)
 
 	// Pipeline encoder for the video processing chain.
 	// Use the codec and color format from the pipeline config to select the

@@ -135,6 +135,21 @@ func (cs *ConnectionServer) AddSender(id string, sdp string) {
 	cs.senderSDP[id] = sdp
 }
 
+// SetSenderInactive records a sender as no longer sending, for a sender
+// whose transmission stopped without a controller asking: the active
+// parameters keep everything but master_enable, which goes false, so the
+// API reports what the sender does.
+func (cs *ConnectionServer) SetSenderInactive(id string) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	state, ok := cs.senderStates[id]
+	if !ok {
+		return
+	}
+	off := false
+	state.Active.MasterEnable = &off
+}
+
 // AddReceiver registers a receiver.
 func (cs *ConnectionServer) AddReceiver(id string) {
 	cs.mu.Lock()
