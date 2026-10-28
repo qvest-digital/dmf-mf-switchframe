@@ -103,6 +103,13 @@ type EngineConfig struct {
 	// frame it leaves to the blend. DVE transitions run on a mix engine and
 	// draw through this when no GPU renders them.
 	Render RenderFunc
+
+	// FramePeriod is the time one output frame may take. A Render call
+	// slower than that makes the engine repeat its output for as many
+	// frames as the call overran by, so a renderer that cannot keep up
+	// drops frames instead of falling further behind for the rest of the
+	// transition. Zero turns the pacing off.
+	FramePeriod time.Duration
 }
 
 // RenderFunc draws one transition frame; see EngineConfig.Render.
@@ -192,7 +199,10 @@ type Engine struct {
 	// Recreated only when resolution changes.
 	rawBlender *FrameBlender
 
-	renderBuf []byte // output of config.Render in blendAndOutput
+	renderBuf    []byte      // output of config.Render in blendAndOutput
+	renderPace   renderPacer // pacing of blendAndOutput's Render calls, under mu
+	rawPace      renderPacer // pacing of BlendRawInto's Render calls, under blendRawMu
+	overrunNoted atomic.Bool // a Render overrun has been logged for this engine
 
 	// Reusable scratch buffers for BlendRawInto mismatched-resolution paths.
 	// blendRawMu serializes concurrent BlendRawInto callers so the scratch
@@ -971,7 +981,8 @@ func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
 }
 
 // render draws the frame through config.Render, returning nil when there is
-// none or it leaves the frame to the blend. Caller must hold e.mu.
+// none or it leaves the frame to the blend. A frame the pacing skips repeats
+// the previous one. Caller must hold e.mu.
 func (e *Engine) render(yuvA, yuvB []byte, pos float64) []byte {
 	if e.config.Render == nil {
 		return nil
@@ -980,11 +991,51 @@ func (e *Engine) render(yuvA, yuvB []byte, pos float64) []byte {
 	if e.colorFormat == video.YUV422_10bit {
 		f = video.YUV422_10bit
 	}
-	e.renderBuf = growBuf(e.renderBuf, f.FrameSize(e.width, e.height))
-	if !e.config.Render(e.renderBuf, yuvA, yuvB, e.width, e.height, f, pos) {
+	size := f.FrameSize(e.width, e.height)
+	if len(e.renderBuf) == size && e.renderPace.skip() {
+		return e.renderBuf
+	}
+	e.renderBuf = growBuf(e.renderBuf, size)
+	if !e.timedRender(&e.renderPace, e.renderBuf, yuvA, yuvB, e.width, e.height, f, pos) {
 		return nil
 	}
 	return e.renderBuf
+}
+
+// renderPacer counts the frames still to repeat after a slow Render call.
+type renderPacer struct {
+	pending int
+	drawn   bool // the buffer holds a rendered frame to repeat
+}
+
+// skip reports whether this frame repeats the previous one.
+func (p *renderPacer) skip() bool {
+	if p.pending > 0 && p.drawn {
+		p.pending--
+		return true
+	}
+	return false
+}
+
+// timedRender calls config.Render and arms pacing when it took longer than
+// a frame period: a call of n periods is followed by n-1 repeated frames, so
+// on average the output keeps the frame rate.
+func (e *Engine) timedRender(p *renderPacer, dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
+	start := time.Now()
+	ok := e.config.Render(dst, from, to, w, h, f, pos)
+	p.drawn = ok
+	period := e.config.FramePeriod
+	if took := time.Since(start); ok && period > 0 && took > period {
+		p.pending = int(took/period) - 1
+		if took%period != 0 {
+			p.pending++
+		}
+		if !e.overrunNoted.Swap(true) {
+			e.log.Warn("transition render slower than the frame rate, repeating frames",
+				"type", e.transitionType, "took", took, "frame_period", period)
+		}
+	}
+	return ok
 }
 
 // WarmupDecode feeds a frame to the decoder for the given source side,
@@ -1405,6 +1456,10 @@ func (e *Engine) BlendRawInto(
 
 	e.mu.Lock()
 	ttype := e.transitionType
+	cf := video.YUV420_8bit
+	if e.colorFormat == video.YUV422_10bit {
+		cf = video.YUV422_10bit
+	}
 	wipeDir := e.wipeDirection
 	stinger := e.config.Stinger
 
@@ -1452,8 +1507,12 @@ func (e *Engine) BlendRawInto(
 	}
 
 	if e.config.Render != nil {
-		dst = growBuf(dst, video.YUV420_8bit.FrameSize(outW, outH))
-		if e.config.Render(dst, fromYUV, toYUV, outW, outH, video.YUV420_8bit, position) {
+		size := cf.FrameSize(outW, outH)
+		if len(dst) == size && e.rawPace.skip() {
+			return dst, outW, outH
+		}
+		dst = growBuf(dst, size)
+		if e.timedRender(&e.rawPace, dst, fromYUV, toYUV, outW, outH, cf, position) {
 			return dst, outW, outH
 		}
 	}
