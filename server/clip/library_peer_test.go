@@ -2,6 +2,7 @@ package clip
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -222,5 +223,79 @@ func TestPublishOfOneClipRunsOneAtATime(t *testing.T) {
 	}
 	if want := []string{peerID + ".ts", peerID + ".ts.json"}; !equal(libraryFiles(t, lib), want) {
 		t.Fatalf("library holds %v, want %v", libraryFiles(t, lib), want)
+	}
+}
+
+// Another engine can mark the clip between this engine's listing of the
+// markers and its own marker being written. Listing again right after
+// catches it: this engine then withdraws its fresh marker and copies
+// nothing, as if it had seen the other marker first.
+func TestPublishBacksOffFromAMarkerWrittenAlongsideItsOwn(t *testing.T) {
+	lib := t.TempDir()
+	b := newEngineStore(t, lib, "b", "clip-from-b")
+	peer := filepath.Join(lib, peerID+".ts.pending.a")
+	orig := writeMarker
+	writeMarker = func(path string, r io.Reader) error {
+		err := orig(path, r)
+		writeFile(t, peer, peerID)
+		return err
+	}
+	t.Cleanup(func() { writeMarker = orig })
+
+	if err := b.Publish(peerID); !errors.Is(err, ErrPublishPending) {
+		t.Fatalf("publish = %v, want ErrPublishPending", err)
+	}
+	if exists(filepath.Join(lib, peerID+".ts")) {
+		t.Fatal("engine b copied media beside engine a's live marker")
+	}
+	if exists(filepath.Join(lib, peerID+".ts.pending.b")) {
+		t.Fatal("engine b left its marker")
+	}
+	if !exists(peer) {
+		t.Fatal("engine a's marker removed")
+	}
+	if got, _ := b.Get(peerID); got.LibraryPath != "" {
+		t.Fatalf("clip moved off its local copy: %+v", got)
+	}
+}
+
+// A Delete while the clip is being copied in waits for the copy and then
+// deletes it from the library too; otherwise the next scan lists the
+// deleted clip again from the media and sidecar the copy left.
+func TestDeleteDuringPublishLeavesNothingInTheLibrary(t *testing.T) {
+	lib := t.TempDir()
+	s := newEngineStore(t, lib, "a", "clip-upload")
+	copying, release := make(chan struct{}), make(chan struct{})
+	orig := copyIntoLibrary
+	copyIntoLibrary = func(dst, src string) error {
+		close(copying)
+		<-release
+		return orig(dst, src)
+	}
+	t.Cleanup(func() { copyIntoLibrary = orig })
+
+	published := make(chan error, 1)
+	go func() { published <- s.Publish(peerID) }()
+	<-copying
+	deleted := make(chan error, 1)
+	go func() { deleted <- s.Delete(peerID) }()
+	select {
+	case err := <-deleted:
+		t.Fatalf("delete returned before the copy ended: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-published; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-deleted; err != nil {
+		t.Fatal(err)
+	}
+	if files := libraryFiles(t, lib); len(files) != 0 {
+		t.Fatalf("library holds %v after the clip was deleted", files)
+	}
+	next, _ := newLibraryStore(t, lib)
+	if res, err := next.ScanLibrary(); err != nil || res.Added != 0 {
+		t.Fatalf("next scan: %+v %v, want nothing", res, err)
 	}
 }

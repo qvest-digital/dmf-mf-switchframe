@@ -55,9 +55,12 @@ const (
 	publishRetries = 30
 )
 
-// copyIntoLibrary is the one way media enters the library; a variable so a
-// test can observe it.
-var copyIntoLibrary = createonly.Copy
+// copyIntoLibrary is the one way media enters the library, and writeMarker
+// the one way a pending marker does; variables so a test can observe them.
+var (
+	copyIntoLibrary = createonly.Copy
+	writeMarker     = createonly.Write
+)
 
 // ErrPublishPending reports that another engine is copying the clip into
 // the library. Nothing was changed there; the clip stays local.
@@ -460,7 +463,7 @@ func (s *Store) Publish(id string) error {
 	if !unfinished {
 		// Not empty: the store completes the upload of an empty file only
 		// later, and the marker has to be there before the media is.
-		err := createonly.Write(marker, strings.NewReader(id+"\n"))
+		err := writeMarker(marker, strings.NewReader(id+"\n"))
 		if err != nil && !errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("mark clip pending in library: %w", err)
 		}

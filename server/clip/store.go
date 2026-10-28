@@ -251,9 +251,14 @@ func (s *Store) syncSidecarLocked(c *Clip) {
 
 // Delete removes a clip by ID, deletes the associated media file, and persists.
 // A library clip's media is deleted from the library, for every store that
-// shares it; if that fails the clip is kept. Returns ErrNotFound if the clip
-// does not exist.
+// shares it; if that fails the clip is kept. A Publish of the clip that is
+// running finishes first, so what it copied into the library is deleted
+// too rather than listed again by the next scan. Returns ErrNotFound if the
+// clip does not exist.
 func (s *Store) Delete(id string) error {
+	if s.libDir != "" {
+		defer s.beginPublish(id)()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
