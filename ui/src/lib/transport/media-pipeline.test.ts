@@ -74,7 +74,7 @@ function fakeFrame(): VideoFrame & { close: ReturnType<typeof vi.fn>; clones: Vi
 	return frame as unknown as VideoFrame & { close: ReturnType<typeof vi.fn>; clones: VideoFrame[] };
 }
 
-const mockAudioDecoderInstances: Array<{ configure: ReturnType<typeof vi.fn> }> = [];
+const mockAudioDecoderInstances: Array<{ configure: ReturnType<typeof vi.fn>; reset: ReturnType<typeof vi.fn> }> = [];
 
 vi.mock('$lib/prism/audio-decoder', () => {
 	return {
@@ -861,6 +861,57 @@ describe('MediaPipeline audio', () => {
 			expect(ctxArgs).toEqual([contexts[0], contexts[0]]);
 			pipeline.destroy();
 			expect(contexts[0].close).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	// A decoder that finishes configuring after its source is gone, or the
+	// pipeline destroyed, was attached to nothing and never reset: its
+	// worklet and nodes stayed on the shared context.
+	it('resets an audio decoder that finishes configuring after its source is gone', async () => {
+		class FakeAudioContext {
+			state = 'suspended';
+			suspend = vi.fn().mockResolvedValue(undefined);
+			close = vi.fn().mockResolvedValue(undefined);
+		}
+		vi.stubGlobal('AudioContext', FakeAudioContext);
+		try {
+			mockTransports.length = 0;
+			mockAudioDecoderInstances.length = 0;
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			mockTransports[0].callbacks.onTrackInfo([{ type: 'audio', codec: 'mp4a.40.2', sampleRate: 48000, channels: 2 }]);
+			const [decoder] = mockAudioDecoderInstances;
+
+			// configure() resolves on a later microtask, after this.
+			pipeline.destroy();
+			await decoder.configure.mock.results[0].value;
+			await Promise.resolve();
+
+			expect(decoder.reset).toHaveBeenCalled();
+			expect(pipeline.getAudioDecoder('cam1')).toBeNull();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it('creates no AudioContext once destroyed', () => {
+		const created = vi.fn();
+		vi.stubGlobal('AudioContext', class { state = 'suspended'; suspend = vi.fn(); close = vi.fn(); constructor() { created(); } });
+		try {
+			mockTransports.length = 0;
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			const { callbacks } = mockTransports[0];
+			pipeline.destroy();
+			pipeline.addSource('cam1');
+
+			callbacks.onTrackInfo([{ type: 'audio', codec: 'mp4a.40.2', sampleRate: 48000, channels: 2 }]);
+
+			expect(created).not.toHaveBeenCalled();
 		} finally {
 			vi.unstubAllGlobals();
 		}
