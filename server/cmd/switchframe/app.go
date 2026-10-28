@@ -1230,7 +1230,7 @@ func (a *App) initMXL() error {
 	}
 
 	// Create MXL instance.
-	inst, err := mxl.NewInstance(a.cfg.MXLDomain)
+	inst, err := mxl.NewInstanceGC(a.cfg.MXLDomain, a.cfg.MXLGCInterval)
 	if err != nil {
 		return fmt.Errorf("mxl: %w", err)
 	}

@@ -67,16 +67,24 @@ func statusError(status C.mxlStatus, context string) error {
 
 // Instance wraps an MXL SDK instance handle.
 type Instance struct {
-	handle    C.mxlInstance
-	stopGC    chan struct{}  // signals the GC goroutine to stop
-	gcWG      sync.WaitGroup // waits for gcLoop to exit before destroying handle
-	closeOnce sync.Once      // ensures Close is safe for concurrent calls
-	closeErr  error          // captured error from the single Close execution
+	handle     C.mxlInstance
+	stopGC     chan struct{}  // signals the GC goroutine to stop
+	gcInterval time.Duration  // period of the running gcLoop; zero when none runs
+	gcWG       sync.WaitGroup // waits for gcLoop to exit before destroying handle
+	closeOnce  sync.Once      // ensures Close is safe for concurrent calls
+	closeErr   error          // captured error from the single Close execution
 }
 
 // NewInstance creates an MXL instance for the given domain path
-// (e.g. "/dev/shm/mxl" on Linux).
+// (e.g. "/dev/shm/mxl" on Linux), collecting the domain every
+// DefaultGCInterval.
 func NewInstance(domain string) (*Instance, error) {
+	return NewInstanceGC(domain, DefaultGCInterval)
+}
+
+// NewInstanceGC creates an MXL instance for the given domain path that
+// calls mxlGarbageCollectFlows every gcInterval; zero or less never does.
+func NewInstanceGC(domain string, gcInterval time.Duration) (*Instance, error) {
 	cDomain := C.CString(domain)
 	defer C.free(unsafe.Pointer(cDomain))
 
@@ -85,17 +93,21 @@ func NewInstance(domain string) (*Instance, error) {
 		return nil, fmt.Errorf("mxl: failed to create instance for domain %q", domain)
 	}
 	inst := &Instance{handle: handle, stopGC: make(chan struct{})}
-	inst.gcWG.Add(1)
-	go inst.gcLoop()
+	if gcInterval > 0 {
+		inst.gcInterval = gcInterval
+		inst.gcWG.Add(1)
+		go inst.gcLoop(gcInterval)
+	}
 	return inst, nil
 }
 
-// gcLoop periodically calls mxlGarbageCollectFlows to clean up stale flows
-// from crashed writers. The SDK runs GC once at instance creation, but the
-// docs say it "should be called periodically on a long running application."
-func (inst *Instance) gcLoop() {
+// gcLoop calls mxlGarbageCollectFlows every interval. The SDK collects only
+// when that is called, never on its own. A collection removes every flow in
+// the domain that no writer holds a lock on, whoever created it: readers take
+// no lock, so a flow that is only being read is removed as well.
+func (inst *Instance) gcLoop(interval time.Duration) {
 	defer inst.gcWG.Done()
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {

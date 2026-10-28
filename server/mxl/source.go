@@ -173,9 +173,15 @@ type Source struct {
 	// same rationale as v210Bufs for the 8-bit path.
 	yuv422p10Out []byte
 
-	// Reusable buffer for YUV data passed to the encoder, avoiding aliasing
-	// with v210Bufs.yuvOut which may be retained by OnRawVideo consumers.
-	encoderYUV []byte
+	// The relay/replay encode runs on its own goroutine once Start has
+	// begun reading video, so an encode slower than a frame period never
+	// holds the MXL reader back. encodeFree holds the frame buffers not in
+	// use; a grain arriving while both are taken is not encoded, and
+	// encodeDrops counts it. Nil before Start, when processVideoGrain
+	// encodes inline.
+	encodeJobs  chan encodeJob
+	encodeFree  chan []byte
+	encodeDrops atomic.Uint64
 
 	// Reusable buffer for audio interleaving (avoids per-call allocation).
 	interleaveBuf []float32
@@ -220,6 +226,7 @@ func (s *Source) Start(ctx context.Context, videoFlow DiscreteReader, audioFlow 
 			Logger:    s.log,
 		})
 		s.videoReader.StartVideo(ctx, videoFlow)
+		s.startVideoEncode()
 		s.wg.Add(1)
 		go s.videoFanOut(ctx)
 	}
@@ -307,8 +314,44 @@ func (s *Source) PreviewEncoderRaw() interface{} {
 	return s.config.PreviewEncoder
 }
 
+// encodeJob is one frame handed to encodeLoop.
+type encodeJob struct {
+	yuv           []byte
+	width, height int
+	pts           int64
+}
+
+// encodeBuffers is how many frames can wait for or be in the encode at once.
+const encodeBuffers = 2
+
+// startVideoEncode starts encodeLoop when the source encodes for the relay.
+// videoFanOut closes encodeJobs when it returns, which ends the loop.
+func (s *Source) startVideoEncode() {
+	if s.config.Relay == nil || s.config.EncoderFactory == nil {
+		return
+	}
+	s.encodeJobs = make(chan encodeJob, encodeBuffers)
+	s.encodeFree = make(chan []byte, encodeBuffers)
+	for i := 0; i < encodeBuffers; i++ {
+		s.encodeFree <- nil
+	}
+	s.wg.Add(1)
+	go s.encodeLoop()
+}
+
+func (s *Source) encodeLoop() {
+	defer s.wg.Done()
+	for job := range s.encodeJobs {
+		s.encodeAndBroadcastVideo(job.yuv, job.width, job.height, job.pts)
+		s.encodeFree <- job.yuv
+	}
+}
+
 func (s *Source) videoFanOut(ctx context.Context) {
 	defer s.wg.Done()
+	if s.encodeJobs != nil {
+		defer close(s.encodeJobs)
+	}
 
 	videoCh := s.videoReader.Video()
 	if videoCh == nil {
@@ -377,16 +420,24 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 	}
 
 	// 3. Encode YUV→H.264 and broadcast to relay for browsers + replay.
-	// Use a copy because OnRawVideo may retain a reference to yuv for
-	// async pipeline processing, and v210Bufs.yuvOut is reused per frame.
+	// The encode gets its own copy: v210Bufs.yuvOut is reused per frame.
+	// Once started it runs on encodeLoop; this goroutine only hands the
+	// frame over, so the encode's time does not count against the frame
+	// period the MXL reader has to keep.
 	if s.config.Relay != nil && s.config.EncoderFactory != nil {
-		needed := len(yuv)
-		if cap(s.encoderYUV) < needed {
-			s.encoderYUV = make([]byte, needed)
+		if s.encodeJobs == nil {
+			s.encodeAndBroadcastVideo(append([]byte(nil), yuv...), grain.Width, grain.Height, pts)
+			return
 		}
-		s.encoderYUV = s.encoderYUV[:needed]
-		copy(s.encoderYUV, yuv)
-		s.encodeAndBroadcastVideo(s.encoderYUV, grain.Width, grain.Height, pts)
+		select {
+		case buf := <-s.encodeFree:
+			s.encodeJobs <- encodeJob{yuv: append(buf[:0], yuv...), width: grain.Width, height: grain.Height, pts: pts}
+		default:
+			if n := s.encodeDrops.Add(1); n == 1 || n%500 == 0 {
+				s.log.Warn("mxl source: relay encode busy, frame not encoded",
+					"source", s.config.FlowName, "dropped_total", n)
+			}
+		}
 	}
 }
 

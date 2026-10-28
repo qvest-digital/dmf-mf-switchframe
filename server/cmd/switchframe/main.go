@@ -16,6 +16,7 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/comms"
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/mxl"
 	"github.com/zsiec/switchframe/server/oidcauth"
 	"github.com/zsiec/switchframe/server/peer"
 	"github.com/zsiec/switchframe/server/srt"
@@ -121,6 +122,10 @@ type AppConfig struct {
 	MXLNMOS     mxlNMOSConfig
 	MXLDomain   string // MXL shared memory domain path
 	MXLDiscover bool   // List available MXL flows and exit
+
+	// MXLGCInterval is how often the MXL instance collects the domain;
+	// zero or less never does.
+	MXLGCInterval time.Duration // --mxl-gc-interval
 
 	// AI inference (segmentation, depth, SAM, tracking — all via sidecar).
 	AISidecarBin string // Path to switchframe-ai sidecar binary (empty = AI disabled)
@@ -400,6 +405,7 @@ func parseConfig() (AppConfig, error) {
 	mxlOutputAudioDef := flag.String("mxl-output-audio-def", "", "Path to MXL output audio flow definition JSON")
 	mxlDomain := flag.String("mxl-domain", "/dev/shm/mxl", "MXL shared memory domain path")
 	mxlDiscover := flag.Bool("mxl-discover", false, "List available MXL flows and exit")
+	mxlGCIntervalFlag := flag.Duration("mxl-gc-interval", mxl.DefaultGCInterval, "how often to remove every flow in the MXL domain no writer holds; 0 = never")
 
 	// AI segmentation flags.
 	aiSidecarFlag := flag.String("ai-sidecar", "", "Path to switchframe-ai sidecar binary (all AI inference)")
@@ -623,6 +629,7 @@ func parseConfig() (AppConfig, error) {
 		MXLOutputVideoDef:    *mxlOutputVideoDef,
 		MXLOutputAudioDef:    *mxlOutputAudioDef,
 		MXLDomain:            *mxlDomain,
+		MXLGCInterval:        *mxlGCIntervalFlag,
 		MXLDiscover:          *mxlDiscover,
 		StateDir:             stateDir,
 		AISidecarBin:         *aiSidecarFlag,
