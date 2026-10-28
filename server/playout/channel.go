@@ -403,6 +403,9 @@ func (c *Channel) Start() error {
 
 	c.state = StateOnAir
 	c.scheduler.Start()
+	// The previous run's position no longer describes the item on air.
+	c.itemProgress.Store(0)
+	c.itemRemainMs.Store(0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel

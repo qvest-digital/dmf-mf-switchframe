@@ -660,12 +660,19 @@ func TestChannel_Start_AfterStopPlaysPlaylistAgain(t *testing.T) {
 	require.NoError(t, ch.Start())
 	require.NoError(t, ch.Next())
 	ch.Stop()
+	ch.itemProgress.Store(500) // where the stopped run left item "b"
+	ch.itemRemainMs.Store(1000)
 
 	require.NoError(t, ch.Start())
 	defer ch.Stop()
 
 	require.Equal(t, StateOnAir, ch.State())
-	require.Equal(t, "a", ch.Status().CurrentItemID)
+	st := ch.Status()
+	require.Equal(t, "a", st.CurrentItemID)
+	// The new run's own ticks may have moved them on already; a three
+	// frame item never reads half done or a second left.
+	require.NotEqual(t, 0.5, st.ItemProgress, "progress of the stopped run")
+	require.NotEqual(t, int64(1000), st.ItemRemainMs, "remaining time of the stopped run")
 }
 
 // Stop() ends the playlist through the scheduler before the run goroutine
