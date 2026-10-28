@@ -731,6 +731,8 @@ export interface ControlRoomState {
 	ftbActive: boolean;
 	ftbDurationMs?: number;
 	transitionAbortThreshold?: number;
+	/** Set when this engine cannot run 3D DVE transitions: the reason. */
+	dve3dUnavailable?: string;
 	dskFadeDurationMs?: number;
 	audioChannels?: Record<string, AudioChannel>;
 	masterLevel: number;

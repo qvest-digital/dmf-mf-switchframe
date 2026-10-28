@@ -94,6 +94,14 @@
 	// it becomes the active transType. The dropdown shows "DVE" when a
 	// non-DVE type is active.
 	let dveSelectValue = $derived(transType.startsWith('dve-') ? transType : '');
+
+	// A 3D DVE picked before the engine reported it cannot run one (or on
+	// the other engine of a pair) would only be refused at AUTO time.
+	$effect(() => {
+		if (crState.dve3dUnavailable && DVE_TYPES.some(t => t.group === '3D' && t.value === transType)) {
+			transType = 'mix';
+		}
+	});
 	function handleDVESelect(e: Event) {
 		const val = (e.target as HTMLSelectElement).value as TransType;
 		if (val) transType = val;
@@ -473,9 +481,9 @@
 						<option value={dt.value}>{dt.label}</option>
 					{/each}
 				</optgroup>
-				<optgroup label="3D">
+				<optgroup label={crState.dve3dUnavailable ? '3D (GPU engine only)' : '3D'}>
 					{#each DVE_TYPES.filter(t => t.group === '3D') as dt}
-						<option value={dt.value}>{dt.label}</option>
+						<option value={dt.value} disabled={!!crState.dve3dUnavailable} title={crState.dve3dUnavailable || undefined}>{dt.label}</option>
 					{/each}
 				</optgroup>
 			</select>

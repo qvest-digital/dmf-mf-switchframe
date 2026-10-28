@@ -91,6 +91,7 @@ var errorMappings = []errorMapping{
 
 	// 400 Bad Request
 	{switcher.ErrEncoderNotAvailable, http.StatusBadRequest},
+	{switcher.ErrDVE3DNeedsGPU, http.StatusUnprocessableEntity},
 	{switcher.ErrAlreadyOnProgram, http.StatusBadRequest},
 	{switcher.ErrInvalidDelay, http.StatusBadRequest},
 	{switcher.ErrInvalidPosition, http.StatusBadRequest},

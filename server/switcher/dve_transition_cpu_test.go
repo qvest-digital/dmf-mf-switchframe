@@ -85,3 +85,39 @@ func TestCPUTransition_DVEIsNotAMix(t *testing.T) {
 	}
 	require.False(t, bytes.Equal(got[:w*h], mix[:w*h]))
 }
+
+// TestCPUTransition_3DIsRefused: a 3D DVE on an engine with no GPU fails
+// with a reason instead of coming out as a mix, and the state says so.
+func TestCPUTransition_3DIsRefused(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+	defer sw.Close()
+	sw.SetTransitionConfig(TransitionConfig{})
+	sw.RegisterSource("cam1", newTestRelay())
+	sw.RegisterSource("cam2", newTestRelay())
+	ctx := context.Background()
+	require.NoError(t, sw.Cut(ctx, "cam1"))
+	require.NoError(t, sw.SetPreview(ctx, "cam2"))
+
+	require.Equal(t, "3D DVE transitions need a GPU engine", sw.State().DVE3DUnavailable)
+	err := sw.StartTransition(ctx, "cam2", "dve-cube", 1000, "")
+	require.ErrorIs(t, err, ErrDVE3DNeedsGPU)
+	require.False(t, sw.State().InTransition)
+	require.Equal(t, "cam1", sw.State().ProgramSource)
+
+	require.NoError(t, sw.StartTransition(ctx, "cam2", "dve-push-left", 60000, ""), "2D DVE runs on the CPU")
+	sw.AbortTransition()
+}
+
+func TestGPUTransition_3DIsAllowed(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+	defer sw.Close()
+	sw.SetTransitionConfig(TransitionConfig{})
+	sw.SetGPUPipeline(&mockGPUPipelineRunner{})
+	sw.RegisterSource("cam1", newTestRelay())
+	sw.RegisterSource("cam2", newTestRelay())
+	ctx := context.Background()
+	require.NoError(t, sw.Cut(ctx, "cam1"))
+	require.Empty(t, sw.State().DVE3DUnavailable)
+	require.NoError(t, sw.StartTransition(ctx, "cam2", "dve-cube", 60000, ""))
+	sw.AbortTransition()
+}

@@ -185,3 +185,32 @@ describe('TransitionControls', () => {
 		});
 	});
 });
+
+describe('TransitionControls 3D DVE availability', () => {
+	const options = (container: HTMLElement, group: string) =>
+		Array.from(container.querySelectorAll(`optgroup`))
+			.find(g => g.label.startsWith(group))!
+			.querySelectorAll('option');
+
+	it('disables 3D DVE transitions with the engine\'s reason', () => {
+		const reason = '3D DVE transitions need a GPU engine';
+		const state = { ...baseState, dve3dUnavailable: reason };
+		const { container } = render(TransitionControls, { props: { state } });
+		const threeD = options(container, '3D');
+		expect(threeD.length).toBe(10);
+		for (const o of threeD) {
+			expect(o.disabled).toBe(true);
+			expect(o.title).toBe(reason);
+		}
+		for (const o of options(container, '2D')) {
+			expect(o.disabled).toBe(false);
+		}
+	});
+
+	it('offers 3D DVE transitions when the engine can run them', () => {
+		const { container } = render(TransitionControls, { props: { state: baseState } });
+		for (const o of options(container, '3D')) {
+			expect(o.disabled).toBe(false);
+		}
+	});
+});

@@ -43,3 +43,20 @@ func compositeTransitionSource(dst, src []byte, w, h int, f video.Format, t Tran
 	}
 	CompositeCPU(dst, w, h, src, w, h, f, t, ComputeInverseTransform(t, w, h), ComputeAABB(t, w, h, w, h))
 }
+
+// Is3DTransition reports whether a DVE transition type moves either source
+// through a 3D transform. The CPU renders 2D transitions only: at 1080p50
+// a 3D one costs more than a frame period even on eight cores.
+func Is3DTransition(transitionType string) bool {
+	fn := DVETransitionForType(transitionType)
+	if fn == nil {
+		return false
+	}
+	for _, pos := range []float64{0.25, 0.5, 0.75} {
+		prog, prev := fn(pos, 1920, 1080)
+		if prog.Is3D() || prev.Is3D() {
+			return true
+		}
+	}
+	return false
+}

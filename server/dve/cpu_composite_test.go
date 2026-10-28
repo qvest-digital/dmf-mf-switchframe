@@ -437,3 +437,29 @@ func TestCompositeCPURandomTransforms(t *testing.T) {
 		}
 	}
 }
+
+// TestIs3DTransitionMatchesTheUI pins the split the control surface shows:
+// its 3D group is what the CPU refuses, its 2D group what it draws.
+func TestIs3DTransitionMatchesTheUI(t *testing.T) {
+	threeD := []string{"dve-cube", "dve-cube-roll", "dve-flip", "dve-door", "dve-swing-door",
+		"dve-fold", "dve-carousel", "dve-tumble", "dve-globe", "dve-page-turn"}
+	twoD := []string{"dve-push-left", "dve-push-right", "dve-push-up", "dve-push-down",
+		"dve-reveal-left", "dve-reveal-right", "dve-reveal-up", "dve-reveal-down",
+		"dve-barn-h", "dve-barn-v", "dve-squeeze", "dve-zoom", "dve-cross-zoom",
+		"dve-shrink-grow", "dve-spin", "dve-scale-rotate", "dve-swing-left",
+		"dve-swing-right", "dve-corner-peel", "dve-fly", "dve-mosaic", "dve-bounce",
+		"dve-blur-dissolve"}
+	for _, ty := range threeD {
+		if !Is3DTransition(ty) {
+			t.Errorf("%s: not 3D", ty)
+		}
+	}
+	for _, ty := range twoD {
+		if Is3DTransition(ty) {
+			t.Errorf("%s: 3D", ty)
+		}
+	}
+	if Is3DTransition("dve-nope") || Is3DTransition("mix") {
+		t.Error("an unknown type reads as 3D")
+	}
+}

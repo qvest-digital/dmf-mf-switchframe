@@ -61,6 +61,11 @@ var (
 	errStingerDataRequired             = errors.New("stinger transition requires stinger data")
 )
 
+// ErrDVE3DNeedsGPU refuses a 3D DVE transition on an engine with no GPU
+// pipeline. The CPU draws 2D DVE transitions only: at 1080p50 a 3D one
+// costs more than a frame period even on eight cores.
+var ErrDVE3DNeedsGPU = errors.New("switcher: 3D DVE transitions need a GPU engine")
+
 // State represents the global state of the switching engine.
 // It replaces the implicit (inTransition, ftbActive) boolean pair with an
 // explicit enum that makes every valid state and transition auditable.
@@ -1131,6 +1136,15 @@ func (s *Switcher) SetWipeMapStore(store *wipemap.WipeMapStore) {
 	s.configMu.Lock()
 	s.wipeMapStore = store
 	s.configMu.Unlock()
+}
+
+// dve3DUnavailable is the state's reason why 3D DVE transitions cannot
+// run, or "" while a GPU pipeline renders them.
+func (s *Switcher) dve3DUnavailable() string {
+	if s.gpuRunner.Load() != nil {
+		return ""
+	}
+	return strings.TrimPrefix(ErrDVE3DNeedsGPU.Error(), "switcher: ")
 }
 
 // gpuRunnerHolder wraps a GPUPipelineRunner for atomic pointer storage.
@@ -2467,6 +2481,10 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	if !isDVE && tt != transition.Mix && tt != transition.Dip && tt != transition.Wipe && tt != transition.Stinger {
 		s.configMu.Unlock()
 		return fmt.Errorf("unsupported transition type: %q", transType)
+	}
+	if isDVE && s.gpuRunner.Load() == nil && dve.Is3DTransition(transType) {
+		s.configMu.Unlock()
+		return fmt.Errorf("transition %q: %w", transType, ErrDVE3DNeedsGPU)
 	}
 	// DVE transitions use mix as the underlying engine type — the DVE compositor
 	// handles the visual effect based on position from the engine.
@@ -4197,6 +4215,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		FTBDurationMs:            s.ftbDurationMs,
 		TransitionAbortThreshold: s.transitionAbortThreshold,
 		TallyState:               tally,
+		DVE3DUnavailable:         s.dve3DUnavailable(),
 		Sources:                  sources,
 		Seq:                      atomic.LoadUint64(&s.seq),
 		Timestamp:                stamp,
