@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -1190,5 +1191,102 @@ func TestMXLNMOS_SkippedReadDoesNotReportTheQueryAPIBack(t *testing.T) {
 	time.Sleep(5 * mxlNMOSHeartbeatInterval)
 	if strings.Contains(logged.String(), "readable again") {
 		t.Errorf("reported readable again without a read:\n%s", logged.String())
+	}
+}
+
+// BCP-004-02: a program Sender states what it produces, the flow it writes,
+// as one constraint set and a caps version. The Flow it references satisfies
+// that set, which is what "MUST not produce a stream that is incompatible
+// with the advertised Sender Capabilities" asks of it.
+func TestMXLNMOS_ProgramSendersStateTheirCaps(t *testing.T) {
+	dir := t.TempDir()
+	videoDef := filepath.Join(dir, "program-video.json")
+	audioDef := filepath.Join(dir, "program-audio.json")
+	_ = os.WriteFile(videoDef, []byte(`{"id":"5f000000-0000-4000-8000-0000000000a1","label":"program video",
+		"format":"urn:x-nmos:format:video","media_type":"video/v210","colorspace":"BT709",
+		"grain_rate":{"numerator":50},"frame_width":1920,"frame_height":1080}`), 0o644)
+	_ = os.WriteFile(audioDef, []byte(`{"id":"5f000000-0000-4000-8000-0000000000a2","label":"program audio",
+		"format":"urn:x-nmos:format:audio","media_type":"audio/float32",
+		"sample_rate":{"numerator":48000},"channel_count":2,"bit_depth":32}`), 0o644)
+	tt := newNMOSTestApp(t, nil, func(a *App) {
+		a.cfg.MXLOutput = "program"
+		a.cfg.MXLOutputVideoDef = videoDef
+		a.cfg.MXLOutputAudioDef = audioDef
+	})
+
+	var senders []map[string]any
+	tt.getJSON(t, "/x-nmos/node/v1.3/senders", &senders)
+	var flows []map[string]any
+	tt.getJSON(t, "/x-nmos/node/v1.3/flows", &flows)
+	var sources []nmos.Source
+	tt.getJSON(t, "/x-nmos/node/v1.3/sources", &sources)
+	flowByID := map[string]map[string]any{}
+	for _, f := range flows {
+		flowByID[f["id"].(string)] = f
+	}
+	channels := map[string]int{}
+	for _, s := range sources {
+		channels[s.ID] = len(s.Channels)
+	}
+	enum := func(v ...any) map[string]any { return map[string]any{"enum": v} }
+	rational := func(n float64) map[string]any { return map[string]any{"numerator": n, "denominator": float64(1)} }
+	want := map[string]map[string]any{
+		"video/v210": {
+			nmos.CapMediaType:     enum("video/v210"),
+			nmos.CapGrainRate:     enum(rational(50)),
+			nmos.CapFrameWidth:    enum(float64(1920)),
+			nmos.CapFrameHeight:   enum(float64(1080)),
+			nmos.CapInterlaceMode: enum("progressive"),
+			nmos.CapColorspace:    enum("BT709"),
+		},
+		"audio/float32": {
+			nmos.CapMediaType:    enum("audio/float32"),
+			nmos.CapSampleRate:   enum(rational(48000)),
+			nmos.CapChannelCount: enum(float64(2)),
+			nmos.CapSampleDepth:  enum(float64(32)),
+		},
+	}
+	if len(senders) != 2 {
+		t.Fatalf("%d senders, want program video and audio", len(senders))
+	}
+	for _, snd := range senders {
+		caps, _ := snd["caps"].(map[string]any)
+		if v, _ := caps["version"].(string); v == "" || v > snd["version"].(string) {
+			t.Errorf("sender %s caps version %q, resource version %v", snd["id"], v, snd["version"])
+		}
+		sets, _ := caps["constraint_sets"].([]any)
+		if len(sets) != 1 {
+			t.Fatalf("sender %s constraint_sets %v, want one set", snd["id"], caps["constraint_sets"])
+		}
+		set := sets[0].(map[string]any)
+		f := flowByID[snd["flow_id"].(string)]
+		mt := f["media_type"].(string)
+		if !reflect.DeepEqual(set, want[mt]) {
+			t.Errorf("%s sender caps\n got %v\nwant %v", mt, set, want[mt])
+		}
+		// Every constraint holds for the Flow the Sender references.
+		attrs := map[string]any{
+			nmos.CapMediaType:   f["media_type"],
+			nmos.CapGrainRate:   f["grain_rate"],
+			nmos.CapFrameWidth:  f["frame_width"],
+			nmos.CapFrameHeight: f["frame_height"],
+			nmos.CapColorspace:  f["colorspace"],
+			nmos.CapSampleRate:  f["sample_rate"],
+			nmos.CapSampleDepth: f["bit_depth"],
+		}
+		if f["format"] == nmos.FormatVideo {
+			attrs[nmos.CapInterlaceMode] = "progressive"
+			if m, ok := f["interlace_mode"]; ok {
+				attrs[nmos.CapInterlaceMode] = m
+			}
+		}
+		if n := channels[f["source_id"].(string)]; n > 0 {
+			attrs[nmos.CapChannelCount] = float64(n)
+		}
+		for k, c := range set {
+			if !reflect.DeepEqual(c.(map[string]any)["enum"].([]any)[0], attrs[k]) {
+				t.Errorf("%s sender: %s %v excludes its own flow's %v", mt, k, c, attrs[k])
+			}
+		}
 	}
 }
