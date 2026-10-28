@@ -531,6 +531,15 @@ func (cs *ConnectionServer) handleSenderStaged(w http.ResponseWriter, r *http.Re
 					})
 					return
 				}
+				// The sender is now sending what was activated. Record it
+				// again: SetSenderInactive may have run while the callback
+				// waited, for a transmission stopped before this one began,
+				// and would otherwise leave the API reporting it off.
+				cs.mu.Lock()
+				if s, ok := cs.senderStates[id]; ok {
+					s.Active = activeCopy
+				}
+				cs.mu.Unlock()
 			}
 		}
 
