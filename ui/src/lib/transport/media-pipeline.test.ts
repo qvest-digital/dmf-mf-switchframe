@@ -74,7 +74,7 @@ function fakeFrame(): VideoFrame & { close: ReturnType<typeof vi.fn>; clones: Vi
 	return frame as unknown as VideoFrame & { close: ReturnType<typeof vi.fn>; clones: VideoFrame[] };
 }
 
-const mockAudioDecoderInstances: Array<{ configure: ReturnType<typeof vi.fn>; reset: ReturnType<typeof vi.fn> }> = [];
+const mockAudioDecoderInstances: Array<{ configure: ReturnType<typeof vi.fn>; reset: ReturnType<typeof vi.fn>; resumeContext: ReturnType<typeof vi.fn> }> = [];
 
 vi.mock('$lib/prism/audio-decoder', () => {
 	return {
@@ -92,6 +92,7 @@ vi.mock('$lib/prism/audio-decoder', () => {
 			getPlaybackPTS = vi.fn().mockReturnValue(-1);
 			reset = vi.fn();
 			setSuspended = vi.fn();
+			resumeContext = vi.fn().mockResolvedValue(undefined);
 		},
 	};
 });
@@ -915,5 +916,86 @@ describe('MediaPipeline audio', () => {
 		} finally {
 			vi.unstubAllGlobals();
 		}
+	});
+
+	// A click during page load, before the audio catalogs arrive, left the
+	// program without audio for good: the context created before the click
+	// had no decoder to resume it through, and one created after it was
+	// suspended on creation.
+	describe('the first user gesture', () => {
+		class FakeAudioContext {
+			static made: FakeAudioContext[] = [];
+			state: 'running' | 'suspended';
+			suspend = vi.fn(async () => { this.state = 'suspended'; });
+			resume = vi.fn(async () => { this.state = 'running'; });
+			close = vi.fn().mockResolvedValue(undefined);
+			constructor() {
+				// A browser starts a context running only after a gesture.
+				this.state = gestured ? 'running' : 'suspended';
+				FakeAudioContext.made.push(this);
+			}
+		}
+		let gestured = false;
+		const audio = [{ type: 'audio', codec: 'mp4a.40.2', sampleRate: 48000, channels: 2 }];
+		function gesture() {
+			gestured = true;
+			window.dispatchEvent(new Event('pointerdown'));
+		}
+		beforeEach(() => {
+			gestured = false;
+			FakeAudioContext.made = [];
+			mockTransports.length = 0;
+			mockAudioDecoderInstances.length = 0;
+			vi.stubGlobal('AudioContext', FakeAudioContext);
+		});
+		afterEach(() => {
+			vi.unstubAllGlobals();
+		});
+
+		it('leaves a context created after it running', () => {
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			gesture();
+
+			mockTransports[0].callbacks.onTrackInfo(audio);
+
+			expect(FakeAudioContext.made).toHaveLength(1);
+			expect(FakeAudioContext.made[0].suspend).not.toHaveBeenCalled();
+			expect(FakeAudioContext.made[0].state).toBe('running');
+			pipeline.destroy();
+		});
+
+		it('resumes a context no decoder has attached to yet', async () => {
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			mockTransports[0].callbacks.onTrackInfo(audio);
+			// The decoder is still configuring.
+			mockAudioDecoderInstances[0].configure.mockReturnValue(new Promise(() => {}));
+			gesture();
+
+			await pipeline.resumeAllAudio();
+
+			expect(FakeAudioContext.made[0].resume).toHaveBeenCalledTimes(1);
+			expect(FakeAudioContext.made[0].state).toBe('running');
+			pipeline.destroy();
+		});
+
+		it('resumes nothing before it', async () => {
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			mockTransports[0].callbacks.onTrackInfo(audio);
+			await Promise.resolve();
+			await Promise.resolve();
+
+			await pipeline.resumeAllAudio();
+			window.dispatchEvent(new Event('focus'));
+
+			expect(mockAudioDecoderInstances[0].resumeContext).not.toHaveBeenCalled();
+			expect(FakeAudioContext.made[0].resume).not.toHaveBeenCalled();
+			pipeline.destroy();
+		});
 	});
 });

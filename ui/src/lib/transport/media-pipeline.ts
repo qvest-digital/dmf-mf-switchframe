@@ -197,11 +197,25 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	let moqActiveNotified = false;
 
 	/**
+	 * Whether the page has had a user gesture, which a browser requires
+	 * before an AudioContext may run. navigator.userActivation knows it;
+	 * where it is missing, a pointer or key press seen here stands in.
+	 */
+	let gestureSeen = false;
+	const markGesture = (): void => { gestureSeen = true; };
+	window.addEventListener('pointerdown', markGesture, { capture: true });
+	window.addEventListener('keydown', markGesture, { capture: true });
+	function audioMayStart(): boolean {
+		return gestureSeen || (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation?.hasBeenActive === true;
+	}
+
+	/**
 	 * One AudioContext for the audio of every source. Each context is an
 	 * audio output stream and an audio rendering thread of its own, and a
 	 * context per source made one tab hold one per source and engine.
-	 * Created suspended, as a browser lets one run only after a user
-	 * gesture; resumeAllAudio resumes it.
+	 * Created before the page's first user gesture, it is suspended, as the
+	 * browser would not let it run; resumeAllAudio resumes it on that
+	 * gesture. Created after it, it runs.
 	 */
 	let audioContext: AudioContext | null = null;
 	/** Set by destroy: nothing may create a context it would not close. */
@@ -210,7 +224,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		if (destroyed) throw new Error('media pipeline destroyed');
 		if (!audioContext) {
 			audioContext = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
-			if (audioContext.state === 'running') void audioContext.suspend();
+			if (audioContext.state === 'running' && !audioMayStart()) void audioContext.suspend();
 		}
 		return audioContext;
 	}
@@ -631,6 +645,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		stopStallDetection();
 		document.removeEventListener("visibilitychange", handleVisibilityChange);
 		window.removeEventListener("focus", handleWindowFocus);
+		window.removeEventListener('pointerdown', markGesture, { capture: true });
+		window.removeEventListener('keydown', markGesture, { capture: true });
 		for (const key of Array.from(sources.keys())) {
 			removeSource(key);
 		}
@@ -706,7 +722,15 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		}
 	}
 
+	/**
+	 * Resume the shared AudioContext once the page has had a user gesture;
+	 * before it, a resume only earns a browser warning. Each decoder flushes
+	 * the audio it buffered while suspended as it resumes, and a context no
+	 * decoder has attached to yet, created before the gesture, is resumed
+	 * directly: no later call would reach it.
+	 */
 	async function resumeAllAudio(): Promise<void> {
+		if (!audioMayStart()) return;
 		const promises: Promise<void>[] = [];
 		for (const source of sources.values()) {
 			if (source.audioDecoder) {
@@ -714,6 +738,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			}
 		}
 		await Promise.all(promises);
+		if (audioContext && audioContext.state === 'suspended') await audioContext.resume();
 	}
 
 	function resetRendererSync(sourceKey: string): void {
