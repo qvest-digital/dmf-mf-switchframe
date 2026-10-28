@@ -1035,8 +1035,8 @@ func (e *Engine) timedRender(p *renderPacer, dst, from, to []byte, w, h int, f v
 			}
 		}
 		if !e.overrunNoted.Swap(true) {
-			e.log.Warn("transition render slower than the frame rate, repeating frames",
-				"type", e.transitionType, "took", took, "frame_period", period)
+			e.log.Warn("transition render slower than the frame rate",
+				"type", e.transitionType, "took", took, "frame_period", period, "repeating_frames", p != nil)
 		}
 	}
 	return ok
