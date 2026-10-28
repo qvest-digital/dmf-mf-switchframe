@@ -373,6 +373,15 @@ type Switcher struct {
 	// ST map registry — per-source lens correction applied in sourceDecoder.
 	stmapRegistry *stmap.Registry
 
+	// CPU color grading: the program grade runs in the colorgrade pipeline
+	// node, per-source correction at ingest. Both stand aside when a GPU
+	// pipeline or GPU source manager grades instead.
+	programGrader ProgramGrader
+	sourceGrader  atomic.Pointer[SourceGrader]
+	// sourceGradeErrLogged holds the sources whose correction has failed,
+	// so the failure is logged once per source, not once per frame.
+	sourceGradeErrLogged sync.Map
+
 	// Thumbnail cache — pipeline routing view JPEG thumbnails.
 	// Created in New(), passed to each sourceDecoder and tapped in
 	// videoProcessingLoop for program output capture.
@@ -1125,6 +1134,20 @@ func (s *Switcher) SetSTMapRegistry(r *stmap.Registry) {
 	s.configMu.Unlock()
 }
 
+// SetColorGraders attaches the CPU color grade sources: the program grade
+// (look and corrector) and per-source correction. Either may be nil.
+func (s *Switcher) SetColorGraders(program ProgramGrader, sources SourceGrader) {
+	s.configMu.Lock()
+	s.programGrader = program
+	s.configMu.Unlock()
+	if sources != nil {
+		s.sourceGrader.Store(&sources)
+	} else {
+		s.sourceGrader.Store(nil)
+	}
+	s.rebuildPipeline()
+}
+
 // SetWipeMapStore sets the wipe map store used to resolve gradient maps for
 // gradient-map-based wipe transitions.
 func (s *Switcher) SetWipeMapStore(store *wipemap.WipeMapStore) {
@@ -1231,12 +1254,13 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(vps, sps, pps []byte, wi
 //
 // CPU pipeline order:
 //
-//	[upstream-key → dve-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode]
+//	[upstream-key -> dve-compositor -> compositor -> colorgrade -> stmap-program -> raw-sink-mxl -> raw-sink-preview -> h264-encode]
 func (s *Switcher) buildNodeList() []PipelineNode {
 	return []PipelineNode{
 		&upstreamKeyNode{bridge: s.keyBridge},
 		&dveCompositorNode{compositor: s.dveCompositor},
 		&compositorNode{compositor: s.compositorRef},
+		&colorGradeNode{grader: s.programGrader},
 		&stmapProgramNode{registry: s.stmapRegistry},
 		&rawSinkNode{sink: &s.rawVideoSink, name: "raw-sink-mxl"},
 		&rawSinkNode{sink: &s.rawPreviewSink, name: "raw-sink-preview"},
@@ -3348,6 +3372,8 @@ func (s *Switcher) makeDecoderCallback(key string) func(string, *ProcessingFrame
 		// (it would race with this write under concurrent ticks).
 		if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil && len(pf.Data) > 0 {
 			h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+		} else {
+			pf = s.gradeSourceFrame(sourceKey, pf)
 		}
 		if fs := ss.viewer.frameSync.Load(); fs != nil {
 			fs.IngestRawVideo(sourceKey, pf)
@@ -3508,6 +3534,8 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 	// zero-copy path via IngestGPUFrame.
 	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil && len(pf.Data) > 0 {
 		h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+	} else {
+		pf = s.gradeSourceFrame(sourceKey, pf)
 	}
 
 	if fs := s.frameSyncBundle.Load().sync; fs != nil {

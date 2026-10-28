@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/internal"
@@ -24,6 +25,23 @@ type colorGradeController struct {
 	lutData   []float32                 // combined LUT (corrector + look)
 	lutSize   int
 	lutGen    uint64
+
+	// grade is the CPU pipeline's view of the same state: nil while grading
+	// is off. Read lock-free per frame, written under mu with enabled.
+	grade atomic.Pointer[programGrade]
+}
+
+type programGrade struct {
+	grader    *colorgrade.Grader
+	intensity float32
+}
+
+// ProgramGrader implements switcher.ProgramGrader.
+func (c *colorGradeController) ProgramGrader() (*colorgrade.Grader, float32) {
+	if p := c.grade.Load(); p != nil {
+		return p.grader, p.intensity
+	}
+	return nil, 0
 }
 
 func newColorGradeController(store *colorgrade.Store) *colorGradeController {
@@ -189,6 +207,13 @@ func (c *colorGradeController) regenerateLUT() {
 	if c.lookName != "" || !c.corrector.IsDefault() {
 		c.enabled = true
 	}
+	if !c.enabled {
+		c.grade.Store(nil)
+		return
+	}
+	// CombineLUT always yields a well-formed cube.
+	g, _ := colorgrade.NewGrader(combined.Data, combined.Size)
+	c.grade.Store(&programGrade{grader: g, intensity: c.intensity})
 }
 
 // --- gpu.ColorGradeState interface (via adapter) ---

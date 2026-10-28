@@ -3,9 +3,10 @@ package colorgrade
 import "sync"
 
 type sourceEntry struct {
-	state CorrectorState
-	lut   *LUT3D // cached, nil = needs regeneration
-	gen   uint64 // incremented on each state change
+	state  CorrectorState
+	lut    *LUT3D  // cached, nil = needs regeneration
+	grader *Grader // cached CPU grader over lut, nil = needs regeneration
+	gen    uint64  // incremented on each state change
 }
 
 // SourceCorrectorManager manages per-source color corrector state with LUT caching.
@@ -48,6 +49,7 @@ func (m *SourceCorrectorManager) Set(key string, state CorrectorState) {
 	}
 	e.state = state
 	e.lut = nil // invalidate cache
+	e.grader = nil
 	e.gen++
 }
 
@@ -118,4 +120,34 @@ func (m *SourceCorrectorManager) SourceLUTGen(sourceKey string) uint64 {
 		return e.gen
 	}
 	return 0
+}
+
+// SourceGrader returns the CPU grader for a source's correction, or nil when
+// the source has none. Implements switcher.SourceGrader.
+func (m *SourceCorrectorManager) SourceGrader(sourceKey string) *Grader {
+	m.mu.RLock()
+	e, ok := m.sources[sourceKey]
+	var g *Grader
+	if ok {
+		g = e.grader
+	}
+	m.mu.RUnlock()
+	if !ok || g != nil {
+		return g
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok = m.sources[sourceKey]
+	if !ok {
+		return nil
+	}
+	if e.grader == nil {
+		if e.lut == nil {
+			e.lut = CombineLUT(e.state, nil)
+		}
+		// CombineLUT always yields a well-formed cube.
+		e.grader, _ = NewGrader(e.lut.Data, e.lut.Size)
+	}
+	return e.grader
 }

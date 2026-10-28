@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -87,6 +88,11 @@ func ParseCube(r io.Reader) (*LUT3D, error) {
 			v, err := strconv.ParseFloat(p, 32)
 			if err != nil {
 				return nil, fmt.Errorf("colorgrade: invalid float value %q: %w", p, err)
+			}
+			// ParseFloat accepts "NaN" and "Inf", and so would the grade,
+			// turning every sample through that LUT entry into garbage.
+			if math.IsNaN(v) || math.IsInf(float64(float32(v)), 0) {
+				return nil, fmt.Errorf("colorgrade: non-finite value %q", p)
 			}
 			lut.Data = append(lut.Data, float32(v))
 		}
