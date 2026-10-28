@@ -34,6 +34,7 @@ func TestOutputPreset_NVENCPreset(t *testing.T) {
 		{"low-latency", OutputPresetLowLatency, "p3"},
 		{"balanced", OutputPresetBalanced, "p4"},
 		{"quality", OutputPresetQuality, "p5"},
+		{"fastest", OutputPresetFastest, "p1"},
 		{"empty default", OutputPreset(""), "p4"},
 	}
 	for _, tt := range tests {
@@ -54,6 +55,7 @@ func TestOutputPreset_X264Preset(t *testing.T) {
 		{"low-latency", OutputPresetLowLatency, "superfast"},
 		{"balanced", OutputPresetBalanced, "superfast"},
 		{"quality", OutputPresetQuality, "faster"},
+		{"fastest", OutputPresetFastest, "ultrafast"},
 		{"empty default", OutputPreset(""), "superfast"},
 	}
 	for _, tt := range tests {

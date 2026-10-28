@@ -123,6 +123,10 @@ type AppConfig struct {
 	MXLDomain   string // MXL shared memory domain path
 	MXLDiscover bool   // List available MXL flows and exit
 
+	// MXLSourcePreset is the speed/quality preset of each MXL source's
+	// full-quality encode, the one the browser relay and replay take.
+	MXLSourcePreset codec.OutputPreset // --mxl-source-preset
+
 	// MXLGCInterval is how often the MXL instance collects the domain;
 	// zero or less never does.
 	MXLGCInterval time.Duration // --mxl-gc-interval
@@ -405,6 +409,7 @@ func parseConfig() (AppConfig, error) {
 	mxlOutputAudioDef := flag.String("mxl-output-audio-def", "", "Path to MXL output audio flow definition JSON")
 	mxlDomain := flag.String("mxl-domain", "/dev/shm/mxl", "MXL shared memory domain path")
 	mxlDiscover := flag.Bool("mxl-discover", false, "List available MXL flows and exit")
+	mxlSourcePresetFlag := flag.String("mxl-source-preset", "", "speed/quality preset of each MXL source's relay and replay encode: low-latency, balanced, quality or fastest; empty = balanced")
 	mxlGCIntervalFlag := flag.Duration("mxl-gc-interval", mxl.DefaultGCInterval, "how often to remove every flow in the MXL domain no writer holds; 0 = never")
 
 	// AI segmentation flags.
@@ -565,6 +570,10 @@ func parseConfig() (AppConfig, error) {
 		return AppConfig{}, err
 	}
 
+	if !codec.OutputPreset(*mxlSourcePresetFlag).Valid() {
+		return AppConfig{}, fmt.Errorf("--mxl-source-preset %q: want low-latency, balanced, quality or fastest", *mxlSourcePresetFlag)
+	}
+
 	// Parse allowed origins for CORS.
 	var allowedOrigins []string
 	if *allowedOriginsFlag != "" {
@@ -630,6 +639,7 @@ func parseConfig() (AppConfig, error) {
 		MXLOutputAudioDef:    *mxlOutputAudioDef,
 		MXLDomain:            *mxlDomain,
 		MXLGCInterval:        *mxlGCIntervalFlag,
+		MXLSourcePreset:      codec.OutputPreset(*mxlSourcePresetFlag),
 		MXLDiscover:          *mxlDiscover,
 		StateDir:             stateDir,
 		AISidecarBin:         *aiSidecarFlag,
