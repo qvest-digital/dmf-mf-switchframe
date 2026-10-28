@@ -3249,3 +3249,67 @@ func TestChannel_EndAnchoredSecondaryEvents_FirstClip_FiresAtClipEnd(t *testing.
 			firedTick, firedTick*33)
 	}
 }
+
+// stopGateIterator yields frames forever; once gate is armed, Next blocks
+// until it is released, holding the run goroutine inside a tick.
+type stopGateIterator struct {
+	gate    chan struct{}
+	blocked chan struct{}
+	armed   *atomic.Bool
+}
+
+func (g *stopGateIterator) Next() (*DecodedFrame, error) {
+	if g.armed.Load() && g.armed.CompareAndSwap(true, false) {
+		close(g.blocked)
+		<-g.gate
+	}
+	f := fakeFrames(1)[0]
+	return &f, nil
+}
+func (g *stopGateIterator) EstimateFPS() float64 { return 30 }
+func (g *stopGateIterator) TotalFrames() int     { return -1 }
+func (g *stopGateIterator) Close()               {}
+
+type stopGateProvider struct{ it *stopGateIterator }
+
+func (p stopGateProvider) Open(string) (FrameIterator, error) { return p.it, nil }
+
+// A Start that arrives while Stop() waits for the run goroutine must not
+// start a run until Stop() is done: Stop's onStop callback, which the app
+// uses to take the channel off the switcher, would otherwise land after the
+// new run's onStart and leave an on-air channel unregistered, and the old
+// run's cleanup would close the new run's clip iterator.
+func TestChannel_StartDuringStopWaitsForStop(t *testing.T) {
+	var armed atomic.Bool
+	it := &stopGateIterator{gate: make(chan struct{}), blocked: make(chan struct{}), armed: &armed}
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider:        stopGateProvider{it},
+		AllowedLocalPrefixes: []string{"/"},
+	})
+	var mu sync.Mutex
+	var events []string
+	ch.SetOnStart(func(string) { mu.Lock(); events = append(events, "start"); mu.Unlock() })
+	ch.SetOnStop(func(string) { mu.Lock(); events = append(events, "stop"); mu.Unlock() })
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(clipItem("a"))))
+	require.NoError(t, ch.Start())
+	defer ch.Stop()
+
+	// Hold the run goroutine inside a tick, then stop: Stop() waits for it.
+	armed.Store(true)
+	<-it.blocked
+	stopped := make(chan struct{})
+	go func() { ch.Stop(); close(stopped) }()
+	waitFor(t, time.Second, func() bool { return ch.State() == StateStopped })
+
+	started := make(chan error, 1)
+	go func() { started <- ch.Start() }()
+	time.Sleep(20 * time.Millisecond) // a Start that does not wait is done by now
+	close(it.gate)
+	<-stopped
+	require.NoError(t, <-started)
+
+	require.Equal(t, StateOnAir, ch.State())
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"start", "stop", "start"}, events)
+}

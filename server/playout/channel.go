@@ -72,6 +72,11 @@ type Channel struct {
 	id     int
 	config ChannelConfig
 
+	// lifecycleMu serializes Start and Stop end to end, callbacks
+	// included: Stop waits for the run goroutine outside mu, and a Start
+	// interleaved there would run its onStart before Stop's onStop.
+	lifecycleMu sync.Mutex
+
 	mu         sync.Mutex
 	state      ChannelState
 	scheduler  *Scheduler
@@ -379,10 +384,14 @@ func (c *Channel) LoadPlaylist(pl *Playlist) error {
 // the run goroutine. A stopped or completed channel keeps its playlist, so
 // it starts again the same way a cued one does.
 func (c *Channel) Start() error {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+
 	c.mu.Lock()
-	// A completed run goroutine may still be cleaning up; a second one must
-	// not start until it has, or its cleanup closes the new run's iterator.
-	for c.state == StateCompleted && c.done != nil {
+	// A run goroutine whose playlist completed may still be cleaning up; a
+	// second one must not start until it has, or its cleanup closes the new
+	// run's iterator.
+	for c.state != StateOnAir && c.done != nil {
 		prev := c.done
 		c.mu.Unlock()
 		<-prev
@@ -401,6 +410,10 @@ func (c *Channel) Start() error {
 		return ErrAlreadyOnAir
 	}
 
+	// A run that completed on its own was never cancelled.
+	if c.cancel != nil {
+		c.cancel()
+	}
 	c.state = StateOnAir
 	c.scheduler.Start()
 	// The previous run's position no longer describes the item on air.
@@ -441,6 +454,9 @@ func (c *Channel) Start() error {
 
 // Stop cancels the run goroutine and transitions to STOPPED.
 func (c *Channel) Stop() {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+
 	c.mu.Lock()
 	if c.state == StateStopped {
 		c.mu.Unlock()
