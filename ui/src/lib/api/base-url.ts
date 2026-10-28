@@ -1,3 +1,5 @@
+import { untrack } from 'svelte';
+
 /**
  * API base URL for HTTP/3 commands.
  * Empty string = same-origin (production).
@@ -119,7 +121,10 @@ export function setAuthoritativeEngineProvider(provider: (() => string | null) |
 }
 
 export function getAuthoritativeEngine(): string | null {
-	return authoritativeEngineProvider?.() ?? null;
+	// GET routing runs inside whatever effect issued the request. The provider
+	// reads reconciler health, which changes on every state message; read
+	// untracked, or that effect re-runs and re-issues its GET on each one.
+	return untrack(() => authoritativeEngineProvider?.() ?? null);
 }
 
 // ── New engine discovery callback ──
