@@ -95,10 +95,12 @@
 	// non-DVE type is active.
 	let dveSelectValue = $derived(transType.startsWith('dve-') ? transType : '');
 
-	// A 3D DVE picked before the engine reported it cannot run one (or on
-	// the other engine of a pair) would only be refused at AUTO time.
+	// Transition types this engine refuses, such as 3D DVE on an engine
+	// without a GPU. A refused type picked earlier (or on the other engine
+	// of a pair) falls back to mix rather than failing at AUTO time.
+	let unavailable = $derived<Record<string, string>>(crState.unavailableTransitions ?? {});
 	$effect(() => {
-		if (crState.dve3dUnavailable && DVE_TYPES.some(t => t.group === '3D' && t.value === transType)) {
+		if (unavailable[transType]) {
 			transType = 'mix';
 		}
 	});
@@ -478,12 +480,12 @@
 				<option value="" disabled>DVE</option>
 				<optgroup label="2D">
 					{#each DVE_TYPES.filter(t => t.group === '2D') as dt}
-						<option value={dt.value}>{dt.label}</option>
+						<option value={dt.value} disabled={!!unavailable[dt.value]} title={unavailable[dt.value]}>{dt.label}{unavailable[dt.value] ? ' (GPU)' : ''}</option>
 					{/each}
 				</optgroup>
-				<optgroup label={crState.dve3dUnavailable ? '3D (GPU engine only)' : '3D'}>
+				<optgroup label="3D">
 					{#each DVE_TYPES.filter(t => t.group === '3D') as dt}
-						<option value={dt.value} disabled={!!crState.dve3dUnavailable} title={crState.dve3dUnavailable || undefined}>{dt.label}</option>
+						<option value={dt.value} disabled={!!unavailable[dt.value]} title={unavailable[dt.value]}>{dt.label}{unavailable[dt.value] ? ' (GPU)' : ''}</option>
 					{/each}
 				</optgroup>
 			</select>

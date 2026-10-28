@@ -340,9 +340,9 @@ type ControlRoomState struct {
 	FTBActive            bool                    `json:"ftbActive,omitempty"`
 	FTBDurationMs        int                     `json:"ftbDurationMs,omitempty"`
 	TransitionAbortThreshold float64             `json:"transitionAbortThreshold,omitempty"`
-	// DVE3DUnavailable, when set, is why 3D DVE transitions cannot run on
-	// this engine; StartTransition refuses them with that reason.
-	DVE3DUnavailable string `json:"dve3dUnavailable,omitempty"`
+	// UnavailableTransitions maps each transition type this engine refuses
+	// to the reason; StartTransition fails for them.
+	UnavailableTransitions map[string]string `json:"unavailableTransitions,omitempty"`
 	DSKFadeDurationMs    int                     `json:"dskFadeDurationMs,omitempty"`
 	AudioChannels        map[string]AudioChannel `json:"audioChannels"`
 	MasterLevel          float64                 `json:"masterLevel"`

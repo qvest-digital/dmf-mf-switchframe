@@ -186,31 +186,31 @@ describe('TransitionControls', () => {
 	});
 });
 
-describe('TransitionControls 3D DVE availability', () => {
-	const options = (container: HTMLElement, group: string) =>
-		Array.from(container.querySelectorAll(`optgroup`))
-			.find(g => g.label.startsWith(group))!
-			.querySelectorAll('option');
+describe('TransitionControls unavailable transitions', () => {
+	const options = (container: HTMLElement) =>
+		Array.from(container.querySelectorAll('select.dve-type-select option')) as HTMLOptionElement[];
 
-	it('disables 3D DVE transitions with the engine\'s reason', () => {
-		const reason = '3D DVE transitions need a GPU engine';
-		const state = { ...baseState, dve3dUnavailable: reason };
+	it('disables exactly the refused types, with the engine\'s reason', () => {
+		const reason3D = '3D DVE transitions need a GPU engine';
+		const state = {
+			...baseState,
+			unavailableTransitions: { 'dve-cube': reason3D, 'dve-globe': reason3D, 'dve-corner-peel': 'Peel needs a GPU engine' },
+		};
 		const { container } = render(TransitionControls, { props: { state } });
-		const threeD = options(container, '3D');
-		expect(threeD.length).toBe(10);
-		for (const o of threeD) {
-			expect(o.disabled).toBe(true);
-			expect(o.title).toBe(reason);
-		}
-		for (const o of options(container, '2D')) {
-			expect(o.disabled).toBe(false);
-		}
+		const byValue = new Map(options(container).map(o => [o.value, o]));
+		expect(byValue.get('dve-cube')!.disabled).toBe(true);
+		expect(byValue.get('dve-cube')!.title).toBe(reason3D);
+		expect(byValue.get('dve-globe')!.disabled).toBe(true);
+		expect(byValue.get('dve-corner-peel')!.disabled).toBe(true);
+		expect(byValue.get('dve-corner-peel')!.title).toBe('Peel needs a GPU engine');
+		expect(byValue.get('dve-flip')!.disabled).toBe(false);
+		expect(byValue.get('dve-push-left')!.disabled).toBe(false);
 	});
 
-	it('offers 3D DVE transitions when the engine can run them', () => {
+	it('offers every DVE transition when the engine refuses none', () => {
 		const { container } = render(TransitionControls, { props: { state: baseState } });
-		for (const o of options(container, '3D')) {
-			expect(o.disabled).toBe(false);
+		for (const o of options(container)) {
+			if (o.value) expect(o.disabled).toBe(false);
 		}
 	});
 });

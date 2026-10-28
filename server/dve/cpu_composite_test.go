@@ -438,9 +438,9 @@ func TestCompositeCPURandomTransforms(t *testing.T) {
 	}
 }
 
-// TestIs3DTransitionMatchesTheUI pins the split the control surface shows:
-// its 3D group is what the CPU refuses, its 2D group what it draws.
-func TestIs3DTransitionMatchesTheUI(t *testing.T) {
+// TestCPURefusalMatchesTheUI pins the split the control surface shows: its
+// 3D group is 3D, its 2D group is not.
+func TestCPURefusalMatchesTheUI(t *testing.T) {
 	threeD := []string{"dve-cube", "dve-cube-roll", "dve-flip", "dve-door", "dve-swing-door",
 		"dve-fold", "dve-carousel", "dve-tumble", "dve-globe", "dve-page-turn"}
 	twoD := []string{"dve-push-left", "dve-push-right", "dve-push-up", "dve-push-down",
@@ -461,5 +461,25 @@ func TestIs3DTransitionMatchesTheUI(t *testing.T) {
 	}
 	if Is3DTransition("dve-nope") || Is3DTransition("mix") {
 		t.Error("an unknown type reads as 3D")
+	}
+
+	// The CPU refuses every 3D type and, of the 2D ones, corner-peel only.
+	refused := CPURefusedTransitions()
+	for _, ty := range threeD {
+		if refused[ty] != reason3D {
+			t.Errorf("%s: refusal %q", ty, refused[ty])
+		}
+	}
+	for _, ty := range twoD {
+		if _, ok := refused[ty]; ok != (ty == "dve-corner-peel") {
+			t.Errorf("%s: refused=%v", ty, ok)
+		}
+	}
+	if len(refused) != len(threeD)+1 {
+		t.Errorf("refuses %d types", len(refused))
+	}
+	refused["dve-push-left"] = "x"
+	if _, ok := CPURefusedTransitions()["dve-push-left"]; ok {
+		t.Error("callers can change the refusal list")
 	}
 }

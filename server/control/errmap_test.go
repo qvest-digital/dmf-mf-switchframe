@@ -30,7 +30,7 @@ func TestErrorStatus(t *testing.T) {
 		{switcher.ErrInvalidDelay, http.StatusBadRequest},
 		{switcher.ErrInvalidPosition, http.StatusBadRequest},
 		{switcher.ErrNoTransition, http.StatusConflict},
-		{switcher.ErrDVE3DNeedsGPU, http.StatusUnprocessableEntity},
+		{switcher.ErrTransitionNeedsGPU, http.StatusUnprocessableEntity},
 
 		// transition
 		{transition.ErrActive, http.StatusConflict},
