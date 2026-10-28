@@ -22,12 +22,15 @@ import (
 
 // buildPlayoutAllowedPrefixes assembles the deny-by-default allow-list of
 // local filesystem prefixes the playout asset pipeline may read from.
-// Always includes the playout cache and clip store; the env var (CSV)
-// adds operator-configured NFS / shared-media mounts.
-func buildPlayoutAllowedPrefixes(stateDir, cacheDir, envCSV string) []string {
+// Always includes the playout cache, the clip store and the clip library;
+// the env var (CSV) adds operator-configured NFS / shared-media mounts.
+func buildPlayoutAllowedPrefixes(stateDir, cacheDir, clipLibraryDir, envCSV string) []string {
 	out := []string{
 		filepath.Clean(cacheDir),
 		filepath.Clean(filepath.Join(stateDir, "clips")),
+	}
+	if clipLibraryDir != "" {
+		out = append(out, filepath.Clean(clipLibraryDir))
 	}
 	for _, p := range strings.Split(envCSV, ",") {
 		p = strings.TrimSpace(p)
@@ -55,7 +58,7 @@ func (a *App) initPlayout() error {
 	// Build the local-asset allow-list: cache + clip store dirs are always
 	// engine-managed and safe; SWITCHFRAME_PLAYOUT_ALLOWED_PATHS lets ops add
 	// NFS / shared-media mounts. Empty list = deny all local-scheme URIs.
-	allowedPrefixes := buildPlayoutAllowedPrefixes(a.cfg.StateDir, cacheDir,
+	allowedPrefixes := buildPlayoutAllowedPrefixes(a.cfg.StateDir, cacheDir, a.cfg.ClipLibraryDir,
 		os.Getenv("SWITCHFRAME_PLAYOUT_ALLOWED_PATHS"))
 	slog.Warn("playout: local asset allow-list",
 		"prefixes", allowedPrefixes,

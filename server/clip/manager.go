@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -144,7 +143,7 @@ func (m *Manager) Load(playerID int, clipID string) error {
 	}()
 
 	// Demux the media file.
-	path := filepath.Join(m.store.Dir(), c.Filename)
+	path := m.store.MediaPath(c)
 	frames, audio, err := m.config.DemuxFunc(path)
 	if err != nil {
 		return fmt.Errorf("demux clip %s: %w", clipID, err)

@@ -549,7 +549,7 @@ func (a *API) handlePlayoutClips(w http.ResponseWriter, _ *http.Request) {
 			}
 			clips = append(clips, playoutClip{
 				Name:     c.Name,
-				Path:     filepath.Join(a.clipStore.Dir(), c.Filename),
+				Path:     a.clipStore.MediaPath(c),
 				Duration: int(c.DurationMs / 1000),
 				Source:   source,
 			})

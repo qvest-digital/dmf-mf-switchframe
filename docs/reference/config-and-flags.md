@@ -99,6 +99,8 @@ All flags are defined in [`parseConfig`](../../server/cmd/switchframe/main.go). 
 |---|---|---|---|
 | `--clip-storage-max` | int64 (bytes) | `10<<30` (10 GB) | Maximum clip storage |
 | `--clip-ephemeral-ttl` | duration | `24h` | TTL for ephemeral clips |
+| `--clip-library-dir` | string | `""` | Clip library shared across runs and engines, e.g. an object-store mount. Its `.ts`, `.mp4`, `.m4v` and `.mov` files are listed as clips at start and on `POST /api/clips/rescan`; uploads, imports and replay exports are copied in; deleting a library clip deletes it there. Only creates and deletes files in it, never renames, appends or overwrites. Empty keeps clips in the state dir |
+| `--recording-archive-dir` | string | `""` | Each finished recording file is copied here as a new file, then removed from the recording dir; files an earlier run left behind are copied when recording starts. Listed for import beside the recording dir. Empty leaves recordings where they are written |
 
 ### Playout
 

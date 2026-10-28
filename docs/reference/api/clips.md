@@ -4,7 +4,7 @@
 > **Read this first:** [api.md](../api.md)
 > **See also:** [subsystems/clips.md](../../subsystems/clips.md) · [clips.md](../../subsystems/clips.md)
 
-**TL;DR** Eighteen endpoints manage the clip library (upload, CRUD, pin for lifecycle retention, import from recordings) and the four player slots (load, eject, play/pause/stop, seek, speed, loop). Uploads go through a transcode pipeline; progress is broadcast via `ClipUploadProgress` so the UI can show a status bar.
+**TL;DR** Nineteen endpoints manage the clip library (upload, CRUD, pin for lifecycle retention, import from recordings, rescan of `--clip-library-dir`) and the four player slots (load, eject, play/pause/stop, seek, speed, loop). Uploads go through a transcode pipeline; progress is broadcast via `ClipUploadProgress` so the UI can show a status bar.
 
 ## Clip library
 
@@ -32,7 +32,7 @@
 
 ### `DELETE /api/clips/{id}`
 
-**Handler:** `(*API).handleClipDelete`. **Response 204.**
+**Handler:** `(*API).handleClipDelete`. **Response 204.** A clip in `--clip-library-dir` is deleted from the library, for every engine and later run that uses it.
 
 ---
 
@@ -62,9 +62,20 @@
 
 ---
 
+### `POST /api/clips/rescan`
+
+**Purpose:** list clips added to `--clip-library-dir` since the last scan and drop clips whose library file is gone.
+**Handler:** `(*API).handleClipRescan`.
+
+**Response 200:** `{ "added": 1, "removed": 0, "skipped": ["unplayable.mp4"] }`.
+
+**Errors:** 409 (no clip library attached).
+
+---
+
 ### `GET /api/clips/recordings`
 
-**Purpose:** list `.ts` files in the recording directory that can be imported as clips.
+**Purpose:** list `.ts` files in the recording directory, and in `--recording-archive-dir`, that can be imported as clips.
 **Handler:** `(*API).handleClipRecordings`.
 
 **Response 200:** `[{ "filename": "...", "sizeBytes": ..., "modifiedMs": ... }, ...]`.

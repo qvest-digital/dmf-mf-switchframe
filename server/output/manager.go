@@ -116,6 +116,10 @@ type Manager struct {
 	// When set, newly added destinations default their Engine field to this label.
 	engineLabel string
 
+	// recordingArchiveDir is the ArchiveDir of a recording started without
+	// one of its own.
+	recordingArchiveDir string
+
 	captionMgr *caption.Manager
 }
 
@@ -250,6 +254,14 @@ func (m *Manager) SetEngineLabel(label string) {
 	m.engineLabel = label
 }
 
+// SetRecordingArchiveDir sets where a recording started without an
+// ArchiveDir of its own archives its finished files; "" archives nothing.
+func (m *Manager) SetRecordingArchiveDir(dir string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recordingArchiveDir = dir
+}
+
 // EngineLabel returns the manager's configured engine label.
 func (m *Manager) EngineLabel() string {
 	m.mu.Lock()
@@ -304,6 +316,9 @@ func (m *Manager) StartRecording(config RecorderConfig) error {
 		return ErrRecorderActive
 	}
 
+	if config.ArchiveDir == "" {
+		config.ArchiveDir = m.recordingArchiveDir
+	}
 	rec := NewFileRecorder(config)
 	if err := rec.Start(m.ctx); err != nil {
 		m.mu.Unlock()

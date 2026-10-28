@@ -29,6 +29,17 @@ func (a *App) initClips() error {
 		return fmt.Errorf("create clip store: %w", err)
 	}
 	slog.Info("clip store initialized", "path", clipDir, "maxBytes", a.cfg.ClipStorageMax)
+	if dir := a.cfg.ClipLibraryDir; dir != "" {
+		if err := store.AttachLibrary(dir); err != nil {
+			return err
+		}
+		res, err := store.ScanLibrary()
+		if err != nil {
+			return err
+		}
+		slog.Info("clip library attached", "path", dir,
+			"added", res.Added, "removed", res.Removed, "skipped", res.Skipped)
+	}
 
 	// Use native 10-bit decoders for clips when the pipeline is professional mode,
 	// preserving 10-bit quality through the clip decode path.
@@ -432,6 +443,10 @@ func (a *App) handleReplayClipExported(source string, tempFile string, store *cl
 		"duration_ms", c.DurationMs,
 		"size", c.ByteSize,
 	)
+
+	if err := store.Publish(c.ID); err != nil {
+		slog.Warn("clips: replay clip not copied into the clip library", "clipID", c.ID, "error", err)
+	}
 
 	// Broadcast state change so UI updates.
 	a.clearLastOperator()
