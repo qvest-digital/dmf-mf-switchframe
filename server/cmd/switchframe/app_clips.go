@@ -36,15 +36,7 @@ func (a *App) initClips() error {
 	is10bitPipeline := pf.Color.ColorFormat == switcher.ColorYUV422_10bit
 
 	mgr := clip.NewManager(store, clip.ManagerConfig{
-		DecoderFactoryForCodec: func(codecName string) (clip.VideoDecoder, error) {
-			// Single-threaded decoder eliminates frame-level multithreading
-			// buffering delay — each Decode() produces output immediately
-			// (only B-frame reordering delay remains, typically 1-2 frames).
-			if is10bitPipeline {
-				return codec.NewVideoDecoderForCodecNative10bitSingleThread(codecName)
-			}
-			return codec.NewVideoDecoderForCodecSingleThread(codecName)
-		},
+		DecoderFactoryForCodec: clipDecoderFactory(is10bitPipeline),
 		EncoderFactory: func(w, h, fpsNum, fpsDen int) (clip.VideoEncoder, error) {
 			bitrate := switcher.DefaultBitrateForResolution(w, h)
 			return codec.NewVideoEncoder(w, h, bitrate, fpsNum, fpsDen)
@@ -462,4 +454,19 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return out.Close()
+}
+
+// clipDecoderFactory returns the decoder factory for clip players. The
+// decoders are frame-threaded: one thread decodes a high-bitrate 1080p H.264
+// clip below real time on a server core, and a player decoding slower than
+// its frame rate plays the clip slowed down, audio included. The player
+// gives the frames a threaded decoder holds back their slots when they come
+// out.
+func clipDecoderFactory(is10bitPipeline bool) func(codecName string) (clip.VideoDecoder, error) {
+	return func(codecName string) (clip.VideoDecoder, error) {
+		if is10bitPipeline {
+			return codec.NewVideoDecoderForCodecNative10bit(codecName)
+		}
+		return codec.NewVideoDecoderForCodec(codecName)
+	}
 }

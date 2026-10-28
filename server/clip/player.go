@@ -375,6 +375,60 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 	// window that primes the decoder after a seek.
 	primeUntilIdx := -1
 
+	// emit outputs one decoded frame: dupCount paced slots, each followed by
+	// its share of the audio. Returns true if the context was cancelled.
+	emit := func(frameData []byte, fw, fh int, srcKeyframe bool, browserWireData []byte, browserKeyframe bool, browserSPS, browserPPS []byte) bool {
+		for dup := 0; dup < dupCount; dup++ {
+			// Pacing starts at the first frame output, not when decoding
+			// starts: a threaded decoder returns its first picture several
+			// calls in, and slots counted from before that would be spent
+			// already and go out back to back.
+			if pacingIdx == 0 {
+				playbackStart = time.Now()
+			}
+			if p.outputFrame(ctx, frameData, fw, fh, srcKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, outputPTS, ptsPerFrame, frameDuration, timer, playbackStart, &pacingIdx) {
+				return true
+			}
+
+			// Save hold frame state.
+			p.holdMu.Lock()
+			if frameData != nil {
+				// Deep-copy YUV (prevents aliasing with decoder buffer).
+				// Reuse existing holdFrame buffer when capacity is sufficient.
+				if cap(p.holdFrame) >= len(frameData) {
+					p.holdFrame = p.holdFrame[:len(frameData)]
+				} else {
+					p.holdFrame = make([]byte, len(frameData))
+				}
+				copy(p.holdFrame, frameData)
+				p.holdW = fw
+				p.holdH = fh
+			}
+			p.holdPTS = *outputPTS
+			// Track last keyframe wire data for hold mode browser relay.
+			// The browser decoder needs a keyframe to start decoding.
+			if browserKeyframe && browserSPS != nil && browserPPS != nil {
+				p.holdKeyWireData = append(p.holdKeyWireData[:0], browserWireData...)
+				p.holdKeySPS = browserSPS
+				p.holdKeyPPS = browserPPS
+			}
+			p.holdMu.Unlock()
+
+			outputIdx++
+			if totalFrames > 0 {
+				prog := int64(outputIdx * 1000 / totalFrames)
+				if prog > 1000 {
+					prog = 1000
+				}
+				p.progress.Store(prog)
+			}
+
+			// Emit audio proportionally.
+			p.emitAudioForVideoFrame(outputIdx, totalFrames)
+		}
+		return false
+	}
+
 	for frameIdx := 0; frameIdx < totalClipFrames; {
 		// Check for seek requests (non-blocking).
 		select {
@@ -438,6 +492,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		// Wire data forwarding to the browser relay is independent of decode
 		// success — the browser has its own decoder and always gets frames.
 		var frameData []byte // nil when decode fails (browser relay still works)
+		buffered := false    // the decoder kept this frame back for reordering
 		fw, fh := p.config.Width, p.config.Height
 		isHEVC := f.IsHEVC()
 		if p.config.DecodeFrame != nil {
@@ -470,6 +525,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 					// the decoder needs reference frames before it can output.
 					if strings.Contains(errMsg, "buffering") {
 						p.decodeBuffering++
+						buffered = true
 					} else {
 						p.decodeErrors++
 						if p.decodeErrorFirst == "" {
@@ -490,6 +546,16 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		} else {
 			// No decoder (testing) — pass wire data through as frame data.
 			frameData = f.wireData
+		}
+
+		// A frame the decoder kept back comes out of a later Decode call or
+		// the drain below. It gets its output slot then: giving it one now
+		// would hold the previous picture for a slot here and push the
+		// drained frames out unpaced at the end, with the audio, which is
+		// emitted per slot, running that many frames ahead of the video.
+		if buffered {
+			frameIdx++
+			continue
 		}
 
 		// Re-encode decoded frame to browser-compatible 8-bit H.264.
@@ -536,46 +602,8 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		}
 
 		// Output frames with duplication for slow-mo.
-		for dup := 0; dup < dupCount; dup++ {
-			if p.outputFrame(ctx, frameData, fw, fh, f.isKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, outputPTS, ptsPerFrame, frameDuration, timer, playbackStart, &pacingIdx) {
-				return true
-			}
-
-			// Save hold frame state.
-			p.holdMu.Lock()
-			if frameData != nil {
-				// Deep-copy YUV (prevents aliasing with decoder buffer).
-				// Reuse existing holdFrame buffer when capacity is sufficient.
-				if cap(p.holdFrame) >= len(frameData) {
-					p.holdFrame = p.holdFrame[:len(frameData)]
-				} else {
-					p.holdFrame = make([]byte, len(frameData))
-				}
-				copy(p.holdFrame, frameData)
-				p.holdW = fw
-				p.holdH = fh
-			}
-			p.holdPTS = *outputPTS
-			// Track last keyframe wire data for hold mode browser relay.
-			// The browser decoder needs a keyframe to start decoding.
-			if browserKeyframe && browserSPS != nil && browserPPS != nil {
-				p.holdKeyWireData = append(p.holdKeyWireData[:0], browserWireData...)
-				p.holdKeySPS = browserSPS
-				p.holdKeyPPS = browserPPS
-			}
-			p.holdMu.Unlock()
-
-			outputIdx++
-			if totalFrames > 0 {
-				prog := int64(outputIdx * 1000 / totalFrames)
-				if prog > 1000 {
-					prog = 1000
-				}
-				p.progress.Store(prog)
-			}
-
-			// Emit audio proportionally.
-			p.emitAudioForVideoFrame(outputIdx, totalFrames)
+		if emit(frameData, fw, fh, f.isKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS) {
+			return true
 		}
 		frameIdx++
 	}
@@ -592,17 +620,12 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 				p.decodeSuccesses++
 				frameData := make([]byte, len(decoded))
 				copy(frameData, decoded)
-				if p.config.RawVideoOutput != nil {
-					p.config.RawVideoOutput(frameData, dw, dh, *outputPTS, false)
+				// Drained frames take their paced slots like any other;
+				// without a browser encoder they reach only the pipeline.
+				wd, kf, sps, pps := p.reencodeForBrowser(frameData, dw, dh, *outputPTS, false)
+				if emit(frameData, dw, dh, false, wd, kf, sps, pps) {
+					return true
 				}
-				// Re-encode drained frames for the browser relay (VideoOutput).
-				if p.config.VideoOutput != nil {
-					if wd, kf, s, pp := p.reencodeForBrowser(frameData, dw, dh, *outputPTS, false); wd != nil {
-						p.config.VideoOutput(wd, *outputPTS, kf, s, pp)
-					}
-				}
-				num, den := fpsToRational(p.sourceFPS)
-				*outputPTS += int64(90000) * int64(den) / int64(num)
 			}
 		}
 	}
@@ -665,12 +688,13 @@ func (p *Player) outputFrame(
 	}
 
 	// Forward H.264 wire data to browser relay (re-encoded or original).
-	if p.config.VideoOutput != nil {
+	if wireData != nil && p.config.VideoOutput != nil {
 		p.config.VideoOutput(wireData, *outputPTS, isKeyframe, sps, pps)
 	}
 
-	// Pace using absolute time to prevent drift from callback overhead.
-	deadline := playbackStart.Add(time.Duration(*pacingIdx) * frameDuration)
+	// Pace using absolute time to prevent drift from callback overhead. The
+	// frame just output is on screen until the next slot starts.
+	deadline := playbackStart.Add(time.Duration(*pacingIdx+1) * frameDuration)
 	wait := time.Until(deadline)
 	if wait > 0 {
 		timer.Reset(wait)

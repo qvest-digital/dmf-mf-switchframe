@@ -111,6 +111,9 @@ func (d *FFmpegDecoder) ReceiveFrame() ([]byte, int, int, error) {
 	return nil, 0, 0, errFFmpegDisabled
 }
 
+// ThreadCount is a stub that returns 0.
+func (d *FFmpegDecoder) ThreadCount() int { return 0 }
+
 // Close is a no-op stub.
 func (d *FFmpegDecoder) Close() {}
 

@@ -1867,3 +1867,119 @@ func TestPlayer_SeekOutputPTSContinuity(t *testing.T) {
 			i, videoPTS[i], i-1, videoPTS[i-1], videoPTS[:min(i+1, 10)])
 	}
 }
+
+// A frame-threaded decoder holds frames back for as many calls as it has
+// threads, and B-frame reordering adds to that. Each picture must still get
+// one paced slot of its own, with the audio for that slot next to it:
+// TestPlayerDelayedDecoderKeepsPacingAndLipSync feeds a decoder that answers
+// "buffering" for its first frames and returns them in the drain.
+func TestPlayerDelayedDecoderKeepsPacingAndLipSync(t *testing.T) {
+	const (
+		frames = 10
+		delay  = 3
+	)
+	clip := make([]BufferedFrame, frames)
+	audio := make([]BufferedAudioFrame, frames)
+	for i := range clip {
+		clip[i] = BufferedFrame{
+			wireData:   []byte{0, 0, 0, 1, 0x41, byte(i)},
+			pts:        int64(i) * 3000, // 30 fps
+			isKeyframe: i == 0,
+		}
+		audio[i] = BufferedAudioFrame{data: []byte{byte(i)}, sampleRate: 48000, channels: 2}
+	}
+
+	yuv := make([]byte, video.YUV420FrameSize(320, 240))
+	decoded := 0
+	drained := 0
+	decoder := &mockDrainableDecoder{
+		decodeFn: func([]byte) ([]byte, int, int, error) {
+			// Each call takes a third of a frame period, so the first
+			// picture leaves the decoder a frame period after play.
+			time.Sleep(11 * time.Millisecond)
+			decoded++
+			if decoded <= delay {
+				return nil, 0, 0, fmt.Errorf("no output frame yet (buffering)")
+			}
+			return yuv, 320, 240, nil
+		},
+		sendEOSFn: func() error { return nil },
+		receiveFrameFn: func() ([]byte, int, int, error) {
+			if drained < delay {
+				drained++
+				return yuv, 320, 240, nil
+			}
+			return nil, 0, 0, fmt.Errorf("no more frames")
+		},
+	}
+
+	type event struct {
+		video bool
+		at    time.Time
+	}
+	var mu sync.Mutex
+	var events []event
+	record := func(isVideo bool) {
+		mu.Lock()
+		events = append(events, event{video: isVideo, at: time.Now()})
+		mu.Unlock()
+	}
+
+	done := make(chan struct{})
+	p := NewPlayer(PlayerConfig{
+		Clip:        clip,
+		AudioClip:   audio,
+		Speed:       1.0,
+		Width:       320,
+		Height:      240,
+		Decoder:     decoder,
+		DecodeFrame: decoder.Decode,
+		RawVideoOutput: func([]byte, int, int, int64, bool) {
+			record(true)
+		},
+		AudioOutput: func([]byte, int64, int, int) {
+			record(false)
+		},
+		OnDone: func() { close(done) },
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.Start(ctx)
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for playback to complete")
+	}
+	cancel()
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	var videoAt []time.Time
+	audioBefore := make([]int, 0, frames)
+	audioSoFar := 0
+	for _, e := range events {
+		if e.video {
+			videoAt = append(videoAt, e.at)
+			audioBefore = append(audioBefore, audioSoFar)
+		} else {
+			audioSoFar++
+		}
+	}
+	require.Len(t, videoAt, frames, "every decoded picture reaches the pipeline")
+	require.Equal(t, frames, audioSoFar, "every audio frame is emitted")
+
+	// Picture k is shown in slot k, so the audio emitted ahead of it is
+	// that of the k slots before.
+	for k, n := range audioBefore {
+		assert.Equal(t, k, n, "audio frames emitted before picture %d", k)
+	}
+
+	// No picture follows the one before it faster than half a frame period.
+	period := time.Second / 30
+	for k := 1; k < len(videoAt); k++ {
+		gap := videoAt[k].Sub(videoAt[k-1])
+		assert.GreaterOrEqual(t, gap, period/2, "gap before picture %d", k)
+	}
+}
