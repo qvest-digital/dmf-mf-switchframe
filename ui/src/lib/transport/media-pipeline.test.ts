@@ -5,7 +5,15 @@ import { isSourceStalled, clearAllStalls, clearSourceStall } from './source-erro
 // Mock all Prism modules since they use Web Workers, WebCodecs,
 // AudioWorklet, and SharedArrayBuffer -- none available in jsdom.
 
-const mockVideoDecoderInstances: Array<{ flush: ReturnType<typeof vi.fn>; reset: ReturnType<typeof vi.fn> }> = [];
+type FrameSink = { addFrame(frame: VideoFrame): void; clear(): void };
+
+const mockVideoDecoderInstances: Array<{
+	flush: ReturnType<typeof vi.fn>;
+	reset: ReturnType<typeof vi.fn>;
+	pause: ReturnType<typeof vi.fn>;
+	resume: ReturnType<typeof vi.fn>;
+	sink: FrameSink;
+}> = [];
 
 vi.mock('$lib/prism/video-decoder', () => {
 	return {
@@ -15,13 +23,24 @@ vi.mock('$lib/prism/video-decoder', () => {
 			decode = vi.fn();
 			reset = vi.fn();
 			flush = vi.fn();
+			pause = vi.fn();
+			resume = vi.fn();
 			getDiagnostics = vi.fn().mockResolvedValue({});
-			constructor() {
+			sink: FrameSink;
+			constructor(sink: FrameSink) {
+				this.sink = sink;
 				mockVideoDecoderInstances.push(this);
 			}
 		},
 	};
 });
+
+type MockBuffer = {
+	addFrame: ReturnType<typeof vi.fn>;
+	clear: ReturnType<typeof vi.fn>;
+	takeNewestFrame: ReturnType<typeof vi.fn>;
+};
+const mockBufferInstances: MockBuffer[] = [];
 
 vi.mock('$lib/prism/video-render-buffer', () => {
 	return {
@@ -30,11 +49,30 @@ vi.mock('$lib/prism/video-render-buffer', () => {
 			getFrameByTimestamp = vi.fn().mockReturnValue({ frame: null, discarded: 0, totalDiscarded: 0, queueSize: 0, queueLengthMs: 0 });
 			peekFirstFrame = vi.fn().mockReturnValue(null);
 			takeNextFrame = vi.fn().mockReturnValue(null);
+			takeNewestFrame = vi.fn().mockReturnValue({ frame: null, discarded: 0, totalDiscarded: 0, queueSize: 0, queueLengthMs: 0 });
 			getStats = vi.fn().mockReturnValue({ queueSize: 0, queueLengthMs: 0, totalDiscarded: 0 });
 			clear = vi.fn();
+			constructor() {
+				mockBufferInstances.push(this);
+			}
 		},
 	};
 });
+
+/** A VideoFrame stand-in that records close() and the clones made of it. */
+function fakeFrame(): VideoFrame & { close: ReturnType<typeof vi.fn>; clones: VideoFrame[] } {
+	const clones: VideoFrame[] = [];
+	const frame = {
+		close: vi.fn(),
+		clones,
+		clone: vi.fn(() => {
+			const c = fakeFrame();
+			clones.push(c);
+			return c;
+		}),
+	};
+	return frame as unknown as VideoFrame & { close: ReturnType<typeof vi.fn>; clones: VideoFrame[] };
+}
 
 const mockAudioDecoderInstances: Array<{ configure: ReturnType<typeof vi.fn> }> = [];
 
@@ -64,6 +102,7 @@ vi.mock('$lib/prism/renderer', () => {
 			start = vi.fn();
 			renderOnce = vi.fn();
 			destroy = vi.fn();
+			resetSync = vi.fn();
 			getVideoBuffer = vi.fn();
 			getDiagnostics = vi.fn().mockReturnValue({ rafCount: 0, framesDrawn: 0 });
 			freeRunOnly = false;
@@ -94,6 +133,7 @@ describe('MediaPipeline', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockVideoDecoderInstances.length = 0;
+		mockBufferInstances.length = 0;
 	});
 
 	it('should create a pipeline', () => {
@@ -117,19 +157,17 @@ describe('MediaPipeline', () => {
 		pipeline.addSource('cam1');
 		pipeline.addSource('cam2');
 
-		expect(pipeline.getVideoBuffer('cam1')).not.toBeNull();
-		expect(pipeline.getVideoBuffer('cam2')).not.toBeNull();
+		expect(pipeline.hasSource('cam1')).toBe(true);
+		expect(pipeline.hasSource('cam2')).toBe(true);
 	});
 
 	it('should not duplicate sources', () => {
 		const pipeline = createMediaPipeline();
 		pipeline.addSource('cam1');
-		const buffer1 = pipeline.getVideoBuffer('cam1');
 		pipeline.addSource('cam1');
-		const buffer2 = pipeline.getVideoBuffer('cam1');
 
-		// Same buffer instance (not recreated)
-		expect(buffer1).toBe(buffer2);
+		// One decoder: the source was not recreated
+		expect(mockVideoDecoderInstances).toHaveLength(1);
 	});
 
 	it('should remove sources and clean up', () => {
@@ -137,13 +175,8 @@ describe('MediaPipeline', () => {
 		pipeline.addSource('cam1');
 		pipeline.removeSource('cam1');
 
-		expect(pipeline.getVideoBuffer('cam1')).toBeNull();
+		expect(pipeline.hasSource('cam1')).toBe(false);
 		expect(pipeline.getAudioDecoder('cam1')).toBeNull();
-	});
-
-	it('should return null for unknown source buffers', () => {
-		const pipeline = createMediaPipeline();
-		expect(pipeline.getVideoBuffer('nonexistent')).toBeNull();
 	});
 
 	it('should return null for unknown source audio decoders', () => {
@@ -159,9 +192,9 @@ describe('MediaPipeline', () => {
 
 		pipeline.destroy();
 
-		expect(pipeline.getVideoBuffer('cam1')).toBeNull();
-		expect(pipeline.getVideoBuffer('cam2')).toBeNull();
-		expect(pipeline.getVideoBuffer('cam3')).toBeNull();
+		expect(pipeline.hasSource('cam1')).toBe(false);
+		expect(pipeline.hasSource('cam2')).toBe(false);
+		expect(pipeline.hasSource('cam3')).toBe(false);
 	});
 
 	it('should feed video frames to the correct source decoder', () => {
@@ -176,8 +209,10 @@ describe('MediaPipeline', () => {
 		pipeline.feedVideoFrame('cam1', data, true, 1000, desc);
 
 		// The video decoder for cam1 should be configured and then decode called
-		const buffer1 = pipeline.getVideoBuffer('cam1');
-		expect(buffer1).not.toBeNull();
+		const [cam1, cam2] = mockVideoDecoderInstances as unknown as Array<Record<string, ReturnType<typeof vi.fn>>>;
+		expect(cam1.configure).toHaveBeenCalledTimes(1);
+		expect(cam1.decode).toHaveBeenCalledWith(data, true, 1000, false);
+		expect(cam2.decode).not.toHaveBeenCalled();
 	});
 
 	it('should ignore video frames for unknown sources', () => {
@@ -255,7 +290,7 @@ describe('MediaPipeline', () => {
 		pipeline.connectSource('cam1');
 		pipeline.removeSource('cam1');
 
-		expect(pipeline.getVideoBuffer('cam1')).toBeNull();
+		expect(pipeline.hasSource('cam1')).toBe(false);
 	});
 
 	it('should support multiple renderers per source', () => {
@@ -290,6 +325,132 @@ describe('MediaPipeline', () => {
 
 		// Should not throw
 		pipeline.detachCanvas('cam1', 'program');
+	});
+
+	// A decoded frame that no canvas shows must be closed at once: an open
+	// VideoFrame holds decoder memory, and a decoder whose frames are held
+	// stops producing output.
+	it('closes a decoded frame no canvas shows', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+		const frame = fakeFrame();
+
+		mockVideoDecoderInstances[0].sink.addFrame(frame);
+
+		expect(frame.close).toHaveBeenCalledTimes(1);
+		pipeline.destroy();
+	});
+
+	it('hands each attached canvas the frame once, the decoded frame or a clone', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+		pipeline.attachCanvas('cam1', 'tile-cam1', document.createElement('canvas'));
+		pipeline.attachCanvas('cam1', 'preview', document.createElement('canvas'));
+		const [tileBuf, previewBuf] = mockBufferInstances;
+		const frame = fakeFrame();
+
+		mockVideoDecoderInstances[0].sink.addFrame(frame);
+
+		expect(tileBuf.addFrame).toHaveBeenCalledWith(frame);
+		expect(previewBuf.addFrame).toHaveBeenCalledWith(frame.clones[0]);
+		expect(frame.clones).toHaveLength(1);
+		expect(frame.close).not.toHaveBeenCalled();
+		pipeline.destroy();
+	});
+
+	// The first canvas attached used to own the source's only buffer, which
+	// went on filling after that canvas was detached: up to 60 open frames
+	// no renderer read.
+	it('stops feeding a detached canvas', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+		pipeline.attachCanvas('cam1', 'preview', document.createElement('canvas'));
+		pipeline.attachCanvas('cam1', 'tile-cam1', document.createElement('canvas'));
+		const [previewBuf, tileBuf] = mockBufferInstances;
+
+		pipeline.detachCanvas('cam1', 'preview');
+		expect(previewBuf.clear).toHaveBeenCalled();
+		const frame = fakeFrame();
+		mockVideoDecoderInstances[0].sink.addFrame(frame);
+
+		expect(previewBuf.addFrame).not.toHaveBeenCalled();
+		expect(tileBuf.addFrame).toHaveBeenCalledWith(frame);
+		expect(frame.clones).toHaveLength(0);
+		pipeline.destroy();
+	});
+
+	it('closes the frames of a renderer replaced on the same canvasId', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+		pipeline.attachCanvas('cam1', 'tile-cam1', document.createElement('canvas'));
+		pipeline.attachCanvas('cam1', 'preview', document.createElement('canvas'));
+		const replaced = mockBufferInstances[1];
+
+		pipeline.attachCanvas('cam1', 'preview', document.createElement('canvas'));
+		const frame = fakeFrame();
+		mockVideoDecoderInstances[0].sink.addFrame(frame);
+
+		expect(replaced.clear).toHaveBeenCalled();
+		expect(replaced.addFrame).not.toHaveBeenCalled();
+		expect(frame.clones).toHaveLength(1);
+		pipeline.destroy();
+	});
+
+	// Warm standby keeps every Engine B source connected with no canvas;
+	// decoding those headless doubled the decode load of a tab.
+	it('decodes video only while a canvas shows the source', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+		const decoder = mockVideoDecoderInstances[0];
+		expect(decoder.pause).toHaveBeenCalledTimes(1);
+		expect(decoder.resume).not.toHaveBeenCalled();
+
+		pipeline.attachCanvas('cam1', 'tile-cam1', document.createElement('canvas'));
+		pipeline.attachCanvas('cam1', 'preview', document.createElement('canvas'));
+		expect(decoder.resume).toHaveBeenCalledTimes(1);
+
+		pipeline.detachCanvas('cam1', 'preview');
+		expect(decoder.pause).toHaveBeenCalledTimes(1);
+		pipeline.detachCanvas('cam1', 'tile-cam1');
+		expect(decoder.pause).toHaveBeenCalledTimes(2);
+		pipeline.destroy();
+	});
+
+	it('keeps a source without a canvas paused when the tab becomes visible', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('shown');
+		pipeline.addSource('standby');
+		pipeline.attachCanvas('shown', 'tile-shown', document.createElement('canvas'));
+		const [shown, standby] = mockVideoDecoderInstances;
+		const hidden = vi.spyOn(document, 'hidden', 'get');
+		try {
+			hidden.mockReturnValue(true);
+			document.dispatchEvent(new Event('visibilitychange'));
+			hidden.mockReturnValue(false);
+			document.dispatchEvent(new Event('visibilitychange'));
+		} finally {
+			hidden.mockRestore();
+		}
+
+		expect(shown.pause).toHaveBeenCalledTimes(2);
+		expect(shown.resume).toHaveBeenCalledTimes(2);
+		expect(standby.pause).toHaveBeenCalledTimes(1);
+		expect(standby.resume).not.toHaveBeenCalled();
+		pipeline.destroy();
+	});
+
+	it('closes the frames it drops when the window regains focus', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+		pipeline.attachCanvas('cam1', 'tile-cam1', document.createElement('canvas'));
+		const frame = fakeFrame();
+		mockBufferInstances[0].takeNewestFrame.mockReturnValueOnce({ frame, discarded: 0, totalDiscarded: 0, queueSize: 0, queueLengthMs: 0 });
+
+		window.dispatchEvent(new Event('focus'));
+
+		expect(mockBufferInstances[0].takeNewestFrame).toHaveBeenCalledTimes(1);
+		expect(frame.close).toHaveBeenCalledTimes(1);
+		pipeline.destroy();
 	});
 
 	it('should return empty diagnostics when no sources', async () => {
