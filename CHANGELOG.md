@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.0-rc.28](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.27...mxl-v1.0.0-rc.28) (2026-10-28)
+
+
+### Bug Fixes
+
+* **clip:** decode clips frame-threaded so they play in real time ([#102](https://github.com/qvest-digital/dmf-mf-switchframe/issues/102)) ([4b1d0ff](https://github.com/qvest-digital/dmf-mf-switchframe/commit/4b1d0ffea065d508b1c4655483d377ab323a5d01))
+* **playout:** start a stopped or completed channel again ([#99](https://github.com/qvest-digital/dmf-mf-switchframe/issues/99)) ([ffd71f0](https://github.com/qvest-digital/dmf-mf-switchframe/commit/ffd71f0d9302d8af3290174085f9388ff3477b0d))
+* **ui:** bound the video decode backlog by time, not by chunk count ([#106](https://github.com/qvest-digital/dmf-mf-switchframe/issues/106)) ([f5f9146](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f5f9146e933fce0c0cf35701b550d3bb2803b08f))
+* **ui:** keep the program audio of a click made during page load ([#104](https://github.com/qvest-digital/dmf-mf-switchframe/issues/104)) ([6dfb7f4](https://github.com/qvest-digital/dmf-mf-switchframe/commit/6dfb7f42d0d1daac542d0ea61dfca1cc799eac73))
+
 ## [1.0.0-rc.27](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.26...mxl-v1.0.0-rc.27) (2026-10-28)
 
 
