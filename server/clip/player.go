@@ -379,6 +379,13 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 	// its share of the audio. Returns true if the context was cancelled.
 	emit := func(frameData []byte, fw, fh int, srcKeyframe bool, browserWireData []byte, browserKeyframe bool, browserSPS, browserPPS []byte) bool {
 		for dup := 0; dup < dupCount; dup++ {
+			// Pacing starts at the first frame output, not when decoding
+			// starts: a threaded decoder returns its first picture several
+			// calls in, and slots counted from before that would be spent
+			// already and go out back to back.
+			if pacingIdx == 0 {
+				playbackStart = time.Now()
+			}
 			if p.outputFrame(ctx, frameData, fw, fh, srcKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, outputPTS, ptsPerFrame, frameDuration, timer, playbackStart, &pacingIdx) {
 				return true
 			}

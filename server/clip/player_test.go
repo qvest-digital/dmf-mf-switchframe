@@ -1894,6 +1894,9 @@ func TestPlayerDelayedDecoderKeepsPacingAndLipSync(t *testing.T) {
 	drained := 0
 	decoder := &mockDrainableDecoder{
 		decodeFn: func([]byte) ([]byte, int, int, error) {
+			// Each call takes a third of a frame period, so the first
+			// picture leaves the decoder a frame period after play.
+			time.Sleep(11 * time.Millisecond)
 			decoded++
 			if decoded <= delay {
 				return nil, 0, 0, fmt.Errorf("no output frame yet (buffering)")
