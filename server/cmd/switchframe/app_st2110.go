@@ -15,9 +15,12 @@ import (
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
-// st2110PacketTimeMs is the packet time program audio is transmitted at,
-// which its Sender's caps state.
-const st2110PacketTimeMs = 1
+// st2110PacketTimeMs and st2110AudioChannels are the packet time and channel
+// count program audio is transmitted with, which its Sender's caps state.
+const (
+	st2110PacketTimeMs  = 1
+	st2110AudioChannels = 2
+)
 
 // st2110State holds all ST 2110 subsystem state for the application lifecycle.
 type st2110State struct {
@@ -28,8 +31,19 @@ type st2110State struct {
 	httpServer *http.Server
 	sources    []*st2110.Source
 	sourcesMu  sync.Mutex
-	output     *st2110.Output
-	dnsSDStop  nmos.StopFunc
+
+	// txMu serialises what changes the program TX: sender activation and
+	// deactivation, which the Connection API runs per sender, and the
+	// restart on a pipeline format change.
+	txMu sync.Mutex
+
+	// newVideoTx and newAudioTx create the program TX sessions; nil uses
+	// the MTL instance.
+	newVideoTx func(st2110.TxVideoConfig) (st2110.VideoTransmitter, error)
+	newAudioTx func(st2110.TxAudioConfig) (st2110.AudioTransmitter, error)
+
+	output    *st2110.Output
+	dnsSDStop nmos.StopFunc
 
 	// TX configs for program output. Stored so we can recreate TX handles
 	// when the output is restarted (Output.Stop closes TX handles).
@@ -39,6 +53,10 @@ type st2110State struct {
 	// Sender ID tracking for cleanup.
 	videoSenderID string
 	audioSenderID string
+
+	// programVideoSenderID is the program video Sender, whose Flow and caps
+	// follow the pipeline format.
+	programVideoSenderID string
 
 	// NMOS resource IDs for cleanup.
 	nodeID   string
@@ -249,24 +267,10 @@ func (a *App) initST2110(ctx context.Context) error {
 		Parents:   []string{},
 	})
 
-	pgmVideoFlow := &nmos.Flow{
-		ID:          pgmVideoFlowID,
-		Label:       "Program Video Flow",
-		Format:      nmos.FormatVideo,
-		SourceID:    pgmVideoSourceID,
-		DeviceID:    state.deviceID,
-		MediaType:   "video/raw",
-		Tags:        map[string][]string{},
-		Parents:     []string{},
-		FrameWidth:  pf.Width,
-		FrameHeight: pf.Height,
-		Colorspace:  "BT709",
-		GrainRate: &nmos.Rational{
-			Numerator:   int64(pf.FPSNum),
-			Denominator: int64(pf.FPSDen),
-		},
-	}
+	pgmVideoFlow := programVideoFlow(pgmVideoFlowID, pgmVideoSourceID, state.deviceID,
+		pf.Width, pf.Height, pf.FPSNum, pf.FPSDen)
 	store.AddFlow(pgmVideoFlow)
+	state.programVideoSenderID = pgmVideoSenderID
 
 	store.AddSender(&nmos.Sender{
 		ID:                pgmVideoSenderID,
@@ -325,7 +329,7 @@ func (a *App) initST2110(ctx context.Context) error {
 		ManifestHref:      nmos.StringPtr(fmt.Sprintf("http://%s:%d/x-nmos/connection/v1.1/single/senders/%s/transportfile", a.cfg.ST2110IP, a.cfg.ST2110NMOSPort, pgmAudioSenderID)),
 		Tags:              map[string][]string{},
 		InterfaceBindings: []string{},
-		Caps:              nmos.ST2110SenderCaps(pgmAudioFlow, 2, st2110PacketTimeMs, nmos.NewVersion()),
+		Caps:              nmos.ST2110SenderCaps(pgmAudioFlow, st2110AudioChannels, st2110PacketTimeMs, nmos.NewVersion()),
 		Subscription:      nmos.SenderSubscription{},
 	})
 	senderIDs = append(senderIDs, pgmAudioSenderID)
@@ -431,10 +435,13 @@ func (a *App) closeST2110() {
 		src.Stop()
 	}
 
-	// Stop output.
+	// Stop output. Under txMu, so a format change cannot create a TX
+	// between this and the instance closing.
+	state.txMu.Lock()
 	if state.output != nil {
 		state.output.Stop()
 	}
+	state.txMu.Unlock()
 
 	// Stop NMOS HTTP server.
 	if state.httpServer != nil {
@@ -704,6 +711,8 @@ func (a *App) activateST2110Sender(id string, params nmos.StagedParams) error {
 	if state == nil {
 		return fmt.Errorf("ST 2110 not initialized")
 	}
+	state.txMu.Lock()
+	defer state.txMu.Unlock()
 
 	if len(params.TransportParams) == 0 {
 		return fmt.Errorf("no transport params for sender %s", id)
@@ -772,7 +781,7 @@ func (a *App) activateST2110Sender(id string, params nmos.StagedParams) error {
 			Port:        port,
 			Format: st2110.AudioFormat{
 				SampleRate:   48000,
-				Channels:     2,
+				Channels:     st2110AudioChannels,
 				BitDepth:     24,
 				PacketTimeUs: st2110PacketTimeMs * 1000,
 			},
@@ -800,6 +809,30 @@ func (a *App) activateST2110Sender(id string, params nmos.StagedParams) error {
 	return nil
 }
 
+// createVideoTx opens a program video TX session.
+func (s *st2110State) createVideoTx(cfg st2110.TxVideoConfig) (st2110.VideoTransmitter, error) {
+	if s.newVideoTx != nil {
+		return s.newVideoTx(cfg)
+	}
+	tx, err := s.instance.CreateVideoTx(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return tx, nil
+}
+
+// createAudioTx opens a program audio TX session.
+func (s *st2110State) createAudioTx(cfg st2110.TxAudioConfig) (st2110.AudioTransmitter, error) {
+	if s.newAudioTx != nil {
+		return s.newAudioTx(cfg)
+	}
+	tx, err := s.instance.CreateAudioTx(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return tx, nil
+}
+
 // startOrRestartST2110Output creates (or recreates) the st2110.Output and wires
 // the switcher raw video sink and mixer raw audio sink. Called when either the
 // video or audio sender is activated. If an output already exists it is stopped
@@ -819,7 +852,7 @@ func (a *App) startOrRestartST2110Output() error {
 	var audioTx st2110.AudioTransmitter
 
 	if state.videoTxCfg != nil {
-		vtx, err := state.instance.CreateVideoTx(*state.videoTxCfg)
+		vtx, err := state.createVideoTx(*state.videoTxCfg)
 		if err != nil {
 			return fmt.Errorf("create video TX: %w", err)
 		}
@@ -827,7 +860,7 @@ func (a *App) startOrRestartST2110Output() error {
 	}
 
 	if state.audioTxCfg != nil {
-		atx, err := state.instance.CreateAudioTx(*state.audioTxCfg)
+		atx, err := state.createAudioTx(*state.audioTxCfg)
 		if err != nil {
 			// Clean up video TX if we already created it.
 			if videoTx != nil {
@@ -839,10 +872,16 @@ func (a *App) startOrRestartST2110Output() error {
 	}
 
 	pf := a.sw.PipelineFormat()
-	state.output = st2110.NewOutput(st2110.OutputConfig{
+	cfg := st2110.OutputConfig{
 		FPSNum: pf.FPSNum,
 		FPSDen: pf.FPSDen,
-	})
+	}
+	if state.videoTxCfg != nil {
+		// The TX converter is sized at creation; the size guard keeps frames
+		// of another size, from a format change still under way, off it.
+		cfg.Width, cfg.Height = state.videoTxCfg.Format.Width, state.videoTxCfg.Format.Height
+	}
+	state.output = st2110.NewOutput(cfg)
 	state.output.Start(videoTx, audioTx, nil)
 
 	// Wire switcher raw video sink to the output.
@@ -873,6 +912,8 @@ func (a *App) deactivateST2110Sender(id string) error {
 	if state == nil {
 		return fmt.Errorf("ST 2110 not initialized")
 	}
+	state.txMu.Lock()
+	defer state.txMu.Unlock()
 
 	slog.Info("ST 2110: sender deactivation requested", "id", id)
 
@@ -896,6 +937,121 @@ func (a *App) deactivateST2110Sender(id string) error {
 
 	slog.Info("ST 2110: sender deactivated", "id", id)
 	return nil
+}
+
+// programVideoFlow is the IS-04 Flow of the program video at a pipeline
+// format.
+func programVideoFlow(id, sourceID, deviceID string, width, height, fpsNum, fpsDen int) *nmos.Flow {
+	return &nmos.Flow{
+		ID:          id,
+		Label:       "Program Video Flow",
+		Format:      nmos.FormatVideo,
+		SourceID:    sourceID,
+		DeviceID:    deviceID,
+		MediaType:   "video/raw",
+		Tags:        map[string][]string{},
+		Parents:     []string{},
+		FrameWidth:  width,
+		FrameHeight: height,
+		Colorspace:  "BT709",
+		GrainRate: &nmos.Rational{
+			Numerator:   int64(fpsNum),
+			Denominator: int64(fpsDen),
+		},
+	}
+}
+
+// wireFormatChange registers the switcher's OnFormatChange callback. gpu is
+// whether a GPU pipeline was initialised and has to be rebuilt.
+func (a *App) wireFormatChange(gpu bool) {
+	a.gpuRebuildOnFormat = gpu
+	a.sw.SetOnFormatChange(a.onPipelineFormatChange)
+}
+
+// dropST2110ProgramVideo takes the program video off the air after its TX
+// could not be created again, the way a failed activation leaves it: no
+// video configuration, no video sink, and the Sender inactive on the
+// Connection API rather than reported active with nothing sent. A running
+// audio Sender is started again alone, since the restart stopped it too.
+// Called with txMu held.
+func (a *App) dropST2110ProgramVideo() {
+	state := a.st2110State
+	sender := state.videoSenderID
+	state.videoTxCfg = nil
+	state.videoSenderID = ""
+	a.sw.SetRawVideoSink(nil)
+	a.updateGPURawVideoSink()
+	if state.connServer != nil && sender != "" {
+		state.connServer.SetSenderInactive(sender)
+	}
+	if state.audioTxCfg == nil {
+		return
+	}
+	if err := a.startOrRestartST2110Output(); err != nil {
+		slog.Error("ST 2110: restarting program audio alone failed", "error", err)
+		if state.connServer != nil && state.audioSenderID != "" {
+			state.connServer.SetSenderInactive(state.audioSenderID)
+		}
+		state.audioTxCfg = nil
+		state.audioSenderID = ""
+		if a.mixer != nil {
+			a.mixer.SetRawAudioSink(nil)
+		}
+	}
+}
+
+// onPipelineFormatChange is the switcher's OnFormatChange callback.
+func (a *App) onPipelineFormatChange(width, height, fpsNum, fpsDen int) {
+	if a.gpuRebuildOnFormat {
+		a.rebuildGPUPipelineForFormat(width, height, fpsNum, fpsDen)
+	}
+	a.updateST2110ProgramFormat()
+}
+
+// updateST2110ProgramFormat brings the program output to the current
+// pipeline format: a running video TX is restarted at it, then the program
+// video Flow and its Sender's caps are republished, so the stream, the Flow
+// and the caps agree. The Flow keeps its id: IS-04 has a Flow id not change
+// with its resolution. The caps take a new version, as BCP-004-02 requires
+// when the capabilities change, and re-adding the Sender moves its own.
+//
+// The format is read here rather than taken from the callback: the switcher
+// calls back outside its lock, so two changes can arrive out of order, and
+// under txMu the last one to run publishes the format in effect.
+func (a *App) updateST2110ProgramFormat() {
+	state := a.st2110State
+	if state == nil || state.store == nil || state.programVideoSenderID == "" {
+		return
+	}
+	state.txMu.Lock()
+	defer state.txMu.Unlock()
+	pf := a.sw.PipelineFormat()
+
+	if state.videoTxCfg != nil {
+		cfg := *state.videoTxCfg
+		cfg.Format.Width, cfg.Format.Height = pf.Width, pf.Height
+		cfg.Format.FPSNum, cfg.Format.FPSDen = pf.FPSNum, pf.FPSDen
+		state.videoTxCfg = &cfg
+		if err := a.startOrRestartST2110Output(); err != nil {
+			slog.Error("ST 2110: restarting the program output at the new format failed",
+				"format", fmt.Sprintf("%dx%d@%d/%d", pf.Width, pf.Height, pf.FPSNum, pf.FPSDen),
+				"error", err)
+			a.dropST2110ProgramVideo()
+		}
+	}
+
+	snd := state.store.GetSender(state.programVideoSenderID)
+	if snd == nil {
+		return
+	}
+	prev := state.store.GetFlow(snd.FlowID)
+	if prev == nil {
+		return
+	}
+	flow := programVideoFlow(prev.ID, prev.SourceID, prev.DeviceID, pf.Width, pf.Height, pf.FPSNum, pf.FPSDen)
+	state.store.AddFlow(flow)
+	snd.Caps = nmos.ST2110SenderCaps(flow, 0, st2110PacketTimeMs, nmos.NewVersion())
+	state.store.AddSender(snd)
 }
 
 // clockRefType returns the IS-04 clock ref_type based on PTP configuration.

@@ -37,7 +37,7 @@ export interface SourceDiagnostics {
 }
 
 /**
- * Per-source media state: decoder, buffer, and renderers.
+ * Per-source media state: decoder, buffers, and renderers.
  * Each source stream has its own MoQTransport, video decoder pipeline,
  * and audio decoder for metering/PFL. Multiple renderers are supported
  * per source so the same decoded video can render to both a multiview
@@ -45,12 +45,13 @@ export interface SourceDiagnostics {
  */
 interface SourceMedia {
 	key: string;
-	videoBuffer: VideoRenderBuffer;
 	videoDecoder: PrismVideoDecoder;
+	/** Whether the video decoder is paused: the tab is hidden or no canvas shows the source. */
+	videoPaused: boolean;
 	audioDecoder: PrismAudioDecoder | null;
 	renderers: Map<string, PrismRenderer>;
-	/** Per-renderer secondary buffers for multi-canvas sources (program/preview). */
-	secondaryBuffers: Map<string, VideoRenderBuffer>;
+	/** Render buffer of each renderer, by canvasId. */
+	buffers: Map<string, VideoRenderBuffer>;
 	transport: MoQTransport | null;
 	configured: boolean;
 	audioConfigured: boolean;
@@ -77,8 +78,6 @@ export interface MediaPipeline {
 	connectSource(key: string): void;
 	/** Disconnect a source's MoQ transport without removing decode state. */
 	disconnectSource(key: string): void;
-	/** Get the video render buffer for a source (for external renderers). */
-	getVideoBuffer(sourceKey: string): VideoRenderBuffer | null;
 	/** Get the audio decoder for a source (for PFL/metering). */
 	getAudioDecoder(sourceKey: string): PrismAudioDecoder | null;
 	/** Get the underlying WebTransport for a source (for datagrams). */
@@ -150,24 +149,37 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	let stallCheckInterval: ReturnType<typeof setInterval> | null = null;
 
 	function createSourceMedia(key: string): SourceMedia {
-		const videoBuffer = new VideoRenderBuffer();
-		const secondaryBuffers = new Map<string, VideoRenderBuffer>();
+		const buffers = new Map<string, VideoRenderBuffer>();
 
-		// Clone decoded frames into secondary buffers so multiple renderers
-		// (tile + program/preview) each get their own copy without contention.
-		const videoDecoder = new PrismVideoDecoder(videoBuffer, (frame: VideoFrame) => {
-			for (const buf of secondaryBuffers.values()) {
-				buf.addFrame(frame.clone());
-			}
-		});
+		// Every renderer (tile, program/preview) reads its own buffer: one
+		// takes the decoded frame, the others a clone. A frame nothing
+		// renders is closed at once; an open VideoFrame holds decoder
+		// memory, and a decoder whose frames are held stops producing.
+		const sink = {
+			addFrame(frame: VideoFrame): void {
+				let owner: VideoRenderBuffer | null = null;
+				for (const buf of buffers.values()) {
+					if (owner) buf.addFrame(frame.clone());
+					else owner = buf;
+				}
+				if (owner) owner.addFrame(frame);
+				else frame.close();
+			},
+			clear(): void {
+				for (const buf of buffers.values()) buf.clear();
+			},
+		};
+		const videoDecoder = new PrismVideoDecoder(sink);
+		// Nothing shows the source until a canvas is attached.
+		videoDecoder.pause();
 
 		return {
 			key,
-			videoBuffer,
 			videoDecoder,
+			videoPaused: true,
 			audioDecoder: null,
 			renderers: new Map(),
-			secondaryBuffers,
+			buffers,
 			transport: null,
 			configured: false,
 			audioConfigured: false,
@@ -183,6 +195,22 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 	/** Set once after the first MoQ catalog is received. */
 	let moqActiveNotified = false;
+
+	/**
+	 * One AudioContext for the audio of every source. Each context is an
+	 * audio output stream and an audio rendering thread of its own, and a
+	 * context per source made one tab hold one per source and engine.
+	 * Created suspended, as a browser lets one run only after a user
+	 * gesture; resumeAllAudio resumes it.
+	 */
+	let audioContext: AudioContext | null = null;
+	function sharedAudioContext(): AudioContext {
+		if (!audioContext) {
+			audioContext = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+			if (audioContext.state === 'running') void audioContext.suspend();
+		}
+		return audioContext;
+	}
 
 	function makeCallbacks(key: string): MoQTransportCallbacks {
 		return {
@@ -214,7 +242,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 						const sampleRate = track.sampleRate || 48000;
 						const channels = track.channels || 2;
 						const audioDecoder = new PrismAudioDecoder();
-						audioDecoder.configure(codec, sampleRate, channels).then(() => {
+						audioDecoder.configure(codec, sampleRate, channels, sharedAudioContext()).then(() => {
 							audioDecoder.setMuted(!unmutedSources.has(key));
 							audioDecoder.enableMetering();
 							source.audioDecoder = audioDecoder;
@@ -248,9 +276,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 						if (gap > 1 && source.latestGroupID > 0) {
 							// Skipped group(s) — transport stall, flush and jump forward
 							source.videoDecoder.flush();
-							for (const buf of source.secondaryBuffers.values()) {
-								buf.clear();
-							}
 							source.groupSkips++;
 						}
 						source.latestGroupID = groupID;
@@ -304,17 +329,12 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 					source.transport = null;
 					source.latestGroupID = 0;
 
-					// Flush decoder to prevent stale frames lingering in the render
-					// buffer during engine failover. Without this, the renderer shows
-					// the last decoded frame frozen for up to 3 seconds (stall threshold)
-					// before failover triggers.
+					// Flush decoder and every render buffer to prevent stale frames
+					// lingering during engine failover. Without this, the renderer
+					// shows the last decoded frame frozen for up to 3 seconds (stall
+					// threshold) before failover triggers.
 					if (source.videoDecoder) {
 						try { source.videoDecoder.flush(); } catch { /* decoder may be in error state */ }
-					}
-					// Clear secondary buffers (program/preview canvases) to avoid
-					// showing stale frames from the dead engine.
-					for (const buf of source.secondaryBuffers.values()) {
-						buf.clear();
 					}
 				}
 			},
@@ -440,19 +460,18 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			source.transport = null;
 		}
 
-		// Clean up all renderers and secondary buffers
+		// Clean up all renderers and their buffers
 		for (const renderer of source.renderers.values()) {
 			renderer.destroy();
 		}
 		source.renderers.clear();
-		for (const buf of source.secondaryBuffers.values()) {
+		for (const buf of source.buffers.values()) {
 			buf.clear();
 		}
-		source.secondaryBuffers.clear();
+		source.buffers.clear();
 
 		// Clean up video pipeline
 		source.videoDecoder.reset();
-		source.videoBuffer.clear();
 
 		// Clean up audio
 		if (source.audioDecoder) {
@@ -502,10 +521,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		}
 	}
 
-	function getVideoBuffer(sourceKey: string): VideoRenderBuffer | null {
-		return sources.get(sourceKey)?.videoBuffer ?? null;
-	}
-
 	function getAudioDecoder(sourceKey: string): PrismAudioDecoder | null {
 		return sources.get(sourceKey)?.audioDecoder ?? null;
 	}
@@ -515,11 +530,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		if (!source) return false;
 
 		// Destroy existing renderer for this canvasId if any
-		const existing = source.renderers.get(canvasId);
-		if (existing) {
-			existing.destroy();
-			source.secondaryBuffers.delete(canvasId);
-		}
+		removeRenderer(source, canvasId);
 
 		// Create audio clock from the source's audio decoder (or a no-op clock)
 		const audioClock = {
@@ -528,15 +539,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			},
 		};
 
-		// First renderer uses the primary buffer; additional renderers get
-		// their own buffer with cloned frames to avoid contention.
-		let buffer: VideoRenderBuffer;
-		if (source.renderers.size === 0) {
-			buffer = source.videoBuffer;
-		} else {
-			buffer = new VideoRenderBuffer();
-			source.secondaryBuffers.set(canvasId, buffer);
-		}
+		const buffer = new VideoRenderBuffer();
+		source.buffers.set(canvasId, buffer);
 
 		const renderer = new PrismRenderer(canvas, buffer, audioClock);
 		// No freeRunOnly flag — audioClock dynamically returns -1 when audio
@@ -544,23 +548,43 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		// transitions to audio-driven once the decoder finishes configuring.
 		source.renderers.set(canvasId, renderer);
 		renderer.start();
+		updateVideoDecode(source);
 		return true;
 	}
 
 	function detachCanvas(sourceKey: string, canvasId: string): void {
 		const source = sources.get(sourceKey);
 		if (!source) return;
+		if (!removeRenderer(source, canvasId)) return;
+		updateVideoDecode(source);
+	}
 
+	/** Destroy a renderer and close the frames its buffer holds. */
+	function removeRenderer(source: SourceMedia, canvasId: string): boolean {
 		const renderer = source.renderers.get(canvasId);
-		if (!renderer) return;
-
+		if (!renderer) return false;
 		renderer.destroy();
 		source.renderers.delete(canvasId);
+		source.buffers.get(canvasId)?.clear();
+		source.buffers.delete(canvasId);
+		return true;
+	}
 
-		const secBuf = source.secondaryBuffers.get(canvasId);
-		if (secBuf) {
-			secBuf.clear();
-			source.secondaryBuffers.delete(canvasId);
+	/**
+	 * Decode video only while it can be seen: the tab is visible and a
+	 * canvas shows the source. A paused decoder drops compressed frames and
+	 * resumes on the next keyframe, so a hidden tab or a source kept
+	 * connected without a canvas (warm standby) neither decodes nor holds
+	 * frames.
+	 */
+	function updateVideoDecode(source: SourceMedia): void {
+		const paused = document.hidden || source.renderers.size === 0;
+		if (paused === source.videoPaused) return;
+		source.videoPaused = paused;
+		if (paused) {
+			source.videoDecoder.pause();
+		} else {
+			source.videoDecoder.resume();
 		}
 	}
 
@@ -599,6 +623,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		for (const key of Array.from(sources.keys())) {
 			removeSource(key);
 		}
+		void audioContext?.close();
+		audioContext = null;
 		lastFrameTime.clear();
 		disconnectedWithFrames.clear();
 	}
@@ -606,14 +632,9 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	function handleVisibilityChange(): void {
 		const hidden = document.hidden;
 		for (const source of sources.values()) {
-			if (hidden) {
-				source.videoDecoder.pause();
-			} else {
-				source.videoDecoder.resume();
-				// Clear secondary buffers (program/preview canvases)
-				for (const buf of source.secondaryBuffers.values()) {
-					buf.clear();
-				}
+			// Resuming flushes the decoder and clears every render buffer.
+			updateVideoDecode(source);
+			if (!hidden) {
 				// Reset renderer sync so stale PTS doesn't corrupt timing
 				for (const renderer of source.renderers.values()) {
 					renderer.resetSync();
@@ -644,9 +665,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		// Snap all video buffers to live edge — discard stale frames
 		// accumulated while the window was unfocused
 		for (const source of sources.values()) {
-			source.videoBuffer.takeNewestFrame();
-			for (const buf of source.secondaryBuffers.values()) {
-				buf.takeNewestFrame();
+			for (const buf of source.buffers.values()) {
+				buf.takeNewestFrame().frame?.close();
 			}
 			// Reset renderer sync so PTS tracking starts fresh
 			for (const renderer of source.renderers.values()) {
@@ -736,7 +756,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		removeSource,
 		connectSource,
 		disconnectSource,
-		getVideoBuffer,
 		getAudioDecoder,
 		getSourceTransport,
 		setSourceMuted,
