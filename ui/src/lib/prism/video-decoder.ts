@@ -1,5 +1,3 @@
-import { VideoRenderBuffer } from "./video-render-buffer";
-
 /** Diagnostic counters and timing statistics from the video decoder worker. */
 export interface VideoDecoderDiagnostics {
 	inputCount: number;
@@ -30,15 +28,21 @@ export interface VideoDecoderDiagnostics {
 	lifetimeConfigGuardDrops: number;
 }
 
+/** Takes the decoded frames: owns, and must close, every frame it is given. */
+export interface VideoFrameSink {
+	addFrame(frame: VideoFrame): void;
+	clear(): void;
+}
+
 /**
  * Manages a Web Worker that runs the WebCodecs VideoDecoder. Compressed
  * frames are posted to the worker, and decoded VideoFrames are transferred
- * back and inserted into a VideoRenderBuffer for the renderer to consume.
+ * back and handed to a VideoFrameSink, such as a VideoRenderBuffer.
  * The worker isolation prevents decode stalls from blocking the main thread.
  */
 export class PrismVideoDecoder {
 	private worker: Worker | null = null;
-	private renderBuffer: VideoRenderBuffer;
+	private renderBuffer: VideoFrameSink;
 	private onFrameReceived: ((frame: VideoFrame) => void) | null;
 	private configured = false;
 	private _lastDiag: VideoDecoderDiagnostics | null = null;
@@ -46,7 +50,7 @@ export class PrismVideoDecoder {
 	private _bufferDropped = 0;
 	private _paused = false;
 
-	constructor(renderBuffer: VideoRenderBuffer, onFrameReceived?: (frame: VideoFrame) => void) {
+	constructor(renderBuffer: VideoFrameSink, onFrameReceived?: (frame: VideoFrame) => void) {
 		this.renderBuffer = renderBuffer;
 		this.onFrameReceived = onFrameReceived ?? null;
 	}
