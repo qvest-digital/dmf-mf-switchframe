@@ -55,8 +55,8 @@ func TestFileRecorder_ArchivesFinishedFiles(t *testing.T) {
 }
 
 // A file a previous run left behind, for instance cut short by a restart,
-// is archived when recording starts again, and an archive of it that
-// already exists is not replaced.
+// is archived when recording starts again; a complete archive of it is
+// kept, so only the local copy goes.
 func TestFileRecorder_ArchivesLeftoversAtStart(t *testing.T) {
 	dir, archive := t.TempDir(), t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "program_old_001.ts"), []byte("old"), 0o644))
@@ -72,11 +72,11 @@ func TestFileRecorder_ArchivesLeftoversAtStart(t *testing.T) {
 	old, err := os.ReadFile(filepath.Join(archive, "program_old_001.ts"))
 	require.NoError(t, err)
 	require.Equal(t, "old", string(old))
-	// The differing file is kept on both sides rather than overwritten.
+	// An archive of another size is a copy cut short: replaced.
 	diff, err := os.ReadFile(filepath.Join(archive, "program_diff_001.ts"))
 	require.NoError(t, err)
-	require.Equal(t, "archived", string(diff))
-	require.ElementsMatch(t, []string{"program_diff_001.ts", r.Filename()}, listNames(t, dir))
+	require.Equal(t, "local", string(diff))
+	require.ElementsMatch(t, []string{r.Filename()}, listNames(t, dir))
 
 	require.NoError(t, r.Close())
 	r.WaitArchived()
@@ -107,4 +107,51 @@ func TestManager_StartRecordingTakesArchiveDir(t *testing.T) {
 		names := listNames(t, archive)
 		return len(names) == 1 && names[0] == name
 	}, 5*time.Second, 10*time.Millisecond)
+}
+
+// Two engines share one archive and name their recordings after the same
+// start second; each archives under its own label, so neither file is lost.
+func TestManager_EnginesSharingAnArchiveNeverCollide(t *testing.T) {
+	archive := t.TempDir()
+	var names [2]string
+	var managers [2]*Manager
+	for i, label := range []string{"a", "b"} {
+		m := NewManager()
+		defer func() { _ = m.Close() }()
+		m.SetEngineLabel(label)
+		m.SetRecordingArchiveDir(archive)
+		require.Equal(t, filepath.Join(archive, label), m.RecordingArchiveDir())
+		managers[i] = m
+	}
+	for i, m := range managers {
+		require.NoError(t, m.StartRecording(RecorderConfig{Dir: t.TempDir()}))
+		names[i] = m.RecordingStatus().Filename
+	}
+	for _, m := range managers {
+		require.NoError(t, m.StopRecording())
+	}
+	require.Eventually(t, func() bool {
+		return len(listNames(t, filepath.Join(archive, "a"))) == 1 && len(listNames(t, filepath.Join(archive, "b"))) == 1
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, []string{names[0]}, listNames(t, filepath.Join(archive, "a")))
+	require.Equal(t, []string{names[1]}, listNames(t, filepath.Join(archive, "b")))
+}
+
+// A copy into the archive that a restart cut short still left a file; the
+// next start replaces it with the whole recording instead of keeping both
+// apart forever.
+func TestFileRecorder_ReplacesACutShortArchive(t *testing.T) {
+	dir, archive := t.TempDir(), t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "program_x_001.ts"), []byte("whole recording"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(archive, "program_x_001.ts"), []byte("whole"), 0o644))
+
+	r := NewFileRecorder(RecorderConfig{Dir: dir, ArchiveDir: archive})
+	require.NoError(t, r.Start(context.TODO()))
+	r.WaitArchived()
+	data, err := os.ReadFile(filepath.Join(archive, "program_x_001.ts"))
+	require.NoError(t, err)
+	require.Equal(t, "whole recording", string(data))
+	require.Equal(t, []string{r.Filename()}, listNames(t, dir))
+	require.NoError(t, r.Close())
+	r.WaitArchived()
 }

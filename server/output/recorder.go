@@ -54,10 +54,12 @@ type FileRecorder struct {
 	errMsg         string
 	pendingRotate  bool      // true when rotation threshold reached but awaiting keyframe
 	cachedPATMPT   []byte    // cached PAT+PMT packets from stream for rotated files
-	archiving      sync.WaitGroup
-	inArchive      map[string]bool // paths being archived; guarded by mu
 	bytesSinceSync int64     // bytes written since last fsync
 	lastSyncTime   time.Time // time of last periodic fsync
+
+	// Copies into ArchiveDir in flight, and the files they copy.
+	archiving sync.WaitGroup
+	inArchive map[string]bool
 }
 
 // NewFileRecorder creates a FileRecorder with the given configuration.
@@ -152,8 +154,11 @@ func (r *FileRecorder) archiveLocked(path string) {
 }
 
 // archiveRecording copies src to the new file dst and removes src. A dst
-// that already exists with src's size is an earlier archive of the same
-// file whose local removal did not happen.
+// that already exists is an earlier archive of the same file: complete when
+// it has src's size, and the local removal is what did not happen; cut
+// short by a restart otherwise, since a copy that dies still leaves a file
+// in an object store, and then replaced. Only this recorder's engine
+// writes into its archive directory, so nothing else owns that file.
 func archiveRecording(dst, src string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
@@ -162,10 +167,16 @@ func archiveRecording(dst, src string) error {
 	if errors.Is(err, fs.ErrExist) {
 		si, serr := os.Stat(src)
 		di, derr := os.Stat(dst)
-		if serr != nil || derr != nil || si.Size() != di.Size() {
-			return fmt.Errorf("a different %s is already archived", filepath.Base(dst))
+		switch {
+		case serr != nil:
+			err = serr
+		case derr == nil && si.Size() == di.Size():
+			err = nil
+		default:
+			if err = os.Remove(dst); err == nil {
+				err = createonly.Copy(dst, src)
+			}
 		}
-		err = nil
 	}
 	if err != nil {
 		return err

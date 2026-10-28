@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -116,8 +117,8 @@ type Manager struct {
 	// When set, newly added destinations default their Engine field to this label.
 	engineLabel string
 
-	// recordingArchiveDir is the ArchiveDir of a recording started without
-	// one of its own.
+	// recordingArchiveDir is where a recording started without an
+	// ArchiveDir of its own archives, before the engine label is added.
 	recordingArchiveDir string
 
 	captionMgr *caption.Manager
@@ -256,10 +257,28 @@ func (m *Manager) SetEngineLabel(label string) {
 
 // SetRecordingArchiveDir sets where a recording started without an
 // ArchiveDir of its own archives its finished files; "" archives nothing.
+// With an engine label the files go to a subdirectory named after it, so
+// two engines sharing one archive never write the same file: both name
+// their recordings after the same start second.
 func (m *Manager) SetRecordingArchiveDir(dir string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.recordingArchiveDir = dir
+}
+
+// RecordingArchiveDir returns the directory a recording started without an
+// ArchiveDir of its own archives to, "" for none.
+func (m *Manager) RecordingArchiveDir() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.recordingArchiveDirLocked()
+}
+
+func (m *Manager) recordingArchiveDirLocked() string {
+	if m.recordingArchiveDir == "" {
+		return ""
+	}
+	return filepath.Join(m.recordingArchiveDir, m.engineLabel)
 }
 
 // EngineLabel returns the manager's configured engine label.
@@ -317,7 +336,7 @@ func (m *Manager) StartRecording(config RecorderConfig) error {
 	}
 
 	if config.ArchiveDir == "" {
-		config.ArchiveDir = m.recordingArchiveDir
+		config.ArchiveDir = m.recordingArchiveDirLocked()
 	}
 	rec := NewFileRecorder(config)
 	if err := rec.Start(m.ctx); err != nil {
