@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TransitionControls from './TransitionControls.svelte';
 
@@ -205,6 +205,34 @@ describe('TransitionControls unavailable transitions', () => {
 		expect(byValue.get('dve-corner-peel')!.title).toBe('Peel needs a GPU engine');
 		expect(byValue.get('dve-flip')!.disabled).toBe(false);
 		expect(byValue.get('dve-push-left')!.disabled).toBe(false);
+	});
+
+	// A refusal that comes and goes, as while an engine rebuilds its GPU
+	// pipeline, must not rewrite the operator's pick; one that stays does.
+	it('falls back to mix only when a refusal persists', async () => {
+		vi.useFakeTimers();
+		try {
+			const refused = { ...baseState, unavailableTransitions: { 'dve-cube': '3D DVE transitions need a GPU engine' } };
+			const { container, rerender } = render(TransitionControls, { props: { state: baseState } });
+			const select = container.querySelector('select.dve-type-select') as HTMLSelectElement;
+			await fireEvent.change(select, { target: { value: 'dve-cube' } });
+			expect(select.value).toBe('dve-cube');
+
+			await rerender({ state: refused });
+			await vi.advanceTimersByTimeAsync(1000);
+			await rerender({ state: baseState });
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(select.value).toBe('dve-cube');
+
+			await rerender({ state: refused });
+			await vi.advanceTimersByTimeAsync(3500);
+			await tick();
+			expect(select.value).toBe('');
+			const mix = container.querySelector('input[type=radio][value=mix]') as HTMLInputElement;
+			expect(mix.checked).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('offers every DVE transition when the engine refuses none', () => {

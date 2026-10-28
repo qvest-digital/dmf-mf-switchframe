@@ -95,14 +95,20 @@
 	// non-DVE type is active.
 	let dveSelectValue = $derived(transType.startsWith('dve-') ? transType : '');
 
-	// Transition types this engine refuses, such as 3D DVE on an engine
-	// without a GPU. A refused type picked earlier (or on the other engine
-	// of a pair) falls back to mix rather than failing at AUTO time.
+	// Transition types the engines refuse, such as 3D DVE on an engine
+	// without a GPU. A refused type that stays picked falls back to mix
+	// rather than failing at AUTO time. A refusal shorter than
+	// REFUSAL_SETTLE_MS, such as while an engine rebuilds its GPU pipeline,
+	// leaves the operator's pick alone.
 	let unavailable = $derived<Record<string, string>>(crState.unavailableTransitions ?? {});
+	const REFUSAL_SETTLE_MS = 3000;
 	$effect(() => {
-		if (unavailable[transType]) {
-			transType = 'mix';
-		}
+		if (!unavailable[transType]) return;
+		const refused = transType;
+		const timer = setTimeout(() => {
+			if (transType === refused && unavailable[refused]) transType = 'mix';
+		}, REFUSAL_SETTLE_MS);
+		return () => clearTimeout(timer);
 	});
 	function handleDVESelect(e: Event) {
 		const val = (e.target as HTMLSelectElement).value as TransType;
