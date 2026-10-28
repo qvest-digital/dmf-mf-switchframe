@@ -2,6 +2,7 @@ package transition
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/internal/video"
@@ -77,4 +78,89 @@ func TestIngestRawFrame_UsesRender(t *testing.T) {
 		require.Equal(t, byte(7), out[0])
 		e.Stop()
 	}
+}
+
+// slowRender fills dst with the call number; the first call takes long.
+func slowRender(calls *int, first time.Duration) RenderFunc {
+	return func(dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
+		*calls++
+		if *calls == 1 {
+			time.Sleep(first)
+		}
+		for i := range dst {
+			dst[i] = byte(*calls)
+		}
+		return true
+	}
+}
+
+// A render slower than the frame period is followed by repeats of its
+// frame, so the engine does not fall further behind with every frame of
+// the transition.
+func TestIngestRawFrame_SlowRenderRepeatsFrames(t *testing.T) {
+	calls := 0
+	var outs []byte
+	e := NewEngine(EngineConfig{
+		Render:      slowRender(&calls, 25*time.Millisecond),
+		FramePeriod: 10 * time.Millisecond,
+		Output:      func(yuv []byte, w, h int, pts int64, kf bool) { outs = append(outs, yuv[0]) },
+	})
+	require.NoError(t, e.Start("a", "b", Mix, 60000))
+	defer e.Stop()
+	const w, h = 32, 16
+	frame := make([]byte, video.YUV420_8bit.FrameSize(w, h))
+	e.IngestRawFrame("a", frame, w, h, 0)
+	for i := 0; i < 4; i++ {
+		e.IngestRawFrame("b", frame, w, h, int64(i))
+	}
+	// 25 ms over a 10 ms period: two repeats, then rendering resumes.
+	require.Equal(t, []byte{1, 1, 1, 2}, outs)
+	require.Equal(t, 2, calls)
+	require.True(t, e.overrunNoted.Load())
+}
+
+func TestBlendRawInto_SlowRenderRepeatsFrames(t *testing.T) {
+	calls := 0
+	e := NewEngine(EngineConfig{Render: slowRender(&calls, 25*time.Millisecond), FramePeriod: 10 * time.Millisecond})
+	e.StartSync("", "", Mix, 1000)
+	const w, h = 32, 16
+	a, b := makeSolidYUV420(w, h, 80), makeSolidYUV420(w, h, 160)
+	var buf []byte
+	var got []byte
+	for i := 0; i < 4; i++ {
+		buf, _, _ = e.BlendRawInto(buf, a, w, h, b, w, h, 0.5)
+		got = append(got, buf[0])
+	}
+	require.Equal(t, []byte{1, 1, 1, 2}, got)
+	require.Equal(t, 2, calls)
+}
+
+func TestRender_NoPacingWithoutFramePeriod(t *testing.T) {
+	calls := 0
+	e := NewEngine(EngineConfig{Render: slowRender(&calls, 15*time.Millisecond)})
+	e.StartSync("", "", Mix, 1000)
+	const w, h = 32, 16
+	a := makeSolidYUV420(w, h, 80)
+	var buf []byte
+	for i := 0; i < 3; i++ {
+		buf, _, _ = e.BlendRawInto(buf, a, w, h, a, w, h, 0.5)
+	}
+	require.Equal(t, 3, calls)
+}
+
+// BlendRawInto hands Render the engine's pixel format, as blendAndOutput
+// does.
+func TestBlendRawInto_RenderGetsColorFormat(t *testing.T) {
+	var got video.Format
+	e := NewEngine(EngineConfig{Render: func(dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
+		got = f
+		return true
+	}})
+	e.SetColorFormat(video.YUV422_10bit)
+	e.StartSync("", "", Mix, 1000)
+	const w, h = 32, 16
+	fr := make([]byte, video.YUV422_10bit.FrameSize(w, h))
+	out, _, _ := e.BlendRawInto(nil, fr, w, h, fr, w, h, 0.5)
+	require.Equal(t, video.YUV422_10bit, got)
+	require.Len(t, out, video.YUV422_10bit.FrameSize(w, h))
 }

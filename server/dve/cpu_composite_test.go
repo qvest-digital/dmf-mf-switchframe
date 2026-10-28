@@ -432,8 +432,8 @@ func TestCompositeCPURandomTransforms(t *testing.T) {
 		got := append([]byte(nil), want...)
 		refComposite(want, w, h, src, f, tr)
 		CompositeCPU(got, w, h, src, w, h, f, tr, ComputeInverseTransform(tr, w, h), ComputeAABB(tr, w, h, w, h))
-		if string(got) != string(want) && runtime.GOARCH == "amd64" {
-			t.Fatalf("case %d %v %+v: CPU composite differs from the GPU kernel", n, f, tr)
+		if d := maxSampleDiff(got, want, f); d > tolerance() {
+			t.Fatalf("case %d %v %+v: CPU composite differs from the GPU kernel by %d", n, f, tr, d)
 		}
 	}
 }
@@ -482,4 +482,30 @@ func TestCPURefusalMatchesTheUI(t *testing.T) {
 	if _, ok := CPURefusedTransitions()["dve-push-left"]; ok {
 		t.Error("callers can change the refusal list")
 	}
+}
+
+// tolerance is the largest sample difference accepted against the kernel
+// transcription: none on amd64, one code elsewhere, where the compiler may
+// fuse multiply-adds differently in the two code shapes.
+func tolerance() int {
+	if runtime.GOARCH == "amd64" {
+		return 0
+	}
+	return 1
+}
+
+func maxSampleDiff(a, b []byte, f video.Format) int {
+	worst := 0
+	if f == video.YUV422_10bit {
+		for i := 0; i+1 < len(a); i += 2 {
+			d := int(binary.LittleEndian.Uint16(a[i:])) - int(binary.LittleEndian.Uint16(b[i:]))
+			worst = max(worst, d, -d)
+		}
+		return worst
+	}
+	for i := range a {
+		d := int(a[i]) - int(b[i])
+		worst = max(worst, d, -d)
+	}
+	return worst
 }
