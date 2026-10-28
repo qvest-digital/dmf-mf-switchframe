@@ -1320,7 +1320,7 @@ func (a *App) initMXL() error {
 			FPSNum:              pf.FPSNum,
 			FPSDen:              pf.FPSDen,
 			Lossless10bit:       lossless10bit,
-			EncoderFactory:      encoderFactory(),
+			EncoderFactory:      encoderFactoryWithOpts(&codec.EncoderOptions{Preset: a.cfg.MXLSourcePreset}),
 			AudioEncoderFactory: audioEncoderFactoryForMXL(),
 			Relay:               relay,
 			OnVideoInfo: func(sps, pps []byte, w, h int) {

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/codec"
 )
 
 // captureStartup runs fn with os.Stdout and the default logger redirected
@@ -332,6 +334,34 @@ func TestParseConfig_MXLGCInterval(t *testing.T) {
 			cfg, err := parseConfig()
 			require.NoError(t, err)
 			require.Equal(t, tc.want, cfg.MXLGCInterval)
+		})
+	}
+}
+
+func TestParseConfig_MXLSourcePreset(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		want    codec.OutputPreset
+		wantErr bool
+	}{
+		{"default", nil, "", false},
+		{"fastest", []string{"--mxl-source-preset=fastest"}, codec.OutputPresetFastest, false},
+		{"unknown", []string{"--mxl-source-preset=ultrafast"}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args, cmdLine := os.Args, flag.CommandLine
+			t.Cleanup(func() { os.Args, flag.CommandLine = args, cmdLine })
+			os.Args = append([]string{"switchframe"}, tc.args...)
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+			cfg, err := parseConfig()
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.MXLSourcePreset)
 		})
 	}
 }

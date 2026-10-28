@@ -9,12 +9,15 @@ const (
 	OutputPresetLowLatency OutputPreset = "low-latency"
 	OutputPresetBalanced   OutputPreset = "balanced"
 	OutputPresetQuality    OutputPreset = "quality"
+	// OutputPresetFastest trades the most quality for the least CPU per
+	// frame: x264 ultrafast, NVENC p1.
+	OutputPresetFastest OutputPreset = "fastest"
 )
 
-// Valid returns true for the three named presets or the empty string (meaning "use default").
+// Valid returns true for the named presets or the empty string (meaning "use default").
 func (p OutputPreset) Valid() bool {
 	switch p {
-	case OutputPresetLowLatency, OutputPresetBalanced, OutputPresetQuality, "":
+	case OutputPresetLowLatency, OutputPresetBalanced, OutputPresetQuality, OutputPresetFastest, "":
 		return true
 	}
 	return false
@@ -23,6 +26,8 @@ func (p OutputPreset) Valid() bool {
 // NVENCPreset returns the NVENC preset string for this output preset.
 func (p OutputPreset) NVENCPreset() string {
 	switch p {
+	case OutputPresetFastest:
+		return "p1"
 	case OutputPresetLowLatency:
 		return "p3"
 	case OutputPresetQuality:
@@ -37,6 +42,8 @@ func (p OutputPreset) X264Preset() string {
 	switch p {
 	case OutputPresetQuality:
 		return "faster"
+	case OutputPresetFastest:
+		return "ultrafast"
 	default:
 		return "superfast"
 	}
