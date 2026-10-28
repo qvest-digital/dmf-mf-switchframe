@@ -1,0 +1,247 @@
+# Prism
+
+A low-latency live video server built on SRT ingest and WebTransport delivery, implementing [Media over QUIC Transport](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/) (MoQ) for browser playback via WebCodecs.
+
+Prism accepts MPEG-TS streams over SRT, demuxes H.264/H.265 video and AAC audio, extracts CEA-608/708 captions and SCTE-35 cues, and delivers them to browser viewers over WebTransport with sub-second latency.
+
+## Features
+
+- **SRT ingest** — Push and pull modes via a pure Go SRT implementation
+- **MoQ Transport** — IETF draft-15 with LOC media packaging
+- **H.264 and H.265** — Full NAL unit parsing, SPS extraction, codec string generation
+- **Multi-track AAC audio** — Dynamic subscription and switching
+- **CEA-608/708 captions** — Extracted from H.264 SEI messages
+- **SCTE-35** — Splice insert and time signal parsing
+- **SMPTE 12M timecode** — Extracted from pic_timing SEI
+- **GOP cache** — Late-joining viewers start from the most recent keyframe
+- **Multiview** — 9-stream composited grid with per-tile audio solo and WebGPU compositing
+- **Control track** — Application-level JSON state broadcast to all viewers via MoQ
+- **Stats track** — Per-viewer stream statistics (bitrate, FPS, codec info, viewer count) delivered as MoQ JSON objects
+- **Stream Inspector** — Real-time diagnostics UI with compact metrics strip and full dashboard overlay (video pipeline, A/V sync, GOP structure, SCTE-35 timeline, error counters)
+- **WebCodecs decoding** — Hardware-accelerated video/audio decode in the browser
+
+## Quick Start
+
+**Prerequisites:** Go 1.24+, Node.js 22+
+
+```bash
+make demo
+```
+
+This builds the server, builds the web viewer, and pushes a bundled test stream. Open `https://localhost:4444/?stream=demo` in your browser and accept the self-signed certificate.
+
+### Full broadcast demo
+
+For the complete 9-stream experience with captions, SCTE-35 cues, timecode, and multi-track audio:
+
+**Additional prerequisites:** [ffmpeg](https://ffmpeg.org/) (includes ffprobe)
+
+```bash
+make demo-full
+```
+
+This downloads Blender open-movie sources (~2 GB on first run), encodes 9 broadcast-realistic streams, and pushes them all simultaneously. Open `https://localhost:4444/` to see the multiview grid.
+
+### Push your own stream
+
+```bash
+ffmpeg -re -i input.ts -c copy -f mpegts srt://localhost:6000?streamid=mystream
+```
+
+Then open `https://localhost:4444/?stream=mystream`.
+
+## Examples
+
+Prism's packages are designed to be used as a library. The `examples/` directory contains standalone programs showing how to embed Prism in your own application, and `web/examples/` shows how to use the player in a browser.
+
+### Minimal server (Go)
+
+A stripped-down version of `cmd/prism` — SRT ingest, demux, and WebTransport delivery in ~60 lines:
+
+```bash
+go run ./examples/minimal-server
+ffmpeg -re -i input.ts -c copy -f mpegts srt://localhost:6000?streamid=demo
+open https://localhost:4443
+```
+
+### Custom ingest (Go)
+
+Feed any MPEG-TS `io.Reader` directly into the pipeline — no SRT required:
+
+```bash
+go run ./examples/custom-ingest input.ts
+open https://localhost:4443/?stream=file
+```
+
+### Standalone web player (TypeScript)
+
+Embed `PrismPlayer` in your own page using the built library bundle:
+
+```bash
+cd web && npm run demo:lib   # builds dist-lib/prism.js + starts Vite dev server
+# (start the Prism server in another terminal: make run)
+open http://localhost:5173/examples/standalone.html?stream=demo
+```
+
+The HTML is ~80 lines and shows the full API: create a player, connect to a stream key, handle lifecycle callbacks. See [`web/examples/standalone.html`](web/examples/standalone.html).
+
+### Building the web player library
+
+To use `PrismPlayer` in your own project:
+
+```bash
+cd web && npm run build:lib   # outputs web/dist-lib/prism.js
+```
+
+```js
+import { PrismPlayer } from "./dist-lib/prism.js";
+
+const player = new PrismPlayer(document.getElementById("container"), {
+  onStreamConnected(key) { console.log("connected:", key); },
+  onStreamDisconnected(key) { console.log("disconnected:", key); },
+});
+player.connect("demo");
+```
+
+The library also exports `MoQTransport`, `MoQMultiviewTransport`, `MetricsStore`, and related types for advanced use cases.
+
+## Architecture
+
+```
+SRT socket ──> io.Pipe ──> MPEG-TS Demuxer ──> Pipeline ──> Relay ──> MoQ Sessions
+                               │                              │           │
+                          H.264/H.265                   GOP cache    Video track
+                          AAC (multi-track)             Fan-out      Audio tracks
+                          CEA-608/708                                Caption track
+                          SCTE-35                                   Stats track
+                          SMPTE 12M timecode                        Control track
+```
+
+Single Go binary, vanilla TypeScript frontend:
+
+| Package | Purpose |
+|---|---|
+| `cmd/prism/` | Entry point, wires everything together |
+| `ingest/` | Stream ingest registry |
+| `ingest/srt/` | SRT server (push) and caller (pull) |
+| `demux/` | MPEG-TS demuxer, H.264/H.265/AAC parsers |
+| `media/` | Frame types (`VideoFrame`, `AudioFrame`) |
+| `distribution/` | WebTransport server, MoQ sessions, relay fan-out |
+| `moq/` | MoQ Transport wire protocol codec |
+| `pipeline/` | Demux-to-distribution orchestration |
+| `stream/` | Stream lifecycle management |
+| `mpegts/` | Low-level MPEG-TS packet/PES/PSI parsing |
+| `scte35/` | SCTE-35 splice info encoding/decoding |
+| `certs/` | Self-signed ECDSA certificate generation |
+| `webtransport/` | WebTransport server on quic-go/HTTP3 |
+| `web/` | Vanilla TypeScript viewer (Vite, WebTransport, WebCodecs) |
+
+## Configuration
+
+Environment variables with defaults:
+
+| Variable | Default | Description |
+|---|---|---|
+| `SRT_ADDR` | `:6000` | SRT ingest listen address |
+| `WT_ADDR` | `:4443` | WebTransport listen address |
+| `API_ADDR` | `:4444` | HTTPS REST API listen address |
+| `WEB_DIR` | `web/dist` | Static file directory for the viewer |
+| `DEBUG` | *(unset)* | Set to any value to enable debug logging |
+
+The server listens on:
+- `:6000` — SRT ingest
+- `:4443` — WebTransport (MoQ)
+- `:4444` — HTTPS REST API + web viewer
+
+## REST API
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/streams` | List active streams |
+| `GET` | `/api/streams/{key}/debug` | Stream debug diagnostics |
+| `GET` | `/api/cert-hash` | WebTransport certificate hash |
+| `POST` | `/api/srt-pull` | Start an SRT pull from a remote address |
+| `GET` | `/api/srt-pull` | List active SRT pulls |
+| `DELETE` | `/api/srt-pull?streamKey=...` | Stop an SRT pull |
+
+## Library Extension Points
+
+When embedding Prism via the `distribution` package, `ServerConfig` exposes hooks for customization:
+
+| Field | Type | Description |
+|---|---|---|
+| `ExtraRoutes` | `func(mux *http.ServeMux)` | Register additional HTTP handlers on the server's mux |
+| `OnStreamRegistered` | `func(key string, relay *Relay)` | Called after a new stream relay is created |
+| `OnStreamUnregistered` | `func(key string)` | Called after a stream is removed |
+| `ControlCh` | `<-chan []byte` | JSON control state broadcast — each send is delivered to all viewers as a MoQ control track object |
+| `OnDatagram` | `func(streamKey string, data []byte)` | Called when a WebTransport datagram arrives from a viewer — must not block |
+
+The `ControlBroadcaster` type handles per-viewer fan-out of control messages with non-blocking sends (slow viewers drop messages rather than blocking the source).
+
+### Relay Methods
+
+The `Relay` type provides two video broadcast methods:
+
+| Method | GOP Cache | Use Case |
+|---|---|---|
+| `BroadcastVideo(frame)` | Yes — late-joining viewers receive the cached GOP | H.264/H.265 streams with keyframes and delta frames |
+| `BroadcastVideoNoCache(frame)` | No — frame data is not retained after the call returns | Raw/keyframe-only streams (e.g., raw YUV monitors) where every frame is independently decodable |
+
+`BroadcastVideoNoCache` is designed for high-throughput streams where the caller wants to reuse frame buffers. Because no frame data is retained, the caller may safely overwrite the frame's `WireData` buffer after the call returns. Late-joining viewers on a no-cache relay simply wait for the next frame (~33ms at 30fps) instead of receiving a GOP replay.
+
+## Development
+
+```bash
+# Run all checks (must pass before committing)
+make check
+
+# Run tests with race detector
+make test
+
+# Format code
+make fmt
+
+# Build and run the server
+make run
+
+# Run web dev server with hot reload (port 5173, proxies API to :4444)
+make dev
+
+# Quick demo with bundled test stream
+make demo
+
+# Full 9-stream broadcast demo (requires ffmpeg)
+make demo-full
+```
+
+`make check` requires [staticcheck](https://staticcheck.dev/):
+
+```bash
+go install honnef.co/go/tools/cmd/staticcheck@latest
+```
+
+## Security Considerations
+
+Prism is designed for development and local-network use. If you expose it to untrusted networks, be aware of the following:
+
+- **CORS** — `Access-Control-Allow-Origin: *` is set on all responses. Production deployments should restrict this at a reverse proxy layer.
+- **WebTransport origins** — `CheckOrigin` accepts all origins. Production deployments should enforce origin checks at the proxy layer.
+- **SRT pull endpoint** — `POST /api/srt-pull` accepts arbitrary addresses, which could be used for SSRF. Restrict this endpoint to authenticated operators or internal networks.
+- **Self-signed certificates** — The server generates a self-signed certificate at startup. Production deployments should use proper TLS certificates.
+
+See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy.
+
+## Dependencies
+
+Four direct Go dependencies:
+
+| Dependency | License | Purpose |
+|---|---|---|
+| [quic-go/quic-go](https://github.com/quic-go/quic-go) | MIT | QUIC + HTTP/3 for WebTransport |
+| [zsiec/ccx](https://github.com/zsiec/ccx) | MIT | CEA-608/708 closed caption extraction |
+| [zsiec/srtgo](https://github.com/zsiec/srtgo) | MIT | Pure Go SRT implementation |
+| [golang.org/x/sync](https://pkg.go.dev/golang.org/x/sync) | BSD-3-Clause | `errgroup` for structured concurrency |
+
+## License
+
+[MIT](LICENSE)

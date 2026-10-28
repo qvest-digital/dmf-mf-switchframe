@@ -1,0 +1,19 @@
+{
+  "name": "prism-viewer",
+  "private": true,
+  "license": "MIT",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "build:lib": "tsc && vite build --config vite.lib.config.ts",
+    "preview": "vite preview",
+    "demo:lib": "npm run build:lib && vite dev"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.69",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}
