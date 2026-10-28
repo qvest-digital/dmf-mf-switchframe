@@ -579,3 +579,106 @@ func TestMXLWriter_TripleBufferOverrunCorrupts(t *testing.T) {
 		t.Fatalf("expected VideoDrops() > 0 under sustained over-production (20 ms hold + 5 ms producer cadence); got 0")
 	}
 }
+
+// frameYUV returns a 12x2 YUV420p frame whose luma is value, so the V210 it
+// becomes identifies the frame.
+func frameYUV(value byte) []byte {
+	const width, height = 12, 2
+	yuv := make([]byte, width*height+2*(width/2)*(height/2))
+	for i := 0; i < width*height; i++ {
+		yuv[i] = value
+	}
+	for i := width * height; i < len(yuv); i++ {
+		yuv[i] = 128
+	}
+	return yuv
+}
+
+// A producer at the grain rate, its frames jittering around the instants
+// the writer would sample on, must get exactly one grain per frame. A
+// writer sampling the latest frame on a ticker of its own loses a frame
+// whenever two arrive between two of its ticks and shows the one before
+// twice in the next; that is how a 50p clip played at 50p reached the
+// program flow with a seventh of its frames repeated.
+func TestWriter_GrainRateProducerGetsOneGrainPerFrame(t *testing.T) {
+	const frames = 100
+	rate := Rational{50, 1}
+	period := 20 * time.Millisecond
+
+	mock := &mockDiscreteWriter{}
+	w := NewWriter(WriterConfig{Width: 12, Height: 2})
+	w.SetVideoWriter(mock, rate)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start the producer on the instant the writer starts, so a writer on
+	// a ticker of its own samples right where the frames arrive.
+	start := time.Now()
+	w.Start(ctx)
+	for k := 0; k < frames; k++ {
+		jitter := time.Duration((k*7)%9-4) * time.Millisecond // -4..+4 ms
+		time.Sleep(time.Until(start.Add(time.Duration(k)*period + jitter)))
+		w.WriteVideo(frameYUV(byte(16+k%200)), 12, 2, 0)
+	}
+	time.Sleep(period / 2)
+	cancel()
+	w.Close()
+
+	// Each frame's grains, in index order, between the first frame and
+	// the last.
+	grains := mock.getGrains()
+	var runs []int
+	for i, g := range grains {
+		if i > 0 && g.index != grains[i-1].index+1 {
+			t.Fatalf("grain %d follows %d", g.index, grains[i-1].index)
+		}
+		if i > 0 && bytes.Equal(g.data, grains[i-1].data) {
+			runs[len(runs)-1]++
+			continue
+		}
+		runs = append(runs, 1)
+	}
+	// The last frame repeats until the writer stops; the first frame may
+	// meet a grain that is already late.
+	if len(runs) != frames {
+		t.Fatalf("%d frames produced, %d reached the flow", frames, len(runs))
+	}
+	repeated := 0
+	for _, n := range runs[1 : len(runs)-1] {
+		repeated += n - 1
+	}
+	if repeated > 1 {
+		t.Fatalf("%d grains repeat a frame; runs %v", repeated, runs)
+	}
+}
+
+// With no new frame the last one is still written once per grain period,
+// a grain late at most, so a stalled program source keeps its flow fed.
+func TestWriter_StalledProducerRepeatsOnSchedule(t *testing.T) {
+	rate := Rational{50, 1}
+	mock := &mockDiscreteWriter{}
+	w := NewWriter(WriterConfig{Width: 12, Height: 2})
+	w.SetVideoWriter(mock, rate)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+	w.WriteVideo(frameYUV(16), 12, 2, 0)
+
+	time.Sleep(400 * time.Millisecond)
+	end := CurrentIndex(rate)
+	cancel()
+	w.Close()
+
+	grains := mock.getGrains()
+	if len(grains) < 18 {
+		t.Fatalf("%d grains in 400ms at 50/1, want about 20", len(grains))
+	}
+	for i := 1; i < len(grains); i++ {
+		if grains[i].index != grains[i-1].index+1 {
+			t.Fatalf("grain %d follows %d", grains[i].index, grains[i-1].index)
+		}
+	}
+	if last := grains[len(grains)-1].index; last+2 < end {
+		t.Fatalf("last grain %d trails the clock at %d", last, end)
+	}
+}

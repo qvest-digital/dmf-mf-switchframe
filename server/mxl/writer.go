@@ -31,6 +31,7 @@ type WriterConfig struct {
 type v210Frame struct {
 	data []byte
 	slot int
+	seq  uint64 // producer's frame count; the writer repeats a frame it has written
 }
 
 // videoWriterRef wraps a DiscreteWriter and its grain rate for atomic access.
@@ -49,13 +50,13 @@ type dataWriterRef struct {
 
 // Writer writes processed video and audio to MXL flows.
 //
-// Video uses a steady-rate output model: WriteVideo converts and buffers
-// the latest frame, while a ticker goroutine writes to MXL shared memory
-// at a fixed frame rate (matching mxl-gst-testsrc behavior). This ensures:
-//   - Exactly one grain per frame period (no gaps, no bursts)
-//   - Wall-clock aligned indices (reader can always find data)
-//   - During transitions: latest blended frame wins, no double-rate writes
-//   - During cuts: last frame repeats during keyframe wait (no gap)
+// Video: WriteVideo converts and buffers the latest frame and wakes the video
+// goroutine, which commits it to the next grain index at once, within one
+// grain of the wall-clock index (see videoIndexFor). A grain nothing new
+// arrived for is filled with the last frame shortly after its period ends.
+// A producer at the grain rate therefore gets one grain per frame whatever
+// the phase between its clock and the grain grid, and a stalled one still
+// gets a grain per period.
 //
 // Audio uses wall-clock indices with monotonic enforcement for contiguous
 // sample delivery.
@@ -85,8 +86,11 @@ type Writer struct {
 	closeDone chan struct{} // closed when Close() completes; CAS-losers wait on it
 	wg        sync.WaitGroup
 
-	// Steady-rate video: WriteVideo stores latest frame, ticker writes it.
+	// WriteVideo stores the latest frame and signals videoKick; the video
+	// goroutine writes it.
 	latestV210 atomic.Pointer[v210Frame]
+	videoKick  chan struct{} // buffered(1)
+	videoSeq   uint64        // frames stored; producer goroutine only
 
 	// Last written audio index for monotonic enforcement.
 	// Only accessed from the single mixer output goroutine.
@@ -128,6 +132,7 @@ func NewWriter(config WriterConfig) *Writer {
 		config:    config,
 		log:       log,
 		closeDone: make(chan struct{}),
+		videoKick: make(chan struct{}, 1),
 	}
 	// Sentinel -1 = no claim; zero-value 0 would collide with slot 0 and
 	// spuriously drop the first WriteVideo after startup.
@@ -233,8 +238,19 @@ func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
 		return
 	}
 
-	w.latestV210.Store(&v210Frame{data: buf, slot: nextIdx})
-	w.v210BufIdx = nextIdx
+	w.publishV210(buf, nextIdx)
+}
+
+// publishV210 makes a converted frame the latest and wakes the video
+// goroutine to write it.
+func (w *Writer) publishV210(buf []byte, slot int) {
+	w.videoSeq++
+	w.latestV210.Store(&v210Frame{data: buf, slot: slot, seq: w.videoSeq})
+	w.v210BufIdx = slot
+	select {
+	case w.videoKick <- struct{}{}:
+	default:
+	}
 }
 
 // acquireV210Slot returns the next V210 ring slot for the producer to fill,
@@ -303,111 +319,132 @@ func (w *Writer) WriteVideo10bit(yuv []byte, width, height int, pts int64) {
 		return
 	}
 
-	w.latestV210.Store(&v210Frame{data: buf, slot: nextIdx})
-	w.v210BufIdx = nextIdx
+	w.publishV210(buf, nextIdx)
 }
 
-// videoTickLoop writes the latest V210 frame to MXL at a steady frame rate.
-// This decouples the write rate from the pipeline callback rate, preventing
-// gaps during keyframe waits and bursts during transitions.
+// videoTickLoop writes each new frame to MXL as it arrives and fills a
+// grain nothing new arrived for with the last frame.
 func (w *Writer) videoTickLoop(ctx context.Context) {
 	ref := w.videoRef.Load()
 	if ref == nil || ref.rate.Numerator <= 0 || ref.rate.Denominator <= 0 {
 		return
 	}
+	period := time.Duration(float64(ref.rate.Denominator) * 1e9 / float64(ref.rate.Numerator))
+	// A grain is filled this long after its period ends, so a frame that
+	// arrives that much late still gets it.
+	grace := period / 8
 
-	intervalNs := float64(ref.rate.Denominator) * 1e9 / float64(ref.rate.Numerator)
-	ticker := time.NewTicker(time.Duration(intervalNs))
-	defer ticker.Stop()
+	timer := time.NewTimer(period)
+	defer timer.Stop()
 
-	var last uint64
+	var last, writtenSeq uint64
 	haveLast := false
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			if w.closed.Load() {
-				return
-			}
-
-			frame := w.latestV210.Load()
-			if frame == nil {
-				continue
-			}
-
-			ref = w.videoRef.Load()
-			if ref == nil || ref.writer == nil {
-				return
-			}
-
-			var now uint64
-			if CurrentIndex != nil {
-				now = CurrentIndex(ref.rate)
-			}
-			index, ok := nextVideoIndex(now, last, haveLast)
-			if !ok {
-				continue
-			}
-
-			// Claim-then-confirm: publish the ring slot we intend to read so
-			// WriteVideo will drop rather than overwrite it, THEN re-load
-			// latest and confirm the slot is unchanged before the cgo copy.
-			// This makes correctness independent of the Load→Store timing: if
-			// a producer published a newer frame (and thus a different slot)
-			// between our load and our claim, we retry against the new frame
-			// instead of memcpying a slot whose protection the producer never
-			// observed. The loop converges immediately at steady state (the
-			// producer must outrun the claim every iteration to spin it).
-			// slot < 0 denotes a standalone (non-ring) buffer needing no claim.
-			for frame.slot >= 0 {
-				w.v210InFlight.Store(int64(frame.slot))
-				latest := w.latestV210.Load()
-				if latest == frame {
-					break
-				}
-				// A newer frame was published; our claim may guard a slot we
-				// are no longer going to read. Re-target the newest frame.
-				frame = latest
-			}
-
-			err := ref.writer.WriteGrain(index, frame.data)
-			if frame.slot >= 0 {
-				w.v210InFlight.Store(-1)
-			}
-			if err != nil {
-				w.log.Error("mxl writer: failed to write video grain",
-					"error", err, "index", index)
-				continue
-			}
-			last, haveLast = index, true
+		case <-w.videoKick:
+		case <-timer.C:
 		}
+		if w.closed.Load() {
+			return
+		}
+
+		frame := w.latestV210.Load()
+		ref = w.videoRef.Load()
+		if ref == nil || ref.writer == nil {
+			return
+		}
+		var now uint64
+		if CurrentIndex != nil {
+			now = CurrentIndex(ref.rate)
+		}
+
+		if frame != nil {
+			if index, ok := videoIndexFor(now, last, haveLast, frame.seq != writtenSeq); ok {
+				// Claim-then-confirm: publish the ring slot we intend to read
+				// so WriteVideo will drop rather than overwrite it, THEN
+				// re-load latest and confirm the slot is unchanged before the
+				// cgo copy. If a producer published a newer frame (and thus a
+				// different slot) between our load and our claim, retry
+				// against the new frame instead of memcpying a slot whose
+				// protection the producer never observed. slot < 0 denotes a
+				// standalone (non-ring) buffer needing no claim.
+				for frame.slot >= 0 {
+					w.v210InFlight.Store(int64(frame.slot))
+					latest := w.latestV210.Load()
+					if latest == frame {
+						break
+					}
+					frame = latest
+				}
+
+				err := ref.writer.WriteGrain(index, frame.data)
+				if frame.slot >= 0 {
+					w.v210InFlight.Store(-1)
+				}
+				if err != nil {
+					w.log.Error("mxl writer: failed to write video grain",
+						"error", err, "index", index)
+				} else {
+					last, haveLast, writtenSeq = index, true, frame.seq
+				}
+			}
+		}
+
+		// Wake for the next decision: when a held frame may be written,
+		// or when the next grain falls due for a fill.
+		wait := period
+		if haveLast && NsUntilIndex != nil {
+			if f := w.latestV210.Load(); f != nil && f.seq != writtenSeq {
+				// A frame newer than the last write is held because the
+				// writer is a grain ahead; write it once the clock moves.
+				wait = time.Duration(NsUntilIndex(last, ref.rate))
+			} else {
+				wait = time.Duration(NsUntilIndex(last+2, ref.rate)) + grace
+			}
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(wait)
 	}
 }
 
-// nextVideoIndex picks the grain index for a tick that fires at wall-clock
-// grain index now, after the writer last committed last. A ticker only keeps
-// the grain period on average, so two ticks can land in one grain period and
-// the next one a period late. Writing the wall-clock index on every tick then
-// repeats an index, which libmxl refuses because it is not past the last
-// commit, and leaves the following index unwritten, which readers get as an
-// invalid grain. The tick after a commit therefore writes the next index
-// unless the clock is already past it, and a tick more than one grain ahead of
-// the clock writes nothing.
-func nextVideoIndex(now, last uint64, haveLast bool) (index uint64, ok bool) {
+// videoIndexFor picks the grain index for the latest frame, or reports that
+// nothing is written now. now is the wall-clock grain index, last the index
+// committed before.
+//
+// A new frame goes to the grain after the last one at once, as long as that
+// is no more than one grain ahead of the clock; further ahead it is held
+// until the clock moves on, and a newer frame replaces it meanwhile. This
+// lets a frame arrive up to a period early or late without being lost or
+// shown twice: a producer at the grain rate whose clock beats against the
+// grain grid keeps one grain per frame. A frame already written is
+// repeated only once the clock has passed the grain after the last one, so
+// a frame that is merely late still takes that grain. Behind by more than a
+// grain, the writer resumes at the grain before the clock; libmxl leaves
+// the indices in between invalid.
+func videoIndexFor(now, last uint64, haveLast, fresh bool) (index uint64, ok bool) {
 	if !haveLast {
 		return now, true
 	}
 	next := last + 1
-	switch {
-	case now > next:
-		return now, true
-	case now+1 < next:
+	if fresh {
+		if next > now+1 {
+			return 0, false
+		}
+	} else if now <= next {
 		return 0, false
-	default:
-		return next, true
 	}
+	if now > 0 && next < now-1 {
+		return now - 1, true
+	}
+	return next, true
 }
 
 // WriteAudio converts interleaved float32 PCM to de-interleaved and writes samples.
