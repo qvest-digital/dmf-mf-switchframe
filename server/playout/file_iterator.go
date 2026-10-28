@@ -48,10 +48,13 @@ type DrainableDecoder interface {
 // (cgo vs non-cgo) and for testing.
 type DecoderFactory func() (VideoDecoder, error)
 
-// DefaultDecoderFactory creates a single-threaded FFmpeg decoder via the
+// DefaultDecoderFactory creates a frame-threaded FFmpeg decoder via the
 // codec package. Returns an error if FFmpeg is not available (non-cgo builds).
+// One thread decodes a high-bitrate 1080p H.264 clip below real time on a
+// server core, and the channel decodes on its tick; frames a threaded
+// decoder holds back come out of later Next calls and the drain.
 func DefaultDecoderFactory() (VideoDecoder, error) {
-	return codec.NewVideoDecoderSingleThread()
+	return codec.NewVideoDecoder()
 }
 
 // FileFrameIterator demuxes a media file upfront and decodes frames on-demand.

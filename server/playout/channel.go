@@ -72,6 +72,11 @@ type Channel struct {
 	id     int
 	config ChannelConfig
 
+	// lifecycleMu serializes Start and Stop end to end, callbacks
+	// included: Stop waits for the run goroutine outside mu, and a Start
+	// interleaved there would run its onStart before Stop's onStop.
+	lifecycleMu sync.Mutex
+
 	mu         sync.Mutex
 	state      ChannelState
 	scheduler  *Scheduler
@@ -375,9 +380,26 @@ func (c *Channel) LoadPlaylist(pl *Playlist) error {
 	return nil
 }
 
-// Start transitions from CUED to ON-AIR and launches the run goroutine.
+// Start puts the loaded playlist on air from its first item and launches
+// the run goroutine. A stopped or completed channel keeps its playlist, so
+// it starts again the same way a cued one does.
 func (c *Channel) Start() error {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+
 	c.mu.Lock()
+	// A run goroutine whose playlist completed may still be cleaning up; a
+	// second one must not start until it has, or its cleanup closes the new
+	// run's iterator.
+	for c.state != StateOnAir && c.done != nil {
+		prev := c.done
+		c.mu.Unlock()
+		<-prev
+		c.mu.Lock()
+		if c.done == prev {
+			break
+		}
+	}
 	pl := c.schedulerPlaylist()
 	if pl == nil {
 		c.mu.Unlock()
@@ -387,13 +409,16 @@ func (c *Channel) Start() error {
 		c.mu.Unlock()
 		return ErrAlreadyOnAir
 	}
-	if c.state != StateCued {
-		c.mu.Unlock()
-		return ErrInvalidState
-	}
 
+	// A run that completed on its own was never cancelled.
+	if c.cancel != nil {
+		c.cancel()
+	}
 	c.state = StateOnAir
 	c.scheduler.Start()
+	// The previous run's position no longer describes the item on air.
+	c.itemProgress.Store(0)
+	c.itemRemainMs.Store(0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
@@ -429,6 +454,9 @@ func (c *Channel) Start() error {
 
 // Stop cancels the run goroutine and transitions to STOPPED.
 func (c *Channel) Stop() {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+
 	c.mu.Lock()
 	if c.state == StateStopped {
 		c.mu.Unlock()
@@ -878,7 +906,7 @@ func (c *Channel) tick(now time.Time) bool {
 	if decision.Completed {
 		// Emit item_end for the last item if one was active.
 		c.emitFinalItemEnd(secScheduler, asRunFn, channelID, now)
-		c.transitionState(StateCompleted)
+		c.completeIfOnAir()
 		return true
 	}
 
@@ -1892,15 +1920,22 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 	c.outputPTS, c.outputPTSFrac = advancePTS(c.outputPTS, c.outputPTSFrac, vStepInt, vStepFrac)
 }
 
-// transitionState changes the channel state and fires the callback.
-func (c *Channel) transitionState(newState ChannelState) {
+// completeIfOnAir moves an on-air channel whose playlist ran out to
+// COMPLETED and fires the callback. Stop() also ends the playlist, through
+// the scheduler, so a tick racing it sees the playlist complete; the channel
+// is STOPPED by then and stays so.
+func (c *Channel) completeIfOnAir() {
 	c.mu.Lock()
-	c.state = newState
+	if c.state != StateOnAir {
+		c.mu.Unlock()
+		return
+	}
+	c.state = StateCompleted
 	fn := c.onStateChange
 	c.mu.Unlock()
 
 	if fn != nil {
-		fn(newState)
+		fn(StateCompleted)
 	}
 }
 

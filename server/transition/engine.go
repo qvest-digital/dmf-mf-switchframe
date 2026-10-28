@@ -201,7 +201,6 @@ type Engine struct {
 
 	renderBuf    []byte      // output of config.Render in blendAndOutput
 	renderPace   renderPacer // pacing of blendAndOutput's Render calls, under mu
-	rawPace      renderPacer // pacing of BlendRawInto's Render calls, under blendRawMu
 	overrunNoted atomic.Bool // a Render overrun has been logged for this engine
 
 	// Reusable scratch buffers for BlendRawInto mismatched-resolution paths.
@@ -1017,18 +1016,23 @@ func (p *renderPacer) skip() bool {
 	return false
 }
 
-// timedRender calls config.Render and arms pacing when it took longer than
-// a frame period: a call of n periods is followed by n-1 repeated frames, so
-// on average the output keeps the frame rate.
+// timedRender calls config.Render and, with a pacer, arms pacing when it
+// took longer than a frame period: a call of n periods is followed by n-1
+// repeated frames, so on average the output keeps the frame rate. The first
+// overrun is logged either way.
 func (e *Engine) timedRender(p *renderPacer, dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
 	start := time.Now()
 	ok := e.config.Render(dst, from, to, w, h, f, pos)
-	p.drawn = ok
+	if p != nil {
+		p.drawn = ok
+	}
 	period := e.config.FramePeriod
 	if took := time.Since(start); ok && period > 0 && took > period {
-		p.pending = int(took/period) - 1
-		if took%period != 0 {
-			p.pending++
+		if p != nil {
+			p.pending = int(took/period) - 1
+			if took%period != 0 {
+				p.pending++
+			}
 		}
 		if !e.overrunNoted.Swap(true) {
 			e.log.Warn("transition render slower than the frame rate, repeating frames",
@@ -1508,11 +1512,11 @@ func (e *Engine) BlendRawInto(
 
 	if e.config.Render != nil {
 		size := cf.FrameSize(outW, outH)
-		if len(dst) == size && e.rawPace.skip() {
-			return dst, outW, outH
-		}
+		// No pacing here: the caller owns dst and processes it in place
+		// after this returns, so a repeat would hand back a processed
+		// frame. The sync loop paces its own ticks.
 		dst = growBuf(dst, size)
-		if e.timedRender(&e.rawPace, dst, fromYUV, toYUV, outW, outH, cf, position) {
+		if e.timedRender(nil, dst, fromYUV, toYUV, outW, outH, cf, position) {
 			return dst, outW, outH
 		}
 	}

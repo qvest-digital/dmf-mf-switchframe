@@ -172,3 +172,16 @@ func TestParseCube_InvalidSize(t *testing.T) {
 		t.Fatal("expected error for size 300")
 	}
 }
+
+// A NaN or infinite entry would reach every sample graded through it.
+func TestParseCube_RejectsNonFinite(t *testing.T) {
+	for _, bad := range []string{"NaN", "nan", "Inf", "-Inf", "+inf", "1e40"} {
+		data := "LUT_3D_SIZE 2\n" + strings.Repeat("0 0 0\n", 7) + "0 " + bad + " 0\n"
+		if _, err := ParseCube(strings.NewReader(data)); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+	if _, err := ParseCube(strings.NewReader("LUT_3D_SIZE 2\n" + strings.Repeat("0 0.5 1\n", 8))); err != nil {
+		t.Errorf("finite LUT rejected: %v", err)
+	}
+}

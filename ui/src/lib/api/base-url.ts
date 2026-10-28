@@ -1,3 +1,5 @@
+import { untrack } from 'svelte';
+
 /**
  * API base URL for HTTP/3 commands.
  * Empty string = same-origin (production).
@@ -118,8 +120,14 @@ export function setAuthoritativeEngineProvider(provider: (() => string | null) |
 	authoritativeEngineProvider = provider;
 }
 
+/**
+ * The engine the reconciler holds authoritative, read without subscribing:
+ * every request reads it, and the reconciler's health changes on each state
+ * snapshot, so a request issued from an effect would otherwise re-run that
+ * effect, and issue the request again, on every snapshot.
+ */
 export function getAuthoritativeEngine(): string | null {
-	return authoritativeEngineProvider?.() ?? null;
+	return untrack(() => authoritativeEngineProvider?.() ?? null);
 }
 
 // ── New engine discovery callback ──
