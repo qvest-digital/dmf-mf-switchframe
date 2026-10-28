@@ -6,15 +6,17 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 const decoded: number[] = [];
 let queued = 0;
 let emit: ((frame: { timestamp: number }) => void) | null = null;
+let decoderError: ((e: Error) => void) | null = null;
 class FakeVideoDecoder {
 	state = 'unconfigured';
-	constructor(init: { output: (f: unknown) => void }) {
+	constructor(init: { output: (f: unknown) => void; error: (e: Error) => void }) {
 		emit = (f) => init.output(f);
+		decoderError = (e) => init.error(e);
 	}
 	get decodeQueueSize() { return queued; }
-	configure() { this.state = 'configured'; }
+	configure() { this.state = 'configured'; queued = 0; }
 	decode(chunk: { timestamp: number }) { decoded.push(chunk.timestamp); queued++; }
-	reset() {}
+	reset() { this.state = 'unconfigured'; queued = 0; }
 	close() { this.state = 'closed'; }
 	async flush() {}
 }
@@ -70,5 +72,32 @@ describe('video decoder worker backlog', () => {
 		queued = 0;
 		send({ type: 'decode', data: new ArrayBuffer(1), isKeyframe: true, timestamp: 62 * FRAME_US, isDisco: false });
 		expect(decoded).toHaveLength(51);
+	});
+
+	// Whatever the timestamps, a backlog stops at 120 chunks.
+	it('drops past 120 queued chunks', () => {
+		for (let i = 1; i <= 130; i++) {
+			// Timestamps that never run a second ahead of the last output.
+			send({ type: 'decode', data: new ArrayBuffer(1), isKeyframe: false, timestamp: i * 10, isDisco: false });
+		}
+		expect(decoded).toHaveLength(120);
+	});
+
+	// A discontinuity starts a new timeline, whose timestamps a lag against
+	// the old one's last frame would read as far ahead.
+	it('takes a discontinuity keyframe however far its timestamp jumps', () => {
+		queued = 5;
+		send({ type: 'decode', data: new ArrayBuffer(1), isKeyframe: true, timestamp: 3_600_000_000, isDisco: true });
+		expect(decoded).toEqual([3_600_000_000]);
+	});
+
+	// After an error the decoder is reset and has put out nothing: lag
+	// against the old decoder's last frame would drop its first keyframe.
+	it('measures lag afresh after a decoder error', async () => {
+		send({ type: 'decode', data: new ArrayBuffer(1), isKeyframe: false, timestamp: FRAME_US, isDisco: false });
+		decoderError!(new Error('decode failed'));
+		queued = 3;
+		send({ type: 'decode', data: new ArrayBuffer(1), isKeyframe: true, timestamp: 5_000_000, isDisco: false });
+		expect(decoded).toEqual([FRAME_US, 5_000_000]);
 	});
 });

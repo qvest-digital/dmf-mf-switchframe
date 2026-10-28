@@ -81,6 +81,9 @@ let recovering = false;
 function recoverDecoder(): void {
 	if (!lastConfigCodec || recovering) return;
 	recovering = true;
+	// The reset decoder has put out nothing yet: its lag counts from its
+	// first frame, not from one the old decoder put out.
+	lastOutputTs = -1;
 	try {
 		// Prefer reset() over close()+new — it's faster because it reuses the
 		// underlying hardware decoder context instead of tearing it down.
@@ -181,6 +184,13 @@ self.onmessage = async (e: MessageEvent) => {
 		}
 		diagLastInputTime = inputNow;
 
+		// A discontinuity starts a new timeline: a timestamp on it says
+		// nothing about lag against the last frame of the old one.
+		if (msg.isDisco) {
+			waitForKeyframe = true;
+			lastOutputTs = -1;
+		}
+
 		const lagging = lastOutputTs >= 0 && videoDecoder.decodeQueueSize > 0 &&
 			msg.timestamp - lastOutputTs > MAX_DECODE_LAG_US;
 		if (lagging || videoDecoder.decodeQueueSize >= MAX_QUEUED_CHUNKS) {
@@ -197,10 +207,6 @@ self.onmessage = async (e: MessageEvent) => {
 		if (discardedBufferFull > 0) {
 			self.postMessage({ type: "warning", message: `Discarded ${discardedBufferFull} video chunks (buffer full)` });
 			discardedBufferFull = 0;
-		}
-
-		if (msg.isDisco) {
-			waitForKeyframe = true;
 		}
 
 		const isKeyframe: boolean = msg.isKeyframe;
