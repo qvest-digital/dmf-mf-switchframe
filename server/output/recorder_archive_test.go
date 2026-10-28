@@ -98,7 +98,7 @@ func TestFileRecorder_NoArchiveKeepsFiles(t *testing.T) {
 func TestManager_StartRecordingTakesArchiveDir(t *testing.T) {
 	dir, archive := t.TempDir(), t.TempDir()
 	m := NewManager()
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	m.SetRecordingArchiveDir(archive)
 	require.NoError(t, m.StartRecording(RecorderConfig{Dir: dir}))
 	name := m.RecordingStatus().Filename
