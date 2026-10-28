@@ -1176,6 +1176,11 @@ func (d *FFmpegDecoder) ReceiveFrame() ([]byte, int, int, error) {
 	return d.adoptOrCopy(outBuf, outLen, int(outWidth), int(outHeight))
 }
 
+// ThreadCount returns the number of threads the decoder was opened with.
+func (d *FFmpegDecoder) ThreadCount() int {
+	return int(d.handle.ctx.thread_count)
+}
+
 // Close releases the decoder resources. Safe to call multiple times.
 func (d *FFmpegDecoder) Close() {
 	d.closeMu.Lock()
