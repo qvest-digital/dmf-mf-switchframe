@@ -523,9 +523,10 @@ func (a *App) addMXLNMOSProgramSender(n *mxlNMOS, deviceID, key string, essence 
 	n.store.AddSource(src)
 	n.store.AddFlow(&flow)
 	senderID := nmos.DeriveID(n.cfg.Seed, "sender", key, string(essence))
+	version := nmos.NewVersion()
 	n.store.AddSender(&nmos.Sender{
 		ID:                senderID,
-		Version:           nmos.NewVersion(),
+		Version:           version,
 		Label:             flow.Label,
 		Description:       flow.Description,
 		Tags:              flow.Tags,
@@ -533,7 +534,7 @@ func (a *App) addMXLNMOSProgramSender(n *mxlNMOS, deviceID, key string, essence 
 		Transport:         nmos.TransportMXL,
 		DeviceID:          deviceID,
 		InterfaceBindings: []string{},
-		Caps:              map[string]interface{}{},
+		Caps:              nmos.SenderCaps(&flow, len(src.Channels), version),
 		Subscription:      nmos.SenderSubscription{Active: true},
 	})
 	n.conn.AddSender(senderID, mxlFlowID)
