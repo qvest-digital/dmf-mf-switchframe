@@ -309,7 +309,7 @@ func TestHostRestartBackoff(t *testing.T) {
 	}
 	elapsed1 := restartTime1.Sub(crashTime1)
 
-	// Second crash — backoff should have doubled.
+	// Second crash.
 	crashTime2 := time.Now()
 	if err := h.Send(&Message{Cmd: "crash"}); err != nil {
 		t.Fatalf("Send crash 2: %v", err)
@@ -323,14 +323,11 @@ func TestHostRestartBackoff(t *testing.T) {
 	}
 	elapsed2 := restartTime2.Sub(crashTime2)
 
-	// The second restart should take longer because backoff resets on success,
-	// so after a successful restart the next crash uses InitialBackoff again.
-	// Actually, looking at the code: on successful restart, backoff resets to
-	// InitialBackoff. So both restarts use the same 50ms backoff.
-	// Both should be >= InitialBackoff.
+	// A successful restart resets the backoff, so both restarts wait
+	// InitialBackoff with the host's +/-25% jitter: at least 37.5ms.
 	t.Logf("first restart elapsed: %v, second restart elapsed: %v", elapsed1, elapsed2)
 
-	minExpected := 40 * time.Millisecond // allow a little slack below 50ms
+	minExpected := 50 * time.Millisecond * 3 / 4
 	if elapsed1 < minExpected {
 		t.Errorf("first restart elapsed %v < expected minimum %v", elapsed1, minExpected)
 	}
