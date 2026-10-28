@@ -2074,3 +2074,40 @@ func TestSwitcher_SeqPersistFlushOnClose(t *testing.T) {
 		t.Errorf("final flush seq = %d, want 42", writes[len(writes)-1])
 	}
 }
+
+// A browser keeps the state snapshot with the latest Timestamp, so two
+// snapshots must never share one: a burst of broadcasts within one
+// millisecond, such as the end of a clip upload, would otherwise tie and
+// leave the browser on whichever arrived last.
+func TestState_TimestampsStrictlyIncrease(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+	defer sw.Close()
+
+	var wg sync.WaitGroup
+	stamps := make([][]int64, 4)
+	for g := range stamps {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 500 {
+				stamps[g] = append(stamps[g], sw.State().Timestamp)
+			}
+		}()
+	}
+	wg.Wait()
+
+	seen := make(map[int64]bool)
+	for _, own := range stamps {
+		for i, ts := range own {
+			require.False(t, seen[ts], "timestamp %d returned twice", ts)
+			seen[ts] = true
+			if i > 0 {
+				require.Greater(t, ts, own[i-1], "timestamps of one goroutine went backwards")
+			}
+		}
+	}
+	now := time.Now().UnixMilli()
+	for ts := range seen {
+		require.LessOrEqual(t, ts, now+int64(len(seen)), "timestamp ran ahead of the clock")
+	}
+}

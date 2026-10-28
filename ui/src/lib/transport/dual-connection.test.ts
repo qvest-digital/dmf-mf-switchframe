@@ -112,7 +112,7 @@ vi.mock('$lib/state/reconciler.svelte', () => ({
 	}),
 }));
 
-import { DualConnectionManager } from './dual-connection';
+import { DualConnectionManager, SNAPSHOT_EPOCH_MS } from './dual-connection';
 import { ConnectionManager } from './connection-manager';
 import { ClockSync } from './clock-sync';
 import { createReconciler } from '$lib/state/reconciler.svelte';
@@ -176,6 +176,83 @@ describe('DualConnectionManager', () => {
 
 	afterEach(() => {
 		vi.clearAllMocks();
+	});
+
+	describe('snapshot order', () => {
+		// The end of a clip upload clears clipUpload; a stale snapshot from
+		// a slower session arriving after it left other browsers showing
+		// the upload in progress until a reload.
+		it('drops a snapshot older than the last one an engine sent', () => {
+			const onStateUpdate = vi.fn();
+			new DualConnectionManager(makeDualConfig({ onStateUpdate }));
+			const reconciler = mockedCreateReconciler.mock.results[0].value;
+			const [instanceA, instanceB] = MockedConnectionManager.mock.results.map(r => r.value);
+			const done = makeState({ timestamp: 2000 });
+			const stale = makeState({ timestamp: 1999, clipUpload: { stage: 'validating', percent: 100 } });
+
+			instanceA.simulateStateUpdate(done);
+			instanceA.simulateStateUpdate(stale);
+
+			expect(reconciler.ingest).toHaveBeenCalledTimes(1);
+			expect(reconciler.ingest).toHaveBeenLastCalledWith('A', done);
+			expect(onStateUpdate).toHaveBeenCalledTimes(1);
+
+			// Order is kept per engine: B's older clock does not hold B back.
+			const fromB = makeState({ timestamp: 1500 });
+			instanceB.simulateStateUpdate(fromB);
+			expect(reconciler.ingest).toHaveBeenLastCalledWith('B', fromB);
+		});
+
+		it('drops an older snapshot in single engine mode too', () => {
+			const onStateUpdate = vi.fn();
+			new DualConnectionManager(makeSingleConfig({ onStateUpdate }));
+			const instance = MockedConnectionManager.mock.results[0].value;
+
+			instance.simulateStateUpdate(makeState({ timestamp: 2000, programSource: 'cam2' }));
+			instance.simulateStateUpdate(makeState({ timestamp: 1000, programSource: 'cam1' }));
+
+			expect(onStateUpdate).toHaveBeenCalledTimes(1);
+			expect(onStateUpdate.mock.calls[0][0].programSource).toBe('cam2');
+		});
+
+		// A restarted engine whose clock is behind sends only older
+		// snapshots; dropping them for good would freeze the UI on the state
+		// the engine had before it restarted.
+		it('takes older snapshots once an engine has sent nothing newer for a while', () => {
+			vi.useFakeTimers();
+			try {
+				const onStateUpdate = vi.fn();
+				new DualConnectionManager(makeSingleConfig({ onStateUpdate }));
+				const instance = MockedConnectionManager.mock.results[0].value;
+
+				instance.simulateStateUpdate(makeState({ timestamp: 10_000, programSource: 'cam1' }));
+				vi.advanceTimersByTime(SNAPSHOT_EPOCH_MS - 1);
+				instance.simulateStateUpdate(makeState({ timestamp: 5_000, programSource: 'cam2' }));
+				expect(onStateUpdate).toHaveBeenCalledTimes(1);
+
+				vi.advanceTimersByTime(1);
+				instance.simulateStateUpdate(makeState({ timestamp: 5_100, programSource: 'cam3' }));
+				expect(onStateUpdate).toHaveBeenCalledTimes(2);
+				expect(onStateUpdate.mock.calls[1][0].programSource).toBe('cam3');
+
+				// The new epoch is ordered as before.
+				instance.simulateStateUpdate(makeState({ timestamp: 5_050, programSource: 'cam2' }));
+				expect(onStateUpdate).toHaveBeenCalledTimes(2);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('accepts snapshots sharing a timestamp', () => {
+			const onStateUpdate = vi.fn();
+			new DualConnectionManager(makeSingleConfig({ onStateUpdate }));
+			const instance = MockedConnectionManager.mock.results[0].value;
+
+			instance.simulateStateUpdate(makeState({ programSource: 'cam1' }));
+			instance.simulateStateUpdate(makeState({ programSource: 'cam2' }));
+
+			expect(onStateUpdate).toHaveBeenCalledTimes(2);
+		});
 	});
 
 	describe('single engine mode', () => {
