@@ -888,6 +888,24 @@ describe('PipelineManager', () => {
 			expect(pipeline.connectSource).toHaveBeenCalledWith('program-preview');
 		});
 
+		// The A/B toggle moves only the program canvas: the preview stays
+		// on Engine A.
+		it('keeps the preview on Engine A while toggled to Engine B', async () => {
+			await manager.syncSources(makeSources('cam1', 'cam2'));
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam2', createCanvas(), pvwCanvas);
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			const b = mockedCreateMediaPipeline.mock.results[0].value;
+			manager.connectSourceB('program-preview');
+			manager.switchProgramToEngineB();
+			pipeline.attachCanvas.mockClear();
+
+			manager.syncProgramPreviewCanvases('cam1', null, pvwCanvas);
+
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam1', 'preview', pvwCanvas);
+			expect(b.attachCanvas).not.toHaveBeenCalledWith('cam1', 'preview', pvwCanvas);
+		});
+
 		it('activeEngine getter reflects current state', () => {
 			expect(manager.activeEngine).toBe('A');
 
@@ -1087,6 +1105,93 @@ describe('PipelineManager', () => {
 				'tile-cam1',
 				expect.any(HTMLCanvasElement),
 			);
+		});
+
+		/** Fail over with sources cam1 and cam2, preview on cam2. */
+		async function failOver(pgmCanvas: HTMLCanvasElement, pvwCanvas: HTMLCanvasElement) {
+			await manager.syncSources(makeSources('cam1', 'cam2'));
+			manager.syncProgramPreviewCanvases('cam2', pgmCanvas, pvwCanvas);
+			const b = createMockPipeline();
+			b.getAudioDecoder.mockReturnValue({ getLevels: vi.fn().mockReturnValue({ peak: [0, 0] }) } as any);
+			mockedCreateMediaPipeline.mockReturnValueOnce(b);
+			const done = manager.failoverToEngineB('https://engine-b:8080', ['cam1', 'cam2']);
+			await vi.advanceTimersByTimeAsync(250);
+			await done;
+			pipeline.attachCanvas.mockClear();
+			pipeline.detachCanvas.mockClear();
+			pipeline.connectSource.mockClear();
+			b.attachCanvas.mockClear();
+			b.detachCanvas.mockClear();
+			return b;
+		}
+
+		// After a failover the preview attached on Engine A, whose sources
+		// are disconnected, and the Engine B renderer of the old preview
+		// source went on drawing onto the preview canvas: the preview showed
+		// a source other than the engine's preview.
+		it('moves the preview on Engine B after a failover', async () => {
+			const pvwCanvas = createCanvas();
+			const b = await failOver(createCanvas(), pvwCanvas);
+
+			manager.syncProgramPreviewCanvases('cam1', null, pvwCanvas);
+
+			expect(b.detachCanvas).toHaveBeenCalledWith('cam2', 'preview');
+			expect(b.attachCanvas).toHaveBeenCalledWith('cam1', 'preview', pvwCanvas);
+			expect(pipeline.attachCanvas).not.toHaveBeenCalled();
+		});
+
+		it('attaches a new source tile on Engine B after a failover', async () => {
+			const b = await failOver(createCanvas(), createCanvas());
+			b.addSource.mockClear();
+			b.connectSource.mockClear();
+
+			await manager.syncSources(makeSources('cam1', 'cam2', 'cam3'));
+
+			expect(b.addSource).toHaveBeenCalledWith('cam3');
+			expect(b.connectSource).toHaveBeenCalledWith('cam3');
+			expect(b.attachCanvas).toHaveBeenCalledWith('cam3', 'tile-cam3', expect.any(HTMLCanvasElement));
+			expect(pipeline.attachCanvas).not.toHaveBeenCalled();
+			expect(pipeline.connectSource).not.toHaveBeenCalled();
+		});
+
+		it('re-attaches a replaced program canvas on Engine B after a failover', async () => {
+			const b = await failOver(createCanvas(), createCanvas());
+			const newPgm = createCanvas();
+
+			manager.syncProgramPreviewCanvases('cam2', newPgm, null);
+
+			expect(b.detachCanvas).toHaveBeenCalledWith('program-preview', 'program');
+			expect(b.attachCanvas).toHaveBeenCalledWith('program-preview', 'program', newPgm);
+			expect(pipeline.attachCanvas).not.toHaveBeenCalled();
+		});
+
+		it('moves the preview back on Engine A after restoring to it', async () => {
+			const pvwCanvas = createCanvas();
+			await failOver(createCanvas(), pvwCanvas);
+			await manager.restoreToEngineA(['cam1', 'cam2']);
+			pipeline.attachCanvas.mockClear();
+
+			manager.syncProgramPreviewCanvases('cam1', null, pvwCanvas);
+
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam1', 'preview', pvwCanvas);
+		});
+
+		// A program stall that Engine B shares is this browser or its
+		// network; failing over to B would only move it.
+		it('engineBDelivering reports whether Engine B program frames arrive', () => {
+			expect(manager.engineBDelivering(1500)).toBe(false);
+			manager.createEngineBPipeline('https://engine-b:8080');
+			const b = mockedCreateMediaPipeline.mock.results[0].value;
+			vi.advanceTimersByTime(10_000);
+			const now = performance.now();
+
+			b.getLastFrameTime.mockReturnValue(now - 1000);
+			expect(manager.engineBDelivering(1500)).toBe(true);
+			b.getLastFrameTime.mockReturnValue(now - 2000);
+			expect(manager.engineBDelivering(1500)).toBe(false);
+			b.getLastFrameTime.mockReturnValue(0);
+			expect(manager.engineBDelivering(1500)).toBe(false);
+			expect(b.getLastFrameTime).toHaveBeenCalledWith('program-preview');
 		});
 
 		it('failoverToEngineB swaps preview canvas to pipeline B', async () => {
