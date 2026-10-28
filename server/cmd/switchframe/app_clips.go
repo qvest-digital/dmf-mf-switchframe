@@ -37,6 +37,10 @@ func (a *App) initClips() error {
 
 	mgr := clip.NewManager(store, clip.ManagerConfig{
 		DecoderFactoryForCodec: clipDecoderFactory(is10bitPipeline),
+		OutputRate: func() (int, int) {
+			pf := a.sw.PipelineFormat()
+			return pf.FPSNum, pf.FPSDen
+		},
 		EncoderFactory: func(w, h, fpsNum, fpsDen int) (clip.VideoEncoder, error) {
 			bitrate := switcher.DefaultBitrateForResolution(w, h)
 			return codec.NewVideoEncoder(w, h, bitrate, fpsNum, fpsDen)

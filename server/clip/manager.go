@@ -53,6 +53,10 @@ type ManagerConfig struct {
 	// If nil, wireData is passed through without decoding (for testing).
 	// Deprecated: Use DecoderFactoryForCodec for codec-aware decoder creation.
 	DecoderFactory func() (VideoDecoder, error)
+	// OutputRate returns the frame rate players output at, normally the
+	// pipeline's; read when a player starts. If nil, players output at
+	// their clip's rate.
+	OutputRate func() (num, den int)
 	// DecoderFactoryForCodec creates a video decoder for the specified codec
 	// ("h264" or "h265"). Takes precedence over DecoderFactory when set.
 	// If nil, falls back to DecoderFactory.
@@ -493,9 +497,16 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 		decoderCloser = dec.Close
 	}
 
+	var outNum, outDen int
+	if m.config.OutputRate != nil {
+		outNum, outDen = m.config.OutputRate()
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	p := NewPlayer(PlayerConfig{
+		OutputFPSNum:   outNum,
+		OutputFPSDen:   outDen,
 		Clip:           slot.frames,
 		AudioClip:      slot.audio,
 		Speed:          speed,
