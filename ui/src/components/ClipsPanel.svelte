@@ -58,7 +58,10 @@
 		const stagePct = uploadProgress?.percent ?? uploadPercent;
 		const [lo, hi] = stageWeights[stage] ?? [0, 25];
 		if (stage === 'uploading') {
-			return lo + Math.round((uploadPercent / 100) * (hi - lo));
+			// Only the uploading browser counts the bytes it sends; any
+			// other one shows the engine's figure.
+			const pct = uploading ? uploadPercent : stagePct;
+			return lo + Math.round((pct / 100) * (hi - lo));
 		}
 		return lo + Math.round((stagePct / 100) * (hi - lo));
 	});

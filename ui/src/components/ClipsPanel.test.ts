@@ -87,6 +87,16 @@ describe('ClipsPanel', () => {
 		expect(container.textContent).toContain('test.mkv');
 	});
 
+	// Another operator's upload: this browser sends no bytes, so its own
+	// upload counter stays at zero.
+	it('shows the engine progress of an upload another browser sends', () => {
+		const state = makeState({
+			clipUpload: { stage: 'uploading', percent: 50, filename: 'other.mp4' },
+		});
+		const { container } = render(ClipsPanel, { props: { state } });
+		expect(container.querySelector('.upload-pct')?.textContent).toBe('13%');
+	});
+
 	it('does not show progress bar when no upload', () => {
 		const state = makeState();
 		const { container } = render(ClipsPanel, { props: { state } });
