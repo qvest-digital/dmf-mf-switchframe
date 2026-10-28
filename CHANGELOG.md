@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-rc.24](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.23...mxl-v1.0.0-rc.24) (2026-10-28)
+
+
+### Features
+
+* **mxl:** add --mxl-gc-interval to set or stop domain collection ([#72](https://github.com/qvest-digital/dmf-mf-switchframe/issues/72)) ([05bf843](https://github.com/qvest-digital/dmf-mf-switchframe/commit/05bf843ea3468c98b06b48f81f3e97c644f077e9))
+
+
+### Bug Fixes
+
+* **mxl:** run the relay encode beside MXL ingest, not in it ([#73](https://github.com/qvest-digital/dmf-mf-switchframe/issues/73)) ([23bd839](https://github.com/qvest-digital/dmf-mf-switchframe/commit/23bd83931ef0c35a48e86d6f462c80fc0c5dacdb))
+
 ## [1.0.0-rc.23](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.22...mxl-v1.0.0-rc.23) (2026-10-27)
 
 
