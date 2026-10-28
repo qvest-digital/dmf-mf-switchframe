@@ -31,8 +31,13 @@ type st2110State struct {
 	httpServer *http.Server
 	sources    []*st2110.Source
 	sourcesMu  sync.Mutex
-	output     *st2110.Output
-	dnsSDStop  nmos.StopFunc
+
+	// txMu serialises what changes the program TX: sender activation and
+	// deactivation, which the Connection API runs per sender, and the
+	// restart on a pipeline format change.
+	txMu      sync.Mutex
+	output    *st2110.Output
+	dnsSDStop nmos.StopFunc
 
 	// TX configs for program output. Stored so we can recreate TX handles
 	// when the output is restarted (Output.Stop closes TX handles).
@@ -697,6 +702,8 @@ func (a *App) activateST2110Sender(id string, params nmos.StagedParams) error {
 	if state == nil {
 		return fmt.Errorf("ST 2110 not initialized")
 	}
+	state.txMu.Lock()
+	defer state.txMu.Unlock()
 
 	if len(params.TransportParams) == 0 {
 		return fmt.Errorf("no transport params for sender %s", id)
@@ -866,6 +873,8 @@ func (a *App) deactivateST2110Sender(id string) error {
 	if state == nil {
 		return fmt.Errorf("ST 2110 not initialized")
 	}
+	state.txMu.Lock()
+	defer state.txMu.Unlock()
 
 	slog.Info("ST 2110: sender deactivation requested", "id", id)
 
@@ -913,24 +922,52 @@ func programVideoFlow(id, sourceID, deviceID string, width, height, fpsNum, fpsD
 	}
 }
 
+// wireFormatChange registers the switcher's OnFormatChange callback. gpu is
+// whether a GPU pipeline was initialised and has to be rebuilt.
+func (a *App) wireFormatChange(gpu bool) {
+	a.gpuRebuildOnFormat = gpu
+	a.sw.SetOnFormatChange(a.onPipelineFormatChange)
+}
+
 // onPipelineFormatChange is the switcher's OnFormatChange callback.
 func (a *App) onPipelineFormatChange(width, height, fpsNum, fpsDen int) {
 	if a.gpuRebuildOnFormat {
 		a.rebuildGPUPipelineForFormat(width, height, fpsNum, fpsDen)
 	}
-	a.updateST2110ProgramFormat(width, height, fpsNum, fpsDen)
+	a.updateST2110ProgramFormat()
 }
 
-// updateST2110ProgramFormat republishes the program video Flow and its
-// Sender's caps at a new pipeline format. The Flow keeps its id: IS-04 has a
-// Flow id not change with its resolution. The caps take a new version, as
-// BCP-004-02 requires when the capabilities change, and re-adding the Sender
-// moves its own.
-func (a *App) updateST2110ProgramFormat(width, height, fpsNum, fpsDen int) {
+// updateST2110ProgramFormat brings the program output to the current
+// pipeline format: a running video TX is restarted at it, then the program
+// video Flow and its Sender's caps are republished, so the stream, the Flow
+// and the caps agree. The Flow keeps its id: IS-04 has a Flow id not change
+// with its resolution. The caps take a new version, as BCP-004-02 requires
+// when the capabilities change, and re-adding the Sender moves its own.
+//
+// The format is read here rather than taken from the callback: the switcher
+// calls back outside its lock, so two changes can arrive out of order, and
+// under txMu the last one to run publishes the format in effect.
+func (a *App) updateST2110ProgramFormat() {
 	state := a.st2110State
 	if state == nil || state.store == nil || state.programVideoSenderID == "" {
 		return
 	}
+	state.txMu.Lock()
+	defer state.txMu.Unlock()
+	pf := a.sw.PipelineFormat()
+
+	if state.videoTxCfg != nil {
+		cfg := *state.videoTxCfg
+		cfg.Format.Width, cfg.Format.Height = pf.Width, pf.Height
+		cfg.Format.FPSNum, cfg.Format.FPSDen = pf.FPSNum, pf.FPSDen
+		state.videoTxCfg = &cfg
+		if err := a.startOrRestartST2110Output(); err != nil {
+			slog.Error("ST 2110: restarting the program output at the new format failed",
+				"format", fmt.Sprintf("%dx%d@%d/%d", pf.Width, pf.Height, pf.FPSNum, pf.FPSDen),
+				"error", err)
+		}
+	}
+
 	snd := state.store.GetSender(state.programVideoSenderID)
 	if snd == nil {
 		return
@@ -939,7 +976,7 @@ func (a *App) updateST2110ProgramFormat(width, height, fpsNum, fpsDen int) {
 	if prev == nil {
 		return
 	}
-	flow := programVideoFlow(prev.ID, prev.SourceID, prev.DeviceID, width, height, fpsNum, fpsDen)
+	flow := programVideoFlow(prev.ID, prev.SourceID, prev.DeviceID, pf.Width, pf.Height, pf.FPSNum, pf.FPSDen)
 	state.store.AddFlow(flow)
 	snd.Caps = nmos.ST2110SenderCaps(flow, 0, st2110PacketTimeMs, nmos.NewVersion())
 	state.store.AddSender(snd)

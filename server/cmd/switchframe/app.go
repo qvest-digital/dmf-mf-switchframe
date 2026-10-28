@@ -1036,11 +1036,10 @@ func (a *App) initSubsystems() error {
 	a.setGPUState(gs)
 	wireGPUPipeline(gs, a.sw, a)
 
-	// Rebuild GPU pipeline on format change (e.g., 1080p → 720p).
-	// Full teardown + recreate: pool, encoder, pipeline, source manager
-	// all need to match the new dimensions.
-	a.gpuRebuildOnFormat = gs != nil
-	a.sw.SetOnFormatChange(a.onPipelineFormatChange)
+	// Follow a pipeline format change (e.g. 1080p -> 720p) wherever the
+	// format is baked in: the GPU pipeline where one was initialised, and
+	// the ST 2110 program output and its NMOS resources.
+	a.wireFormatChange(gs != nil)
 
 	// Pipeline encoder for the video processing chain.
 	// Use the codec and color format from the pipeline config to select the
