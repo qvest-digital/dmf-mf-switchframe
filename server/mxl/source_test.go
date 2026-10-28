@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -974,4 +975,58 @@ func TestSource_StandardPath_NoPreview(t *testing.T) {
 	}
 
 	src.Stop()
+}
+
+// blockingVideoEncoder holds every Encode until release is closed.
+type blockingVideoEncoder struct {
+	fakeVideoEncoder
+	release chan struct{}
+}
+
+func (e *blockingVideoEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+	<-e.release
+	return e.fakeVideoEncoder.Encode(yuv, pts, forceIDR)
+}
+
+// The relay encode runs beside ingest, not in it: with every encode stuck,
+// the grains the flow delivers still reach the switcher, and the ones that
+// find no free encode buffer are counted and not encoded.
+func TestSource_SlowEncodeDoesNotHoldIngest(t *testing.T) {
+	const grains = 10
+	frame := makeV210Frame(12, 2)
+	var videoGrains []mockGrain
+	for i := 1; i <= grains; i++ {
+		videoGrains = append(videoGrains, mockGrain{data: frame,
+			info: GrainInfo{Index: uint64(i), GrainSize: uint32(len(frame)), TotalSlices: 1, ValidSlices: 1}})
+	}
+	flow := newMockDiscreteReader(videoGrains, FlowConfig{Format: DataFormatVideo, GrainRate: Rational{50, 1}})
+
+	enc := &blockingVideoEncoder{release: make(chan struct{})}
+	var raw atomic.Int32
+	src := NewSource(SourceConfig{
+		FlowName: "cam1",
+		Width:    12,
+		Height:   2,
+		Relay:    &mockMediaBroadcasterForTest{},
+		EncoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return enc, nil
+		},
+		OnRawVideo: func(string, []byte, int, int, int64) { raw.Add(1) },
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	src.Start(ctx, flow, nil)
+	defer func() {
+		close(enc.release)
+		cancel()
+		src.Stop()
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for raw.Load() < grains && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := raw.Load(); got != grains {
+		t.Fatalf("switcher got %d of %d grains while the encode was stuck", got, grains)
+	}
 }
