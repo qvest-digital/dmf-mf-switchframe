@@ -2,6 +2,10 @@
 
 This repository is MIT-licensed (see `LICENSE`). The following bundled or referenced assets have their own terms.
 
+## Go modules
+
+**prism** (`server/third_party/prism`): MIT License, see `server/third_party/prism/LICENSE`, [upstream](https://github.com/zsiec/prism). A patched copy of `github.com/zsiec/prism` at `v0.1.6-0.20260406003103-645d92c6cee7`, without its `test/` directory, which `server/go.mod` replaces the module with. The patch is the only change to the pinned version: `distribution/session_helpers.go`, `distribution/moq_session.go` and `distribution/session_helpers_test.go`.
+
 ## Fonts
 
 **Inter** (server-side text overlay) — see `server/graphics/textrender/fonts/OFL.txt` (SIL Open Font License).

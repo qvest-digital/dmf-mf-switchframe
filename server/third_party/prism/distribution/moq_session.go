@@ -570,7 +570,7 @@ func (m *MoQSession) writeVideoLoop(ctx context.Context, sub *moqTrackSub) {
 				currentStream = stream
 			}
 
-			if currentStream == nil {
+			if currentStream == nil || !fitsVideoStream(frame, currentGroupID) {
 				continue
 			}
 

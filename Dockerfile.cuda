@@ -118,6 +118,8 @@ WORKDIR /app
 
 # Go module cache (changes less often than source)
 COPY server/go.mod server/go.sum ./server/
+# go.mod replaces a module with this directory, which go mod download reads.
+COPY server/third_party/ ./server/third_party/
 RUN cd server && go mod download
 
 # Copy source + embedded UI

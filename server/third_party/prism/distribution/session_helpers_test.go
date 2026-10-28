@@ -90,23 +90,54 @@ func TestTrySendVideoFullChannelMarksDamaged(t *testing.T) {
 	}
 }
 
-func TestTrySendVideoFullChannelKeyframeNoDamage(t *testing.T) {
+// A keyframe meeting a full channel displaces the queued frames. Dropping
+// it instead left its group's deltas to be queued once there was room,
+// and the client got deltas with no keyframe to decode them against.
+func TestTrySendVideoFullChannelKeyframeDisplacesBacklog(t *testing.T) {
 	t.Parallel()
 
-	ch := make(chan *media.VideoFrame, 1)
+	ch := make(chan *media.VideoFrame, 3)
 	var damaged atomic.Uint32
 	var sent, dropped atomic.Int64
 
-	// Fill the channel.
-	ch <- &media.VideoFrame{}
-
-	trySendVideo(&media.VideoFrame{IsKeyframe: true, GroupID: 7}, ch, &damaged, &sent, &dropped)
-
-	if dropped.Load() != 1 {
-		t.Fatalf("dropped = %d, want 1", dropped.Load())
+	// A backlog of group 6.
+	for range 3 {
+		trySendVideo(&media.VideoFrame{GroupID: 6}, ch, &damaged, &sent, &dropped)
 	}
-	// Keyframe drop should NOT mark group as damaged — the next keyframe will reset anyway.
+
+	key := &media.VideoFrame{IsKeyframe: true, GroupID: 7}
+	trySendVideo(key, ch, &damaged, &sent, &dropped)
+	// Room for group 7's deltas now.
+	trySendVideo(&media.VideoFrame{GroupID: 7}, ch, &damaged, &sent, &dropped)
+
+	if got := <-ch; got != key {
+		t.Fatalf("first queued frame = %+v, want the group 7 keyframe", got)
+	}
+	if got := <-ch; got.GroupID != 7 || got.IsKeyframe {
+		t.Fatalf("second queued frame = %+v, want a group 7 delta", got)
+	}
+	if len(ch) != 0 {
+		t.Fatalf("channel length = %d, want 0", len(ch))
+	}
+	if dropped.Load() != 3 {
+		t.Fatalf("dropped = %d, want the 3 displaced frames", dropped.Load())
+	}
 	if damaged.Load() != 0 {
 		t.Fatalf("damagedGroup = %d, want 0", damaged.Load())
+	}
+}
+
+// Only a delta whose keyframe opened the stream may be written to it.
+func TestFitsVideoStream(t *testing.T) {
+	t.Parallel()
+
+	if !fitsVideoStream(&media.VideoFrame{IsKeyframe: true, GroupID: 7}, 7) {
+		t.Fatal("keyframe that opened the stream rejected")
+	}
+	if !fitsVideoStream(&media.VideoFrame{GroupID: 7}, 7) {
+		t.Fatal("delta of the open group rejected")
+	}
+	if fitsVideoStream(&media.VideoFrame{GroupID: 8}, 7) {
+		t.Fatal("delta of a later group accepted on the open stream")
 	}
 }

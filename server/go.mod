@@ -8,6 +8,7 @@ require (
 	github.com/as/scte v0.0.2
 	github.com/asticode/go-astits v1.15.0
 	github.com/coreos/go-oidc/v3 v3.21.0
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/google/uuid v1.6.0
 	github.com/grandcat/zeroconf v1.0.0
@@ -35,7 +36,6 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/miekg/dns v1.1.27 // indirect
@@ -55,3 +55,6 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+// A patched copy of the pinned version; see THIRD_PARTY_LICENSES.md.
+replace github.com/zsiec/prism => ./third_party/prism
