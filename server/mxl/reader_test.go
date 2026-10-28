@@ -889,6 +889,7 @@ type liveRing struct {
 	start  time.Time
 	period time.Duration
 	size   uint64
+	data   []byte // every grain's payload; one byte when nil
 
 	mu      sync.Mutex
 	tooLate int
@@ -915,7 +916,11 @@ func (r *liveRing) ReadGrain(index uint64, timeoutNs uint64) ([]byte, GrainInfo,
 	if lag := head - index; lag > r.maxLag {
 		r.maxLag = lag
 	}
-	return []byte{0}, GrainInfo{Index: index, GrainSize: 1, TotalSlices: 1, ValidSlices: 1}, nil
+	data := r.data
+	if data == nil {
+		data = []byte{0}
+	}
+	return data, GrainInfo{Index: index, GrainSize: uint32(len(data)), TotalSlices: 1, ValidSlices: 1}, nil
 }
 
 func (r *liveRing) ConfigInfo() FlowConfig     { return FlowConfig{Format: DataFormatVideo} }

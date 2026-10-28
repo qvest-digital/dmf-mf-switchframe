@@ -442,7 +442,8 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 }
 
 // encodeAndBroadcastVideo encodes a YUV420p frame to H.264 and broadcasts it.
-// Called only from the single videoFanOut goroutine, so lazy-init is safe.
+// Called from one goroutine at a time, so lazy-init is safe: encodeLoop once
+// Start has begun reading video, otherwise the caller of processVideoGrain.
 //
 // Three modes:
 //   - PreviewEncoder set, ReplayViewer nil: preview-only (existing behavior).
