@@ -21,7 +21,7 @@ func setupLibraryAPI(t *testing.T, lib string, opts ...APIOption) (*API, *clip.S
 	t.Helper()
 	store, err := clip.NewStore(t.TempDir(), 100*1024*1024)
 	require.NoError(t, err)
-	require.NoError(t, store.AttachLibrary(lib))
+	require.NoError(t, store.AttachLibrary(lib, ""))
 	_, err = store.ScanLibrary()
 	require.NoError(t, err)
 	mgr := clip.NewManager(store, clip.ManagerConfig{})

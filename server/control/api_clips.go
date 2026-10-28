@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -53,7 +54,9 @@ func (a *API) registerClipRoutes(mux *http.ServeMux) {
 // attached. A failure leaves the clip stored locally and playable here, and
 // is logged: it is missing from the library for later bookings.
 func (a *API) publishClip(id string) {
-	if err := a.clipStore.Publish(id); err != nil {
+	if err := a.clipStore.PublishSoon(id); errors.Is(err, clip.ErrPublishPending) {
+		slog.Info("clip: copied into the clip library once the other engine's copy ends", "clip", id)
+	} else if err != nil {
 		slog.Warn("clip: not copied into the clip library", "clip", id, "error", err)
 	}
 }

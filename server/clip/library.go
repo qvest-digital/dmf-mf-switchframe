@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/zsiec/switchframe/server/internal/createonly"
 )
@@ -31,14 +33,114 @@ import (
 //
 // A copy cut short still becomes a file: when the process dies, the kernel
 // closes the descriptor and the store completes the upload with what was
-// written. So Publish writes <media>.pending before the media and deletes it
-// after; a scan does not list media with a marker beside it, and the next
-// Publish of that clip replaces the media.
+// written. So Publish writes a pending marker before the media and deletes
+// it after: <media>.pending.<owner>, owner being the engine label (plain
+// <media>.pending without one). Engines sharing a library copy the same
+// clip at the same time, as the UI uploads to all of them, so a marker is
+// only ever deleted, and the media beside it replaced, by its own engine,
+// or once it is older than peerMarkerTimeout. A scan does not list media
+// with any marker beside it unless its sidecar shows the copy finished.
 
 const (
 	librarySidecarExt = ".json"
 	libraryPendingExt = ".pending"
+
+	// How long another engine's marker counts as a copy in progress. The
+	// largest upload copies in minutes; an older marker was left by an
+	// engine that died with it.
+	peerMarkerTimeout = time.Hour
+
+	// How often a Publish that waits for another engine's copy is tried
+	// again before PublishLocal at the next start takes over.
+	publishRetries = 30
 )
+
+// copyIntoLibrary is the one way media enters the library; a variable so a
+// test can observe it.
+var copyIntoLibrary = createonly.Copy
+
+// ErrPublishPending reports that another engine is copying the clip into
+// the library. Nothing was changed there; the clip stays local.
+var ErrPublishPending = errors.New("clip: another engine is copying this clip into the library")
+
+// pendingMarker is a marker beside a library media file.
+type pendingMarker struct {
+	path    string
+	owner   string
+	modTime time.Time
+}
+
+// markerOf splits a library file name into the media it marks and the
+// marker's owner, or reports that it is no marker.
+func markerOf(name string) (media, owner string, ok bool) {
+	i := strings.LastIndex(name, libraryPendingExt)
+	if i <= 0 {
+		return "", "", false
+	}
+	rest := name[i+len(libraryPendingExt):]
+	switch {
+	case rest == "":
+		return name[:i], "", true
+	case strings.HasPrefix(rest, ".") && validOwner(rest[1:]) && rest != ".":
+		return name[:i], rest[1:], true
+	}
+	return "", "", false
+}
+
+func validOwner(owner string) bool {
+	for _, r := range owner {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// markerPath is this store's marker for the media at path.
+func (s *Store) markerPath(media string) string {
+	if s.libOwner == "" {
+		return media + libraryPendingExt
+	}
+	return media + libraryPendingExt + "." + s.libOwner
+}
+
+// markersBeside lists the pending markers of the media at path.
+func markersBeside(media string) ([]pendingMarker, error) {
+	entries, err := os.ReadDir(filepath.Dir(media))
+	if err != nil {
+		return nil, err
+	}
+	base := filepath.Base(media)
+	var out []pendingMarker
+	for _, e := range entries {
+		m, owner, ok := markerOf(e.Name())
+		if !ok || m != base || e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, pendingMarker{path: filepath.Join(filepath.Dir(media), e.Name()), owner: owner, modTime: info.ModTime()})
+	}
+	return out, nil
+}
+
+// classifyMarkers sorts markers into this store's own, other engines'
+// still in progress, and other engines' left by an engine that died.
+func (s *Store) classifyMarkers(markers []pendingMarker, now time.Time) (own bool, live, dead []pendingMarker) {
+	for _, m := range markers {
+		switch {
+		case m.owner == s.libOwner:
+			own = true
+		case now.Sub(m.modTime) < peerMarkerTimeout:
+			live = append(live, m)
+		default:
+			dead = append(dead, m)
+		}
+	}
+	return own, live, dead
+}
 
 // libraryClipID derives a clip ID from a path relative to the library, so
 // that every Store scanning the same library assigns a file the same ID.
@@ -119,6 +221,7 @@ type LibraryScan struct {
 type libraryCandidate struct {
 	id, rel string
 	info    fs.FileInfo
+	markers []pendingMarker
 }
 
 // ScanLibrary lists every playable media file in the attached library as a
@@ -140,6 +243,7 @@ func (s *Store) ScanLibrary() (LibraryScan, error) {
 
 	var found []libraryCandidate
 	present := map[string]bool{}
+	markers := map[string][]pendingMarker{}
 	err := filepath.WalkDir(s.libDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -150,7 +254,17 @@ func (s *Store) ScanLibrary() (LibraryScan, error) {
 			}
 			return nil
 		}
-		if d.IsDir() || !isLibraryMedia(d.Name()) {
+		if d.IsDir() {
+			return nil
+		}
+		if media, owner, ok := markerOf(d.Name()); ok {
+			if info, err := d.Info(); err == nil {
+				key := filepath.Join(filepath.Dir(path), media)
+				markers[key] = append(markers[key], pendingMarker{path: path, owner: owner, modTime: info.ModTime()})
+			}
+			return nil
+		}
+		if !isLibraryMedia(d.Name()) {
 			return nil
 		}
 		rel, err := filepath.Rel(s.libDir, path)
@@ -175,8 +289,10 @@ func (s *Store) ScanLibrary() (LibraryScan, error) {
 	}
 
 	var add []*Clip
+	now := time.Now()
 	for _, f := range found {
-		if _, err := os.Stat(filepath.Join(s.libDir, f.rel) + libraryPendingExt); err == nil {
+		f.markers = markers[filepath.Join(s.libDir, f.rel)]
+		if len(f.markers) > 0 && !s.finishedDespiteMarkers(f, now) {
 			res.Skipped = append(res.Skipped, f.rel)
 			continue
 		}
@@ -209,6 +325,31 @@ func (s *Store) ScanLibrary() (LibraryScan, error) {
 		}
 	}
 	return res, nil
+}
+
+// finishedDespiteMarkers reports whether media with pending markers beside
+// it is complete anyway: Publish writes the sidecar only once the media is,
+// so a sidecar of the media's size means the engine died before deleting
+// its marker. Markers this store owns, unless its Publish of the clip is
+// running, and other engines' dead ones are then deleted, so a complete
+// clip does not stay hidden behind them.
+func (s *Store) finishedDespiteMarkers(f libraryCandidate, now time.Time) bool {
+	path := filepath.Join(s.libDir, f.rel)
+	if _, err := readLibrarySidecar(path, f.info.Size()); err != nil {
+		return false
+	}
+	s.mu.RLock()
+	publishing := s.publishing[f.id] != nil
+	s.mu.RUnlock()
+	for _, m := range f.markers {
+		mine := m.owner == s.libOwner && !publishing
+		if mine || (m.owner != s.libOwner && now.Sub(m.modTime) >= peerMarkerTimeout) {
+			if err := os.Remove(m.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				slog.Info("clip: stale pending marker not deleted", "path", m.path, "error", err)
+			}
+		}
+	}
+	return true
 }
 
 // libraryClip builds the clip for a library file from its sidecar, or by
@@ -249,17 +390,46 @@ func (s *Store) libraryClip(f libraryCandidate) (*Clip, error) {
 	return c, nil
 }
 
+// beginPublish waits for a running Publish of id in this store and marks
+// one as running; the returned function ends it.
+func (s *Store) beginPublish(id string) func() {
+	s.mu.Lock()
+	for {
+		running := s.publishing[id]
+		if running == nil {
+			break
+		}
+		s.mu.Unlock()
+		<-running
+		s.mu.Lock()
+	}
+	done := make(chan struct{})
+	s.publishing[id] = done
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		delete(s.publishing, id)
+		s.mu.Unlock()
+		close(done)
+	}
+}
+
 // Publish copies a locally stored clip into the attached library and then
-// serves it from there, removing the local file. A library file of the same
-// name already present, as when another Store sharing the library published
-// the same clip ID, is taken as this clip's, unless a pending marker from an
-// earlier Publish says it is incomplete. Without a library, or for a clip
-// already in it, Publish does nothing. A clip that cannot be copied stays
-// local and playable here.
+// serves it from there, removing the local file. Without a library, or for
+// a clip already in it, Publish does nothing.
+//
+// A library file of the same name, as when another engine sharing the
+// library published the same clip ID, is taken as this clip's. It is
+// replaced instead only beside this store's own pending marker, left by a
+// Publish that did not finish, or beside another engine's dead one. While
+// another engine's marker is live Publish touches nothing and returns
+// ErrPublishPending. A clip that is not copied stays local and playable.
 func (s *Store) Publish(id string) error {
 	if s.libDir == "" {
 		return nil
 	}
+	defer s.beginPublish(id)()
+
 	s.mu.RLock()
 	c, ok := s.clips[id]
 	var cp Clip
@@ -277,24 +447,43 @@ func (s *Store) Publish(id string) error {
 	src := filepath.Join(s.dir, cp.Filename)
 	rel := id + strings.ToLower(filepath.Ext(cp.Filename))
 	dst := filepath.Join(s.libDir, rel)
-	marker := dst + libraryPendingExt
+	marker := s.markerPath(dst)
 
-	// Not empty: the store completes the upload of an empty file only
-	// later, and the marker has to be there before the media is.
-	err := createonly.Write(marker, strings.NewReader(id+"\n"))
-	unfinished := errors.Is(err, fs.ErrExist)
-	if err != nil && !unfinished {
-		return fmt.Errorf("mark clip pending in library: %w", err)
+	markers, err := markersBeside(dst)
+	if err != nil {
+		return fmt.Errorf("list pending markers in library: %w", err)
+	}
+	unfinished, live, dead := s.classifyMarkers(markers, time.Now())
+	if len(live) > 0 {
+		return ErrPublishPending
+	}
+	if !unfinished {
+		// Not empty: the store completes the upload of an empty file only
+		// later, and the marker has to be there before the media is.
+		err := createonly.Write(marker, strings.NewReader(id+"\n"))
+		if err != nil && !errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("mark clip pending in library: %w", err)
+		}
+		unfinished = err != nil
+		// Another engine may have marked the clip since the listing.
+		if markers, err := markersBeside(dst); err == nil {
+			if _, live, _ := s.classifyMarkers(markers, time.Now()); len(live) > 0 {
+				if !unfinished {
+					_ = os.Remove(marker)
+				}
+				return ErrPublishPending
+			}
+		}
 	}
 
-	err = createonly.Copy(dst, src)
+	err = copyIntoLibrary(dst, src)
 	switch {
-	case errors.Is(err, fs.ErrExist) && unfinished:
-		// Left by a Publish that did not finish, this one's or the other
-		// engine's: what is there may be cut short. The store refuses the
-		// delete while that upload is still being completed.
+	case errors.Is(err, fs.ErrExist) && (unfinished || len(dead) > 0):
+		// Left by a Publish that did not finish: what is there may be cut
+		// short. The store refuses the delete while that upload is still
+		// being completed.
 		if err = os.Remove(dst); err == nil {
-			err = createonly.Copy(dst, src)
+			err = copyIntoLibrary(dst, src)
 		}
 	case errors.Is(err, fs.ErrExist):
 		err = nil
@@ -313,8 +502,10 @@ func (s *Store) Publish(id string) error {
 	if serr := writeLibrarySidecar(dst, &cp); serr != nil {
 		slog.Info("clip: library sidecar not written, probed on the next scan", "clip", id, "error", serr)
 	}
-	if merr := os.Remove(marker); merr != nil && !errors.Is(merr, fs.ErrNotExist) {
-		slog.Warn("clip: pending marker left in library; the clip is not listed by later scans until it is published again", "clip", id, "error", merr)
+	for _, m := range append(dead, pendingMarker{path: marker}) {
+		if merr := os.Remove(m.path); merr != nil && !errors.Is(merr, fs.ErrNotExist) {
+			slog.Warn("clip: pending marker left in library", "path", m.path, "error", merr)
+		}
 	}
 
 	s.mu.Lock()
@@ -336,6 +527,34 @@ func (s *Store) Publish(id string) error {
 	return nil
 }
 
+// PublishSoon publishes id, and while another engine is copying the same
+// clip tries again in the background a little later, as that copy ends.
+func (s *Store) PublishSoon(id string) error {
+	err := s.Publish(id)
+	if errors.Is(err, ErrPublishPending) {
+		go func() {
+			for try := 0; try < publishRetries; try++ {
+				time.Sleep(s.retryWait())
+				err := s.Publish(id)
+				if errors.Is(err, ErrPublishPending) {
+					continue
+				}
+				if err != nil {
+					slog.Warn("clip: not copied into the clip library", "clip", id, "error", err)
+				}
+				return
+			}
+			slog.Info("clip: another engine still copying it into the clip library; tried again at the next start", "clip", id)
+		}()
+	}
+	return err
+}
+
+// defaultRetryWait spreads the retries of engines waiting on each other.
+func defaultRetryWait() time.Duration {
+	return 5*time.Second + time.Duration(rand.Int64N(int64(10*time.Second)))
+}
+
 // PublishLocal publishes every clip still stored only locally, as one whose
 // Publish was cut short by a restart. It returns how many it published and
 // how many are still local.
@@ -353,7 +572,9 @@ func (s *Store) PublishLocal() (published, left int) {
 	s.mu.RUnlock()
 	for _, id := range ids {
 		if err := s.Publish(id); err != nil {
-			slog.Warn("clip: not copied into the clip library", "clip", id, "error", err)
+			if !errors.Is(err, ErrPublishPending) {
+				slog.Warn("clip: not copied into the clip library", "clip", id, "error", err)
+			}
 			left++
 			continue
 		}

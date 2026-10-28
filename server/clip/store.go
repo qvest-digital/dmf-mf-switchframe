@@ -26,9 +26,16 @@ type Store struct {
 	filePath string
 	maxBytes int64
 
-	// libDir is the attached clip library, empty for none. See library.go.
-	libDir string
-	probe  func(path string) (*ProbeResult, error)
+	// libDir is the attached clip library, empty for none, and libOwner the
+	// label this store's pending markers carry there. See library.go.
+	libDir   string
+	libOwner string
+	probe    func(path string) (*ProbeResult, error)
+
+	// publishing holds one channel per clip ID being published, closed
+	// when that Publish ends.
+	publishing map[string]chan struct{}
+	retryWait  func() time.Duration
 }
 
 // NewStore creates a Store backed by the given directory with a storage limit in bytes.
@@ -46,6 +53,8 @@ func NewStore(dir string, maxBytes int64) (*Store, error) {
 		maxBytes: maxBytes,
 		probe:    Validate,
 	}
+	s.publishing = map[string]chan struct{}{}
+	s.retryWait = defaultRetryWait
 
 	data, err := os.ReadFile(s.filePath)
 	if err != nil {
@@ -67,13 +76,19 @@ func NewStore(dir string, maxBytes int64) (*Store, error) {
 }
 
 // AttachLibrary makes dir the store's clip library, creating it if needed.
-// Call it before the store is shared; ScanLibrary then lists what is there
-// and Publish copies local clips in.
-func (s *Store) AttachLibrary(dir string) error {
+// owner names this store among those sharing the library, the engine label:
+// lowercase letters, digits and '-', empty for a store that shares it with
+// no other engine. Call it before the store is shared; ScanLibrary then
+// lists what is there and Publish copies local clips in.
+func (s *Store) AttachLibrary(dir, owner string) error {
+	if !validOwner(owner) {
+		return fmt.Errorf("clip library owner %q: only lowercase letters, digits and '-'", owner)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create clip library dir: %w", err)
 	}
 	s.libDir = dir
+	s.libOwner = owner
 	return nil
 }
 

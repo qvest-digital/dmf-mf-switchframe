@@ -18,7 +18,7 @@ func newLibraryStore(t *testing.T, lib string) (*Store, *int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AttachLibrary(lib); err != nil {
+	if err := s.AttachLibrary(lib, ""); err != nil {
 		t.Fatal(err)
 	}
 	probes := 0
@@ -335,7 +335,7 @@ func TestScanLibraryValidatesRealClip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AttachLibrary(lib); err != nil {
+	if err := s.AttachLibrary(lib, ""); err != nil {
 		t.Fatal(err)
 	}
 	res, err := s.ScanLibrary()

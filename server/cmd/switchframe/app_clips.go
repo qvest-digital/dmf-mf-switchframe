@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -30,7 +31,7 @@ func (a *App) initClips() error {
 	}
 	slog.Info("clip store initialized", "path", clipDir, "maxBytes", a.cfg.ClipStorageMax)
 	if dir := a.cfg.ClipLibraryDir; dir != "" {
-		if err := store.AttachLibrary(dir); err != nil {
+		if err := store.AttachLibrary(dir, a.cfg.EngineLabel); err != nil {
 			return err
 		}
 		res, err := store.ScanLibrary()
@@ -462,7 +463,9 @@ func (a *App) handleReplayClipExported(source string, tempFile string, store *cl
 		"size", c.ByteSize,
 	)
 
-	if err := store.Publish(c.ID); err != nil {
+	if err := store.PublishSoon(c.ID); errors.Is(err, clip.ErrPublishPending) {
+		slog.Info("clips: replay clip copied into the clip library once the other engine's copy ends", "clipID", c.ID)
+	} else if err != nil {
 		slog.Warn("clips: replay clip not copied into the clip library", "clipID", c.ID, "error", err)
 	}
 
