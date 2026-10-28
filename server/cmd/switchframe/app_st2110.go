@@ -15,9 +15,12 @@ import (
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
-// st2110PacketTimeMs is the packet time program audio is transmitted at,
-// which its Sender's caps state.
-const st2110PacketTimeMs = 1
+// st2110PacketTimeMs and st2110AudioChannels are the packet time and channel
+// count program audio is transmitted with, which its Sender's caps state.
+const (
+	st2110PacketTimeMs  = 1
+	st2110AudioChannels = 2
+)
 
 // st2110State holds all ST 2110 subsystem state for the application lifecycle.
 type st2110State struct {
@@ -39,6 +42,10 @@ type st2110State struct {
 	// Sender ID tracking for cleanup.
 	videoSenderID string
 	audioSenderID string
+
+	// programVideoSenderID is the program video Sender, whose Flow and caps
+	// follow the pipeline format.
+	programVideoSenderID string
 
 	// NMOS resource IDs for cleanup.
 	nodeID   string
@@ -249,24 +256,10 @@ func (a *App) initST2110(ctx context.Context) error {
 		Parents:   []string{},
 	})
 
-	pgmVideoFlow := &nmos.Flow{
-		ID:          pgmVideoFlowID,
-		Label:       "Program Video Flow",
-		Format:      nmos.FormatVideo,
-		SourceID:    pgmVideoSourceID,
-		DeviceID:    state.deviceID,
-		MediaType:   "video/raw",
-		Tags:        map[string][]string{},
-		Parents:     []string{},
-		FrameWidth:  pf.Width,
-		FrameHeight: pf.Height,
-		Colorspace:  "BT709",
-		GrainRate: &nmos.Rational{
-			Numerator:   int64(pf.FPSNum),
-			Denominator: int64(pf.FPSDen),
-		},
-	}
+	pgmVideoFlow := programVideoFlow(pgmVideoFlowID, pgmVideoSourceID, state.deviceID,
+		pf.Width, pf.Height, pf.FPSNum, pf.FPSDen)
 	store.AddFlow(pgmVideoFlow)
+	state.programVideoSenderID = pgmVideoSenderID
 
 	store.AddSender(&nmos.Sender{
 		ID:                pgmVideoSenderID,
@@ -325,7 +318,7 @@ func (a *App) initST2110(ctx context.Context) error {
 		ManifestHref:      nmos.StringPtr(fmt.Sprintf("http://%s:%d/x-nmos/connection/v1.1/single/senders/%s/transportfile", a.cfg.ST2110IP, a.cfg.ST2110NMOSPort, pgmAudioSenderID)),
 		Tags:              map[string][]string{},
 		InterfaceBindings: []string{},
-		Caps:              nmos.ST2110SenderCaps(pgmAudioFlow, 2, st2110PacketTimeMs, nmos.NewVersion()),
+		Caps:              nmos.ST2110SenderCaps(pgmAudioFlow, st2110AudioChannels, st2110PacketTimeMs, nmos.NewVersion()),
 		Subscription:      nmos.SenderSubscription{},
 	})
 	senderIDs = append(senderIDs, pgmAudioSenderID)
@@ -772,7 +765,7 @@ func (a *App) activateST2110Sender(id string, params nmos.StagedParams) error {
 			Port:        port,
 			Format: st2110.AudioFormat{
 				SampleRate:   48000,
-				Channels:     2,
+				Channels:     st2110AudioChannels,
 				BitDepth:     24,
 				PacketTimeUs: st2110PacketTimeMs * 1000,
 			},
@@ -896,6 +889,60 @@ func (a *App) deactivateST2110Sender(id string) error {
 
 	slog.Info("ST 2110: sender deactivated", "id", id)
 	return nil
+}
+
+// programVideoFlow is the IS-04 Flow of the program video at a pipeline
+// format.
+func programVideoFlow(id, sourceID, deviceID string, width, height, fpsNum, fpsDen int) *nmos.Flow {
+	return &nmos.Flow{
+		ID:          id,
+		Label:       "Program Video Flow",
+		Format:      nmos.FormatVideo,
+		SourceID:    sourceID,
+		DeviceID:    deviceID,
+		MediaType:   "video/raw",
+		Tags:        map[string][]string{},
+		Parents:     []string{},
+		FrameWidth:  width,
+		FrameHeight: height,
+		Colorspace:  "BT709",
+		GrainRate: &nmos.Rational{
+			Numerator:   int64(fpsNum),
+			Denominator: int64(fpsDen),
+		},
+	}
+}
+
+// onPipelineFormatChange is the switcher's OnFormatChange callback.
+func (a *App) onPipelineFormatChange(width, height, fpsNum, fpsDen int) {
+	if a.gpuRebuildOnFormat {
+		a.rebuildGPUPipelineForFormat(width, height, fpsNum, fpsDen)
+	}
+	a.updateST2110ProgramFormat(width, height, fpsNum, fpsDen)
+}
+
+// updateST2110ProgramFormat republishes the program video Flow and its
+// Sender's caps at a new pipeline format. The Flow keeps its id: IS-04 has a
+// Flow id not change with its resolution. The caps take a new version, as
+// BCP-004-02 requires when the capabilities change, and re-adding the Sender
+// moves its own.
+func (a *App) updateST2110ProgramFormat(width, height, fpsNum, fpsDen int) {
+	state := a.st2110State
+	if state == nil || state.store == nil || state.programVideoSenderID == "" {
+		return
+	}
+	snd := state.store.GetSender(state.programVideoSenderID)
+	if snd == nil {
+		return
+	}
+	prev := state.store.GetFlow(snd.FlowID)
+	if prev == nil {
+		return
+	}
+	flow := programVideoFlow(prev.ID, prev.SourceID, prev.DeviceID, width, height, fpsNum, fpsDen)
+	state.store.AddFlow(flow)
+	snd.Caps = nmos.ST2110SenderCaps(flow, 0, st2110PacketTimeMs, nmos.NewVersion())
+	state.store.AddSender(snd)
 }
 
 // clockRefType returns the IS-04 clock ref_type based on PTP configuration.
