@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,8 +28,17 @@ import (
 //
 // Next to each media file sits <media>.json with the clip's metadata, so a
 // later scan does not have to read the whole media file to probe it.
+//
+// A copy cut short still becomes a file: when the process dies, the kernel
+// closes the descriptor and the store completes the upload with what was
+// written. So Publish writes <media>.pending before the media and deletes it
+// after; a scan does not list media with a marker beside it, and the next
+// Publish of that clip replaces the media.
 
-const librarySidecarExt = ".json"
+const (
+	librarySidecarExt = ".json"
+	libraryPendingExt = ".pending"
+)
 
 // libraryClipID derives a clip ID from a path relative to the library, so
 // that every Store scanning the same library assigns a file the same ID.
@@ -166,6 +176,10 @@ func (s *Store) ScanLibrary() (LibraryScan, error) {
 
 	var add []*Clip
 	for _, f := range found {
+		if _, err := os.Stat(filepath.Join(s.libDir, f.rel) + libraryPendingExt); err == nil {
+			res.Skipped = append(res.Skipped, f.rel)
+			continue
+		}
 		c, err := s.libraryClip(f)
 		if err != nil {
 			res.Skipped = append(res.Skipped, f.rel)
@@ -225,7 +239,9 @@ func (s *Store) libraryClip(f libraryCandidate) (*Clip, error) {
 		}
 		// Best effort: a read-only library is still listed, it is only
 		// probed again by the next scan.
-		_ = writeLibrarySidecar(path, c)
+		if err := writeLibrarySidecar(path, c); err != nil {
+			slog.Info("clip: library sidecar not written, probed again on the next scan", "path", f.rel, "error", err)
+		}
 	}
 	c.ID = f.id
 	c.Filename = ""
@@ -236,8 +252,10 @@ func (s *Store) libraryClip(f libraryCandidate) (*Clip, error) {
 // Publish copies a locally stored clip into the attached library and then
 // serves it from there, removing the local file. A library file of the same
 // name already present, as when another Store sharing the library published
-// the same clip ID, is taken as this clip's. Without a library, or for a
-// clip already in it, Publish does nothing.
+// the same clip ID, is taken as this clip's, unless a pending marker from an
+// earlier Publish says it is incomplete. Without a library, or for a clip
+// already in it, Publish does nothing. A clip that cannot be copied stays
+// local and playable here.
 func (s *Store) Publish(id string) error {
 	if s.libDir == "" {
 		return nil
@@ -259,19 +277,44 @@ func (s *Store) Publish(id string) error {
 	src := filepath.Join(s.dir, cp.Filename)
 	rel := id + strings.ToLower(filepath.Ext(cp.Filename))
 	dst := filepath.Join(s.libDir, rel)
-	err := createonly.Copy(dst, src)
+	marker := dst + libraryPendingExt
+
+	// Not empty: the store completes the upload of an empty file only
+	// later, and the marker has to be there before the media is.
+	err := createonly.Write(marker, strings.NewReader(id+"\n"))
+	unfinished := errors.Is(err, fs.ErrExist)
+	if err != nil && !unfinished {
+		return fmt.Errorf("mark clip pending in library: %w", err)
+	}
+
+	err = createonly.Copy(dst, src)
 	switch {
-	case err == nil:
-		if err := writeLibrarySidecar(dst, &cp); err != nil {
-			_ = removeLibraryMedia(dst)
-			return fmt.Errorf("write library sidecar: %w", err)
+	case errors.Is(err, fs.ErrExist) && unfinished:
+		// Left by a Publish that did not finish, this one's or the other
+		// engine's: what is there may be cut short. The store refuses the
+		// delete while that upload is still being completed.
+		if err = os.Remove(dst); err == nil {
+			err = createonly.Copy(dst, src)
 		}
 	case errors.Is(err, fs.ErrExist):
-		if _, serr := os.Stat(dst + librarySidecarExt); serr != nil {
-			_ = writeLibrarySidecar(dst, &cp)
+		err = nil
+	}
+	if err != nil {
+		// The marker stays while anything may be at dst: it is what keeps
+		// a cut-short file from being listed.
+		if _, serr := os.Stat(dst); errors.Is(serr, fs.ErrNotExist) {
+			_ = os.Remove(marker)
 		}
-	default:
 		return fmt.Errorf("copy clip into library: %w", err)
+	}
+
+	// The media is complete from here on. The sidecar only saves the next
+	// scan a probe, so failing to write it costs nothing else.
+	if serr := writeLibrarySidecar(dst, &cp); serr != nil {
+		slog.Info("clip: library sidecar not written, probed on the next scan", "clip", id, "error", serr)
+	}
+	if merr := os.Remove(marker); merr != nil && !errors.Is(merr, fs.ErrNotExist) {
+		slog.Warn("clip: pending marker left in library; the clip is not listed by later scans until it is published again", "clip", id, "error", merr)
 	}
 
 	s.mu.Lock()
@@ -291,4 +334,30 @@ func (s *Store) Publish(id string) error {
 	s.mu.Unlock()
 	_ = os.Remove(src)
 	return nil
+}
+
+// PublishLocal publishes every clip still stored only locally, as one whose
+// Publish was cut short by a restart. It returns how many it published and
+// how many are still local.
+func (s *Store) PublishLocal() (published, left int) {
+	if s.libDir == "" {
+		return 0, 0
+	}
+	var ids []string
+	s.mu.RLock()
+	for id, c := range s.clips {
+		if c.LibraryPath == "" && c.Filename != "" {
+			ids = append(ids, id)
+		}
+	}
+	s.mu.RUnlock()
+	for _, id := range ids {
+		if err := s.Publish(id); err != nil {
+			slog.Warn("clip: not copied into the clip library", "clip", id, "error", err)
+			left++
+			continue
+		}
+		published++
+	}
+	return published, left
 }

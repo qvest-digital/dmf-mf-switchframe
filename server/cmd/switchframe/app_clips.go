@@ -39,6 +39,24 @@ func (a *App) initClips() error {
 		}
 		slog.Info("clip library attached", "path", dir,
 			"added", res.Added, "removed", res.Removed, "skipped", res.Skipped)
+		// Clips a restart caught before they reached the library, copied
+		// in the background: they play from local storage meanwhile. The
+		// store may still be completing the upload the restart cut short,
+		// and refuses to replace it until then, so a few more tries follow.
+		go func() {
+			for try := 0; try < 6; try++ {
+				if try > 0 {
+					time.Sleep(10 * time.Second)
+				}
+				n, left := store.PublishLocal()
+				if n > 0 {
+					slog.Info("clips: copied into the clip library after a restart", "clips", n)
+				}
+				if left == 0 {
+					return
+				}
+			}
+		}()
 	}
 
 	// Use native 10-bit decoders for clips when the pipeline is professional mode,

@@ -253,7 +253,7 @@ Validation ([`SourceConfig.Validate`](../../server/srt/types.go)) enforces all r
 | `ephemeral` | `bool` | If true, subject to TTL cleanup (`--clip-ephemeral-ttl`) |
 | `libraryPath` | `string` | Media path relative to `--clip-library-dir` for a library clip, which then has no `filename` and is never TTL-cleaned (optional) |
 
-A library clip's ID is its file's stem when that is a clip ID, otherwise derived from its path in the library, so every engine scanning one library assigns the same IDs. Next to each library media file `<file>.json` holds the same fields without `id`, `filename` and `libraryPath`, so a scan does not probe the media again; it is ignored when its `byteSize` no longer matches the file.
+A library clip's ID is its file's stem when that is a clip ID, otherwise derived from its path in the library, so every engine scanning one library assigns the same IDs. Next to each library media file `<file>.json` holds the same fields without `id`, `filename` and `libraryPath`, so a scan does not probe the media again; it is ignored when its `byteSize` no longer matches the file. While a clip is copied in, `<file>.pending` sits beside it: a scan skips media with a marker, since a copy cut short by a crash still leaves a shorter file, and the next copy of that clip, retried at start for clips still stored locally, replaces it.
 
 Ephemeral clips bypass the storage quota check on Add and are deleted by `CleanEphemeral` if older than `maxAge` and not currently loaded in any player slot.
 

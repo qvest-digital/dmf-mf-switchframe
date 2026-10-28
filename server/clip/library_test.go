@@ -363,3 +363,99 @@ func equal(a, b []string) bool {
 	}
 	return true
 }
+
+// A copy killed part way still leaves a file: the kernel closes the
+// descriptor and the store completes the upload with what was written. The
+// pending marker Publish writes first keeps a scan from listing that file
+// as a clip of the wrong length.
+func TestScanSkipsMediaWithPendingMarker(t *testing.T) {
+	lib := t.TempDir()
+	writeFile(t, filepath.Join(lib, "0123456789abcdef0123456789abcdef.ts"), "clip-cut-sh")
+	writeFile(t, filepath.Join(lib, "0123456789abcdef0123456789abcdef.ts.pending"), "x")
+	s, probes := newLibraryStore(t, lib)
+	res, err := s.ScanLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Added != 0 || len(res.Skipped) != 1 || *probes != 0 {
+		t.Fatalf("scan = %+v after %d probes, want the pending clip skipped unprobed", res, *probes)
+	}
+	if _, err := os.Stat(filepath.Join(lib, "0123456789abcdef0123456789abcdef.ts.json")); !os.IsNotExist(err) {
+		t.Fatalf("a sidecar now vouches for a cut-short file: %v", err)
+	}
+}
+
+// The next Publish of a clip whose copy was cut short replaces the file
+// rather than taking the short one as the other engine's.
+func TestPublishReplacesCutShortCopy(t *testing.T) {
+	lib := t.TempDir()
+	const id = "0123456789abcdef0123456789abcdef"
+	writeFile(t, filepath.Join(lib, id+".ts"), "clip-cut")
+	writeFile(t, filepath.Join(lib, id+".ts.pending"), id)
+	s, _ := newLibraryStore(t, lib)
+	writeFile(t, filepath.Join(s.Dir(), "upload.ts"), "clip-complete")
+	if err := s.AddWithID(id, &Clip{Name: "Upload", Filename: "upload.ts", ByteSize: 13}); err != nil {
+		t.Fatal(err)
+	}
+	if n, left := s.PublishLocal(); n != 1 || left != 0 {
+		t.Fatalf("PublishLocal = %d published, %d left, want 1, 0", n, left)
+	}
+	data, _ := os.ReadFile(filepath.Join(lib, id+".ts"))
+	if string(data) != "clip-complete" {
+		t.Fatalf("library holds %q", data)
+	}
+	if want := []string{id + ".ts", id + ".ts.json"}; !equal(libraryFiles(t, lib), want) {
+		t.Fatalf("library holds %v, want %v", libraryFiles(t, lib), want)
+	}
+}
+
+// The sidecar only saves a probe. A sidecar that cannot be written leaves
+// the media in the library and the clip served from there.
+func TestPublishKeepsMediaWhenSidecarFails(t *testing.T) {
+	lib := t.TempDir()
+	const id = "0123456789abcdef0123456789abcdef"
+	// A non-empty directory where the sidecar goes: neither removed nor
+	// created over.
+	writeFile(t, filepath.Join(lib, id+".ts.json", "blocker"), "x")
+	s, _ := newLibraryStore(t, lib)
+	writeFile(t, filepath.Join(s.Dir(), "upload.ts"), "clip-upload")
+	if err := s.AddWithID(id, &Clip{Name: "Upload", Filename: "upload.ts", ByteSize: 11}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Publish(id); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(lib, id+".ts")); err != nil || string(data) != "clip-upload" {
+		t.Fatalf("library media: %q %v", data, err)
+	}
+	if got, _ := s.Get(id); got.LibraryPath != id+".ts" {
+		t.Fatalf("clip not served from the library: %+v", got)
+	}
+	if err := s.Update(id, func(c *Clip) { c.Loop = true }); err != nil {
+		t.Fatalf("update with an unwritable sidecar: %v", err)
+	}
+}
+
+// A retry that cannot replace the cut-short file leaves the marker, so the
+// file stays unlisted, and the clip local and playable.
+func TestPublishKeepsThePendingMarkerWhenTheRetryFails(t *testing.T) {
+	lib := t.TempDir()
+	const id = "0123456789abcdef0123456789abcdef"
+	// A non-empty directory in place of the media: not removable.
+	writeFile(t, filepath.Join(lib, id+".ts", "blocker"), "x")
+	writeFile(t, filepath.Join(lib, id+".ts.pending"), id)
+	s, _ := newLibraryStore(t, lib)
+	writeFile(t, filepath.Join(s.Dir(), "upload.ts"), "clip-complete")
+	if err := s.AddWithID(id, &Clip{Name: "Upload", Filename: "upload.ts", ByteSize: 13}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Publish(id); err == nil {
+		t.Fatal("publish over an unremovable file succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(lib, id+".ts.pending")); err != nil {
+		t.Fatalf("marker removed: %v", err)
+	}
+	if got, _ := s.Get(id); got.LibraryPath != "" || got.Filename != "upload.ts" {
+		t.Fatalf("clip moved off its local file: %+v", got)
+	}
+}
