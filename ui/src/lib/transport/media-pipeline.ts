@@ -138,6 +138,27 @@ const STALL_CHECK_INTERVAL_MS = 500;
  * lookup, QUIC and MoQ handshakes and the subscriptions come before it. */
 const RECONNECT_GRACE_MS = 3000;
 
+/**
+ * Whether the page has had a user gesture, which a browser requires before
+ * an AudioContext may run. navigator.userActivation knows it; where it is
+ * missing, a pointer or key press seen since this module loaded stands in.
+ * Kept per page, not per pipeline: a pipeline created after the gesture,
+ * such as engine B's on a failover, must know of it too.
+ */
+let gestureSeen = false;
+const markGesture = (): void => {
+	gestureSeen = true;
+	window.removeEventListener('pointerdown', markGesture, { capture: true });
+	window.removeEventListener('keydown', markGesture, { capture: true });
+};
+if (typeof window !== 'undefined') {
+	window.addEventListener('pointerdown', markGesture, { capture: true });
+	window.addEventListener('keydown', markGesture, { capture: true });
+}
+function audioMayStart(): boolean {
+	return gestureSeen || (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation?.hasBeenActive === true;
+}
+
 export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline {
 	const sources = new Map<string, SourceMedia>();
 	/** Per-source last video frame arrival time (performance.now()). */
@@ -195,19 +216,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 	/** Set once after the first MoQ catalog is received. */
 	let moqActiveNotified = false;
-
-	/**
-	 * Whether the page has had a user gesture, which a browser requires
-	 * before an AudioContext may run. navigator.userActivation knows it;
-	 * where it is missing, a pointer or key press seen here stands in.
-	 */
-	let gestureSeen = false;
-	const markGesture = (): void => { gestureSeen = true; };
-	window.addEventListener('pointerdown', markGesture, { capture: true });
-	window.addEventListener('keydown', markGesture, { capture: true });
-	function audioMayStart(): boolean {
-		return gestureSeen || (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation?.hasBeenActive === true;
-	}
 
 	/**
 	 * One AudioContext for the audio of every source. Each context is an
@@ -645,8 +653,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		stopStallDetection();
 		document.removeEventListener("visibilitychange", handleVisibilityChange);
 		window.removeEventListener("focus", handleWindowFocus);
-		window.removeEventListener('pointerdown', markGesture, { capture: true });
-		window.removeEventListener('keydown', markGesture, { capture: true });
 		for (const key of Array.from(sources.keys())) {
 			removeSource(key);
 		}
@@ -737,7 +743,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				promises.push(source.audioDecoder.resumeContext());
 			}
 		}
-		await Promise.all(promises);
+		// One decoder failing to resume must not keep the context suspended.
+		await Promise.allSettled(promises);
 		if (audioContext && audioContext.state === 'suspended') await audioContext.resume();
 	}
 

@@ -74,6 +74,8 @@ function fakeFrame(): VideoFrame & { close: ReturnType<typeof vi.fn>; clones: Vi
 	return frame as unknown as VideoFrame & { close: ReturnType<typeof vi.fn>; clones: VideoFrame[] };
 }
 
+/** Set to keep every audio decoder configuring for good. */
+let audioConfigurePending = false;
 const mockAudioDecoderInstances: Array<{ configure: ReturnType<typeof vi.fn>; reset: ReturnType<typeof vi.fn>; resumeContext: ReturnType<typeof vi.fn> }> = [];
 
 vi.mock('$lib/prism/audio-decoder', () => {
@@ -82,7 +84,7 @@ vi.mock('$lib/prism/audio-decoder', () => {
 			constructor() {
 				mockAudioDecoderInstances.push(this);
 			}
-			configure = vi.fn().mockResolvedValue(undefined);
+			configure = vi.fn(() => (audioConfigurePending ? new Promise<void>(() => {}) : Promise.resolve()));
 			decode = vi.fn();
 			setMuted = vi.fn();
 			isMuted = vi.fn().mockReturnValue(true);
@@ -941,19 +943,25 @@ describe('MediaPipeline audio', () => {
 			gestured = true;
 			window.dispatchEvent(new Event('pointerdown'));
 		}
-		beforeEach(() => {
+		// The gesture is kept per page, in the module: each test loads it anew.
+		let create: typeof createMediaPipeline;
+		beforeEach(async () => {
 			gestured = false;
+			audioConfigurePending = false;
 			FakeAudioContext.made = [];
 			mockTransports.length = 0;
 			mockAudioDecoderInstances.length = 0;
 			vi.stubGlobal('AudioContext', FakeAudioContext);
+			vi.resetModules();
+			({ createMediaPipeline: create } = await import('./media-pipeline'));
 		});
 		afterEach(() => {
 			vi.unstubAllGlobals();
+			audioConfigurePending = false;
 		});
 
 		it('leaves a context created after it running', () => {
-			const pipeline = createMediaPipeline();
+			const pipeline = create();
 			pipeline.addSource('cam1');
 			pipeline.connectSource('cam1');
 			gesture();
@@ -966,24 +974,55 @@ describe('MediaPipeline audio', () => {
 			pipeline.destroy();
 		});
 
+		// Engine B's pipeline is created on a failover, after the gesture,
+		// and must know of it as well.
+		it('leaves the context of a pipeline created after it running', () => {
+			gesture();
+			const pipeline = create();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+
+			mockTransports[0].callbacks.onTrackInfo(audio);
+
+			expect(FakeAudioContext.made[0].suspend).not.toHaveBeenCalled();
+			expect(FakeAudioContext.made[0].state).toBe('running');
+			pipeline.destroy();
+		});
+
 		it('resumes a context no decoder has attached to yet', async () => {
-			const pipeline = createMediaPipeline();
+			audioConfigurePending = true;
+			const pipeline = create();
 			pipeline.addSource('cam1');
 			pipeline.connectSource('cam1');
 			mockTransports[0].callbacks.onTrackInfo(audio);
-			// The decoder is still configuring.
-			mockAudioDecoderInstances[0].configure.mockReturnValue(new Promise(() => {}));
 			gesture();
 
 			await pipeline.resumeAllAudio();
 
+			expect(pipeline.getAudioDecoder('cam1')).toBeNull();
 			expect(FakeAudioContext.made[0].resume).toHaveBeenCalledTimes(1);
 			expect(FakeAudioContext.made[0].state).toBe('running');
 			pipeline.destroy();
 		});
 
+		it('resumes the context when a decoder fails to resume', async () => {
+			const pipeline = create();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			mockTransports[0].callbacks.onTrackInfo(audio);
+			await Promise.resolve();
+			await Promise.resolve();
+			mockAudioDecoderInstances[0].resumeContext.mockRejectedValue(new Error('worklet gone'));
+			gesture();
+
+			await pipeline.resumeAllAudio();
+
+			expect(FakeAudioContext.made[0].state).toBe('running');
+			pipeline.destroy();
+		});
+
 		it('resumes nothing before it', async () => {
-			const pipeline = createMediaPipeline();
+			const pipeline = create();
 			pipeline.addSource('cam1');
 			pipeline.connectSource('cam1');
 			mockTransports[0].callbacks.onTrackInfo(audio);
