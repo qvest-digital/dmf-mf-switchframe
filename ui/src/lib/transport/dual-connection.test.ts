@@ -178,6 +178,55 @@ describe('DualConnectionManager', () => {
 		vi.clearAllMocks();
 	});
 
+	describe('snapshot order', () => {
+		// The end of a clip upload clears clipUpload; a stale snapshot from
+		// a slower session arriving after it left other browsers showing
+		// the upload in progress until a reload.
+		it('drops a snapshot older than the last one an engine sent', () => {
+			const onStateUpdate = vi.fn();
+			new DualConnectionManager(makeDualConfig({ onStateUpdate }));
+			const reconciler = mockedCreateReconciler.mock.results[0].value;
+			const [instanceA, instanceB] = MockedConnectionManager.mock.results.map(r => r.value);
+			const done = makeState({ timestamp: 2000 });
+			const stale = makeState({ timestamp: 1999, clipUpload: { stage: 'validating', percent: 100 } });
+
+			instanceA.simulateStateUpdate(done);
+			instanceA.simulateStateUpdate(stale);
+
+			expect(reconciler.ingest).toHaveBeenCalledTimes(1);
+			expect(reconciler.ingest).toHaveBeenLastCalledWith('A', done);
+			expect(onStateUpdate).toHaveBeenCalledTimes(1);
+
+			// Order is kept per engine: B's older clock does not hold B back.
+			const fromB = makeState({ timestamp: 1500 });
+			instanceB.simulateStateUpdate(fromB);
+			expect(reconciler.ingest).toHaveBeenLastCalledWith('B', fromB);
+		});
+
+		it('drops an older snapshot in single engine mode too', () => {
+			const onStateUpdate = vi.fn();
+			new DualConnectionManager(makeSingleConfig({ onStateUpdate }));
+			const instance = MockedConnectionManager.mock.results[0].value;
+
+			instance.simulateStateUpdate(makeState({ timestamp: 2000, programSource: 'cam2' }));
+			instance.simulateStateUpdate(makeState({ timestamp: 1000, programSource: 'cam1' }));
+
+			expect(onStateUpdate).toHaveBeenCalledTimes(1);
+			expect(onStateUpdate.mock.calls[0][0].programSource).toBe('cam2');
+		});
+
+		it('accepts snapshots sharing a timestamp', () => {
+			const onStateUpdate = vi.fn();
+			new DualConnectionManager(makeSingleConfig({ onStateUpdate }));
+			const instance = MockedConnectionManager.mock.results[0].value;
+
+			instance.simulateStateUpdate(makeState({ programSource: 'cam1' }));
+			instance.simulateStateUpdate(makeState({ programSource: 'cam2' }));
+
+			expect(onStateUpdate).toHaveBeenCalledTimes(2);
+		});
+	});
+
 	describe('single engine mode', () => {
 		it('wraps one ConnectionManager', () => {
 			new DualConnectionManager(makeSingleConfig());

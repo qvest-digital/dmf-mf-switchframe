@@ -403,6 +403,14 @@ export class DualConnectionManager {
 					state = update as ControlRoomState;
 				}
 
+				// An engine's state reaches the browser over more than one
+				// session (its control session and the media pipeline's
+				// program feed), each snapshot on a stream of its own, so an
+				// older snapshot can arrive after a newer one and would put
+				// back what that one replaced.
+				const last = this.lastStates.get(engineId);
+				if (last && state.timestamp < last.state.timestamp) return;
+
 				this.lastStates.set(engineId, { state, at: Date.now() });
 				if (this._isDualEngine) {
 					this.reconciler.ingest(engineId, state);
