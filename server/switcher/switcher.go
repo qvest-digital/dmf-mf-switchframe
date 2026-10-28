@@ -2540,6 +2540,13 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		}
 	}
 
+	// A DVE transition runs on a mix engine. The GPU pipeline draws it
+	// when there is one; otherwise the engine draws it on the CPU.
+	var render transition.RenderFunc
+	if isDVE && !gpuActive {
+		render = dve.CPUTransitionForType(transType)
+	}
+
 	engine := transition.NewEngine(transition.EngineConfig{
 		DecoderFactory: decoderFactory,
 		WipeDirection:  wipeDir,
@@ -2550,6 +2557,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		HintWidth:      hintW,
 		HintHeight:     hintH,
 		SkipBlend:      gpuActive,
+		Render:         render,
 		Output:         outputCb,
 		OnComplete: func(aborted bool) {
 			s.handleTransitionComplete(aborted)

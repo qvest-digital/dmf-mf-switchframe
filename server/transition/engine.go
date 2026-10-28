@@ -96,7 +96,17 @@ type EngineConfig struct {
 	// transitions are active — the GPU pipeline performs the blend, and
 	// the CPU engine only manages transition state.
 	SkipBlend bool
+
+	// Render, when set, draws each transition frame in place of the blend
+	// for the engine's type: dst, from and to are w x h frames in format f,
+	// and to is nil when there is no incoming frame. It reports false for a
+	// frame it leaves to the blend. DVE transitions run on a mix engine and
+	// draw through this when no GPU renders them.
+	Render RenderFunc
 }
+
+// RenderFunc draws one transition frame; see EngineConfig.Render.
+type RenderFunc func(dst, from, to []byte, w, h int, f video.Format, pos float64) bool
 
 // Engine manages the dissolve pipeline lifecycle.
 // Created when a transition starts, destroyed when it completes or aborts.
@@ -181,6 +191,8 @@ type Engine struct {
 	// rawBlender is cached for BlendRaw to avoid per-frame allocation (Issue 7).
 	// Recreated only when resolution changes.
 	rawBlender *FrameBlender
+
+	renderBuf []byte // output of config.Render in blendAndOutput
 
 	// Reusable scratch buffers for BlendRawInto mismatched-resolution paths.
 	// blendRawMu serializes concurrent BlendRawInto callers so the scratch
@@ -904,10 +916,10 @@ func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
 	pos := e.currentPosition()
 
 	blendStart := time.Now()
-	var blended []byte
-	if e.colorFormat == video.YUV422_10bit {
+	blended := e.render(yuvA, yuvB, pos)
+	if blended == nil && e.colorFormat == video.YUV422_10bit {
 		blended = e.blend10bit(yuvA, yuvB, pos)
-	} else {
+	} else if blended == nil {
 		switch e.transitionType {
 		case Mix:
 			blended = e.blender.BlendMix(yuvA, yuvB, pos)
@@ -956,6 +968,23 @@ func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
 	if autoComplete && e.config.OnComplete != nil {
 		e.config.OnComplete(false)
 	}
+}
+
+// render draws the frame through config.Render, returning nil when there is
+// none or it leaves the frame to the blend. Caller must hold e.mu.
+func (e *Engine) render(yuvA, yuvB []byte, pos float64) []byte {
+	if e.config.Render == nil {
+		return nil
+	}
+	f := video.YUV420_8bit
+	if e.colorFormat == video.YUV422_10bit {
+		f = video.YUV422_10bit
+	}
+	e.renderBuf = growBuf(e.renderBuf, f.FrameSize(e.width, e.height))
+	if !e.config.Render(e.renderBuf, yuvA, yuvB, e.width, e.height, f, pos) {
+		return nil
+	}
+	return e.renderBuf
 }
 
 // WarmupDecode feeds a frame to the decoder for the given source side,
@@ -1420,6 +1449,13 @@ func (e *Engine) BlendRawInto(
 	// when the freeze-repeat frame's buffer was recycled.
 	if len(fromYUV) == 0 {
 		fromYUV = makeBlack()
+	}
+
+	if e.config.Render != nil {
+		dst = growBuf(dst, video.YUV420_8bit.FrameSize(outW, outH))
+		if e.config.Render(dst, fromYUV, toYUV, outW, outH, video.YUV420_8bit, position) {
+			return dst, outW, outH
+		}
 	}
 
 	var blended []byte
