@@ -53,6 +53,9 @@ jobs:
       - uses: ./.github/actions/setup-cgo-deps
       - name: Run tests with coverage
         run: cd server && go test ./... -race -coverprofile=coverage.out -timeout=15m
+      # A module of its own, so ./... above leaves it out.
+      - name: Run tests of the patched prism package
+        run: cd server/third_party/prism && go test ./distribution/ -race -timeout=5m
       - name: Upload Go coverage
         uses: actions/upload-artifact@v4
         with:

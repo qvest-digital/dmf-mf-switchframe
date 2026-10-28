@@ -89,8 +89,6 @@ github.com/untangledco/streaming v0.0.4 h1:Fiy/ETGeKx5NqO7ve93QHDAEKkAQ1LaLRd1CN
 github.com/untangledco/streaming v0.0.4/go.mod h1:6JLR+oAI3xOuUL3YUzfHUSU2gWPibK4ZU4sipziSCJQ=
 github.com/zsiec/ccx v0.2.0 h1:RaCC4a0ng9wa6AUvT9Kg9kfiEy9svfXL5mmRbi6Ykmo=
 github.com/zsiec/ccx v0.2.0/go.mod h1:Y30W1TCZX7HAXM0miCzG18kSyKtJvqbOk7zrFcTGpU4=
-github.com/zsiec/prism v0.1.6-0.20260406003103-645d92c6cee7 h1:TVg/JaFspejEZTVn4s9Z9kdf1jS3oxE5pQyN1FD3E2E=
-github.com/zsiec/prism v0.1.6-0.20260406003103-645d92c6cee7/go.mod h1:B8MUNrUBFyvzF0TVde0NbE15IHb7Dy+IsuDjkC4X7+Y=
 github.com/zsiec/srtgo v0.2.5-0.20260320141915-f0f3efc9a40e h1:EMk2kkZW8RNc8jgTCkBo1ADVZwBHbQxb1GCFzJmHYI8=
 github.com/zsiec/srtgo v0.2.5-0.20260320141915-f0f3efc9a40e/go.mod h1:0iqZpF/SA85R06PxqaerYVXUuC0J+Q6YW8JiRslcjs4=
 go.uber.org/mock v0.5.2 h1:LbtPTcP8A5k9WPXj54PPPbjcI4Y6lhyOZXn+VS7wNko=
