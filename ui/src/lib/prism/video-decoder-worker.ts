@@ -2,14 +2,20 @@
 declare const self: DedicatedWorkerGlobalScope;
 export {};
 
-// Cap the decode queue. Must absorb a keyframe + a few delta frames from
-// MoQ burst delivery without dropping, but not so large that decoded frames
-// accumulate far ahead of audio. 16 frames ≈ 533ms at 30fps — enough for
-// burst absorption while keeping video latency bounded.
-const MAX_QUEUED_CHUNKS = 16;
+// Bound the decode backlog by time, not by count: chunks arrive in bursts
+// whenever the main thread or the network holds them back, and a burst of
+// a few hundred milliseconds is 17 or more chunks at 50 fps. A chunk is
+// dropped, and the decoder waits for the next keyframe, only when it is
+// more than MAX_DECODE_LAG_US ahead of the last frame the decoder put out,
+// or when MAX_QUEUED_CHUNKS are queued whatever their timestamps. The
+// renderer's live-edge skip keeps what a burst decodes from adding latency.
+const MAX_DECODE_LAG_US = 1_000_000;
+const MAX_QUEUED_CHUNKS = 120;
 
 let videoDecoder: VideoDecoder | null = null;
 let waitForKeyframe = true;
+/** Timestamp of the last frame the decoder put out, -1 before the first. */
+let lastOutputTs = -1;
 let discardedDelta = 0;
 let discardedBufferFull = 0;
 
@@ -75,6 +81,9 @@ let recovering = false;
 function recoverDecoder(): void {
 	if (!lastConfigCodec || recovering) return;
 	recovering = true;
+	// The reset decoder has put out nothing yet: its lag counts from its
+	// first frame, not from one the old decoder put out.
+	lastOutputTs = -1;
 	try {
 		// Prefer reset() over close()+new — it's faster because it reuses the
 		// underlying hardware decoder context instead of tearing it down.
@@ -101,6 +110,7 @@ function recoverDecoder(): void {
 }
 
 function processVideoFrame(frame: VideoFrame): void {
+	lastOutputTs = frame.timestamp;
 	diagFrameCount++;
 	lifetimeOutputCount++;
 	const now = performance.now();
@@ -134,6 +144,7 @@ self.onmessage = async (e: MessageEvent) => {
 		videoDecoder = createDecoder();
 		lifetimeConfigureCount++;
 		waitForKeyframe = true;
+		lastOutputTs = -1;
 		discardedDelta = 0;
 		discardedBufferFull = 0;
 		diagFrameCount = 0;
@@ -173,7 +184,16 @@ self.onmessage = async (e: MessageEvent) => {
 		}
 		diagLastInputTime = inputNow;
 
-		if (videoDecoder.decodeQueueSize >= MAX_QUEUED_CHUNKS) {
+		// A discontinuity starts a new timeline: a timestamp on it says
+		// nothing about lag against the last frame of the old one.
+		if (msg.isDisco) {
+			waitForKeyframe = true;
+			lastOutputTs = -1;
+		}
+
+		const lagging = lastOutputTs >= 0 && videoDecoder.decodeQueueSize > 0 &&
+			msg.timestamp - lastOutputTs > MAX_DECODE_LAG_US;
+		if (lagging || videoDecoder.decodeQueueSize >= MAX_QUEUED_CHUNKS) {
 			discardedBufferFull++;
 			diagTotalDiscardedFull++;
 			lifetimeDiscardedBufferFull++;
@@ -187,10 +207,6 @@ self.onmessage = async (e: MessageEvent) => {
 		if (discardedBufferFull > 0) {
 			self.postMessage({ type: "warning", message: `Discarded ${discardedBufferFull} video chunks (buffer full)` });
 			discardedBufferFull = 0;
-		}
-
-		if (msg.isDisco) {
-			waitForKeyframe = true;
 		}
 
 		const isKeyframe: boolean = msg.isKeyframe;
@@ -274,6 +290,7 @@ self.onmessage = async (e: MessageEvent) => {
 		});
 	} else if (msg.type === "flush") {
 		waitForKeyframe = true;
+		lastOutputTs = -1;
 		// Reset the decoder's internal state so stale reference frames
 		// from before the pause don't cause artifacts.
 		if (videoDecoder && videoDecoder.state === "configured") {
