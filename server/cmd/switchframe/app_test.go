@@ -312,3 +312,26 @@ func TestParseConfig_STMapPrewarm(t *testing.T) {
 		})
 	}
 }
+
+func TestParseConfig_MXLGCInterval(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want time.Duration
+	}{
+		{"default", nil, 30 * time.Second},
+		{"off", []string{"--mxl-gc-interval=0"}, 0},
+		{"set", []string{"--mxl-gc-interval=5m"}, 5 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args, cmdLine := os.Args, flag.CommandLine
+			t.Cleanup(func() { os.Args, flag.CommandLine = args, cmdLine })
+			os.Args = append([]string{"switchframe"}, tc.args...)
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+			cfg, err := parseConfig()
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.MXLGCInterval)
+		})
+	}
+}
