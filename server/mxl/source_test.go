@@ -1030,3 +1030,88 @@ func TestSource_SlowEncodeDoesNotHoldIngest(t *testing.T) {
 		t.Fatalf("switcher got %d of %d grains while the encode was stuck", got, grains)
 	}
 }
+
+// recordingVideoEncoder keeps a copy of what each Encode received, after
+// waiting on gate when it is set.
+type recordingVideoEncoder struct {
+	fakeVideoEncoder
+	gate chan struct{}
+	mu   sync.Mutex
+	seen [][]byte
+}
+
+func (e *recordingVideoEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+	if e.gate != nil {
+		<-e.gate
+	}
+	e.mu.Lock()
+	e.seen = append(e.seen, append([]byte(nil), yuv...))
+	e.mu.Unlock()
+	return e.fakeVideoEncoder.Encode(yuv, pts, forceIDR)
+}
+
+// The encode reads its frame after the source has converted the next grain
+// into the same conversion buffer, so it must be handed a copy of its own.
+func TestSource_EncoderGetsItsOwnCopy(t *testing.T) {
+	const width, height = 12, 2
+	enc := &recordingVideoEncoder{gate: make(chan struct{})}
+	var raw [][]byte
+	src := NewSource(SourceConfig{
+		FlowName: "cam1",
+		Width:    width,
+		Height:   height,
+		Relay:    &mockMediaBroadcasterForTest{},
+		EncoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return enc, nil
+		},
+		OnRawVideo: func(_ string, yuv []byte, _, _ int, _ int64) { raw = append(raw, append([]byte(nil), yuv...)) },
+	})
+	src.startVideoEncode()
+
+	now := time.Now()
+	for i, y := range []byte{64, 200} {
+		src.processVideoGrain(VideoGrain{V210: makeV210FrameWithY(width, height, y), Width: width, Height: height,
+			ReadTime: now.Add(time.Duration(i) * 20 * time.Millisecond)})
+	}
+	close(enc.gate)
+	close(src.encodeJobs)
+	src.wg.Wait()
+
+	if len(enc.seen) != 2 {
+		t.Fatalf("encoder got %d frames, want 2", len(enc.seen))
+	}
+	for i := range enc.seen {
+		if string(enc.seen[i]) != string(raw[i]) {
+			t.Fatalf("frame %d reached the encoder changed: the next grain overwrote it", i)
+		}
+	}
+}
+
+// A switcher hand-off slower than the flow holds the source's ingest
+// goroutine, as a per-frame GPU upload on a shared GPU does. The reader
+// must stay near the head and never let the ring wrap under it.
+func TestSource_SlowSwitcherStaysNearHead(t *testing.T) {
+	const width, height = 12, 2
+	ring := &liveRing{start: time.Now(), period: 4 * time.Millisecond, size: 20,
+		data: makeV210FrameWithY(width, height, 64)}
+	src := NewSource(SourceConfig{
+		FlowName:   "cam1",
+		Width:      width,
+		Height:     height,
+		OnRawVideo: func(string, []byte, int, int, int64) { time.Sleep(6 * time.Millisecond) },
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+	src.Start(ctx, ring, nil)
+	<-ctx.Done()
+	src.Stop()
+
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+	if ring.tooLate != 0 {
+		t.Fatalf("the ring overwrote the reader's position %d times", ring.tooLate)
+	}
+	if ring.maxLag > videoMaxLag+2 {
+		t.Fatalf("reader fell %d grains behind the head, bound %d", ring.maxLag, videoMaxLag)
+	}
+}

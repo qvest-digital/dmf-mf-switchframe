@@ -53,6 +53,16 @@ type ReaderConfig struct {
 	Logger *slog.Logger
 }
 
+// videoMaxLag is how far behind the head the video loop's read position may
+// fall while its consumer is the reason, before it skips ahead. A consumer
+// slower than the flow then loses single grains as it goes rather than
+// falling a whole ring behind and losing the ring at once on a re-sync.
+// Delivery latency adds the channel's grains on top, about 3+4 grains. A
+// position behind because the producer committed a burst is not skipped:
+// the consumer counts as the cause only when a send waited longer than a
+// grain period, and one that keeps up drains the burst.
+const videoMaxLag = 3
+
 // grainLookBack is how many grains behind the head the video and data loops
 // resync to.
 const grainLookBack = 2
@@ -180,11 +190,29 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 	consecutiveErrors := 0
 	const maxConsecutiveErrors = 50
 
+	var skipped uint64
+	// The consumer is behind when a send waits longer than a grain period;
+	// a shorter wait is it being scheduled, as when a burst fills videoCh.
+	period := 20 * time.Millisecond
+	if rate := flow.ConfigInfo().GrainRate; rate.Numerator > 0 && rate.Denominator > 0 {
+		period = time.Duration(int64(time.Second) * rate.Denominator / rate.Numerator)
+	}
+	waited := false // the last send waited longer than period
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
+		}
+
+		// Skip only what the consumer cannot take.
+		if headIdx, hErr := flow.HeadIndex(); waited && hErr == nil && headIdx > index+videoMaxLag {
+			n := headIdx - videoMaxLag - index
+			index = headIdx - videoMaxLag
+			if skipped += n; skipped == n || skipped/500 != (skipped-n)/500 {
+				log.Warn("mxl video reader: consumer behind, skipping grains",
+					"skipped_total", skipped)
+			}
 		}
 
 		data, info, err := flow.ReadGrain(index, timeoutNs)
@@ -243,8 +271,15 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 
 		select {
 		case r.videoCh <- grain:
-		case <-ctx.Done():
-			return
+			waited = false
+		default:
+			start := time.Now()
+			select {
+			case r.videoCh <- grain:
+			case <-ctx.Done():
+				return
+			}
+			waited = time.Since(start) > period
 		}
 
 		index++
