@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-rc.25](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.24...mxl-v1.0.0-rc.25) (2026-10-28)
+
+
+### Features
+
+* **mxl:** add --mxl-source-preset for the source relay encode ([#77](https://github.com/qvest-digital/dmf-mf-switchframe/issues/77)) ([f95705e](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f95705e4438b8fd20fbd5f2a71a5cb71b8e6d23b))
+
+
+### Bug Fixes
+
+* **mxl:** keep the video reader a few grains behind the head ([#74](https://github.com/qvest-digital/dmf-mf-switchframe/issues/74)) ([85c42f8](https://github.com/qvest-digital/dmf-mf-switchframe/commit/85c42f84c50fd9f48d78a33d906fa3bf4d4d5a19))
+
 ## [1.0.0-rc.24](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.23...mxl-v1.0.0-rc.24) (2026-10-28)
 
 
