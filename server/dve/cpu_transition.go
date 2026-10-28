@@ -74,18 +74,9 @@ var cpuRefused = map[string]string{
 // a GPU refuses, each with the reason.
 func CPURefusedTransitions() map[string]string { return maps.Clone(cpuRefused) }
 
-// Is3DTransition reports whether a DVE transition type moves either source
-// through a 3D transform.
-func Is3DTransition(transitionType string) bool {
-	fn := DVETransitionForType(transitionType)
-	if fn == nil {
-		return false
-	}
-	for _, pos := range []float64{0.25, 0.5, 0.75} {
-		prog, prev := fn(pos, 1920, 1080)
-		if prog.Is3D() || prev.Is3D() {
-			return true
-		}
-	}
-	return false
+// CPURefusal returns the reason an engine without a GPU refuses a
+// transition type, and whether it does.
+func CPURefusal(transitionType string) (string, bool) {
+	reason, ok := cpuRefused[transitionType]
+	return reason, ok
 }

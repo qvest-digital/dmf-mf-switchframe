@@ -2507,7 +2507,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		s.configMu.Unlock()
 		return fmt.Errorf("unsupported transition type: %q", transType)
 	}
-	if reason, refused := dve.CPURefusedTransitions()[transType]; refused && s.gpuRunner.Load() == nil {
+	if reason, refused := dve.CPURefusal(transType); refused && s.gpuRunner.Load() == nil {
 		s.configMu.Unlock()
 		return fmt.Errorf("%w: %s", ErrTransitionNeedsGPU, reason)
 	}

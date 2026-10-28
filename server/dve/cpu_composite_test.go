@@ -509,3 +509,19 @@ func maxSampleDiff(a, b []byte, f video.Format) int {
 	}
 	return worst
 }
+
+// Is3DTransition reports whether a DVE transition type moves either source
+// through a 3D transform at any of a few positions.
+func Is3DTransition(transitionType string) bool {
+	fn := DVETransitionForType(transitionType)
+	if fn == nil {
+		return false
+	}
+	for _, pos := range []float64{0.25, 0.5, 0.75} {
+		prog, prev := fn(pos, 1920, 1080)
+		if prog.Is3D() || prev.Is3D() {
+			return true
+		}
+	}
+	return false
+}
