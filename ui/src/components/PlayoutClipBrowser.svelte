@@ -1,12 +1,15 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { PlayoutClip } from '$lib/api/types';
 	import { playoutClips } from '$lib/api/switch-api';
 
 	interface Props {
 		onSelect: (clip: { name: string; path: string; duration: number }) => void;
+		/** The engines' clip count; the list is fetched again when it moves. */
+		clipCount?: number;
 	}
 
-	let { onSelect }: Props = $props();
+	let { onSelect, clipCount }: Props = $props();
 
 	let clips = $state<PlayoutClip[]>([]);
 	let loading = $state(false);
@@ -35,9 +38,12 @@
 		return `${m}:${String(s).padStart(2, '0')}`;
 	}
 
-	// Fetch on mount.
+	// Fetch on mount and when a clip is stored or removed, and on nothing
+	// else the fetch reads. The derived notifies only when the count moves.
+	const count = $derived(clipCount);
 	$effect(() => {
-		fetchClips();
+		void count;
+		untrack(fetchClips);
 	});
 </script>
 
