@@ -649,6 +649,66 @@ func TestChannel_StartRequiresCued(t *testing.T) {
 	}
 }
 
+// A stopped channel keeps its playlist, and the operator's play button is
+// enabled on it: starting it again plays that playlist from the top.
+func TestChannel_Start_AfterStopPlaysPlaylistAgain(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider:        fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
+	})
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(holdClipItem("a"), clipItem("b"))))
+	require.NoError(t, ch.Start())
+	require.NoError(t, ch.Next())
+	ch.Stop()
+
+	require.NoError(t, ch.Start())
+	defer ch.Stop()
+
+	require.Equal(t, StateOnAir, ch.State())
+	require.Equal(t, "a", ch.Status().CurrentItemID)
+}
+
+// Stop() ends the playlist through the scheduler before the run goroutine
+// sees its context cancelled, so a tick can land in between and find the
+// playlist complete. That tick must leave the stopped channel stopped.
+func TestChannel_TickAfterStopKeepsChannelStopped(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider:        fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
+	})
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(clipItem("a"))))
+	var states []ChannelState
+	ch.SetOnStateChange(func(s ChannelState) { states = append(states, s) })
+
+	// What Stop() does under the lock, without the run goroutine.
+	ch.mu.Lock()
+	ch.state = StateStopped
+	ch.scheduler.Stop()
+	ch.mu.Unlock()
+
+	require.True(t, ch.tick(time.Now()), "a stopped scheduler ends the run")
+	require.Equal(t, StateStopped, ch.State())
+	require.Empty(t, states)
+}
+
+// A playlist that has run out leaves the channel completed with the
+// playlist still loaded; starting it again plays it from the top.
+func TestChannel_Start_AfterCompletedPlaysPlaylistAgain(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider:        fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
+	})
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(clipItem("a"))))
+	require.NoError(t, ch.Start())
+	waitFor(t, 5*time.Second, func() bool { return ch.State() == StateCompleted })
+
+	require.NoError(t, ch.Start())
+	defer ch.Stop()
+
+	require.Equal(t, StateOnAir, ch.State())
+	waitFor(t, 5*time.Second, func() bool { return ch.State() == StateCompleted })
+}
+
 func TestChannel_JumpTo_NotFound(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider:        fakeProvider(3),

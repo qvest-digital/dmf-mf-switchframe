@@ -375,9 +375,22 @@ func (c *Channel) LoadPlaylist(pl *Playlist) error {
 	return nil
 }
 
-// Start transitions from CUED to ON-AIR and launches the run goroutine.
+// Start puts the loaded playlist on air from its first item and launches
+// the run goroutine. A stopped or completed channel keeps its playlist, so
+// it starts again the same way a cued one does.
 func (c *Channel) Start() error {
 	c.mu.Lock()
+	// A completed run goroutine may still be cleaning up; a second one must
+	// not start until it has, or its cleanup closes the new run's iterator.
+	for c.state == StateCompleted && c.done != nil {
+		prev := c.done
+		c.mu.Unlock()
+		<-prev
+		c.mu.Lock()
+		if c.done == prev {
+			break
+		}
+	}
 	pl := c.schedulerPlaylist()
 	if pl == nil {
 		c.mu.Unlock()
@@ -386,10 +399,6 @@ func (c *Channel) Start() error {
 	if c.state == StateOnAir {
 		c.mu.Unlock()
 		return ErrAlreadyOnAir
-	}
-	if c.state != StateCued {
-		c.mu.Unlock()
-		return ErrInvalidState
 	}
 
 	c.state = StateOnAir
@@ -878,7 +887,7 @@ func (c *Channel) tick(now time.Time) bool {
 	if decision.Completed {
 		// Emit item_end for the last item if one was active.
 		c.emitFinalItemEnd(secScheduler, asRunFn, channelID, now)
-		c.transitionState(StateCompleted)
+		c.completeIfOnAir()
 		return true
 	}
 
@@ -1892,15 +1901,22 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 	c.outputPTS, c.outputPTSFrac = advancePTS(c.outputPTS, c.outputPTSFrac, vStepInt, vStepFrac)
 }
 
-// transitionState changes the channel state and fires the callback.
-func (c *Channel) transitionState(newState ChannelState) {
+// completeIfOnAir moves an on-air channel whose playlist ran out to
+// COMPLETED and fires the callback. Stop() also ends the playlist, through
+// the scheduler, so a tick racing it sees the playlist complete; the channel
+// is STOPPED by then and stays so.
+func (c *Channel) completeIfOnAir() {
 	c.mu.Lock()
-	c.state = newState
+	if c.state != StateOnAir {
+		c.mu.Unlock()
+		return
+	}
+	c.state = StateCompleted
 	fn := c.onStateChange
 	c.mu.Unlock()
 
 	if fn != nil {
-		fn(newState)
+		fn(StateCompleted)
 	}
 }
 
