@@ -60,10 +60,10 @@ describe('stall failover across two pipelines', () => {
 		let manager: PipelineManager;
 		const pipelineA = createMediaPipeline({
 			onSourceStalled: (key) => {
-				// The decision the page's stall handler takes on Engine A.
+				// The page's stall handler on Engine A.
 				if (key !== 'program-preview') return;
-				if (manager.engineBDelivering(STALL_THRESHOLD_MS)) failovers++;
-				else refused++;
+				if (manager.refusesStallFailover()) refused++;
+				else failovers++;
 			},
 		});
 		manager = new PipelineManager(pipelineA, () => []);

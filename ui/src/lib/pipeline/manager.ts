@@ -1,5 +1,5 @@
 import type { MediaPipeline } from '$lib/transport/media-pipeline';
-import { createMediaPipeline } from '$lib/transport/media-pipeline';
+import { createMediaPipeline, STALL_THRESHOLD_MS } from '$lib/transport/media-pipeline';
 
 /** Audio peak levels for a single channel (linear 0..1). */
 export interface PeakLevels {
@@ -687,6 +687,15 @@ export class PipelineManager {
 		// If was recently healthy (within 5s), still consider healthy
 		// (decoder or video may be briefly absent during stream renegotiation)
 		return Date.now() - this._warmStandbyLastHealthy < 5000;
+	}
+
+	/**
+	 * Whether a program stall on Engine A must not fail over: Engine B's
+	 * pipeline exists and its program feed has stalled as well, which is
+	 * this browser or its network rather than Engine A.
+	 */
+	refusesStallFailover(): boolean {
+		return this.pipelineB !== null && !this.engineBDelivering(STALL_THRESHOLD_MS);
 	}
 
 	/**
