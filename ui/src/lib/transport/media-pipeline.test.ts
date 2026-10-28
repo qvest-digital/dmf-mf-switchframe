@@ -74,9 +74,14 @@ function fakeFrame(): VideoFrame & { close: ReturnType<typeof vi.fn>; clones: Vi
 	return frame as unknown as VideoFrame & { close: ReturnType<typeof vi.fn>; clones: VideoFrame[] };
 }
 
+const mockAudioDecoderInstances: Array<{ configure: ReturnType<typeof vi.fn> }> = [];
+
 vi.mock('$lib/prism/audio-decoder', () => {
 	return {
 		PrismAudioDecoder: class MockPrismAudioDecoder {
+			constructor() {
+				mockAudioDecoderInstances.push(this);
+			}
 			configure = vi.fn().mockResolvedValue(undefined);
 			decode = vi.fn();
 			setMuted = vi.fn();
@@ -107,9 +112,14 @@ vi.mock('$lib/prism/renderer', () => {
 	};
 });
 
+const mockTransports: Array<{ key: string; callbacks: { onTrackInfo(tracks: unknown[]): void } }> = [];
+
 vi.mock('$lib/prism/moq-transport', () => {
 	return {
 		MoQTransport: class MockMoQTransport {
+			constructor(public key: string, public callbacks: { onTrackInfo(tracks: unknown[]): void }) {
+				mockTransports.push(this);
+			}
 			connect = vi.fn().mockResolvedValue(undefined);
 			close = vi.fn();
 			subscribeAudio = vi.fn().mockResolvedValue(undefined);
@@ -820,5 +830,39 @@ describe('MediaPipeline stall detection', () => {
 
 		pipeline.stopStallDetection();
 		pipeline.destroy();
+	});
+});
+
+describe('MediaPipeline audio', () => {
+	// A context per source made one tab open an audio output stream and an
+	// audio thread per source and engine.
+	it('decodes the audio of every source into one AudioContext', () => {
+		const contexts: Array<{ close: ReturnType<typeof vi.fn> }> = [];
+		class FakeAudioContext {
+			state = 'running';
+			suspend = vi.fn().mockResolvedValue(undefined);
+			close = vi.fn().mockResolvedValue(undefined);
+			constructor() { contexts.push(this); }
+		}
+		vi.stubGlobal('AudioContext', FakeAudioContext);
+		try {
+			mockTransports.length = 0;
+			mockAudioDecoderInstances.length = 0;
+			const pipeline = createMediaPipeline();
+			for (const key of ['cam1', 'cam2']) {
+				pipeline.addSource(key);
+				pipeline.connectSource(key);
+			}
+			const audio = [{ type: 'audio', codec: 'mp4a.40.2', sampleRate: 48000, channels: 2 }];
+			for (const t of mockTransports) t.callbacks.onTrackInfo(audio);
+
+			expect(contexts).toHaveLength(1);
+			const ctxArgs = mockAudioDecoderInstances.map((d) => d.configure.mock.calls[0][3]);
+			expect(ctxArgs).toEqual([contexts[0], contexts[0]]);
+			pipeline.destroy();
+			expect(contexts[0].close).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });
