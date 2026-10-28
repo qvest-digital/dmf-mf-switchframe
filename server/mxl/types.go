@@ -156,8 +156,10 @@ type DiscreteReader interface {
 
 // ContinuousReader reads audio samples from an MXL flow.
 type ContinuousReader interface {
-	// ReadSamples reads count samples starting at index. Blocks up to timeoutNs.
-	// Returns de-interleaved float32 channels (one slice per channel).
+	// ReadSamples reads the count samples ending at index: index is the
+	// exclusive end of the window, [index-count, index), as in
+	// mxlFlowReaderGetSamples. Blocks up to timeoutNs. Returns de-interleaved
+	// float32 channels (one slice per channel).
 	ReadSamples(index uint64, count int, timeoutNs uint64) ([][]float32, error)
 
 	// ConfigInfo returns the flow configuration.
@@ -181,7 +183,9 @@ type DiscreteWriter interface {
 
 // ContinuousWriter writes audio samples to an MXL flow.
 type ContinuousWriter interface {
-	// WriteSamples writes de-interleaved float32 channels at the given index.
+	// WriteSamples writes de-interleaved float32 channels ending at the given
+	// index: index is the exclusive end of the batch, as in
+	// mxlFlowWriterOpenSamples, so the samples occupy [index-n, index).
 	WriteSamples(index uint64, channels [][]float32) error
 
 	// Close releases the writer.
