@@ -322,6 +322,10 @@ func (w *Writer) WriteVideo10bit(yuv []byte, width, height int, pts int64) {
 	w.publishV210(buf, nextIdx)
 }
 
+// stallRepeats is how many grains in a row repeat a frame before the source
+// counts as stalled and repeats stop waiting for a late frame.
+const stallRepeats = 2
+
 // videoTickLoop writes each new frame to MXL as it arrives and fills a
 // grain nothing new arrived for with the last frame.
 func (w *Writer) videoTickLoop(ctx context.Context) {
@@ -339,6 +343,7 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 
 	var last, writtenSeq uint64
 	haveLast := false
+	repeats := 0 // consecutive writes of a frame already written
 
 	for {
 		select {
@@ -362,7 +367,7 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 		}
 
 		if frame != nil {
-			if index, ok := videoIndexFor(now, last, haveLast, frame.seq != writtenSeq); ok {
+			if index, ok := videoIndexFor(now, last, haveLast, frame.seq != writtenSeq, repeats >= stallRepeats); ok {
 				// Claim-then-confirm: publish the ring slot we intend to read
 				// so WriteVideo will drop rather than overwrite it, THEN
 				// re-load latest and confirm the slot is unchanged before the
@@ -388,6 +393,11 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 					w.log.Error("mxl writer: failed to write video grain",
 						"error", err, "index", index)
 				} else {
+					if haveLast && frame.seq == writtenSeq {
+						repeats++
+					} else {
+						repeats = 0
+					}
 					last, haveLast, writtenSeq = index, true, frame.seq
 				}
 			}
@@ -401,6 +411,10 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 				// A frame newer than the last write is held because the
 				// writer is a grain ahead; write it once the clock moves.
 				wait = time.Duration(NsUntilIndex(last, ref.rate))
+			} else if repeats >= stallRepeats {
+				// Stalled: repeat on the grain grid, as a frame that is
+				// merely late is no longer expected.
+				wait = time.Duration(NsUntilIndex(last+1, ref.rate))
 			} else {
 				wait = time.Duration(NsUntilIndex(last+2, ref.rate)) + grace
 			}
@@ -426,20 +440,29 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 // shown twice: a producer at the grain rate whose clock beats against the
 // grain grid keeps one grain per frame. A frame already written is
 // repeated only once the clock has passed the grain after the last one, so
-// a frame that is merely late still takes that grain. Behind by more than a
-// grain, the writer resumes at the grain before the clock; libmxl leaves
-// the indices in between invalid.
-func videoIndexFor(now, last uint64, haveLast, fresh bool) (index uint64, ok bool) {
+// a frame that is merely late still takes that grain; once the source has
+// stalled (stalled, see stallRepeats), each further repeat takes its grain
+// when the grain starts. Behind by more than a grain, the
+// writer resumes at the grain before the clock; libmxl leaves the indices
+// in between invalid.
+func videoIndexFor(now, last uint64, haveLast, fresh, stalled bool) (index uint64, ok bool) {
 	if !haveLast {
 		return now, true
 	}
 	next := last + 1
-	if fresh {
+	switch {
+	case fresh:
 		if next > now+1 {
 			return 0, false
 		}
-	} else if now <= next {
-		return 0, false
+	case stalled:
+		if now < next {
+			return 0, false
+		}
+	default:
+		if now <= next {
+			return 0, false
+		}
 	}
 	if now > 0 && next < now-1 {
 		return now - 1, true
