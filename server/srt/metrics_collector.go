@@ -4,11 +4,12 @@ import (
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 var (
 	descConnected = prometheus.NewDesc("switchframe_srt_connected",
-		"1 while the SRT connection is up. connection is the input's source key, or output:<output id> for an output.",
+		"1 while the SRT connection is up. connection is the input's source label, the same as in switchframe_source_info, or output:<output id> for an output.",
 		[]string{"connection", "direction"}, nil)
 	descRTT = prometheus.NewDesc("switchframe_srt_rtt_seconds",
 		"Smoothed round-trip time.", []string{"connection", "direction"}, nil)
@@ -66,7 +67,7 @@ func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 // connectionLabel names a connection by what it belongs to: an input's
-// source key, or output:<id> for an output, without the adapter kind the
+// source label, or output:<id> for an output, without the adapter kind the
 // stats key also carries.
 func connectionLabel(key string) string {
 	if rest, ok := strings.CutPrefix(key, "output:dest:"); ok {
@@ -76,7 +77,8 @@ func connectionLabel(key string) string {
 	if strings.HasPrefix(key, "output:") {
 		return "output:srt"
 	}
-	return key
+	// An input's key is derived from its publisher's stream id.
+	return metrics.SourceLabel(key)
 }
 
 // Collect implements prometheus.Collector.
