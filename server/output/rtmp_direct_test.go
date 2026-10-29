@@ -805,8 +805,8 @@ func TestRTMPDirect_CountsMediaTime(t *testing.T) {
 	t.Parallel()
 	r := rtmpForMediaTime(t)
 	pts := int64(90000)
-	// Two steps measure the interval; frames before that count nothing.
-	for i := 0; i < 3; i++ {
+	// Three steps measure the interval; frames before that count nothing.
+	for i := 0; i < 4; i++ {
 		require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, IsKeyframe: i == 0, WireData: []byte{0x01}}))
 		r.testWrite()
 		pts += frameTicks50
@@ -827,7 +827,7 @@ func TestRTMPDirect_MediaTimeFallsWithDroppedFrames(t *testing.T) {
 	t.Parallel()
 	r := rtmpForMediaTime(t)
 	pts := int64(90000)
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ {
 		require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, IsKeyframe: i == 0, WireData: []byte{0x01}}))
 		r.testWrite()
 		pts += frameTicks50
@@ -856,7 +856,7 @@ func TestRTMPDirect_MediaTimeIgnoresPTSJumps(t *testing.T) {
 		r.testWrite()
 	}
 	pts := int64(90000)
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ {
 		send(pts)
 		pts += frameTicks50
 	}
@@ -872,10 +872,56 @@ func TestRTMPDirect_MediaTimeIgnoresPTSJumps(t *testing.T) {
 		pts += frameTicks50
 	}
 	// A jump under a second still takes no more than one interval: the
-	// interval is the smaller of the last two steps.
+	// interval is the median of the last three steps.
 	pts += 45000
 	send(pts)
 	require.Equal(t, int64(7*frameTicks50), r.Status().MediaTicks-start, "seven frames written")
+}
+
+// Program PTS steps can jitter around the frame interval, as with a fresh
+// source frame's own PTS; with every frame written the rate still reads
+// one, not the low side of the jitter.
+func TestRTMPDirect_MediaTimeAveragesJitter(t *testing.T) {
+	t.Parallel()
+	r := rtmpForMediaTime(t)
+	steps := []int64{1800, 1700, 1900, 1800, 1650, 1950} // +-8% around 50 fps
+	pts := int64(90000)
+	for i := 0; i < 4; i++ {
+		require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, IsKeyframe: i == 0, WireData: []byte{0x01}}))
+		r.testWrite()
+		pts += frameTicks50
+	}
+	start, startPTS := r.Status().MediaTicks, pts-frameTicks50
+	for i := 0; i < 600; i++ { // 12 s
+		pts += steps[i%len(steps)] - frameTicks50
+		require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, WireData: []byte{0x01}}))
+		r.testWrite()
+		pts += frameTicks50
+	}
+	sent := float64(r.Status().MediaTicks - start)
+	offered := float64(pts - frameTicks50 - startPTS)
+	require.InDelta(t, 1.0, sent/offered, 0.01, "sent %.0f of %.0f ticks", sent, offered)
+}
+
+// Steps over a second are gaps, not intervals, even several in a row.
+func TestRTMPDirect_MediaTimeIgnoresRepeatedGaps(t *testing.T) {
+	t.Parallel()
+	r := rtmpForMediaTime(t)
+	send := func(pts int64) {
+		require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, IsKeyframe: true, WireData: []byte{0x01}}))
+		r.testWrite()
+	}
+	pts := int64(90000)
+	for i := 0; i < 4; i++ {
+		send(pts)
+		pts += frameTicks50
+	}
+	start := r.Status().MediaTicks
+	for i := 0; i < 3; i++ {
+		pts += 2 * 90000
+		send(pts)
+	}
+	require.Equal(t, int64(3*frameTicks50), r.Status().MediaTicks-start)
 }
 
 // The time a reconnect keeps the destination down is not media sent: the
@@ -888,7 +934,7 @@ func TestRTMPDirect_MediaTimeSkipsAReconnect(t *testing.T) {
 		r.testWrite()
 	}
 	pts := int64(90000)
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ {
 		send(pts, i == 0)
 		pts += frameTicks50
 	}
