@@ -10,10 +10,11 @@ import (
 
 // Sentinel errors for destination operations.
 var (
-	ErrDestinationNotFound    = errors.New("output: destination not found")
-	ErrDestinationActive      = errors.New("output: destination already active")
-	ErrDestinationStopped     = errors.New("output: destination not active")
-	ErrDestinationWrongEngine = errors.New("output: destination assigned to different engine")
+	ErrDestinationNotFound  = errors.New("output: destination not found")
+	ErrDestinationActive    = errors.New("output: destination already active")
+	ErrDestinationStopped   = errors.New("output: destination not active")
+	ErrDestinationExists    = errors.New("output: destination ID already in use")
+	ErrInvalidDestinationID = errors.New("output: invalid destination ID")
 )
 
 // DestinationConfig configures a single output destination.
@@ -30,14 +31,18 @@ type DestinationConfig struct {
 	MaxConns      int    `json:"maxConns,omitempty"`      // listener only
 	Name          string `json:"name,omitempty"`          // user-friendly label
 	SCTE35Enabled bool   `json:"scte35Enabled,omitempty"` // default true; false strips SCTE-35
-	Engine        string `json:"engine,omitempty"`        // "a", "b", or "" (default = local engine)
+	// Engine is the engine of a pair that sends: "a", "b", or "" for
+	// every engine. A labeled engine stores "a" when none is given, so
+	// both engines of a pair agree on the sender.
+	Engine string `json:"engine,omitempty"`
 }
 
 // DestinationStatus is the runtime status of a destination.
 type DestinationStatus struct {
 	ID             string            `json:"id"`
 	Config         DestinationConfig `json:"config"`
-	State          string            `json:"state"` // "stopped", "starting", "connected", "error"
+	State          string            `json:"state"` // "stopped", "standby", or the adapter's state
+	Armed          bool              `json:"armed,omitempty"`
 	BytesWritten   int64             `json:"bytesWritten"`
 	DroppedPackets int64             `json:"droppedPackets"`
 	OverflowCount  int64             `json:"overflowCount,omitempty"`
@@ -55,7 +60,9 @@ type Destination struct {
 	adapter      Adapter      // TS-based adapters (SRT)
 	frameAdapter FrameAdapter // Frame-based adapters (RTMP direct)
 	async        *AsyncAdapter
-	active       bool
+	active       bool      // an adapter runs on this engine
+	armed        bool      // started by the operator; the owner engine sends
+	unsentSince  time.Time // armed here, owned by a reachable peer not sending it
 	createdAt    time.Time
 	startedAt    *time.Time
 }
@@ -67,6 +74,20 @@ func generateDestinationID() string {
 	return hex.EncodeToString(b)
 }
 
+// ValidDestinationID reports whether id has the form of a generated
+// destination ID: 8 lowercase hex characters.
+func ValidDestinationID(id string) bool {
+	if len(id) != 8 {
+		return false
+	}
+	for _, c := range id {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // status returns the current DestinationStatus snapshot.
 func (d *Destination) status() DestinationStatus {
 	d.mu.Lock()
@@ -76,8 +97,12 @@ func (d *Destination) status() DestinationStatus {
 		ID:        d.id,
 		Config:    d.config,
 		State:     "stopped",
+		Armed:     d.armed,
 		CreatedAt: d.createdAt,
 		StartedAt: d.startedAt,
+	}
+	if d.armed && !d.active {
+		st.State = "standby"
 	}
 
 	if d.adapter != nil {

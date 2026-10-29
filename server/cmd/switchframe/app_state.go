@@ -107,6 +107,7 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 				Address:        d.Config.Address,
 				Port:           d.Config.Port,
 				URL:            d.Config.URL,
+				Engine:         d.Config.Engine,
 				State:          d.State,
 				BytesWritten:   d.BytesWritten,
 				DroppedPackets: d.DroppedPackets,
@@ -988,6 +989,7 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 	if dests := a.outputMgr.ListDestinations(); len(dests) > 0 {
 		snap.OutputDestinations = make([]internal.DestinationSnapshot, 0, len(dests))
 		for _, d := range dests {
+			armed := d.Armed
 			snap.OutputDestinations = append(snap.OutputDestinations, internal.DestinationSnapshot{
 				ID: d.ID,
 				Config: internal.DestinationSnapshotConfig{
@@ -999,8 +1001,15 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 					StreamID: d.Config.StreamID,
 					Name:     d.Config.Name,
 					Engine:   d.Config.Engine,
+
+					Encryption:    d.Config.Encryption,
+					Passphrase:    d.Config.Passphrase,
+					MaxBW:         d.Config.MaxBW,
+					MaxConns:      d.Config.MaxConns,
+					SCTE35Enabled: d.Config.SCTE35Enabled,
 				},
 				Active: d.State == "connected" || d.State == "starting",
+				Armed:  &armed,
 			})
 		}
 	}

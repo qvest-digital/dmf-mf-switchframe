@@ -214,3 +214,20 @@ func TestPeerHealth_SeqSurvivesRestart(t *testing.T) {
 		"post-restart /api/peer/health must report >= persisted seq; got %d, want >= %d",
 		resp.LastCommandSeq, restoredSeq)
 }
+
+// The peer reads which destinations this engine sends from its health poll.
+func TestHandlePeerHealth_ListsSendingDestinations(t *testing.T) {
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(t, programRelay)
+	mock := &mockOutputManager{sendingIDs: []string{"0a1b2c3d"}}
+	api := NewAPI(sw, WithOutputManager(mock))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/peer/health", nil)
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp peer.HealthResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, []string{"0a1b2c3d"}, resp.Sending)
+}

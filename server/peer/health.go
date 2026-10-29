@@ -37,6 +37,11 @@ type HealthResponse struct {
 	// (both-follower) behavior, so this is backward compatible with peers
 	// that do not yet populate it.
 	InstanceID string `json:"instanceId,omitempty"`
+
+	// Sending lists the output destinations this engine sends, of those
+	// one engine of a pair sends. The other engine reads it to tell whether
+	// a destination it owns was taken over while it was away.
+	Sending []string `json:"sending,omitempty"`
 }
 
 // PeerStatus holds the current peer health state, safe to read from any
@@ -51,6 +56,11 @@ type PeerStatus struct {
 	PeerLabel      string
 	PeerEpoch      uint64
 	PeerInstanceID string
+	PeerSending    []string
+
+	// Down is set once the peer has failed the failure threshold of
+	// consecutive polls, whether or not it was ever reached.
+	Down bool
 
 	// PolledAt is when the last completed poll was sent, and SeenPolledAt
 	// when the last successful one was: what a poll reports is known to be
@@ -159,6 +169,7 @@ type HealthPoller struct {
 	peerLabel      string
 	peerEpoch      uint64
 	peerInstanceID string
+	peerSending    []string
 	polledAt       time.Time
 	seenPolledAt   time.Time
 
@@ -234,9 +245,17 @@ func (p *HealthPoller) Status() PeerStatus {
 		PeerLabel:      p.peerLabel,
 		PeerEpoch:      p.peerEpoch,
 		PeerInstanceID: p.peerInstanceID,
+		PeerSending:    p.peerSending,
+		Down:           !p.reachable && p.consecFailures >= p.failureThreshold,
 		PolledAt:       p.polledAt,
 		SeenPolledAt:   p.seenPolledAt,
 	}
+}
+
+// DownAfter is how long the peer takes at most to be declared down once it
+// stops answering: the failure threshold of polls.
+func (p *HealthPoller) DownAfter() time.Duration {
+	return time.Duration(p.failureThreshold) * p.pollInterval
 }
 
 // LocalLabel returns this engine's configured label ("", "a", or "b").
@@ -459,6 +478,7 @@ func (p *HealthPoller) recordSuccessAt(sent time.Time, health HealthResponse) {
 	p.peerLabel = health.EngineLabel
 	p.peerEpoch = health.Epoch
 	p.peerInstanceID = health.InstanceID
+	p.peerSending = health.Sending
 
 	if wasUnreachable {
 		slog.Info("peer engine recovered",

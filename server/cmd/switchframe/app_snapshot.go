@@ -402,41 +402,49 @@ func (a *App) ApplyRecording(snap internal.RecordingSnapshot) error {
 	return nil
 }
 
-// ApplyOutputDestinations reconciles output destinations from a snapshot.
-// Only updates the active state of existing destinations — does not create
-// or delete destinations (IDs are engine-specific).
+// ApplyOutputDestinations takes over the peer's output destinations: both
+// engines of a pair store a destination under one ID, so one missing here is
+// added, and each takes the peer's sending engine and armed state. A
+// destination the snapshot lacks is left alone.
 func (a *App) ApplyOutputDestinations(dests []internal.DestinationSnapshot) error {
 	if a.outputMgr == nil {
 		return nil
 	}
-
-	// Build a lookup of desired state by ID.
-	desired := make(map[string]bool, len(dests))
+	have := make(map[string]bool)
+	for _, d := range a.outputMgr.ListDestinations() {
+		have[d.ID] = true
+	}
 	for _, d := range dests {
-		desired[d.ID] = d.Active
-	}
-
-	// Walk existing destinations and reconcile active state.
-	existing := a.outputMgr.ListDestinations()
-	for _, dest := range existing {
-		wantActive, ok := desired[dest.ID]
-		if !ok {
-			// Destination not in snapshot — leave unchanged.
-			continue
-		}
-
-		isActive := dest.State == "connected" || dest.State == "starting"
-		if wantActive && !isActive {
-			if err := a.outputMgr.StartDestination(dest.ID); err != nil {
-				slog.Warn("snapshot apply: start destination failed", "id", dest.ID, "error", err)
+		if !have[d.ID] {
+			c := d.Config
+			_, err := a.outputMgr.AddDestinationWithID(d.ID, output.DestinationConfig{
+				Type:          c.Type,
+				Address:       c.Address,
+				Port:          c.Port,
+				URL:           c.URL,
+				Latency:       c.Latency,
+				StreamID:      c.StreamID,
+				Encryption:    c.Encryption,
+				Passphrase:    c.Passphrase,
+				MaxBW:         c.MaxBW,
+				MaxConns:      c.MaxConns,
+				Name:          c.Name,
+				SCTE35Enabled: c.SCTE35Enabled,
+				Engine:        c.Engine,
+			})
+			if err != nil {
+				slog.Warn("snapshot apply: add destination failed", "id", d.ID, "error", err)
+				continue
 			}
-		} else if !wantActive && isActive {
-			if err := a.outputMgr.StopDestination(dest.ID); err != nil {
-				slog.Warn("snapshot apply: stop destination failed", "id", dest.ID, "error", err)
-			}
+		}
+		armed := d.Active
+		if d.Armed != nil {
+			armed = *d.Armed
+		}
+		if err := a.outputMgr.ApplyDestinationState(d.ID, d.Config.Engine, armed); err != nil {
+			slog.Warn("snapshot apply: destination state failed", "id", d.ID, "error", err)
 		}
 	}
-
 	return nil
 }
 

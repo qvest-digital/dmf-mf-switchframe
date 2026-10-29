@@ -739,6 +739,9 @@ func (a *App) initOutput() error {
 	// label, and destinations added before the label is set are stamped
 	// with an empty Engine field.
 	a.outputMgr.SetEngineLabel(a.cfg.EngineLabel)
+	if a.cfg.EngineLabel != "" && a.cfg.PeerEngineURL != "" {
+		a.outputMgr.EnablePeerFailover()
+	}
 	a.outputMgr.SetRecordingArchiveDir(a.cfg.RecordingArchiveDir)
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
@@ -2108,6 +2111,13 @@ func (a *App) Run(ctx context.Context) error {
 		slog.Info("peer health poller started",
 			"peerURL", a.cfg.PeerEngineURL,
 			"engineLabel", a.cfg.EngineLabel)
+		if a.cfg.EngineLabel != "" {
+			a.bgWG.Add(1)
+			go func() {
+				defer a.bgWG.Done()
+				runDestinationFailover(a.bgCtx, a.peerPoller, a.outputMgr, time.Second)
+			}()
+		}
 	}
 
 	// On air without an operator cut: on a peer's program, else on a

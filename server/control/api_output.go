@@ -215,11 +215,17 @@ func (a *API) handleAddDestination(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
 		return
 	}
-	var config output.DestinationConfig
-	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+	// ID is optional; a client of an engine pair sends one to both, so both
+	// store the destination under it.
+	var req struct {
+		output.DestinationConfig
+		ID string `json:"id,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	config := req.DestinationConfig
 	switch config.Type {
 	case "srt-caller":
 		if config.Address == "" {
@@ -250,7 +256,7 @@ func (a *API) handleAddDestination(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "type must be 'srt-caller', 'srt-listener', or 'rtmp'")
 		return
 	}
-	id, err := a.outputMgr.AddDestination(config)
+	id, err := a.outputMgr.AddDestinationWithID(req.ID, config)
 	if err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
@@ -309,7 +315,8 @@ func (a *API) handleRemoveDestination(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleStartDestination starts a destination's adapter.
+// handleStartDestination arms a destination. The engine that sends it starts
+// its adapter; the other engine of a pair answers alike with state "standby".
 func (a *API) handleStartDestination(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
 	if a.outputMgr == nil {
@@ -342,7 +349,8 @@ func (a *API) handleCBRStatus(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(status)
 }
 
-// handleStopDestination stops a destination's adapter.
+// handleStopDestination disarms a destination and stops its adapter where it
+// runs.
 func (a *API) handleStopDestination(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
 	if a.outputMgr == nil {
@@ -359,7 +367,8 @@ func (a *API) handleStopDestination(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(status)
 }
 
-// handleReassignDestinationEngine changes the engine assignment for a destination.
+// handleReassignDestinationEngine moves a destination to another engine of a
+// pair: sent to both engines, it is the manual switch-over.
 // Gated on the partitioned follower — accepting a reassign here would diverge
 // from the leader's record with no merge at heal. The cleanup path for the
 // minority side is /api/peer/force-leader, which promotes this engine and

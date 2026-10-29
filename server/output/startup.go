@@ -2,6 +2,8 @@ package output
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,6 +90,12 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 	return cfg, nil
 }
 
+// startupDestinationID is the ID of the i-th destination of a startup file.
+func startupDestinationID(i int) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("outputs-config/destination/%d", i)))
+	return hex.EncodeToString(sum[:4])
+}
+
 // readInto sets *field from the file at path, without the trailing newline a
 // mounted Secret often carries. An empty path leaves the field alone.
 func readInto(field *string, path, name string) error {
@@ -136,13 +144,27 @@ func (r StartupRecording) RecorderConfig() (RecorderConfig, error) {
 
 // ApplyStartup adds and starts every destination in cfg and starts the
 // recording it names. It stops at the first one the manager refuses.
+//
+// Each destination gets an ID derived from its position in the file, so
+// both engines of a pair reading one file store it under one ID. With peer
+// failover enabled, a destination one engine sends is armed and left to
+// ReconcileDestinations, which starts it once the peer is known not to send
+// it already.
 func (m *Manager) ApplyStartup(cfg StartupConfig) error {
+	m.mu.Lock()
+	deferStart := m.peerFailover && m.engineLabel != ""
+	m.mu.Unlock()
 	for i, d := range cfg.Destinations {
-		id, err := m.AddDestination(d.DestinationConfig)
+		id, err := m.AddDestinationWithID(startupDestinationID(i), d.DestinationConfig)
 		if err != nil {
 			return fmt.Errorf("destination %d (%s): %w", i, d.Type, err)
 		}
-		if err := m.StartDestination(id); err != nil {
+		if deferStart && d.Type != "srt-listener" {
+			err = m.armDestination(id)
+		} else {
+			err = m.StartDestination(id)
+		}
+		if err != nil {
 			return fmt.Errorf("destination %d (%s): start: %w", i, d.Type, err)
 		}
 	}
