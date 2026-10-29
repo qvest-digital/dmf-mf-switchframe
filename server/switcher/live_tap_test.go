@@ -2,6 +2,8 @@ package switcher
 
 import (
 	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,7 +74,8 @@ func TestLiveTap_CopiesOnlySourcesBeingRead(t *testing.T) {
 }
 
 // Playout carries 8-bit YUV420 only; a 10-bit picture read as one would
-// air as noise.
+// air as noise. The 10-bit picture here has the byte length of an 8-bit
+// 4:2:0 one, so only its format tells them apart.
 func TestLiveTap_SkipsTenBitPictures(t *testing.T) {
 	sw := newTestSwitcher(t, newTestRelay())
 	t.Cleanup(sw.Close)
@@ -80,8 +83,44 @@ func TestLiveTap_SkipsTenBitPictures(t *testing.T) {
 	const w, h = 64, 36
 
 	require.Nil(t, sw.ReadLiveTap("mxl:a"))
-	ingestLiveTap(sw, "mxl:a", make([]byte, ColorYUV422_10bit.FrameSize(w, h)), ColorYUV422_10bit, w, h, 1)
+	ingestLiveTap(sw, "mxl:a", liveTapPicture(w, h, 0x51), ColorYUV422_10bit, w, h, 1)
 	require.Nil(t, sw.ReadLiveTap("mxl:a"))
+}
+
+// Without the warning a 10-bit pipeline's live item airs idle while the
+// channel reports the source as missing or unconnected.
+func TestLiveTap_WarnsOnceAboutATenBitSource(t *testing.T) {
+	var buf bytes.Buffer
+	sw := newTestSwitcher(t, newTestRelay())
+	t.Cleanup(sw.Close)
+	sw.log = slog.New(slog.NewTextHandler(&buf, nil))
+	sw.RegisterMXLSource("mxl:a")
+	const w, h = 64, 36
+
+	ingestLiveTap(sw, "mxl:a", make([]byte, ColorYUV422_10bit.FrameSize(w, h)), ColorYUV422_10bit, w, h, 1)
+	require.NotContains(t, buf.String(), "playout live item", "a source no item reads is none of playout's business")
+
+	sw.ArmLiveTap("mxl:a")
+	for pts := int64(2); pts < 5; pts++ {
+		ingestLiveTap(sw, "mxl:a", make([]byte, ColorYUV422_10bit.FrameSize(w, h)), ColorYUV422_10bit, w, h, pts)
+	}
+	require.Equal(t, 1, strings.Count(buf.String(), "playout live item cannot air a source of this format without a GPU"))
+	require.Contains(t, buf.String(), "source=mxl:a")
+}
+
+// A live item that starts next must air its input on its first tick, not
+// the idle picture while the first read starts the copying.
+func TestLiveTap_ArmedSourceHasAPictureOnTheFirstRead(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+	t.Cleanup(sw.Close)
+	sw.RegisterMXLSource("mxl:a")
+	const w, h = 64, 36
+
+	sw.ArmLiveTap("mxl:a")
+	ingestLiveTap(sw, "mxl:a", liveTapPicture(w, h, 0x51), ColorYUV420_8bit, w, h, 1)
+	got := sw.ReadLiveTap("mxl:a")
+	require.NotNil(t, got)
+	require.Equal(t, liveTapPicture(w, h, 0x51), got.Data)
 }
 
 // A source registered again under the same key must not show the former

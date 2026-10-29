@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-// liveTapIdle is how long a source keeps being copied after its last read.
-// A playout channel reads its live source every tick, so a source no item
-// has read for this long has gone off air.
+// liveTapIdle is how long a source keeps being copied after its last read
+// or arm. A playout channel reads its live source, and arms the one it airs
+// next, every tick, so a source untouched for this long is neither.
 const liveTapIdle = 2 * time.Second
 
 // LiveTapFrame is a copy of a source's latest 8-bit YUV420 picture.
@@ -28,21 +28,33 @@ type liveTaps struct {
 }
 
 type liveTapEntry struct {
-	lastRead atomic.Int64 // UnixNano
-	frame    atomic.Pointer[LiveTapFrame]
+	lastRead     atomic.Int64 // UnixNano
+	frame        atomic.Pointer[LiveTapFrame]
+	warnedFormat atomic.Bool
+}
+
+// ArmLiveTap starts or keeps copying sourceKey's pictures without reading
+// one, so a live item that is about to air has a picture on its first
+// tick. Like a read, it lasts liveTapIdle.
+func (s *Switcher) ArmLiveTap(sourceKey string) {
+	s.armLiveTap(sourceKey)
+}
+
+func (s *Switcher) armLiveTap(sourceKey string) *liveTapEntry {
+	v, _ := s.liveTaps.entries.LoadOrStore(sourceKey, &liveTapEntry{})
+	e := v.(*liveTapEntry)
+	e.lastRead.Store(time.Now().UnixNano())
+	return e
 }
 
 // ReadLiveTap returns a copy of the latest picture of sourceKey, or nil
-// before one has arrived. The first read starts copying the source's
-// pictures as they arrive, so it returns nil. Each call returns a buffer
+// before one has arrived. The first read of a source nothing armed starts
+// copying its pictures as they arrive, so it returns nil. Each call returns a buffer
 // of its own, since the caller ingests it into the pipeline like any
 // produced frame. Builds with a GPU source manager feed that cache
 // instead, so this stays empty there.
 func (s *Switcher) ReadLiveTap(sourceKey string) *LiveTapFrame {
-	v, _ := s.liveTaps.entries.LoadOrStore(sourceKey, &liveTapEntry{})
-	e := v.(*liveTapEntry)
-	e.lastRead.Store(time.Now().UnixNano())
-	f := e.frame.Load()
+	f := s.armLiveTap(sourceKey).frame.Load()
 	if f == nil {
 		return nil
 	}
@@ -64,7 +76,16 @@ func (s *Switcher) recordLiveTap(sourceKey string, pf *ProcessingFrame) {
 		s.liveTaps.entries.CompareAndDelete(sourceKey, e)
 		return
 	}
-	if pf.Format != ColorYUV420_8bit || len(pf.Data) != ColorYUV420_8bit.FrameSize(pf.Width, pf.Height) {
+	if pf.Format != ColorYUV420_8bit {
+		// The channel airs its idle picture and reports the source as not
+		// available, which reads as a missing or unconnected input.
+		if e.warnedFormat.CompareAndSwap(false, true) {
+			s.log.Warn("playout live item cannot air a source of this format without a GPU",
+				"source", sourceKey, "format", pf.Format)
+		}
+		return
+	}
+	if len(pf.Data) != ColorYUV420_8bit.FrameSize(pf.Width, pf.Height) {
 		return
 	}
 	e.frame.Store(&LiveTapFrame{
