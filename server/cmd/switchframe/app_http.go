@@ -56,7 +56,7 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	apiHandler = a.operatorMW(apiHandler)
 	apiHandler = a.authMW(apiHandler)
 	apiHandler = a.api.DownloadTicketMiddleware(apiHandler, unauthenticated)
-	apiHandler = control.MetricsMiddleware(apiHandler)
+	apiHandler = control.RouteMetricsMiddleware(apiMux)(apiHandler)
 	apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
 	apiHandler = control.CORSMiddleware(a.cfg.AllowedOrigins)(apiHandler)
 

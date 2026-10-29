@@ -3,6 +3,7 @@ package main
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -164,5 +165,21 @@ func TestAddReplayClip_UsesRequestClipID(t *testing.T) {
 	}
 	if !clip.ValidID(fresh.ID) || fresh.ID == id {
 		t.Fatalf("replay without a requested ID got %q", fresh.ID)
+	}
+}
+
+// A playlist names a clip by the path /api/playout/clips reports, and the
+// UI takes that path from one engine and sends the playlist to both. Both
+// engines store a replay under one clip ID; its file has to carry that ID,
+// not a local time stamp, or the other engine cannot open it.
+func TestReplayClipFilename_FollowsClipID(t *testing.T) {
+	const id = "00112233445566778899aabbccddeeff"
+	a := replayClipFilename("mxl:mxl-1", id, time.Date(2026, 1, 2, 3, 4, 5, 299e6, time.UTC))
+	b := replayClipFilename("mxl:mxl-1", id, time.Date(2026, 1, 2, 3, 4, 5, 435e6, time.UTC))
+	if a != id+".ts" || b != a {
+		t.Fatalf("replay files %q and %q, want both %q", a, b, id+".ts")
+	}
+	if got := replayClipFilename("cam1", "", time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)); got != "replay_cam1_20260102_030405.000.ts" {
+		t.Fatalf("replay without a requested ID named %q", got)
 	}
 }

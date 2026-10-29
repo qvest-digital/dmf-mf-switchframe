@@ -503,6 +503,11 @@ type RTMPDirect struct {
 	lastSPS     []byte // cached for reconnect (written only from writeLoop)
 	lastPPS     []byte // cached for reconnect (written only from writeLoop)
 
+	// ptsRef is the last frame PTS on the 64-bit timeline unwrapPTS puts
+	// both streams on; set once ptsRefSet. Touched only by the write loop.
+	ptsRef    int64
+	ptsRefSet bool
+
 	state        atomic.Pointer[AdapterState]
 	lastError    atomic.Pointer[string]
 	reconnecting atomic.Bool
@@ -763,6 +768,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		}
 	}
 
+	framePTS := r.extendPTS(frame.PTS)
 	if !r.initialized.Load() {
 		if !frame.IsKeyframe {
 			return // drop non-keyframes before init
@@ -771,7 +777,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		// Test mode: just mark initialized without calling C.
 		if r.connectFn != nil {
 			r.initialized.Store(true)
-			r.ptsBase = frame.PTS
+			r.ptsBase = framePTS
 
 			return
 		}
@@ -782,6 +788,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 			r.enterReconnect(err.Error())
 			return
 		}
+		r.ptsBase = framePTS
 	}
 
 	// Cache SPS/PPS from keyframes for eager reconnect.
@@ -798,7 +805,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 			return
 		}
 		r.pendingIDR.Store(false)
-		r.ptsBase = frame.PTS // rebase for new connection
+		r.ptsBase = framePTS // rebase for new connection
 	}
 
 	// In test mode, skip the C write call.
@@ -811,7 +818,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		return
 	}
 
-	pts := frame.PTS - r.ptsBase
+	pts := framePTS - r.ptsBase
 	if pts < 0 {
 		pts = 0
 	}
@@ -854,7 +861,7 @@ func (r *RTMPDirect) handleAudio(frame *media.AudioFrame) {
 	// Audio from before the first video frame has no place on this
 	// connection's timeline; clamping it to zero would stack frames on
 	// one timestamp.
-	pts := frame.PTS - r.ptsBase
+	pts := r.extendPTS(frame.PTS) - r.ptsBase
 	if pts < 0 {
 		return
 	}
@@ -925,10 +932,18 @@ func (r *RTMPDirect) initConnection(frame *media.VideoFrame) error {
 		return fmt.Errorf("rtmp_flv_open failed (code %d)", int(rc))
 	}
 
-	r.ptsBase = frame.PTS
 	r.initialized.Store(true)
 	r.bo.Reset()
 	return nil
+}
+
+// extendPTS puts a frame PTS on the write loop's 64-bit timeline.
+func (r *RTMPDirect) extendPTS(pts int64) int64 {
+	if r.ptsRefSet {
+		pts = unwrapPTS(pts, r.ptsRef)
+	}
+	r.ptsRef, r.ptsRefSet = pts, true
+	return pts
 }
 
 // enterReconnect transitions to reconnect state and spawns the reconnect loop.

@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/srt"
 )
 
@@ -573,4 +576,33 @@ func TestSRTListener_AcceptLoopErrorRacingCloseConvergesToStopped(t *testing.T) 
 		}, 2*time.Second, 100*time.Microsecond,
 			"iteration %d: accept error racing Close must not leave the listener in a non-Stopped state", i)
 	}
+}
+
+// A listener wired by the manager counts what each client is sent.
+func TestSRTListener_Metrics(t *testing.T) {
+	pm := metrics.NewMetrics(prometheus.NewRegistry())
+	mgr := NewManager()
+	mgr.SetMetrics(pm)
+
+	l := NewSRTListener(SRTListenerConfig{Port: 9999, MaxConns: 8})
+	mgr.mu.Lock()
+	mgr.instrumentSRTListenerLocked(l)
+	mgr.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l.ctx = ctx
+	l.cancel = cancel
+	l.state.Store(ptrTo(StateActive))
+
+	c1, c2 := &mockListenerConn{id: "c1"}, &mockListenerConn{id: "c2"}
+	require.NoError(t, l.AddConnection("c1", c1))
+	require.NoError(t, l.AddConnection("c2", c2))
+
+	data := make([]byte, 1316)
+	_, err := l.Write(data)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(pm.SRTBytesTotal) == float64(2*len(data))
+	}, 2*time.Second, 10*time.Millisecond, "one copy per client")
 }

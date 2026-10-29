@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
@@ -765,11 +766,24 @@ func (s *Switcher) ThumbnailCache() *ThumbnailCache {
 
 // SetMetrics attaches Prometheus metrics to the switcher for production
 // observability. When set, the switcher increments counters for cuts,
-// transitions, and IDR gate events alongside the existing atomic debug counters.
+// transitions, and source health transitions alongside the existing atomic
+// debug counters.
 func (s *Switcher) SetMetrics(m *metrics.Metrics) {
 	s.configMu.Lock()
-	defer s.configMu.Unlock()
 	s.promMetrics = m
+	s.configMu.Unlock()
+
+	if m == nil {
+		s.health.setHooks(nil, nil)
+		return
+	}
+	// A removed source's series go with it: SRT listener inputs come and go
+	// with every stream id a publisher sends, and would otherwise pile up.
+	s.health.setHooks(func(source string, from, to SourceHealthStatus) {
+		m.SourceStatusChangesTotal.WithLabelValues(metrics.SourceLabel(source), string(from), string(to)).Inc()
+	}, func(source string) {
+		m.SourceStatusChangesTotal.DeletePartialMatch(prometheus.Labels{"source": metrics.SourceLabel(source)})
+	})
 }
 
 // SetCodecInfo records which encoder/decoder were selected at startup and

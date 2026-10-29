@@ -7,9 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 func TestHealthStatusFromAge(t *testing.T) {
@@ -316,4 +319,98 @@ func TestHealthHysteresis_FirstSourceAppliesImmediately(t *testing.T) {
 	hm.mu.RUnlock()
 
 	hm.stop()
+}
+
+// Each committed transition reaches the change hook once, after hysteresis;
+// a source's first status is not a transition.
+func TestHealthMonitor_OnChange(t *testing.T) {
+	hm := newHealthMonitor()
+	type change struct{ source, from, to string }
+	var got []change
+	hm.setHooks(func(source string, from, to SourceHealthStatus) {
+		got = append(got, change{source, string(from), string(to)})
+	}, nil)
+	hm.registerSource("cam1")
+	hm.recordFrame("cam1", time.Now().Add(-1500*time.Millisecond))
+
+	hm.checkForChanges() // first status: stale
+	require.Empty(t, got)
+
+	hm.recordFrame("cam1", time.Now())
+	hm.checkForChanges() // recovery is immediate
+	require.Equal(t, []change{{"cam1", "stale", "healthy"}}, got)
+
+	hm.recordFrame("cam1", time.Now().Add(-1500*time.Millisecond))
+	for range degradationThreshold - 1 {
+		hm.checkForChanges()
+	}
+	require.Len(t, got, 1, "degradation waits for the hysteresis threshold")
+	hm.checkForChanges()
+	require.Equal(t, change{"cam1", "healthy", "stale"}, got[1])
+}
+
+// SetMetrics counts source health transitions by source and status pair.
+func TestSwitcher_SetMetricsCountsHealthChanges(t *testing.T) {
+	pm := metrics.NewMetrics(prometheus.NewRegistry())
+	s := &Switcher{health: newHealthMonitor()}
+	s.SetMetrics(pm)
+
+	s.health.registerSource("cam1")
+	s.health.recordFrame("cam1", time.Now().Add(-1500*time.Millisecond))
+	s.health.checkForChanges()
+	s.health.recordFrame("cam1", time.Now())
+	s.health.checkForChanges()
+
+	require.Equal(t, float64(1), testutil.ToFloat64(pm.SourceStatusChangesTotal.WithLabelValues("cam1", "stale", "healthy")))
+}
+
+// A removed source's series go with it, so inputs that come and go with
+// every stream id a publisher sends do not pile up.
+func TestSwitcher_SetMetricsDeletesARemovedSourcesSeries(t *testing.T) {
+	pm := metrics.NewMetrics(prometheus.NewRegistry())
+	s := &Switcher{health: newHealthMonitor()}
+	s.SetMetrics(pm)
+
+	for _, key := range []string{"cam1", "cam2"} {
+		s.health.registerSource(key)
+		s.health.recordFrame(key, time.Now().Add(-1500*time.Millisecond))
+	}
+	s.health.checkForChanges()
+	for _, key := range []string{"cam1", "cam2"} {
+		s.health.recordFrame(key, time.Now())
+	}
+	s.health.checkForChanges()
+	require.Equal(t, 2, testutil.CollectAndCount(pm.SourceStatusChangesTotal))
+
+	s.health.removeSource("cam1")
+	require.Equal(t, 1, testutil.CollectAndCount(pm.SourceStatusChangesTotal))
+	require.Equal(t, float64(1), testutil.ToFloat64(pm.SourceStatusChangesTotal.WithLabelValues("cam2", "stale", "healthy")))
+}
+
+// An SRT input's key carries the publisher's stream id; its series is
+// labelled by a digest instead.
+func TestSwitcher_SetMetricsHidesSRTStreamIDs(t *testing.T) {
+	pm := metrics.NewMetrics(prometheus.NewRegistry())
+	s := &Switcher{health: newHealthMonitor()}
+	s.SetMetrics(pm)
+	key := "srt:secret-stream-key"
+	s.health.registerSource(key)
+	s.health.recordFrame(key, time.Now().Add(-1500*time.Millisecond))
+	s.health.checkForChanges()
+	s.health.recordFrame(key, time.Now())
+	s.health.checkForChanges()
+
+	require.Equal(t, float64(1), testutil.ToFloat64(
+		pm.SourceStatusChangesTotal.WithLabelValues(metrics.SourceLabel(key), "stale", "healthy")))
+	reg := prometheus.NewRegistry()
+	require.NoError(t, reg.Register(pm.SourceStatusChangesTotal))
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	for _, f := range families {
+		for _, m := range f.GetMetric() {
+			for _, l := range m.GetLabel() {
+				require.NotContains(t, l.GetValue(), "secret")
+			}
+		}
+	}
 }
