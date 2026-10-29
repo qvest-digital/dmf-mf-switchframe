@@ -90,6 +90,11 @@ export function programGain(): number {
 	return state.solo ? 0 : 1;
 }
 
+/** How many subscribers are attached; a destroyed pipeline leaves none. */
+export function monitorSubscriberCount(): number {
+	return listeners.size;
+}
+
 /** Calls fn after every change; returns the unsubscribe. */
 export function subscribeMonitor(fn: () => void): () => void {
 	listeners.add(fn);

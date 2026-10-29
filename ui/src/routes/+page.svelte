@@ -909,14 +909,34 @@
 	let pflActiveSource = $state<string | null>(null);
 	let pflActiveMode = $state<import('$lib/audio/pfl-toggle').PFLMode>('off');
 	const pflToggle = createPFLToggle({
-		pipeline,
+		pipeline: () => pipelineManager.activePipeline,
 		aflGain: (key) => {
 			const ch = store.effectiveState.audioChannels?.[key];
 			return !ch || ch.muted ? 0 : Math.pow(10, ch.level / 20);
 		},
 		setSolo: setMonitorSolo,
 	});
-	const aflMonitor = { setAFLGain: (key: string, gain: number) => pipeline.setSourceGain(key, gain) };
+	const aflMonitor = { setAFLGain: (key: string, gain: number) => pflToggle.setAFLGain(key, gain) };
+
+	// The solo plays on the active engine's pipeline: after a failover or a
+	// restore it moves there, since the other one no longer plays audio.
+	$effect(() => {
+		void activeEngine;
+		pflToggle.follow();
+	});
+
+	// A soloed channel that goes away leaves nothing to listen to: program
+	// comes back.
+	$effect(() => {
+		const keys = store.sourceKeys;
+		if (pflActiveSource && !keys.includes(pflActiveSource)) releaseSolo();
+	});
+
+	function releaseSolo() {
+		const result = pflToggle.clear();
+		pflActiveSource = result.source;
+		pflActiveMode = result.mode;
+	}
 
 	// Macro list for keyboard trigger (Ctrl+1-9)
 	let macroList = $state<Macro[]>([]);
@@ -1870,7 +1890,7 @@
 					{#snippet children(activeTab)}
 						{#if activeTab === 'Audio'}
 							<div class="tab-panel audio-tab">
-								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} pflMode={pflActiveMode} {aflMonitor} selectedChannel={selectedAudioChannel} {audioDrift} {isDualEngine} engineBAudioChannels={engineBState?.audioChannels ?? null} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
+								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} pflMode={pflActiveMode} {aflMonitor} onSoloRelease={releaseSolo} selectedChannel={selectedAudioChannel} {audioDrift} {isDualEngine} engineBAudioChannels={engineBState?.audioChannels ?? null} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
 							</div>
 						{:else if activeTab === 'Compose'}
 							<div class="tab-panel">

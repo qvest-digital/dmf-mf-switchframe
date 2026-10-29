@@ -24,12 +24,19 @@ export interface PFLToggleResult {
 	mode: PFLMode;
 }
 
+/** What the toggle needs of a media pipeline. */
+export interface PFLPipeline {
+	setSourceMuted(key: string, muted: boolean): void;
+	setSourceGain(key: string, gain: number): void;
+}
+
 export interface PFLToggleContext {
-	/** The media pipeline that decodes each channel's audio. */
-	pipeline: {
-		setSourceMuted(key: string, muted: boolean): void;
-		setSourceGain(key: string, gain: number): void;
-	};
+	/**
+	 * The media pipeline that currently plays this browser's audio: engine
+	 * A's, or engine B's after a failover. Read at every change, and by
+	 * follow() when the active engine changes.
+	 */
+	pipeline(): PFLPipeline;
 	/** Linear gain of the channel's fader, 0 while the channel is muted. */
 	aflGain(key: string): number;
 	/** Take program out of the monitor while a channel is soloed. */
@@ -39,11 +46,25 @@ export interface PFLToggleContext {
 export function createPFLToggle(ctx: PFLToggleContext) {
 	let activeSource: string | null = null;
 	let activeMode: PFLMode = 'off';
+	/** The pipeline the solo is applied on. */
+	let appliedOn: PFLPipeline | null = null;
+	/** Gain the soloed channel plays at: 1 in PFL, its fader in AFL. */
+	let gain = 1;
 	let busy = false;
 
-	function release(key: string) {
-		ctx.pipeline.setSourceMuted(key, true);
-		ctx.pipeline.setSourceGain(key, 1);
+	function release() {
+		if (appliedOn && activeSource) {
+			appliedOn.setSourceMuted(activeSource, true);
+			appliedOn.setSourceGain(activeSource, 1);
+		}
+		appliedOn = null;
+	}
+
+	function apply() {
+		if (!activeSource) return;
+		appliedOn = ctx.pipeline();
+		appliedOn.setSourceGain(activeSource, gain);
+		appliedOn.setSourceMuted(activeSource, false);
 	}
 
 	/**
@@ -61,35 +82,58 @@ export function createPFLToggle(ctx: PFLToggleContext) {
 
 		if (activeSource === sourceKey && activeMode === 'pfl') {
 			activeMode = 'afl';
-			ctx.pipeline.setSourceGain(sourceKey, ctx.aflGain(sourceKey));
+			gain = ctx.aflGain(sourceKey);
+			apply();
 		} else if (activeSource === sourceKey && activeMode === 'afl') {
-			release(sourceKey);
-			ctx.setSolo(false);
-			activeSource = null;
-			activeMode = 'off';
+			clear();
 		} else {
-			if (activeSource) release(activeSource);
-			ctx.pipeline.setSourceGain(sourceKey, 1);
-			ctx.pipeline.setSourceMuted(sourceKey, false);
-			ctx.setSolo(true);
+			release();
 			activeSource = sourceKey;
 			activeMode = 'pfl';
+			gain = 1;
+			apply();
+			ctx.setSolo(true);
 		}
 
 		setTimeout(() => { busy = false; }, 100);
 		return { source: activeSource, mode: activeMode };
 	}
 
+	/** End the solo: program back on the monitor. */
+	function clear(): PFLToggleResult {
+		release();
+		if (activeSource) ctx.setSolo(false);
+		activeSource = null;
+		activeMode = 'off';
+		gain = 1;
+		return { source: null, mode: 'off' };
+	}
+
 	/** Follow a fader or mute change of the channel in AFL. */
+	function setAFLGain(sourceKey: string, linearGain: number): void {
+		if (activeSource !== sourceKey || activeMode !== 'afl') return;
+		gain = linearGain;
+		appliedOn?.setSourceGain(sourceKey, gain);
+	}
+
+	/** Re-read the AFL gain from the channel's fader. */
 	function refreshAFL(): void {
-		if (activeSource && activeMode === 'afl') {
-			ctx.pipeline.setSourceGain(activeSource, ctx.aflGain(activeSource));
-		}
+		if (activeSource) setAFLGain(activeSource, ctx.aflGain(activeSource));
+	}
+
+	/** Move the solo to the pipeline now active, after a failover or restore. */
+	function follow(): void {
+		if (!activeSource || ctx.pipeline() === appliedOn) return;
+		release();
+		apply();
 	}
 
 	return {
 		toggle,
+		clear,
+		setAFLGain,
 		refreshAFL,
+		follow,
 		get activeSource() { return activeSource; },
 		get activeMode() { return activeMode; },
 	};

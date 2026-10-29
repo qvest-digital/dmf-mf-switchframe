@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { setMonitorDimmed, setMonitorMuted, setMonitorSolo, setMonitorVolume } from '$lib/audio/monitor.svelte';
+import { monitorSubscriberCount, setMonitorDimmed, setMonitorMuted, setMonitorSolo, setMonitorVolume } from '$lib/audio/monitor.svelte';
 import { createMediaPipeline, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
 import { isSourceStalled, clearAllStalls, clearSourceStall } from './source-errors.svelte';
 
@@ -935,7 +935,9 @@ describe('MediaPipeline audio', () => {
 			expect(monitorBus.target()).toBeCloseTo(0.05);
 			setMonitorDimmed(false);
 
+			const subscribers = monitorSubscriberCount();
 			pipeline.destroy();
+			expect(monitorSubscriberCount()).toBe(subscribers - 1);
 			const calls = programBus.gain.setTargetAtTime.mock.calls.length;
 			setMonitorSolo(true);
 			expect(programBus.gain.setTargetAtTime.mock.calls.length).toBe(calls);

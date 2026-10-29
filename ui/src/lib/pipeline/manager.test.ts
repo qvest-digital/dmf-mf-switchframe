@@ -1005,11 +1005,14 @@ describe('PipelineManager', () => {
 			await vi.advanceTimersByTimeAsync(250);
 			await failoverPromise;
 			expect(manager.activeEngine).toBe('B');
+			// The active pipeline is the one whose audio plays (PFL follows it).
+			expect(manager.activePipeline).toBe(bPipelineMock);
 
 			// Now restore to A
 			await manager.restoreToEngineA(['cam1']);
 
 			expect(manager.activeEngine).toBe('A');
+			expect(manager.activePipeline).not.toBe(bPipelineMock);
 			expect(manager.hasEngineBPipeline).toBe(false);
 			expect(bPipelineMock.destroy).toHaveBeenCalled();
 		});

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import MonitorStrip from './MonitorStrip.svelte';
 import { monitor, monitorGain, setMonitorMuted, setMonitorVolume } from '$lib/audio/monitor.svelte';
@@ -37,5 +37,14 @@ describe('MonitorStrip', () => {
 		solo.unmount();
 		const idle = render(MonitorStrip);
 		expect(idle.container.textContent).toContain('PGM');
+	});
+});
+
+describe('MonitorStrip solo', () => {
+	it('the solo label returns the monitor to program', async () => {
+		const onSoloRelease = vi.fn();
+		const { container } = render(MonitorStrip, { props: { soloSource: 'CAM 1', soloMode: 'pfl', onSoloRelease } });
+		await fireEvent.click(container.querySelector('[data-testid="monitor-solo"]') as HTMLElement);
+		expect(onSoloRelease).toHaveBeenCalledTimes(1);
 	});
 });

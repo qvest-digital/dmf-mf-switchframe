@@ -10,8 +10,10 @@
 		/** Label of the channel soloed with PFL/AFL, if any. */
 		soloSource?: string | null;
 		soloMode?: PFLMode;
+		/** End the solo: program back on the monitor. */
+		onSoloRelease?: () => void;
 	}
-	let { soloSource = null, soloMode = 'off' }: Props = $props();
+	let { soloSource = null, soloMode = 'off', onSoloRelease }: Props = $props();
 
 	/** Fader floor; the bottom of the travel is silence. */
 	const MIN_DB = -60;
@@ -29,7 +31,12 @@
 	<span class="strip-sub">this browser</span>
 
 	{#if soloSource && soloMode !== 'off'}
-		<span class="solo" data-testid="monitor-solo">{soloMode.toUpperCase()} {soloSource}</span>
+		<button
+			class="solo"
+			data-testid="monitor-solo"
+			title="Back to program on your monitor"
+			onclick={() => onSoloRelease?.()}
+		>{soloMode.toUpperCase()} {soloSource}</button>
 	{:else}
 		<span class="solo idle">PGM</span>
 	{/if}
@@ -87,6 +94,10 @@
 	}
 
 	.solo {
+		padding: 0;
+		border: none;
+		background: none;
+		cursor: pointer;
 		font-family: var(--font-mono);
 		font-size: 8px;
 		font-weight: 700;

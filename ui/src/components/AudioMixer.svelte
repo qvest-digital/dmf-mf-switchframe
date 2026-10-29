@@ -29,6 +29,8 @@
 		pflMode?: PFLMode;
 		/** Plays the channel in AFL at a linear gain on the local monitor. */
 		aflMonitor?: { setAFLGain(sourceKey: string, linearGain: number): void } | null;
+		/** End the PFL/AFL solo from the MONITOR strip. */
+		onSoloRelease?: () => void;
 		selectedChannel?: string | null;
 		audioDrift?: { channel: string; reason: string } | null;
 		isDualEngine?: boolean;
@@ -38,7 +40,7 @@
 		onChannelSelect?: (sourceKey: string | null) => void;
 	}
 
-	let { state: crState, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, pflMode = 'off' as PFLMode, aflMonitor = null, selectedChannel = null, audioDrift = null, isDualEngine = false, engineBAudioChannels = null, onPFLToggle, onStateUpdate, onChannelSelect }: Props = $props();
+	let { state: crState, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, pflMode = 'off' as PFLMode, aflMonitor = null, onSoloRelease, selectedChannel = null, audioDrift = null, isDualEngine = false, engineBAudioChannels = null, onPFLToggle, onStateUpdate, onChannelSelect }: Props = $props();
 
 	let ui = $state({ collapsed: false });
 
@@ -363,7 +365,7 @@
 					class:pfl-active={isPfl}
 					class:afl-active={isAfl}
 					onclick={() => onPFLToggle?.(key)}
-					title={isPfl ? 'PFL: this channel alone on your monitor, before the fader. Click for AFL.' : isAfl ? 'AFL: this channel alone on your monitor, at its fader. Click to hear program again.' : 'PFL: hear this channel alone on your monitor. The program mix is not affected.'}
+					title={isPfl ? 'PFL: this channel alone on your monitor, before the fader. Click for AFL.' : isAfl ? 'AFL: this channel alone on your monitor, as the source sends it at its fader level, without EQ or dynamics. Click to hear program again.' : 'PFL: hear this channel alone on your monitor. The program mix is not affected.'}
 				>
 					{isAfl ? 'AFL' : 'PFL'}
 				</button>
@@ -498,7 +500,7 @@
 		{/if}
 	</div>
 
-	<MonitorStrip soloSource={pflActiveSource ? (crState.sources[pflActiveSource]?.label || pflActiveSource) : null} soloMode={pflMode} />
+	<MonitorStrip soloSource={pflActiveSource ? (crState.sources[pflActiveSource]?.label || pflActiveSource) : null} soloMode={pflMode} {onSoloRelease} />
 	</div>
 
 	{#if selectedChannel && crState.audioChannels?.[selectedChannel]}
