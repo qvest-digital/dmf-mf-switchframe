@@ -141,6 +141,10 @@ const RECONNECT_GRACE_MS = 3000;
  * connect; it doubles with each failed attempt up to RECONNECT_MAX_MS. */
 export const RECONNECT_BASE_MS = 500;
 export const RECONNECT_MAX_MS = 4000;
+/** How long a transport has to deliver its catalog. A dial made while the
+ * network is down can hang in the QUIC handshake for longer than the
+ * outage lasts; it is abandoned and dialled again. */
+export const CONNECT_TIMEOUT_MS = 4000;
 
 /**
  * Whether the page has had a user gesture, which a browser requires before
@@ -179,6 +183,14 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	/** Pending reconnect of each source, and the attempts made since its
 	 * last transport delivered a catalog. */
 	const reconnects = new Map<string, { timer: ReturnType<typeof setTimeout> | null; attempts: number }>();
+	/** Deadline of each source's transport that has not delivered its
+	 * catalog yet. */
+	const connectDeadlines = new Map<string, ReturnType<typeof setTimeout>>();
+	function clearConnectDeadline(key: string): void {
+		const t = connectDeadlines.get(key);
+		if (t) clearTimeout(t);
+		connectDeadlines.delete(key);
+	}
 
 	function createSourceMedia(key: string): SourceMedia {
 		const buffers = new Map<string, VideoRenderBuffer>();
@@ -260,6 +272,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				// The transport is up: a later loss starts its backoff afresh,
 				// and the engine is reachable again, so every source still
 				// waiting dials now rather than at the end of its backoff.
+				clearConnectDeadline(key);
 				const r = reconnects.get(key);
 				if (r) r.attempts = 0;
 				dialWaiting();
@@ -400,6 +413,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		if (!source?.transport) return;
 		const transport = source.transport;
 		source.transport = null;
+		clearConnectDeadline(key);
 		try { transport.close(); } catch { /* already closed */ }
 		source.latestGroupID = 0;
 		try { source.videoDecoder.flush(); } catch { /* decoder may be in error state */ }
@@ -548,6 +562,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 		wanted.delete(key);
 		cancelReconnect(key);
+		clearConnectDeadline(key);
 
 		// Clean up stall tracking
 		lastFrameTime.delete(key);
@@ -602,6 +617,13 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		const videoPriority = key === "program-preview" ? 16 : 96;
 		const transport = new MoQTransport(key, makeCallbacks(key, current), videoPriority, config?.engineBaseUrl);
 		source.transport = transport;
+		clearConnectDeadline(key);
+		connectDeadlines.set(key, setTimeout(() => {
+			connectDeadlines.delete(key);
+			if (!current()) return;
+			console.warn(`[MediaPipeline] source "${key}" did not connect within ${CONNECT_TIMEOUT_MS} ms`);
+			transportLost(key);
+		}, CONNECT_TIMEOUT_MS));
 
 		// Connect asynchronously. A transport closed on purpose meanwhile,
 		// by disconnectSource or removeSource, rejects too; that is no
@@ -618,6 +640,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		if (!source) return;
 		wanted.delete(key);
 		cancelReconnect(key);
+		clearConnectDeadline(key);
 		// A disconnected source receives no frames, so it must not read as
 		// stalled; connectSource re-arms it.
 		if (lastFrameTime.delete(key)) disconnectedWithFrames.add(key);
@@ -734,6 +757,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		window.removeEventListener("focus", handleWindowFocus);
 		window.removeEventListener("online", dialWaiting);
 		for (const key of Array.from(reconnects.keys())) cancelReconnect(key);
+		for (const key of Array.from(connectDeadlines.keys())) clearConnectDeadline(key);
 		wanted.clear();
 		for (const key of Array.from(sources.keys())) {
 			removeSource(key);

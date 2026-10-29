@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createMediaPipeline, RECONNECT_BASE_MS, RECONNECT_MAX_MS, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
+import { createMediaPipeline, RECONNECT_BASE_MS, RECONNECT_MAX_MS, CONNECT_TIMEOUT_MS, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
 import { isSourceStalled, clearAllStalls, clearSourceStall } from './source-errors.svelte';
 
 // Mock all Prism modules since they use Web Workers, WebCodecs,
@@ -1175,6 +1175,7 @@ describe('MediaPipeline audio', () => {
 			vi.advanceTimersByTime(RECONNECT_BASE_MS);
 			cb(0).onControlState(new Uint8Array([1]));
 			expect(onControlState).not.toHaveBeenCalled();
+			cb(1).onTrackInfo([]);
 			cb(1).onControlState(new Uint8Array([2]));
 			expect(onControlState).toHaveBeenCalledTimes(1);
 			// A late close of the old transport does not drop the new one.
@@ -1234,6 +1235,30 @@ describe('MediaPipeline audio', () => {
 			for (const k of ['w2', 'w3']) last(k).onClose();
 			last('w1').onTrackInfo([]);
 			expect(['w2', 'w3'].map((k) => of(k).length)).toEqual(before.map((n) => n + 2));
+			pipeline.destroy();
+		});
+
+		// A dial made during an outage can hang in the handshake for longer
+		// than the outage; once the network is back nothing dialled again
+		// until the browser gave up on it.
+		it('abandons a dial that delivers no catalog and dials again', () => {
+			const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			connectImpl = () => new Promise(() => {});
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('hang');
+			pipeline.connectSource('hang');
+			const of = () => mockTransports.filter((t) => t.key === 'hang');
+			vi.advanceTimersByTime(CONNECT_TIMEOUT_MS - 1);
+			expect(of().length).toBe(1);
+			vi.advanceTimersByTime(1);
+			expect((of()[0] as unknown as { close: ReturnType<typeof vi.fn> }).close).toHaveBeenCalled();
+			vi.advanceTimersByTime(RECONNECT_BASE_MS);
+			expect(of().length).toBe(2);
+			// A transport that delivers its catalog in time is kept.
+			(of()[1].callbacks as unknown as Callbacks).onTrackInfo([]);
+			vi.advanceTimersByTime(CONNECT_TIMEOUT_MS * 3);
+			expect(of().length).toBe(2);
+			warn.mockRestore();
 			pipeline.destroy();
 		});
 
