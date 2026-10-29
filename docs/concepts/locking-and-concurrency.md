@@ -194,7 +194,7 @@ The `Manager.mu` and `Channel.mu` entries above summarize what each mutex protec
 
 **`playout.Channel`** (`server/playout/channel.go:67-138`) — 40 fields total:
 
-- **atomic counters (read by `Status()` from any goroutine):** `itemProgress`, `itemRemainMs`.
+- **atomics (read by `Status()` from any goroutine):** `itemProgress`, `itemRemainMs`, `itemError`.
 - **strict single-writer (the `run()` tick goroutine owns them; joined via `<-doneCh` in `Stop()`):** `clipIter`, `clipFPS`, `clipTotal`, `clipFrame`, `clipOutputFrame`, `clipLastFrame`, `outputPTS`, `outputAudioPTS`. No cross-goroutine reader exists today. Promoting these to atomics would be defensive; skipped to avoid churn until a reader actually appears.
 - **protected by `Channel.mu` (all external callers + tick preamble):** `state`, `clipItemID`, `clipStartTime`, `gpuAlias`, `gpuSourceTap`, `lastLiveTapMiss`, `activeLiveSource`, `onLiveAudio`, `rawVideoOutput`, `audioOutput`, `onStateChange`, `onStart`, `onStop`, `ptsProvider`, `secondaryHandler`, `secondaryScheduler`, `secondaryItemID`, `spliceCoordinator`, `asRunLog`, `itemStartTime`, `cancel`, `done`. The tick goroutine grabs callbacks at the top of `tick()` into locals, then releases the lock before emitting the frame.
 - **init-once / immutable after `NewChannel`:** `id`, `config`, `scheduler`, `idleLoop`, `compositor`, `gpuAliasedSentinel`, `slateFrame`, `frameDuration`.

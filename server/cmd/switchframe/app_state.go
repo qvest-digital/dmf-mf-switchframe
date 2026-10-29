@@ -14,6 +14,7 @@ import (
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/peer"
+	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/stmap"
 )
@@ -36,6 +37,53 @@ func sourceType(key string) string {
 	default:
 		return "demo"
 	}
+}
+
+// playoutChannelInfo is a playout channel's status as the control room
+// state carries it.
+func playoutChannelInfo(s playout.ChannelStatus) internal.PlayoutChannelInfo {
+	ch := internal.PlayoutChannelInfo{
+		ID:            s.ID,
+		State:         s.State,
+		Mode:          s.Mode,
+		PlaylistName:  s.PlaylistName,
+		CurrentItemID: s.CurrentItemID,
+		CurrentTitle:  s.CurrentTitle,
+		NextItemID:    s.NextItemID,
+		NextTitle:     s.NextTitle,
+		ItemIndex:     s.ItemIndex,
+		ItemCount:     s.ItemCount,
+		ItemProgress:  s.ItemProgress,
+		ItemRemainMs:  s.ItemRemainMs,
+		ItemError:     s.ItemError,
+	}
+	if s.Pods != nil {
+		ch.PodsArmed = s.Pods.PodsArmed
+		ch.PodsCompleted = s.Pods.PodsCompleted
+		if s.Pods.ActivePod != nil {
+			ch.ActivePod = &internal.PodStatusInfo{
+				ID:          s.Pods.ActivePod.ID,
+				Type:        s.Pods.ActivePod.Type,
+				State:       s.Pods.ActivePod.State,
+				ElapsedMs:   s.Pods.ActivePod.ElapsedMs,
+				RemainingMs: s.Pods.ActivePod.RemainingMs,
+				DurationMs:  s.Pods.ActivePod.DurationMs,
+				Armed:       s.Pods.ActivePod.Armed,
+			}
+		}
+		for _, ps := range s.Pods.Pods {
+			ch.Pods = append(ch.Pods, internal.PodStatusInfo{
+				ID:          ps.ID,
+				Type:        ps.Type,
+				State:       ps.State,
+				ElapsedMs:   ps.ElapsedMs,
+				RemainingMs: ps.RemainingMs,
+				DurationMs:  ps.DurationMs,
+				Armed:       ps.Armed,
+			})
+		}
+	}
+	return ch
 }
 
 // enrichState patches a ControlRoomState snapshot with output, graphics,
@@ -366,47 +414,7 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		states := a.playoutMgr.ChannelStates()
 		channels := make([]internal.PlayoutChannelInfo, len(states))
 		for i, s := range states {
-			ch := internal.PlayoutChannelInfo{
-				ID:            s.ID,
-				State:         s.State,
-				Mode:          s.Mode,
-				PlaylistName:  s.PlaylistName,
-				CurrentItemID: s.CurrentItemID,
-				CurrentTitle:  s.CurrentTitle,
-				NextItemID:    s.NextItemID,
-				NextTitle:     s.NextTitle,
-				ItemIndex:     s.ItemIndex,
-				ItemCount:     s.ItemCount,
-				ItemProgress:  s.ItemProgress,
-				ItemRemainMs:  s.ItemRemainMs,
-			}
-			if s.Pods != nil {
-				ch.PodsArmed = s.Pods.PodsArmed
-				ch.PodsCompleted = s.Pods.PodsCompleted
-				if s.Pods.ActivePod != nil {
-					ch.ActivePod = &internal.PodStatusInfo{
-						ID:          s.Pods.ActivePod.ID,
-						Type:        s.Pods.ActivePod.Type,
-						State:       s.Pods.ActivePod.State,
-						ElapsedMs:   s.Pods.ActivePod.ElapsedMs,
-						RemainingMs: s.Pods.ActivePod.RemainingMs,
-						DurationMs:  s.Pods.ActivePod.DurationMs,
-						Armed:       s.Pods.ActivePod.Armed,
-					}
-				}
-				for _, ps := range s.Pods.Pods {
-					ch.Pods = append(ch.Pods, internal.PodStatusInfo{
-						ID:          ps.ID,
-						Type:        ps.Type,
-						State:       ps.State,
-						ElapsedMs:   ps.ElapsedMs,
-						RemainingMs: ps.RemainingMs,
-						DurationMs:  ps.DurationMs,
-						Armed:       ps.Armed,
-					})
-				}
-			}
-			channels[i] = ch
+			channels[i] = playoutChannelInfo(s)
 		}
 		state.Playout = &internal.PlayoutState{Channels: channels}
 	}
