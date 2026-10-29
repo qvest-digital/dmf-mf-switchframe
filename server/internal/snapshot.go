@@ -311,6 +311,8 @@ type DestinationSnapshotConfig struct {
 	MaxBW         int64  `json:"maxBandwidth,omitempty"`
 	MaxConns      int    `json:"maxConns,omitempty"`
 	SCTE35Enabled bool   `json:"scte35Enabled,omitempty"`
+
+	AllowUntrustedCert bool `json:"allowUntrustedCert,omitempty"`
 }
 
 // DestinationSnapshot captures an output destination's config and state.

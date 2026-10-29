@@ -24,6 +24,7 @@ func TestApplyOutputDestinations_AddsPeerDestinationsOnStandby(t *testing.T) {
 		Config: internal.DestinationSnapshotConfig{
 			Type: "srt-caller", Address: "192.0.2.1", Port: 9000, Engine: "b",
 			Encryption: "aes-128", Passphrase: "0123456789abcdef", SCTE35Enabled: true,
+			AllowUntrustedCert: true,
 		},
 		Active: true,
 		Armed:  &armed,
@@ -36,6 +37,7 @@ func TestApplyOutputDestinations_AddsPeerDestinationsOnStandby(t *testing.T) {
 	require.Equal(t, "aes-128", st.Config.Encryption)
 	require.Equal(t, "0123456789abcdef", st.Config.Passphrase)
 	require.True(t, st.Config.SCTE35Enabled)
+	require.True(t, st.Config.AllowUntrustedCert)
 	require.Empty(t, m.SendingDestinationIDs())
 
 	// A later snapshot that stopped it disarms it here too.

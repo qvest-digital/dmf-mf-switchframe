@@ -431,6 +431,8 @@ func (a *App) ApplyOutputDestinations(dests []internal.DestinationSnapshot) erro
 				Name:          c.Name,
 				SCTE35Enabled: c.SCTE35Enabled,
 				Engine:        c.Engine,
+
+				AllowUntrustedCert: c.AllowUntrustedCert,
 			})
 			if err != nil {
 				slog.Warn("snapshot apply: add destination failed", "id", d.ID, "error", err)

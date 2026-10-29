@@ -1007,6 +1007,8 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 					MaxBW:         d.Config.MaxBW,
 					MaxConns:      d.Config.MaxConns,
 					SCTE35Enabled: d.Config.SCTE35Enabled,
+
+					AllowUntrustedCert: d.Config.AllowUntrustedCert,
 				},
 				Active: d.State == "connected" || d.State == "starting",
 				Armed:  &armed,
