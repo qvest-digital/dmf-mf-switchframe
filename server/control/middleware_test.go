@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/metrics"
 )
@@ -390,4 +392,113 @@ func TestMaxBytesMiddleware_LargeUploadPathsExempt(t *testing.T) {
 		require.Equal(t, http.StatusOK, rec.Code,
 			"large-upload path %q must be exempt from the global JSON cap", p)
 	}
+}
+
+// requestsCount reads switchframe_http_requests_total for one label set.
+func requestsCount(method, pattern, status, caller string) float64 {
+	return testutil.ToFloat64(metrics.HTTPRequestsTotal.WithLabelValues(method, pattern, status, caller))
+}
+
+// metricsTestServer wires the API chain as the app does: an outer mux hands
+// /api/ to metrics -> auth -> the API mux.
+func metricsTestServer() http.Handler {
+	api := http.NewServeMux()
+	api.HandleFunc("GET /api/metricstest/clips/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	api.HandleFunc("GET /api/peer/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	operatorCheck := OperatorTokenChecker(func(token string) bool { return token == "op-token" })
+	h := AuthMiddleware("api-token", operatorCheck)(api)
+	h = RouteMetricsMiddleware(api)(h)
+	top := http.NewServeMux()
+	top.Handle("/api/", h)
+	return top
+}
+
+// A request turned away by authentication never reaches the API mux. It
+// must still be counted under its own route, not under the outer mux's
+// "/api/", or a client looping on a rejected call cannot be told from all
+// other traffic.
+func TestRouteMetricsMiddleware_RejectedRequestKeepsRoute(t *testing.T) {
+	h := metricsTestServer()
+	const route = "GET /api/metricstest/clips/{id}"
+	before := requestsCount("GET", route, "401", CallerNone)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/metricstest/clips/abc", nil))
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	require.Equal(t, before+1, requestsCount("GET", route, "401", CallerNone))
+}
+
+// The caller label names the credential a request came in on, so an
+// operator UI, a script holding the API token, a stale token and an
+// anonymous client are told apart.
+func TestRouteMetricsMiddleware_CallerClass(t *testing.T) {
+	h := metricsTestServer()
+	const route = "GET /api/metricstest/clips/{id}"
+	tests := []struct {
+		name   string
+		path   string
+		auth   string
+		route  string
+		status int
+		caller string
+	}{
+		{"api token", "/api/metricstest/clips/1", "Bearer api-token", route, http.StatusOK, CallerToken},
+		{"operator token", "/api/metricstest/clips/2", "Bearer op-token", route, http.StatusOK, CallerOperator},
+		{"unknown token", "/api/metricstest/clips/3", "Bearer stale", route, http.StatusUnauthorized, CallerInvalid},
+		{"no token", "/api/metricstest/clips/4", "", route, http.StatusUnauthorized, CallerNone},
+		{"exempt path", "/api/peer/health", "", "GET /api/peer/health", http.StatusOK, CallerExempt},
+		{"no route", "/api/metricstest/nothing", "Bearer api-token", "unknown", http.StatusNotFound, CallerToken},
+		{"no route, no token", "/api/metricstest/nothing", "", "unknown", http.StatusUnauthorized, CallerNone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status := strconv.Itoa(tt.status)
+			before := requestsCount("GET", tt.route, status, tt.caller)
+			req := httptest.NewRequest("GET", tt.path, nil)
+			if tt.auth != "" {
+				req.Header.Set("Authorization", tt.auth)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			require.Equal(t, tt.status, rec.Code)
+			require.Equal(t, before+1, requestsCount("GET", tt.route, status, tt.caller))
+		})
+	}
+}
+
+// Without authentication in the chain, as in demo mode, the caller is
+// unchecked rather than claimed as any credential.
+func TestMetricsMiddleware_CallerUnchecked(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/metricstest/demo", func(w http.ResponseWriter, r *http.Request) {})
+	h := RouteMetricsMiddleware(mux)(mux)
+	before := requestsCount("GET", "GET /api/metricstest/demo", "200", CallerUnchecked)
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/metricstest/demo", nil))
+	require.Equal(t, before+1, requestsCount("GET", "GET /api/metricstest/demo", "200", CallerUnchecked))
+}
+
+func TestMetricsMiddleware_InFlight(t *testing.T) {
+	var during float64
+	h := MetricsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		during = testutil.ToFloat64(metrics.HTTPRequestsInFlight)
+	}))
+	before := testutil.ToFloat64(metrics.HTTPRequestsInFlight)
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/x", nil))
+	require.Equal(t, before+1, during, "a request is in flight while served")
+	require.Equal(t, before, testutil.ToFloat64(metrics.HTTPRequestsInFlight), "and no longer once answered")
+}
+
+// A made-up method is counted as "other": an unauthenticated client must
+// not be able to mint a series per method it invents.
+func TestRouteMetricsMiddleware_UnknownMethodIsOther(t *testing.T) {
+	h := metricsTestServer()
+	before := requestsCount("other", "unknown", "401", CallerNone)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("FOO", "/api/metricstest/clips/1", nil))
+	require.Equal(t, before+1, requestsCount("other", "unknown", "401", CallerNone))
 }

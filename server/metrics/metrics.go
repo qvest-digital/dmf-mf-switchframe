@@ -20,6 +20,7 @@ func init() {
 	registry.MustRegister(
 		HTTPRequestsTotal,
 		HTTPRequestDuration,
+		HTTPRequestsInFlight,
 	)
 }
 
@@ -34,15 +35,16 @@ func Handler() http.Handler {
 	return promhttp.HandlerFor(registry, promhttp.HandlerOpts{EnableOpenMetrics: true})
 }
 
-// HTTPRequestsTotal counts HTTP requests by method, path pattern, and status code.
+// HTTPRequestsTotal counts HTTP requests by method, path pattern, status
+// code, and caller class.
 var HTTPRequestsTotal = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Namespace: "switchframe",
 		Subsystem: "http",
 		Name:      "requests_total",
-		Help:      "Total HTTP requests by method, path pattern, and status code.",
+		Help:      "Total HTTP requests by method, path pattern, status code, and caller class (token, operator, ticket, invalid, none, exempt, unchecked).",
 	},
-	[]string{"method", "pattern", "status"},
+	[]string{"method", "pattern", "status", "caller"},
 )
 
 // HTTPRequestDuration measures HTTP request latency distribution.
@@ -52,9 +54,20 @@ var HTTPRequestDuration = prometheus.NewHistogramVec(
 		Subsystem: "http",
 		Name:      "request_duration_seconds",
 		Help:      "HTTP request latency distribution.",
-		Buckets:   []float64{.0005, .001, .005, .01, .025, .05, .1, .25, .5},
+		// Up to 30s: uploads, imports and exports run for seconds.
+		Buckets: []float64{.0005, .001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30},
 	},
 	[]string{"method", "pattern"},
+)
+
+// HTTPRequestsInFlight is the number of HTTP requests being served.
+var HTTPRequestsInFlight = prometheus.NewGauge(
+	prometheus.GaugeOpts{
+		Namespace: "switchframe",
+		Subsystem: "http",
+		Name:      "requests_in_flight",
+		Help:      "HTTP requests currently being served.",
+	},
 )
 
 // Metrics holds all Switchframe subsystem Prometheus metrics.
@@ -68,9 +81,8 @@ type Metrics struct {
 	IDRGateDuration    prometheus.Histogram
 
 	// Mixer
-	FramesMixedTotal       prometheus.Counter
-	EncodeErrorsTotal      prometheus.Counter
-	PassthroughBypassTotal prometheus.Counter
+	FramesMixedTotal  prometheus.Counter
+	EncodeErrorsTotal prometheus.Counter
 
 	// Output
 	RingbufOverflowsTotal prometheus.Counter
@@ -85,12 +97,9 @@ type Metrics struct {
 	CBRBurstTicksTotal  prometheus.Counter
 
 	// Pipeline
-	PipelineDecodeErrorsTotal prometheus.Counter
 	PipelineEncodeErrorsTotal prometheus.Counter
 	PipelineFramesProcessed   prometheus.Counter
-	PipelineDecodeDuration    prometheus.Histogram
 	PipelineEncodeDuration    prometheus.Histogram
-	PipelineBlendDuration     prometheus.Histogram
 	NodeProcessDuration       *prometheus.HistogramVec
 
 	// Health
@@ -137,12 +146,12 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		IDRGateEventsTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "switchframe",
 			Name:      "idr_gate_events_total",
-			Help:      "Total IDR gate events (frames gated until first keyframe after cut).",
+			Help:      "Total IDR gate events: an SRT output reconnected and held its output until the next keyframe.",
 		}),
 		IDRGateDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Namespace: "switchframe",
 			Name:      "idr_gate_duration_seconds",
-			Help:      "Duration of IDR gate wait in seconds.",
+			Help:      "Time an SRT output held its output after a reconnect, until a keyframe or the gate timeout.",
 			Buckets:   []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0},
 		}),
 
@@ -158,12 +167,6 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Subsystem: "mixer",
 			Name:      "encode_errors_total",
 			Help:      "Total audio encode errors in the mixer.",
-		}),
-		PassthroughBypassTotal: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "switchframe",
-			Subsystem: "mixer",
-			Name:      "passthrough_bypass_total",
-			Help:      "Total audio frames bypassed via passthrough (single source at 0 dB).",
 		}),
 
 		// Output
@@ -219,12 +222,6 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		}),
 
 		// Pipeline
-		PipelineDecodeErrorsTotal: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: "switchframe",
-			Subsystem: "pipeline",
-			Name:      "decode_errors_total",
-			Help:      "Total video pipeline decode errors (fallback to passthrough).",
-		}),
 		PipelineEncodeErrorsTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "switchframe",
 			Subsystem: "pipeline",
@@ -237,26 +234,12 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name:      "frames_processed_total",
 			Help:      "Total video frames processed through the YUV pipeline.",
 		}),
-		PipelineDecodeDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Namespace: "switchframe",
-			Subsystem: "pipeline",
-			Name:      "decode_duration_seconds",
-			Help:      "Video pipeline decode latency.",
-			Buckets:   []float64{0.001, 0.005, 0.01, 0.02, 0.033, 0.05, 0.1},
-		}),
 		PipelineEncodeDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Namespace: "switchframe",
 			Subsystem: "pipeline",
 			Name:      "encode_duration_seconds",
 			Help:      "Video pipeline encode latency.",
 			Buckets:   []float64{0.001, 0.005, 0.01, 0.02, 0.033, 0.05, 0.1},
-		}),
-		PipelineBlendDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Namespace: "switchframe",
-			Subsystem: "pipeline",
-			Name:      "blend_duration_seconds",
-			Help:      "Transition blend latency.",
-			Buckets:   []float64{0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01},
 		}),
 		NodeProcessDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "switchframe",
@@ -363,17 +346,13 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.IDRGateDuration,
 		m.FramesMixedTotal,
 		m.EncodeErrorsTotal,
-		m.PassthroughBypassTotal,
 		m.RingbufOverflowsTotal,
 		m.SRTReconnectsTotal,
 		m.RecordingBytesTotal,
 		m.SRTBytesTotal,
-		m.PipelineDecodeErrorsTotal,
 		m.PipelineEncodeErrorsTotal,
 		m.PipelineFramesProcessed,
-		m.PipelineDecodeDuration,
 		m.PipelineEncodeDuration,
-		m.PipelineBlendDuration,
 		m.NodeProcessDuration,
 		m.SourceStatusChangesTotal,
 		m.CBRNullPacketsTotal,
