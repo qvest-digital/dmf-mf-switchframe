@@ -87,10 +87,13 @@ type mxlNMOS struct {
 	conn      *nmos.MXLConnectionServer
 	receivers map[string]mxlReceiverRef
 	order     []string
-	reg       *nmos.RegistrationClient
-	query     *nmos.QueryClient
-	srv       *http.Server
-	http      *http.Client
+	// bookings holds each named input's booked flows, by input name.
+	bookings map[string]mxlBooking
+	state    mxlNMOSState
+	reg      *nmos.RegistrationClient
+	query    *nmos.QueryClient
+	srv      *http.Server
+	http     *http.Client
 
 	mu         sync.Mutex
 	registered bool
@@ -133,6 +136,7 @@ func (a *App) initMXLNMOS() error {
 		return err
 	}
 	a.mxlNMOS = n
+	a.restoreMXLNMOS(context.Background())
 
 	addr := fmt.Sprintf(":%d", n.cfg.Port)
 	ln, err := net.Listen("tcp", addr)
@@ -203,6 +207,7 @@ func (a *App) newMXLNMOS() (*mxlNMOS, error) {
 		domainID:    domainID,
 		store:       nmos.NewResourceStore(),
 		receivers:   map[string]mxlReceiverRef{},
+		bookings:    map[string]mxlBooking{},
 		http:        &http.Client{Timeout: 5 * time.Second},
 		forwardKick: make(chan struct{}, 1),
 	}
@@ -227,6 +232,10 @@ func (a *App) newMXLNMOS() (*mxlNMOS, error) {
 	if err := a.buildMXLNMOSResources(n); err != nil {
 		return nil, err
 	}
+	if a.cfg.StateDir != "" {
+		n.state.path = filepath.Join(a.cfg.StateDir, mxlNMOSStateFile)
+	}
+	n.state.load(n.receivers)
 	return n, nil
 }
 
@@ -294,6 +303,7 @@ func (a *App) buildMXLNMOSResources(n *mxlNMOS) error {
 	// for a booking without named inputs; a registry refuses a null.
 	rxIDs := []string{}
 	for _, spec := range specs {
+		n.bookings[spec.Name] = mxlBooking{Video: spec.Video, Audio: spec.Audio, Data: spec.Data}
 		essences := []mxlEssence{essenceVideo, essenceAudio}
 		if spec.Data != "" {
 			essences = append(essences, essenceData)
@@ -593,6 +603,7 @@ func (a *App) activateMXLReceiver(ctx context.Context, id string, active nmos.MX
 		return err
 	}
 	n.store.UpdateReceiverSubscription(id, active.SenderID, active.MasterEnable)
+	n.saveMXLActivation(id, active)
 	go a.publishMXLReceiver(id)
 	// One that changes nothing is not passed on, which also ends the
 	// round trip of an activation the peer could not mark as its own.
@@ -834,6 +845,7 @@ func (a *App) reconcileMXLNMOS(ctx context.Context) (done bool, err error) {
 		}
 		n.conn.SetReceiverActive(id, peerActive)
 		n.store.UpdateReceiverSubscription(id, peerActive.SenderID, peerActive.MasterEnable)
+		n.saveMXLActivation(id, peerActive)
 		go a.publishMXLReceiver(id)
 		slog.Info("mxl nmos: adopted peer connection", "receiver", id, "flow", peerActive.FlowID())
 	}
