@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.31](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.30...mxl-v1.0.0-rc.31) (2026-10-29)
+
+
+### Bug Fixes
+
+* **ui:** stop requests at a refused token and back polls off ([#130](https://github.com/qvest-digital/dmf-mf-switchframe/issues/130)) ([338f788](https://github.com/qvest-digital/dmf-mf-switchframe/commit/338f788e0d39f81ab9b1cbbdb8b6b20f95652e1d))
+
 ## [1.0.0-rc.30](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.29...mxl-v1.0.0-rc.30) (2026-10-29)
 
 
