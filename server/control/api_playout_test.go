@@ -903,3 +903,58 @@ func TestSanitizePlaylistName(t *testing.T) {
 		})
 	}
 }
+
+func TestPlayoutRoutes_EndLoop(t *testing.T) {
+	api := setupTestPlayoutAPI(t)
+
+	body := `{
+		"id": "pl-1",
+		"name": "Loop Test",
+		"default_transition": {"type": "cut"},
+		"items": [
+			{"id": "item-1", "type": "clip", "title": "Loop", "asset_uri": "local:///tmp/test1.ts", "loop": true},
+			{"id": "item-2", "type": "live", "title": "Live", "source": "camera1"}
+		]
+	}`
+	post := func(path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+		return rec
+	}
+
+	require.Equal(t, http.StatusBadRequest, post("/api/playout/channels/1/end-loop", "").Code, "not on air")
+	require.Equal(t, http.StatusOK, post("/api/playout/channels/1/load", body).Code)
+	require.Equal(t, http.StatusOK, post("/api/playout/channels/1/start", "").Code)
+	defer post("/api/playout/channels/1/stop", "")
+
+	rec := post("/api/playout/channels/1/end-loop", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var ch playout.ChannelStatus
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&ch))
+	require.True(t, ch.Looping)
+	require.True(t, ch.LoopExit)
+}
+
+// Cue top is a jump to the first item on a channel that is not on air.
+func TestPlayoutRoutes_JumpOffAirCues(t *testing.T) {
+	api := setupTestPlayoutAPI(t)
+
+	loadReq := httptest.NewRequest("POST", "/api/playout/channels/1/load", strings.NewReader(validPlaylistJSON()))
+	loadReq.Header.Set("Content-Type", "application/json")
+	loadRec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(loadRec, loadReq)
+	require.Equal(t, http.StatusOK, loadRec.Code)
+
+	jumpReq := httptest.NewRequest("POST", "/api/playout/channels/1/jump", strings.NewReader(`{"itemId": "item-1"}`))
+	jumpReq.Header.Set("Content-Type", "application/json")
+	jumpRec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(jumpRec, jumpReq)
+	require.Equal(t, http.StatusOK, jumpRec.Code, jumpRec.Body.String())
+
+	var ch playout.ChannelStatus
+	require.NoError(t, json.NewDecoder(jumpRec.Body).Decode(&ch))
+	require.Equal(t, "cued", ch.State)
+	require.Equal(t, 0, ch.ItemIndex)
+}

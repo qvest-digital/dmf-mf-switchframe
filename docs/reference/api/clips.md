@@ -75,34 +75,47 @@
 
 ### `GET /api/clips/recordings`
 
-**Purpose:** list `.ts` files that can be imported as clips: in the recording directory, in `--recording-archive-dir` and in each engine's subdirectory of it.
+**Purpose:** list the `.ts` files in the recording directory, in `--recording-archive-dir` and in each engine's subdirectory of it, with how far along each one is.
 **Handler:** `(*API).handleClipRecordings`.
 
-**Response 200:** `[{ "filename": "...", "sizeBytes": ..., "modifiedMs": ... }, ...]`.
+**Response 200:** `[{ "filename": "...", "path": "...", "byteSize": ..., "modTime": "...", "state": "...", "error": "..." }, ...]`. `state` is `recording` (the file the running recording writes), `finalizing` (closed, still being copied into the archive), `ready`, or `failed` (empty: no program video reached the recorder; `error` says so).
+
+---
+
+### `POST /api/clips/recordings/download-url`
+
+**Purpose:** issue a download URL for one recording file. A browser download cannot send the `Authorization` header, so the URL carries a ticket valid for one request within a minute, for that file only.
+**Handler:** `(*API).handleRecordingDownloadURL`.
+
+**Request body:** `{ "path": "/abs/path/to/recording.ts" }`.
+
+**Response 200:** `{ "url": "/api/clips/recordings/download?path=...&ticket=..." }`.
+
+**Errors:** 400 (missing path), 403 (path outside the recording directories), 404.
 
 ---
 
 ### `GET /api/clips/recordings/download`
 
 **Purpose:** stream a recording file back to the client.
-**Handler:** `(*API).handleRecordingDownload`. **Query:** `?filename=<basename>`.
+**Handler:** `(*API).handleRecordingDownload`. **Query:** `?path=<absolute path>`, plus `&ticket=` in place of the `Authorization` header.
 
 **Response 200:** `video/mp2t` with `Content-Disposition: attachment`.
 
-**Errors:** 400 (missing/invalid filename), 404.
+**Errors:** 400 (missing/invalid path), 401 (ticket expired, used or issued for another file), 403 (path outside the recording directories), 404.
 
 ---
 
 ### `POST /api/clips/from-recording`
 
-**Purpose:** import a saved recording into the clip library (no transcode — the `.ts` file is referenced directly).
+**Purpose:** copy a recording into the clip store as a new clip.
 **Handler:** `(*API).handleClipFromRecording`.
 
-**Request body:** `{ "filename": "recording-2026-04-17T12-30-00.ts", "name": "show-open" }`.
+**Request body:** `{ "path": "/abs/path/to/recording.ts" }`.
 
-**Response 201:** `internal.ClipInfo`.
+**Response 201:** `clip.Clip`.
 
-**Errors:** 400 (invalid name / filename), 404 (file not in recording dir), 409 (already exists).
+**Errors:** 400 (missing path, path outside the recording directories, empty recording, or no playable video).
 
 ## Clip players
 

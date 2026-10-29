@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -530,18 +531,31 @@ func TestHandleClipRecordingsWithFiles(t *testing.T) {
 	require.True(t, names["program_20260314_130000_001.ts"])
 }
 
-func TestHandleClipRecordingsExcludesActiveRecording(t *testing.T) {
+// Every recording file is listed with how far along it is, so the operator
+// sees a running recording grow, a stopped one finalize, and an empty one
+// fail, rather than a file that silently stays at 0 B.
+func TestHandleClipRecordingsReportsStates(t *testing.T) {
 	recDir := t.TempDir()
-	activeFile := "program_20260314_120000_000.ts"
-	require.NoError(t, os.WriteFile(filepath.Join(recDir, activeFile), make([]byte, 1024), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(recDir, "program_20260314_130000_001.ts"), make([]byte, 2048), 0o644))
+	files := map[string]int{
+		"program_active_001.ts":     1024,
+		"program_finalizing_001.ts": 4096,
+		"program_done_001.ts":       2048,
+		"program_empty_001.ts":      0,
+	}
+	for name, size := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(recDir, name), make([]byte, size), 0o644))
+	}
 
 	clipDir := t.TempDir()
 	store, err := clip.NewStore(clipDir, 100*1024*1024)
 	require.NoError(t, err)
 	mgr := clip.NewManager(store, clip.ManagerConfig{})
 
-	mock := &mockOutputManager{recording: true, recFilename: activeFile}
+	mock := &mockOutputManager{
+		recording:   true,
+		recFilename: "program_active_001.ts",
+		finalizing:  []string{"program_finalizing_001.ts"},
+	}
 	programRelay := distribution.NewRelay()
 	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw,
@@ -557,11 +571,47 @@ func TestHandleClipRecordingsExcludesActiveRecording(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	var list []RecordingFileInfo
-	err = json.NewDecoder(rec.Body).Decode(&list)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&list))
+	got := map[string]RecordingFileInfo{}
+	for _, f := range list {
+		got[f.Filename] = f
+	}
+	require.Len(t, got, 4)
+	require.Equal(t, RecordingStateRecording, got["program_active_001.ts"].State)
+	require.EqualValues(t, 1024, got["program_active_001.ts"].ByteSize, "a running recording shows its size so far")
+	require.Equal(t, RecordingStateFinalizing, got["program_finalizing_001.ts"].State)
+	require.Equal(t, RecordingStateReady, got["program_done_001.ts"].State)
+	require.Empty(t, got["program_done_001.ts"].Error)
+	require.Equal(t, RecordingStateFailed, got["program_empty_001.ts"].State)
+	require.Contains(t, got["program_empty_001.ts"].Error, "no program video")
+}
+
+// Importing an empty recording names the cause instead of the probe error
+// on a temporary copy ("no video stream found: empty file: .../rec-import-...").
+func TestHandleClipFromRecordingEmptyFile(t *testing.T) {
+	recDir := t.TempDir()
+	empty := filepath.Join(recDir, "program_empty_001.ts")
+	require.NoError(t, os.WriteFile(empty, nil, 0o644))
+
+	clipDir := t.TempDir()
+	store, err := clip.NewStore(clipDir, 100*1024*1024)
 	require.NoError(t, err)
-	// Only the non-active file should be listed.
-	require.Len(t, list, 1)
-	require.Equal(t, "program_20260314_130000_001.ts", list[0].Filename)
+	mgr := clip.NewManager(store, clip.ManagerConfig{})
+	sw := switcher.NewTestSwitcher(t, distribution.NewRelay())
+	api := NewAPI(sw, WithClipManager(mgr), WithClipStore(store), WithRecordingDir(recDir))
+
+	body, _ := json.Marshal(map[string]string{"path": empty})
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, httptest.NewRequest("POST", "/api/clips/from-recording", bytes.NewReader(body)))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "recording is empty")
+	require.NotContains(t, rec.Body.String(), "rec-import-")
+	entries, err := os.ReadDir(clipDir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		require.False(t, strings.HasPrefix(e.Name(), "rec-import-"), "no temporary copy is left behind")
+	}
+	require.Empty(t, store.List())
 }
 
 func TestHandleClipFromRecordingPathTraversal(t *testing.T) {

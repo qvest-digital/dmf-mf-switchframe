@@ -1223,6 +1223,32 @@ export function graphicsSetRect(layerId: number, rect: { x: number; y: number; w
 	});
 }
 
+/** Stores a layer's name and/or panel settings on the engine. */
+export function graphicsSetLayerSettings(
+	layerId: number,
+	settings: { name?: string; config?: Record<string, unknown> | null },
+): Promise<GraphicsState> {
+	return patch(`/api/graphics/${layerId}`, settings);
+}
+
+/** Restacks every layer; ids are listed bottom to top. */
+export function graphicsSetLayerOrder(ids: number[]): Promise<GraphicsState> {
+	return request('/api/graphics/order', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ ids }),
+	});
+}
+
+export function graphicsExportLayers(): Promise<unknown> {
+	return request('/api/graphics/export');
+}
+
+/** Replaces every layer with an export's, keeping their ids. */
+export function graphicsImportLayers(doc: unknown): Promise<GraphicsState> {
+	return post('/api/graphics/import', doc);
+}
+
 export function graphicsSetZOrder(layerId: number, zOrder: number): Promise<GraphicsState> {
 	return request(`/api/graphics/${layerId}/zorder`, {
 		method: 'PUT',
@@ -1941,17 +1967,23 @@ export function listRecordings(): Promise<RecordingFileInfo[]> {
 	return request('/api/clips/recordings');
 }
 
-/** Fetch recordings from a specific engine URL. Returns [] on failure. */
-export async function listRecordingsFromEngine(engineUrl: string): Promise<RecordingFileInfo[]> {
+/** Recordings of one engine, or null when it does not answer in time. */
+async function fetchEngineRecordings(engineUrl: string): Promise<RecordingFileInfo[] | null> {
 	try {
 		const res = await fetch(`${engineUrl}/api/clips/recordings`, {
 			headers: authHeaders(),
+			signal: AbortSignal.timeout(ENGINE_FETCH_TIMEOUT_MS),
 		});
-		if (!res.ok) return [];
-		return res.json();
+		if (!res.ok) return null;
+		return await res.json();
 	} catch {
-		return [];
+		return null;
 	}
+}
+
+/** Fetch recordings from a specific engine URL. Returns [] on failure. */
+export async function listRecordingsFromEngine(engineUrl: string): Promise<RecordingFileInfo[]> {
+	return (await fetchEngineRecordings(engineUrl)) ?? [];
 }
 
 /** Fetch recordings from all engines, grouped by engine. Single-engine falls back to standard list. */
@@ -1963,16 +1995,55 @@ export async function listRecordingsDualEngine(): Promise<EngineRecordingGroup[]
 	}
 
 	const results = await Promise.allSettled(
-		engines.map(async (eng) => ({
-			engineId: eng.id,
-			engineUrl: eng.url,
-			recordings: await listRecordingsFromEngine(eng.url),
-		}))
+		engines.map(async (eng): Promise<EngineRecordingGroup> => {
+			const recordings = await fetchEngineRecordings(eng.url);
+			return {
+				engineId: eng.id as EngineRecordingGroup['engineId'],
+				engineUrl: eng.url,
+				recordings: recordings ?? [],
+				unreachable: recordings === null,
+			};
+		})
 	);
 
 	return results
 		.filter((r): r is PromiseFulfilledResult<EngineRecordingGroup> => r.status === 'fulfilled')
 		.map(r => r.value);
+}
+
+/**
+ * A download URL for one recording file on one engine. A browser download
+ * cannot send the Authorization header, so the engine hands out a
+ * single-use link that stands in for it for a minute.
+ */
+export async function recordingDownloadUrl(engineUrl: string, path: string): Promise<string> {
+	const res = await fetch(`${engineUrl}/api/clips/recordings/download-url`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', ...authHeaders() },
+		body: JSON.stringify({ path }),
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	const { url } = await res.json();
+	return `${engineUrl}${url}`;
+}
+
+/**
+ * The program confidence thumbnail of the engine at baseUrl ('' for this
+ * origin), or null while the engine has none yet. Fetched rather than set as
+ * an <img src> because an image request cannot carry the bearer token.
+ */
+export async function fetchConfidenceThumbnail(baseUrl: string, signal?: AbortSignal): Promise<Blob | null> {
+	const res = await fetch(`${baseUrl}/api/output/confidence`, {
+		headers: authHeaders(),
+		cache: 'no-store',
+		signal,
+	});
+	if (res.status === 204) return null;
+	if (!res.ok) throw new SwitchApiError(res.status, `HTTP ${res.status}`);
+	return res.blob();
 }
 
 /** Import a recording from a specific engine. The file path is local to that engine. */
@@ -2327,6 +2398,11 @@ export function playoutStop(channelId: number): Promise<void> {
 
 export function playoutNext(channelId: number): Promise<void> {
 	return post(`/api/playout/channels/${channelId}/next`, {});
+}
+
+/** Let the looping clip on air finish its current pass, then move on. */
+export function playoutEndLoop(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/end-loop`, {});
 }
 
 /**

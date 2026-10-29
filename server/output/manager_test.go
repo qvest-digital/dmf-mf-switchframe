@@ -2,6 +2,7 @@ package output
 
 import (
 	"context"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -1272,4 +1273,57 @@ func TestManager_StartSRTOutputDialDoesNotBlockControlPlane(t *testing.T) {
 	close(releaseDial)
 	require.NoError(t, <-startDone)
 	require.True(t, mgr.SRTOutputStatus().Active)
+}
+
+// The control room learns that a stopped recording recorded nothing, and
+// the next start clears it.
+func TestOutputManager_EmptyRecordingReportedUntilNextStart(t *testing.T) {
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+	require.NoError(t, mgr.StopRecording())
+
+	status := mgr.RecordingStatus()
+	require.False(t, status.Active)
+	require.Equal(t, ErrNothingRecorded.Error(), status.Error)
+	require.NotEmpty(t, status.Filename)
+
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+	status = mgr.RecordingStatus()
+	require.True(t, status.Active)
+	require.Empty(t, status.Error)
+}
+
+// Files still being copied into the archive are reported as finalizing,
+// also after the recording that wrote them has stopped, and forgotten once
+// the copy is done.
+func TestOutputManager_FinalizingRecordings(t *testing.T) {
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+	mgr.mu.Lock()
+	rec := mgr.recorder
+	mgr.mu.Unlock()
+	require.NoError(t, mgr.StopRecording())
+	require.Empty(t, mgr.FinalizingRecordings())
+
+	rec.mu.Lock()
+	rec.inArchive = map[string]bool{filepath.Join(dir, "program_x_001.ts"): true}
+	rec.mu.Unlock()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+	require.NoError(t, mgr.StopRecording())
+	require.Equal(t, []string{"program_x_001.ts"}, mgr.FinalizingRecordings(),
+		"an older recorder's copy is still tracked after a newer one stopped")
+
+	rec.mu.Lock()
+	rec.inArchive = nil
+	rec.mu.Unlock()
+	require.Empty(t, mgr.FinalizingRecordings())
+	mgr.mu.Lock()
+	require.Len(t, mgr.stoppedRecorders, 1, "only the newest stopped recorder is kept")
+	mgr.mu.Unlock()
 }

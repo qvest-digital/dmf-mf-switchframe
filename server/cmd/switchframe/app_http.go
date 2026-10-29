@@ -49,11 +49,13 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	apiMux := http.NewServeMux()
 	a.api.RegisterOnMux(apiMux)
 
-	// Middleware chain matches ExtraRoutes: CORS -> logger -> metrics -> auth -> operator -> maxbytes
+	// Middleware chain matches ExtraRoutes: CORS -> logger -> metrics -> download ticket -> auth -> operator -> maxbytes
 	var apiHandler http.Handler = apiMux
 	apiHandler = control.MaxBytesMiddleware(apiHandler)
+	unauthenticated := apiHandler
 	apiHandler = a.operatorMW(apiHandler)
 	apiHandler = a.authMW(apiHandler)
+	apiHandler = a.api.DownloadTicketMiddleware(apiHandler, unauthenticated)
 	apiHandler = control.MetricsMiddleware(apiHandler)
 	apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
 	apiHandler = control.CORSMiddleware(a.cfg.AllowedOrigins)(apiHandler)

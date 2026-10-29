@@ -140,6 +140,21 @@ const STALL_CHECK_INTERVAL_MS = 500;
 /** Extra time a reconnected source has for its first frame: certificate
  * lookup, QUIC and MoQ handshakes and the subscriptions come before it. */
 const RECONNECT_GRACE_MS = 3000;
+/** Delay before reconnecting a source whose transport closed or failed to
+ * connect; it doubles with each failed attempt up to RECONNECT_MAX_MS. */
+export const RECONNECT_BASE_MS = 500;
+export const RECONNECT_MAX_MS = 4000;
+/** How long a transport has to deliver its catalog. A dial made while the
+ * network is down can hang in the QUIC handshake for longer than the
+ * outage lasts; it is abandoned and dialled again. */
+export const CONNECT_TIMEOUT_MS = 4000;
+/** How long a transport has to stay up before its loss starts the
+ * backoff afresh. An engine that accepts a session and drops it at once
+ * would otherwise be dialled at the base delay for as long as it flaps. */
+export const RECONNECT_STABLE_MS = 10_000;
+/** Least time between two early dials of the sources waiting to
+ * reconnect, set off by another source of the pipeline coming up. */
+export const DIAL_WAITING_MIN_MS = 1000;
 
 /**
  * Whether the page has had a user gesture, which a browser requires before
@@ -171,6 +186,25 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	const disconnectedWithFrames = new Set<string>();
 	/** Interval handle for stall detection. */
 	let stallCheckInterval: ReturnType<typeof setInterval> | null = null;
+	/** Sources whose transport should be up: connected and not since
+	 * disconnected or removed. A transport of one that closes, or fails to
+	 * connect, is reconnected; nothing else would. */
+	const wanted = new Set<string>();
+	/** Pending reconnect of each source, and the attempts made since its
+	 * last transport delivered a catalog. */
+	const reconnects = new Map<string, { timer: ReturnType<typeof setTimeout> | null; attempts: number }>();
+	/** When each source's current transport delivered its catalog. */
+	const upSince = new Map<string, number>();
+	/** When waiting sources were last dialled early. */
+	let lastDialWaiting = -Infinity;
+	/** Deadline of each source's transport that has not delivered its
+	 * catalog yet. */
+	const connectDeadlines = new Map<string, ReturnType<typeof setTimeout>>();
+	function clearConnectDeadline(key: string): void {
+		const t = connectDeadlines.get(key);
+		if (t) clearTimeout(t);
+		connectDeadlines.delete(key);
+	}
 
 	function createSourceMedia(key: string): SourceMedia {
 		const buffers = new Map<string, VideoRenderBuffer>();
@@ -274,11 +308,22 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		return key === 'program' || key === 'program-preview';
 	}
 
-	function makeCallbacks(key: string): MoQTransportCallbacks {
+	/** Callbacks of one transport of a source. `current` tells whether that
+	 * transport is still the source's: a replaced or closed transport can
+	 * still deliver, and its frames would interleave with the new one's in
+	 * the same decoder. */
+	function makeCallbacks(key: string, current: () => boolean): MoQTransportCallbacks {
 		return {
 			onTrackInfo(tracks: TrackInfo[]) {
 				const source = sources.get(key);
-				if (!source || destroyed) return;
+				if (!source || destroyed || !current()) return;
+				// The transport is up, and the engine is reachable again, so
+				// every source still waiting dials now rather than at the end
+				// of its backoff. Its own backoff starts afresh only once it
+				// has stayed up: see transportLost.
+				clearConnectDeadline(key);
+				upSince.set(key, Date.now());
+				dialWaiting();
 
 				// Notify once that MoQ is active (catalog received = WebTransport
 				// + MoQ handshake succeeded, control data will flow on state changes).
@@ -334,7 +379,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				description: Uint8Array | null,
 			) {
 				const source = sources.get(key);
-				if (!source) return;
+				if (!source || !current()) return;
 
 				// Group-level skip-to-latest: when a keyframe arrives and we've
 				// SKIPPED groups (gap > 1), flush stale decoder state and jump
@@ -372,11 +417,13 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				_groupID: number,
 				_trackIndex: number,
 			) {
+				if (!current()) return;
 				const timestampUs = Math.round(timestamp * 1_000_000 / 90_000);
 				feedAudioFrame(key, data, timestampUs);
 			},
 
 			onCaptionFrame(caption: CaptionData, timestamp: number) {
+				if (!current()) return;
 				if (key === 'program-preview' && config?.onProgramCaptionFrame) {
 					config.onProgramCaptionFrame(caption, timestamp);
 				}
@@ -387,38 +434,97 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			},
 
 			onControlState(data: Uint8Array) {
+				if (!current()) return;
 				if (config?.onControlState) {
 					config.onControlState(data);
 				}
 			},
 
 			onClose() {
-				// Transport closed -- could reconnect.
-				// Reset latestGroupID so reconnection starts fresh
-				// (new Prism relay restarts group IDs from 1).
-				const source = sources.get(key);
-				if (source) {
-					source.transport = null;
-					source.latestGroupID = 0;
-
-					// Flush decoder and every render buffer to prevent stale frames
-					// lingering during engine failover. Without this, the renderer
-					// shows the last decoded frame frozen for up to 3 seconds (stall
-					// threshold) before failover triggers.
-					if (source.videoDecoder) {
-						try { source.videoDecoder.flush(); } catch { /* decoder may be in error state */ }
-					}
-				}
+				if (current()) transportLost(key);
 			},
 
 			onError(err: string) {
+				if (!current()) return;
 				console.warn(`[MediaPipeline] source "${key}" error:`, err);
-				const source = sources.get(key);
-				if (source?.transport) {
-					source.transport.close();
-				}
+				transportLost(key);
 			},
 		};
+	}
+
+	/**
+	 * The current transport of a source closed or failed. Drops it and
+	 * everything it delivered: the decoder waits for a keyframe of the next
+	 * transport rather than decoding its deltas against old references, and
+	 * no backlog of the old stream is left in the render buffers. A
+	 * reconnect of the new relay session starts its group IDs afresh.
+	 */
+	function transportLost(key: string): void {
+		const source = sources.get(key);
+		if (!source?.transport) return;
+		const transport = source.transport;
+		source.transport = null;
+		clearConnectDeadline(key);
+		try { transport.close(); } catch { /* already closed */ }
+		source.latestGroupID = 0;
+		try { source.videoDecoder.flush(); } catch { /* decoder may be in error state */ }
+		for (const buf of source.buffers.values()) buf.clear();
+		const up = upSince.get(key);
+		upSince.delete(key);
+		if (up !== undefined && Date.now() - up >= RECONNECT_STABLE_MS) {
+			const r = reconnects.get(key);
+			if (r) r.attempts = 0;
+		}
+		scheduleReconnect(key);
+	}
+
+	function scheduleReconnect(key: string): void {
+		if (destroyed || !wanted.has(key)) return;
+		let r = reconnects.get(key);
+		if (!r) {
+			r = { timer: null, attempts: 0 };
+			reconnects.set(key, r);
+		}
+		if (r.timer) return;
+		const backoff = Math.min(RECONNECT_BASE_MS * 2 ** r.attempts, RECONNECT_MAX_MS);
+		r.attempts++;
+		// Jitter, so every source of a page does not dial at the same moment.
+		const delay = backoff * (0.75 + Math.random() * 0.5);
+		r.timer = setTimeout(() => {
+			r!.timer = null;
+			const source = sources.get(key);
+			if (destroyed || !source || !wanted.has(key) || source.transport) return;
+			openTransport(key, source);
+		}, delay);
+	}
+
+	function cancelReconnect(key: string): void {
+		const r = reconnects.get(key);
+		if (r?.timer) clearTimeout(r.timer);
+		reconnects.delete(key);
+	}
+
+	/** Dial at once every source waiting for a reconnect: the browser
+	 * reports the network back, or a transport of this pipeline came up. */
+	function dialWaiting(): void {
+		const now = Date.now();
+		if (now - lastDialWaiting < DIAL_WAITING_MIN_MS) return;
+		lastDialWaiting = now;
+		for (const [key, r] of reconnects) {
+			if (!r.timer) continue;
+			clearTimeout(r.timer);
+			r.timer = null;
+			const source = sources.get(key);
+			if (source && wanted.has(key) && !source.transport) openTransport(key, source);
+		}
+	}
+
+	/** The browser reports the network back: every waiting source dials
+	 * now, its backoff started afresh. */
+	function handleOnline(): void {
+		for (const r of reconnects.values()) r.attempts = 0;
+		lastDialWaiting = -Infinity;
+		dialWaiting();
 	}
 
 	/** Compare two avcC descriptions for byte equality. */
@@ -521,6 +627,11 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		const source = sources.get(key);
 		if (!source) return;
 
+		wanted.delete(key);
+		cancelReconnect(key);
+		clearConnectDeadline(key);
+		upSince.delete(key);
+
 		// Clean up stall tracking
 		lastFrameTime.delete(key);
 		disconnectedWithFrames.delete(key);
@@ -557,28 +668,48 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	function connectSource(key: string): void {
 		const source = sources.get(key);
 		if (!source) return;
+		wanted.add(key);
 		if (source.transport) return; // already connected
+		cancelReconnect(key);
 		// A source that delivered frames before it was disconnected must
 		// deliver again: count its stall window from the reconnect, after
 		// the time the reconnect itself takes.
 		if (disconnectedWithFrames.delete(key)) lastFrameTime.set(key, performance.now() + RECONNECT_GRACE_MS);
+		openTransport(key, source);
+	}
 
-		const callbacks = makeCallbacks(key);
+	function openTransport(key: string, source: SourceMedia): void {
+		const current = () => sources.get(key) === source && source.transport === transport;
 		// program-preview gets high priority (16) so QUIC schedules it
 		// ahead of multiview tiles (96) during bandwidth contention.
 		const videoPriority = key === "program-preview" ? 16 : 96;
-		const transport = new MoQTransport(key, callbacks, videoPriority, config?.engineBaseUrl);
+		const transport = new MoQTransport(key, makeCallbacks(key, current), videoPriority, config?.engineBaseUrl);
 		source.transport = transport;
+		clearConnectDeadline(key);
+		connectDeadlines.set(key, setTimeout(() => {
+			connectDeadlines.delete(key);
+			if (!current()) return;
+			console.warn(`[MediaPipeline] source "${key}" did not connect within ${CONNECT_TIMEOUT_MS} ms`);
+			transportLost(key);
+		}, CONNECT_TIMEOUT_MS));
 
-		// Connect asynchronously
+		// Connect asynchronously. A transport closed on purpose meanwhile,
+		// by disconnectSource or removeSource, rejects too; that is no
+		// failure.
 		transport.connect().catch((err) => {
+			if (!current()) return;
 			console.warn(`[MediaPipeline] Failed to connect source "${key}":`, err);
+			transportLost(key);
 		});
 	}
 
 	function disconnectSource(key: string): void {
 		const source = sources.get(key);
 		if (!source) return;
+		wanted.delete(key);
+		cancelReconnect(key);
+		clearConnectDeadline(key);
+		upSince.delete(key);
 		// A disconnected source receives no frames, so it must not read as
 		// stalled; connectSource re-arms it.
 		if (lastFrameTime.delete(key)) disconnectedWithFrames.add(key);
@@ -693,6 +824,11 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		stopStallDetection();
 		document.removeEventListener("visibilitychange", handleVisibilityChange);
 		window.removeEventListener("focus", handleWindowFocus);
+		window.removeEventListener("online", handleOnline);
+		for (const key of Array.from(reconnects.keys())) cancelReconnect(key);
+		for (const key of Array.from(connectDeadlines.keys())) clearConnectDeadline(key);
+		upSince.clear();
+		wanted.clear();
 		for (const key of Array.from(sources.keys())) {
 			removeSource(key);
 		}
@@ -756,6 +892,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 	document.addEventListener("visibilitychange", handleVisibilityChange);
 	window.addEventListener("focus", handleWindowFocus);
+	window.addEventListener("online", handleOnline);
 
 	/** Track which sources should be unmuted (set before audio decoder is ready). */
 	const unmutedSources = new Set<string>();

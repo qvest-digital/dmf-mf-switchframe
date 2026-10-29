@@ -411,4 +411,58 @@ describe('AudioMixer', () => {
 			expect(warning).toBeTruthy();
 		});
 	});
+
+	// Two faders moved within one send interval: each channel's last
+	// position is what its engine ends up with.
+	describe('fader sends', () => {
+		it('sends the final level of every channel moved together', async () => {
+			vi.useFakeTimers();
+			try {
+				const api = await import('$lib/api/switch-api');
+				const setLevel = vi.mocked(api.setLevel);
+				setLevel.mockClear();
+				const { container } = render(AudioMixer, { props: { state } });
+				const [f1, f2] = Array.from(container.querySelectorAll('.channel-strip .fader')) as HTMLInputElement[];
+				await fireEvent.input(f1, { target: { value: '-10' } });
+				await fireEvent.input(f1, { target: { value: '-12' } });
+				await fireEvent.input(f2, { target: { value: '-20' } });
+				await vi.advanceTimersByTimeAsync(200);
+				const last = new Map(setLevel.mock.calls.map(([src, lvl]) => [src, lvl]));
+				expect(last.get('cam1')).toBe(-12);
+				expect(last.get('cam2')).toBe(-20);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('keeps one level request per channel in flight', async () => {
+			vi.useFakeTimers();
+			try {
+				const api = await import('$lib/api/switch-api');
+				const setLevel = vi.mocked(api.setLevel);
+				setLevel.mockClear();
+				let answer: (v: unknown) => void = () => {};
+				setLevel.mockImplementation(() => new Promise((r) => { answer = r; }) as never);
+				const { container } = render(AudioMixer, { props: { state } });
+				const fader = container.querySelector('.channel-strip .fader') as HTMLInputElement;
+				for (let i = 0; i < 30; i++) {
+					await fireEvent.input(fader, { target: { value: String(-i) } });
+					await vi.advanceTimersByTimeAsync(16);
+				}
+				expect(setLevel).toHaveBeenCalledTimes(1);
+				answer({});
+				await vi.advanceTimersByTimeAsync(0);
+				expect(setLevel).toHaveBeenCalledTimes(2);
+				expect(setLevel).toHaveBeenLastCalledWith('cam1', -29);
+			} finally {
+				await restoreSetLevel();
+				vi.useRealTimers();
+			}
+		});
+	});
 });
+
+async function restoreSetLevel() {
+	const api = await import('$lib/api/switch-api');
+	vi.mocked(api.setLevel).mockReset().mockResolvedValue({} as never);
+}

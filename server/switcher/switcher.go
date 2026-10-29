@@ -655,6 +655,13 @@ type Switcher struct {
 	ticksBehind      int
 	syncLoopRunning  atomic.Bool                     // double-start guard (Issue 10)
 	cachedBlackFrame atomic.Pointer[ProcessingFrame] // cached broadcast black (Issue 11)
+
+	// stall feeds the pipeline while the program source delivers nothing.
+	stall           programStall
+	stallFillFrames atomic.Int64
+	// lastEnqueueNano is when a frame other than a fill was last queued for
+	// the pipeline: it arrived then, however long the pipeline takes.
+	lastEnqueueNano atomic.Int64
 	// transitionBlendBuf is the persistent dst for engine.BlendRawInto on
 	// the sync-loop transition path. Grown on first tick and reused every
 	// tick thereafter — kills the ~3 MB/frame result allocation that
@@ -695,6 +702,10 @@ type videoProcWork struct {
 	// (via RunFromCache) instead of re-uploading from CPU memory.
 	// Empty for transition/FRC output which produces blended/synthesized frames.
 	sourceKey string
+	// fill marks a frame programStall fed while the program source stalled.
+	fill bool
+	// keepPTS skips the wall-clock PTS rewrite, as for built-in sources.
+	keepPTS bool
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -721,6 +732,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 	s.initAtomicSlots()
 	s.registerBuiltinSourcesLocked()
 	go s.videoProcessingLoop()
+	s.startProgramStallFiller()
 	s.startBuiltinProducer()
 	return s
 }
@@ -984,6 +996,9 @@ func (s *Switcher) Close() {
 		if fs != nil {
 			fs.Stop()
 		}
+
+		// The stall filler sends to videoProcCh too.
+		s.stopProgramStallFiller()
 
 		// Shut down async video processing goroutine.
 		close(s.videoProcCh)
@@ -2114,6 +2129,9 @@ func (s *Switcher) broadcastWithCaptions(frame *media.VideoFrame) {
 // enqueueVideoWork sends a work item to the async video processing goroutine
 // with newest-wins drop policy when the channel is full.
 func (s *Switcher) enqueueVideoWork(work videoProcWork) {
+	if !work.fill {
+		s.lastEnqueueNano.Store(time.Now().UnixNano())
+	}
 	select {
 	case s.videoProcCh <- work:
 	default:
@@ -2219,6 +2237,12 @@ func (s *Switcher) videoProcessingLoop() {
 			work.yuvFrame.ReleaseYUV()
 			continue
 		}
+		// A filled frame queued just before a transition started must not
+		// interleave with the transition's frames.
+		if work.fill && s.hotState.Load().state.isInTransition() {
+			work.yuvFrame.ReleaseYUV()
+			continue
+		}
 
 		// Normalize to pipeline format resolution before processing.
 		// Sources may deliver at different resolutions (e.g., 720p camera
@@ -2241,8 +2265,12 @@ func (s *Switcher) videoProcessingLoop() {
 		// sprite animation jittering on the program output. Skip the
 		// rewrite for built-ins; their PTS is already in a monotonic CFR
 		// domain compatible with the mixer's wall-clock audio PTS.
-		if !isBuiltinSource(work.sourceKey) {
+		if !isBuiltinSource(work.sourceKey) && !work.keepPTS {
 			work.yuvFrame.PTS = s.wallClockVideoPTS(work.yuvFrame.PTS)
+		}
+		if !work.fill && s.stall.noteFrame(work.yuvFrame, work.sourceKey, work.epoch, time.Now()) {
+			s.log.Info("program source resumed", "program_source", work.sourceKey,
+				"filled_frames", s.stallFillFrames.Load())
 		}
 
 		// Route through GPU pipeline if available, fall back to CPU.
@@ -3940,6 +3968,7 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		"video_pipeline": map[string]any{
 			"frames_processed":      s.videoProcCount.Load(),
 			"frames_broadcast":      s.videoBroadcastCount.Load(),
+			"stall_fill_frames":     s.stallFillFrames.Load(),
 			"frames_dropped":        s.videoProcDropped.Load(),
 			"epoch_stale":           s.programEpochStale.Load(),
 			"encode_nil":            s.pipeEncodeNil.Load(),

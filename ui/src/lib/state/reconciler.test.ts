@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createAutoReconcile } from './auto-reconcile';
-import { createReconciler, clipSlotCatchingUp, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, AUTHORITY_HOLD_MS, sortedStringify, SETTLE_MS, SETTLE_MAX_MS, leastAdvancedUpload } from './reconciler.svelte';
+import { createReconciler, clipSlotCatchingUp, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, AUTHORITY_HOLD_MS, sortedStringify, SETTLE_MS, SETTLE_MAX_MS, leastAdvancedUpload, PLAYOUT_MISMATCH_HOLD_MS } from './reconciler.svelte';
 import type { ControlRoomState, ClipPlayerState } from '$lib/api/types';
 
 /** Let both engines' states sit unchanged for SETTLE_MS, after which a
@@ -203,6 +203,79 @@ describe('createReconciler', () => {
 			r.tick();
 			expect(r.health.status).toBe('synced');
 		}
+	});
+
+	// Each command of a drag carries its own seq. An engine further away
+	// applies every one of them a little later, so the two seqs differ at
+	// every moment of the drag although neither engine misses a command.
+	it('does not report lagging while the engine behind keeps applying commands', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		const at = (level: number) => makeState({
+			lastCommandSeq: level,
+			audioChannels: { cam1: { level, trim: 0, muted: false, afv: false } as never },
+		});
+		r.ingest('A', at(0));
+		r.ingest('B', at(0));
+		const seen = new Set<string>();
+		for (let level = 1; level <= 40; level++) {
+			r.ingest('A', at(level));
+			vi.advanceTimersByTime(60);
+			r.tick();
+			seen.add(r.health.status);
+			r.ingest('B', at(level - 1));
+			vi.advanceTimersByTime(60);
+			r.tick();
+			seen.add(r.health.status);
+		}
+		expect([...seen]).toEqual(['synced']);
+	});
+
+	it('reports lagging once the engine behind stops applying commands', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		r.ingest('A', makeState({ lastCommandSeq: 1 }));
+		r.ingest('B', makeState({ lastCommandSeq: 1 }));
+		for (let seq = 2; seq <= 4; seq++) {
+			r.ingest('A', makeState({ lastCommandSeq: seq }));
+			r.ingest('B', makeState({ lastCommandSeq: seq - 1 }));
+			vi.advanceTimersByTime(100);
+		}
+		// Engine A keeps going; engine B stays at 3.
+		for (let seq = 5; seq <= 12; seq++) {
+			r.ingest('A', makeState({ lastCommandSeq: seq }));
+			vi.advanceTimersByTime(100);
+			r.tick();
+		}
+		expect(r.health.status).not.toBe('synced');
+	});
+
+	// The page hides the audio drift warning while the engines settle: a
+	// fader dragged on both shows a level difference at nearly every moment.
+	it('reports settling while a drag changes the engines and not once they hold still', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		const at = (level: number) => makeState({
+			lastCommandSeq: level,
+			audioChannels: { cam1: { level, trim: 0, muted: false, afv: false } as never },
+		});
+		r.ingest('A', at(0));
+		r.ingest('B', at(0));
+		for (let level = 1; level <= 40; level++) {
+			r.ingest('A', at(level));
+			vi.advanceTimersByTime(60);
+			r.tick();
+			expect(r.settling).toBe(true);
+			r.ingest('B', at(level - 1));
+			vi.advanceTimersByTime(60);
+			r.tick();
+			expect(r.settling).toBe(true);
+		}
+		// Engine B never gets the last level: a real drift, reported.
+		vi.advanceTimersByTime(SETTLE_MS);
+		r.tick();
+		expect(r.settling).toBe(false);
+		expect(r.health.status).not.toBe('synced');
 	});
 
 	// SCTE-35 start and log times come from each engine's clock.
@@ -472,6 +545,12 @@ describe('createReconciler', () => {
 				playout: { channels: [{ id: 0, state: 'on_air', currentTitle: 'Bumper', itemIndex: 0, itemCount: 1 }] },
 			}));
 			settle(r);
+			// A playout difference counts once it has lasted; the transports
+			// keep both engines fresh meanwhile.
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+			vi.advanceTimersByTime(PLAYOUT_MISMATCH_HOLD_MS);
+			r.tick();
 			r.tick();
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -500,6 +579,12 @@ describe('createReconciler', () => {
 				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 5, itemCount: 15 }] },
 			}));
 			settle(r);
+			// A playout difference counts once it has lasted; the transports
+			// keep both engines fresh meanwhile.
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+			vi.advanceTimersByTime(PLAYOUT_MISMATCH_HOLD_MS);
+			r.tick();
 			expect(r.health.status).toBe('mismatch');
 		});
 
@@ -538,7 +623,52 @@ describe('createReconciler', () => {
 				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 2, itemCount: 15, currentTitle: 'Interview', itemRemainMs: 19000 }] },
 			}));
 			settle(r);
+			// A playout difference counts once it has lasted; the transports
+			// keep both engines fresh meanwhile.
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+			vi.advanceTimersByTime(PLAYOUT_MISMATCH_HOLD_MS);
 			r.tick();
+			r.tick();
+			expect(r.health.status).toBe('mismatch');
+		});
+
+		// Engines a second apart on a looping clip: at each loop point one
+		// reports the clip's start, the other its end, for that second. That
+		// read as a critical mismatch and pushed a snapshot every loop.
+		it('does not report a mismatch at the loop point of engines a little apart', () => {
+			vi.useFakeTimers();
+			const r = createReconciler();
+			const at = (remain: number) => makeState({
+				lastCommandSeq: 10,
+				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 0, itemCount: 1, currentTitle: 'Clip', itemRemainMs: remain }] },
+			});
+			const seen = new Set<string>();
+			// A 20 s loop, engine B 1.2 s behind engine A, for three loops.
+			for (let t = 0; t < 60_000; t += 200) {
+				r.ingest('A', at(20_000 - (t % 20_000)));
+				r.ingest('B', at(20_000 - ((t + 18_800) % 20_000)));
+				vi.advanceTimersByTime(200);
+				r.tick();
+				seen.add(r.health.status);
+			}
+			expect([...seen]).toEqual(['synced']);
+		});
+
+		it('reports a playout difference that lasts', () => {
+			vi.useFakeTimers();
+			const r = createReconciler();
+			const at = (remain: number) => makeState({
+				lastCommandSeq: 10,
+				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 0, itemCount: 1, currentTitle: 'Clip', itemRemainMs: remain }] },
+			});
+			for (let t = 0; t < PLAYOUT_MISMATCH_HOLD_MS + 1000; t += 200) {
+				r.ingest('A', at(30_000 - t));
+				r.ingest('B', at(20_000 - t));
+				vi.advanceTimersByTime(200);
+				r.tick();
+				if (t < PLAYOUT_MISMATCH_HOLD_MS - 200) expect(r.health.status).not.toBe('mismatch');
+			}
 			expect(r.health.status).toBe('mismatch');
 		});
 

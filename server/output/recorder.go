@@ -31,6 +31,12 @@ type RecorderConfig struct {
 	ArchiveDir string
 }
 
+// ErrNothingRecorded is the error a stopped recording reports when no
+// program video reached it: the muxer starts a file at the first keyframe,
+// so a program source that delivers no frames leaves the file empty. The
+// empty file is removed rather than left behind as a recording.
+var ErrNothingRecorded = errors.New("no program video reached the recorder, so nothing was recorded")
+
 // syncBytesThreshold is the number of bytes written between periodic fsync
 // calls. 4MB provides crash resilience without excessive I/O overhead.
 const syncBytesThreshold int64 = 4 * 1024 * 1024
@@ -46,6 +52,7 @@ type FileRecorder struct {
 	filename       string
 	state          AdapterState
 	started        time.Time // overall recording start
+	stopped        time.Time // when Close ended the recording
 	fileStarted    time.Time // current file start
 	fileBytes      int64     // bytes written to current file
 	fileIndex      int       // 1-based file index
@@ -395,8 +402,19 @@ func (r *FileRecorder) Close() error {
 	closeErr := r.file.Close()
 	r.file = nil
 	r.state = StateStopped
-	if closeErr == nil {
-		r.archiveLocked(filepath.Join(r.config.Dir, r.filename))
+	r.stopped = time.Now()
+	path := filepath.Join(r.config.Dir, r.filename)
+	switch {
+	case closeErr != nil:
+	case r.fileBytes == 0 && r.fileIndex == 1:
+		// A rotated file always starts at a keyframe, so only the first
+		// one can be empty.
+		r.errMsg = ErrNothingRecorded.Error()
+		if err := os.Remove(path); err != nil {
+			slog.Error("empty recording not removed", "file", path, "err", err)
+		}
+	default:
+		r.archiveLocked(path)
 	}
 	if syncErr != nil {
 		if closeErr != nil {
@@ -416,6 +434,35 @@ func (r *FileRecorder) Status() AdapterStatus {
 		State:        r.state,
 		BytesWritten: r.bytes.Load(),
 		StartedAt:    r.started,
+		Error:        r.errMsg,
+	}
+}
+
+// Archiving returns the basenames of the closed files still being copied
+// into ArchiveDir.
+func (r *FileRecorder) Archiving() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	names := make([]string, 0, len(r.inArchive))
+	for p := range r.inArchive {
+		names = append(names, filepath.Base(p))
+	}
+	return names
+}
+
+// FinalStatus returns what a stopped recorder wrote: its last file, the
+// bytes and duration, and why nothing was recorded, if nothing was.
+func (r *FileRecorder) FinalStatus() RecordingStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var dur float64
+	if !r.started.IsZero() && !r.stopped.IsZero() {
+		dur = r.stopped.Sub(r.started).Seconds()
+	}
+	return RecordingStatus{
+		Filename:     r.filename,
+		BytesWritten: r.bytes.Load(),
+		DurationSecs: dur,
 		Error:        r.errMsg,
 	}
 }

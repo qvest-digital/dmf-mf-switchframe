@@ -810,3 +810,38 @@ func TestFileRecorder_PATPMTScanSkippedInSteadyState(t *testing.T) {
 	require.Equal(t, firstCached, secondCached,
 		"cached PAT/PMT must not be re-scanned/overwritten in steady state")
 }
+
+// A recording that never sees a program keyframe writes nothing. Stopping
+// it removes the empty file and says why, instead of leaving a 0 B file
+// that later fails to import as "no video stream found: empty file".
+func TestFileRecorder_EmptyRecordingRemovedAndReported(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{Dir: dir})
+	require.NoError(t, r.Start(context.Background()))
+	name := r.Filename()
+	require.NoError(t, r.Close())
+
+	_, err := os.Stat(filepath.Join(dir, name))
+	require.True(t, os.IsNotExist(err), "the empty file is removed")
+	final := r.FinalStatus()
+	require.Equal(t, name, final.Filename)
+	require.Equal(t, ErrNothingRecorded.Error(), final.Error)
+	require.False(t, final.Active)
+}
+
+// A recording that wrote something keeps its file and reports no error.
+func TestFileRecorder_NonEmptyRecordingKept(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{Dir: dir})
+	require.NoError(t, r.Start(context.Background()))
+	name := r.Filename()
+	_, err := r.Write(make([]byte, 188))
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
+
+	fi, err := os.Stat(filepath.Join(dir, name))
+	require.NoError(t, err)
+	require.EqualValues(t, 188, fi.Size())
+	require.Empty(t, r.FinalStatus().Error)
+	require.EqualValues(t, 188, r.FinalStatus().BytesWritten)
+}

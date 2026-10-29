@@ -2,7 +2,7 @@
 	import type { ControlRoomState, LayoutSlotState } from '$lib/api/types';
 	import type { FastControl } from '$lib/transport/fast-control';
 	import { updateDVESlot, apiCall } from '$lib/api/switch-api';
-	import { throttle } from '$lib/util/throttle';
+	import { coalesce } from '$lib/util/coalesce';
 
 	interface Props {
 		state: ControlRoomState;
@@ -71,9 +71,12 @@
 		return getSlotTransform(slot);
 	}
 
-	const throttledUpdate = throttle((slotId: number, update: Record<string, unknown>) => {
-		apiCall(updateDVESlot(slotId, update), 'Update slot');
-	}, 50);
+	/** REST fallback while dragging: latest value per slot, one request in flight. */
+	const throttledUpdate = coalesce((slotId: number, update: Record<string, unknown>) => {
+		const p = updateDVESlot(slotId, update);
+		apiCall(p, 'Update slot');
+		return p;
+	}, 50, (slotId) => String(slotId));
 
 	function handlePointerDown(e: PointerEvent, slot: LayoutSlotState, type: 'move' | 'resize' | 'rotate', corner?: 'tl' | 'tr' | 'bl' | 'br') {
 		e.preventDefault();

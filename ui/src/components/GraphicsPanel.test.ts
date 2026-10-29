@@ -183,14 +183,17 @@ describe('GraphicsPanel', () => {
 		expect(canvas.height).toBe(216);
 	});
 
-	it('should show layer ID and z-order in rail', () => {
+	it('should show the layer reference and name in rail, not its z-order', () => {
 		const state = {
 			...baseState,
-			graphics: { layers: [{ ...oneLayer, id: 3, zOrder: 2 }] },
+			graphics: { layers: [{ ...oneLayer, id: 3, zOrder: 2, name: 'Sponsor' }] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		expect(container.textContent).toContain('L3');
-		expect(container.textContent).toContain('z2');
+		const item = container.querySelector('.rail-item') as HTMLElement;
+		expect(item.querySelector('.layer-ref')?.textContent).toBe('#3');
+		expect(item.querySelector('.layer-name')?.textContent).toBe('Sponsor');
+		expect(item.querySelector('.layer-type')?.textContent).toBe('Lower Third');
+		expect(item.textContent).not.toContain('z2');
 	});
 
 	it('should have delete button in rail', () => {
@@ -295,7 +298,7 @@ describe('GraphicsPanel', () => {
 		expect(stopBtn.textContent?.trim()).toBe('STOP');
 	});
 
-	it('should sort layers by z-order in rail', () => {
+	it('should list layers by z-order, front-most first', () => {
 		const state = {
 			...baseState,
 			graphics: {
@@ -307,8 +310,9 @@ describe('GraphicsPanel', () => {
 			},
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const nums = Array.from(container.querySelectorAll('.layer-num')).map(el => el.textContent);
-		expect(nums).toEqual(['L0', 'L2', 'L1']);
+		// Front-most first.
+		const refs = Array.from(container.querySelectorAll('.layer-ref')).map(el => el.textContent);
+		expect(refs).toEqual(['#1', '#2', '#0']);
 	});
 
 	it('should show selected template card highlighted', () => {

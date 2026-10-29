@@ -82,12 +82,25 @@ func TestFileRecorder_ArchivesLeftoversAtStart(t *testing.T) {
 	r.WaitArchived()
 }
 
+// recordSomething writes one packet into the manager's running recording,
+// which an empty recording, removed on stop, would not leave behind.
+func recordSomething(t *testing.T, m *Manager) {
+	t.Helper()
+	m.mu.Lock()
+	r := m.recorder
+	m.mu.Unlock()
+	_, err := r.Write(make([]byte, 188))
+	require.NoError(t, err)
+}
+
 // Without an ArchiveDir nothing moves.
 func TestFileRecorder_NoArchiveKeepsFiles(t *testing.T) {
 	dir := t.TempDir()
 	r := NewFileRecorder(RecorderConfig{Dir: dir})
 	require.NoError(t, r.Start(context.TODO()))
 	name := r.Filename()
+	_, err := r.Write(make([]byte, 188))
+	require.NoError(t, err)
 	require.NoError(t, r.Close())
 	r.WaitArchived()
 	require.Equal(t, []string{name}, listNames(t, dir))
@@ -102,6 +115,7 @@ func TestManager_StartRecordingTakesArchiveDir(t *testing.T) {
 	m.SetRecordingArchiveDir(archive)
 	require.NoError(t, m.StartRecording(RecorderConfig{Dir: dir}))
 	name := m.RecordingStatus().Filename
+	recordSomething(t, m)
 	require.NoError(t, m.StopRecording())
 	require.Eventually(t, func() bool {
 		names := listNames(t, archive)
@@ -126,6 +140,7 @@ func TestManager_EnginesSharingAnArchiveNeverCollide(t *testing.T) {
 	for i, m := range managers {
 		require.NoError(t, m.StartRecording(RecorderConfig{Dir: t.TempDir()}))
 		names[i] = m.RecordingStatus().Filename
+		recordSomething(t, m)
 	}
 	for _, m := range managers {
 		require.NoError(t, m.StopRecording())

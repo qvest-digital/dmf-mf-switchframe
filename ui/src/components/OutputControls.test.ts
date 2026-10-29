@@ -375,3 +375,86 @@ describe('OutputControls', () => {
 		expect(badge?.classList.contains('synced')).toBe(true);
 	});
 });
+
+describe('OutputControls confidence thumbnail', () => {
+	// An <img src> request carries no Authorization header and was refused
+	// with 401 once sign-in was on; the thumbnail is fetched with the token.
+	it('fetches the thumbnail with the bearer token and shows it as a blob URL', async () => {
+		localStorage.setItem('switchframe_operator_token', 'tok');
+		const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, blob: async () => new Blob(['jpg']) });
+		vi.stubGlobal('fetch', fetchMock);
+		const createObjectURL = vi.fn().mockReturnValue('blob:thumb-1');
+		vi.stubGlobal('URL', Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() }));
+		try {
+			const state = { ...baseState, recording: { active: true, filename: 'r.ts' } };
+			const { container } = render(OutputControls, { props: { state } as never });
+			await vi.waitFor(() => expect(container.querySelector('img.confidence-thumb')).not.toBeNull());
+			const img = container.querySelector('img.confidence-thumb') as HTMLImageElement;
+			expect(img.getAttribute('src')).toBe('blob:thumb-1');
+			const [url, init] = fetchMock.mock.calls[0];
+			expect(String(url)).toMatch(/\/api\/output\/confidence$/);
+			expect((init as RequestInit).headers).toMatchObject({ Authorization: 'Bearer tok' });
+		} finally {
+			vi.unstubAllGlobals();
+			localStorage.removeItem('switchframe_operator_token');
+		}
+	});
+
+	it('does not poll while nothing is recorded or streamed', async () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal('fetch', fetchMock);
+		try {
+			const { container } = render(OutputControls, { props: { state: baseState } as never });
+			await new Promise((r) => setTimeout(r, 20));
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(container.querySelector('img.confidence-thumb')).toBeNull();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	// A hidden tab polls nothing: the thumbnail is not visible there.
+	it('fetches nothing while the tab is hidden, then resumes', async () => {
+		const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, blob: async () => new Blob(['jpg']) });
+		vi.stubGlobal('fetch', fetchMock);
+		vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn().mockReturnValue('blob:t'), revokeObjectURL: vi.fn() }));
+		const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+		vi.useFakeTimers();
+		try {
+			const state = { ...baseState, recording: { active: true, filename: 'r.ts' } };
+			render(OutputControls, { props: { state } as never });
+			await vi.advanceTimersByTimeAsync(3500);
+			expect(fetchMock).not.toHaveBeenCalled();
+			hidden.mockReturnValue(false);
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+			hidden.mockRestore();
+			vi.unstubAllGlobals();
+		}
+	});
+
+	// Every object URL made for a thumbnail is released: the previous one on
+	// each new thumbnail, the last one when recording stops.
+	it('revokes the previous thumbnail URL and the last one on teardown', async () => {
+		let n = 0;
+		const createObjectURL = vi.fn(() => `blob:t${++n}`);
+		const revokeObjectURL = vi.fn();
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, blob: async () => new Blob(['jpg']) }));
+		vi.stubGlobal('URL', Object.assign(URL, { createObjectURL, revokeObjectURL }));
+		vi.useFakeTimers();
+		try {
+			const state = { ...baseState, recording: { active: true, filename: 'r.ts' } };
+			const { rerender } = render(OutputControls, { props: { state } as never });
+			await vi.advanceTimersByTimeAsync(1100);
+			expect(createObjectURL).toHaveBeenCalledTimes(2);
+			expect(revokeObjectURL).toHaveBeenCalledWith('blob:t1');
+			await rerender({ state: { ...baseState, recording: { active: false } } } as never);
+			expect(revokeObjectURL).toHaveBeenCalledWith('blob:t2');
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllGlobals();
+		}
+	});
+});

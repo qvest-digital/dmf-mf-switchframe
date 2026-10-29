@@ -633,6 +633,7 @@
 								onChange={updateItem}
 								sources={sourceNames}
 								clips={availableClips}
+								graphicsLayers={crState.graphics?.layers ?? []}
 							/>
 						</div>
 					</div>

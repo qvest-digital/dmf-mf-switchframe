@@ -134,6 +134,8 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		for _, l := range gfxStatus.Layers {
 			gfxState.Layers = append(gfxState.Layers, internal.GraphicsLayerState{
 				ID:                 l.ID,
+				Name:               l.Name,
+				Config:             l.Config,
 				Template:           l.Template,
 				Active:             l.Active,
 				FadePosition:       l.FadePosition,
@@ -891,6 +893,8 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 			Height:    l.Rect.Height,
 			Template:  l.Template,
 			ImageName: l.ImageName,
+			Name:      l.Name,
+			Config:    l.Config,
 		})
 	}
 
@@ -1083,6 +1087,7 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 				SchedulerState:   schedState,
 				SchedulerMode:    s.Mode,
 				PlaylistHash:     a.playoutMgr.PlaylistHash(i + 1),
+				LoopExit:         s.LoopExit,
 			})
 		}
 	}

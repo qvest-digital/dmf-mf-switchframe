@@ -295,6 +295,20 @@ func (m *Manager) JumpTo(channelID int, itemID string) error {
 	return ch.JumpTo(itemID)
 }
 
+// EndLoop has the looping clip on the given channel end after its current
+// pass.
+func (m *Manager) EndLoop(channelID int) error {
+	if err := m.validateChannelID(channelID); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	ch := m.channels[channelID-1]
+	m.mu.Unlock()
+
+	return ch.EndLoop()
+}
+
 // TakeManual pauses automated playlist advancement on the given channel.
 func (m *Manager) TakeManual(channelID int) error {
 	if err := m.validateChannelID(channelID); err != nil {
@@ -452,8 +466,13 @@ func (m *Manager) Recover(statePath string) error {
 					"channel", pch.ID, "error", err)
 				continue
 			}
-			// Override cursor to the saved position.
-			ch.SetCursor(pch.Cursor)
+			// A channel that was cued or on air is re-cued at its saved
+			// position. A stopped or completed one stays cued at the top,
+			// where its Start would have begun without the restart; a
+			// cursor kept for it would read as a cue after the next one.
+			if pch.State == StateCued || pch.State == StateOnAir {
+				ch.CueAt(pch.Cursor)
+			}
 		}
 
 		// Restore non-terminal pods.
@@ -727,7 +746,7 @@ func (m *Manager) RecoverChannel(channelID int) error {
 			return fmt.Errorf("recover: reload playlist: %w", err)
 		}
 		if snap.Cursor >= 0 && snap.Cursor < len(snap.Playlist.Items) {
-			ch.SetCursor(snap.Cursor)
+			ch.CueAt(snap.Cursor)
 		}
 	}
 

@@ -246,6 +246,13 @@ export const TRANSITION_LOCK_STALE_THRESHOLD_MS = 5_000;
 /** Hard upper bound on how long the transition lock may be held. Prevents a
  * stuck lock if the locked engine keeps reporting inTransition=true forever. */
 export const TRANSITION_LOCK_MAX_HOLD_MS = 10_000;
+/** How long the engines' playout channels must differ before that counts
+ * as a mismatch. Engines whose channels run up to PLAYOUT_ELAPSED_TOLERANCE_MS
+ * apart reach every item boundary and loop point that far apart too: one
+ * engine then reports the next item, or a looping clip's start, while the
+ * other still reports the end of the last. */
+export const PLAYOUT_ELAPSED_TOLERANCE_MS = 5000;
+export const PLAYOUT_MISMATCH_HOLD_MS = PLAYOUT_ELAPSED_TOLERANCE_MS;
 
 /** Union of the engines' refused transition types, keeping the first
  * engine's reason where both refuse one. Returns `current` itself when it
@@ -314,6 +321,9 @@ export function createReconciler() {
 
 	// Track when seq delta first appeared for time-based detection
 	let seqDeltaSince = $state(0);
+	// Each engine's lastCommandSeq as of the last tracking pass.
+	let trackedSeqA = 0;
+	let trackedSeqB = 0;
 
 	// Each engine's compared fields as of its last state, and when either
 	// last changed.
@@ -325,9 +335,14 @@ export function createReconciler() {
 	let previousComparableB = '';
 	// When the engines' compared fields last started to differ; 0 while equal.
 	let comparedDifferSince = 0;
+	// When the engines' playout channels last started to differ; 0 while not.
+	let playoutDifferSince = 0;
 
 	// Tick-updated status (time-based)
 	let tickedStatus = $state<SyncStatus>('disconnected');
+	// Whether a difference between the engines is still a command
+	// propagating, updated with tickedStatus.
+	let tickedSettling = $state(false);
 
 	// Updated every tick (~200ms) to drive smooth uptime display in engineHealth
 	let lastTickTime = $state(Date.now());
@@ -413,6 +428,7 @@ export function createReconciler() {
 		updateHeldAuthority(now);
 		// Recompute status immediately so health reflects the new state
 		tickedStatus = computeStatus(now);
+		tickedSettling = isSettling(now);
 	}
 
 	function updateSeqDeltaTracking(now: number) {
@@ -422,9 +438,15 @@ export function createReconciler() {
 		}
 		const seqA = stateA.lastCommandSeq ?? 0;
 		const seqB = stateB.lastCommandSeq ?? 0;
+		// The engine behind still applying commands has them in flight, as
+		// through a fader drag, where the two seqs need never be equal at
+		// any one moment. Only an engine that stopped advancing lags.
+		const behindAdvanced = seqA < seqB ? seqA !== trackedSeqA : seqB !== trackedSeqB;
+		trackedSeqA = seqA;
+		trackedSeqB = seqB;
 		if (seqA === seqB) {
 			seqDeltaSince = 0;
-		} else if (seqDeltaSince === 0) {
+		} else if (seqDeltaSince === 0 || behindAdvanced) {
 			seqDeltaSince = now;
 		}
 	}
@@ -718,25 +740,11 @@ export function createReconciler() {
 		return false;
 	}
 
-	/** Check if critical fields mismatch at same lastCommandSeq. */
-	function hasCriticalMismatch(): boolean {
+	/** Whether the engines' on-air playout channels differ: more than one
+	 * item apart, or on the same item more than PLAYOUT_ELAPSED_TOLERANCE_MS
+	 * apart or with different titles. */
+	function playoutDiffers(): boolean {
 		if (!stateA || !stateB || !connectedA || !connectedB) return false;
-		const seqA = stateA.lastCommandSeq ?? 0;
-		const seqB = stateB.lastCommandSeq ?? 0;
-		if (seqA !== seqB) return false;
-
-		// Check programSource and other mismatch fields
-		for (const field of MISMATCH_FIELDS) {
-			if (!fieldEquals(stateA[field], stateB[field])) return true;
-		}
-
-		// Audio mute/afv mismatch is critical — one engine muted while other isn't
-		if (hasAudioMismatch()) return true;
-
-		// Recording mismatch is critical — one engine recording while other isn't
-		if (stateA.recording?.active !== stateB.recording?.active) return true;
-
-		// Check playout channel divergence (itemIndex with drift tolerance, elapsed time, currentTitle)
 		const playoutA = stateA?.playout;
 		const playoutB = stateB?.playout;
 		if (playoutA?.channels?.length && playoutB?.channels?.length) {
@@ -752,15 +760,40 @@ export function createReconciler() {
 				// Tolerate <=1 item index difference (natural scheduler drift)
 				const indexDelta = Math.abs((chA.itemIndex ?? 0) - (chB.itemIndex ?? 0));
 				if (indexDelta > 1) return true;
-				// Check elapsed time divergence (>5s on same item = diverged)
+				// Elapsed time on the same item
 				if (indexDelta === 0 && chA.itemRemainMs !== undefined && chB.itemRemainMs !== undefined) {
 					const elapsedDelta = Math.abs(chA.itemRemainMs - chB.itemRemainMs);
-					if (elapsedDelta > 5000) return true;
+					if (elapsedDelta > PLAYOUT_ELAPSED_TOLERANCE_MS) return true;
 				}
 				// Only flag title mismatch if index delta is 0 (same item, different title = real mismatch)
 				if (indexDelta === 0 && chA.currentTitle !== undefined && chB.currentTitle !== undefined && chA.currentTitle !== chB.currentTitle) return true;
 			}
 		}
+
+		return false;
+	}
+
+	/** Check if critical fields mismatch at same lastCommandSeq. */
+	function hasCriticalMismatch(now: number): boolean {
+		if (!stateA || !stateB || !connectedA || !connectedB) return false;
+		const seqA = stateA.lastCommandSeq ?? 0;
+		const seqB = stateB.lastCommandSeq ?? 0;
+		if (seqA !== seqB) return false;
+
+		// Check programSource and other mismatch fields
+		for (const field of MISMATCH_FIELDS) {
+			if (!fieldEquals(stateA[field], stateB[field])) return true;
+		}
+
+		// Audio mute/afv mismatch is critical: one engine muted while other isn't
+		if (hasAudioMismatch()) return true;
+
+		// Recording mismatch is critical: one engine recording while other isn't
+		if (stateA.recording?.active !== stateB.recording?.active) return true;
+
+		// A playout difference counts once it has lasted, see
+		// PLAYOUT_MISMATCH_HOLD_MS.
+		if (playoutDifferSince > 0 && now - playoutDifferSince >= PLAYOUT_MISMATCH_HOLD_MS) return true;
 
 		return false;
 	}
@@ -782,6 +815,14 @@ export function createReconciler() {
 			return now - lastSeen > threshold;
 		}
 		return false;
+	}
+
+	/** Whether the engines' compared fields are still changing, so that a
+	 * difference between them is a command on its way rather than a
+	 * divergence. */
+	function isSettling(now: number): boolean {
+		return now - comparedChangedAt < SETTLE_MS
+			&& (comparedDifferSince === 0 || now - comparedDifferSince < SETTLE_MAX_MS);
 	}
 
 	/** Compute sync status based on current state + elapsed time. */
@@ -814,10 +855,11 @@ export function createReconciler() {
 		// even during recovery so auto-reconcile can re-push if needed.
 		// A difference while either engine is still changing is a command
 		// propagating, not a divergence.
-		const settling = now - comparedChangedAt < SETTLE_MS
-			&& (comparedDifferSince === 0 || now - comparedDifferSince < SETTLE_MAX_MS);
+		const settling = isSettling(now);
 
-		if (!settling && hasCriticalMismatch()) return 'mismatch';
+		if (!playoutDiffers()) playoutDifferSince = 0;
+		else if (playoutDifferSince === 0) playoutDifferSince = now;
+		if (!settling && hasCriticalMismatch(now)) return 'mismatch';
 		if (recovering) return 'recovering';
 
 		const seqA = stateA!.lastCommandSeq ?? 0;
@@ -862,6 +904,7 @@ export function createReconciler() {
 		updateHeldAuthority(now);
 
 		tickedStatus = computeStatus(now);
+		tickedSettling = isSettling(now);
 	}
 
 	/**
@@ -905,6 +948,7 @@ export function createReconciler() {
 		updateHeldAuthority(now);
 		// Re-evaluate status
 		tickedStatus = computeStatus(now);
+		tickedSettling = isSettling(now);
 	}
 
 	function setRecovering(value: boolean) {
@@ -1036,6 +1080,11 @@ export function createReconciler() {
 		},
 		get health() {
 			return health;
+		},
+		/** True while the engines' compared fields are still changing: a
+		 * difference between them then is a command propagating. */
+		get settling() {
+			return tickedSettling;
 		},
 		get engineHealth() {
 			return engineHealthDerived;

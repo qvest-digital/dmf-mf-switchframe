@@ -27,6 +27,7 @@ type mockOutputManager struct {
 	lastSRTConfig     output.SRTConfig
 	thumbnail         []byte
 	recDroppedPackets int64
+	finalizing        []string // basenames FinalizingRecordings reports
 
 	// Multi-destination fields.
 	destinations   map[string]output.DestinationStatus
@@ -96,6 +97,10 @@ func (m *mockOutputManager) SRTOutputStatus() output.SRTStatus {
 		Address: "192.168.1.100",
 		Port:    9000,
 	}
+}
+
+func (m *mockOutputManager) FinalizingRecordings() []string {
+	return m.finalizing
 }
 
 func (m *mockOutputManager) ConfidenceThumbnail() []byte {

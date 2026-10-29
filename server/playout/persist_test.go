@@ -881,3 +881,201 @@ func TestManager_RecoverChannel_NoPlaylist(t *testing.T) {
 		t.Error("expected error for channel with no playlist")
 	}
 }
+
+// A cue survives an engine restart: the persisted cursor of a cued channel
+// is the cued item, and Start after recovery puts that item on air.
+func TestManager_Recover_KeepsCue(t *testing.T) {
+	provider := fakeProvider(5)
+	pl := testPlaylist(liveItem("a", "cam-1"), liveItem("b", "cam-2"), liveItem("c", "cam-3"))
+
+	m1 := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
+	if err := m1.LoadPlaylist(1, pl); err != nil {
+		t.Fatal(err)
+	}
+	if err := m1.JumpTo(1, "c"); err != nil {
+		t.Fatal(err)
+	}
+	snap := m1.Snapshot()
+	statePath := filepath.Join(t.TempDir(), "playout-state.json")
+	if err := atomicWriteJSON(statePath, &snap); err != nil {
+		t.Fatal(err)
+	}
+
+	m2 := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
+	if err := m2.Recover(statePath); err != nil {
+		t.Fatal(err)
+	}
+	defer m2.Close()
+	if st := m2.ChannelStates()[0]; st.State != "cued" || st.CurrentItemID != "c" {
+		t.Fatalf("after recovery: state %q item %q, want cued at c", st.State, st.CurrentItemID)
+	}
+	if err := m2.Start(1); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if st := m2.ChannelStates()[0]; st.State != "on_air" || st.CurrentItemID != "c" {
+		t.Fatalf("after Start: state %q item %q, want on air at c", st.State, st.CurrentItemID)
+	}
+}
+
+// RecoverChannel re-cues at the current item and restarts there, not at
+// the top of the playlist.
+func TestManager_RecoverChannel_ResumesAtCurrentItem(t *testing.T) {
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
+	defer m.Close()
+	pl := testPlaylist(liveItem("a", "cam-1"), liveItem("b", "cam-2"))
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Start(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Next(1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return m.ChannelStates()[0].CurrentItemID == "b" })
+
+	if err := m.RecoverChannel(1); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if st := m.ChannelStates()[0]; st.State != "on_air" || st.CurrentItemID != "b" {
+		t.Fatalf("after RecoverChannel: state %q item %q, want on air at b", st.State, st.CurrentItemID)
+	}
+}
+
+// recoverInto persists m1 and recovers it into a fresh manager.
+func recoverInto(t *testing.T, m1 *Manager) *Manager {
+	t.Helper()
+	snap := m1.Snapshot()
+	statePath := filepath.Join(t.TempDir(), "playout-state.json")
+	if err := atomicWriteJSON(statePath, &snap); err != nil {
+		t.Fatal(err)
+	}
+	m2 := NewManager(ManagerConfig{AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
+	if err := m2.Recover(statePath); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m2.Close)
+	return m2
+}
+
+func startAndItem(t *testing.T, m *Manager) string {
+	t.Helper()
+	if err := m.Start(1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	st := m.ChannelStates()[0]
+	if st.State != "on_air" {
+		t.Fatalf("after Start: state %q, want on_air", st.State)
+	}
+	return st.CurrentItemID
+}
+
+// A stopped channel starts from the top, restart or not, so both engines of
+// a pair agree after a rolling restart; a second restart must not turn the
+// kept cursor into a cue either.
+func TestManager_Recover_StoppedStartsAtTop(t *testing.T) {
+	m1 := NewManager(ManagerConfig{AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
+	defer m1.Close()
+	pl := testPlaylist(liveItem("a", "cam-1"), liveItem("b", "cam-2"))
+	if err := m1.LoadPlaylist(1, pl); err != nil {
+		t.Fatal(err)
+	}
+	if err := m1.Start(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m1.Next(1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return m1.ChannelStates()[0].CurrentItemID == "b" })
+	if err := m1.Stop(1); err != nil {
+		t.Fatal(err)
+	}
+
+	m2 := recoverInto(t, m1)
+	m3 := recoverInto(t, m2) // second restart, before anyone started it
+	if got := startAndItem(t, m3); got != "a" {
+		t.Fatalf("stopped channel after two restarts started at %q, want a", got)
+	}
+	if got := startAndItem(t, m1); got != "a" {
+		t.Fatalf("the engine that never restarted started at %q, want a", got)
+	}
+}
+
+// A completed channel's cursor lies past the last item; Start after a
+// restart must still play the playlist from the top.
+func TestManager_Recover_CompletedStartsAtTop(t *testing.T) {
+	m1 := NewManager(ManagerConfig{AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
+	defer m1.Close()
+	if err := m1.LoadPlaylist(1, testPlaylist(clipItem("a"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := m1.Start(1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, func() bool { return m1.ChannelStates()[0].State == "completed" })
+
+	m2 := recoverInto(t, m1)
+	if err := m2.Start(1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return m2.ChannelStates()[0].CurrentItemID == "a" })
+}
+
+// A persisted cue outside the playlist is not a cue.
+func TestManager_Recover_CuedOutOfRangeStartsAtTop(t *testing.T) {
+	state := PersistedState{Version: 1, Timestamp: time.Now().UTC(), Channels: []PersistedChannel{
+		{ID: 1, State: StateCued, Cursor: 5, Playlist: testPlaylist(liveItem("a", "cam-1"), liveItem("b", "cam-2"))},
+		{ID: 2, State: StateStopped},
+	}}
+	statePath := filepath.Join(t.TempDir(), "playout-state.json")
+	if err := atomicWriteJSON(statePath, &state); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
+	defer m.Close()
+	if err := m.Recover(statePath); err != nil {
+		t.Fatal(err)
+	}
+	if got := startAndItem(t, m); got != "a" {
+		t.Fatalf("started at %q, want a", got)
+	}
+}
+
+// Rolling restart: both engines on air at b, one restarts and is re-cued at
+// b. An operator Stop then Start on both must start both at the top, or they
+// play different items.
+func TestManager_Recover_StopDropsRecoveredCue(t *testing.T) {
+	pl := testPlaylist(liveItem("a", "cam-1"), liveItem("b", "cam-2"))
+	onAirAtB := func() *Manager {
+		m := NewManager(ManagerConfig{AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
+		t.Cleanup(m.Close)
+		if err := m.LoadPlaylist(1, pl); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Start(1); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Next(1); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, 2*time.Second, func() bool { return m.ChannelStates()[0].CurrentItemID == "b" })
+		return m
+	}
+	engineA := onAirAtB()
+	engineB := recoverInto(t, onAirAtB())
+	if st := engineB.ChannelStates()[0]; st.State != "cued" || st.CurrentItemID != "b" {
+		t.Fatalf("restarted engine: state %q item %q, want cued at b", st.State, st.CurrentItemID)
+	}
+
+	for name, m := range map[string]*Manager{"A": engineA, "B": engineB} {
+		if err := m.Stop(1); err != nil {
+			t.Fatal(err)
+		}
+		if got := startAndItem(t, m); got != "a" {
+			t.Fatalf("engine %s started at %q after Stop, want a", name, got)
+		}
+	}
+}

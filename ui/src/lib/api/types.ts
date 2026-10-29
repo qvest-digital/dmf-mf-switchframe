@@ -209,6 +209,10 @@ export interface EasingConfig {
 
 export interface GraphicsLayerState {
 	id: number;
+	/** Operator label. Playlist events address the id, never the name or stacking. */
+	name?: string;
+	/** Graphics panel settings, stored on the engine as is. */
+	config?: Record<string, unknown>;
 	template?: string;
 	active: boolean;
 	fadePosition?: number;
@@ -580,17 +584,25 @@ export interface ClipInfo {
 	libraryPath?: string;
 }
 
+/** Where a recording file is in its life: being written, being copied into
+ * the recording archive, complete, or empty. */
+export type RecordingFileState = 'recording' | 'finalizing' | 'ready' | 'failed';
+
 export interface RecordingFileInfo {
 	filename: string;
 	path: string;
 	byteSize: number;
 	modTime: string;
+	state: RecordingFileState;
+	error?: string;
 }
 
 export interface EngineRecordingGroup {
 	engineId: EngineId;
 	engineUrl: string;
 	recordings: RecordingFileInfo[];
+	/** The engine did not answer; its recordings are unknown, not absent. */
+	unreachable?: boolean;
 }
 
 export interface SCTE35State {
@@ -991,6 +1003,10 @@ export interface PlayoutChannelState {
 	itemCount: number;
 	itemProgress?: number;
 	itemRemainMs?: number;
+	/** A looping clip is on air. */
+	looping?: boolean;
+	/** The looping clip ends after its current pass. */
+	loopExit?: boolean;
 	activePod?: PodStatusBroadcast;
 	pods?: PodStatusBroadcast[];
 	podsArmed?: number;

@@ -110,6 +110,10 @@ func (a *App) initPlayout() error {
 	// Per-slot MoQ group ID counter for GPU preview frames.
 	var playoutPreviewGroupID [playout.MaxChannels]atomic.Uint32
 
+	// CPU encoders for the relays no GPU preview encoder feeds.
+	relayW, relayH := parsePreviewResolution(a.cfg.PreviewResolution)
+	relayFeed := newPlayoutRelayFeed(relayW, relayH, a.cfg.PreviewBitrate, a.cfg.PreviewFrameInterval)
+
 	// Channel lifecycle: register/unregister as switcher sources.
 	mgr.OnChannelLifecycle(
 		// onStart: register playout channel as a raw YUV switcher source + mixer channel.
@@ -166,6 +170,9 @@ func (a *App) initPlayout() error {
 					},
 				})
 				slog.Info("playout: GPU preview encoder registered", "key", key)
+			} else if idx >= 0 && idx < playout.MaxChannels {
+				curPF := a.sw.PipelineFormat()
+				relayFeed.start(idx, key, a.playoutRelays[idx], curPF.FPSNum, curPF.FPSDen)
 			}
 		},
 		// onStop: unregister playout channel source.
@@ -174,6 +181,7 @@ func (a *App) initPlayout() error {
 			if idx >= 0 && idx < playout.MaxChannels {
 				playoutPreviewGroupID[idx].Store(0)
 			}
+			relayFeed.stop(idx)
 			// Release GPU preview encoder and cached frames.
 			if gs := a.gpu(); gs != nil && gs.sourceManager != nil {
 				gs.sourceManager.RemoveSource(key)
@@ -225,6 +233,7 @@ func (a *App) initPlayout() error {
 	// Raw video output: playout sends decoded YUV to switcher pipeline.
 	// nil YUV = GPU-aliased signal frame (triggers RunFromCache, no CPU upload).
 	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		relayFeed.frame(playoutChannelIDFromKey(key)-1, yuv, w, h, pts)
 		curPF := a.sw.PipelineFormat()
 		outYUV, outW, outH := yuv, w, h
 		if len(yuv) == 0 {
@@ -252,12 +261,17 @@ func (a *App) initPlayout() error {
 
 	// Audio output: playout sends decoded audio to the mixer (same pattern as clips).
 	mgr.SetAudioOutput(func(key string, data []byte, pts int64, sampleRate, channels int) {
-		a.mixer.IngestFrame(key, &media.AudioFrame{
+		frame := &media.AudioFrame{
 			Data:       data,
 			PTS:        pts,
 			SampleRate: sampleRate,
 			Channels:   channels,
-		})
+		}
+		a.mixer.IngestFrame(key, frame)
+		// The relay carries the audio too, for the tile's meter.
+		if idx := playoutChannelIDFromKey(key) - 1; idx >= 0 && idx < playout.MaxChannels && a.playoutRelays[idx] != nil {
+			a.playoutRelays[idx].BroadcastAudio(frame)
+		}
 	})
 
 	// State change broadcasts.

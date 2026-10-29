@@ -1,5 +1,7 @@
 package internal
 
+import "encoding/json"
+
 // FullStateSnapshot captures the complete restorable engine state for
 // multi-region active-active redundancy. When a browser detects sustained
 // state divergence between engines, it pulls a full snapshot from the
@@ -151,16 +153,18 @@ type AudioMasterSnapshot struct {
 // Omits transient data (FadePosition, AnimationState, sequence state).
 // HTML5URL is configuration (not transient status), so it is included.
 type GraphicsLayerSnapshot struct {
-	ID        int    `json:"id"`
-	Active    bool   `json:"active"`
-	ZOrder    int    `json:"zOrder"`
-	X         int    `json:"x"`
-	Y         int    `json:"y"`
-	Width     int    `json:"width"`
-	Height    int    `json:"height"`
-	Template  string `json:"template,omitempty"`
-	ImageName string `json:"imageName,omitempty"`
-	HTML5URL  string `json:"html5Url,omitempty"`
+	ID        int             `json:"id"`
+	Active    bool            `json:"active"`
+	ZOrder    int             `json:"zOrder"`
+	X         int             `json:"x"`
+	Y         int             `json:"y"`
+	Width     int             `json:"width"`
+	Height    int             `json:"height"`
+	Template  string          `json:"template,omitempty"`
+	ImageName string          `json:"imageName,omitempty"`
+	HTML5URL  string          `json:"html5Url,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Config    json.RawMessage `json:"config,omitempty"`
 }
 
 // LayoutSnapshot captures the full DVE layout configuration.
@@ -350,6 +354,8 @@ type PlayoutChannelSnapshot struct {
 	SchedulerMode      string  `json:"schedulerMode,omitempty"`
 	TransitionProgress float64 `json:"transitionProgress,omitempty"`
 	PlaylistHash       string  `json:"playlistHash,omitempty"`
+	// LoopExit: the looping clip on air ends after its current pass.
+	LoopExit bool `json:"loopExit,omitempty"`
 }
 
 // SCTE35ActiveEventSnapshot captures an in-flight SCTE-35 event.

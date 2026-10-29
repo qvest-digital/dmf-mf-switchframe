@@ -135,3 +135,44 @@ describe('SecondaryEventEditor', () => {
 		expect(container.querySelector('.sec-timeline-marker')).toBeTruthy();
 	});
 });
+
+describe('SecondaryEventEditor graphics layer', () => {
+	const graphicsLayers = [
+		{ id: 0, name: 'Sponsor', active: false, zOrder: 1, x: 0, y: 0, width: 0, height: 0 },
+		{ id: 2, active: false, zOrder: 0, x: 0, y: 0, width: 0, height: 0 },
+	];
+
+	async function openEditor(evt: SecondaryEvent) {
+		const onUpdate = vi.fn();
+		const r = render(SecondaryEventEditor, { props: { events: [evt], onUpdate, graphicsLayers } });
+		await fireEvent.click(r.container.querySelector('.sec-header') as HTMLElement);
+		return { ...r, onUpdate };
+	}
+
+	it('names the layer an event addresses by id and label', async () => {
+		const { container } = await openEditor(makeEvent({ layer: 2 }));
+		expect(container.querySelector('.sec-layer')?.textContent).toBe('#2 Layer #2');
+		await fireEvent.click(container.querySelector('.sec-edit-btn') as HTMLElement);
+		const opts = Array.from(container.querySelectorAll('.sec-editor select option')).map((o) => o.textContent?.trim());
+		expect(opts).toContain('#0 Sponsor');
+		expect(opts).toContain('#2 Layer #2');
+	});
+
+	it('keeps a missing layer visible instead of retargeting the event', async () => {
+		const { container } = await openEditor(makeEvent({ layer: 5 }));
+		expect(container.querySelector('.sec-layer')?.textContent).toBe('#5 (no such layer)');
+		await fireEvent.click(container.querySelector('.sec-edit-btn') as HTMLElement);
+		const select = Array.from(container.querySelectorAll('.sec-editor select')).find((s) =>
+			Array.from((s as HTMLSelectElement).options).some((o) => o.textContent?.includes('no such layer'))) as HTMLSelectElement;
+		expect(select.value).toBe('5');
+	});
+
+	it('retargets an event to the chosen layer', async () => {
+		const { container, onUpdate } = await openEditor(makeEvent({ layer: 2 }));
+		await fireEvent.click(container.querySelector('.sec-edit-btn') as HTMLElement);
+		const select = Array.from(container.querySelectorAll('.sec-editor select')).find((s) =>
+			Array.from((s as HTMLSelectElement).options).some((o) => o.textContent === '#0 Sponsor')) as HTMLSelectElement;
+		await fireEvent.change(select, { target: { value: '0' } });
+		expect(onUpdate).toHaveBeenCalledWith([expect.objectContaining({ layer: 0 })]);
+	});
+});
