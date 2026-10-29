@@ -60,9 +60,11 @@ Valid actions are listed in `macro.allActions` (~60 actions covering cut, previe
 **Purpose:** execute a macro asynchronously. Returns immediately with 202 Accepted; progress streams through state broadcasts.
 **Handler:** `(*API).handleRunMacro`.
 
+**Request body** (optional): `{ "runId": "<32 hex>" }`. Each replay step derives the ID of the clip it exports from `runId` and its place in the run, so engines sent the same request store those clips under one ID each.
+
 **Response 202:** `{ "status": "started", "name": "<macro name>" }`.
 
-**Errors:** 404 (`macro.ErrNotFound`), 409 ("macro already running").
+**Errors:** 400 (invalid JSON, malformed `runId`), 404 (`macro.ErrNotFound`), 409 ("macro already running").
 
 **Emits:** continuous state broadcasts with evolving `Macro` field — each step transitions from `pending` → `running` → `done` / `failed` / `skipped`, and wait steps populate `WaitStartMs` / `WaitMs` so the UI can show a countdown.
 

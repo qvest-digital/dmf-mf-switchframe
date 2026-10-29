@@ -4,6 +4,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -138,5 +139,30 @@ func TestAcquireClipFrameBuf(t *testing.T) {
 	}
 	if len(buf) != big {
 		t.Errorf("buffer length = %d, want %d", len(buf), big)
+	}
+}
+
+// Each engine of a pair exports the replay a request started and adds it to
+// its own store. Under the request's clip ID, a delete or pin sent to both
+// engines by that ID finds the clip on each.
+func TestAddReplayClip_UsesRequestClipID(t *testing.T) {
+	const id = "00112233445566778899aabbccddeeff"
+	store, err := clip.NewStore(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := addReplayClip(store, &clip.Clip{Name: "cam1 replay", Ephemeral: true}, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(id); err != nil {
+		t.Fatalf("replay clip not stored under the request's ID: %v", err)
+	}
+
+	fresh := &clip.Clip{Name: "cam1 replay", Ephemeral: true}
+	if err := addReplayClip(store, fresh, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !clip.ValidID(fresh.ID) || fresh.ID == id {
+		t.Fatalf("replay without a requested ID got %q", fresh.ID)
 	}
 }

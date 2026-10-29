@@ -351,8 +351,8 @@ func (a *App) initClips() error {
 	// Wire replay → clip store: when a replay clip is exported, validate
 	// and add it as an ephemeral clip entry.
 	if a.replayMgr != nil {
-		a.replayMgr.SetOnClipExported(func(source string, tempFile string) {
-			a.handleReplayClipExported(source, tempFile, store)
+		a.replayMgr.SetOnClipExported(func(source, tempFile, clipID string) {
+			a.handleReplayClipExported(source, tempFile, clipID, store)
 		})
 		slog.Info("clips: replay export callback wired")
 	}
@@ -393,9 +393,20 @@ func clipPlayerIDFromKey(key string) int {
 	return n
 }
 
+// addReplayClip adds an exported replay to store under clipID, the ID the
+// replay request named on every engine it was sent to, or under a fresh ID
+// when clipID is "".
+func addReplayClip(store *clip.Store, c *clip.Clip, clipID string) error {
+	if clipID == "" {
+		return store.Add(c)
+	}
+	return store.AddWithID(clipID, c)
+}
+
 // handleReplayClipExported processes a temp TS file exported from replay,
-// validates it, creates an ephemeral clip entry, and moves it to the store.
-func (a *App) handleReplayClipExported(source string, tempFile string, store *clip.Store) {
+// validates it, creates an ephemeral clip entry under clipID ("" for a
+// fresh ID), and moves it to the store.
+func (a *App) handleReplayClipExported(source, tempFile, clipID string, store *clip.Store) {
 	// Validate the temp TS file to extract metadata.
 	result, err := clip.Validate(tempFile)
 	if err != nil {
@@ -444,8 +455,8 @@ func (a *App) handleReplayClipExported(source string, tempFile string, store *cl
 		Ephemeral:  true,
 	}
 
-	if err := store.Add(c); err != nil {
-		slog.Warn("clips: failed to add replay clip", "source", source, "error", err)
+	if err := addReplayClip(store, c, clipID); err != nil {
+		slog.Warn("clips: failed to add replay clip", "source", source, "clipID", clipID, "error", err)
 		_ = os.Remove(destPath)
 		return
 	}

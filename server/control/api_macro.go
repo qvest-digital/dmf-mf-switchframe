@@ -2,12 +2,16 @@ package control
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
+	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/zsiec/switchframe/server/caption"
@@ -99,6 +103,19 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
+	// runId names this run on every engine it is sent to, so that what a
+	// step creates there, such as a replay clip, takes the same ID on each.
+	var req struct {
+		RunID string `json:"runId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.RunID != "" && !clip.ValidID(req.RunID) {
+		httperr.Write(w, http.StatusBadRequest, "runId must be 32 lowercase hex characters")
+		return
+	}
 
 	// Concurrency guard: only one macro at a time.
 	a.macroMu.Lock()
@@ -134,6 +151,7 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		stmapRegistry:  a.stmapRegistry,
 		textAnimEngine: a.textAnimEngine,
 		tickerEngine:   a.tickerEngine,
+		runID:          req.RunID,
 	}
 
 	onProgress := a.macroProgressFn(gen)
@@ -256,6 +274,22 @@ type apiMacroTarget struct {
 	stmapRegistry  *stmap.Registry
 	textAnimEngine *graphics.TextAnimationEngine
 	tickerEngine   *graphics.TickerEngine
+
+	// runID and replays derive the ID of each replay clip the run exports.
+	runID   string
+	replays int
+}
+
+// nextReplayClipID returns the clip ID for the run's next replay: derived
+// from the run ID and the replay's place in the run, so every engine running
+// the same run names its export alike, or "" for a run without an ID.
+func (t *apiMacroTarget) nextReplayClipID() string {
+	if t.runID == "" {
+		return ""
+	}
+	t.replays++
+	sum := sha256.Sum256([]byte("switchframe-macro-replay\x00" + t.runID + "\x00" + strconv.Itoa(t.replays)))
+	return hex.EncodeToString(sum[:16])
 }
 
 func (t *apiMacroTarget) Cut(ctx context.Context, source string) error {
@@ -1169,7 +1203,7 @@ func (t *apiMacroTarget) execReplayPlay(params map[string]any) error {
 	if err != nil {
 		return err
 	}
-	return t.replayMgr.Play(source, speed, loop)
+	return t.replayMgr.PlayAs(source, speed, loop, t.nextReplayClipID())
 }
 
 func (t *apiMacroTarget) execReplayStop() error {
@@ -1201,7 +1235,7 @@ func (t *apiMacroTarget) execReplayQuickClip(params map[string]any) error {
 	if err := t.replayMgr.MarkOut(source); err != nil {
 		return err
 	}
-	return t.replayMgr.Play(source, speed, false)
+	return t.replayMgr.PlayAs(source, speed, false, t.nextReplayClipID())
 }
 
 func (t *apiMacroTarget) execReplayPlayLast() error {
