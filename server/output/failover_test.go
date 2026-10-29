@@ -400,6 +400,30 @@ func TestDestinationPair_FollowerYieldsWithinOnePollOfTakeover(t *testing.T) {
 	require.Empty(t, b.SendingDestinationIDs())
 }
 
+// The grace period before a takeover runs from the first poll that answers
+// this engine's last change. A poll from before the change, as the one
+// still at hand when an operator moves the destination away, must not start
+// it: the takeover would come up to a poll interval early.
+func TestDestinationPair_TakeoverTimerIgnoresPollFromBefore(t *testing.T) {
+	a, b := pairEngine(t, "a"), pairEngine(t, "b")
+	addBoth(t, a, b, true)
+	for _, m := range []*Manager{a, b} {
+		require.NoError(t, m.ReassignDestinationEngine(pairID, "b"))
+	}
+	stale := viewOf(a, false) // A stands by
+	stale.Grace = 20 * time.Millisecond
+
+	require.NoError(t, b.ReassignDestinationEngine(pairID, "a")) // A's leg pending
+	b.ReconcileDestinations(stale)
+	time.Sleep(30 * time.Millisecond)
+	fresh := stale
+	fresh.SeenPolledAt = time.Now()
+	b.ReconcileDestinations(fresh)
+
+	requireState(t, b, "standby", "a")
+	require.Empty(t, b.SendingDestinationIDs())
+}
+
 // A delete the standby missed deletes it on the standby too.
 func TestDestinationPair_DeleteMissedByStandby(t *testing.T) {
 	a, b := pairEngine(t, "a"), pairEngine(t, "b")
