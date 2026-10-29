@@ -1,6 +1,9 @@
 package transition
 
 import (
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,14 +53,18 @@ func TestBlendRawInto_RenderDeclinesFallsBackToBlend(t *testing.T) {
 	require.InDelta(t, 120, int(got[w-1]), 1)
 }
 
-// IngestRawFrame drives the engine's own output path.
+// IngestRawFrame drives the engine's own output path, which draws on a
+// render goroutine.
 func TestIngestRawFrame_UsesRender(t *testing.T) {
 	for _, f := range []video.Format{video.YUV420_8bit, video.YUV422_10bit} {
+		var mu sync.Mutex
 		calls := 0
 		var out []byte
 		var gotFormat video.Format
 		e := NewEngine(EngineConfig{
 			Render: func(dst, from, to []byte, w, h int, fm video.Format, pos float64) bool {
+				mu.Lock()
+				defer mu.Unlock()
 				calls++
 				gotFormat = fm
 				for i := range dst {
@@ -65,58 +72,147 @@ func TestIngestRawFrame_UsesRender(t *testing.T) {
 				}
 				return true
 			},
-			Output: func(yuv []byte, w, h int, pts int64, kf bool) { out = append([]byte(nil), yuv...) },
+			Output: func(yuv []byte, w, h int, pts int64, kf bool) {
+				mu.Lock()
+				defer mu.Unlock()
+				out = append([]byte(nil), yuv...)
+			},
 		})
 		e.SetColorFormat(f)
 		require.NoError(t, e.Start("a", "b", Mix, 60000))
 		const w, h = 32, 16
 		e.IngestRawFrame("a", make([]byte, f.FrameSize(w, h)), w, h, 1)
 		e.IngestRawFrame("b", make([]byte, f.FrameSize(w, h)), w, h, 2)
+		require.Eventually(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return out != nil
+		}, time.Second, time.Millisecond)
+		mu.Lock()
 		require.Equal(t, 1, calls, "%v", f)
 		require.Equal(t, f, gotFormat)
 		require.Len(t, out, f.FrameSize(w, h))
 		require.Equal(t, byte(7), out[0])
+		mu.Unlock()
 		e.Stop()
 	}
 }
 
-// slowRender fills dst with the call number; the first call takes long.
-func slowRender(calls *int, first time.Duration) RenderFunc {
-	return func(dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
-		*calls++
-		if *calls == 1 {
-			time.Sleep(first)
-		}
-		for i := range dst {
-			dst[i] = byte(*calls)
-		}
-		return true
-	}
-}
-
-// A render slower than the frame period is followed by repeats of its
-// frame, so the engine does not fall further behind with every frame of
-// the transition.
-func TestIngestRawFrame_SlowRenderRepeatsFrames(t *testing.T) {
-	calls := 0
-	var outs []byte
+// A render slower than the frame period must not hold up the source that
+// triggers it: the frames it cannot draw in time are dropped, the newest
+// waiting one is drawn next.
+func TestIngestRawFrame_SlowRenderDoesNotDelaySource(t *testing.T) {
+	var mu sync.Mutex
+	var drawn []float64
+	release := make(chan struct{})
 	e := NewEngine(EngineConfig{
-		Render:      slowRender(&calls, 25*time.Millisecond),
+		Render: func(dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
+			<-release
+			mu.Lock()
+			drawn = append(drawn, float64(from[0]))
+			mu.Unlock()
+			return true
+		},
 		FramePeriod: 10 * time.Millisecond,
-		Output:      func(yuv []byte, w, h int, pts int64, kf bool) { outs = append(outs, yuv[0]) },
+		Output:      func(yuv []byte, w, h int, pts int64, kf bool) {},
 	})
 	require.NoError(t, e.Start("a", "b", Mix, 60000))
 	defer e.Stop()
 	const w, h = 32, 16
+	start := time.Now()
+	for i := 1; i <= 10; i++ {
+		a := make([]byte, video.YUV420_8bit.FrameSize(w, h))
+		a[0] = byte(i)
+		e.IngestRawFrame("a", a, w, h, int64(i))
+		e.IngestRawFrame("b", make([]byte, len(a)), w, h, int64(i))
+	}
+	require.Less(t, time.Since(start), 200*time.Millisecond, "ingest waited for the renderer")
+	close(release)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(drawn) > 0 && drawn[len(drawn)-1] == 10
+	}, time.Second, time.Millisecond, "the newest frame is drawn")
+	mu.Lock()
+	require.Less(t, len(drawn), 10, "frames that waited were dropped, not queued")
+	mu.Unlock()
+}
+
+// The transition completes after its last frame is out: the switcher moves
+// program when OnComplete fires, and a frame after that would show the
+// transition again.
+func TestIngestRawFrame_FinalFrameBeforeOnComplete(t *testing.T) {
+	var mu sync.Mutex
+	var events []string
+	e := NewEngine(EngineConfig{
+		Render: func(dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
+			time.Sleep(5 * time.Millisecond)
+			return true
+		},
+		Output: func(yuv []byte, w, h int, pts int64, kf bool) {
+			mu.Lock()
+			events = append(events, "output")
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {
+			mu.Lock()
+			events = append(events, fmt.Sprintf("complete aborted=%v", aborted))
+			mu.Unlock()
+		},
+	})
+	require.NoError(t, e.Start("a", "b", Mix, 100))
+	const w, h = 32, 16
 	frame := make([]byte, video.YUV420_8bit.FrameSize(w, h))
 	e.IngestRawFrame("a", frame, w, h, 0)
-	for i := 0; i < 4; i++ {
-		e.IngestRawFrame("b", frame, w, h, int64(i))
+	time.Sleep(150 * time.Millisecond) // past the end: the next frame is final
+	e.IngestRawFrame("b", frame, w, h, 1)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(events) == 2
+	}, time.Second, time.Millisecond)
+	mu.Lock()
+	require.Equal(t, []string{"output", "complete aborted=false"}, events)
+	mu.Unlock()
+	require.Equal(t, StateIdle, e.State())
+}
+
+// Abort and Stop end the render goroutine, also while it is drawing.
+func TestRenderGoroutineEndsOnAbortAndStop(t *testing.T) {
+	for _, end := range []string{"abort", "stop"} {
+		started := make(chan struct{}, 1)
+		release := make(chan struct{})
+		outputs := atomic.Int32{}
+		e := NewEngine(EngineConfig{
+			Render: func(dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+				<-release
+				return true
+			},
+			Output: func(yuv []byte, w, h int, pts int64, kf bool) { outputs.Add(1) },
+		})
+		require.NoError(t, e.Start("a", "b", Mix, 60000))
+		const w, h = 32, 16
+		frame := make([]byte, video.YUV420_8bit.FrameSize(w, h))
+		e.IngestRawFrame("a", frame, w, h, 0)
+		e.IngestRawFrame("b", frame, w, h, 1)
+		<-started
+		e.mu.Lock()
+		r := e.render
+		e.mu.Unlock()
+		require.NotNil(t, r)
+		if end == "abort" {
+			e.Abort()
+		} else {
+			e.Stop()
+		}
+		close(release)
+		require.Eventually(t, func() bool { return !r.running() }, time.Second, time.Millisecond, end)
+		require.Zero(t, outputs.Load(), "%s: a frame drawn for an ended transition went out", end)
 	}
-	// 25 ms over a 10 ms period: two repeats, then rendering resumes.
-	require.Equal(t, []byte{1, 1, 1, 2}, outs)
-	require.Equal(t, 2, calls)
-	require.True(t, e.overrunNoted.Load())
 }
 
 // BlendRawInto's caller processes the returned buffer in place (keyers,
@@ -170,4 +266,18 @@ func TestBlendRawInto_RenderGetsColorFormat(t *testing.T) {
 	out, _, _ := e.BlendRawInto(nil, fr, w, h, fr, w, h, 0.5)
 	require.Equal(t, video.YUV422_10bit, got)
 	require.Len(t, out, video.YUV422_10bit.FrameSize(w, h))
+}
+
+// slowRender fills dst with the call number; the first call takes long.
+func slowRender(calls *int, first time.Duration) RenderFunc {
+	return func(dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
+		*calls++
+		if *calls == 1 {
+			time.Sleep(first)
+		}
+		for i := range dst {
+			dst[i] = byte(*calls)
+		}
+		return true
+	}
 }

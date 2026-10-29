@@ -104,11 +104,8 @@ type EngineConfig struct {
 	// draw through this when no GPU renders them.
 	Render RenderFunc
 
-	// FramePeriod is the time one output frame may take. A Render call
-	// slower than that makes the engine repeat its output for as many
-	// frames as the call overran by, so a renderer that cannot keep up
-	// drops frames instead of falling further behind for the rest of the
-	// transition. Zero turns the pacing off.
+	// FramePeriod is the time one output frame may take. The first Render
+	// call slower than that is logged. Zero turns the check off.
 	FramePeriod time.Duration
 }
 
@@ -199,9 +196,8 @@ type Engine struct {
 	// Recreated only when resolution changes.
 	rawBlender *FrameBlender
 
-	renderBuf    []byte      // output of config.Render in blendAndOutput
-	renderPace   renderPacer // pacing of blendAndOutput's Render calls, under mu
-	overrunNoted atomic.Bool // a Render overrun has been logged for this engine
+	render       *asyncRender // draws config.Render frames, nil until the first; under mu
+	overrunNoted atomic.Bool  // a Render overrun has been logged for this engine
 
 	// Reusable scratch buffers for BlendRawInto mismatched-resolution paths.
 	// blendRawMu serializes concurrent BlendRawInto callers so the scratch
@@ -924,9 +920,14 @@ func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
 
 	pos := e.currentPosition()
 
+	if e.config.Render != nil {
+		e.submitRender(yuvA, yuvB, pos, pts)
+		return
+	}
+
 	blendStart := time.Now()
-	blended := e.render(yuvA, yuvB, pos)
-	if blended == nil && e.colorFormat == video.YUV422_10bit {
+	var blended []byte
+	if e.colorFormat == video.YUV422_10bit {
 		blended = e.blend10bit(yuvA, yuvB, pos)
 	} else if blended == nil {
 		switch e.transitionType {
@@ -979,65 +980,40 @@ func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
 	}
 }
 
-// render draws the frame through config.Render, returning nil when there is
-// none or it leaves the frame to the blend. A frame the pacing skips repeats
-// the previous one. Caller must hold e.mu.
-func (e *Engine) render(yuvA, yuvB []byte, pos float64) []byte {
-	if e.config.Render == nil {
-		return nil
-	}
+// submitRender hands a frame to the render goroutine, starting it on the
+// first frame, and completes the transition when the position reaches the
+// end: the goroutine then draws that frame, outputs it and calls
+// OnComplete. Caller must hold e.mu; submitRender releases it.
+func (e *Engine) submitRender(yuvA, yuvB []byte, pos float64, pts int64) {
 	f := video.YUV420_8bit
 	if e.colorFormat == video.YUV422_10bit {
 		f = video.YUV422_10bit
 	}
-	size := f.FrameSize(e.width, e.height)
-	if len(e.renderBuf) == size && e.renderPace.skip() {
-		return e.renderBuf
+	if e.render == nil {
+		e.render = newAsyncRender(e, e.transitionType)
 	}
-	e.renderBuf = growBuf(e.renderBuf, size)
-	if !e.timedRender(&e.renderPace, e.renderBuf, yuvA, yuvB, e.width, e.height, f, pos) {
-		return nil
+	isKF := !e.firstOutput
+	e.firstOutput = true
+	final := !e.manualControl && pos >= 1.0
+	e.render.submit(yuvA, yuvB, e.width, e.height, f, pos, pts, isKF, final)
+	if final {
+		e.log.Info("auto-complete", "type", e.transitionType)
+		// The goroutine finishes the transition; cleanup must not stop it.
+		e.render = nil
+		e.cleanup()
 	}
-	return e.renderBuf
+	e.mu.Unlock()
 }
 
-// renderPacer counts the frames still to repeat after a slow Render call.
-type renderPacer struct {
-	pending int
-	drawn   bool // the buffer holds a rendered frame to repeat
-}
-
-// skip reports whether this frame repeats the previous one.
-func (p *renderPacer) skip() bool {
-	if p.pending > 0 && p.drawn {
-		p.pending--
-		return true
-	}
-	return false
-}
-
-// timedRender calls config.Render and, with a pacer, arms pacing when it
-// took longer than a frame period: a call of n periods is followed by n-1
-// repeated frames, so on average the output keeps the frame rate. The first
-// overrun is logged either way.
-func (e *Engine) timedRender(p *renderPacer, dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
+// timedRender calls config.Render and logs the first call of the engine
+// that takes longer than a frame period.
+func (e *Engine) timedRender(ttype Type, dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
 	start := time.Now()
 	ok := e.config.Render(dst, from, to, w, h, f, pos)
-	if p != nil {
-		p.drawn = ok
-	}
 	period := e.config.FramePeriod
-	if took := time.Since(start); ok && period > 0 && took > period {
-		if p != nil {
-			p.pending = int(took/period) - 1
-			if took%period != 0 {
-				p.pending++
-			}
-		}
-		if !e.overrunNoted.Swap(true) {
-			e.log.Warn("transition render slower than the frame rate, repeating frames",
-				"type", e.transitionType, "took", took, "frame_period", period)
-		}
+	if took := time.Since(start); ok && period > 0 && took > period && !e.overrunNoted.Swap(true) {
+		e.log.Warn("transition render slower than the frame rate",
+			"type", ttype, "took", took, "frame_period", period)
 	}
 	return ok
 }
@@ -1516,7 +1492,7 @@ func (e *Engine) BlendRawInto(
 		// after this returns, so a repeat would hand back a processed
 		// frame. The sync loop paces its own ticks.
 		dst = growBuf(dst, size)
-		if e.timedRender(nil, dst, fromYUV, toYUV, outW, outH, cf, position) {
+		if e.timedRender(ttype, dst, fromYUV, toYUV, outW, outH, cf, position) {
 			return dst, outW, outH
 		}
 	}
@@ -1627,6 +1603,12 @@ func growCoords(buf []int64, n int) []int64 {
 
 // cleanup releases codec resources and resets state. Caller must hold e.mu.
 func (e *Engine) cleanup() {
+	// Stop the render goroutine, dropping any frame still waiting.
+	if e.render != nil {
+		e.render.shutdown()
+		e.render = nil
+	}
+
 	// Stop watchdog goroutine (idempotent via sync.Once)
 	if e.watchdogStop != nil {
 		e.watchdogOnce.Do(func() {
