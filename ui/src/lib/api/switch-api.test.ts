@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, checkFragmentToken, getAuthToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency, setDualTimestampProvider, graphicsOn, graphicsOff, recallPreset, dveSlotOn, clipPlayerPlay, clipPlayerStop, listRecordingsDualEngine, listRecordingsFromEngine, importRecordingFromEngine, graphicsSequenceUpload, runMacro, setSourceKey, setFormat, setEncoderBackend, resetCircuitBreakers } from './switch-api';
+import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, checkFragmentToken, getAuthToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency, setDualTimestampProvider, graphicsOn, graphicsOff, recallPreset, dveSlotOn, clipPlayerPlay, clipPlayerStop, listRecordingsDualEngine, listRecordingsFromEngine, importRecordingFromEngine, graphicsSequenceUpload, runMacro, setSourceKey, setFormat, setEncoderBackend, resetCircuitBreakers, engineFetch, authHeaders } from './switch-api';
 import { setEngineUrls } from './base-url';
 import * as notifications from '$lib/state/notifications.svelte';
 import type { SRTOutputConfig, SCTE35CueRequest, CreateSRTSourceConfig } from './types';
@@ -476,9 +476,9 @@ describe('Auth token', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		await getState();
-		expect(mockFetch).toHaveBeenCalledWith('/api/switch/state', {
-			headers: { Authorization: 'Bearer my-secret-token' },
-		});
+		const [url, init] = mockFetch.mock.calls[0];
+		expect(url).toBe('/api/switch/state');
+		expect(new Headers(init.headers).get('Authorization')).toBe('Bearer my-secret-token');
 	});
 
 	it('includes Authorization header in POST requests', async () => {
@@ -490,11 +490,36 @@ describe('Auth token', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		await cut('cam1');
-		expect(mockFetch).toHaveBeenCalledWith('/api/switch/cut', {
-			method: 'POST',
-			headers: { Authorization: 'Bearer my-secret-token', 'Content-Type': 'application/json' },
-			body: JSON.stringify({ source: 'cam1' }),
-		});
+		const [url, init] = mockFetch.mock.calls[0];
+		expect(url).toBe('/api/switch/cut');
+		expect(init.method).toBe('POST');
+		expect(init.body).toBe(JSON.stringify({ source: 'cam1' }));
+		const headers = new Headers(init.headers);
+		expect(headers.get('Authorization')).toBe('Bearer my-secret-token');
+		expect(headers.get('Content-Type')).toBe('application/json');
+	});
+
+	// A tab left on an old build kept retrying a refused token for hours; the
+	// engine's log can only name that build if the request carries it.
+	it('names the page build on a request with a token to the page engine', async () => {
+		setAuthToken('my-secret-token');
+		const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+		vi.stubGlobal('fetch', mockFetch);
+
+		await getState();
+		const build = new Headers(mockFetch.mock.calls[0][1].headers).get('X-Switchframe-UI-Build');
+		expect(build).toBeTruthy();
+	});
+
+	// The other engine's preflight allows no custom header until it runs this
+	// build too, so sending one there would fail the request.
+	it('does not name the build to another origin', async () => {
+		setAuthToken('my-secret-token');
+		const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+		vi.stubGlobal('fetch', mockFetch);
+
+		await engineFetch('https://engine-b.invalid/api/switch/state', { headers: authHeaders() });
+		expect(new Headers(mockFetch.mock.calls[0][1].headers).has('X-Switchframe-UI-Build')).toBe(false);
 	});
 
 	it('does not include Authorization header when no token is set', async () => {
@@ -531,11 +556,9 @@ describe('SCTE-35 API', () => {
 			autoReturn: true,
 		};
 		await scte35Cue(req);
-		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/cue', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(req),
-		});
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/cue', expect.objectContaining({ method: 'POST', headers: { 'Content-Type': 'application/json' } }));
+		const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(body).toEqual({ ...req, eventId: expect.any(Number) });
 	});
 
 	it('scte35Cue sends time_signal with descriptors', async () => {
@@ -552,11 +575,9 @@ describe('SCTE-35 API', () => {
 			descriptors: [{ segmentationType: 48, upidType: 9, upid: 'ABCD0001', durationMs: 60000 }],
 		};
 		await scte35Cue(req);
-		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/cue', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(req),
-		});
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/cue', expect.objectContaining({ method: 'POST', headers: { 'Content-Type': 'application/json' } }));
+		const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(body).toEqual({ ...req, descriptors: [{ ...req.descriptors![0], segEventId: expect.any(Number) }] });
 	});
 
 	it('scte35Return sends POST without eventId', async () => {
