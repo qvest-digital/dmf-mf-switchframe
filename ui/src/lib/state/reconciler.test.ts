@@ -291,6 +291,61 @@ describe('createReconciler', () => {
 		expect(r.health.divergences).toEqual([]);
 	});
 
+	// An engine that restarted has an empty SCTE-35 event log while the
+	// other keeps its history, and a snapshot push does not carry the log:
+	// counting it held the pair out of sync until the other engine restarted.
+	it('does not report SCTE-35 event log history as a divergence', () => {
+		vi.useFakeTimers();
+		const logged = { eventId: 7, commandType: 'splice_insert', isOut: true, autoReturn: false, timestamp: 1000, status: 'injected' };
+		const st = (eventLog: unknown[]) => ({ enabled: true, activeEvents: {}, eventLog, heartbeatOk: true, config: {} as never });
+		const r = createReconciler();
+		r.ingest('A', makeState({ scte35: st([logged, { ...logged, isOut: false, status: 'returned' }]) as never }));
+		r.ingest('B', makeState({ scte35: st([]) as never }));
+		vi.advanceTimersByTime(SETTLE_MS);
+		r.tick();
+		expect(r.health.divergences).toEqual([]);
+		expect(r.health.status).toBe('synced');
+	});
+
+	// The events on air are compared: one engine in a break the other is not
+	// in signals a different break downstream.
+	it('reports an SCTE-35 event on air on one engine only', () => {
+		vi.useFakeTimers();
+		const ev = { eventId: 7, commandType: 'splice_insert', isOut: true, elapsedMs: 0, autoReturn: false, held: false, spliceTimePts: 0, startedAt: 1000 };
+		const st = (activeEvents: Record<string, unknown>) => ({ enabled: true, activeEvents, eventLog: [], heartbeatOk: true, config: {} as never });
+		const r = createReconciler();
+		r.ingest('A', makeState({ scte35: st({ '7': ev }) as never }));
+		r.ingest('B', makeState({ scte35: st({}) as never }));
+		vi.advanceTimersByTime(SETTLE_MAX_MS);
+		r.tick();
+		expect(r.health.divergences.map((d) => d.field)).toEqual(['scte35']);
+	});
+
+	// Both engines run a macro sent to them; each stamps a wait step's start
+	// from its own clock, and the finished run stays in state until
+	// dismissed, so the stamps held the pair out of sync until then.
+	it('does not report macro wait step start times as a divergence', () => {
+		vi.useFakeTimers();
+		const run = (waitStartMs: number) => ({ running: false, macroName: 'm', currentStep: 1, steps: [
+			{ action: 'wait', summary: 'Wait 1.5s', status: 'done', waitMs: 1500, waitStartMs },
+			{ action: 'cut', summary: 'Cut', status: 'done' },
+		] });
+		const r = createReconciler();
+		r.ingest('A', makeState({ macro: run(1_000) as never }));
+		r.ingest('B', makeState({ macro: run(1_020) as never }));
+		vi.advanceTimersByTime(SETTLE_MS);
+		r.tick();
+		expect(r.health.divergences).toEqual([]);
+
+		// A step that fared differently is still a divergence.
+		const failed = run(1_020);
+		failed.steps[1] = { ...failed.steps[1], status: 'failed' };
+		r.ingest('B', makeState({ macro: failed as never }));
+		vi.advanceTimersByTime(SETTLE_MAX_MS);
+		r.tick();
+		expect(r.health.divergences.map((d) => d.field)).toEqual(['macro']);
+	});
+
 	it('reports a difference that outlasts the settle time', () => {
 		vi.useFakeTimers();
 		const r = createReconciler();

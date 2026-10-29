@@ -635,7 +635,7 @@ func TestReplayManager_OnClipExported(t *testing.T) {
 		filePath string
 	}
 	exportCh := make(chan exportEvent, 1)
-	m.SetOnClipExported(func(source string, filePath string) {
+	m.SetOnClipExported(func(source, filePath, _ string) {
 		exportCh <- exportEvent{source: source, filePath: filePath}
 	})
 
@@ -677,6 +677,47 @@ func TestReplayManager_OnClipExported(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond)
 }
 
+// Both engines of a pair export the same replay; the clip ID the request
+// names has to reach the clip store, or each engine stores the replay under
+// an ID of its own and a delete by one engine's ID misses on the other.
+func TestReplayManager_PlayAsHandsClipIDToExport(t *testing.T) {
+	const id = "0123456789abcdef0123456789abcdef"
+	for name, play := range map[string]func(m *Manager) error{
+		"PlayAs": func(m *Manager) error {
+			return m.PlayAs("cam1", 1.0, false, id)
+		},
+		"QuickReplayAs": func(m *Manager) error {
+			return m.QuickReplayAs("cam1", 5, 1.0, id)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := NewManager(&mockRelay{}, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+			defer m.Close()
+			got := make(chan string, 1)
+			m.SetOnClipExported(func(_, filePath, clipID string) {
+				_ = os.Remove(filePath)
+				got <- clipID
+			})
+			_ = m.AddSource("cam1")
+			m.RecordFrame("cam1", makeVideoFrameAVC1(0, true, 100))
+			m.RecordFrame("cam1", makeVideoFrameAVC1(3003, false, 50))
+			_ = m.MarkIn("cam1")
+			time.Sleep(10 * time.Millisecond)
+			m.RecordFrame("cam1", makeVideoFrameAVC1(6006, true, 100))
+			m.RecordFrame("cam1", makeVideoFrameAVC1(9009, false, 50))
+			_ = m.MarkOut("cam1")
+
+			require.NoError(t, play(m))
+			select {
+			case clipID := <-got:
+				require.Equal(t, id, clipID)
+			case <-time.After(5 * time.Second):
+				t.Fatal("OnClipExported callback not called within timeout")
+			}
+		})
+	}
+}
+
 func TestReplayManager_OnClipExported_NilCallback(t *testing.T) {
 	relay := &mockRelay{}
 	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
@@ -707,7 +748,7 @@ func TestReplayManager_CloseWaitsForExportGoroutine(t *testing.T) {
 	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
 
 	var exportFinished atomic.Int32
-	m.SetOnClipExported(func(source string, filePath string) {
+	m.SetOnClipExported(func(source, filePath, _ string) {
 		// Simulate slow export work.
 		time.Sleep(200 * time.Millisecond)
 		exportFinished.Add(1)

@@ -73,8 +73,9 @@ type Manager struct {
 	audioEncoderFactory audio.EncoderFactory
 
 	// onClipExported is called after Play() extracts a clip, with the
-	// source name and path to a temp TS file containing the muxed frames.
-	onClipExported func(source string, filePath string)
+	// source name, path to a temp TS file containing the muxed frames and
+	// the ID the clip is to take ("" for none chosen).
+	onClipExported func(source, filePath, clipID string)
 
 	// exportWg tracks background export goroutines so Close() can wait for them.
 	exportWg sync.WaitGroup
@@ -255,6 +256,13 @@ func (m *Manager) MarkOut(source string) error {
 
 // Play starts playback of the marked clip at the given speed.
 func (m *Manager) Play(source string, speed float64, loop bool) error {
+	return m.PlayAs(source, speed, loop, "")
+}
+
+// PlayAs is Play, handing clipID to the clip export callback as the ID the
+// exported clip takes. Engines that play the same replay pass the same
+// clipID, so a later request for the clip by ID finds it on each of them.
+func (m *Manager) PlayAs(source string, speed float64, loop bool, clipID string) error {
 	err := func() error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -292,7 +300,7 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 					m.log.Error("failed to export replay clip", "source", source, "error", muxErr)
 					return
 				}
-				exportFn(source, path)
+				exportFn(source, path, clipID)
 			}()
 		}
 
@@ -534,6 +542,11 @@ func (m *Manager) SetMarks(markInMs, markOutMs *int64) error {
 // QuickReplay combines mark + play in one call, auto-stopping any active
 // player first. Sets marks to [now-seconds, now] and starts playback.
 func (m *Manager) QuickReplay(source string, seconds int, speed float64) error {
+	return m.QuickReplayAs(source, seconds, speed, "")
+}
+
+// QuickReplayAs is QuickReplay with the exported clip's ID, as for PlayAs.
+func (m *Manager) QuickReplayAs(source string, seconds int, speed float64, clipID string) error {
 	// Stop any active player first.
 	m.mu.Lock()
 	if m.player != nil {
@@ -564,8 +577,7 @@ func (m *Manager) QuickReplay(source string, seconds int, speed float64) error {
 		speed = 0.5
 	}
 
-	// Play delegates to the existing Play method.
-	return m.Play(source, speed, false)
+	return m.PlayAs(source, speed, false, clipID)
 }
 
 // PeekFrame returns a JPEG thumbnail of the most recent frame for a source.
@@ -689,10 +701,11 @@ func (m *Manager) SetAudioCodecFactories(decFactory audio.DecoderFactory, encFac
 }
 
 // SetOnClipExported registers a callback invoked after Play() extracts a
-// clip from the replay buffer. The callback receives the source name and
-// a path to a temporary MPEG-TS file containing the muxed clip frames.
-// The caller is responsible for moving or removing the temp file.
-func (m *Manager) SetOnClipExported(fn func(source string, filePath string)) {
+// clip from the replay buffer. The callback receives the source name, a
+// path to a temporary MPEG-TS file containing the muxed clip frames and the
+// clip ID given to PlayAs, "" when none was. The caller is responsible for
+// moving or removing the temp file.
+func (m *Manager) SetOnClipExported(fn func(source, filePath, clipID string)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onClipExported = fn

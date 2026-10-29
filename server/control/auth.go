@@ -46,6 +46,7 @@ func AuthMiddleware(token string, operatorCheck ...OperatorTokenChecker) func(ht
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Skip auth for exempt paths.
 			if authExemptPaths[r.URL.Path] {
+				setCaller(r, CallerExempt)
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -53,6 +54,7 @@ func AuthMiddleware(token string, operatorCheck ...OperatorTokenChecker) func(ht
 			// Extract Bearer token.
 			authHeader := r.Header.Get("Authorization")
 			if !strings.HasPrefix(authHeader, "Bearer ") {
+				setCaller(r, CallerNone)
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("WWW-Authenticate", `Bearer realm="switchframe"`)
 				w.WriteHeader(http.StatusUnauthorized)
@@ -64,16 +66,19 @@ func AuthMiddleware(token string, operatorCheck ...OperatorTokenChecker) func(ht
 
 			// Check session API token first (timing-safe).
 			if subtle.ConstantTimeCompare([]byte(provided), tokenBytes) == 1 {
+				setCaller(r, CallerToken)
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			// Fall back to operator token check.
 			if checkOperator != nil && checkOperator(provided) {
+				setCaller(r, CallerOperator)
 				next.ServeHTTP(w, r)
 				return
 			}
 
+			setCaller(r, CallerInvalid)
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("WWW-Authenticate", `Bearer realm="switchframe"`)
 			w.WriteHeader(http.StatusUnauthorized)

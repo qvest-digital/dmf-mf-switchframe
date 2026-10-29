@@ -65,6 +65,9 @@ func (a *API) handlePodCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
+		// ID names the pod on every engine it is created on, so that a
+		// request by pod ID reaches it on each; empty picks a fresh one.
+		ID       string             `json:"id"`
 		Template string             `json:"template"`
 		Config   *playout.PodConfig `json:"config"`
 	}
@@ -76,9 +79,9 @@ func (a *API) handlePodCreate(w http.ResponseWriter, r *http.Request) {
 	var pod *playout.Pod
 	var err error
 	if req.Template != "" {
-		pod, err = pb.CreateFromTemplate(req.Template)
+		pod, err = pb.CreateFromTemplateWithID(req.ID, req.Template)
 	} else if req.Config != nil {
-		pod, err = pb.CreatePod(*req.Config)
+		pod, err = pb.CreatePodWithID(req.ID, *req.Config)
 	} else {
 		httperr.Write(w, http.StatusBadRequest, "template or config required")
 		return

@@ -156,13 +156,17 @@ type PlayRequest struct {
 	Source string  `json:"source"`
 	Speed  float64 `json:"speed"`
 	Loop   bool    `json:"loop"`
+	// ClipID is the ID the clip exported from the replay takes in the clip
+	// store, 32 lowercase hex characters; empty lets the store choose one.
+	ClipID string `json:"clipId,omitempty"`
 }
 
 // QuickReplayRequest is the JSON body for the quick-replay endpoint.
 type QuickReplayRequest struct {
 	Seconds int     `json:"seconds"`
 	Speed   float64 `json:"speed"`
-	Source  string  `json:"source"` // Empty = current program source
+	Source  string  `json:"source"`           // Empty = current program source
+	ClipID  string  `json:"clipId,omitempty"` // as for PlayRequest
 }
 
 // SeekRequest is the JSON body for the seek endpoint.

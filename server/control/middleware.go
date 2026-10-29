@@ -170,12 +170,61 @@ func LogFromCtx(ctx context.Context) *slog.Logger {
 	return slog.Default()
 }
 
+// Caller classes on switchframe_http_requests_total: which credential a
+// request was let in, or turned away, on.
+const (
+	CallerToken     = "token"     // the session API token
+	CallerOperator  = "operator"  // a registered operator's token
+	CallerTicket    = "ticket"    // a one-time download ticket
+	CallerInvalid   = "invalid"   // a bearer token that matches neither
+	CallerNone      = "none"      // no bearer token
+	CallerExempt    = "exempt"    // a path that takes no API credential
+	CallerUnchecked = "unchecked" // no authentication ran, as in demo mode
+)
+
+// ctxKeyCaller is the context key under which MetricsMiddleware leaves a
+// slot for the authentication further in to name the caller class.
+type ctxKeyCaller struct{}
+
+// setCaller records the caller class of r for MetricsMiddleware. Outside
+// it, there is no slot and the call does nothing.
+func setCaller(r *http.Request, class string) {
+	if p, ok := r.Context().Value(ctxKeyCaller{}).(*string); ok {
+		*p = class
+	}
+}
+
 // MetricsMiddleware records Prometheus HTTP request metrics (counter and histogram)
 // for each request. It uses r.Pattern (Go 1.22+ ServeMux feature) for route labels
 // to avoid cardinality explosion from path parameters.
 func MetricsMiddleware(next http.Handler) http.Handler {
+	return metricsHandler(nil, next)
+}
+
+// RouteMetricsMiddleware is MetricsMiddleware for a chain that ends in
+// routes. The route label is resolved against routes before the request
+// is served, so a request rejected before it reaches the mux, by
+// authentication for one, is still counted under its route rather than
+// under the pattern of an outer mux.
+func RouteMetricsMiddleware(routes *http.ServeMux) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return metricsHandler(routes, next)
+	}
+}
+
+func metricsHandler(routes *http.ServeMux, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		metrics.HTTPRequestsInFlight.Inc()
+		defer metrics.HTTPRequestsInFlight.Dec()
+
+		var pattern string
+		if routes != nil {
+			_, pattern = routes.Handler(r)
+		}
+
+		caller := CallerUnchecked
+		r = r.WithContext(context.WithValue(r.Context(), ctxKeyCaller{}, &caller))
 
 		sr := &statusRecorder{ResponseWriter: w, status: 0}
 		next.ServeHTTP(sr, r)
@@ -185,22 +234,28 @@ func MetricsMiddleware(next http.Handler) http.Handler {
 			status = http.StatusOK
 		}
 
-		// Use r.Pattern for the route label. This is set by Go 1.22+ ServeMux
-		// after routing, so it contains the pattern like "GET /api/sources"
-		// rather than the actual path (which could have unbounded cardinality).
-		pattern := r.Pattern
+		// Without routes, r.Pattern is what the mux that served the request
+		// set: a pattern like "GET /api/sources" rather than the actual path,
+		// which could have unbounded cardinality. With routes it is not read:
+		// a request authentication turned away still carries the pattern of
+		// an outer mux, which names no route.
+		if pattern == "" && routes == nil {
+			pattern = r.Pattern
+		}
 		if pattern == "" {
 			pattern = "unknown"
 		}
 
+		method := metrics.MethodLabel(r.Method)
 		metrics.HTTPRequestsTotal.WithLabelValues(
-			r.Method,
+			method,
 			pattern,
 			strconv.Itoa(status),
+			caller,
 		).Inc()
 
 		metrics.HTTPRequestDuration.WithLabelValues(
-			r.Method,
+			method,
 			pattern,
 		).Observe(time.Since(start).Seconds())
 	})

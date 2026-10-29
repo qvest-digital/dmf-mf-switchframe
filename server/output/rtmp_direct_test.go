@@ -4,8 +4,10 @@ package output
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -414,6 +416,121 @@ func TestParseSPSDimensions(t *testing.T) {
 	}
 }
 
+// silentTCPServer accepts connections and never answers, as an ingest does
+// when it hangs mid-handshake or a stateful firewall drops its replies.
+func silentTCPServer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	var conns []net.Conn
+	var mu sync.Mutex
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	return ln.Addr().String()
+}
+
+func rtmpTestKeyframe(pts int64) *media.VideoFrame {
+	return &media.VideoFrame{
+		PTS: pts, DTS: pts, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xc0, 0x1e},
+		PPS:      []byte{0x68, 0xce, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x84, 0x00},
+	}
+}
+
+// Stopping a destination must not wait on an ingest that stopped answering:
+// the connect runs on the write loop, and Close joins it.
+func TestRTMPDirect_CloseAbortsHungConnect(t *testing.T) {
+	addr := silentTCPServer(t)
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://" + addr + "/live/key"})
+	require.NoError(t, err)
+	require.NoError(t, r.Start(context.Background()))
+	require.NoError(t, r.WriteVideo(rtmpTestKeyframe(90000)))
+	time.Sleep(200 * time.Millisecond) // the write loop is now in the handshake
+
+	closed := make(chan struct{})
+	go func() {
+		_ = r.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked behind a connect the ingest never answers")
+	}
+}
+
+// A connect that never completes must fail on its own, so the adapter
+// reports the error and retries with backoff instead of hanging silently.
+func TestRTMPDirect_HungConnectTimesOutIntoReconnect(t *testing.T) {
+	addr := silentTCPServer(t)
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://" + addr + "/live/key"})
+	require.NoError(t, err)
+	r.ioTimeout = 300 * time.Millisecond
+	r.bo.Initial = time.Hour // keep the reconnect loop asleep
+	require.NoError(t, r.Start(context.Background()))
+	defer func() { _ = r.Close() }()
+	require.NoError(t, r.WriteVideo(rtmpTestKeyframe(90000)))
+
+	require.Eventually(t, func() bool {
+		return *r.state.Load() == StateReconnecting
+	}, 3*time.Second, 10*time.Millisecond, "connect never gave up")
+}
+
+// An ingest that refuses every connection must see the retries back off.
+// Without a cached sequence header the reconnect loop hands the retry back
+// to the next keyframe, and resetting the backoff there turned every retry
+// into a fresh first attempt.
+func TestRTMPDirect_FailedFirstConnectBacksOff(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = ln.Close() }()
+	var attempts atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			attempts.Add(1)
+			_ = c.Close()
+		}
+	}()
+
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://" + ln.Addr().String() + "/live/key"})
+	require.NoError(t, err)
+	r.bo.Initial = 20 * time.Millisecond
+	r.bo.JitterPct = 0
+	require.NoError(t, r.Start(context.Background()))
+	defer func() { _ = r.Close() }()
+
+	// Keyframes every 10 ms for 1.3 s. Backing off from 20 ms doubles
+	// through 40, 80, 160, 320 and 640 ms: about seven attempts.
+	for end := time.Now().Add(1300 * time.Millisecond); time.Now().Before(end); {
+		require.NoError(t, r.WriteVideo(rtmpTestKeyframe(90000)))
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.LessOrEqual(t, attempts.Load(), int32(10), "retries did not back off")
+	require.GreaterOrEqual(t, attempts.Load(), int32(3), "adapter stopped retrying")
+}
+
 // flvTag is one audio or video tag read back from an FLV file.
 type flvTag struct {
 	kind  byte // 8 audio, 9 video
@@ -522,4 +639,70 @@ func TestRTMPDirect_AudioWaitsForRebaseAfterReconnect(t *testing.T) {
 	require.Zero(t, r.bytesWritten.Load()-1, "audio from before the new base")
 	r.handleAudio(&media.AudioFrame{PTS: 271920, Data: []byte{0x21, 0x10}})
 	require.Equal(t, int64(3), r.bytesWritten.Load())
+}
+
+// Close aborts a flush in flight, which fails that write. A destination
+// stopped on purpose must not keep reporting the write error.
+func TestRTMPDirect_CloseClearsWriteError(t *testing.T) {
+	t.Parallel()
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://example.com/live/key"})
+	require.NoError(t, err)
+	require.NoError(t, r.Start(context.Background()))
+	r.lastError.Store(ptrTo("RTMP video write failed"))
+	require.NoError(t, r.Close())
+
+	st := r.RTMPStatusSnapshot()
+	require.Equal(t, string(StateStopped), st.State)
+	require.Empty(t, r.Status().Error)
+}
+
+// Video PTS wraps at 33 bits after about 26.5 hours; audio PTS counts on.
+// FLV timestamps carry on across the wrap for both, instead of video
+// dropping to 0 behind audio.
+func TestRTMPDirect_TimestampsContinueAcrossPTSWrap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "out.flv")
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "file:" + path})
+	require.NoError(t, err)
+	require.NoError(t, r.Start(context.Background()))
+
+	keyData := []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x84, 0x00}
+	pData := []byte{0x00, 0x00, 0x00, 0x04, 0x41, 0x9a, 0x02, 0x00}
+	audioData := []byte{0x21, 0x10, 0x04}
+	var want int64
+	wrapFrames(t,
+		func(pts int64, key bool) error {
+			f := &media.VideoFrame{PTS: pts, DTS: pts, WireData: pData}
+			if key {
+				f = &media.VideoFrame{PTS: pts, DTS: pts, IsKeyframe: true,
+					SPS: []byte{0x67, 0x42, 0xc0, 0x1e}, PPS: []byte{0x68, 0xce, 0x38, 0x80}, WireData: keyData}
+			}
+			want += int64(len(f.WireData))
+			if err := r.WriteVideo(f); err != nil {
+				return err
+			}
+			if key {
+				require.Eventually(t, r.initialized.Load, 2*time.Second, 5*time.Millisecond)
+			}
+			time.Sleep(time.Millisecond)
+			return nil
+		},
+		func(pts int64) error {
+			want += int64(len(audioData))
+			return r.WriteAudio(&media.AudioFrame{PTS: pts, Data: audioData})
+		})
+	require.Eventually(t, func() bool { return r.bytesWritten.Load() == want }, 2*time.Second, 5*time.Millisecond,
+		"not every frame was written; state %s, error %q", *r.state.Load(), *r.lastError.Load())
+	require.NoError(t, r.Close())
+
+	tags := readFLVTags(t, path)
+	video := mediaTimestamps(tags, 9)
+	audio := mediaTimestamps(tags, 8)
+	require.Len(t, video, 50)
+	for i, ms := range video {
+		require.Equal(t, uint32(i*20), ms, "video tag %d", i)
+	}
+	require.Len(t, audio, 40)
+	for i, ms := range audio {
+		require.InDelta(t, float64(i)*1920/90, float64(ms), 1, "audio tag %d", i)
+	}
 }

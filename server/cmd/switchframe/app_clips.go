@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -351,8 +352,8 @@ func (a *App) initClips() error {
 	// Wire replay → clip store: when a replay clip is exported, validate
 	// and add it as an ephemeral clip entry.
 	if a.replayMgr != nil {
-		a.replayMgr.SetOnClipExported(func(source string, tempFile string) {
-			a.handleReplayClipExported(source, tempFile, store)
+		a.replayMgr.SetOnClipExported(func(source, tempFile, clipID string) {
+			a.handleReplayClipExported(source, tempFile, clipID, store)
 		})
 		slog.Info("clips: replay export callback wired")
 	}
@@ -393,9 +394,31 @@ func clipPlayerIDFromKey(key string) int {
 	return n
 }
 
+// addReplayClip adds an exported replay to store under clipID, the ID the
+// replay request named on every engine it was sent to, or under a fresh ID
+// when clipID is "".
+func addReplayClip(store *clip.Store, c *clip.Clip, clipID string) error {
+	if clipID == "" {
+		return store.Add(c)
+	}
+	return store.AddWithID(clipID, c)
+}
+
+// replayClipFilename names a replay's file in the clip store. A replay
+// with a requested clip ID is named after it, as an upload is, so that the
+// engines storing one replay under one ID hold it at one path: playlists
+// name a clip by its path, and the UI sends one playlist to every engine.
+func replayClipFilename(source, clipID string, now time.Time) string {
+	if clipID != "" {
+		return clipID + ".ts"
+	}
+	return fmt.Sprintf("replay_%s_%s.ts", source, now.Format("20060102_150405.000"))
+}
+
 // handleReplayClipExported processes a temp TS file exported from replay,
-// validates it, creates an ephemeral clip entry, and moves it to the store.
-func (a *App) handleReplayClipExported(source string, tempFile string, store *clip.Store) {
+// validates it, creates an ephemeral clip entry under clipID ("" for a
+// fresh ID), and moves it to the store.
+func (a *App) handleReplayClipExported(source, tempFile, clipID string, store *clip.Store) {
 	// Validate the temp TS file to extract metadata.
 	result, err := clip.Validate(tempFile)
 	if err != nil {
@@ -404,19 +427,16 @@ func (a *App) handleReplayClipExported(source string, tempFile string, store *cl
 		return
 	}
 
-	// Generate a filename for the clip in the store directory.
-	filename := fmt.Sprintf("replay_%s_%s.ts", source, time.Now().Format("20060102_150405.000"))
+	filename := replayClipFilename(source, clipID, time.Now())
 	destPath := filepath.Join(store.Dir(), filename)
 
-	// Move the temp file into the clip store directory.
-	if err := os.Rename(tempFile, destPath); err != nil {
-		// Rename may fail across filesystem boundaries; fall back to copy.
-		if copyErr := copyFile(tempFile, destPath); copyErr != nil {
-			slog.Warn("clips: failed to move replay clip", "source", source, "error", copyErr)
-			_ = os.Remove(tempFile)
-			return
-		}
-		_ = os.Remove(tempFile)
+	// Everything below removes destPath only because this call put it there.
+	if placed, err := placeReplayFile(store, tempFile, destPath, clipID); err != nil {
+		slog.Warn("clips: failed to move replay clip", "source", source, "error", err)
+		return
+	} else if !placed {
+		slog.Info("clips: replay clip already stored, export dropped", "source", source, "clipID", clipID)
+		return
 	}
 
 	// Get the file size.
@@ -444,8 +464,8 @@ func (a *App) handleReplayClipExported(source string, tempFile string, store *cl
 		Ephemeral:  true,
 	}
 
-	if err := store.Add(c); err != nil {
-		slog.Warn("clips: failed to add replay clip", "source", source, "error", err)
+	if err := addReplayClip(store, c, clipID); err != nil {
+		slog.Warn("clips: failed to add replay clip", "source", source, "clipID", clipID, "error", err)
 		_ = os.Remove(destPath)
 		return
 	}
@@ -470,6 +490,48 @@ func (a *App) handleReplayClipExported(source string, tempFile string, store *cl
 
 // copyFile copies src to dst. Used as fallback when os.Rename fails
 // (e.g., across filesystem boundaries).
+// placeReplayFile moves an exported replay from tempFile to destPath in
+// store's directory without replacing a file there: a replay named after
+// its clip ID collides with the clip a request with the same ID stored
+// before, such as one the UI retried after a partial failure. It reports
+// false, and drops tempFile, when store already holds clipID. A file at
+// destPath that no clip owns, left by an export that did not finish, is
+// replaced. tempFile is gone afterwards in every case.
+func placeReplayFile(store *clip.Store, tempFile, destPath, clipID string) (bool, error) {
+	err := moveNoReplace(tempFile, destPath)
+	if errors.Is(err, fs.ErrExist) {
+		if _, getErr := store.Get(clipID); getErr == nil {
+			_ = os.Remove(tempFile)
+			return false, nil
+		}
+		_ = os.Remove(destPath)
+		err = moveNoReplace(tempFile, destPath)
+	}
+	if err != nil {
+		_ = os.Remove(tempFile)
+		return false, err
+	}
+	return true, nil
+}
+
+// moveNoReplace moves src to dst, failing with an fs.ErrExist error when
+// dst exists. A hard link refuses an existing dst; across filesystems,
+// where src cannot be linked, src is copied into a dst created exclusively.
+func moveNoReplace(src, dst string) error {
+	err := os.Link(src, dst)
+	if errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	if err != nil {
+		if err := copyFile(src, dst); err != nil {
+			return err
+		}
+	}
+	_ = os.Remove(src)
+	return nil
+}
+
+// copyFile copies src to dst, which it creates and refuses to replace.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -477,7 +539,7 @@ func copyFile(src, dst string) error {
 	}
 	defer func() { _ = in.Close() }()
 
-	out, err := os.Create(dst)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return err
 	}

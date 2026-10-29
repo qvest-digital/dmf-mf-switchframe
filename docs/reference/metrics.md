@@ -10,9 +10,11 @@
 
 Switchframe's metrics surface is deliberately narrow. Not every counter is worth exporting; scrape overhead is cheap but dashboard noise is not. The set exported from [`metrics.go`](../../server/metrics/metrics.go) is the set that has earned its way in — operations that have caused incidents, performance paths with measurable customer impact, and subsystem health signals that a monitoring system needs to page on.
 
-Three broad categories exist. First, **event counters** that tick forward as the server does work: cuts performed, frames mixed, SRT reconnects. Second, **histograms** that characterize latency or size distributions: pipeline decode duration, IDR gate duration, snapshot apply size. Third, **gauges** for values that move up and down: command-queue depth.
+Three broad categories exist. First, **event counters** that tick forward as the server does work: cuts performed, frames mixed, SRT reconnects. Second, **histograms** that characterize latency or size distributions: pipeline encode duration, IDR gate duration, snapshot apply size. Third, **gauges** for values that move up and down: command-queue depth, requests in flight.
 
-Labels are used sparingly. `transitions_completed_total` is labeled by type (mix, dip, ftb) because the operator cares about which transition style is in use; `source_status_changes_total` is labeled by source key and the from/to status so alerting can distinguish a flap from a real outage. `http_requests_total` carries method, pattern, and status — standard trio for request dashboards. Over-labeling explodes cardinality, so everything else is a plain counter or histogram.
+Labels are used sparingly. `transitions_completed_total` is labeled by type (mix, dip, ftb) because the operator cares about which transition style is in use; `source_status_changes_total` is labeled by source and the from/to status so alerting can distinguish a flap from a real outage. `http_requests_total` carries method, pattern, status and caller: the standard trio for request dashboards, plus which credential a request came in on. Over-labeling explodes cardinality, so everything else is a plain counter or histogram.
+
+Every label value comes from a bounded set. An HTTP method outside the standard ones is `other`. A request that matches no route, rejected or not, has the pattern `unknown`. A source label is the source key, except for an SRT input: its key is derived from the publisher's stream id, which can carry a stream key, so its label is `srt:` and a 12-character digest of the key ([`metrics.SourceLabel`](../../server/metrics/labels.go)).
 
 The scrape endpoint sits on a separate port from the QUIC server for three reasons. Prometheus scrapers expect TCP HTTP; the production control surface speaks QUIC. The admin endpoint also carries Go pprof (`/debug/pprof/*`) and the health (`/health`) and readiness (`/ready`) probes — everything operations needs, segregated from operator/API traffic. And binding it to `127.0.0.1:9090` by default means it is not exposed to the internet unless the operator deliberately reconfigures it.
 
@@ -39,8 +41,9 @@ Registered at package init in [`metrics.go`](../../server/metrics/metrics.go).
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `switchframe_http_requests_total` | counter | `method`, `pattern`, `status` | Total HTTP requests seen by the API middleware chain ([`control.MetricsMiddleware`](../../server/control/middleware.go)). |
-| `switchframe_http_request_duration_seconds` | histogram | `method`, `pattern` | Request latency. Buckets: 0.5 ms, 1 ms, 5 ms, 10 ms, 25 ms, 50 ms, 100 ms, 250 ms, 500 ms. |
+| `switchframe_http_requests_total` | counter | `method`, `pattern`, `status`, `caller` | Total HTTP requests seen by the API middleware chain ([`control.RouteMetricsMiddleware`](../../server/control/middleware.go)). The pattern is resolved against the API mux before authentication runs, so a 401 or 403 is counted under its route. `caller` names the credential: `token` (the session API token), `operator` (an operator's token), `ticket` (a download ticket), `invalid` (a bearer token that matches neither), `none` (no bearer token), `exempt` (a route that takes none), `unchecked` (no authentication ran, as in demo mode). |
+| `switchframe_http_request_duration_seconds` | histogram | `method`, `pattern` | Request latency. Buckets: 0.5 ms, 1 ms, 5 ms, 10 ms, 25 ms, 50 ms, 100 ms, 250 ms, 500 ms, 1 s, 2.5 s, 5 s, 10 s, 30 s. No `caller` label: a ratio against `http_requests_total` sums `caller` away. |
+| `switchframe_http_requests_in_flight` | gauge | — | HTTP requests currently being served. |
 
 ## Switcher metrics
 
@@ -50,8 +53,8 @@ Registered per-instance via `NewMetrics` and attached to the switcher with `Swit
 |---|---|---|---|
 | `switchframe_cuts_total` | counter | — | Every hard cut. Incremented in `Switcher.Cut`. |
 | `switchframe_transitions_completed_total` | counter | `type` (mix, dip, ftb, wipe, stinger, dve-*) | Every completed transition, labeled by the transition type string the engine used. |
-| `switchframe_idr_gate_events_total` | counter | — | Every time the output manager gates frames waiting for the first IDR keyframe after a cut or pipeline rebuild. |
-| `switchframe_idr_gate_duration_seconds` | histogram | — | Duration the IDR gate was closed. Buckets: 5 ms, 10 ms, 25 ms, 50 ms, 100 ms, 250 ms, 500 ms, 1 s. |
+| `switchframe_idr_gate_events_total` | counter | — | Every time an SRT caller output, after a reconnect, held its output until a keyframe (or the 2 s gate timeout). |
+| `switchframe_idr_gate_duration_seconds` | histogram | — | How long that output was held. Buckets: 5 ms, 10 ms, 25 ms, 50 ms, 100 ms, 250 ms, 500 ms, 1 s. |
 
 ## Mixer metrics
 
@@ -59,7 +62,6 @@ Registered per-instance via `NewMetrics` and attached to the switcher with `Swit
 |---|---|---|---|
 | `switchframe_mixer_frames_mixed_total` | counter | — | Every audio frame emitted from `tick()` (decoded, mixed, re-encoded). |
 | `switchframe_mixer_encode_errors_total` | counter | — | Every FDK-AAC encode failure in the mixer. |
-| `switchframe_mixer_passthrough_bypass_total` | counter | — | Every frame where passthrough bypassed mixing (single source at 0 dB, no EQ/compressor active). |
 
 ## Pipeline metrics
 
@@ -67,12 +69,9 @@ Recorded by the video processing pipeline on every frame.
 
 | Metric | Type | Labels | Fires on |
 |---|---|---|---|
-| `switchframe_pipeline_decode_errors_total` | counter | — | FFmpeg decoder returned an error in the pipeline loop; frame falls back to passthrough. |
 | `switchframe_pipeline_encode_errors_total` | counter | — | FFmpeg encoder returned an error; frame is dropped. |
 | `switchframe_pipeline_frames_processed_total` | counter | — | Frames successfully run through the YUV processing chain. |
-| `switchframe_pipeline_decode_duration_seconds` | histogram | — | Time spent in the decode node. Buckets: 1 ms, 5 ms, 10 ms, 20 ms, 33 ms, 50 ms, 100 ms. |
-| `switchframe_pipeline_encode_duration_seconds` | histogram | — | Time spent in the encode node. Same buckets as decode. |
-| `switchframe_pipeline_blend_duration_seconds` | histogram | — | Time spent in the transition blend. Buckets: 0.1 ms, 0.5 ms, 1 ms, 2 ms, 5 ms, 10 ms. |
+| `switchframe_pipeline_encode_duration_seconds` | histogram | — | Time spent in the encode node. Buckets: 1 ms, 5 ms, 10 ms, 20 ms, 33 ms, 50 ms, 100 ms. |
 | `switchframe_pipeline_node_duration_seconds` | histogram | `node` (name from `PipelineNode.Name()`) | Per-node processing duration. Buckets: 10 µs, 100 µs, 1 ms, 10 ms, 100 ms. |
 
 ## Output metrics
@@ -82,7 +81,7 @@ Recorded by the video processing pipeline on every frame.
 | `switchframe_output_ringbuf_overflows_total` | counter | — | Every time an SRT output adapter's ring buffer overflows (downstream too slow; sender drops oldest packets). |
 | `switchframe_output_srt_reconnects_total` | counter | — | Every SRT output reconnect attempt. |
 | `switchframe_output_recording_bytes_total` | counter | — | Bytes written to recording files. |
-| `switchframe_output_srt_bytes_total` | counter | — | Bytes sent over all SRT output connections. |
+| `switchframe_output_srt_bytes_total` | counter | — | Bytes sent over all SRT output connections, one count per client of a listener. |
 
 ## CBR pacer metrics
 
@@ -99,7 +98,7 @@ Populated by [`output.CBRPacer`](../../server/output/cbr_pacer.go) when constant
 
 | Metric | Type | Labels | Fires on |
 |---|---|---|---|
-| `switchframe_source_status_changes_total` | counter | `source`, `from_status`, `to_status` | Every source health transition (ok ↔ stale ↔ no_signal ↔ offline). Driven by [`healthMonitor`](../../server/switcher/health.go). |
+| `switchframe_source_status_changes_total` | counter | `source`, `from_status`, `to_status` | Every source health transition (healthy ↔ stale ↔ no_signal ↔ offline), after hysteresis; a source's first status is not one. Driven by [`healthMonitor`](../../server/switcher/health.go). A removed source's series are deleted with it. |
 
 ## Command queue metrics (active-active)
 
@@ -143,14 +142,15 @@ These come from Prometheus's standard collectors. They are always present and ne
 | [`NewMetrics`](../../server/metrics/metrics.go) | metrics/metrics.go | Construct + register on a `prometheus.Registerer` |
 | [`GetRegistry`](../../server/metrics/metrics.go) | metrics/metrics.go | Returns the non-default `*prometheus.Registry` |
 | [`Handler`](../../server/metrics/metrics.go) | metrics/metrics.go | `http.Handler` with `promhttp.HandlerOpts{EnableOpenMetrics: true}` |
-| [`HTTPRequestsTotal` / `HTTPRequestDuration`](../../server/metrics/metrics.go) | metrics/metrics.go | Package-level HTTP counters (registered at init) |
+| [`HTTPRequestsTotal` / `HTTPRequestDuration` / `HTTPRequestsInFlight`](../../server/metrics/metrics.go) | metrics/metrics.go | Package-level HTTP metrics (registered at init) |
+| [`SourceLabel` / `MethodLabel`](../../server/metrics/labels.go) | metrics/labels.go | The label value a source key or an HTTP method takes |
 | [`SetMetrics`](../../server/switcher/switcher.go) (and similarly on Mixer, Manager) | subsystems | Attach `*Metrics` to a subsystem under its mutex |
 
 ## Gotchas and invariants
 
 - **Metrics are opt-in per subsystem.** A subsystem's counters only increment once `SetMetrics` has been called with a non-nil `*Metrics`. Before that, metric accessors are guarded by a nil check.
 - **The registry is a singleton.** `metrics.GetRegistry()` returns the same `*prometheus.Registry` on every call. `NewMetrics` registers all subsystem metrics on the registry it receives; the app's `initInfra` calls `NewMetrics(metrics.GetRegistry())` exactly once.
-- **Label cardinality is intentionally limited.** `source_status_changes_total` carries a `source` label — keep source key counts reasonable. Per-output destination labels would blow up cardinality and are deliberately absent.
+- **Label cardinality is intentionally limited.** `source_status_changes_total` carries a `source` label, through `SourceLabel`, and its series are deleted when the source is removed. Per-output destination labels would blow up cardinality and are deliberately absent.
 - **The `/metrics` endpoint requires the admin bearer token when configured.** Scrape jobs should use the same token as any other admin endpoint. `/health` and `/ready` are always open.
 - **Do not add new metrics to the default Prometheus registry.** Use `GetRegistry()` and register via `NewMetrics` or its callers. Default-registry registration would not be exported by our handler.
 

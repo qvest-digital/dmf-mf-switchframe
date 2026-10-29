@@ -66,6 +66,12 @@ type SRTCaller struct {
 	// onReconnect is called after a successful reconnection with a boolean
 	// indicating whether the ring buffer overflowed (data was lost).
 	onReconnect func(overflowed bool)
+
+	// onSent is told the bytes each write put on the connection, and
+	// onIDRGate how long a reconnect held output back before the gate
+	// opened. Both are set before Start and never change after.
+	onSent    func(n int)
+	onIDRGate func(held time.Duration)
 }
 
 // NewSRTCaller creates an SRT caller adapter.
@@ -158,9 +164,10 @@ func (c *SRTCaller) Write(tsData []byte) (int, error) {
 				// Timeout expired — force-clear IDR gate.
 				slog.Warn("SRT IDR gate timeout expired, forcing output",
 					"elapsed", elapsed, "address", c.config.Address)
-				c.pendingIDR.Store(false)
-			} else {
-				c.pendingIDR.Store(false)
+			}
+			c.pendingIDR.Store(false)
+			if c.onIDRGate != nil {
+				c.onIDRGate(time.Since(time.UnixMilli(c.pendingIDRSince.Load())))
 			}
 		}
 
@@ -185,6 +192,9 @@ func (c *SRTCaller) Write(tsData []byte) (int, error) {
 		}
 
 		c.bytesWritten.Add(int64(n))
+		if c.onSent != nil {
+			c.onSent(n)
+		}
 		return n, nil
 
 	case StateReconnecting:

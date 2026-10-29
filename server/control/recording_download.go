@@ -120,6 +120,7 @@ func (a *API) DownloadTicketMiddleware(authed, direct http.Handler) http.Handler
 			authed.ServeHTTP(w, r)
 			return
 		}
+		setCaller(r, CallerTicket)
 		absPath, err := filepath.Abs(r.URL.Query().Get("path"))
 		if err != nil || !a.downloadTickets.redeem(ticket, absPath) {
 			httperr.Write(w, http.StatusUnauthorized, "download link expired or already used")
