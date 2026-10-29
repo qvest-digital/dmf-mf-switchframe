@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { holdReload } from '$lib/util/activity';
 	import type { ControlRoomState, CorrectorState, CurvePoint } from '$lib/api/types';
 	import {
 		setCorrector, resetCorrector, saveCustomLook,
@@ -151,6 +152,7 @@
 	let zonesOpen = $state(false);
 	let saveLookExpanded = $state(false);
 	let lookNameDraft = $state('');
+	$effect(() => { if (saveLookExpanded) return holdReload('unsaved look'); });
 
 	// ── Debounced send to server ──
 	let sendTimeout: ReturnType<typeof setTimeout>;

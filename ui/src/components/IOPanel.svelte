@@ -83,6 +83,7 @@
 	let newDestStreamID = $state('');
 	let newDestLatency = $state(120);
 	let newDestSCTE35 = $state(true);
+	let newDestAllowUntrusted = $state(false);
 
 	// --- Inline confirmation ---
 	let confirmingDeleteSource = $state<string | null>(null);
@@ -338,6 +339,7 @@
 				type: 'rtmp',
 				url: newDestURL,
 				name: newDestName || undefined,
+				allowUntrustedCert: newDestURL.startsWith('rtmps://') && newDestAllowUntrusted ? true : undefined,
 			};
 		} else {
 			config = {
@@ -359,6 +361,7 @@
 		newDestStreamID = '';
 		newDestLatency = 120;
 		newDestSCTE35 = true;
+		newDestAllowUntrusted = false;
 		showAddDest = false;
 	}
 
@@ -823,6 +826,16 @@
 									<span class="detail-label">State</span>
 									<span class="detail-value {destStateClass(dest.state)}">{dest.state}</span>
 								</div>
+								{#if dest.type === 'rtmp' && dest.url?.startsWith('rtmps://')}
+									<div class="detail-row">
+										<span class="detail-label">Certificate</span>
+										{#if dest.allowUntrustedCert}
+											<span class="detail-value val-red">Not verified (untrusted allowed)</span>
+										{:else}
+											<span class="detail-value">Verified</span>
+										{/if}
+									</div>
+								{/if}
 								{#if dest.type === 'rtmp' && dest.url}
 									<div class="detail-row">
 										<span class="detail-label">URL</span>
@@ -918,6 +931,21 @@
 							<div class="form-hint-block">
 								Full RTMP ingest URL including stream key. Supports <code>rtmp://</code> and <code>rtmps://</code>.
 							</div>
+							{#if newDestURL.startsWith('rtmps://')}
+								<div class="form-row">
+									<label class="form-label-inline">
+										<input type="checkbox" bind:checked={newDestAllowUntrusted} />
+										Allow untrusted certificate
+									</label>
+								</div>
+								<div class="form-hint-block" class:form-hint-warn={newDestAllowUntrusted}>
+									{#if newDestAllowUntrusted}
+										The server certificate is not verified: whoever answers at this address receives the stream key.
+									{:else}
+										The server certificate is verified against the system CA bundle and the host name.
+									{/if}
+								</div>
+							{/if}
 						{:else}
 							<!-- SRT-specific fields -->
 							{#if newDestType === 'srt-caller'}
@@ -1787,6 +1815,10 @@
 		color: var(--text-secondary);
 		padding: 0 0 6px 72px;
 		line-height: 1.5;
+	}
+
+	.form-hint-block.form-hint-warn {
+		color: var(--color-warning);
 	}
 
 	.form-hint-block code {

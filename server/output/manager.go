@@ -102,6 +102,10 @@ type Manager struct {
 	lipSyncSource   atomic.Pointer[lipSyncProvider]
 	smoothedLipSync atomic.Int64
 	lipSyncLatched  atomic.Bool
+	// lipSyncLastDTS is the DTS of the last video frame the offset was
+	// updated on, valid once lipSyncHaveDTS is set.
+	lipSyncLastDTS atomic.Int64
+	lipSyncHaveDTS atomic.Bool
 
 	// Video resolution for SDT service_type in TS output.
 	videoWidth  int
@@ -857,7 +861,8 @@ func (m *Manager) StartDestination(id string) error {
 
 	case "rtmp":
 		rtmpDirect, err := NewRTMPDirect(RTMPCallerConfig{
-			URL: dest.config.URL,
+			URL:                dest.config.URL,
+			AllowUntrustedCert: dest.config.AllowUntrustedCert,
 		})
 		if err != nil {
 			dest.mu.Unlock()
@@ -1430,13 +1435,11 @@ func (m *Manager) ensureMuxerLocked() bool {
 		pacer.Start()
 	}
 
-	// Propagate latched lip-sync offset to the new muxer. LatchLipSync
-	// is called at startup before the muxer exists, so the offset must
-	// be applied here when the muxer is first created.
-	if m.lipSyncLatched.Load() {
-		if smoothed := m.smoothedLipSync.Load(); smoothed != 0 {
-			muxer.SetLipSyncOffset90k(smoothed)
-		}
+	// Propagate the lip-sync offset to the new muxer: LatchLipSync runs
+	// at startup before the muxer exists, and an RTMP output keeps the
+	// smoothed offset current without one.
+	if smoothed := m.smoothedLipSync.Load(); smoothed != 0 {
+		muxer.SetLipSyncOffset90k(smoothed)
 	}
 
 	m.muxer = muxer
@@ -1673,24 +1676,14 @@ type CBRPacerStatus struct {
 // viewer → channel path. Called synchronously from the switcher's encode
 // goroutine — no channels, no goroutine hops.
 func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
+	muxer := m.directMuxer.Load()
+	fas := m.frameAdapters.Load()
+	hasFrameAdapters := fas != nil && len(*fas) > 0
+	if muxer != nil || hasFrameAdapters {
+		m.updateLipSync(muxer, frame.DTS)
+	}
 	// TS-based outputs (SRT, recording).
-	if muxer := m.directMuxer.Load(); muxer != nil {
-		if p := m.lipSyncSource.Load(); p != nil && !m.lipSyncLatched.Load() {
-			raw := p.fn()
-			cur := m.smoothedLipSync.Load()
-			if cur == 0 {
-				m.smoothedLipSync.Store(raw)
-				muxer.SetLipSyncOffset90k(raw)
-			} else if delta := raw - cur; delta > 450 || delta < -450 {
-				// Smoothed EMA update. In production this RMW is
-				// single-writer (encode goroutine); LatchLipSync sets
-				// latched=true, which short-circuits this block on the
-				// next frame. A plain Store is safe.
-				next := (cur*15 + raw) / 16
-				m.smoothedLipSync.Store(next)
-				muxer.SetLipSyncOffset90k(next)
-			}
-		}
+	if muxer != nil {
 		// Diagnostic: verify upstream PTS deltas at DirectWriteVideo
 		// stage. Uses the shared nominal-delta helper so non-NTSC
 		// pipelines (24/25/30/50/60 fps) don't produce false warnings.
@@ -1707,9 +1700,19 @@ func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 		}
 	}
 	// Frame adapters (RTMP direct FLV).
-	if fas := m.frameAdapters.Load(); fas != nil {
+	if hasFrameAdapters {
+		// The TS muxer delays video by the lip-sync offset; frame adapters
+		// get the same delay, so an RTMP output keeps the A/V alignment an
+		// SRT output has.
+		f := frame
+		if off := m.smoothedLipSync.Load(); off != 0 {
+			shifted := *frame
+			shifted.PTS += off
+			shifted.DTS += off
+			f = &shifted
+		}
 		for _, fa := range *fas {
-			if err := fa.WriteVideo(frame); err != nil {
+			if err := fa.WriteVideo(f); err != nil {
 				m.log.Error("frame adapter video write error", "adapter", fa.ID(), "err", err)
 			}
 		}
@@ -1717,6 +1720,49 @@ func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 	// Feed the confidence monitor (1fps JPEG thumbnail).
 	if cm := m.confidence.Load(); cm != nil {
 		cm.IngestVideo(frame)
+	}
+}
+
+// updateLipSync refreshes the smoothed lip-sync offset from its source on
+// the video frame with dts and hands it to muxer when there is one. Runs on
+// the encode goroutine.
+func (m *Manager) updateLipSync(muxer *TSMuxer, dts int64) {
+	p := m.lipSyncSource.Load()
+	if p == nil || m.lipSyncLatched.Load() {
+		return
+	}
+	prevDTS, havePrev := m.lipSyncLastDTS.Load(), m.lipSyncHaveDTS.Load()
+	m.lipSyncLastDTS.Store(dts)
+	m.lipSyncHaveDTS.Store(true)
+	raw := p.fn()
+	cur := m.smoothedLipSync.Load()
+	next := cur
+	if cur == 0 {
+		next = raw
+	} else if delta := raw - cur; delta > 450 || delta < -450 {
+		// Smoothed EMA update. In production this RMW is single-writer
+		// (encode goroutine); LatchLipSync sets latched=true, which
+		// short-circuits this function on the next frame. A plain Store
+		// is safe.
+		next = (cur*15 + raw) / 16
+	}
+	if next < cur {
+		// The offset delays video, so a fall of a frame interval or more
+		// in one frame moves the shifted video timestamps backwards, which
+		// an RTMP output cannot write. Falling by at most half the frame
+		// interval plays video at most twice as fast while it comes down.
+		var maxFall int64
+		if havePrev && dts > prevDTS {
+			maxFall = (dts - prevDTS) / 2
+		}
+		next = max(next, cur-maxFall)
+	}
+	if next == cur {
+		return
+	}
+	m.smoothedLipSync.Store(next)
+	if muxer != nil {
+		muxer.SetLipSyncOffset90k(next)
 	}
 }
 

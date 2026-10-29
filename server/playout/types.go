@@ -426,6 +426,8 @@ var (
 	ErrPodNoDumpOut     = errors.New("playout: dump out not allowed for this pod")
 	ErrPodNotActive     = errors.New("playout: no active pod")
 	ErrNoPodBoard       = errors.New("playout: pod board not initialized")
+	ErrPodExists        = errors.New("playout: pod id already in use")
+	ErrInvalidPodID     = errors.New("playout: pod id must be \"pod-\" and 8 lowercase hex characters")
 )
 
 // AsRunEventType classifies as-run log entries.

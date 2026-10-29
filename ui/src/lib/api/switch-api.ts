@@ -1,5 +1,7 @@
 import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, EngineRecordingGroup, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, DVEPresetInfo, WipePattern, WipeConfig } from './types';
+import { version } from '$app/environment';
 import { notify } from '$lib/state/notifications.svelte';
+import { trackChange } from '$lib/util/activity';
 import { resolveApiUrl, getEngineUrls, setFlushTimestampInjector, isNonIdempotent, isTimedPath, getAuthoritativeEngine, getEmergencyEngineBUrl, type EngineEndpoint } from './base-url';
 import { isTokenRefused, tokenAcceptedBy, tokenRefusedBy, tokenReplaced } from './auth-gate';
 
@@ -97,6 +99,20 @@ function engineOrigins(): string[] {
 	return engines && engines.length > 0 ? engines.map((e) => originOf(e.url)) : [pageOrigin()];
 }
 
+// Names this page's build to the engine that served it, on requests that
+// carry a token, so its log says which build a tab whose token is refused
+// runs. Only to that engine: on a request to the other
+// engine a custom header needs that engine's preflight to allow it, and an
+// engine still on an older build does not.
+const UI_BUILD_HEADER = 'X-Switchframe-UI-Build';
+
+function withBuild(url: string, init?: RequestInit): RequestInit | undefined {
+	const headers = new Headers(init?.headers);
+	if (!headers.has('Authorization') || originOf(url) !== pageOrigin()) return init;
+	headers.set(UI_BUILD_HEADER, version);
+	return { ...init, headers };
+}
+
 /**
  * fetch() for engine API requests. Once every engine has answered 401 the
  * auth gate is closed, and while it is closed a request is answered with a
@@ -112,7 +128,14 @@ export async function engineFetch(url: string, init?: RequestInit): Promise<Resp
 		});
 	}
 	const sent = new Headers(init?.headers).get('Authorization');
-	const res = await fetch(url, init);
+	const method = (init?.method ?? 'GET').toUpperCase();
+	const done = method === 'GET' || method === 'HEAD' ? () => {} : trackChange();
+	let res: Response;
+	try {
+		res = await fetch(url, withBuild(url, init));
+	} finally {
+		done();
+	}
 	// An answer to a token that has since been replaced says nothing about
 	// the current one.
 	if (!ownAuth && sent === (authHeaders().Authorization ?? null)) {
@@ -1252,8 +1275,97 @@ export function getGate(source: string): Promise<GateResponse> {
 
 // --- Graphics Layer API ---
 
-export function graphicsAddLayer(): Promise<{ id: number }> {
-	return request('/api/graphics', { method: 'POST' });
+/** How long a retry of a layer add another engine missed waits. */
+const LAYER_ADD_RETRY_DELAY_MS = 500;
+
+/** Sends one layer add to one engine, under id when given, within the
+ * per-engine timeout, and counts the outcome toward its circuit breaker. */
+async function addLayerOn(engine: EngineEndpoint, id?: number): Promise<Response> {
+	const startedAt = Date.now();
+	try {
+		const res = await fetchWithTimeout(`${engine.url}/api/graphics`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', ...authHeaders() },
+			body: JSON.stringify(id === undefined ? {} : { id }),
+		});
+		if (res.ok) recordSuccess(engine.url, startedAt);
+		else if (res.status >= 500) recordFailure(engine.url);
+		return res;
+	} catch (err) {
+		recordFailure(engine.url);
+		throw err;
+	}
+}
+
+/** Whether a failed layer add may have failed for a transient reason: no
+ * answer, or a server error. */
+function transientAddFailure(r: PromiseSettledResult<Response>): boolean {
+	return r.status === 'rejected' || r.value.status >= 500;
+}
+
+/**
+ * Adds a graphics layer on every engine under one ID. Each engine numbers
+ * its layers itself, and the numbers part once one has missed a create or
+ * restarted, so the first engine that takes the add picks the number and
+ * the others are asked for that one. A request by layer ID then reaches one
+ * layer on every engine. An engine that did not answer, or answered with a
+ * server error, is asked again once with the same ID; a 409 then means the
+ * first request landed.
+ */
+export async function graphicsAddLayer(): Promise<{ id: number }> {
+	const engines = getEngineUrls();
+	if (!engines || engines.length <= 1) return request('/api/graphics', { method: 'POST' });
+	const reachable = engines.filter((e) => !isCircuitOpen(e.url));
+	const candidates = reachable.length > 0 ? reachable : engines;
+
+	let picker: EngineEndpoint | undefined;
+	let layer: { id: number } | undefined;
+	let lastError: unknown;
+	for (const engine of candidates) {
+		let res: Response;
+		try {
+			res = await addLayerOn(engine);
+		} catch (err) {
+			lastError = err;
+			continue;
+		}
+		if (res.ok) {
+			picker = engine;
+			layer = await res.json();
+			break;
+		}
+		const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+		lastError = new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+		// Too many layers or a refused request is the same on every engine.
+		if (res.status < 500) throw lastError;
+	}
+	if (!picker || !layer) throw lastError ?? new Error('All engines unreachable');
+	const id = layer.id;
+
+	const others = candidates.filter((e) => e !== picker);
+	const results = await Promise.all(others.map(async (engine): Promise<PromiseSettledResult<Response>> => {
+		const send = () => addLayerOn(engine, id).then(
+			(value): PromiseSettledResult<Response> => ({ status: 'fulfilled', value }),
+			(reason): PromiseSettledResult<Response> => ({ status: 'rejected', reason }),
+		);
+		const first = await send();
+		if (!transientAddFailure(first)) return first;
+		await new Promise((r) => setTimeout(r, LAYER_ADD_RETRY_DELAY_MS));
+		const retry = await send();
+		// The first request may have added the layer without its answer
+		// getting back.
+		if (retry.status === 'fulfilled' && retry.value.status === 409) {
+			return { status: 'fulfilled', value: new Response(null, { status: 204 }) };
+		}
+		return retry;
+	}));
+	const failures = describeEngineFailures(results, others);
+	if (failures) {
+		console.warn(`[dual-api] Graphics layer ${id} not added on ${failures}`);
+		partialFailureCallback?.();
+		partialFailureNotify?.(`POST /api/graphics failed on ${failures}`);
+	}
+	return layer;
 }
 
 export function graphicsRemoveLayer(layerId: number): Promise<void> {
@@ -1740,8 +1852,19 @@ export function setFormat(arg: string | { width: number; height: number; fpsNum:
 
 // SCTE-35 operations
 
+/**
+ * Each engine numbers the events it cues itself, from 1 at every start, so
+ * a cue sent to both carries its IDs: return, cancel, hold and extend name
+ * the event by ID, and both engines' outputs signal the break alike.
+ */
 export function scte35Cue(req: SCTE35CueRequest): Promise<{ eventId: number; state: ControlRoomState }> {
-	return post('/api/scte35/cue', req);
+	const ids = new Uint32Array(1 + (req.descriptors?.length ?? 0));
+	crypto.getRandomValues(ids);
+	return post('/api/scte35/cue', {
+		...req,
+		eventId: req.eventId ?? (req.commandType === 'splice_insert' ? ids[0] || 1 : undefined),
+		descriptors: req.descriptors?.map((d, i) => ({ ...d, segEventId: d.segEventId ?? (ids[i + 1] || 1) })),
+	});
 }
 
 export function scte35Return(eventId?: number): Promise<ControlRoomState> {
@@ -1875,7 +1998,8 @@ function uploadClipToEngine(
 	onUploadProgress?: (percent: number) => void,
 	clipId?: string,
 ): Promise<ClipInfo> {
-	return new Promise((resolve, reject) => {
+	const done = trackChange();
+	return new Promise<ClipInfo>((resolve, reject) => {
 		const formData = new FormData();
 		if (clipId) formData.append('id', clipId);
 		formData.append('file', file);
@@ -1918,7 +2042,7 @@ function uploadClipToEngine(
 		xhr.onerror = () => reject(new SwitchApiError(0, 'network error'));
 		xhr.onabort = () => reject(new SwitchApiError(0, 'upload aborted'));
 		xhr.send(formData);
-	});
+	}).finally(done);
 }
 
 /** Returns the clip name an engine derives from an uploaded file's name. */
@@ -1941,11 +2065,16 @@ async function engineClip(baseUrl: string, id: string, name: string): Promise<Cl
 	}
 }
 
-/** Returns a random clip ID in the form the engines generate. */
-export function newClipId(): string {
-	const b = new Uint8Array(16);
+/** Returns n random bytes as lowercase hex. */
+function randomHex(n: number): string {
+	const b = new Uint8Array(n);
 	crypto.getRandomValues(b);
 	return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+/** Returns a random clip ID in the form the engines generate. */
+export function newClipId(): string {
+	return randomHex(16);
 }
 
 /**
@@ -2576,8 +2705,10 @@ export function podList(channelId: number): Promise<PodInfo[]> {
 	return request<PodInfo[]>(`/api/playout/channels/${channelId}/pods`);
 }
 
+/** Creates a pod under one ID on every engine, so that arming, firing or
+ * deleting it by that ID reaches it on each. */
 export function podCreate(channelId: number, body: { template?: string; config?: PodConfig }): Promise<PodInfo> {
-	return post(`/api/playout/channels/${channelId}/pods`, body);
+	return post(`/api/playout/channels/${channelId}/pods`, { id: `pod-${randomHex(4)}`, ...body });
 }
 
 export function podArm(channelId: number, podId: string): Promise<void> {

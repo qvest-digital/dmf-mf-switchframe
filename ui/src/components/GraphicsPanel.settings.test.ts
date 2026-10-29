@@ -4,6 +4,7 @@ import { tick } from 'svelte';
 import GraphicsPanel from './GraphicsPanel.svelte';
 import * as api from '$lib/api/switch-api';
 import { notify } from '$lib/state/notifications.svelte';
+import { reloadHolds } from '$lib/util/activity';
 
 vi.mock('$lib/state/notifications.svelte', () => ({ notify: vi.fn() }));
 
@@ -78,6 +79,22 @@ describe('GraphicsPanel settings on the engine', () => {
 		expect(api.graphicsSetLayerSettings).toHaveBeenCalledTimes(2);
 		expect(vi.mocked(api.graphicsSetLayerSettings).mock.calls[1][1].config).toMatchObject({ fields: { name: 'Ada' } });
 		expect(container.querySelector('.gfx-unsaved')).toBeNull();
+	});
+
+	// A stale-build reload of an unattended tab would drop the edit the
+	// panel is still retrying.
+	it('holds a reload while a refused save is being retried', async () => {
+		vi.mocked(api.graphicsSetLayerSettings)
+			.mockRejectedValueOnce(new Error('engine unreachable'))
+			.mockResolvedValueOnce({});
+		const { container, unmount } = render(GraphicsPanel, { props: { state: stateWith(layer(0, 0)) } });
+		await fireEvent.input(container.querySelector('.field-inp') as HTMLInputElement, { target: { value: 'Ada' } });
+		expect(reloadHolds()).not.toContain('unsaved graphics settings');
+		await vi.advanceTimersByTimeAsync(350);
+		expect(reloadHolds()).toContain('unsaved graphics settings');
+		await vi.advanceTimersByTimeAsync(3100);
+		expect(reloadHolds()).not.toContain('unsaved graphics settings');
+		unmount();
 	});
 
 	it('shows a refusal by the engine instead of retrying it', async () => {
@@ -202,6 +219,15 @@ describe('GraphicsPanel reorder', () => {
 		dropOn(container, 1, 2, 'lower');
 		await tick();
 		expect(api.graphicsSetLayerOrder).not.toHaveBeenCalled();
+	});
+
+	it('holds a reload while a layer name is being typed', async () => {
+		const { container, unmount } = render(GraphicsPanel, { props: { state } });
+		await fireEvent.dblClick(container.querySelector('[data-layer-id="1"]') as HTMLElement);
+		expect(reloadHolds()).toContain('layer rename');
+		await fireEvent.keyDown(container.querySelector('.rename-input') as HTMLInputElement, { key: 'Enter' });
+		expect(reloadHolds()).not.toContain('layer rename');
+		unmount();
 	});
 
 	it('renames a layer without touching its id', async () => {
