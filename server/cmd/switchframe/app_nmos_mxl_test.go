@@ -37,6 +37,10 @@ type lockedRetargetable struct {
 	mu     sync.Mutex
 	ids    []string
 	refuse error
+	// budget is how long the last Connect was given to open its flow.
+	budget time.Duration
+	// onConnect, when set, runs at the start of each Connect.
+	onConnect func(id string)
 }
 
 func (f *lockedRetargetable) Retarget(id string) {
@@ -45,9 +49,15 @@ func (f *lockedRetargetable) Retarget(id string) {
 	f.ids = append(f.ids, id)
 }
 
-func (f *lockedRetargetable) Connect(_ context.Context, id string) error {
+func (f *lockedRetargetable) Connect(ctx context.Context, id string) error {
+	if f.onConnect != nil {
+		f.onConnect(id)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if d, ok := ctx.Deadline(); ok {
+		f.budget = time.Until(d)
+	}
 	if f.refuse != nil {
 		return f.refuse
 	}

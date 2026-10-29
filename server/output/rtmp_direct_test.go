@@ -5,6 +5,8 @@ package output
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -527,4 +529,114 @@ func TestRTMPDirect_FailedFirstConnectBacksOff(t *testing.T) {
 	}
 	require.LessOrEqual(t, attempts.Load(), int32(10), "retries did not back off")
 	require.GreaterOrEqual(t, attempts.Load(), int32(3), "adapter stopped retrying")
+}
+
+// flvTag is one audio or video tag read back from an FLV file.
+type flvTag struct {
+	kind  byte // 8 audio, 9 video
+	ms    uint32
+	media bool // coded media rather than a sequence header or end of sequence
+}
+
+func readFLVTags(t *testing.T, path string) []flvTag {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(b), 13)
+	require.Equal(t, "FLV", string(b[:3]))
+	var tags []flvTag
+	for i := 13; i+11 <= len(b); {
+		kind := b[i]
+		size := int(b[i+1])<<16 | int(b[i+2])<<8 | int(b[i+3])
+		ms := uint32(b[i+7])<<24 | uint32(b[i+4])<<16 | uint32(b[i+5])<<8 | uint32(b[i+6])
+		body := b[i+11 : i+11+size]
+		if kind == 8 || kind == 9 {
+			// AACPacketType and AVCPacketType both sit at body[1]; 1 is
+			// coded media.
+			tags = append(tags, flvTag{kind: kind, ms: ms, media: len(body) > 1 && body[1] == 1})
+		}
+		i += 11 + size + 4
+	}
+	return tags
+}
+
+func mediaTimestamps(tags []flvTag, kind byte) []uint32 {
+	var out []uint32
+	for _, tg := range tags {
+		if tg.kind == kind && tg.media {
+			out = append(out, tg.ms)
+		}
+	}
+	return out
+}
+
+// FLV carries timestamps in milliseconds. Frames arrive with 90 kHz PTS, and
+// writing those ticks unscaled makes an ingest see 90 seconds of media per
+// second of wall time.
+func TestRTMPDirect_FLVTimestampsInMilliseconds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "out.flv")
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "file:" + path})
+	require.NoError(t, err)
+	require.NoError(t, r.Start(context.Background()))
+
+	const base = int64(900000)
+	key := &media.VideoFrame{
+		PTS: base, DTS: base, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xc0, 0x1e},
+		PPS:      []byte{0x68, 0xce, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x84, 0x00},
+	}
+	require.NoError(t, r.WriteVideo(key))
+	require.Eventually(t, r.initialized.Load, 2*time.Second, 5*time.Millisecond)
+
+	// Audio from before the first video frame and frames for 1 s at 50 fps.
+	require.NoError(t, r.WriteAudio(&media.AudioFrame{PTS: base - 1920, Data: []byte{0x21, 0x10, 0x04}}))
+	for i := int64(1); i < 50; i++ {
+		require.NoError(t, r.WriteVideo(&media.VideoFrame{
+			PTS: base + i*1800, DTS: base + i*1800,
+			WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x41, 0x9a, 0x02, 0x00},
+		}))
+		if i <= 40 {
+			pts := base + (i-1)*1920
+			require.NoError(t, r.WriteAudio(&media.AudioFrame{PTS: pts, Data: []byte{0x21, 0x10, 0x04}}))
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, r.Close())
+
+	tags := readFLVTags(t, path)
+	video := mediaTimestamps(tags, 9)
+	audio := mediaTimestamps(tags, 8)
+	require.Len(t, video, 50)
+	for i, ms := range video {
+		require.Equal(t, uint32(i*20), ms, "video tag %d", i)
+	}
+	require.Len(t, audio, 40, "audio from before the first video frame is dropped")
+	for i, ms := range audio {
+		require.InDelta(t, float64(i)*1920/90, float64(ms), 1, "audio tag %d", i)
+	}
+}
+
+// After a reconnect, audio must wait for the keyframe that rebases the new
+// connection's timeline instead of being stamped against the old one.
+func TestRTMPDirect_AudioWaitsForRebaseAfterReconnect(t *testing.T) {
+	t.Parallel()
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://example.com/live/key"})
+	require.NoError(t, err)
+	r.connectFn = func(string) error { return nil }
+	r.state.Store(ptrTo(StateActive))
+	r.initialized.Store(true)
+	r.ptsBase = 90000
+
+	r.pendingIDR.Store(true)
+	r.handleAudio(&media.AudioFrame{PTS: 180000, Data: []byte{0x21, 0x10}})
+	require.Zero(t, r.bytesWritten.Load(), "audio before the rebasing keyframe")
+
+	r.handleVideo(&media.VideoFrame{PTS: 270000, IsKeyframe: true, WireData: []byte{0x01}})
+	require.False(t, r.pendingIDR.Load())
+	r.handleAudio(&media.AudioFrame{PTS: 180000, Data: []byte{0x21, 0x10}})
+	require.Zero(t, r.bytesWritten.Load()-1, "audio from before the new base")
+	r.handleAudio(&media.AudioFrame{PTS: 271920, Data: []byte{0x21, 0x10}})
+	require.Equal(t, int64(3), r.bytesWritten.Load())
 }

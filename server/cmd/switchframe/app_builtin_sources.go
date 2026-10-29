@@ -24,14 +24,6 @@ func (a *App) initBuiltinSourcePreview() error {
 	}
 
 	pf := a.sw.PipelineFormat()
-	pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
-	if pw <= 0 || ph <= 0 {
-		pw, ph = 854, 480
-	}
-	bitrate := a.cfg.PreviewBitrate
-	if bitrate <= 0 {
-		bitrate = 500_000
-	}
 
 	encoders := make(map[string]*preview.Encoder, switcher.BuiltinSourceCount)
 	for _, key := range []string{
@@ -40,23 +32,15 @@ func (a *App) initBuiltinSourcePreview() error {
 	} {
 		relay := a.server.RegisterStream(key)
 
-		pe, err := preview.NewEncoder(preview.Config{
-			SourceKey:     key,
-			Width:         pw,
-			Height:        ph,
-			Bitrate:       bitrate,
-			FPSNum:        pf.FPSNum,
-			FPSDen:        pf.FPSDen,
-			Relay:         relay,
-			FrameInterval: a.cfg.PreviewFrameInterval,
-		})
+		cfg := a.builtinPreviewConfig(key, relay, pf.FPSNum, pf.FPSDen)
+		pe, err := preview.NewEncoder(cfg)
 		if err != nil {
 			return fmt.Errorf("built-in preview encoder %q: %w", key, err)
 		}
 		encoders[key] = pe
 		a.debugCollector.Register("preview:"+key, pe)
 		slog.Info("built-in source preview encoder ready",
-			"key", key, "preview_resolution", []int{pw, ph}, "bitrate", bitrate)
+			"key", key, "preview_resolution", []int{cfg.Width, cfg.Height}, "scale_down", cfg.ScaleDown, "bitrate", cfg.Bitrate)
 	}
 
 	// A scratch buffer per source for 10-bit → 8-bit downconversion, reused
@@ -102,4 +86,16 @@ func (a *App) closeBuiltinSourcePreview() {
 		}
 	}
 	a.builtinPreviewEncoders = nil
+}
+
+// builtinPreviewConfig configures a built-in source's relay encoder. Its
+// relay exists whether the preview proxy is on or not; only under the
+// proxy is it scaled down to the preview size like every other source's.
+func (a *App) builtinPreviewConfig(key string, relay preview.Relay, fpsNum, fpsDen int) preview.Config {
+	cfg := a.sourcePreviewConfig(key, relay, fpsNum, fpsDen)
+	if cfg.Bitrate <= 0 {
+		cfg.Bitrate = 500_000
+	}
+	cfg.ScaleDown = a.cfg.PreviewProxy
+	return cfg
 }

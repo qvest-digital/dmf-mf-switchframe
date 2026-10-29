@@ -1,5 +1,45 @@
 package main
 
+import "github.com/zsiec/switchframe/server/preview"
+
+// sourcePreviewConfig configures the CPU encoder of a source's browser
+// relay under the preview proxy: the source scaled down to the preview
+// size at the preview bitrate, as the GPU preview proxy encodes it. The
+// relay only feeds the UI's tiles and monitors; at the source's own size
+// it cost a 1080p encode per source on the engine and a 1080p decode per
+// tile in every browser.
+func (a *App) sourcePreviewConfig(key string, relay preview.Relay, fpsNum, fpsDen int) preview.Config {
+	pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
+	return preview.Config{
+		SourceKey:     key,
+		Width:         pw,
+		Height:        ph,
+		Bitrate:       a.cfg.PreviewBitrate,
+		FPSNum:        fpsNum,
+		FPSDen:        fpsDen,
+		Relay:         relay,
+		FrameInterval: a.cfg.PreviewFrameInterval,
+		ScaleDown:     true,
+	}
+}
+
+// programPreviewConfig configures the CPU encoder of the program monitor's
+// relay. Under the preview proxy it is 720p, the size the GPU program
+// preview encodes; otherwise it keeps the program's own size.
+func (a *App) programPreviewConfig(relay preview.Relay, fpsNum, fpsDen int) preview.Config {
+	return preview.Config{
+		SourceKey: "program-preview",
+		Width:     1280,
+		Height:    720,
+		Bitrate:   3_000_000,
+		FPSNum:    fpsNum,
+		FPSDen:    fpsDen,
+		Relay:     relay,
+		Preset:    "veryfast",
+		ScaleDown: a.cfg.PreviewProxy,
+	}
+}
+
 // parsePreviewResolution converts a resolution string to width and height.
 func parsePreviewResolution(res string) (int, int) {
 	switch res {

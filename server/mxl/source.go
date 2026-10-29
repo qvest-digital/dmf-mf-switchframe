@@ -513,8 +513,12 @@ func (s *Source) encodeAndBroadcastVideo(yuv []byte, width, height int, pts int6
 		}
 
 		// Notify caller on first keyframe so it can set VideoInfo on the relay.
-		// Browsers need this to initialize their VideoDecoder.
-		if !s.videoInfoSent && s.config.OnVideoInfo != nil && frame.SPS != nil && frame.PPS != nil {
+		// Browsers need this to initialize their VideoDecoder. In dual-encode
+		// the relay carries the preview encoder's stream, which sets its own
+		// VideoInfo: the relay keeps whichever arrives first, and this
+		// encode's size and decoder config would describe a stream the relay
+		// never carries.
+		if !s.videoInfoSent && s.config.OnVideoInfo != nil && s.config.PreviewEncoder == nil && frame.SPS != nil && frame.PPS != nil {
 			s.videoInfoSent = true
 			s.config.OnVideoInfo(frame.SPS, frame.PPS, width, height)
 		}
