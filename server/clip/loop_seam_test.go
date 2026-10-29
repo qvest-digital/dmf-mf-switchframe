@@ -3,6 +3,7 @@ package clip
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -105,13 +106,32 @@ func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
 	for i, v := range shown[:2*pictures] {
 		require.Equal(t, byte(i%pictures), v, "picture %d of %v", i, shown)
 	}
+	// Output i is due i periods after output 0, which anchors the pacing,
+	// and comes out a decode call after that. Measured against that grid,
+	// no output is ahead of its slot or held far past it, and a wrap costs
+	// no time: each pass sits where the first one does. A pass's median
+	// offset ignores the odd output a busy host delays; a decoder refill at
+	// the wrap moves every output after it.
 	period := 20 * time.Millisecond
-	for i := 1; i < len(at); i++ {
-		gap := at[i].Sub(at[i-1])
-		assert.LessOrEqual(t, gap, period*3/2, "gap before output %d (picture %d)", i, shown[i])
-		assert.GreaterOrEqual(t, gap, period/2, "gap before output %d (picture %d)", i, shown[i])
+	offset := make([]time.Duration, len(at))
+	for i := range at {
+		offset[i] = at[i].Sub(at[0]) - time.Duration(i)*period
+		assert.Greater(t, offset[i], -period/2, "output %d (picture %d) ahead of its slot", i, shown[i])
+		assert.Less(t, offset[i], 3*period, "output %d (picture %d) held past its slot", i, shown[i])
+	}
+	first := medianDuration(offset[:pictures])
+	for pass := 1; pass*pictures < len(offset); pass++ {
+		later := medianDuration(offset[pass*pictures : min((pass+1)*pictures, len(offset))])
+		assert.Less(t, later-first, period/2, "pass %d behind the first by %v", pass, later-first)
+		assert.Greater(t, later-first, -period/2, "pass %d ahead of the first by %v", pass, first-later)
 	}
 	assert.GreaterOrEqual(t, audioOut, 2*pictures, "audio frames emitted over two passes")
+}
+
+func medianDuration(d []time.Duration) time.Duration {
+	s := slices.Clone(d)
+	slices.Sort(s)
+	return s[len(s)/2]
 }
 
 // Resuming after a pause picks up at the output rate: the slots that fell
