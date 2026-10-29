@@ -10,6 +10,7 @@ package output
 #include <libavutil/opt.h>
 #include <libavutil/error.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/time.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,6 +19,30 @@ package output
 #ifndef AV_PROFILE_AAC_LOW
 #define AV_PROFILE_AAC_LOW FF_PROFILE_AAC_LOW
 #endif
+
+// rtmp_intr_t is the opaque of the AVIO interrupt callback. It lives in C
+// memory because libavformat keeps the pointer for the context's lifetime.
+// abort ends every blocking call at once; deadline_us, when non-zero, ends
+// the call in progress once av_gettime_relative passes it.
+typedef struct {
+	int abort;
+	int64_t deadline_us;
+} rtmp_intr_t;
+
+static int rtmp_interrupt_cb(void* opaque) {
+	rtmp_intr_t* in = (rtmp_intr_t*)opaque;
+	if (__atomic_load_n(&in->abort, __ATOMIC_RELAXED)) return 1;
+	int64_t d = __atomic_load_n(&in->deadline_us, __ATOMIC_RELAXED);
+	return d != 0 && av_gettime_relative() > d;
+}
+
+static void rtmp_intr_arm(rtmp_intr_t* in, int64_t timeout_us) {
+	__atomic_store_n(&in->deadline_us, av_gettime_relative() + timeout_us, __ATOMIC_RELAXED);
+}
+
+static void rtmp_intr_abort(rtmp_intr_t* in, int abort) {
+	__atomic_store_n(&in->abort, abort, __ATOMIC_RELAXED);
+}
 
 typedef struct {
 	AVFormatContext* out_ctx;
@@ -197,10 +222,12 @@ static void sps_get_dimensions(const uint8_t* sps, int sps_len,
 static int rtmp_flv_open(rtmp_flv_ctx_t* ctx, const char* url,
 	const unsigned char* sps, int sps_len,
 	const unsigned char* pps, int pps_len,
-	int sample_rate, int channels) {
+	int sample_rate, int channels, rtmp_intr_t* intr) {
 
 	int rc = avformat_alloc_output_context2(&ctx->out_ctx, NULL, "flv", url);
 	if (rc < 0 || !ctx->out_ctx) return -1;
+	ctx->out_ctx->interrupt_callback.callback = rtmp_interrupt_cb;
+	ctx->out_ctx->interrupt_callback.opaque = intr;
 
 	av_opt_set(ctx->out_ctx->priv_data, "flvflags", "no_duration_filesize", 0);
 
@@ -302,7 +329,8 @@ static int rtmp_flv_open(rtmp_flv_ctx_t* ctx, const char* url,
 	ast->codecpar->extradata_size = 2;
 
 	// Open RTMP connection.
-	rc = avio_open(&ctx->out_ctx->pb, url, AVIO_FLAG_WRITE);
+	rc = avio_open2(&ctx->out_ctx->pb, url, AVIO_FLAG_WRITE,
+		&ctx->out_ctx->interrupt_callback, NULL);
 	if (rc < 0) {
 		avformat_free_context(ctx->out_ctx);
 		ctx->out_ctx = NULL;
@@ -417,6 +445,13 @@ import (
 const (
 	rtmpVideoChSize = 100
 	rtmpAudioChSize = 100
+
+	// rtmpIOTimeout bounds one connect or one packet write. An ingest that
+	// accepts TCP and then stops answering would otherwise hold the write
+	// loop, and with it Close, forever.
+	rtmpIOTimeout = 10 * time.Second
+	// rtmpTrailerTimeout bounds the FLV trailer written on Close.
+	rtmpTrailerTimeout = 2 * time.Second
 )
 
 // RTMPDirect pushes program output to an RTMP ingest server using direct
@@ -434,6 +469,12 @@ type RTMPDirect struct {
 	cancel context.CancelFunc
 	stopCh chan struct{}
 	doneCh chan struct{}
+
+	// intr is the interrupt state every blocking libavformat call polls:
+	// Close aborts through it without taking mu, which a blocked call
+	// holds. Allocated by Start, freed by Close.
+	intr      *C.rtmp_intr_t
+	ioTimeout time.Duration
 
 	// reconnectDone is closed by reconnectLoop on exit so Close can join
 	// the goroutine; nil when no loop is running. Guarded by mu.
@@ -485,8 +526,9 @@ func NewRTMPDirect(config RTMPCallerConfig) (*RTMPDirect, error) {
 	}
 
 	r := &RTMPDirect{
-		config: config,
-		bo:     backoff.Backoff{JitterPct: 0.20},
+		config:    config,
+		bo:        backoff.Backoff{JitterPct: 0.20},
+		ioTimeout: rtmpIOTimeout,
 	}
 	r.state.Store(ptrTo(StateStopped))
 	r.lastError.Store(ptrTo(""))
@@ -504,6 +546,10 @@ func (r *RTMPDirect) Start(ctx context.Context) error {
 	r.stopCh = make(chan struct{})
 	r.doneCh = make(chan struct{})
 	r.goCtx, r.cancel = context.WithCancel(ctx)
+	if r.intr == nil {
+		r.intr = (*C.rtmp_intr_t)(C.calloc(1, C.sizeof_rtmp_intr_t))
+	}
+	C.rtmp_intr_abort(r.intr, 0)
 	r.startedAt = time.Now()
 	r.bytesWritten.Store(0)
 	r.state.Store(ptrTo(StateActive))
@@ -517,6 +563,11 @@ func (r *RTMPDirect) Start(ctx context.Context) error {
 func (r *RTMPDirect) Close() error {
 	if r.cancel != nil {
 		r.cancel()
+	}
+	// Unblock a connect or write the write loop or reconnect loop is stuck
+	// in, so the joins below return.
+	if r.intr != nil {
+		C.rtmp_intr_abort(r.intr, 1)
 	}
 
 	if r.stopCh != nil {
@@ -543,7 +594,16 @@ func (r *RTMPDirect) Close() error {
 	}
 
 	r.mu.Lock()
+	if r.intr != nil {
+		// Give the trailer a bounded chance on a healthy connection.
+		C.rtmp_intr_abort(r.intr, 0)
+		C.rtmp_intr_arm(r.intr, C.int64_t(rtmpTrailerTimeout.Microseconds()))
+	}
 	r.closeLocked()
+	if r.intr != nil {
+		C.free(unsafe.Pointer(r.intr))
+		r.intr = nil
+	}
 	r.mu.Unlock()
 
 	// Close transcoder if active.
@@ -552,6 +612,9 @@ func (r *RTMPDirect) Close() error {
 		r.transcoder = nil
 	}
 
+	// Aborting a flush in flight fails that write, which records a write
+	// error; a destination stopped on purpose reports none.
+	r.lastError.Store(ptrTo(""))
 	r.state.Store(ptrTo(StateStopped))
 	return nil
 }
@@ -715,6 +778,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 	}
 
 	r.mu.Lock()
+	r.armLocked()
 	rc := C.rtmp_flv_write_video(&r.ctx,
 		(*C.uchar)(unsafe.Pointer(&frame.WireData[0])),
 		C.int(len(frame.WireData)),
@@ -763,6 +827,7 @@ func (r *RTMPDirect) handleAudio(frame *media.AudioFrame) {
 	}
 
 	r.mu.Lock()
+	r.armLocked()
 	rc := C.rtmp_flv_write_audio(&r.ctx,
 		(*C.uchar)(unsafe.Pointer(&data[0])),
 		C.int(len(data)),
@@ -803,17 +868,20 @@ func (r *RTMPDirect) initConnection(frame *media.VideoFrame) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	r.armLocked()
 	rc := C.rtmp_flv_open(&r.ctx, cURL,
 		(*C.uchar)(unsafe.Pointer(&frame.SPS[0])), C.int(len(frame.SPS)),
 		(*C.uchar)(unsafe.Pointer(&frame.PPS[0])), C.int(len(frame.PPS)),
 		C.int(r.config.SampleRate),
-		C.int(r.config.Channels))
+		C.int(r.config.Channels),
+		r.intr)
 	if rc < 0 {
 		return fmt.Errorf("rtmp_flv_open failed (code %d)", int(rc))
 	}
 
 	r.ptsBase = frame.PTS
 	r.initialized.Store(true)
+	r.bo.Reset()
 	return nil
 }
 
@@ -877,7 +945,9 @@ func (r *RTMPDirect) reconnectLoop() {
 		default:
 		}
 
+		r.mu.Lock()
 		wait := r.bo.Next()
+		r.mu.Unlock()
 		slog.Info("RTMP direct reconnecting", "backoff", wait, "url", rtmpMaskURL(r.config.URL))
 
 		select {
@@ -900,21 +970,23 @@ func (r *RTMPDirect) reconnectLoop() {
 		// Try eager reconnect if we have cached SPS/PPS.
 		if len(r.lastSPS) > 0 && len(r.lastPPS) > 0 {
 			cURL := C.CString(r.config.URL)
+			r.armLocked()
 			rc := C.rtmp_flv_open(&r.ctx, cURL,
 				(*C.uchar)(unsafe.Pointer(&r.lastSPS[0])), C.int(len(r.lastSPS)),
 				(*C.uchar)(unsafe.Pointer(&r.lastPPS[0])), C.int(len(r.lastPPS)),
 				C.int(r.config.SampleRate),
-				C.int(r.config.Channels))
+				C.int(r.config.Channels),
+				r.intr)
 			C.free(unsafe.Pointer(cURL))
 
 			if rc == 0 {
+				r.bo.Reset()
 				r.mu.Unlock()
 				// Eagerly reconnected — need a keyframe to resume cleanly.
 				r.initialized.Store(true)
 				r.pendingIDR.Store(true)
 				r.state.Store(ptrTo(StateActive))
 				r.lastError.Store(ptrTo(""))
-				r.bo.Reset()
 
 				slog.Info("RTMP direct reconnected", "url", rtmpMaskURL(r.config.URL))
 				if r.onReconnect != nil {
@@ -932,12 +1004,13 @@ func (r *RTMPDirect) reconnectLoop() {
 
 		r.mu.Unlock()
 
-		// No cached SPS/PPS — reset and wait for next keyframe.
+		// No cached SPS/PPS -- reset and wait for next keyframe. The
+		// backoff stays where it is: nothing has connected yet, and
+		// initConnection resets it once something does.
 		r.initialized.Store(false)
 		r.pendingIDR.Store(true)
 		r.state.Store(ptrTo(StateActive))
 		r.lastError.Store(ptrTo(""))
-		r.bo.Reset()
 
 		slog.Info("RTMP direct ready for reconnect (waiting for keyframe)",
 			"url", rtmpMaskURL(r.config.URL))
@@ -946,6 +1019,12 @@ func (r *RTMPDirect) reconnectLoop() {
 		}
 		return
 	}
+}
+
+// armLocked starts the deadline for the blocking call about to be made.
+// Must be called with r.mu held.
+func (r *RTMPDirect) armLocked() {
+	C.rtmp_intr_arm(r.intr, C.int64_t(r.ioTimeout.Microseconds()))
 }
 
 // closeLocked tears down the FFmpeg FLV context. Must be called with r.mu held.
