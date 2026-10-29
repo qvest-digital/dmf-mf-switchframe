@@ -88,6 +88,31 @@ describe('PlayoutItemEditor', () => {
 		expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ source: 'mxl:mxl-2' }));
 	});
 
+	// An item names an input, not what is connected to it, so it can be
+	// planned for an input a controller connects before air.
+	it('offers an input connected to nothing, marked', async () => {
+		const onChange = vi.fn();
+		const { container } = render(PlayoutItemEditor, {
+			props: {
+				item: makeItem({ type: 'live' }),
+				onChange,
+				sources: {
+					'mxl:mxl-1': { ...liveSource('mxl:mxl-1', 1), label: 'srt-ingest-2 p-demo' },
+					'mxl:mxl-2': { ...liveSource('mxl:mxl-2', 2), unconnected: true },
+				},
+			},
+		});
+		const sourceSelect = container.querySelector('.field-source-select') as HTMLSelectElement;
+		const options = [...sourceSelect.querySelectorAll('option')].filter((o) => !o.disabled);
+		expect(options.map((o) => [o.value, o.textContent])).toEqual([
+			['mxl:mxl-1', 'srt-ingest-2 p-demo'],
+			['mxl:mxl-2', 'mxl:mxl-2 (unconnected)'],
+		]);
+		sourceSelect.value = 'mxl:mxl-2';
+		await fireEvent.change(sourceSelect);
+		expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ source: 'mxl:mxl-2' }));
+	});
+
 	it('follows a label change on the selected input', async () => {
 		const sources = (label: string) => ({ 'mxl:mxl-1': { ...liveSource('mxl:mxl-1', 1), label } });
 		const { container, rerender } = render(PlayoutItemEditor, {
