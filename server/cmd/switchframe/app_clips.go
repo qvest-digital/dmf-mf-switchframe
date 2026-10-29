@@ -65,16 +65,14 @@ func (a *App) initClips() error {
 	pf := a.sw.PipelineFormat()
 	is10bitPipeline := pf.Color.ColorFormat == switcher.ColorYUV422_10bit
 
+	previewW, previewH := parsePreviewResolution(a.cfg.PreviewResolution)
 	mgr := clip.NewManager(store, clip.ManagerConfig{
 		DecoderFactoryForCodec: clipDecoderFactory(is10bitPipeline),
 		OutputRate: func() (int, int) {
 			pf := a.sw.PipelineFormat()
 			return pf.FPSNum, pf.FPSDen
 		},
-		EncoderFactory: func(w, h, fpsNum, fpsDen int) (clip.VideoEncoder, error) {
-			bitrate := switcher.DefaultBitrateForResolution(w, h)
-			return codec.NewVideoEncoder(w, h, bitrate, fpsNum, fpsDen)
-		},
+		EncoderFactory: clipRelayEncoderFactory(previewW, previewH, a.cfg.PreviewBitrate),
 	})
 
 	// PTS anchoring (same pattern as replay).
@@ -510,3 +508,44 @@ func clipDecoderFactory(is10bitPipeline bool) func(codecName string) (clip.Video
 		return codec.NewVideoDecoderForCodec(codecName)
 	}
 }
+
+// clipRelayEncoderFactory returns the factory for the encoders that feed a
+// clip player's browser relay. The relay only feeds the UI's tiles, so it
+// is encoded at the preview size and bitrate, the settings the GPU preview
+// proxy uses for the same relays; a clip smaller than that is not scaled
+// up. Encoding every clip picture at full 1080p took a large share of a
+// CPU engine with two players running.
+func clipRelayEncoderFactory(pw, ph, bitrate int) func(w, h, fpsNum, fpsDen int) (clip.VideoEncoder, error) {
+	return func(w, h, fpsNum, fpsDen int) (clip.VideoEncoder, error) {
+		ew, eh := pw, ph
+		if w <= pw || h <= ph {
+			ew, eh = w, h
+		}
+		enc, err := codec.NewPreviewEncoder(ew, eh, bitrate, fpsNum, fpsDen)
+		if err != nil {
+			return nil, err
+		}
+		if ew == w && eh == h {
+			return enc, nil
+		}
+		return &scaledEncoder{enc: enc, srcW: w, srcH: h, w: ew, h: eh, buf: make([]byte, ew*eh*3/2)}, nil
+	}
+}
+
+// scaledEncoder scales each 8-bit 4:2:0 frame to its encoder's size first.
+type scaledEncoder struct {
+	enc        clip.VideoEncoder
+	srcW, srcH int
+	w, h       int
+	buf        []byte
+}
+
+func (s *scaledEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+	if len(yuv) != s.srcW*s.srcH*3/2 {
+		return nil, false, fmt.Errorf("clip relay encoder: %d bytes is not a %dx%d 8-bit 4:2:0 frame", len(yuv), s.srcW, s.srcH)
+	}
+	transition.ScaleYUV420(yuv, s.srcW, s.srcH, s.buf, s.w, s.h)
+	return s.enc.Encode(s.buf, pts, forceIDR)
+}
+
+func (s *scaledEncoder) Close() { s.enc.Close() }
