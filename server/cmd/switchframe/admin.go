@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/metrics"
 )
@@ -26,6 +27,17 @@ func init() {
 		runtime.SetMutexProfileFraction(5)
 		// Rate=1000 means block events >= 1µs are recorded.
 		runtime.SetBlockProfileRate(1000)
+	}
+}
+
+// registerCollectors registers the collectors that read a subsystem's state
+// at scrape time. A second registration of the same metrics, as when a test
+// builds a second App in one process, is logged and the first one kept.
+func registerCollectors(reg prometheus.Registerer, cs ...prometheus.Collector) {
+	for _, c := range cs {
+		if err := reg.Register(c); err != nil {
+			slog.Warn("metrics collector not registered", "err", err)
+		}
 	}
 }
 
