@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/metrics"
@@ -390,4 +392,93 @@ func TestMaxBytesMiddleware_LargeUploadPathsExempt(t *testing.T) {
 		require.Equal(t, http.StatusOK, rec.Code,
 			"large-upload path %q must be exempt from the global JSON cap", p)
 	}
+}
+
+func TestSuccessfulReadLoggedAtDebug(t *testing.T) {
+	// The UI polls reads; at INFO they bury mutations and failures.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	handler := LoggerMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for _, method := range []string{"GET", "HEAD"} {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, "/api/playout/clips", nil))
+	}
+	require.Empty(t, buf.String(), "a successful read must not be logged at INFO")
+}
+
+func TestFailedReadLoggedAtInfoWithClient(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	handler := LoggerMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+
+	req := httptest.NewRequest("GET", "/api/playout/clips", nil)
+	req.Header.Set("User-Agent", "test-browser/1.0")
+	req.Header.Set("X-Forwarded-For", "192.0.2.7")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	out := buf.String()
+	for _, field := range []string{"status=401", "path=/api/playout/clips", "user_agent=test-browser/1.0", "forwarded_for=192.0.2.7"} {
+		require.Contains(t, out, field)
+	}
+}
+
+func TestSuccessfulMutationsAllLogged(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	handler := LoggerMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for range 5 {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/api/switch/cut", nil))
+	}
+	require.Equal(t, 5, bytes.Count(buf.Bytes(), []byte("http request")), "every mutation is an operator action and is logged")
+}
+
+func TestRepeatedFailureLoggedOncePerWindow(t *testing.T) {
+	// One stale browser tab retrying a refused token sent 67 requests a
+	// second to each engine; each one was a log line.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	now := time.Unix(1000, 0)
+	limiter := newErrorLogLimiter(10*time.Second, func() time.Time { return now })
+	handler := loggerMiddleware(logger, limiter)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/missing" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	lines := func() int { return bytes.Count(buf.Bytes(), []byte("http request")) }
+
+	for range 100 {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/playout/clips", nil))
+		now = now.Add(50 * time.Millisecond) // 5 s in all, inside one window
+	}
+	require.Equal(t, 1, lines(), "identical failures inside one window share one line")
+
+	// A different failure is not hidden behind the first.
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/missing", nil))
+	require.Equal(t, 2, lines())
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/api/playout/clips", nil))
+	require.Equal(t, 3, lines(), "the method is part of the key")
+
+	now = now.Add(10 * time.Second)
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/playout/clips", nil))
+	require.Equal(t, 4, lines(), "the next window logs again")
+	require.Contains(t, buf.String(), "suppressed=99", "the line says how many were left out")
+}
+
+func TestErrorLogLimiterBoundsKeys(t *testing.T) {
+	now := time.Unix(1000, 0)
+	l := newErrorLogLimiter(time.Minute, func() time.Time { return now })
+	for i := range errorLogLimiterMaxKeys * 3 {
+		ok, _ := l.allow(strconv.Itoa(i))
+		require.True(t, ok, "a key not seen in this window is logged")
+	}
+	require.LessOrEqual(t, len(l.keys), errorLogLimiterMaxKeys)
 }

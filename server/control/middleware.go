@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zsiec/switchframe/server/metrics"
@@ -20,21 +21,30 @@ import (
 // ctxKeyLogger is the unexported context key for the request-scoped logger.
 type ctxKeyLogger struct{}
 
-// LoggerMiddleware returns middleware that adds structured logging to each request.
-// It generates or preserves a request ID, creates a child logger with request
-// attributes, and logs the completed request with status, latency, and bytes written.
+// LoggerMiddleware returns middleware that adds structured logging each request.
+// It generates or preserves request ID, creates child logger with request
+// attributes, and logs completed request with status, latency, and bytes written.
+//
+// A successful read is logged at DEBUG: the UI polls, so at INFO the reads
+// bury everything else. Mutations and every failed request stay at INFO. A
+// failure that repeats, one client retrying a refused token for instance,
+// is logged once per errorLogWindow with the count left out since.
 func LoggerMiddleware(base *slog.Logger) func(http.Handler) http.Handler {
+	return loggerMiddleware(base, newErrorLogLimiter(errorLogWindow, time.Now))
+}
+
+func loggerMiddleware(base *slog.Logger, limiter *errorLogLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 
-			// Use incoming X-Request-ID or generate a new one.
+			// Use incoming X-Request-ID or generate new one.
 			reqID := r.Header.Get("X-Request-ID")
 			if reqID == "" {
 				reqID = newRequestID()
 			}
 
-			// Create child logger with request attributes.
+			// Create child logger request attributes.
 			child := base.With(
 				"request_id", reqID,
 				"method", r.Method,
@@ -49,32 +59,98 @@ func LoggerMiddleware(base *slog.Logger) func(http.Handler) http.Handler {
 			// Set response header.
 			w.Header().Set("X-Request-ID", reqID)
 
-			// Wrap ResponseWriter to capture status and bytes.
+			// Wrap ResponseWriter capture status and bytes.
 			sr := &statusRecorder{ResponseWriter: w, status: 0}
-
 			next.ServeHTTP(sr, r)
 
-			// Default to 200 if WriteHeader was never called.
+			// Default to 200 if WriteHeader never called.
 			status := sr.status
 			if status == 0 {
 				status = http.StatusOK
 			}
 
 			latency := time.Since(start)
-
-			// Log at DEBUG for noisy paths, INFO for everything else.
-			level := slog.LevelInfo
-			if isNoisyPath(r.URL.Path) {
-				level = slog.LevelDebug
-			}
-
-			child.Log(r.Context(), level, "http request",
+			attrs := []any{
 				"status", status,
 				"latency", latency,
 				"bytes", sr.written,
-			)
+			}
+
+			level := slog.LevelInfo
+			switch {
+			case isNoisyPath(r.URL.Path), isRead(r.Method) && status < http.StatusBadRequest:
+				level = slog.LevelDebug
+			case status >= http.StatusBadRequest:
+				log, suppressed := limiter.allow(r.Method + " " + r.URL.Path + " " + strconv.Itoa(status))
+				if !log {
+					return
+				}
+				// Behind an ingress every request comes from the ingress, so
+				// only these name the client that keeps failing.
+				attrs = append(attrs,
+					"user_agent", r.UserAgent(),
+					"forwarded_for", r.Header.Get("X-Forwarded-For"),
+				)
+				if suppressed > 0 {
+					attrs = append(attrs, "suppressed", suppressed)
+				}
+			}
+			child.Log(r.Context(), level, "http request", attrs...)
 		})
 	}
+}
+
+// isRead reports whether a request method only reads.
+func isRead(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
+}
+
+// errorLogWindow is how long identical failed requests share one log line.
+const errorLogWindow = 10 * time.Second
+
+// errorLogLimiterMaxKeys bounds the keys held; paths carry ids, so a client
+// walking ids would otherwise grow the map without end.
+const errorLogLimiterMaxKeys = 1024
+
+// errorLogLimiter lets one log line per key through each window and counts
+// the rest, so the next line can say how many were left out.
+type errorLogLimiter struct {
+	mu     sync.Mutex
+	window time.Duration
+	now    func() time.Time
+	keys   map[string]*errorLogKey
+}
+
+type errorLogKey struct {
+	logged     time.Time
+	suppressed int
+}
+
+func newErrorLogLimiter(window time.Duration, now func() time.Time) *errorLogLimiter {
+	return &errorLogLimiter{window: window, now: now, keys: make(map[string]*errorLogKey)}
+}
+
+// allow reports whether a request under key is logged, and how many under
+// the same key were not since the last one that was.
+func (l *errorLogLimiter) allow(key string) (bool, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	k, ok := l.keys[key]
+	if !ok {
+		if len(l.keys) >= errorLogLimiterMaxKeys {
+			clear(l.keys)
+		}
+		l.keys[key] = &errorLogKey{logged: now}
+		return true, 0
+	}
+	if now.Sub(k.logged) < l.window {
+		k.suppressed++
+		return false, 0
+	}
+	suppressed := k.suppressed
+	k.logged, k.suppressed = now, 0
+	return true, suppressed
 }
 
 // LogFromCtx retrieves the request-scoped logger from the context.
