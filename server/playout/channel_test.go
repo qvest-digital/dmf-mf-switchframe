@@ -3441,3 +3441,55 @@ func TestChannel_JumpToWithoutPlaylist(t *testing.T) {
 	require.ErrorIs(t, ch.JumpTo("x"), ErrNoPlaylist)
 	require.Equal(t, StateStopped, ch.State())
 }
+
+// recordingSeekSlice is a SliceIterator that can seek, like the file iterator.
+type recordingSeekSlice struct {
+	*SliceIterator
+	seeks *[]int
+}
+
+func (s recordingSeekSlice) Seek(frame int) error {
+	*s.seeks = append(*s.seeks, frame)
+	if frame < 0 || frame >= s.TotalFrames() {
+		return fmt.Errorf("seek %d past %d frames", frame, s.TotalFrames())
+	}
+	s.pos = frame
+	return nil
+}
+
+type recordingSeekProvider struct {
+	frames []DecodedFrame
+	seeks  []int
+}
+
+func (p *recordingSeekProvider) Open(string) (FrameIterator, error) {
+	return recordingSeekSlice{SliceIterator: NewSliceIterator(p.frames), seeks: &p.seeks}, nil
+}
+
+// A peer reports the elapsed time of a looping item across all its passes.
+// The synced engine must land where the peer's current pass is, not seek
+// past the end and restart the clip.
+func TestChannel_SeekToItem_LoopingClipLandsInCurrentPass(t *testing.T) {
+	prov := &recordingSeekProvider{frames: fakeFrames(30)} // 1 s at 30 fps
+	ch := NewChannel(1, ChannelConfig{AssetProvider: prov, AllowedLocalPrefixes: []string{"/"}})
+	loop := clipItem("a")
+	loop.Loop = true
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(loop, clipItem("b"))))
+
+	require.NoError(t, ch.SeekToItem(0, 2500)) // third pass, 0.5 s in
+	require.Equal(t, []int{15}, prov.seeks)
+	ch.mu.Lock()
+	frame, start := ch.clipFrame, ch.clipStartTime
+	ch.mu.Unlock()
+	require.Equal(t, 15, frame)
+	require.InDelta(t, 500, time.Since(start).Milliseconds(), 100)
+
+	// Exactly at a pass boundary the pass starts over.
+	require.NoError(t, ch.SeekToItem(0, 2000))
+	require.Equal(t, []int{15}, prov.seeks, "frame 0 needs no seek")
+
+	// A clip that does not loop keeps its elapsed time as it is.
+	prov.seeks = nil
+	require.NoError(t, ch.SeekToItem(1, 500))
+	require.Equal(t, []int{15}, prov.seeks)
+}
