@@ -19,8 +19,14 @@ type PlayerConfig struct {
 	Speed      float64
 	Loop       bool
 	InitialPTS int64
-	Width      int // frame width (from clip metadata)
-	Height     int // frame height (from clip metadata)
+	// OutputFPSNum/OutputFPSDen is the rate the player outputs at, normally
+	// the pipeline's. Each output slot shows the picture whose time span
+	// holds the slot, so a clip at another rate gets a fixed cadence, such
+	// as 2,2,1 for 30 fps on 50 fps. Zero outputs at the clip's own rate.
+	OutputFPSNum int
+	OutputFPSDen int
+	Width        int // frame width (from clip metadata)
+	Height       int // frame height (from clip metadata)
 
 	// DecodeFrame decodes H.264 wire data to raw YUV420 planar bytes.
 	// If nil, wireData is passed through unchanged (for testing).
@@ -108,6 +114,16 @@ type Player struct {
 	encoderH int
 
 	sourceFPS float64
+
+	// Pacing: slot paceIdx is due at paceStart + paceIdx frame periods. A
+	// pass that starts with paceIdx 0 anchors paceStart at its first
+	// output; a loop pass whose first frames the previous pass already fed
+	// to the decoder carries both over, so the wrap keeps the cadence.
+	paceStart time.Time
+	paceIdx   int
+
+	// pts advances the output PTS by one output period per slot.
+	pts ptsStep
 
 	// Reusable scratch buffers for decode/re-encode hot path.
 	// annexBBuf and prependBuf must be separate allocations because
@@ -311,11 +327,13 @@ func (p *Player) run(ctx context.Context) {
 	outputPTS := p.config.InitialPTS
 	p.outputAudioPTS = p.config.InitialPTS
 
+	startFrame := 0
 	for {
-		cancelled := p.playClip(ctx, clip, sourceFPS, &outputPTS)
+		cancelled, fedNext := p.playClip(ctx, clip, sourceFPS, &outputPTS, startFrame)
 		if cancelled {
 			return
 		}
+		startFrame = fedNext
 
 		if !p.loop.Load() {
 			// Non-loop: transition to holding, notify, then hold loop.
@@ -329,10 +347,12 @@ func (p *Player) run(ctx context.Context) {
 			return
 		}
 
-		// Loop: flush decoder so it can handle the new stream cleanly
-		// (SPS/PPS may differ between playthroughs), then reset indices.
-		if fd, ok := p.config.Decoder.(FlushableDecoder); ok {
-			fd.Flush()
+		// Loop: unless the pass already fed the next one's first frames,
+		// flush the decoder, then reset indices.
+		if startFrame == 0 {
+			if fd, ok := p.config.Decoder.(FlushableDecoder); ok {
+				fd.Flush()
+			}
 		}
 		// Reset decode error tracking so first-error logging triggers again.
 		p.decodeErrors = 0
@@ -348,16 +368,27 @@ func (p *Player) run(ctx context.Context) {
 	}
 }
 
-// playClip plays through all frames once. Returns true if context was cancelled.
-func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS float64, outputPTS *int64) bool {
+// playClip plays through all frames once, starting with frame startFrame:
+// the frames before it the previous pass has already fed to the decoder.
+// Returns true if the context was cancelled, and how many frames of the next
+// pass it fed to the decoder to get its own last pictures out.
+func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS float64, outputPTS *int64, startFrame int) (cancelled bool, fedNext int) {
 	totalClipFrames := len(clip)
 
+	srcNum, srcDen := clipRational(sourceFPS)
+	outNum, outDen := p.config.OutputFPSNum, p.config.OutputFPSDen
+	if outNum <= 0 || outDen <= 0 {
+		outNum, outDen = srcNum, srcDen
+	}
+	ptsStep := &p.pts
+	ptsStep.num, ptsStep.den = int64(outNum), int64(outDen)
+	frameDuration := time.Second * time.Duration(outDen) / time.Duration(outNum)
+
 	speed := p.speed.Load().(float64)
-	dupCount, ptsPerFrame := computeClipTiming(speed, sourceFPS)
-	frameDuration := computeFrameDuration(speed, sourceFPS, dupCount)
+	cad := newCadence(outNum, outDen, srcNum, srcDen, speed)
 
 	// Compute total output frames for progress tracking.
-	totalFrames := totalClipFrames * dupCount
+	totalFrames := cad.start(totalClipFrames)
 	p.totalOutputFrames = totalFrames
 
 	// Create pacing timer.
@@ -367,26 +398,35 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		<-timer.C
 	}
 
-	playbackStart := time.Now()
-	pacingIdx := 0
+	if startFrame == 0 {
+		p.paceIdx = 0
+	}
 	outputIdx := 0
+	// Frames fed to the decoder whose pictures have not come out; the
+	// previous pass fed this one's first startFrame frames.
+	held := startFrame
+	pic := 0 // pictures of this pass output or skipped, in presentation order
 
 	// -1 = no rewind in flight; otherwise exclusive end of the decode-only
 	// window that primes the decoder after a seek.
 	primeUntilIdx := -1
 
-	// emit outputs one decoded frame: dupCount paced slots, each followed by
-	// its share of the audio. Returns true if the context was cancelled.
-	emit := func(frameData []byte, fw, fh int, srcKeyframe bool, browserWireData []byte, browserKeyframe bool, browserSPS, browserPPS []byte) bool {
-		for dup := 0; dup < dupCount; dup++ {
+	// emit outputs one decoded picture in its n paced slots, each followed
+	// by its share of the audio. The browser relay gets the picture once.
+	// Returns true if the context was cancelled.
+	emit := func(n int, frameData []byte, fw, fh int, srcKeyframe bool, browserWireData []byte, browserKeyframe bool, browserSPS, browserPPS []byte) bool {
+		for slot := 0; slot < n; slot++ {
+			if slot == 1 {
+				srcKeyframe, browserWireData, browserKeyframe = false, nil, false
+			}
 			// Pacing starts at the first frame output, not when decoding
 			// starts: a threaded decoder returns its first picture several
 			// calls in, and slots counted from before that would be spent
 			// already and go out back to back.
-			if pacingIdx == 0 {
-				playbackStart = time.Now()
+			if p.paceIdx == 0 {
+				p.paceStart = time.Now()
 			}
-			if p.outputFrame(ctx, frameData, fw, fh, srcKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, outputPTS, ptsPerFrame, frameDuration, timer, playbackStart, &pacingIdx) {
+			if p.outputFrame(ctx, frameData, fw, fh, srcKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, outputPTS, ptsStep, frameDuration, timer, &p.paceStart, &p.paceIdx) {
 				return true
 			}
 
@@ -429,7 +469,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		return false
 	}
 
-	for frameIdx := 0; frameIdx < totalClipFrames; {
+	for frameIdx := startFrame; frameIdx < totalClipFrames; {
 		// Check for seek requests (non-blocking).
 		select {
 		case pos := <-p.seekCh:
@@ -453,12 +493,13 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 			if fd, ok := p.config.Decoder.(FlushableDecoder); ok {
 				fd.Flush()
 			}
+			held = 0
 			frameIdx = keyframeIdx
 			primeUntilIdx = targetIdx
-			outputIdx = targetIdx * dupCount
+			pic = targetIdx
+			outputIdx = cad.start(pic)
 			// Reset pacing to avoid a burst of catch-up frames.
-			playbackStart = time.Now()
-			pacingIdx = 0
+			p.paceIdx = 0
 			// Update audio index proportionally.
 			if len(p.config.AudioClip) > 0 {
 				p.audioIdx = targetIdx * len(p.config.AudioClip) / totalClipFrames
@@ -469,20 +510,18 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		}
 
 		// Check for speed changes. Defer while priming: outputIdx was
-		// pinned to targetIdx*dupCount by the seek branch; recomputing
+		// pinned to the target's first slot by the seek branch; recomputing
 		// from a primer frameIdx would rewind the progress/audio counters
 		// below their intended post-seek value.
 		if frameIdx >= primeUntilIdx {
 			newSpeed := p.speed.Load().(float64)
 			if newSpeed != speed {
 				speed = newSpeed
-				dupCount, ptsPerFrame = computeClipTiming(speed, sourceFPS)
-				frameDuration = computeFrameDuration(speed, sourceFPS, dupCount)
-				totalFrames = totalClipFrames * dupCount
+				cad = newCadence(outNum, outDen, srcNum, srcDen, speed)
+				totalFrames = cad.start(totalClipFrames)
 				p.totalOutputFrames = totalFrames
-				outputIdx = frameIdx * dupCount
-				playbackStart = time.Now()
-				pacingIdx = 0
+				outputIdx = cad.start(pic)
+				p.paceIdx = 0
 			}
 		}
 
@@ -490,62 +529,10 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 
 		// Decode video to YUV420 for the switcher pipeline.
 		// Wire data forwarding to the browser relay is independent of decode
-		// success — the browser has its own decoder and always gets frames.
-		var frameData []byte // nil when decode fails (browser relay still works)
-		buffered := false    // the decoder kept this frame back for reordering
-		fw, fh := p.config.Width, p.config.Height
-		isHEVC := f.IsHEVC()
-		if p.config.DecodeFrame != nil {
-			// Convert wire format to Annex B for the decoder (reuses buffer).
-			p.annexBBuf = codec.WireToAnnexBInto(f.wireData, p.annexBBuf[:0])
-			if len(p.annexBBuf) > 0 {
-				// Prepend parameter sets for keyframes so the decoder can initialize.
-				// Use prependBuf as a separate destination to avoid aliasing.
-				decoderInput := p.annexBBuf
-				if f.isKeyframe && len(f.sps) > 0 {
-					if isHEVC {
-						p.prependBuf = codec.PrependVPSSPSPPSInto(f.vps, f.sps, f.pps, p.annexBBuf, p.prependBuf[:0])
-					} else {
-						p.prependBuf = codec.PrependSPSPPSInto(f.sps, f.pps, p.annexBBuf, p.prependBuf[:0])
-					}
-					decoderInput = p.prependBuf
-				}
-
-				p.decodeAttempts++
-				decoded, dw, dh, err := p.config.DecodeFrame(decoderInput)
-				if err == nil {
-					p.decodeSuccesses++
-					// Deep-copy: decoder may reuse its output buffer.
-					frameData = make([]byte, len(decoded))
-					copy(frameData, decoded)
-					fw, fh = dw, dh
-				} else {
-					errMsg := err.Error()
-					// EAGAIN ("buffering") is expected for B-frame reordering —
-					// the decoder needs reference frames before it can output.
-					if strings.Contains(errMsg, "buffering") {
-						p.decodeBuffering++
-						buffered = true
-					} else {
-						p.decodeErrors++
-						if p.decodeErrorFirst == "" {
-							p.decodeErrorFirst = errMsg
-							slog.Warn("clip: decode error",
-								"error", err,
-								"frameIdx", frameIdx,
-								"isKeyframe", f.isKeyframe,
-								"wireDataLen", len(f.wireData),
-								"annexBLen", len(p.annexBBuf),
-								"hasSPS", len(f.sps) > 0,
-								"codec", f.Codec(),
-							)
-						}
-					}
-				}
-			}
-		} else {
-			// No decoder (testing) — pass wire data through as frame data.
-			frameData = f.wireData
+		// success -- the browser has its own decoder and always gets frames.
+		frameData, fw, fh, buffered := p.decodeClipFrame(f, frameIdx)
+		if buffered {
+			held++
 		}
 
 		// A frame the decoder kept back comes out of a later Decode call or
@@ -556,6 +543,20 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		if buffered {
 			frameIdx++
 			continue
+		}
+
+		// A picture that falls between two output slots is skipped before
+		// it is re-encoded: the browser relay's stream must hold only the
+		// pictures it is sent.
+		priming := frameIdx < primeUntilIdx
+		slots := 1
+		if !priming {
+			slots = cad.slots(pic)
+			pic++
+			if slots == 0 {
+				frameIdx++
+				continue
+			}
 		}
 
 		// Re-encode decoded frame to browser-compatible 8-bit H.264.
@@ -587,29 +588,60 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		// Priming: emit to the browser relay (its decoder needs IDR+chain
 		// too) and advance outputPTS so the GOP cache sees unique,
 		// monotonic timestamps, but skip the switcher pipeline and pacing.
-		if frameIdx < primeUntilIdx {
+		if priming {
 			select {
 			case <-ctx.Done():
-				return true
+				return true, 0
 			default:
 			}
 			if p.config.VideoOutput != nil {
 				p.config.VideoOutput(browserWireData, *outputPTS, browserKeyframe, browserSPS, browserPPS)
 			}
-			*outputPTS += ptsPerFrame
+			*outputPTS += ptsStep.next()
 			frameIdx++
 			continue
 		}
 
-		// Output frames with duplication for slow-mo.
-		if emit(frameData, fw, fh, f.isKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS) {
-			return true
+		if emit(slots, frameData, fw, fh, f.isKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS) {
+			return true, 0
 		}
 		frameIdx++
 	}
 
-	// Drain remaining buffered frames from the decoder (B-frame reordering).
-	if p.config.Decoder != nil {
+	// The last pictures are still in the decoder. Looping, feed it the next
+	// pass's first frames until they come out, so the wrap neither drains
+	// nor restarts the decoder: a restarted frame-threaded decoder returns
+	// nothing for its first calls, which held the last picture and left a
+	// gap in the audio at every loop. The next pass starts after the frames
+	// fed here.
+	if p.loop.Load() && held > 0 && p.config.DecodeFrame != nil && totalClipFrames > 2*held {
+		for held > 0 && fedNext < totalClipFrames {
+			select {
+			case <-ctx.Done():
+				return true, 0
+			default:
+			}
+			frameData, fw, fh, buffered := p.decodeClipFrame(clip[fedNext], fedNext)
+			fedNext++
+			if buffered {
+				continue
+			}
+			if frameData == nil {
+				continue // failed: no picture came out
+			}
+			held--
+			slots := cad.slots(pic)
+			pic++
+			if slots == 0 {
+				continue
+			}
+			wd, kf, sps, pps := p.reencodeForBrowser(frameData, fw, fh, *outputPTS, false)
+			if emit(slots, frameData, fw, fh, false, wd, kf, sps, pps) {
+				return true, 0
+			}
+		}
+	} else if p.config.Decoder != nil {
+		// Drain remaining buffered frames from the decoder (B-frame reordering).
 		if drainable, ok := p.config.Decoder.(DrainableDecoder); ok {
 			_ = drainable.SendEOS()
 			for {
@@ -618,13 +650,18 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 					break
 				}
 				p.decodeSuccesses++
+				slots := cad.slots(pic)
+				pic++
+				if slots == 0 {
+					continue
+				}
 				frameData := make([]byte, len(decoded))
 				copy(frameData, decoded)
 				// Drained frames take their paced slots like any other;
 				// without a browser encoder they reach only the pipeline.
 				wd, kf, sps, pps := p.reencodeForBrowser(frameData, dw, dh, *outputPTS, false)
-				if emit(frameData, dw, dh, false, wd, kf, sps, pps) {
-					return true
+				if emit(slots, frameData, dw, dh, false, wd, kf, sps, pps) {
+					return true, 0
 				}
 			}
 		}
@@ -644,7 +681,69 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 	// Mark final progress.
 	p.progress.Store(1000)
 
-	return false
+	return false, fedNext
+}
+
+// decodeClipFrame feeds frame f to the decoder and returns the picture it
+// gives back: nil when decoding failed, buffered when the decoder kept the
+// frame and returned nothing. Without a decoder (tests) the wire data is
+// the picture.
+func (p *Player) decodeClipFrame(f BufferedFrame, frameIdx int) (frameData []byte, fw, fh int, buffered bool) {
+	fw, fh = p.config.Width, p.config.Height
+	isHEVC := f.IsHEVC()
+	if p.config.DecodeFrame != nil {
+		// Convert wire format to Annex B for the decoder (reuses buffer).
+		p.annexBBuf = codec.WireToAnnexBInto(f.wireData, p.annexBBuf[:0])
+		if len(p.annexBBuf) > 0 {
+			// Prepend parameter sets for keyframes so the decoder can initialize.
+			// Use prependBuf as a separate destination to avoid aliasing.
+			decoderInput := p.annexBBuf
+			if f.isKeyframe && len(f.sps) > 0 {
+				if isHEVC {
+					p.prependBuf = codec.PrependVPSSPSPPSInto(f.vps, f.sps, f.pps, p.annexBBuf, p.prependBuf[:0])
+				} else {
+					p.prependBuf = codec.PrependSPSPPSInto(f.sps, f.pps, p.annexBBuf, p.prependBuf[:0])
+				}
+				decoderInput = p.prependBuf
+			}
+
+			p.decodeAttempts++
+			decoded, dw, dh, err := p.config.DecodeFrame(decoderInput)
+			if err == nil {
+				p.decodeSuccesses++
+				// Deep-copy: decoder may reuse its output buffer.
+				frameData = make([]byte, len(decoded))
+				copy(frameData, decoded)
+				fw, fh = dw, dh
+			} else {
+				errMsg := err.Error()
+				// EAGAIN ("buffering") is expected for B-frame reordering --
+				// the decoder needs reference frames before it can output.
+				if strings.Contains(errMsg, "buffering") {
+					p.decodeBuffering++
+					buffered = true
+				} else {
+					p.decodeErrors++
+					if p.decodeErrorFirst == "" {
+						p.decodeErrorFirst = errMsg
+						slog.Warn("clip: decode error",
+							"error", err,
+							"frameIdx", frameIdx,
+							"isKeyframe", f.isKeyframe,
+							"wireDataLen", len(f.wireData),
+							"annexBLen", len(p.annexBBuf),
+							"hasSPS", len(f.sps) > 0,
+							"codec", f.Codec(),
+						)
+					}
+				}
+			}
+		}
+	} else {
+		// No decoder (testing) -- pass wire data through as frame data.
+		frameData = f.wireData
+	}
+	return frameData, fw, fh, buffered
 }
 
 // outputFrame outputs a single decoded frame, handling pause and pacing.
@@ -658,10 +757,10 @@ func (p *Player) outputFrame(
 	frameData []byte, fw, fh int, srcKeyframe bool,
 	wireData []byte, isKeyframe bool, sps, pps []byte,
 	outputPTS *int64,
-	ptsPerFrame int64,
+	pts *ptsStep,
 	frameDuration time.Duration,
 	timer *time.Timer,
-	playbackStart time.Time,
+	playbackStart *time.Time,
 	pacingIdx *int,
 ) bool {
 	// Check for pause. If paused, this blocks until resumed or cancelled.
@@ -669,9 +768,16 @@ func (p *Player) outputFrame(
 	if chPtr != nil {
 		select {
 		case <-*chPtr:
-			// Not paused or just resumed.
-		case <-ctx.Done():
-			return true
+			// Not paused.
+		default:
+			select {
+			case <-*chPtr:
+				// Resumed: the slots due during the pause are not owed,
+				// so pacing restarts from this one.
+				*playbackStart = time.Now().Add(-time.Duration(*pacingIdx) * frameDuration)
+			case <-ctx.Done():
+				return true
+			}
 		}
 	}
 
@@ -694,7 +800,7 @@ func (p *Player) outputFrame(
 
 	// Pace using absolute time to prevent drift from callback overhead. The
 	// frame just output is on screen until the next slot starts.
-	deadline := playbackStart.Add(time.Duration(*pacingIdx+1) * frameDuration)
+	deadline := (*playbackStart).Add(time.Duration(*pacingIdx+1) * frameDuration)
 	wait := time.Until(deadline)
 	if wait > 0 {
 		timer.Reset(wait)
@@ -705,7 +811,7 @@ func (p *Player) outputFrame(
 		}
 	}
 
-	*outputPTS += ptsPerFrame
+	*outputPTS += pts.next()
 	*pacingIdx++
 
 	return false
@@ -865,23 +971,46 @@ func estimateFPSFromClipFrames(clip []BufferedFrame) float64 {
 	return fps
 }
 
-// computeClipTiming computes frame duplication count and PTS increment per
-// output frame. For speeds > 1.0, dupCount is 1 (pacing handles speed).
-// For speeds <= 1.0, frames are duplicated.
-func computeClipTiming(speed, sourceFPS float64) (dupCount int, ptsPerFrame int64) {
-	if speed >= 1.0 {
-		dupCount = 1
-	} else {
-		dupCount = int(math.Round(1.0 / speed))
-		if dupCount < 1 {
-			dupCount = 1
-		}
-	}
-	ptsPerFrame = int64(90000.0 / (sourceFPS * float64(dupCount)))
-	return
+// ptsStep advances a 90 kHz PTS by one output period of den/num seconds,
+// carrying the remainder, so a period that is not a whole number of ticks
+// (1501.5 at 59.94 fps) does not drift against the audio.
+type ptsStep struct{ num, den, rem int64 }
+
+func (s *ptsStep) next() int64 {
+	s.rem += 90000 * s.den
+	d := s.rem / s.num
+	s.rem -= d * s.num
+	return d
 }
 
-// computeFrameDuration computes the wall-clock duration between output frames.
-func computeFrameDuration(speed, sourceFPS float64, dupCount int) time.Duration {
-	return time.Duration(float64(time.Second) / (sourceFPS * speed * float64(dupCount)))
+// cadence maps a pass's pictures onto output slots: a slot shows the
+// picture whose time span holds the slot's start, so picture k occupies
+// slots start(k) to start(k+1). p/q is output slots per picture.
+type cadence struct{ p, q int64 }
+
+// newCadence returns the cadence of a clip at srcNum/srcDen fps played at
+// speed on an output at outNum/outDen fps.
+func newCadence(outNum, outDen, srcNum, srcDen int, speed float64) cadence {
+	milli := int64(math.Round(speed * 1000))
+	if milli < 1 {
+		milli = 1
+	}
+	return cadence{p: int64(outNum) * int64(srcDen) * 1000, q: int64(outDen) * int64(srcNum) * milli}
+}
+
+// start is the first output slot of picture k.
+func (c cadence) start(k int) int { return int((int64(k)*c.p + c.q - 1) / c.q) }
+
+// slots is how many output slots picture k occupies: 0 for a picture
+// between two slots, as when 60 fps meets 50.
+func (c cadence) slots(k int) int { return c.start(k+1) - c.start(k) }
+
+// clipRational returns the clip's rate as a fraction: the broadcast rate it
+// is within 1% of, so 29.97 fps is exactly 30000/1001, else milli-fps.
+func clipRational(fps float64) (num, den int) {
+	num, den = fpsToRational(fps)
+	if math.Abs(float64(num)/float64(den)-fps) <= fps/100 {
+		return num, den
+	}
+	return int(math.Round(fps * 1000)), 1000
 }

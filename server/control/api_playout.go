@@ -30,6 +30,7 @@ func (a *API) registerPlayoutRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/playout/channels/{n}/next", a.handlePlayoutNext)
 	mux.HandleFunc("POST /api/playout/channels/{n}/previous", a.handlePlayoutPrevious)
 	mux.HandleFunc("POST /api/playout/channels/{n}/jump", a.handlePlayoutJump)
+	mux.HandleFunc("POST /api/playout/channels/{n}/end-loop", a.handlePlayoutEndLoop)
 	mux.HandleFunc("POST /api/playout/channels/{n}/manual", a.handlePlayoutTakeManual)
 	mux.HandleFunc("POST /api/playout/channels/{n}/auto", a.handlePlayoutReturnToAuto)
 	mux.HandleFunc("GET /api/playout/channels/{n}/playlist", a.handlePlayoutPlaylist)
@@ -173,6 +174,26 @@ func (a *API) handlePlayoutNext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.playoutMgr.Next(n); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	a.broadcast()
+	states := a.playoutMgr.ChannelStates()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(states[n-1])
+}
+
+// handlePlayoutEndLoop has the looping clip on a playout channel end after
+// its current pass.
+func (a *API) handlePlayoutEndLoop(w http.ResponseWriter, r *http.Request) {
+	n, err := parseChannelID(r)
+	if err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	if err := a.playoutMgr.EndLoop(n); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}

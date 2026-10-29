@@ -2355,6 +2355,11 @@ export function playoutNext(channelId: number): Promise<void> {
 	return post(`/api/playout/channels/${channelId}/next`, {});
 }
 
+/** Let the looping clip on air finish its current pass, then move on. */
+export function playoutEndLoop(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/end-loop`, {});
+}
+
 /**
  * Check if the next playout item is cached on all engines before advancing.
  * Shows a warning notification if any engine is not ready.

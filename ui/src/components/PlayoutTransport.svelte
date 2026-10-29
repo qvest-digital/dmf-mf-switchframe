@@ -2,7 +2,7 @@
 	import { onDestroy } from 'svelte';
 	import type { PlayoutChannelState, CacheStatus } from '$lib/api/types';
 	import {
-		playoutStart, playoutStop, playoutNext, playoutPrevious,
+		playoutStart, playoutStop, playoutNext, playoutPrevious, playoutEndLoop,
 		playoutTakeManual, playoutReturnToAuto, apiCall,
 	} from '$lib/api/switch-api';
 	import {
@@ -82,6 +82,10 @@
 
 	function handleNext() {
 		apiCall(playoutNext(channel.id), 'Playout next');
+	}
+
+	function handleEndLoop() {
+		apiCall(playoutEndLoop(channel.id), 'End loop');
 	}
 
 	function handlePrevious() {
@@ -168,8 +172,24 @@
 		<button class="t-btn t-next" onclick={handleNext} disabled={isStopped} title="Next item">
 			{@html renderIcon(ICON_FRAME_FORWARD, 15)}
 		</button>
-		{#if (isStopped || channel.state === 'completed') && onCueTop}
-			<button class="t-btn t-cue-top" onclick={onCueTop} title="Cue to first item">
+		{#if isOnAir && channel.looping}
+			<button
+				class="t-btn t-end-loop"
+				class:armed={channel.loopExit}
+				onclick={handleEndLoop}
+				disabled={channel.loopExit}
+				title={channel.loopExit ? 'Loop ends after this pass' : 'Finish this pass, then continue the playlist'}
+			>
+				{channel.loopExit ? 'LOOP ENDS' : 'END LOOP'}
+			</button>
+		{/if}
+		{#if !isOnAir && onCueTop}
+			<button
+				class="t-btn t-cue-top"
+				onclick={onCueTop}
+				disabled={isCued && channel.itemIndex === 0}
+				title={isCued && channel.itemIndex === 0 ? 'Cued at the first item' : 'Cue to first item'}
+			>
 				CUE TOP
 			</button>
 		{/if}
@@ -246,6 +266,18 @@
 		min-width: 34px;
 		height: 30px;
 	}
+
+	.t-end-loop {
+		padding: 0 8px;
+		font-family: var(--font-ui);
+		font-size: 8px;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		color: var(--accent-orange);
+		border-color: var(--accent-orange-medium);
+		background: var(--accent-orange-dim);
+	}
+	.t-end-loop.armed:disabled { opacity: 0.7; }
 
 	.t-cue-top {
 		padding: 0 8px;

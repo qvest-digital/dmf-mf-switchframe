@@ -19,6 +19,8 @@ func TestClipDecoderFactory_FrameThreaded(t *testing.T) {
 			threaded, ok := dec.(interface{ ThreadCount() int })
 			require.True(t, ok, "%T reports no thread count", dec)
 			require.Greater(t, threaded.ThreadCount(), 1, "10-bit pipeline %v, %s", is10bit, codecName)
+			// Two players and playout share the engine's cores.
+			require.LessOrEqual(t, threaded.ThreadCount(), 4, "10-bit pipeline %v, %s", is10bit, codecName)
 			dec.Close()
 		}
 	}

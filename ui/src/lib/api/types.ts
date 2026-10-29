@@ -995,6 +995,10 @@ export interface PlayoutChannelState {
 	itemCount: number;
 	itemProgress?: number;
 	itemRemainMs?: number;
+	/** A looping clip is on air. */
+	looping?: boolean;
+	/** The looping clip ends after its current pass. */
+	loopExit?: boolean;
 	activePod?: PodStatusBroadcast;
 	pods?: PodStatusBroadcast[];
 	podsArmed?: number;

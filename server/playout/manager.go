@@ -295,6 +295,20 @@ func (m *Manager) JumpTo(channelID int, itemID string) error {
 	return ch.JumpTo(itemID)
 }
 
+// EndLoop has the looping clip on the given channel end after its current
+// pass.
+func (m *Manager) EndLoop(channelID int) error {
+	if err := m.validateChannelID(channelID); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	ch := m.channels[channelID-1]
+	m.mu.Unlock()
+
+	return ch.EndLoop()
+}
+
 // TakeManual pauses automated playlist advancement on the given channel.
 func (m *Manager) TakeManual(channelID int) error {
 	if err := m.validateChannelID(channelID); err != nil {

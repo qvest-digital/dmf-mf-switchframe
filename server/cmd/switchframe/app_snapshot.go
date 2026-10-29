@@ -532,6 +532,14 @@ func (a *App) ApplyPlayoutChannels(channels []internal.PlayoutChannelSnapshot) e
 			continue
 		}
 
+		// Seeking clears a loop release; take the peer's.
+		if chSnap.LoopExit {
+			if err := a.playoutMgr.EndLoop(channelID); err != nil {
+				slog.Warn("snapshot apply: playout end loop failed",
+					"channel", channelID, "error", err)
+			}
+		}
+
 		slog.Info("snapshot apply: playout channel seeked",
 			"channel", channelID,
 			"item", chSnap.CurrentItemIndex,

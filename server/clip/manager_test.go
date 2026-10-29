@@ -1009,3 +1009,36 @@ func TestManagerPlayerStatesReportLoadingClip(t *testing.T) {
 		})
 	}
 }
+
+// A player outputs at the rate the manager's OutputRate reports when it
+// starts, so a clip at another rate than the pipeline's gets the pipeline's
+// cadence rather than its own.
+func TestManagerPlayOutputsAtOutputRate(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir, 1<<30)
+	require.NoError(t, err)
+	rate := [2]int{50, 1}
+	mgr := NewManager(store, ManagerConfig{
+		DemuxFunc:  mockDemuxFunc(30),
+		OutputRate: func() (int, int) { return rate[0], rate[1] },
+	})
+	defer mgr.Close()
+	c := addTestClip(t, store, dir)
+
+	require.NoError(t, mgr.Load(1, c.ID))
+	require.NoError(t, mgr.Play(1, 1.0, true))
+	mgr.mu.Lock()
+	cfg := mgr.players[0].player.config
+	mgr.mu.Unlock()
+	assert.Equal(t, 50, cfg.OutputFPSNum)
+	assert.Equal(t, 1, cfg.OutputFPSDen)
+
+	rate = [2]int{60000, 1001}
+	require.NoError(t, mgr.Stop(1))
+	require.NoError(t, mgr.Play(1, 1.0, true))
+	mgr.mu.Lock()
+	cfg = mgr.players[0].player.config
+	mgr.mu.Unlock()
+	assert.Equal(t, 60000, cfg.OutputFPSNum)
+	assert.Equal(t, 1001, cfg.OutputFPSDen)
+}

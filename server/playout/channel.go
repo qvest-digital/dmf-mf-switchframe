@@ -254,6 +254,10 @@ func (c *Channel) Status() ChannelStatus {
 			item := pl.Items[snap.Cursor]
 			st.CurrentItemID = item.ID
 			st.CurrentTitle = item.Title
+			if c.state == StateOnAir && item.Loop && item.Type == ItemClip {
+				st.Looping = true
+				st.LoopExit = snap.LoopExit
+			}
 		}
 		if snap.Cursor+1 < len(pl.Items) {
 			next := pl.Items[snap.Cursor+1]
@@ -380,9 +384,10 @@ func (c *Channel) LoadPlaylist(pl *Playlist) error {
 	return nil
 }
 
-// Start puts the loaded playlist on air from its first item and launches
-// the run goroutine. A stopped or completed channel keeps its playlist, so
-// it starts again the same way a cued one does.
+// Start puts the loaded playlist on air from its cued item, the first one
+// unless JumpTo cued another, and launches the run goroutine. A stopped or
+// completed channel keeps its playlist, so it starts again the same way a
+// cued one does.
 func (c *Channel) Start() error {
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
@@ -521,15 +526,41 @@ func (c *Channel) Previous() error {
 	return c.scheduler.Previous()
 }
 
-// JumpTo finds the item with the given ID and moves the cursor to it.
+// JumpTo finds the item with the given ID and moves the cursor to it. On
+// air the item plays at once. Off air the channel is cued to it, and Start
+// then begins there instead of at the first item.
 func (c *Channel) JumpTo(itemID string) error {
+	c.mu.Lock()
+	if c.state == StateOnAir {
+		c.mu.Unlock()
+		return c.scheduler.JumpTo(itemID)
+	}
+	if err := c.scheduler.Cue(itemID); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	c.state = StateCued
+	c.itemProgress.Store(0)
+	c.itemRemainMs.Store(0)
+	fn := c.onStateChange
+	c.mu.Unlock()
+
+	if fn != nil {
+		fn(StateCued)
+	}
+	return nil
+}
+
+// EndLoop lets the looping clip on air finish its current pass, then end as
+// a clip that does not loop.
+func (c *Channel) EndLoop() error {
 	c.mu.Lock()
 	if c.state != StateOnAir {
 		c.mu.Unlock()
 		return ErrNotOnAir
 	}
 	c.mu.Unlock()
-	return c.scheduler.JumpTo(itemID)
+	return c.scheduler.EndLoop()
 }
 
 // SeekToItem repositions the channel to a specific playlist item at a given
@@ -1437,8 +1468,9 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 		// If loop mode, rewind — close the iterator so it re-opens on the
 		// next tick with the same item ID forced to mismatch. Guarded on
 		// iterator identity so a concurrent SeekToItem's fresh iterator is
-		// not torn down by the old clip's end-of-loop.
-		if item.Loop {
+		// not torn down by the old clip's end-of-loop. After EndLoop the pass
+		// that just finished was the last one.
+		if item.Loop && !c.scheduler.LoopExitPending() {
 			c.mu.Lock()
 			if c.clipIter == iter {
 				if c.clipIter != nil {
