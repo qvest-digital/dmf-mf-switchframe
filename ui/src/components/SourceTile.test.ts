@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import SourceTile from './SourceTile.svelte';
+import { reloadHolds } from '$lib/util/activity';
 import type { SourceInfo, TallyStatus, SourceHealthStatus } from '$lib/api/types';
 
 function makeSource(overrides: Partial<SourceInfo> = {}): SourceInfo {
@@ -263,6 +264,18 @@ describe('SourceTile delay badge', () => {
 });
 
 describe('SourceTile label editing', () => {
+	// A stale-build reload of an untouched tab would drop the label being typed.
+	it('holds the reload while the label is being edited', async () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'idle', index: 0, onLabelChange: vi.fn() },
+		});
+		expect(reloadHolds()).not.toContain('source rename');
+		await fireEvent.dblClick(container.querySelector('.tile-label') as HTMLElement);
+		expect(reloadHolds()).toContain('source rename');
+		await fireEvent.keyDown(container.querySelector('.tile-label-input') as HTMLInputElement, { key: 'Escape' });
+		expect(reloadHolds()).not.toContain('source rename');
+	});
+
 	it('enters edit mode on double-click', async () => {
 		const onLabelChange = vi.fn();
 		const { container } = render(SourceTile, {
