@@ -314,6 +314,9 @@ export function createReconciler() {
 
 	// Track when seq delta first appeared for time-based detection
 	let seqDeltaSince = $state(0);
+	// Each engine's lastCommandSeq as of the last tracking pass.
+	let trackedSeqA = 0;
+	let trackedSeqB = 0;
 
 	// Each engine's compared fields as of its last state, and when either
 	// last changed.
@@ -328,6 +331,9 @@ export function createReconciler() {
 
 	// Tick-updated status (time-based)
 	let tickedStatus = $state<SyncStatus>('disconnected');
+	// Whether a difference between the engines is still a command
+	// propagating, updated with tickedStatus.
+	let tickedSettling = $state(false);
 
 	// Updated every tick (~200ms) to drive smooth uptime display in engineHealth
 	let lastTickTime = $state(Date.now());
@@ -413,6 +419,7 @@ export function createReconciler() {
 		updateHeldAuthority(now);
 		// Recompute status immediately so health reflects the new state
 		tickedStatus = computeStatus(now);
+		tickedSettling = isSettling(now);
 	}
 
 	function updateSeqDeltaTracking(now: number) {
@@ -422,9 +429,15 @@ export function createReconciler() {
 		}
 		const seqA = stateA.lastCommandSeq ?? 0;
 		const seqB = stateB.lastCommandSeq ?? 0;
+		// The engine behind still applying commands has them in flight, as
+		// through a fader drag, where the two seqs need never be equal at
+		// any one moment. Only an engine that stopped advancing lags.
+		const behindAdvanced = seqA < seqB ? seqA !== trackedSeqA : seqB !== trackedSeqB;
+		trackedSeqA = seqA;
+		trackedSeqB = seqB;
 		if (seqA === seqB) {
 			seqDeltaSince = 0;
-		} else if (seqDeltaSince === 0) {
+		} else if (seqDeltaSince === 0 || behindAdvanced) {
 			seqDeltaSince = now;
 		}
 	}
@@ -784,6 +797,14 @@ export function createReconciler() {
 		return false;
 	}
 
+	/** Whether the engines' compared fields are still changing, so that a
+	 * difference between them is a command on its way rather than a
+	 * divergence. */
+	function isSettling(now: number): boolean {
+		return now - comparedChangedAt < SETTLE_MS
+			&& (comparedDifferSince === 0 || now - comparedDifferSince < SETTLE_MAX_MS);
+	}
+
 	/** Compute sync status based on current state + elapsed time. */
 	function computeStatus(now: number): SyncStatus {
 		let hasA = stateA !== null && connectedA;
@@ -814,8 +835,7 @@ export function createReconciler() {
 		// even during recovery so auto-reconcile can re-push if needed.
 		// A difference while either engine is still changing is a command
 		// propagating, not a divergence.
-		const settling = now - comparedChangedAt < SETTLE_MS
-			&& (comparedDifferSince === 0 || now - comparedDifferSince < SETTLE_MAX_MS);
+		const settling = isSettling(now);
 
 		if (!settling && hasCriticalMismatch()) return 'mismatch';
 		if (recovering) return 'recovering';
@@ -862,6 +882,7 @@ export function createReconciler() {
 		updateHeldAuthority(now);
 
 		tickedStatus = computeStatus(now);
+		tickedSettling = isSettling(now);
 	}
 
 	/**
@@ -905,6 +926,7 @@ export function createReconciler() {
 		updateHeldAuthority(now);
 		// Re-evaluate status
 		tickedStatus = computeStatus(now);
+		tickedSettling = isSettling(now);
 	}
 
 	function setRecovering(value: boolean) {
@@ -1036,6 +1058,11 @@ export function createReconciler() {
 		},
 		get health() {
 			return health;
+		},
+		/** True while the engines' compared fields are still changing: a
+		 * difference between them then is a command propagating. */
+		get settling() {
+			return tickedSettling;
 		},
 		get engineHealth() {
 			return engineHealthDerived;

@@ -16,6 +16,7 @@
 		apiCall,
 	} from '$lib/api/switch-api';
 	import { GraphicsPublisher } from '$lib/graphics/publisher';
+	import { coalesce } from '$lib/util/coalesce';
 	import { notify } from '$lib/state/notifications.svelte';
 	import { builtinTemplates } from '$lib/graphics/templates';
 	import { ICON_LAYERS, renderIcon } from '$lib/icons';
@@ -403,13 +404,15 @@
 		}
 	}
 
-	async function handleSequenceSpeed(id: number, speed: number) {
+	// The speed slider sends its latest value per layer, not one request
+	// per input event.
+	const handleSequenceSpeed = coalesce(async (id: number, speed: number) => {
 		try {
 			await graphicsSequenceSetSpeed(id, speed);
 		} catch {
 			notify('error', 'Failed to set speed');
 		}
-	}
+	}, 50, (id) => String(id));
 
 	let dskFadeDurationInput = $state(1000);
 	$effect(() => {

@@ -2,7 +2,7 @@
 	import type { ControlRoomState, GraphicsLayerState } from '$lib/api/types';
 	import type { FastControl } from '$lib/transport/fast-control';
 	import { graphicsSetRect, apiCall } from '$lib/api/switch-api';
-	import { throttle } from '$lib/util/throttle';
+	import { coalesce } from '$lib/util/coalesce';
 
 	interface Props {
 		state: ControlRoomState;
@@ -45,9 +45,12 @@
 		return Math.round(val / 2) * 2;
 	}
 
-	const throttledUpdate = throttle((layerId: number, rect: { x: number; y: number; width: number; height: number }) => {
-		apiCall(graphicsSetRect(layerId, rect), 'Update layer');
-	}, 50);
+	/** REST fallback while dragging: latest rect per layer, one request in flight. */
+	const throttledUpdate = coalesce((layerId: number, rect: { x: number; y: number; width: number; height: number }) => {
+		const p = graphicsSetRect(layerId, rect);
+		apiCall(p, 'Update layer');
+		return p;
+	}, 50, (layerId) => String(layerId));
 
 	function handlePointerDown(e: PointerEvent, layer: GraphicsLayerState, type: 'move' | 'resize', corner?: Corner) {
 		e.preventDefault();

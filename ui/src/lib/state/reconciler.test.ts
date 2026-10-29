@@ -205,6 +205,79 @@ describe('createReconciler', () => {
 		}
 	});
 
+	// Each command of a drag carries its own seq. An engine further away
+	// applies every one of them a little later, so the two seqs differ at
+	// every moment of the drag although neither engine misses a command.
+	it('does not report lagging while the engine behind keeps applying commands', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		const at = (level: number) => makeState({
+			lastCommandSeq: level,
+			audioChannels: { cam1: { level, trim: 0, muted: false, afv: false } as never },
+		});
+		r.ingest('A', at(0));
+		r.ingest('B', at(0));
+		const seen = new Set<string>();
+		for (let level = 1; level <= 40; level++) {
+			r.ingest('A', at(level));
+			vi.advanceTimersByTime(60);
+			r.tick();
+			seen.add(r.health.status);
+			r.ingest('B', at(level - 1));
+			vi.advanceTimersByTime(60);
+			r.tick();
+			seen.add(r.health.status);
+		}
+		expect([...seen]).toEqual(['synced']);
+	});
+
+	it('reports lagging once the engine behind stops applying commands', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		r.ingest('A', makeState({ lastCommandSeq: 1 }));
+		r.ingest('B', makeState({ lastCommandSeq: 1 }));
+		for (let seq = 2; seq <= 4; seq++) {
+			r.ingest('A', makeState({ lastCommandSeq: seq }));
+			r.ingest('B', makeState({ lastCommandSeq: seq - 1 }));
+			vi.advanceTimersByTime(100);
+		}
+		// Engine A keeps going; engine B stays at 3.
+		for (let seq = 5; seq <= 12; seq++) {
+			r.ingest('A', makeState({ lastCommandSeq: seq }));
+			vi.advanceTimersByTime(100);
+			r.tick();
+		}
+		expect(r.health.status).not.toBe('synced');
+	});
+
+	// The page hides the audio drift warning while the engines settle: a
+	// fader dragged on both shows a level difference at nearly every moment.
+	it('reports settling while a drag changes the engines and not once they hold still', () => {
+		vi.useFakeTimers();
+		const r = createReconciler();
+		const at = (level: number) => makeState({
+			lastCommandSeq: level,
+			audioChannels: { cam1: { level, trim: 0, muted: false, afv: false } as never },
+		});
+		r.ingest('A', at(0));
+		r.ingest('B', at(0));
+		for (let level = 1; level <= 40; level++) {
+			r.ingest('A', at(level));
+			vi.advanceTimersByTime(60);
+			r.tick();
+			expect(r.settling).toBe(true);
+			r.ingest('B', at(level - 1));
+			vi.advanceTimersByTime(60);
+			r.tick();
+			expect(r.settling).toBe(true);
+		}
+		// Engine B never gets the last level: a real drift, reported.
+		vi.advanceTimersByTime(SETTLE_MS);
+		r.tick();
+		expect(r.settling).toBe(false);
+		expect(r.health.status).not.toBe('synced');
+	});
+
 	// SCTE-35 start and log times come from each engine's clock.
 	it('does not report SCTE-35 event timestamps as a divergence', () => {
 		vi.useFakeTimers();
