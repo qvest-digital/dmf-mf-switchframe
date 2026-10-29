@@ -145,6 +145,12 @@ type Engine struct {
 	latestYUVB  []byte
 	firstOutput bool // true after the first frame has been output
 
+	// Per side (0 from, 1 to): whether the side has delivered a frame in
+	// this transition, and when it last did (the start until then). A fill
+	// from IngestFillFrame touches neither; ReblendStalled reads both.
+	delivered [2]bool
+	idleSince [2]time.Time
+
 	// Frame dimensions (set on first decode)
 	width  int
 	height int
@@ -433,6 +439,7 @@ func (e *Engine) Start(from, to string, ttype Type, durationMs int) error {
 	e.decoderB = decB
 	e.latestYUVA = nil
 	e.latestYUVB = nil
+	e.resetSides()
 
 	// Pre-initialize blender from hint dimensions if available.
 	// This eliminates output gaps when ALL warmup decodes return EAGAIN
@@ -652,6 +659,7 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 	}
 
 	e.lastFrameAt = time.Now()
+	e.noteDelivered(isFrom, e.lastFrameAt)
 
 	// Snapshot the decoder pointer for use outside the lock.
 	// Each source (A/B) has its own decoder so concurrent decodes don't conflict.
@@ -790,6 +798,78 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 // Skips H.264 decode — stores YUV directly and triggers blend. The frame is
 // scaled to the engine's resolution if dimensions don't match.
 func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int, pts int64) {
+	e.ingestRaw(sourceKey, yuv, width, height, pts, false)
+}
+
+// IngestFillFrame is IngestRawFrame for a frame that stands in for one the
+// side has not delivered: it blends like one, but the side still counts as
+// having delivered nothing (see ReblendStalled).
+func (e *Engine) IngestFillFrame(sourceKey string, yuv []byte, width, height int, pts int64) {
+	e.ingestRaw(sourceKey, yuv, width, height, pts, true)
+}
+
+// ReblendStalled keeps a transition moving while side has delivered no
+// frame for after, measured from its last frame or from the start. A side
+// that has delivered one in this transition is blended again with the
+// frame held for it: a source slower than after, or one that has stopped,
+// keeps its last picture. needFill reports a stalled side that has
+// delivered nothing, which only a fill from IngestFillFrame can stand in
+// for.
+func (e *Engine) ReblendStalled(side string, after time.Duration, pts int64) (reblended, needFill bool) {
+	e.mu.Lock()
+	isFrom := side == e.fromSource
+	if e.state != StateActive || side == "" || (!isFrom && side != e.toSource) {
+		e.mu.Unlock()
+		return false, false
+	}
+	i := sideIndex(isFrom)
+	now := time.Now()
+	if now.Sub(e.idleSince[i]) < after {
+		e.mu.Unlock()
+		return false, false
+	}
+	held := e.latestYUVB
+	if isFrom {
+		held = e.latestYUVA
+	}
+	if !e.delivered[i] || held == nil {
+		e.mu.Unlock()
+		return false, true
+	}
+	if isFrom && e.transitionType != FTB && e.transitionType != FTBReverse {
+		// Only a frame of the side it goes to draws one; the frame held
+		// here is what the next one blends from.
+		e.mu.Unlock()
+		return false, false
+	}
+	e.lastFrameAt = now
+	e.blendAndOutput(isFrom, pts)
+	return true, false
+}
+
+func sideIndex(isFrom bool) int {
+	if isFrom {
+		return 0
+	}
+	return 1
+}
+
+// resetSides marks both sides as having delivered nothing yet. Caller holds
+// e.mu.
+func (e *Engine) resetSides() {
+	now := time.Now()
+	e.delivered = [2]bool{}
+	e.idleSince = [2]time.Time{now, now}
+}
+
+// noteDelivered records a frame a side delivered. Caller holds e.mu.
+func (e *Engine) noteDelivered(isFrom bool, now time.Time) {
+	i := sideIndex(isFrom)
+	e.delivered[i] = true
+	e.idleSince[i] = now
+}
+
+func (e *Engine) ingestRaw(sourceKey string, yuv []byte, width, height int, pts int64, fill bool) {
 	ingestStart := time.Now()
 	defer func() {
 		dur := time.Since(ingestStart).Nanoseconds()
@@ -812,6 +892,9 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 	}
 
 	e.lastFrameAt = time.Now()
+	if !fill {
+		e.noteDelivered(isFrom, e.lastFrameAt)
+	}
 
 	// Lazy-init blender from this frame's dimensions if not yet set.
 	if e.width == 0 {
@@ -1367,6 +1450,7 @@ func (e *Engine) StartSync(from, to string, ttype Type, durationMs int) {
 	e.toSource = to
 	e.latestYUVA = nil
 	e.latestYUVB = nil
+	e.resetSides()
 
 	// Initialize blender from hint dimensions.
 	if e.config.HintWidth > 0 && e.config.HintHeight > 0 {

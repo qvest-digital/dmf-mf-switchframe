@@ -54,6 +54,7 @@ type programStall struct {
 	// so holding a reference costs that copy and keeps these pixels intact.
 	held      *ProcessingFrame
 	heldEpoch uint64
+	heldAt    time.Time
 	stalled   bool
 	// blackAfter is how long a stall shows the held frame before black;
 	// sourceLossTimeout when zero.
@@ -78,6 +79,7 @@ func (st *programStall) noteFrame(pf *ProcessingFrame, sourceKey string, epoch u
 		keep.Ref()
 		st.held = &keep
 		st.heldEpoch = epoch
+		st.heldAt = now
 	}
 	resumed = st.stalled
 	st.stalled = false
@@ -245,14 +247,17 @@ func (s *Switcher) fillStep(now time.Time, period time.Duration, seenEpoch *uint
 }
 
 // feedStalledTransition keeps a CPU transition running when one of its
-// sources has delivered nothing for stallAfter. The engine blends only once
-// it has a frame from the source it leaves, and a mix, dip or wipe only on a
-// frame of the source it goes to, so a stalled side otherwise stops its
-// output and it never completes. The side it leaves gets the held program
-// frame (black once sourceLossTimeout has passed), the side it goes to gets
-// black, once per period; the engine's own output then reaches the pipeline
-// as usual. The GPU transition path blends from its own source cache and is
-// left alone.
+// sides has delivered no video to the engine for stallAfter. The engine
+// blends only once it has a frame of the side it leaves, and a mix, dip or
+// wipe only on a frame of the side it goes to, so a stalled side otherwise
+// stops its output and it never completes. A side that has delivered a
+// frame in this transition is blended again with that frame, so a live
+// source slower than stallAfter keeps its picture. A side that has
+// delivered nothing gets a fill once per period: the one it leaves the held
+// program frame (black once blackAfter has passed since the program's last
+// frame), the one it goes to black. The engine's own output then reaches
+// the pipeline as usual. The GPU transition path blends from its own source
+// cache and is left alone.
 func (s *Switcher) feedStalledTransition(hs *hotState, now time.Time, period time.Duration) {
 	engine := hs.transEngine
 	if engine == nil || engine.State() != transition.StateActive {
@@ -261,34 +266,30 @@ func (s *Switcher) feedStalledTransition(hs *hotState, now time.Time, period tim
 	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
 		return
 	}
-	stalled := func(key string) (bool, time.Duration) {
-		ago := s.health.lastFrameAgoMs(key)
-		if ago < 0 {
-			return true, sourceLossTimeout
-		}
-		d := time.Duration(ago) * time.Millisecond
-		return d >= stallAfter(period), d
-	}
+	// A monotonic 90 kHz clock: the engine orders its output by PTS, and the
+	// processing loop renumbers that output like any program frame.
+	pts := now.UnixNano() * 9 / 100000
 	from, to := engine.FromSource(), engine.ToSource()
-	if from != "" {
-		if ok, since := stalled(from); ok {
-			s.feedTransitionSide(engine, from, from == hs.programSource && since < s.stall.blackAfterOr(sourceLossTimeout), now)
-		}
-	}
-	if to != "" {
-		if ok, _ := stalled(to); ok {
-			s.feedTransitionSide(engine, to, false, now)
+	for _, side := range []string{from, to} {
+		reblended, needFill := engine.ReblendStalled(side, stallAfter(period), pts)
+		switch {
+		case reblended:
+			s.stallTransitionFeeds.Add(1)
+		case needFill:
+			s.feedTransitionSide(engine, side, side == from && side == hs.programSource, now, pts)
 		}
 	}
 }
 
-// feedTransitionSide hands the engine one frame for side: the held program
-// frame when useHeld and one is held for the current epoch, else black.
-func (s *Switcher) feedTransitionSide(engine *transition.Engine, side string, useHeld bool, now time.Time) {
+// feedTransitionSide hands the engine one fill for side: the held program
+// frame when useHeld, one is held for the current epoch and it is younger
+// than blackAfter, else black.
+func (s *Switcher) feedTransitionSide(engine *transition.Engine, side string, useHeld bool, now time.Time, pts int64) {
 	st := &s.stall
 	var frame *ProcessingFrame
 	st.mu.Lock()
-	if useHeld && st.held != nil && st.heldEpoch == s.programEpoch.Load() {
+	if useHeld && st.held != nil && st.heldEpoch == s.programEpoch.Load() &&
+		now.Sub(st.heldAt) < st.blackAfterOr(sourceLossTimeout) {
 		keep := *st.held
 		keep.Ref()
 		frame = &keep
@@ -299,9 +300,7 @@ func (s *Switcher) feedTransitionSide(engine *transition.Engine, side string, us
 	}
 	defer frame.ReleaseYUV()
 	s.stallTransitionFeeds.Add(1)
-	// A monotonic 90 kHz clock: the engine orders its output by PTS, and the
-	// processing loop renumbers that output like any program frame.
-	engine.IngestRawFrame(side, frame.Data, frame.Width, frame.Height, now.UnixNano()*9/100000)
+	engine.IngestFillFrame(side, frame.Data, frame.Width, frame.Height, pts)
 }
 
 // blackAfterOr returns blackAfter, or def when it is not set.

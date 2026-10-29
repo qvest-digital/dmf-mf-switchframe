@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -414,20 +415,34 @@ func TestProgramStall_NoFillQueuedBehindASlowPipeline(t *testing.T) {
 // feedLive delivers frames of luma y from key at the pipeline rate until
 // the returned stop is called.
 func (r *stallRig) feedLive(key string, y byte) (stop func()) {
+	return r.feedEvery(key, y, r.sw.framePeriod())
+}
+
+// feedEvery delivers a frame of luma y from key every interval until the
+// returned stop is called.
+func (r *stallRig) feedEvery(key string, y byte, every time.Duration) (stop func()) {
+	pts := int64(5_000_000)
+	return r.every(every, func() {
+		r.send(key, y, pts)
+		pts += r.sw.framePTSTicks()
+	})
+}
+
+// every runs fn every interval on its own goroutine until the returned stop
+// is called.
+func (r *stallRig) every(interval time.Duration, fn func()) (stop func()) {
 	done := make(chan struct{})
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		pts := int64(5_000_000)
-		tick := time.NewTicker(r.sw.framePeriod())
+		tick := time.NewTicker(interval)
 		defer tick.Stop()
 		for {
 			select {
 			case <-done:
 				return
 			case <-tick.C:
-				r.send(key, y, pts)
-				pts += r.sw.framePTSTicks()
+				fn()
 			}
 		}
 	}()
@@ -506,4 +521,52 @@ func TestTransitionStall_NothingFedBetweenLiveSources(t *testing.T) {
 	require.NoError(t, r.sw.StartTransition(context.Background(), "cam2", "mix", 500, ""))
 	r.waitProgram(t, "cam2")
 	require.Zero(t, r.sw.stallTransitionFeeds.Load())
+}
+
+// A live source slower than the stall threshold (slides, a still, a camera
+// that sends only on change) is not stalled between its frames: a mix to it
+// blends towards its last picture and never mixes black in.
+func TestTransitionStall_SlowLiveToSourceKeepsItsPicture(t *testing.T) {
+	r := newTransitionRig(t)
+	stop1 := r.feedLive("cam1", 200)
+	defer stop1()
+	stop2 := r.feedEvery("cam2", 50, 200*time.Millisecond)
+	defer stop2()
+	time.Sleep(300 * time.Millisecond)
+
+	start := time.Now()
+	require.NoError(t, r.sw.StartTransition(context.Background(), "cam2", "mix", 1000, ""))
+	r.waitProgram(t, "cam2")
+
+	out := r.since(start)
+	var blended, darker int
+	for _, o := range out {
+		switch {
+		case o.y < 50:
+			darker++
+		case o.y > 50 && o.y < 200:
+			blended++
+		}
+	}
+	require.Greater(t, blended, 10, "the mix shows pictures between cam1's and cam2's")
+	require.Zero(t, darker, "%d of %d frames are darker than both sources: black mixed in", darker, len(out))
+	requireMonotonicPTS(t, r.all())
+}
+
+// A source whose video stops while its audio keeps flowing is stalled: the
+// mix to it runs to black and completes rather than waiting for a picture.
+func TestTransitionStall_VideoStalledWhileAudioFlows(t *testing.T) {
+	r := newTransitionRig(t)
+	stop1 := r.feedLive("cam1", 200)
+	defer stop1()
+	r.feed("cam2", 50, 3, 90000)
+	audio := r.every(20*time.Millisecond, func() {
+		r.sw.handleAudioFrame("cam2", &media.AudioFrame{Data: make([]byte, 64), SampleRate: 48000, Channels: 2})
+	})
+	defer audio()
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, r.sw.StartTransition(context.Background(), "cam2", "mix", 500, ""))
+	r.waitProgram(t, "cam2")
+	require.Greater(t, r.sw.stallTransitionFeeds.Load(), int64(0))
 }
