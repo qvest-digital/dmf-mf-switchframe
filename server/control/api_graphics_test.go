@@ -996,3 +996,63 @@ func TestGraphicsImport_RefusedWhileHTML5Bound(t *testing.T) {
 	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
 	require.Equal(t, id, comp.Status().Layers[0].ID)
 }
+
+// The graphics panel of a UI served by one engine sends every layer
+// mutation to the other engine as well, cross-origin: each one has to pass
+// its preflight and then reach its route there. Template, field, animation
+// and fly edits all travel as PATCH /api/graphics/{id}.
+func TestGraphicsMutations_CrossOrigin(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	handler := CORSMiddleware(nil)(api.Mux())
+	const origin = "https://engine-a.example.com"
+
+	send := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		pre := httptest.NewRequest(http.MethodOptions, path, nil)
+		pre.Header.Set("Origin", origin)
+		pre.Header.Set("Access-Control-Request-Method", method)
+		pre.Header.Set("Access-Control-Request-Headers", "authorization,content-type")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, pre)
+		require.Equal(t, http.StatusNoContent, rec.Code, "preflight %s %s", method, path)
+		require.Contains(t, strings.Split(strings.ReplaceAll(rec.Header().Get("Access-Control-Allow-Methods"), " ", ""), ","), method,
+			"preflight %s %s", method, path)
+
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Content-Type", "application/json")
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		require.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"), "%s %s", method, path)
+		require.Less(t, rec.Code, 300, "%s %s: %d %s", method, path, rec.Code, rec.Body.String())
+		return rec
+	}
+
+	var created map[string]int
+	require.NoError(t, json.NewDecoder(send(http.MethodPost, "/api/graphics", "").Body).Decode(&created))
+	first := created["id"]
+	require.Equal(t, 0, first, "the first layer of an empty compositor is #0")
+	require.NoError(t, json.NewDecoder(send(http.MethodPost, "/api/graphics", "").Body).Decode(&created))
+	second := created["id"]
+
+	layer := fmt.Sprintf("/api/graphics/%d", first)
+	send(http.MethodPatch, layer, `{"config":{"template":"network-bug","fields":{}}}`)
+	send(http.MethodPatch, layer, `{"config":{"template":"network-bug","fields":{"text":"LIVE"}}}`)
+	send(http.MethodPut, "/api/graphics/order", fmt.Sprintf(`{"ids":[%d,%d]}`, second, first))
+	frame, err := json.Marshal(map[string]any{"width": 4, "height": 4, "template": "network-bug", "rgba": make([]byte, 4*4*4)})
+	require.NoError(t, err)
+	send(http.MethodPost, layer+"/frame", string(frame))
+	send(http.MethodPost, layer+"/on", `{}`)
+	send(http.MethodPost, layer+"/off", `{}`)
+	exported := send(http.MethodGet, "/api/graphics/export", "").Body.String()
+	send(http.MethodDelete, fmt.Sprintf("/api/graphics/%d", second), "")
+	send(http.MethodPost, "/api/graphics/import", exported)
+
+	layers := comp.Status().Layers
+	require.Len(t, layers, 2)
+	for _, l := range layers {
+		if l.ID == first {
+			require.JSONEq(t, `{"template":"network-bug","fields":{"text":"LIVE"}}`, string(l.Config))
+		}
+	}
+}
