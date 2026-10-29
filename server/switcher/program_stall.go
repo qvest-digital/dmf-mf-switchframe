@@ -164,6 +164,13 @@ func (s *Switcher) fillStep(now time.Time, period time.Duration, seenEpoch *uint
 		return period
 	}
 
+	// Frames waiting for the pipeline, real or filled, mean the pipeline
+	// is behind, not the source: filling now would evict real frames from
+	// the queue and put an older picture after newer ones.
+	if len(s.videoProcCh) > 0 {
+		return period
+	}
+
 	// A new program epoch (a cut, a completed transition) gives the new
 	// source stallAfter of its own before anything is filled, so
 	// no filled frame can land before its first frame.
@@ -178,6 +185,11 @@ func (s *Switcher) fillStep(now time.Time, period time.Duration, seenEpoch *uint
 	since := st.lastFrame
 	if st.epoch != epoch || since.Before(*epochSince) {
 		since = *epochSince
+	}
+	// A frame counts from when it was queued, not from when the pipeline
+	// got to it.
+	if enq := time.Unix(0, s.lastEnqueueNano.Load()); enq.After(since) {
+		since = enq
 	}
 	stallAt := since.Add(stallAfter(period))
 	if now.Before(stallAt) {

@@ -659,6 +659,9 @@ type Switcher struct {
 	// stall feeds the pipeline while the program source delivers nothing.
 	stall           programStall
 	stallFillFrames atomic.Int64
+	// lastEnqueueNano is when a frame other than a fill was last queued for
+	// the pipeline: it arrived then, however long the pipeline takes.
+	lastEnqueueNano atomic.Int64
 	// transitionBlendBuf is the persistent dst for engine.BlendRawInto on
 	// the sync-loop transition path. Grown on first tick and reused every
 	// tick thereafter — kills the ~3 MB/frame result allocation that
@@ -2126,6 +2129,9 @@ func (s *Switcher) broadcastWithCaptions(frame *media.VideoFrame) {
 // enqueueVideoWork sends a work item to the async video processing goroutine
 // with newest-wins drop policy when the channel is full.
 func (s *Switcher) enqueueVideoWork(work videoProcWork) {
+	if !work.fill {
+		s.lastEnqueueNano.Store(time.Now().UnixNano())
+	}
 	select {
 	case s.videoProcCh <- work:
 	default:

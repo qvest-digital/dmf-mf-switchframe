@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,8 @@ type stallRig struct {
 	sw  *Switcher
 	mu  sync.Mutex
 	out []stallOut
+	// hook runs on the processing goroutine before a frame is recorded.
+	hook atomic.Pointer[func(*ProcessingFrame)]
 }
 
 // newStallRig builds a switcher with a pipeline whose raw sink records
@@ -34,6 +37,9 @@ func newStallRig(t *testing.T, blackAfter time.Duration) *stallRig {
 		return transition.NewMockEncoder(), nil
 	})
 	r.sw.SetRawVideoSink(func(pf *ProcessingFrame) {
+		if h := r.hook.Load(); h != nil {
+			(*h)(pf)
+		}
 		r.mu.Lock()
 		r.out = append(r.out, stallOut{y: pf.Data[0], pts: pf.PTS, at: time.Now()})
 		r.mu.Unlock()
@@ -307,4 +313,100 @@ func TestProgramStall_CloseWhileFilling(t *testing.T) {
 			t.Fatal("filler goroutine still running after Close")
 		}
 	}
+}
+
+// A slow pipeline is not a stalled source: while the processing goroutine
+// is held up, frames the source delivered wait in the queue. Filling then
+// would evict those real frames and put an older picture after newer ones.
+func TestProgramStall_SlowPipelineIsNotASourceStall(t *testing.T) {
+	r := newStallRig(t, 10*time.Second)
+	var once sync.Once
+	hold := func(pf *ProcessingFrame) {
+		if pf.Data[0] == 30 {
+			once.Do(func() { time.Sleep(300 * time.Millisecond) })
+		}
+	}
+	r.hook.Store(&hold)
+	r.sw.RegisterSource("cam1", newTestRelay())
+	require.NoError(t, r.sw.Cut(context.Background(), "cam1"))
+
+	period := r.sw.framePeriod()
+	pts := int64(90000)
+	for y := byte(10); y < 90; y++ {
+		r.send("cam1", y, pts)
+		pts += r.sw.framePTSTicks()
+		time.Sleep(period)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	require.Zero(t, r.sw.stallFillFrames.Load(), "the source never stalled")
+	out := r.all()
+	for i := 1; i < len(out); i++ {
+		require.GreaterOrEqual(t, out[i].y, out[i-1].y, "frame %d shows an older picture after a newer one", i)
+	}
+}
+
+// A filled frame queued just before a transition starts never reaches the
+// pipeline: it would interleave with the transition's frames.
+func TestProgramStall_QueuedFillDroppedAtTransitionStart(t *testing.T) {
+	r := newStallRig(t, 10*time.Second)
+	r.sw.stopProgramStallFiller()
+	r.sw.RegisterSource("cam1", newTestRelay())
+	require.NoError(t, r.sw.Cut(context.Background(), "cam1"))
+	r.feed("cam1", 100, 2, 90000)
+	time.Sleep(50 * time.Millisecond)
+
+	setState := func(st State) {
+		r.sw.configMu.Lock()
+		r.sw.updateHotState(func(hs *hotState) { hs.state = st })
+		r.sw.configMu.Unlock()
+	}
+	fill := func(y byte) {
+		f := r.sw.pipelineBlack()
+		for i := range f.Data[:320*240] {
+			f.Data[i] = y
+		}
+		r.sw.enqueueVideoWork(videoProcWork{yuvFrame: f, epoch: r.sw.programEpoch.Load(), fill: true})
+	}
+
+	setState(StateTransitioning)
+	fill(77)
+	time.Sleep(100 * time.Millisecond)
+	setState(StateIdle)
+	fill(78)
+	require.Eventually(t, func() bool {
+		out := r.all()
+		return len(out) > 0 && out[len(out)-1].y == 78
+	}, time.Second, 5*time.Millisecond)
+	for _, o := range r.all() {
+		require.NotEqual(t, byte(77), o.y, "a fill queued during a transition reached the pipeline")
+	}
+}
+
+// During a real stall with a slow pipeline the filler does not queue more
+// than the pipeline takes: queued fills would only evict each other.
+func TestProgramStall_NoFillQueuedBehindASlowPipeline(t *testing.T) {
+	r := newStallRig(t, 10*time.Second)
+	r.sw.RegisterSource("cam1", newTestRelay())
+	require.NoError(t, r.sw.Cut(context.Background(), "cam1"))
+	r.feed("cam1", 100, 3, 90000)
+
+	var held atomic.Int32
+	slow := func(pf *ProcessingFrame) {
+		if held.Add(1) <= 3 {
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+	stallStart := time.Now()
+	r.hook.Store(&slow)
+	time.Sleep(1500 * time.Millisecond)
+	r.sw.stopProgramStallFiller()
+	time.Sleep(100 * time.Millisecond) // let the queue drain
+
+	fills := r.sw.stallFillFrames.Load()
+	require.Greater(t, fills, int64(5), "the source is stalled")
+	// Every frame since the stall is a fill; one that never came out was
+	// evicted from the queue.
+	reached := int64(len(r.since(stallStart)))
+	require.LessOrEqual(t, fills-reached, int64(1), "%d fills queued, %d reached the pipeline", fills, reached)
 }
