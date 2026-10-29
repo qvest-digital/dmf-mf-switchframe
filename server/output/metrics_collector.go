@@ -19,6 +19,9 @@ var (
 		"TS packets the output dropped because it could not keep up.", []string{"output"}, nil)
 	descOutputOverflows = prometheus.NewDesc("switchframe_output_overflows_total",
 		"Times an SRT caller's reconnect buffer overflowed, losing what it held.", []string{"output"}, nil)
+	descOutputMedia = prometheus.NewDesc("switchframe_output_media_seconds_total",
+		"Media time an output of timed frames (RTMP) has sent. Its rate is 1 while the destination keeps up and falls below 1 while it does not or the connection is down.",
+		[]string{"output"}, nil)
 	descOutputClients = prometheus.NewDesc("switchframe_output_clients",
 		"Clients connected to an SRT listener output.", []string{"output"}, nil)
 
@@ -50,7 +53,7 @@ func NewMetricsCollector(m *Manager) *MetricsCollector {
 func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		descOutputInfo, descOutputState, descOutputBytes, descOutputDropped, descOutputOverflows,
-		descOutputClients, descRecordingActive, descRecordingFailed, descRecordingBytes,
+		descOutputClients, descOutputMedia, descRecordingActive, descRecordingFailed, descRecordingBytes,
 		descRecordingDuration, descRecordingDropped,
 	} {
 		ch <- d
@@ -86,6 +89,9 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 
 	for _, d := range c.m.ListDestinations() {
 		output(d.ID, d.Config.Type, d.Config.Name, d.State, d.BytesWritten, d.DroppedPackets, d.OverflowCount, d.Connections)
+		if d.Config.Type == "rtmp" {
+			ch <- prometheus.MustNewConstMetric(descOutputMedia, prometheus.CounterValue, d.MediaSeconds, d.ID)
+		}
 	}
 	if srt := c.m.SRTOutputStatus(); srt.Active {
 		output("srt", "srt-"+srt.Mode, "", srt.State, srt.BytesWritten, srt.DroppedPackets, srt.OverflowCount, srt.Connections)

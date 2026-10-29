@@ -58,6 +58,7 @@ func TestMetricsCollector_Destinations(t *testing.T) {
 	}, f["switchframe_output_state"])
 	require.Equal(t, map[string]float64{id: 0}, f["switchframe_output_bytes_total"])
 	require.NotContains(t, f, "switchframe_output_clients", "an RTMP output has no clients")
+	require.Equal(t, map[string]float64{id: 0}, f["switchframe_output_media_seconds_total"])
 
 	for name, series := range f {
 		for labels := range series {

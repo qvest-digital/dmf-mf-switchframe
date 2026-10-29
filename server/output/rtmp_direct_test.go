@@ -523,3 +523,34 @@ func TestRTMPDirect_AudioWaitsForRebaseAfterReconnect(t *testing.T) {
 	r.handleAudio(&media.AudioFrame{PTS: 271920, Data: []byte{0x21, 0x10}})
 	require.Equal(t, int64(3), r.bytesWritten.Load())
 }
+
+// The media time sent follows the frames written: one second of 50 fps
+// frames is one second, and the time a reconnect kept the destination
+// down is not counted, so its rate falls below real time.
+func TestRTMPDirect_CountsMediaTime(t *testing.T) {
+	t.Parallel()
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://example.com/live/key"})
+	require.NoError(t, err)
+	r.connectFn = func(string) error { return nil }
+	r.state.Store(ptrTo(StateActive))
+	r.initialized.Store(true)
+
+	const frame = 1800 // 90 kHz ticks at 50 fps
+	pts := int64(90000)
+	for i := 0; i <= 50; i++ {
+		r.handleVideo(&media.VideoFrame{PTS: pts, IsKeyframe: i == 0, WireData: []byte{0x01}})
+		pts += frame
+	}
+	require.Equal(t, int64(90000), r.Status().MediaTicks, "50 steps of one frame")
+
+	// Down for two seconds, then back on a keyframe.
+	r.pendingIDR.Store(true)
+	pts += 2 * 90000
+	r.handleVideo(&media.VideoFrame{PTS: pts, IsKeyframe: true, WireData: []byte{0x01}})
+	r.handleVideo(&media.VideoFrame{PTS: pts + frame, WireData: []byte{0x01}})
+	require.Equal(t, int64(90000+frame), r.Status().MediaTicks, "the gap is not media sent")
+
+	// A source change can step the PTS back; that sends no media.
+	r.handleVideo(&media.VideoFrame{PTS: 1000, WireData: []byte{0x01}})
+	require.Equal(t, int64(90000+frame), r.Status().MediaTicks)
+}

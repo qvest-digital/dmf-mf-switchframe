@@ -452,6 +452,13 @@ type RTMPDirect struct {
 	reconnecting atomic.Bool
 	pendingIDR   atomic.Bool
 	bytesWritten atomic.Int64
+	// mediaTicks is the media time sent on the connections, in 90 kHz
+	// ticks: the PTS step between consecutive video frames written. A
+	// destination that keeps up sends one second of it per second;
+	// lastVideoPTS and haveLastPTS belong to writeLoop.
+	mediaTicks   atomic.Int64
+	lastVideoPTS int64
+	haveLastPTS  bool
 	videoDropped atomic.Int64
 	audioDropped atomic.Int64
 	startedAt    time.Time
@@ -596,6 +603,7 @@ func (r *RTMPDirect) Status() AdapterStatus {
 	return AdapterStatus{
 		State:        state,
 		BytesWritten: r.bytesWritten.Load(),
+		MediaTicks:   r.mediaTicks.Load(),
 		StartedAt:    r.startedAt,
 		Error:        errStr,
 	}
@@ -692,11 +700,14 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		}
 		r.pendingIDR.Store(false)
 		r.ptsBase = frame.PTS // rebase for new connection
+		// The time the connection was down was not sent.
+		r.haveLastPTS = false
 	}
 
 	// In test mode, skip the C write call.
 	if r.connectFn != nil {
 		r.bytesWritten.Add(int64(len(frame.WireData)))
+		r.countMedia(frame.PTS)
 		return
 	}
 
@@ -730,6 +741,17 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 	}
 
 	r.bytesWritten.Add(int64(len(frame.WireData)))
+	r.countMedia(frame.PTS)
+}
+
+// countMedia adds the media time from the previous video frame written to
+// pts. A step backwards, as across a source change, adds nothing.
+func (r *RTMPDirect) countMedia(pts int64) {
+	if r.haveLastPTS && pts > r.lastVideoPTS {
+		r.mediaTicks.Add(pts - r.lastVideoPTS)
+	}
+	r.lastVideoPTS = pts
+	r.haveLastPTS = true
 }
 
 // handleAudio processes a single audio frame.
