@@ -1,6 +1,7 @@
 package output
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/prism/media"
 )
 
 func gatherOutput(t *testing.T, c prometheus.Collector) map[string]map[string]float64 {
@@ -69,6 +71,16 @@ func TestMetricsCollector_Destinations(t *testing.T) {
 	}
 }
 
+// statusFrameAdapter is a FrameAdapter that only reports a status.
+type statusFrameAdapter struct{ st AdapterStatus }
+
+func (a statusFrameAdapter) ID() string                         { return "status" }
+func (a statusFrameAdapter) WriteVideo(*media.VideoFrame) error { return nil }
+func (a statusFrameAdapter) WriteAudio(*media.AudioFrame) error { return nil }
+func (a statusFrameAdapter) Start(context.Context) error        { return nil }
+func (a statusFrameAdapter) Close() error                       { return nil }
+func (a statusFrameAdapter) Status() AdapterStatus              { return a.st }
+
 // An RTMP output's media time and dropped frames come from its adapter,
 // video and audio drops apart.
 func TestMetricsCollector_RTMPMediaAndDrops(t *testing.T) {
@@ -76,15 +88,12 @@ func TestMetricsCollector_RTMPMediaAndDrops(t *testing.T) {
 	defer func() { _ = m.Close() }()
 	id, err := m.AddDestination(DestinationConfig{Type: "rtmp", URL: "rtmp://example.com/live/key", Name: "stream"})
 	require.NoError(t, err)
-	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://example.com/live/key"})
-	require.NoError(t, err)
-	r.mediaTicks.Store(3 * 90000)
-	r.videoDropped.Store(7)
-	r.audioDropped.Store(2)
 	m.mu.Lock()
 	d := m.destinations[id]
 	d.mu.Lock()
-	d.frameAdapter = r
+	d.frameAdapter = statusFrameAdapter{st: AdapterStatus{
+		State: StateActive, MediaTicks: 3 * 90000, VideoDropped: 7, AudioDropped: 2,
+	}}
 	d.mu.Unlock()
 	m.mu.Unlock()
 
