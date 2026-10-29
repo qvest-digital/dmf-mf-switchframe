@@ -612,6 +612,9 @@ func (r *RTMPDirect) Close() error {
 		r.transcoder = nil
 	}
 
+	// Aborting a flush in flight fails that write, which records a write
+	// error; a destination stopped on purpose reports none.
+	r.lastError.Store(ptrTo(""))
 	r.state.Store(ptrTo(StateStopped))
 	return nil
 }

@@ -640,3 +640,18 @@ func TestRTMPDirect_AudioWaitsForRebaseAfterReconnect(t *testing.T) {
 	r.handleAudio(&media.AudioFrame{PTS: 271920, Data: []byte{0x21, 0x10}})
 	require.Equal(t, int64(3), r.bytesWritten.Load())
 }
+
+// Close aborts a flush in flight, which fails that write. A destination
+// stopped on purpose must not keep reporting the write error.
+func TestRTMPDirect_CloseClearsWriteError(t *testing.T) {
+	t.Parallel()
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://example.com/live/key"})
+	require.NoError(t, err)
+	require.NoError(t, r.Start(context.Background()))
+	r.lastError.Store(ptrTo("RTMP video write failed"))
+	require.NoError(t, r.Close())
+
+	st := r.RTMPStatusSnapshot()
+	require.Equal(t, string(StateStopped), st.State)
+	require.Empty(t, r.Status().Error)
+}
