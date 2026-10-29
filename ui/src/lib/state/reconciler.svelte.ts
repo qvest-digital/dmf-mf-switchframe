@@ -247,6 +247,24 @@ export const TRANSITION_LOCK_STALE_THRESHOLD_MS = 5_000;
  * stuck lock if the locked engine keeps reporting inTransition=true forever. */
 export const TRANSITION_LOCK_MAX_HOLD_MS = 10_000;
 
+/** Union of the engines' refused transition types, keeping the first
+ * engine's reason where both refuse one. Returns `current` itself when it
+ * already holds exactly that union, so an unchanged state keeps its identity. */
+export function unionUnavailable(
+	a: Record<string, string> | undefined,
+	b: Record<string, string> | undefined,
+	current: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+	if (!a && !b) return current;
+	const union: Record<string, string> = { ...(b ?? {}), ...(a ?? {}) };
+	const keys = Object.keys(union);
+	if (keys.length === 0) return current && Object.keys(current).length === 0 ? current : undefined;
+	if (current && Object.keys(current).length === keys.length && keys.every((k) => current[k] === union[k])) {
+		return current;
+	}
+	return union;
+}
+
 export function createReconciler() {
 	let stateA = $state<ControlRoomState | null>(null);
 	let stateB = $state<ControlRoomState | null>(null);
@@ -575,6 +593,14 @@ export function createReconciler() {
 			.filter((c): c is number => c !== undefined);
 		const clipCount = counts.length > 0 ? Math.min(...counts) : st.clipCount;
 		if (clipCount !== st.clipCount) st = { ...st, clipCount };
+		// Mutations go to both engines, so a transition one engine refuses
+		// would leave program diverged: offer only what every engine accepts.
+		const unavailableTransitions = unionUnavailable(
+			connectedA ? stateA?.unavailableTransitions : undefined,
+			connectedB ? stateB?.unavailableTransitions : undefined,
+			st.unavailableTransitions,
+		);
+		if (unavailableTransitions !== st.unavailableTransitions) st = { ...st, unavailableTransitions };
 		return engineBUrl && st.engineBUrl !== engineBUrl ? { ...st, engineBUrl } : st;
 	});
 

@@ -734,6 +734,8 @@ export interface ControlRoomState {
 	ftbActive: boolean;
 	ftbDurationMs?: number;
 	transitionAbortThreshold?: number;
+	/** Transition types this engine refuses, each with the reason. */
+	unavailableTransitions?: Record<string, string>;
 	dskFadeDurationMs?: number;
 	audioChannels?: Record<string, AudioChannel>;
 	masterLevel: number;
