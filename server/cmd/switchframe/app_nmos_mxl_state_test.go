@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zsiec/switchframe/server/nmos"
 )
@@ -220,6 +223,57 @@ func TestMXLNMOS_NullStateFileIsEmpty(t *testing.T) {
 	re.app.restoreMXLNMOS(t.Context())
 	if got := re.cam2V.FlowID(); got != nmosFlow {
 		t.Errorf("after a restart cam2 reads %q, want the connection saved after the null file", got)
+	}
+}
+
+// A controller's activation that arrives while a reconcile adoption of the
+// same receiver is being applied waits for it and then replaces it, so the
+// activation answered last is the one the reader, /active and the saved
+// state name: answered 200 and then overwritten by the adoption, a restart
+// would restore the peer's connection and /active would deny the
+// controller's.
+func TestMXLNMOS_ActivationDuringAdoptionWins(t *testing.T) {
+	const peerFlow = "3494dc19-22c2-4f00-865b-cdbeee7909f0"
+	dir := t.TempDir()
+	tt := newEngine(t, dir)
+	rx := rxID("cam2", "video")
+	tt.peer.mu.Lock()
+	tt.peer.active[rx] = `{"sender_id":"` + nmosSender + `","master_enable":true,
+		"activation":{"mode":"activate_immediate","requested_time":null,"activation_time":"1755192060:38206854"},
+		"transport_file":{"data":null,"type":null},
+		"transport_params":[{"mxl_domain_id":"` + nmosDomain + `","mxl_flow_id":"` + peerFlow + `"}]}`
+	tt.peer.mu.Unlock()
+	patched := make(chan int, 1)
+	tt.cam2V.onConnect = func(id string) {
+		if id != peerFlow {
+			return
+		}
+		// Forwarded, so nothing is queued for the peer and reconcile does
+		// not stand back for it.
+		go func() { patched <- tt.patch(t, rx, activationBody(nmosFlow), true) }()
+		select {
+		case <-patched:
+			patched <- http.StatusOK
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	if _, err := tt.app.reconcileMXLNMOS(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-patched; code != http.StatusOK {
+		t.Fatalf("PATCH: %d", code)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, mxlNMOSStateFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]savedActivation
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	reader, active, file := tt.cam2V.FlowID(), tt.active(t, rx).FlowID(), saved[rx].Active.FlowID()
+	if reader != nmosFlow || active != nmosFlow || file != nmosFlow {
+		t.Errorf("reader %s, /active %s, saved %s; want the controller's %s, activated last", reader, active, file, nmosFlow)
 	}
 }
 

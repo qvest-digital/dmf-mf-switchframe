@@ -267,13 +267,27 @@ func (s *MXLConnectionServer) ReceiverActive(id string) (MXLEndpoint, bool) {
 // activation callback, for state applied by other means, e.g. taken over
 // from a peer.
 func (s *MXLConnectionServer) SetReceiverActive(id string, active MXLEndpoint) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if st, ok := s.receivers[id]; ok {
-		st.active = active.clone()
-		st.staged = active.clone()
-		st.staged.Activation = Activation{}
+	s.UpdateReceiverActive(id, func(MXLEndpoint) (MXLEndpoint, bool) { return active, true })
+}
+
+// UpdateReceiverActive replaces a receiver's active state with what update
+// returns from the current one, or leaves it when update returns false.
+// update runs under the lock a PATCH of the receiver holds, so whatever it
+// applies or records cannot interleave with an activation.
+func (s *MXLConnectionServer) UpdateReceiverActive(id string, update func(cur MXLEndpoint) (MXLEndpoint, bool)) {
+	st := s.lookup("receivers", id)
+	if st == nil {
+		return
 	}
+	st.lock.Lock()
+	defer st.lock.Unlock()
+	next, ok := update(st.active.clone())
+	if !ok {
+		return
+	}
+	st.active = next.clone()
+	st.staged = next.clone()
+	st.staged.Activation = Activation{}
 }
 
 func (s *MXLConnectionServer) lookup(kind, id string) *mxlState {

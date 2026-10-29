@@ -825,28 +825,38 @@ func (a *App) reconcileMXLNMOS(ctx context.Context) (done bool, err error) {
 		if err != nil {
 			return false, err
 		}
-		mine, _ := n.conn.ReceiverActive(id)
-		if sameConnection(mine, peerActive) || !laterActivation(peerActive, mine) {
-			continue
-		}
-		n.mu.Lock()
-		_, queued := n.forward[id]
-		n.mu.Unlock()
-		if queued {
-			// This engine's own activation is on its way to the peer.
-			continue
-		}
 		peerActive.TransportParams[0].DomainID = nonEmptyPtr(n.domainID)
 		if !peerActive.MasterEnable {
 			peerActive.TransportParams[0].DomainID = nil
 		}
-		if err := a.applyMXLReceiver(ctx, n.receivers[id], peerActive, connectTimeout); err != nil {
-			slog.Warn("mxl nmos: peer connection not adopted", "receiver", id, "error", err)
+		// Compared, applied and recorded under the receiver's lock, so a
+		// controller's activation landing meanwhile is either compared
+		// against or replaces this adoption whole: the reader, /active and
+		// the saved state never name different connections.
+		adopted := false
+		n.conn.UpdateReceiverActive(id, func(mine nmos.MXLEndpoint) (nmos.MXLEndpoint, bool) {
+			if sameConnection(mine, peerActive) || !laterActivation(peerActive, mine) {
+				return mine, false
+			}
+			n.mu.Lock()
+			_, queued := n.forward[id]
+			n.mu.Unlock()
+			if queued {
+				// This engine's own activation is on its way to the peer.
+				return mine, false
+			}
+			if err := a.applyMXLReceiver(ctx, n.receivers[id], peerActive, connectTimeout); err != nil {
+				slog.Warn("mxl nmos: peer connection not adopted", "receiver", id, "error", err)
+				return mine, false
+			}
+			n.store.UpdateReceiverSubscription(id, peerActive.SenderID, peerActive.MasterEnable)
+			n.saveMXLActivation(id, peerActive)
+			adopted = true
+			return peerActive, true
+		})
+		if !adopted {
 			continue
 		}
-		n.conn.SetReceiverActive(id, peerActive)
-		n.store.UpdateReceiverSubscription(id, peerActive.SenderID, peerActive.MasterEnable)
-		n.saveMXLActivation(id, peerActive)
 		go a.publishMXLReceiver(id)
 		slog.Info("mxl nmos: adopted peer connection", "receiver", id, "flow", peerActive.FlowID())
 	}
