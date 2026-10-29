@@ -145,6 +145,13 @@ export const RECONNECT_MAX_MS = 4000;
  * network is down can hang in the QUIC handshake for longer than the
  * outage lasts; it is abandoned and dialled again. */
 export const CONNECT_TIMEOUT_MS = 4000;
+/** How long a transport has to stay up before its loss starts the
+ * backoff afresh. An engine that accepts a session and drops it at once
+ * would otherwise be dialled at the base delay for as long as it flaps. */
+export const RECONNECT_STABLE_MS = 10_000;
+/** Least time between two early dials of the sources waiting to
+ * reconnect, set off by another source of the pipeline coming up. */
+export const DIAL_WAITING_MIN_MS = 1000;
 
 /**
  * Whether the page has had a user gesture, which a browser requires before
@@ -183,6 +190,10 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	/** Pending reconnect of each source, and the attempts made since its
 	 * last transport delivered a catalog. */
 	const reconnects = new Map<string, { timer: ReturnType<typeof setTimeout> | null; attempts: number }>();
+	/** When each source's current transport delivered its catalog. */
+	const upSince = new Map<string, number>();
+	/** When waiting sources were last dialled early. */
+	let lastDialWaiting = -Infinity;
 	/** Deadline of each source's transport that has not delivered its
 	 * catalog yet. */
 	const connectDeadlines = new Map<string, ReturnType<typeof setTimeout>>();
@@ -269,12 +280,12 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			onTrackInfo(tracks: TrackInfo[]) {
 				const source = sources.get(key);
 				if (!source || destroyed || !current()) return;
-				// The transport is up: a later loss starts its backoff afresh,
-				// and the engine is reachable again, so every source still
-				// waiting dials now rather than at the end of its backoff.
+				// The transport is up, and the engine is reachable again, so
+				// every source still waiting dials now rather than at the end
+				// of its backoff. Its own backoff starts afresh only once it
+				// has stayed up: see transportLost.
 				clearConnectDeadline(key);
-				const r = reconnects.get(key);
-				if (r) r.attempts = 0;
+				upSince.set(key, Date.now());
 				dialWaiting();
 
 				// Notify once that MoQ is active (catalog received = WebTransport
@@ -418,6 +429,12 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		source.latestGroupID = 0;
 		try { source.videoDecoder.flush(); } catch { /* decoder may be in error state */ }
 		for (const buf of source.buffers.values()) buf.clear();
+		const up = upSince.get(key);
+		upSince.delete(key);
+		if (up !== undefined && Date.now() - up >= RECONNECT_STABLE_MS) {
+			const r = reconnects.get(key);
+			if (r) r.attempts = 0;
+		}
 		scheduleReconnect(key);
 	}
 
@@ -450,14 +467,24 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	/** Dial at once every source waiting for a reconnect: the browser
 	 * reports the network back, or a transport of this pipeline came up. */
 	function dialWaiting(): void {
+		const now = Date.now();
+		if (now - lastDialWaiting < DIAL_WAITING_MIN_MS) return;
+		lastDialWaiting = now;
 		for (const [key, r] of reconnects) {
 			if (!r.timer) continue;
 			clearTimeout(r.timer);
 			r.timer = null;
-			r.attempts = 0;
 			const source = sources.get(key);
 			if (source && wanted.has(key) && !source.transport) openTransport(key, source);
 		}
+	}
+
+	/** The browser reports the network back: every waiting source dials
+	 * now, its backoff started afresh. */
+	function handleOnline(): void {
+		for (const r of reconnects.values()) r.attempts = 0;
+		lastDialWaiting = -Infinity;
+		dialWaiting();
 	}
 
 	/** Compare two avcC descriptions for byte equality. */
@@ -563,6 +590,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		wanted.delete(key);
 		cancelReconnect(key);
 		clearConnectDeadline(key);
+		upSince.delete(key);
 
 		// Clean up stall tracking
 		lastFrameTime.delete(key);
@@ -641,6 +669,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		wanted.delete(key);
 		cancelReconnect(key);
 		clearConnectDeadline(key);
+		upSince.delete(key);
 		// A disconnected source receives no frames, so it must not read as
 		// stalled; connectSource re-arms it.
 		if (lastFrameTime.delete(key)) disconnectedWithFrames.add(key);
@@ -755,9 +784,10 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		stopStallDetection();
 		document.removeEventListener("visibilitychange", handleVisibilityChange);
 		window.removeEventListener("focus", handleWindowFocus);
-		window.removeEventListener("online", dialWaiting);
+		window.removeEventListener("online", handleOnline);
 		for (const key of Array.from(reconnects.keys())) cancelReconnect(key);
 		for (const key of Array.from(connectDeadlines.keys())) clearConnectDeadline(key);
+		upSince.clear();
 		wanted.clear();
 		for (const key of Array.from(sources.keys())) {
 			removeSource(key);
@@ -818,7 +848,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 	document.addEventListener("visibilitychange", handleVisibilityChange);
 	window.addEventListener("focus", handleWindowFocus);
-	window.addEventListener("online", dialWaiting);
+	window.addEventListener("online", handleOnline);
 
 	/** Track which sources should be unmuted (set before audio decoder is ready). */
 	const unmutedSources = new Set<string>();

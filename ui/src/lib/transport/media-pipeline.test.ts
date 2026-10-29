@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createMediaPipeline, RECONNECT_BASE_MS, RECONNECT_MAX_MS, CONNECT_TIMEOUT_MS, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
+import { createMediaPipeline, RECONNECT_BASE_MS, RECONNECT_MAX_MS, CONNECT_TIMEOUT_MS, RECONNECT_STABLE_MS, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
 import { isSourceStalled, clearAllStalls, clearSourceStall } from './source-errors.svelte';
 
 // Mock all Prism modules since they use Web Workers, WebCodecs,
@@ -1113,7 +1113,7 @@ describe('MediaPipeline audio', () => {
 			pipeline.destroy();
 		});
 
-		it('backs off between failed attempts and starts afresh once a catalog arrives', () => {
+		it('backs off between failed attempts and starts afresh once a transport stayed up', () => {
 			const pipeline = createMediaPipeline();
 			pipeline.addSource('cam1');
 			pipeline.connectSource('cam1');
@@ -1133,7 +1133,12 @@ describe('MediaPipeline audio', () => {
 				vi.advanceTimersByTime(RECONNECT_MAX_MS);
 			}
 			expectNextAfter(RECONNECT_MAX_MS);
+			// Up, but lost before it stayed up: the backoff goes on.
 			cb(mockTransports.length - 1).onTrackInfo([]);
+			expectNextAfter(RECONNECT_MAX_MS);
+			// Up for RECONNECT_STABLE_MS: its loss starts afresh.
+			cb(mockTransports.length - 1).onTrackInfo([]);
+			vi.advanceTimersByTime(RECONNECT_STABLE_MS);
 			expectNextAfter(RECONNECT_BASE_MS);
 			pipeline.destroy();
 		});
@@ -1258,6 +1263,89 @@ describe('MediaPipeline audio', () => {
 			(of()[1].callbacks as unknown as Callbacks).onTrackInfo([]);
 			vi.advanceTimersByTime(CONNECT_TIMEOUT_MS * 3);
 			expect(of().length).toBe(2);
+			warn.mockRestore();
+			pipeline.destroy();
+		});
+
+		// An engine that accepts a session, delivers the catalog and drops
+		// it: every catalog of one source dialled every other at once with
+		// its backoff reset, so the page kept dialling at the base delay.
+		it('does not keep dialling at the base delay against a flapping engine', () => {
+			const pipeline = createMediaPipeline();
+			const keys = ['f1', 'f2', 'f3'];
+			for (const k of keys) { pipeline.addSource(k); pipeline.connectSource(k); }
+			const of = (k: string) => mockTransports.filter((t) => t.key === k);
+			const handled = new Set<unknown>();
+			for (let t = 0; t < 20_000; t += 100) {
+				// Every new transport comes up and is dropped within 100 ms.
+				for (const k of keys) {
+					const last = of(k).at(-1)!;
+					if (handled.has(last)) continue;
+					handled.add(last);
+					const c = last.callbacks as unknown as Callbacks;
+					c.onTrackInfo([]);
+					c.onClose();
+				}
+				vi.advanceTimersByTime(100);
+			}
+			// At the base delay each source would dial about 40 times in
+			// 20 s; with the backoff growing to its cap and early dials at
+			// most once a second, far fewer.
+			for (const k of keys) expect(of(k).length).toBeLessThan(30);
+			const total = keys.reduce((n, k) => n + of(k).length, 0);
+			expect(total / 20).toBeLessThan(4); // dials per second
+			pipeline.destroy();
+		});
+
+		// A transport replaced after a loss can still deliver; none of what
+		// it delivers may touch the source's new transport, its decoder or
+		// its backoff.
+		it('ignores errors, frames and catalogs of a replaced transport', () => {
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.attachCanvas('cam1', 'tile', document.createElement('canvas'));
+			pipeline.connectSource('cam1');
+			type Full = Callbacks & { onVideoFrame(d: Uint8Array, k: boolean, ts: number, g: number, desc: Uint8Array | null): void };
+			const old = mockTransports[mockTransports.length - 1].callbacks as unknown as Full;
+			old.onClose();
+			vi.advanceTimersByTime(RECONNECT_BASE_MS);
+			const cur = mockTransports[mockTransports.length - 1];
+			(cur.callbacks as unknown as Callbacks).onTrackInfo([]);
+			const n = mockTransports.length;
+			const decoder = mockVideoDecoderInstances[mockVideoDecoderInstances.length - 1] as unknown as { decode: ReturnType<typeof vi.fn>; configure: ReturnType<typeof vi.fn>; flush: ReturnType<typeof vi.fn> };
+			decoder.decode.mockClear();
+			decoder.configure.mockClear();
+			decoder.flush.mockClear();
+
+			old.onError('stream reset');
+			old.onVideoFrame(new Uint8Array([0, 0, 0, 1, 0x65]), true, 9000, 7, null);
+			old.onTrackInfo([{ type: 'video', codec: 'avc1.640028', width: 1920, height: 1080 }]);
+			vi.advanceTimersByTime(RECONNECT_MAX_MS * 2);
+
+			// The new transport is untouched: not closed, not replaced.
+			expect((cur as unknown as { close: ReturnType<typeof vi.fn> }).close).not.toHaveBeenCalled();
+			expect(mockTransports.length).toBe(n);
+			// Nothing reached the decoder.
+			expect(decoder.decode).not.toHaveBeenCalled();
+			expect(decoder.configure).not.toHaveBeenCalled();
+			expect(decoder.flush).not.toHaveBeenCalled();
+			pipeline.destroy();
+		});
+
+		// A catalog of the replaced transport must not pass for the new
+		// one's: the new one, still connecting, keeps its connect deadline.
+		it('keeps the connect deadline of a new transport when the old one delivers a catalog', () => {
+			const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			const old = mockTransports[mockTransports.length - 1].callbacks as unknown as Callbacks;
+			old.onClose();
+			vi.advanceTimersByTime(RECONNECT_BASE_MS);
+			const cur = mockTransports[mockTransports.length - 1] as unknown as { close: ReturnType<typeof vi.fn> };
+			old.onTrackInfo([]);
+			vi.advanceTimersByTime(CONNECT_TIMEOUT_MS);
+			expect(cur.close).toHaveBeenCalled();
 			warn.mockRestore();
 			pipeline.destroy();
 		});
