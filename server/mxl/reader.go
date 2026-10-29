@@ -105,7 +105,8 @@ type Reader struct {
 // ReaderStats is what a Reader has lost, and how far behind the head of
 // its flow it reads.
 type ReaderStats struct {
-	// SkippedGrains are grains skipped because the consumer was behind.
+	// SkippedGrains are grains skipped because the consumer was behind;
+	// only a video reader skips.
 	SkippedGrains uint64
 	// Resyncs counts jumps to the head after the ring overwrote the read
 	// position, each losing what lay between.

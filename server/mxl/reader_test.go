@@ -556,6 +556,9 @@ func TestAudioReaderTooLateRecovery(t *testing.T) {
 	if received[0].Channels != 2 {
 		t.Fatalf("expected 2 channels, got %d", received[0].Channels)
 	}
+	if st := reader.Stats(); st.Resyncs != 1 {
+		t.Fatalf("resyncs = %d, want 1", st.Resyncs)
+	}
 }
 
 // tooLateContinuousReader returns a "too late" error on the Nth ReadSamples call,
@@ -1024,6 +1027,36 @@ func TestReader_CountsResyncs(t *testing.T) {
 			cancel()
 		}
 	}
+	r.Wait()
+	if st := r.Stats(); st.Resyncs != 1 {
+		t.Fatalf("resyncs = %d, want 1", st.Resyncs)
+	}
+}
+
+// A data reader's re-sync after the ring overwrote its position is counted
+// like a video reader's.
+func TestReader_CountsDataResyncs(t *testing.T) {
+	flow := &tooLateDiscreteReader{
+		headIdx: 200,
+		grains: []mockGrain{
+			{data: []byte{1}, info: GrainInfo{Index: 100, GrainSize: 1, TotalSlices: 1, ValidSlices: 1}},
+			{data: []byte{2}, info: GrainInfo{Index: 198, GrainSize: 1, TotalSlices: 1, ValidSlices: 1}},
+		},
+		tooLateAt: 1,
+	}
+	r := NewDataReader(ReaderConfig{BufSize: 8, TimeoutMs: 10})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r.StartData(ctx, flow)
+	go func() {
+		for range r.Data() {
+		}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for r.Stats().Resyncs == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
 	r.Wait()
 	if st := r.Stats(); st.Resyncs != 1 {
 		t.Fatalf("resyncs = %d, want 1", st.Resyncs)

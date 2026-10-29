@@ -24,12 +24,25 @@ func (waitingFlow) ConfigInfo() mxl.FlowConfig {
 func (f waitingFlow) HeadIndex() (uint64, error) { return f.head.Add(1), nil }
 func (waitingFlow) Close() error                 { return nil }
 
-// Each MXL input reports its readers' losses by essence, and the video
-// reader's lag, under the input's source label.
+// silentAudio is an audio flow that delivers nothing.
+type silentAudio struct{}
+
+func (silentAudio) ReadSamples(uint64, int, uint64) ([][]float32, error) {
+	return nil, mxl.ErrTimeout
+}
+func (silentAudio) ConfigInfo() mxl.FlowConfig {
+	return mxl.FlowConfig{Format: mxl.DataFormatAudio, GrainRate: mxl.Rational{Numerator: 48000, Denominator: 1}, ChannelCount: 2}
+}
+func (silentAudio) HeadIndex() (uint64, error) { return 0, nil }
+func (silentAudio) Close() error               { return nil }
+
+// Each MXL input reports its readers' re-syncs by essence, and the video
+// reader's skips and lag, the only reader that skips, under the input's
+// source label.
 func TestMXLReaderCollector(t *testing.T) {
 	src := mxl.NewSource(mxl.SourceConfig{FlowName: "mxl:cam1", Width: 16, Height: 16})
 	ctx, cancel := context.WithCancel(context.Background())
-	src.Start(ctx, waitingFlow{head: new(atomic.Uint64)}, nil)
+	src.Start(ctx, waitingFlow{head: new(atomic.Uint64)}, silentAudio{})
 	defer func() { cancel(); src.Stop() }()
 
 	c := &mxlReaderCollector{sources: func() []*mxl.Source { return []*mxl.Source{src} }}
@@ -37,6 +50,6 @@ func TestMXLReaderCollector(t *testing.T) {
 		return metricstest.Series(t, c)["switchframe_mxl_reader_lag_grains"]["mxl:cam1"] > 0
 	}, time.Second, 5*time.Millisecond, "the head runs ahead of a reader that reads nothing")
 	f := metricstest.Series(t, c)
-	require.Equal(t, map[string]float64{"video/mxl:cam1": 0}, f["switchframe_mxl_reader_skipped_grains_total"])
-	require.Equal(t, map[string]float64{"video/mxl:cam1": 0}, f["switchframe_mxl_reader_resyncs_total"])
+	require.Equal(t, map[string]float64{"mxl:cam1": 0}, f["switchframe_mxl_reader_skipped_grains_total"])
+	require.Equal(t, map[string]float64{"audio/mxl:cam1": 0, "video/mxl:cam1": 0}, f["switchframe_mxl_reader_resyncs_total"])
 }
