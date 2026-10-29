@@ -3,6 +3,8 @@
 	import RoutingEdge from './RoutingEdge.svelte';
 	import RoutingDetailPopover from './RoutingDetailPopover.svelte';
 	import { resolveApiUrl } from '$lib/api/base-url';
+	import { engineFetch, authHeaders } from '$lib/api/switch-api';
+	import { poll } from '$lib/util/poll';
 
 	interface PipelineNodeInfo {
 		name: string;
@@ -185,7 +187,7 @@
 
 		try {
 			const method = node.bypassed ? 'DELETE' : 'PUT';
-			const res = await fetch(resolveApiUrl(`/api/pipeline/nodes/${name}/bypass`), { method });
+			const res = await engineFetch(resolveApiUrl(`/api/pipeline/nodes/${name}/bypass`), { method, headers: authHeaders() });
 			if (res.ok) {
 				const data = await res.json();
 				if (data.nodes) {
@@ -383,8 +385,8 @@
 		switch (e.code) {
 			case 'KeyR':
 				e.preventDefault();
-				fetchSnapshot();
-				fetchThumbnails();
+				fetchSnapshot().catch(() => {});
+				fetchThumbnails().catch(() => {});
 				break;
 		}
 	}
@@ -404,57 +406,53 @@
 
 	// ── API polling ──
 
-	async function fetchSnapshot() {
-		try {
-			const res = await fetch(resolveApiUrl('/api/pipeline/snapshot'));
-			if (res.ok) {
-				const data = await res.json();
-				if (data.nodes) {
-					nodes = data.nodes;
-					// Enhancement 2: Accumulate sparkline samples
-					for (const node of nodes) {
-						if (!sparklineData[node.name]) sparklineData[node.name] = [];
-						sparklineData[node.name].push(node.lastNs);
-						if (sparklineData[node.name].length > 60) sparklineData[node.name].shift();
-					}
-				}
-				if (data.connections) edges = data.connections;
+	// Each read throws when the engine does not answer, so the poll backs
+	// off; the overlay keeps the data it last had.
+	async function fetchSnapshot(signal?: AbortSignal) {
+		const res = await engineFetch(resolveApiUrl('/api/pipeline/snapshot'), { headers: authHeaders(), signal });
+		if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		const data = await res.json();
+		if (data.nodes) {
+			nodes = data.nodes;
+			// Enhancement 2: Accumulate sparkline samples
+			for (const node of nodes) {
+				if (!sparklineData[node.name]) sparklineData[node.name] = [];
+				sparklineData[node.name].push(node.lastNs);
+				if (sparklineData[node.name].length > 60) sparklineData[node.name].shift();
 			}
-		} catch {
-			// API unavailable, keep current data
 		}
+		if (data.connections) edges = data.connections;
 	}
 
-	async function fetchThumbnails() {
+	async function fetchThumbnails(signal?: AbortSignal) {
 		try {
-			const res = await fetch(resolveApiUrl('/api/pipeline/thumbnails'));
-			if (res.ok) {
-				const data = await res.json();
-				const apiNodes = data.nodes ?? {};
-				const mapped: Record<string, string> = {};
-				for (const [id, info] of Object.entries(apiNodes)) {
-					const entry = info as ThumbnailApiEntry;
-					if (entry.jpeg) {
-						mapped[id] = `data:image/jpeg;base64,${entry.jpeg}`;
-					}
+			const res = await engineFetch(resolveApiUrl('/api/pipeline/thumbnails'), { headers: authHeaders(), signal });
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const data = await res.json();
+			const apiNodes = data.nodes ?? {};
+			const mapped: Record<string, string> = {};
+			for (const [id, info] of Object.entries(apiNodes)) {
+				const entry = info as ThumbnailApiEntry;
+				if (entry.jpeg) {
+					mapped[id] = `data:image/jpeg;base64,${entry.jpeg}`;
 				}
-				// For source nodes missing server thumbnails, capture from browser canvases.
-				// The On-Air source tiles render live video to canvases with id="tile-{key}".
-				for (const node of nodes) {
-					if (node.category === 'source' && !mapped[node.name]) {
-						const canvas = document.getElementById(`tile-${node.name}`) as HTMLCanvasElement | null;
-						if (canvas && canvas.width > 0 && canvas.height > 0) {
-							try {
-								mapped[node.name] = canvas.toDataURL('image/jpeg', 0.5);
-							} catch {
-								// Canvas may be tainted or empty
-							}
+			}
+			// For source nodes missing server thumbnails, capture from browser canvases.
+			// The On-Air source tiles render live video to canvases with id="tile-{key}".
+			for (const node of nodes) {
+				if (node.category === 'source' && !mapped[node.name]) {
+					const canvas = document.getElementById(`tile-${node.name}`) as HTMLCanvasElement | null;
+					if (canvas && canvas.width > 0 && canvas.height > 0) {
+						try {
+							mapped[node.name] = canvas.toDataURL('image/jpeg', 0.5);
+						} catch {
+							// Canvas may be tainted or empty
 						}
 					}
 				}
-				thumbnails = mapped;
 			}
-		} catch {
+			thumbnails = mapped;
+		} catch (e) {
 			// API unavailable — still try browser canvases
 			const mapped: Record<string, string> = {};
 			for (const node of nodes) {
@@ -468,18 +466,19 @@
 				}
 			}
 			if (Object.keys(mapped).length > 0) thumbnails = mapped;
+			throw e;
 		}
 	}
 
 	$effect(() => {
 		if (!visible) return;
-		fetchSnapshot();
-		fetchThumbnails();
-		const id = setInterval(() => {
-			fetchSnapshot();
-			fetchThumbnails();
-		}, 1000);
-		return () => clearInterval(id);
+		// Polled apart, so a failing thumbnail endpoint does not slow the snapshot.
+		const stopSnapshot = poll(fetchSnapshot, 1000);
+		const stopThumbnails = poll(fetchThumbnails, 1000);
+		return () => {
+			stopSnapshot();
+			stopThumbnails();
+		};
 	});
 </script>
 

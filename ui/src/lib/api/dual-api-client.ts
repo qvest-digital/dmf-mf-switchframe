@@ -1,5 +1,6 @@
 import type { EngineId } from '$lib/api/types';
 import { SnapshotStaleError } from '$lib/state/auto-reconcile';
+import { engineFetch } from '$lib/api/switch-api';
 
 export interface EngineConfig {
 	id: EngineId;
@@ -66,7 +67,7 @@ export class DualApiClient {
 		if (lockId) {
 			url.searchParams.set('lockId', lockId);
 		}
-		const res = await fetch(url.toString(), {
+		const res = await engineFetch(url.toString(), {
 			method: 'GET',
 			headers: {
 				...this.authHeaders(),
@@ -86,7 +87,7 @@ export class DualApiClient {
 	): Promise<{ warnings: string[] }> {
 		const engine = this.findEngine(engineId);
 		const query = opts?.force ? '?force=true' : '';
-		const res = await fetch(`${engine.url}/api/sync/state-snapshot${query}`, {
+		const res = await engineFetch(`${engine.url}/api/sync/state-snapshot${query}`, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
@@ -115,7 +116,7 @@ export class DualApiClient {
 		engineId: EngineId
 	): Promise<{ acquired: boolean; lockId?: string; holder?: string }> {
 		const engine = this.findEngine(engineId);
-		const res = await fetch(`${engine.url}/api/sync/reconcile-lock`, {
+		const res = await engineFetch(`${engine.url}/api/sync/reconcile-lock`, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
@@ -129,7 +130,7 @@ export class DualApiClient {
 
 	async releaseReconcileLock(engineId: EngineId, lockId: string): Promise<void> {
 		const engine = this.findEngine(engineId);
-		await fetch(`${engine.url}/api/sync/reconcile-lock/${lockId}`, {
+		await engineFetch(`${engine.url}/api/sync/reconcile-lock/${lockId}`, {
 			method: 'DELETE',
 			headers: this.authHeaders(),
 		}).catch(() => {}); // best-effort

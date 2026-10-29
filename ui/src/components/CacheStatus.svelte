@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { playoutCacheStatus } from '$lib/api/switch-api';
+	import { poll } from '$lib/util/poll';
 	import type { CacheStatus } from '$lib/api/types';
 	import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_REFRESH, renderIcon } from '$lib/icons';
 
@@ -8,17 +9,22 @@
 	let loading = $state(false);
 	let error = $state(false);
 
-	async function refresh() {
+	async function load() {
 		loading = true;
 		error = false;
 		try {
 			status = await playoutCacheStatus();
-		} catch {
+		} catch (e) {
 			status = null;
 			error = true;
+			throw e;
 		} finally {
 			loading = false;
 		}
+	}
+
+	function refresh() {
+		load().catch(() => {});
 	}
 
 	function formatBytes(bytes: number): string {
@@ -36,11 +42,7 @@
 	// Auto-refresh every 5s while expanded; stop when collapsed
 	$effect(() => {
 		if (!expanded) return;
-		// Initial fetch
-		refresh();
-		// Periodic refresh while expanded
-		const interval = setInterval(refresh, 5000);
-		return () => clearInterval(interval);
+		return poll(load, 5000);
 	});
 </script>
 

@@ -6,9 +6,12 @@ vi.mock('$lib/api/switch-api', () => ({
 	operatorReconnect: vi.fn(),
 	operatorHeartbeat: vi.fn(),
 	setAuthToken: vi.fn(),
+	SwitchApiError: class extends Error {
+		constructor(public status: number, message: string) { super(message); }
+	},
 }));
 
-import { operatorRegister, operatorReconnect, operatorHeartbeat, setAuthToken } from '$lib/api/switch-api';
+import { operatorRegister, operatorReconnect, operatorHeartbeat, setAuthToken, SwitchApiError } from '$lib/api/switch-api';
 
 describe('operator state', () => {
 	beforeEach(() => {
@@ -53,6 +56,38 @@ describe('operator state', () => {
 		vi.mocked(operatorHeartbeat).mockClear();
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(operatorHeartbeat).not.toHaveBeenCalled();
+	});
+
+	// A heartbeat the engines answer 401 forever was sent every 10s.
+	it('stops the heartbeat at a 401 and reconnects once', async () => {
+		const mod = await import('./operator.svelte');
+		localStorage.setItem('switchframe_operator_token', 'test-token');
+		vi.mocked(operatorReconnect).mockResolvedValueOnce({ id: 'op1', name: 'Test', role: 'director' as const });
+		expect(await mod.reconnect()).toBe(true);
+		vi.mocked(operatorReconnect).mockClear();
+
+		vi.mocked(operatorHeartbeat).mockRejectedValue(new SwitchApiError(401, 'invalid token'));
+		vi.mocked(operatorReconnect).mockRejectedValue(new SwitchApiError(401, 'invalid token'));
+		await vi.advanceTimersByTimeAsync(120_000);
+
+		expect(operatorHeartbeat).toHaveBeenCalledTimes(1);
+		expect(operatorReconnect).toHaveBeenCalledTimes(1);
+		expect(mod.getSession()).toBeNull();
+	});
+
+	it('backs the heartbeat off while the engines do not answer', async () => {
+		const mod = await import('./operator.svelte');
+		localStorage.setItem('switchframe_operator_token', 'test-token');
+		vi.mocked(operatorReconnect).mockResolvedValueOnce({ id: 'op1', name: 'Test', role: 'director' as const });
+		expect(await mod.reconnect()).toBe(true);
+
+		vi.mocked(operatorHeartbeat).mockReset();
+		vi.mocked(operatorHeartbeat).mockRejectedValue(new TypeError('Failed to fetch'));
+		await vi.advanceTimersByTimeAsync(120_000);
+
+		// At 10, 30, 60, 90 and 120s rather than every 10s.
+		expect(operatorHeartbeat).toHaveBeenCalledTimes(5);
+		mod.disconnect();
 	});
 
 	it('caches session in sessionStorage on register', async () => {

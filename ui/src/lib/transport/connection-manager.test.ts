@@ -7,6 +7,7 @@ vi.mock('$lib/transport/connection', () => ({
 
 vi.mock('$lib/api/switch-api', () => ({
 	getAuthHeaders: vi.fn().mockReturnValue({}),
+	engineFetch: (url: string, init?: RequestInit) => fetch(url, init),
 }));
 
 import { ConnectionManager } from './connection-manager';
@@ -265,6 +266,27 @@ describe('ConnectionManager', () => {
 			);
 			expect(onStateUpdate).toHaveBeenCalledWith(state);
 			expect(onInitialLoadComplete).toHaveBeenCalledOnce();
+		});
+
+		// A fixed 3s retry kept asking an engine that was down.
+		it('backs off the initial fetch while the engine does not answer', async () => {
+			setupMocks();
+			vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+			const onInitialLoadError = vi.fn();
+			const manager = new ConnectionManager({
+				url: 'https://localhost:8080',
+				onStateUpdate: vi.fn(),
+				onConnectionStateChange: vi.fn(),
+				onInitialLoadComplete: vi.fn(),
+				onInitialLoadError,
+			});
+
+			void manager.start();
+			await vi.advanceTimersByTimeAsync(120_000);
+			manager.stop();
+
+			// Attempts at 0, 3, 9, 21, 45, 75 and 105s.
+			expect(onInitialLoadError).toHaveBeenCalledTimes(7);
 		});
 
 		it('should fire onInitialLoadError and retry on fetch failure', async () => {

@@ -20,6 +20,7 @@ import {
 	startRecording, stopRecording, addDestination, clipPlayerLoadByName,
 	commandLatency, resetCommandLatency,
 } from './switch-api';
+import { tokenReplaced } from './auth-gate';
 
 // Track all fetch calls for inspection
 let fetchCalls: Array<{ url: string; opts: RequestInit }> = [];
@@ -92,6 +93,7 @@ describe('switch-api dual-engine routing', () => {
 		setOnNewEngineDiscovered(null);
 		resetPreferredEngine();
 		resetCircuitBreakers();
+		tokenReplaced();
 	});
 
 	// ─── Single-engine mode (no engines configured) ───

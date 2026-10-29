@@ -58,7 +58,8 @@
 	import { ControlPlaneDiscovery } from '$lib/transport/control-plane-discovery';
 	import { CaptionRenderer } from '$lib/prism/captions';
 	import type { ControlRoomState, Macro } from '$lib/api/types';
-	import { fetchOIDCConfig, consumeSignInFragment, signIn, signOut, isSignedIn, renewLapsedToken, startTokenRefresh, clearRefreshToken, type OIDCConfig } from '$lib/api/oidc';
+	import { fetchOIDCConfig, consumeSignInFragment, signIn, signOut, isSignedIn, renewLapsedToken, renewRefusedToken, startTokenRefresh, clearRefreshToken, type OIDCConfig } from '$lib/api/oidc';
+	import { setTokenRefusedHandler, setTokenAcceptedHandler, tokenReplaced } from '$lib/api/auth-gate';
 
 	// Extract token from URL fragment BEFORE any connections are created.
 	// Must run at module level, not in onMount, to avoid race conditions
@@ -728,6 +729,8 @@
 		onInitialLoadComplete: () => {
 			initialLoading = false;
 			connectionError = null;
+			// A token renewed after the first fetch was refused let a retry in.
+			tokenRequired = false;
 		},
 		onInitialLoadError: handleInitialLoadError,
 		// Off by default: commands run on arrival on each engine.
@@ -1562,11 +1565,34 @@
 		clearRefreshToken();
 		signedIn = false;
 		setAuthToken(tokenInput.trim());
+		// The same token pasted again, after the engine was fixed, is a retry.
+		tokenReplaced();
 		tokenRequired = false;
 		connectionError = null;
 		initialLoading = true;
 		await connectionManager.start();
 	}
+
+	// The engines refused the token: every request now stops at the auth
+	// gate until a renewal or a sign-in sets a new one.
+	setTokenRefusedHandler(async () => {
+		const result = await renewRefusedToken();
+		if (result.renewed) {
+			tokenRequired = false;
+			return;
+		}
+		signedIn = false;
+		signInMessage = result.message;
+		tokenRequired = true;
+		initialLoading = false;
+	});
+	// A new token from anywhere (the refresh timer, another tab, a renewal)
+	// takes the prompt down.
+	setTokenAcceptedHandler(() => {
+		tokenRequired = false;
+		signedIn = isSignedIn();
+		signInMessage = null;
+	});
 
 	onMount(async () => {
 		keyboard.attach();
@@ -1661,6 +1687,8 @@
 		pipeline.destroy();
 		operatorState.destroy();
 		stopTokenRefresh?.();
+		setTokenRefusedHandler(null);
+		setTokenAcceptedHandler(null);
 		setEngineUrls(null);
 		setDualTimestampProvider(null);
 		setPartialFailureCallback(null);

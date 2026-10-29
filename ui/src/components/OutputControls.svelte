@@ -13,6 +13,7 @@
 	import type { SyncHealth } from '$lib/state/reconciler.svelte';
 	import { getEngineUrls } from '$lib/api/base-url';
 	import { fetchConfidenceThumbnail } from '$lib/api/switch-api';
+	import { poll } from '$lib/util/poll';
 
 	type ConnectionIndicatorState = 'webtransport' | 'polling' | 'disconnected';
 
@@ -78,34 +79,24 @@
 	$effect(() => {
 		if (!showConfidence) return;
 		const baseUrl = confidenceBaseUrl;
-		const abort = new AbortController();
-		let inFlight = false;
 		let current: string | null = null;
 
-		async function poll() {
-			// One request at a time, and none while the tab is hidden.
-			if (inFlight || document.hidden) return;
-			inFlight = true;
-			try {
-				const blob = await fetchConfidenceThumbnail(baseUrl, abort.signal);
-				if (blob && !abort.signal.aborted) {
-					const next = URL.createObjectURL(blob);
-					if (current) URL.revokeObjectURL(current);
-					current = next;
-					thumbUrl = next;
-				}
-			} catch {
-				// Keep the last thumbnail; the next poll retries.
-			} finally {
-				inFlight = false;
+		// None while the tab is hidden. A failed read keeps the last
+		// thumbnail and throws, so the poll backs off.
+		async function fetchThumb(signal: AbortSignal) {
+			if (document.hidden) return;
+			const blob = await fetchConfidenceThumbnail(baseUrl, signal);
+			if (blob && !signal.aborted) {
+				const next = URL.createObjectURL(blob);
+				if (current) URL.revokeObjectURL(current);
+				current = next;
+				thumbUrl = next;
 			}
 		}
 
-		poll();
-		const id = setInterval(poll, THUMB_POLL_MS);
+		const stop = poll(fetchThumb, THUMB_POLL_MS);
 		return () => {
-			clearInterval(id);
-			abort.abort();
+			stop();
 			if (current) URL.revokeObjectURL(current);
 			thumbUrl = null;
 		};

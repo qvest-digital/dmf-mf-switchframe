@@ -5,6 +5,7 @@
  * same token reaches Engine A and Engine B without a second sign-in.
  */
 import { getAuthToken, setAuthToken } from './switch-api';
+import { isTokenRefused } from './auth-gate';
 import { getEngineUrls } from './base-url';
 import { disconnect } from '$lib/state/operator.svelte';
 
@@ -13,6 +14,8 @@ const REFRESH_KEY = 'switchframe_oidc_refresh';
 const REFRESH_MARGIN_MS = 60_000;
 /** Retry interval while no engine can refresh. */
 const RETRY_MS = 10_000;
+/** A token refused again this soon after a renewal is not renewed again. */
+const RENEW_AGAIN_AFTER_MS = 60_000;
 
 export interface OIDCConfig {
 	enabled: boolean;
@@ -98,12 +101,21 @@ export type RefreshResult =
 	/** No engine answered. */
 	| { outcome: 'unreachable' };
 
+let refreshInFlight: Promise<RefreshResult> | null = null;
+
 /**
  * Exchanges the stored refresh token for a new ID token at the page's
  * engine, then at the peer: while Engine A is down, Engine B keeps the
- * session alive.
+ * session alive. Callers that overlap share one exchange: a provider that
+ * refuses a reused refresh token would otherwise refuse the second, and
+ * its caller would discard the token the first one stored.
  */
-export async function refreshToken(): Promise<RefreshResult> {
+export function refreshToken(): Promise<RefreshResult> {
+	refreshInFlight ??= exchangeRefreshToken().finally(() => { refreshInFlight = null; });
+	return refreshInFlight;
+}
+
+async function exchangeRefreshToken(): Promise<RefreshResult> {
 	const refresh = localStorage.getItem(REFRESH_KEY);
 	if (!refresh) return { outcome: 'rejected' };
 
@@ -146,6 +158,34 @@ export async function renewLapsedToken(): Promise<RefreshResult | null> {
 	const result = await refreshToken();
 	if (result.outcome === 'forbidden' || result.outcome === 'rejected') clearRefreshToken();
 	return result;
+}
+
+let lastRenewalAt = -Infinity;
+
+/**
+ * Answers the engines refusing the page's token. A sign-in is renewed with
+ * one refresh; one refused again within RENEW_AGAIN_AFTER_MS, a refresh
+ * that fails, or a token that is not from a sign-in leaves the operator to
+ * sign in, with the message to show.
+ */
+export async function renewRefusedToken(): Promise<{ renewed: true } | { renewed: false; message: string | null }> {
+	const now = Date.now();
+	if (!isSignedIn() || now - lastRenewalAt < RENEW_AGAIN_AFTER_MS) return { renewed: false, message: null };
+	lastRenewalAt = now;
+	const result = await refreshToken();
+	switch (result.outcome) {
+	case 'refreshed':
+		// A provider that handed back the refused token renewed nothing.
+		return isTokenRefused() ? { renewed: false, message: 'Session expired' } : { renewed: true };
+	case 'forbidden':
+		clearRefreshToken();
+		return { renewed: false, message: result.message };
+	case 'rejected':
+		clearRefreshToken();
+		return { renewed: false, message: 'Session expired' };
+	case 'unreachable':
+		return { renewed: false, message: 'Session expired' };
+	}
 }
 
 /**
