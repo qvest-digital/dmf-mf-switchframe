@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createMediaPipeline, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
+import { createMediaPipeline, RECONNECT_BASE_MS, RECONNECT_MAX_MS, CONNECT_TIMEOUT_MS, RECONNECT_STABLE_MS, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
 import { isSourceStalled, clearAllStalls, clearSourceStall } from './source-errors.svelte';
 
 // Mock all Prism modules since they use Web Workers, WebCodecs,
@@ -116,6 +116,8 @@ vi.mock('$lib/prism/renderer', () => {
 });
 
 const mockTransports: Array<{ key: string; callbacks: { onTrackInfo(tracks: unknown[]): void } }> = [];
+/** What MockMoQTransport.connect returns. */
+let connectImpl: () => Promise<void> = () => Promise.resolve();
 
 vi.mock('$lib/prism/moq-transport', () => {
 	return {
@@ -123,7 +125,7 @@ vi.mock('$lib/prism/moq-transport', () => {
 			constructor(public key: string, public callbacks: { onTrackInfo(tracks: unknown[]): void }) {
 				mockTransports.push(this);
 			}
-			connect = vi.fn().mockResolvedValue(undefined);
+			connect = vi.fn(() => connectImpl());
 			close = vi.fn();
 			subscribeAudio = vi.fn().mockResolvedValue(undefined);
 			subscribeAllAudio = vi.fn().mockResolvedValue(undefined);
@@ -1035,6 +1037,328 @@ describe('MediaPipeline audio', () => {
 			expect(mockAudioDecoderInstances[0].resumeContext).not.toHaveBeenCalled();
 			expect(FakeAudioContext.made[0].resume).not.toHaveBeenCalled();
 			pipeline.destroy();
+		});
+	});
+
+	// A real network drop closes every WebTransport session of the page.
+	// Nothing outside the pipeline reconnects a source's transport, so
+	// before this the tiles and the program monitor stayed frozen once the
+	// network was back.
+	describe('reconnect', () => {
+		type Callbacks = { onTrackInfo(t: unknown[]): void; onClose(): void; onError(e: string): void; onControlState(d: Uint8Array): void };
+		const cb = (i: number) => mockTransports[i].callbacks as unknown as Callbacks;
+		beforeEach(() => {
+			vi.useFakeTimers();
+			mockTransports.length = 0;
+			vi.spyOn(Math, 'random').mockReturnValue(0.5); // no jitter
+		});
+		afterEach(() => {
+			connectImpl = () => Promise.resolve();
+			vi.useRealTimers();
+			vi.restoreAllMocks();
+		});
+
+		it('reconnects a source whose transport closes', () => {
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			expect(mockTransports.length).toBe(1);
+			cb(0).onClose();
+			vi.advanceTimersByTime(RECONNECT_BASE_MS);
+			expect(mockTransports.length).toBe(2);
+			expect((mockTransports[1] as unknown as { connect: ReturnType<typeof vi.fn> }).connect).toHaveBeenCalled();
+			pipeline.destroy();
+		});
+
+		// A failed dial left a dead transport on the source, and connectSource
+		// then took the source for connected for good.
+		it('reconnects a source whose transport failed to connect', () => {
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			cb(0).onError('MoQ WebTransport connection failed');
+			vi.advanceTimersByTime(RECONNECT_BASE_MS);
+			expect(mockTransports.length).toBe(2);
+			pipeline.destroy();
+		});
+
+		it('reconnects when connect rejects', async () => {
+			const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			connectImpl = () => Promise.reject(new Error('handshake failed'));
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			connectImpl = () => Promise.resolve();
+			await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+			expect(mockTransports.length).toBe(2);
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining('Failed to connect source "cam1"'), expect.anything());
+			pipeline.destroy();
+		});
+
+		// Removing a source while it connects rejects its connect; that is
+		// no failure to warn about or to reconnect from.
+		it('neither warns nor reconnects for a transport closed on purpose', async () => {
+			const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			let reject: (e: Error) => void = () => {};
+			connectImpl = () => new Promise((_, r) => { reject = r; });
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			connectImpl = () => Promise.resolve();
+			pipeline.removeSource('cam1');
+			reject(new Error('transport closed'));
+			await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS);
+			expect(warn).not.toHaveBeenCalled();
+			expect(mockTransports.length).toBe(1);
+			pipeline.destroy();
+		});
+
+		it('backs off between failed attempts and starts afresh once a transport stayed up', () => {
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			const expectNextAfter = (ms: number) => {
+				const n = mockTransports.length;
+				cb(n - 1).onClose();
+				vi.advanceTimersByTime(ms - 1);
+				expect(mockTransports.length).toBe(n);
+				vi.advanceTimersByTime(1);
+				expect(mockTransports.length).toBe(n + 1);
+			};
+			expectNextAfter(RECONNECT_BASE_MS);
+			expectNextAfter(RECONNECT_BASE_MS * 2);
+			expectNextAfter(RECONNECT_BASE_MS * 4);
+			for (let i = 0; i < 6; i++) {
+				cb(mockTransports.length - 1).onClose();
+				vi.advanceTimersByTime(RECONNECT_MAX_MS);
+			}
+			expectNextAfter(RECONNECT_MAX_MS);
+			// Up, but lost before it stayed up: the backoff goes on.
+			cb(mockTransports.length - 1).onTrackInfo([]);
+			expectNextAfter(RECONNECT_MAX_MS);
+			// Up for RECONNECT_STABLE_MS: its loss starts afresh.
+			cb(mockTransports.length - 1).onTrackInfo([]);
+			vi.advanceTimersByTime(RECONNECT_STABLE_MS);
+			expectNextAfter(RECONNECT_BASE_MS);
+			pipeline.destroy();
+		});
+
+		it('does not reconnect a source disconnected or removed on purpose', () => {
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.addSource('cam2');
+			pipeline.connectSource('cam1');
+			pipeline.connectSource('cam2');
+			pipeline.disconnectSource('cam1');
+			pipeline.removeSource('cam2');
+			cb(0).onClose();
+			cb(1).onClose();
+			vi.advanceTimersByTime(RECONNECT_MAX_MS * 2);
+			expect(mockTransports.length).toBe(2);
+			pipeline.destroy();
+		});
+
+		it('does not reconnect a source disconnected while a reconnect is pending', () => {
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			cb(0).onClose();
+			pipeline.disconnectSource('cam1');
+			vi.advanceTimersByTime(RECONNECT_MAX_MS * 2);
+			expect(mockTransports.length).toBe(1);
+			pipeline.destroy();
+		});
+
+		// The old transport can deliver after it was replaced; its stream
+		// interleaved with the new one's in the same decoder.
+		it('ignores a replaced transport', () => {
+			const onControlState = vi.fn();
+			const pipeline = createMediaPipeline({ onControlState });
+			pipeline.addSource('program-preview');
+			pipeline.connectSource('program-preview');
+			cb(0).onClose();
+			vi.advanceTimersByTime(RECONNECT_BASE_MS);
+			cb(0).onControlState(new Uint8Array([1]));
+			expect(onControlState).not.toHaveBeenCalled();
+			cb(1).onTrackInfo([]);
+			cb(1).onControlState(new Uint8Array([2]));
+			expect(onControlState).toHaveBeenCalledTimes(1);
+			// A late close of the old transport does not drop the new one.
+			cb(0).onClose();
+			vi.advanceTimersByTime(RECONNECT_MAX_MS);
+			expect(mockTransports.length).toBe(2);
+			pipeline.destroy();
+		});
+
+		it('drops what a lost transport delivered', () => {
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.attachCanvas('cam1', 'tile', document.createElement('canvas'));
+			pipeline.connectSource('cam1');
+			const decoder = mockVideoDecoderInstances[mockVideoDecoderInstances.length - 1];
+			const buffer = mockBufferInstances[mockBufferInstances.length - 1];
+			decoder.flush.mockClear();
+			buffer.clear.mockClear();
+			cb(0).onClose();
+			expect(decoder.flush).toHaveBeenCalled();
+			expect(buffer.clear).toHaveBeenCalled();
+			pipeline.destroy();
+		});
+
+		it('dials at once when the browser reports the network back', () => {
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('net');
+			pipeline.connectSource('net');
+			const mine = () => mockTransports.filter((t) => t.key === 'net');
+			for (let i = 0; i < 5; i++) {
+				(mine().at(-1)!.callbacks as unknown as Callbacks).onClose();
+				vi.advanceTimersByTime(RECONNECT_MAX_MS);
+			}
+			const n = mine().length;
+			(mine().at(-1)!.callbacks as unknown as Callbacks).onClose();
+			window.dispatchEvent(new Event('online'));
+			expect(mine().length).toBe(n + 1);
+			pipeline.destroy();
+		});
+
+		// A network outage closes every source's transport; the first one
+		// back shows the engine is reachable again.
+		it('dials every waiting source once one transport is up again', () => {
+			const pipeline = createMediaPipeline();
+			for (const k of ['w1', 'w2', 'w3']) { pipeline.addSource(k); pipeline.connectSource(k); }
+			const of = (k: string) => mockTransports.filter((t) => t.key === k);
+			const last = (k: string) => of(k).at(-1)!.callbacks as unknown as Callbacks;
+			// Lose them all a few times, so their backoffs grow.
+			for (let i = 0; i < 4; i++) {
+				for (const k of ['w1', 'w2', 'w3']) last(k).onClose();
+				vi.advanceTimersByTime(RECONNECT_MAX_MS);
+			}
+			for (const k of ['w1', 'w2', 'w3']) last(k).onClose();
+			const before = ['w2', 'w3'].map((k) => of(k).length);
+			vi.advanceTimersByTime(RECONNECT_MAX_MS * 1.25);
+			// w1 is back first; w2 and w3, waiting, dial at once.
+			for (const k of ['w2', 'w3']) last(k).onClose();
+			last('w1').onTrackInfo([]);
+			expect(['w2', 'w3'].map((k) => of(k).length)).toEqual(before.map((n) => n + 2));
+			pipeline.destroy();
+		});
+
+		// A dial made during an outage can hang in the handshake for longer
+		// than the outage; once the network is back nothing dialled again
+		// until the browser gave up on it.
+		it('abandons a dial that delivers no catalog and dials again', () => {
+			const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			connectImpl = () => new Promise(() => {});
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('hang');
+			pipeline.connectSource('hang');
+			const of = () => mockTransports.filter((t) => t.key === 'hang');
+			vi.advanceTimersByTime(CONNECT_TIMEOUT_MS - 1);
+			expect(of().length).toBe(1);
+			vi.advanceTimersByTime(1);
+			expect((of()[0] as unknown as { close: ReturnType<typeof vi.fn> }).close).toHaveBeenCalled();
+			vi.advanceTimersByTime(RECONNECT_BASE_MS);
+			expect(of().length).toBe(2);
+			// A transport that delivers its catalog in time is kept.
+			(of()[1].callbacks as unknown as Callbacks).onTrackInfo([]);
+			vi.advanceTimersByTime(CONNECT_TIMEOUT_MS * 3);
+			expect(of().length).toBe(2);
+			warn.mockRestore();
+			pipeline.destroy();
+		});
+
+		// An engine that accepts a session, delivers the catalog and drops
+		// it: every catalog of one source dialled every other at once with
+		// its backoff reset, so the page kept dialling at the base delay.
+		it('does not keep dialling at the base delay against a flapping engine', () => {
+			const pipeline = createMediaPipeline();
+			const keys = ['f1', 'f2', 'f3'];
+			for (const k of keys) { pipeline.addSource(k); pipeline.connectSource(k); }
+			const of = (k: string) => mockTransports.filter((t) => t.key === k);
+			const handled = new Set<unknown>();
+			for (let t = 0; t < 20_000; t += 100) {
+				// Every new transport comes up and is dropped within 100 ms.
+				for (const k of keys) {
+					const last = of(k).at(-1)!;
+					if (handled.has(last)) continue;
+					handled.add(last);
+					const c = last.callbacks as unknown as Callbacks;
+					c.onTrackInfo([]);
+					c.onClose();
+				}
+				vi.advanceTimersByTime(100);
+			}
+			// At the base delay each source would dial about 40 times in
+			// 20 s; with the backoff growing to its cap and early dials at
+			// most once a second, far fewer.
+			for (const k of keys) expect(of(k).length).toBeLessThan(30);
+			const total = keys.reduce((n, k) => n + of(k).length, 0);
+			expect(total / 20).toBeLessThan(4); // dials per second
+			pipeline.destroy();
+		});
+
+		// A transport replaced after a loss can still deliver; none of what
+		// it delivers may touch the source's new transport, its decoder or
+		// its backoff.
+		it('ignores errors, frames and catalogs of a replaced transport', () => {
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.attachCanvas('cam1', 'tile', document.createElement('canvas'));
+			pipeline.connectSource('cam1');
+			type Full = Callbacks & { onVideoFrame(d: Uint8Array, k: boolean, ts: number, g: number, desc: Uint8Array | null): void };
+			const old = mockTransports[mockTransports.length - 1].callbacks as unknown as Full;
+			old.onClose();
+			vi.advanceTimersByTime(RECONNECT_BASE_MS);
+			const cur = mockTransports[mockTransports.length - 1];
+			(cur.callbacks as unknown as Callbacks).onTrackInfo([]);
+			const n = mockTransports.length;
+			const decoder = mockVideoDecoderInstances[mockVideoDecoderInstances.length - 1] as unknown as { decode: ReturnType<typeof vi.fn>; configure: ReturnType<typeof vi.fn>; flush: ReturnType<typeof vi.fn> };
+			decoder.decode.mockClear();
+			decoder.configure.mockClear();
+			decoder.flush.mockClear();
+
+			old.onError('stream reset');
+			old.onVideoFrame(new Uint8Array([0, 0, 0, 1, 0x65]), true, 9000, 7, null);
+			old.onTrackInfo([{ type: 'video', codec: 'avc1.640028', width: 1920, height: 1080 }]);
+			vi.advanceTimersByTime(RECONNECT_MAX_MS * 2);
+
+			// The new transport is untouched: not closed, not replaced.
+			expect((cur as unknown as { close: ReturnType<typeof vi.fn> }).close).not.toHaveBeenCalled();
+			expect(mockTransports.length).toBe(n);
+			// Nothing reached the decoder.
+			expect(decoder.decode).not.toHaveBeenCalled();
+			expect(decoder.configure).not.toHaveBeenCalled();
+			expect(decoder.flush).not.toHaveBeenCalled();
+			pipeline.destroy();
+		});
+
+		// A catalog of the replaced transport must not pass for the new
+		// one's: the new one, still connecting, keeps its connect deadline.
+		it('keeps the connect deadline of a new transport when the old one delivers a catalog', () => {
+			const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			const old = mockTransports[mockTransports.length - 1].callbacks as unknown as Callbacks;
+			old.onClose();
+			vi.advanceTimersByTime(RECONNECT_BASE_MS);
+			const cur = mockTransports[mockTransports.length - 1] as unknown as { close: ReturnType<typeof vi.fn> };
+			old.onTrackInfo([]);
+			vi.advanceTimersByTime(CONNECT_TIMEOUT_MS);
+			expect(cur.close).toHaveBeenCalled();
+			warn.mockRestore();
+			pipeline.destroy();
+		});
+
+		it('stops reconnecting once destroyed', () => {
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			cb(0).onClose();
+			pipeline.destroy();
+			vi.advanceTimersByTime(RECONNECT_MAX_MS * 2);
+			window.dispatchEvent(new Event('online'));
+			expect(mockTransports.length).toBe(1);
 		});
 	});
 });
