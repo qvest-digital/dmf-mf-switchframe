@@ -36,8 +36,13 @@ type AdapterStatus struct {
 	// MediaTicks is the media time sent, in 90 kHz ticks, for an adapter
 	// that sends timed frames; zero for one that sends a byte stream.
 	MediaTicks int64
-	StartedAt  time.Time
-	Error      string
+	// VideoDropped and AudioDropped are the frames an adapter that sends
+	// timed frames dropped because the destination did not take them in
+	// time.
+	VideoDropped int64
+	AudioDropped int64
+	StartedAt    time.Time
+	Error        string
 }
 
 // Adapter is the interface that all output destinations implement.

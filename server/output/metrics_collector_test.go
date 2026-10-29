@@ -59,6 +59,7 @@ func TestMetricsCollector_Destinations(t *testing.T) {
 	require.Equal(t, map[string]float64{id: 0}, f["switchframe_output_bytes_total"])
 	require.NotContains(t, f, "switchframe_output_clients", "an RTMP output has no clients")
 	require.Equal(t, map[string]float64{id: 0}, f["switchframe_output_media_seconds_total"])
+	require.Equal(t, map[string]float64{"video/" + id: 0, "audio/" + id: 0}, f["switchframe_output_dropped_frames_total"])
 
 	for name, series := range f {
 		for labels := range series {
@@ -66,6 +67,30 @@ func TestMetricsCollector_Destinations(t *testing.T) {
 			require.NotContains(t, labels, "ingest.example.com", "%s exports the address", name)
 		}
 	}
+}
+
+// An RTMP output's media time and dropped frames come from its adapter,
+// video and audio drops apart.
+func TestMetricsCollector_RTMPMediaAndDrops(t *testing.T) {
+	m := NewManager()
+	defer func() { _ = m.Close() }()
+	id, err := m.AddDestination(DestinationConfig{Type: "rtmp", URL: "rtmp://example.com/live/key", Name: "stream"})
+	require.NoError(t, err)
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://example.com/live/key"})
+	require.NoError(t, err)
+	r.mediaTicks.Store(3 * 90000)
+	r.videoDropped.Store(7)
+	r.audioDropped.Store(2)
+	m.mu.Lock()
+	d := m.destinations[id]
+	d.mu.Lock()
+	d.frameAdapter = r
+	d.mu.Unlock()
+	m.mu.Unlock()
+
+	f := gatherOutput(t, NewMetricsCollector(m))
+	require.Equal(t, map[string]float64{id: 3}, f["switchframe_output_media_seconds_total"])
+	require.Equal(t, map[string]float64{"video/" + id: 7, "audio/" + id: 2}, f["switchframe_output_dropped_frames_total"])
 }
 
 // The recorder's series follow it: active and growing while it runs, its

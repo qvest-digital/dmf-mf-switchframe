@@ -41,6 +41,8 @@ type DestinationStatus struct {
 	BytesWritten   int64             `json:"bytesWritten"`
 	DroppedPackets int64             `json:"droppedPackets"`
 	MediaSeconds   float64           `json:"mediaSeconds,omitempty"`
+	VideoDropped   int64             `json:"videoDropped,omitempty"`
+	AudioDropped   int64             `json:"audioDropped,omitempty"`
 	OverflowCount  int64             `json:"overflowCount,omitempty"`
 	Connections    int               `json:"connections,omitempty"`
 	Error          string            `json:"error,omitempty"`
@@ -93,6 +95,8 @@ func (d *Destination) status() DestinationStatus {
 		st.State = string(faStatus.State)
 		st.BytesWritten = faStatus.BytesWritten
 		st.MediaSeconds = float64(faStatus.MediaTicks) / 90000
+		st.VideoDropped = faStatus.VideoDropped
+		st.AudioDropped = faStatus.AudioDropped
 		st.Error = faStatus.Error
 	}
 

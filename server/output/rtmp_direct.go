@@ -453,12 +453,16 @@ type RTMPDirect struct {
 	pendingIDR   atomic.Bool
 	bytesWritten atomic.Int64
 	// mediaTicks is the media time sent on the connections, in 90 kHz
-	// ticks: the PTS step between consecutive video frames written. A
-	// destination that keeps up sends one second of it per second;
-	// lastVideoPTS and haveLastPTS belong to writeLoop.
+	// ticks: one program frame interval per video frame written. The
+	// interval is measured where frames are offered (WriteVideo), before
+	// any is dropped, so a destination that takes every other frame sends
+	// half a second of it per second. offeredPTS and offeredStep are the
+	// previous offered frame's PTS and step; frameTicks is the interval.
 	mediaTicks   atomic.Int64
-	lastVideoPTS int64
-	haveLastPTS  bool
+	offered      atomic.Bool
+	offeredPTS   atomic.Int64
+	offeredStep  atomic.Int64
+	frameTicks   atomic.Int64
 	videoDropped atomic.Int64
 	audioDropped atomic.Int64
 	startedAt    time.Time
@@ -571,6 +575,8 @@ func (r *RTMPDirect) WriteVideo(frame *media.VideoFrame) error {
 		return fmt.Errorf("RTMP direct not active (state: %s)", state)
 	}
 
+	r.measureFrameInterval(frame.PTS)
+
 	// Silently drop during reconnect or starting.
 	select {
 	case r.videoCh <- frame:
@@ -604,6 +610,8 @@ func (r *RTMPDirect) Status() AdapterStatus {
 		State:        state,
 		BytesWritten: r.bytesWritten.Load(),
 		MediaTicks:   r.mediaTicks.Load(),
+		VideoDropped: r.videoDropped.Load(),
+		AudioDropped: r.audioDropped.Load(),
 		StartedAt:    r.startedAt,
 		Error:        errStr,
 	}
@@ -700,14 +708,12 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		}
 		r.pendingIDR.Store(false)
 		r.ptsBase = frame.PTS // rebase for new connection
-		// The time the connection was down was not sent.
-		r.haveLastPTS = false
 	}
 
 	// In test mode, skip the C write call.
 	if r.connectFn != nil {
 		r.bytesWritten.Add(int64(len(frame.WireData)))
-		r.countMedia(frame.PTS)
+		r.mediaTicks.Add(r.frameTicks.Load())
 		return
 	}
 
@@ -741,17 +747,29 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 	}
 
 	r.bytesWritten.Add(int64(len(frame.WireData)))
-	r.countMedia(frame.PTS)
+	r.mediaTicks.Add(r.frameTicks.Load())
 }
 
-// countMedia adds the media time from the previous video frame written to
-// pts. A step backwards, as across a source change, adds nothing.
-func (r *RTMPDirect) countMedia(pts int64) {
-	if r.haveLastPTS && pts > r.lastVideoPTS {
-		r.mediaTicks.Add(pts - r.lastVideoPTS)
+// maxFrameTicks bounds a PTS step that can be a frame interval: one
+// second at 90 kHz. A longer step, or one backwards, is a discontinuity,
+// as across a source change, not an interval.
+const maxFrameTicks = 90000
+
+// measureFrameInterval takes the program frame interval from the PTS steps
+// of the frames offered. It is the smaller of the last two steps, so the
+// one step a forward PTS jump makes is never taken for an interval.
+func (r *RTMPDirect) measureFrameInterval(pts int64) {
+	prevPTS := r.offeredPTS.Swap(pts)
+	if !r.offered.Swap(true) {
+		return
 	}
-	r.lastVideoPTS = pts
-	r.haveLastPTS = true
+	step := pts - prevPTS
+	if step <= 0 || step > maxFrameTicks {
+		return
+	}
+	if prev := r.offeredStep.Swap(step); prev > 0 {
+		r.frameTicks.Store(min(prev, step))
+	}
 }
 
 // handleAudio processes a single audio frame.
