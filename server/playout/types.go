@@ -176,20 +176,24 @@ type Playlist struct {
 
 // ChannelStatus is the broadcast state of a playout channel.
 type ChannelStatus struct {
-	ID             int             `json:"id"`
-	State          string          `json:"state"`
-	SchedulerState string          `json:"schedulerState,omitempty"`
-	Mode           string          `json:"mode,omitempty"`
-	PlaylistName   string          `json:"playlistName,omitempty"`
-	CurrentItemID  string          `json:"currentItemId,omitempty"`
-	CurrentTitle   string          `json:"currentTitle,omitempty"`
-	NextItemID     string          `json:"nextItemId,omitempty"`
-	NextTitle      string          `json:"nextTitle,omitempty"`
-	ItemIndex      int             `json:"itemIndex"`
-	ItemCount      int             `json:"itemCount"`
-	ItemProgress   float64         `json:"itemProgress,omitempty"`
-	ItemRemainMs   int64           `json:"itemRemainMs,omitempty"`
-	Pods           *PodBoardStatus `json:"pods,omitempty"`
+	ID             int     `json:"id"`
+	State          string  `json:"state"`
+	SchedulerState string  `json:"schedulerState,omitempty"`
+	Mode           string  `json:"mode,omitempty"`
+	PlaylistName   string  `json:"playlistName,omitempty"`
+	CurrentItemID  string  `json:"currentItemId,omitempty"`
+	CurrentTitle   string  `json:"currentTitle,omitempty"`
+	NextItemID     string  `json:"nextItemId,omitempty"`
+	NextTitle      string  `json:"nextTitle,omitempty"`
+	ItemIndex      int     `json:"itemIndex"`
+	ItemCount      int     `json:"itemCount"`
+	ItemProgress   float64 `json:"itemProgress,omitempty"`
+	ItemRemainMs   int64   `json:"itemRemainMs,omitempty"`
+	// Looping is set while a looping clip is on air, LoopExit once EndLoop
+	// has it end after the current pass.
+	Looping  bool            `json:"looping,omitempty"`
+	LoopExit bool            `json:"loopExit,omitempty"`
+	Pods     *PodBoardStatus `json:"pods,omitempty"`
 }
 
 // MaxChannels is the maximum number of playout channels.
@@ -200,6 +204,7 @@ var (
 	ErrNoPlaylist     = errors.New("playout: no playlist loaded")
 	ErrAlreadyOnAir   = errors.New("playout: channel already on air")
 	ErrNotOnAir       = errors.New("playout: channel not on air")
+	ErrNotLooping     = errors.New("playout: item on air does not loop")
 	ErrInvalidChannel = errors.New("playout: invalid channel ID")
 	ErrInvalidItem    = errors.New("playout: invalid playlist item")
 	ErrEmptyPlaylist  = errors.New("playout: playlist is empty")

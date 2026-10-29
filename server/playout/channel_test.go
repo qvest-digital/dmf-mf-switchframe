@@ -3313,3 +3313,56 @@ func TestChannel_StartDuringStopWaitsForStop(t *testing.T) {
 	defer mu.Unlock()
 	require.Equal(t, []string{"start", "stop", "start"}, events)
 }
+
+// countingProvider counts opens per asset; a looping clip reopens its asset
+// on every pass.
+type countingProvider struct {
+	inner AssetProvider
+	mu    sync.Mutex
+	opens map[string]int
+}
+
+func (p *countingProvider) Open(uri string) (FrameIterator, error) {
+	p.mu.Lock()
+	p.opens[uri]++
+	p.mu.Unlock()
+	return p.inner.Open(uri)
+}
+
+func (p *countingProvider) count(uri string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.opens[uri]
+}
+
+func TestChannel_EndLoop_FinishesPassThenAdvances(t *testing.T) {
+	prov := &countingProvider{inner: fakeProvider(10), opens: map[string]int{}}
+	ch := NewChannel(1, ChannelConfig{AssetProvider: prov, AllowedLocalPrefixes: []string{"/"}})
+	loop := clipItem("a")
+	loop.Loop = true
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(loop, liveItem("b", "cam-1"))))
+	require.NoError(t, ch.Start())
+	defer ch.Stop()
+
+	// Two passes in, it is still looping.
+	waitFor(t, 5*time.Second, func() bool { return prov.count(loop.AssetURI) >= 3 })
+	st := ch.Status()
+	require.Equal(t, "a", st.CurrentItemID)
+	require.True(t, st.Looping)
+	require.False(t, st.LoopExit)
+
+	require.NoError(t, ch.EndLoop())
+	opensAtEnd := prov.count(loop.AssetURI)
+	st = ch.Status()
+	require.Equal(t, "a", st.CurrentItemID, "EndLoop must not cut away mid-pass")
+	require.True(t, st.LoopExit)
+
+	waitFor(t, 2*time.Second, func() bool { return ch.Status().CurrentItemID == "b" })
+	require.Equal(t, opensAtEnd, prov.count(loop.AssetURI), "the clip must not start another pass")
+	require.False(t, ch.Status().Looping)
+}
+
+func TestChannel_EndLoop_NotOnAir(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
+	require.ErrorIs(t, ch.EndLoop(), ErrNotOnAir)
+}

@@ -152,6 +152,7 @@ var errorMappings = []errorMapping{
 	{playout.ErrNoPlaylist, http.StatusBadRequest},
 	{playout.ErrAlreadyOnAir, http.StatusConflict},
 	{playout.ErrNotOnAir, http.StatusBadRequest},
+	{playout.ErrNotLooping, http.StatusConflict},
 	{playout.ErrEmptyPlaylist, http.StatusBadRequest},
 	{playout.ErrItemNotFound, http.StatusNotFound},
 	{playout.ErrAlreadyCued, http.StatusConflict},

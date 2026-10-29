@@ -254,6 +254,10 @@ func (c *Channel) Status() ChannelStatus {
 			item := pl.Items[snap.Cursor]
 			st.CurrentItemID = item.ID
 			st.CurrentTitle = item.Title
+			if c.state == StateOnAir && item.Loop && item.Type == ItemClip {
+				st.Looping = true
+				st.LoopExit = snap.LoopExit
+			}
 		}
 		if snap.Cursor+1 < len(pl.Items) {
 			next := pl.Items[snap.Cursor+1]
@@ -530,6 +534,18 @@ func (c *Channel) JumpTo(itemID string) error {
 	}
 	c.mu.Unlock()
 	return c.scheduler.JumpTo(itemID)
+}
+
+// EndLoop lets the looping clip on air finish its current pass, then end as
+// a clip that does not loop.
+func (c *Channel) EndLoop() error {
+	c.mu.Lock()
+	if c.state != StateOnAir {
+		c.mu.Unlock()
+		return ErrNotOnAir
+	}
+	c.mu.Unlock()
+	return c.scheduler.EndLoop()
 }
 
 // SeekToItem repositions the channel to a specific playlist item at a given
@@ -1437,8 +1453,9 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 		// If loop mode, rewind — close the iterator so it re-opens on the
 		// next tick with the same item ID forced to mismatch. Guarded on
 		// iterator identity so a concurrent SeekToItem's fresh iterator is
-		// not torn down by the old clip's end-of-loop.
-		if item.Loop {
+		// not torn down by the old clip's end-of-loop. After EndLoop the pass
+		// that just finished was the last one.
+		if item.Loop && !c.scheduler.LoopExitPending() {
 			c.mu.Lock()
 			if c.clipIter == iter {
 				if c.clipIter != nil {
