@@ -37,6 +37,10 @@ type mockOutputManager struct {
 	stopDestErr    error
 	lastDestConfig output.DestinationConfig
 	lastDestID     string
+	lastAddID      string
+	sendingIDs     []string
+	pairIDs        []string
+	armedIDs       []string
 
 	// CBR status.
 	cbrStatus *output.CBRPacerStatus
@@ -107,12 +111,15 @@ func (m *mockOutputManager) ConfidenceThumbnail() []byte {
 	return m.thumbnail
 }
 
-func (m *mockOutputManager) AddDestination(config output.DestinationConfig) (string, error) {
+func (m *mockOutputManager) AddDestinationWithID(id string, config output.DestinationConfig) (string, error) {
 	if m.addDestErr != nil {
 		return "", m.addDestErr
 	}
 	m.lastDestConfig = config
-	id := "test-dest-1"
+	m.lastAddID = id
+	if id == "" {
+		id = "test-dest-1"
+	}
 	if m.destinations == nil {
 		m.destinations = make(map[string]output.DestinationStatus)
 	}
@@ -122,6 +129,14 @@ func (m *mockOutputManager) AddDestination(config output.DestinationConfig) (str
 		State:  "stopped",
 	}
 	return id, nil
+}
+
+func (m *mockOutputManager) SendingDestinationIDs() []string {
+	return m.sendingIDs
+}
+
+func (m *mockOutputManager) PairDestinationIDs() (all, armed []string) {
+	return m.pairIDs, m.armedIDs
 }
 
 func (m *mockOutputManager) RemoveDestination(id string) error {
@@ -622,6 +637,39 @@ func TestAddDestination(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "test-dest-1", status.ID)
 	require.Equal(t, "stopped", status.State)
+}
+
+// The UI sends one ID to both engines of a pair, so both store the
+// destination under it.
+func TestAddDestination_WithID(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+
+	body := `{"id":"0a1b2c3d","type":"rtmp","url":"rtmp://example.com/live/key"}`
+	req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "0a1b2c3d", mock.lastAddID)
+	require.Equal(t, "rtmp://example.com/live/key", mock.lastDestConfig.URL)
+}
+
+func TestAddDestination_IDErrors(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		{output.ErrDestinationExists, http.StatusConflict},
+		{output.ErrInvalidDestinationID, http.StatusBadRequest},
+	} {
+		api, mock := setupOutputTestAPI(t)
+		mock.addDestErr = tc.err
+		body := `{"id":"0a1b2c3d","type":"rtmp","url":"rtmp://example.com/live/key"}`
+		req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+		require.Equal(t, tc.want, rec.Code, "%v", tc.err)
+	}
 }
 
 func TestAddDestination_InvalidType(t *testing.T) {

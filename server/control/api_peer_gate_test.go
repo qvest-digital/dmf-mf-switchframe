@@ -32,6 +32,15 @@ func leaderPoller(t *testing.T) *peer.HealthPoller {
 	return p
 }
 
+// reachableLeaderPoller builds a HealthPoller in the leader role with the
+// peer "b" reachable.
+func reachableLeaderPoller(t *testing.T) *peer.HealthPoller {
+	t.Helper()
+	p := peer.NewHealthPoller("http://unused", peer.WithLocalIdentity("a"))
+	p.SetPeerStateForTest(true, "b", 0)
+	return p
+}
+
 func setupOutputAPIWithPoller(t *testing.T, p *peer.HealthPoller) (*API, *mockOutputManager) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
@@ -136,7 +145,7 @@ func TestReassignDestinationEngine_RejectsOnPartitionedFollower(t *testing.T) {
 }
 
 func TestReassignDestinationEngine_AllowsOnLeader(t *testing.T) {
-	api, mock := setupOutputAPIWithPoller(t, leaderPoller(t))
+	api, mock := setupOutputAPIWithPoller(t, reachableLeaderPoller(t))
 	mock.destinations = map[string]output.DestinationStatus{
 		"dest-1": {
 			ID:     "dest-1",
@@ -153,6 +162,34 @@ func TestReassignDestinationEngine_AllowsOnLeader(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 	require.Equal(t, "b", mock.destinations["dest-1"].Config.Engine)
+}
+
+// A move to a peer that is down would be taken back by this engine's next
+// failover tick while the client was told it happened.
+func TestReassignDestinationEngine_RejectsMoveToDownPeer(t *testing.T) {
+	api, mock := setupOutputAPIWithPoller(t, leaderPoller(t))
+	mock.destinations = map[string]output.DestinationStatus{
+		"dest-1": {
+			ID:     "dest-1",
+			Config: output.DestinationConfig{Type: "srt-caller", Address: "10.0.0.1", Port: 5000, Engine: "b"},
+			State:  "active",
+		},
+	}
+
+	put := func(engine string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("PUT", "/api/output/destinations/dest-1/engine", strings.NewReader(`{"engine":"`+engine+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := put("a")
+	require.Equal(t, http.StatusOK, rec.Code, "a move to this engine holds: %s", rec.Body.String())
+	rec = put("b")
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
+	require.Contains(t, rec.Body.String(), "is down")
+	require.Equal(t, "a", mock.destinations["dest-1"].Config.Engine)
 }
 
 func TestReassignDestinationEngine_AllowsOnStandalone(t *testing.T) {
@@ -186,26 +223,26 @@ func TestReassignDestinationEngine_FollowerRejectPreservesConvergence(t *testing
 		m.destinations = map[string]output.DestinationStatus{
 			"dest-1": {
 				ID:     "dest-1",
-				Config: output.DestinationConfig{Type: "srt-caller", Address: "10.0.0.1", Port: 5000, Engine: "a"},
+				Config: output.DestinationConfig{Type: "srt-caller", Address: "10.0.0.1", Port: 5000, Engine: "b"},
 				State:  "stopped",
 			},
 		}
 	}
 
-	reqLeader := httptest.NewRequest("PUT", "/api/output/destinations/dest-1/engine", strings.NewReader(`{"engine":"b"}`))
+	reqLeader := httptest.NewRequest("PUT", "/api/output/destinations/dest-1/engine", strings.NewReader(`{"engine":"a"}`))
 	reqLeader.Header.Set("Content-Type", "application/json")
 	recLeader := httptest.NewRecorder()
 	apiLeader.Mux().ServeHTTP(recLeader, reqLeader)
 
-	reqFollower := httptest.NewRequest("PUT", "/api/output/destinations/dest-1/engine", strings.NewReader(`{"engine":"a"}`))
+	reqFollower := httptest.NewRequest("PUT", "/api/output/destinations/dest-1/engine", strings.NewReader(`{"engine":"b"}`))
 	reqFollower.Header.Set("Content-Type", "application/json")
 	recFollower := httptest.NewRecorder()
 	apiFollower.Mux().ServeHTTP(recFollower, reqFollower)
 
 	require.Equal(t, http.StatusOK, recLeader.Code, "leader body: %s", recLeader.Body.String())
 	require.Equal(t, http.StatusConflict, recFollower.Code, "follower body: %s", recFollower.Body.String())
-	require.Equal(t, "b", mockLeader.destinations["dest-1"].Config.Engine)
-	require.Equal(t, "a", mockFollower.destinations["dest-1"].Config.Engine,
+	require.Equal(t, "a", mockLeader.destinations["dest-1"].Config.Engine)
+	require.Equal(t, "b", mockFollower.destinations["dest-1"].Config.Engine,
 		"follower's local state must remain unchanged so heal surfaces the leader's value")
 }
 

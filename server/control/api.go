@@ -79,7 +79,9 @@ type OutputManagerAPI interface {
 	StopSRTOutput() error
 	SRTOutputStatus() output.SRTStatus
 	ConfidenceThumbnail() []byte
-	AddDestination(config output.DestinationConfig) (string, error)
+	AddDestinationWithID(id string, config output.DestinationConfig) (string, error)
+	SendingDestinationIDs() []string
+	PairDestinationIDs() (all, armed []string)
 	RemoveDestination(id string) error
 	StartDestination(id string) error
 	StopDestination(id string) error

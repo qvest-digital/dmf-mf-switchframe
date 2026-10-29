@@ -305,6 +305,14 @@ type DestinationSnapshotConfig struct {
 	StreamID string `json:"streamID,omitempty"`
 	Name     string `json:"name,omitempty"`
 	Engine   string `json:"engine,omitempty"`
+
+	Encryption    string `json:"encryption,omitempty"`
+	Passphrase    string `json:"passphrase,omitempty"`
+	MaxBW         int64  `json:"maxBandwidth,omitempty"`
+	MaxConns      int    `json:"maxConns,omitempty"`
+	SCTE35Enabled bool   `json:"scte35Enabled,omitempty"`
+
+	AllowUntrustedCert bool `json:"allowUntrustedCert,omitempty"`
 }
 
 // DestinationSnapshot captures an output destination's config and state.
@@ -312,6 +320,9 @@ type DestinationSnapshot struct {
 	ID     string                    `json:"id"`
 	Config DestinationSnapshotConfig `json:"config"`
 	Active bool                      `json:"active"`
+	// Armed is set while the destination is started, whichever engine
+	// sends it. Nil in a snapshot from an engine that predates it.
+	Armed *bool `json:"armed,omitempty"`
 }
 
 // ReplayMarksSnapshot captures the replay mark-in/mark-out points.

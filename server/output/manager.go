@@ -122,8 +122,13 @@ type Manager struct {
 	srtStatsManager *srt.StatsManager
 
 	// engineLabel identifies which engine this manager belongs to ("a", "b", or "").
-	// When set, newly added destinations default their Engine field to this label.
 	engineLabel string
+
+	// peer is the last view of the other engine ReconcileDestinations was
+	// given; peerFailover is set while there is one to be given.
+	peer         PeerView
+	peerFailover bool
+	peerProbe    func() (PeerView, bool)
 
 	// recordingArchiveDir is where a recording started without an
 	// ArchiveDir of its own archives, before the engine label is added.
@@ -280,7 +285,6 @@ func (m *Manager) OnMuxerStart(fn func()) {
 }
 
 // SetEngineLabel sets the engine identifier for this manager ("a", "b", or "").
-// Newly added destinations will default their Engine field to this label.
 func (m *Manager) SetEngineLabel(label string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -333,8 +337,10 @@ func (m *Manager) SetCaptionManager(cm *caption.Manager) {
 	}
 }
 
-// ReassignDestinationEngine changes the engine assignment for a destination.
-// Valid values are "a", "b", or "" (local engine).
+// ReassignDestinationEngine changes the engine that sends a destination:
+// "a", "b", or "" for every engine. An armed destination moves over at once:
+// the engine that no longer sends it stops its adapter and stays on
+// standby, the one that now does starts it.
 func (m *Manager) ReassignDestinationEngine(id, engine string) error {
 	if engine != "a" && engine != "b" && engine != "" {
 		return fmt.Errorf("output: engine must be 'a', 'b', or empty")
@@ -346,12 +352,15 @@ func (m *Manager) ReassignDestinationEngine(id, engine string) error {
 		return ErrDestinationNotFound
 	}
 	dest.mu.Lock()
-	dest.config.Engine = engine
+	if now := time.Now(); dest.setEngineLocked(engine, now) {
+		dest.operatorChangedAt = now
+	}
 	dest.mu.Unlock()
 
 	fn := m.onState
 	m.mu.Unlock()
 
+	m.settle(id, false)
 	if fn != nil {
 		fn()
 	}
@@ -620,6 +629,41 @@ func (m *Manager) StopSRTOutput() error {
 // The destination is created in stopped state and must be started explicitly.
 // Returns the generated destination ID.
 func (m *Manager) AddDestination(config DestinationConfig) (string, error) {
+	return m.AddDestinationWithID("", config)
+}
+
+// AddDestinationWithID creates a destination under id, or under a generated
+// ID when id is empty. Both engines of a pair store one destination under
+// one ID, so a start, stop, delete or failover addresses it alike on each.
+func (m *Manager) AddDestinationWithID(id string, config DestinationConfig) (string, error) {
+	return m.addDestination(id, config, false)
+}
+
+// AddPeerDestination creates a destination the peer holds under id, armed
+// as the peer holds it, and starts its adapter if this engine sends it.
+// Created armed in one step, it is never listed unarmed to the peer, which
+// a standby reads as an operator's stop.
+func (m *Manager) AddPeerDestination(id string, config DestinationConfig, armed bool) error {
+	if id == "" {
+		return ErrInvalidDestinationID
+	}
+	if _, err := m.addDestination(id, config, armed); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	fn := m.onState
+	m.mu.Unlock()
+	m.settle(id, true)
+	if fn != nil {
+		fn()
+	}
+	return nil
+}
+
+func (m *Manager) addDestination(id string, config DestinationConfig, armed bool) (string, error) {
+	if id != "" && !ValidDestinationID(id) {
+		return "", ErrInvalidDestinationID
+	}
 	// Validate config.
 	switch config.Type {
 	case "srt-caller":
@@ -650,23 +694,29 @@ func (m *Manager) AddDestination(config DestinationConfig) (string, error) {
 		return "", err
 	}
 
-	// Default engine label from manager if not explicitly set.
 	m.mu.Lock()
-	if config.Engine == "" {
-		config.Engine = m.engineLabel
+	defer m.mu.Unlock()
+	// Engine A sends unless told otherwise, on both engines alike: a
+	// default of the local label would have each engine send its own copy.
+	if config.Engine == "" && m.engineLabel != "" {
+		config.Engine = "a"
 	}
-	m.mu.Unlock()
-
-	id := generateDestinationID()
-	dest := &Destination{
+	if id == "" {
+		id = generateDestinationID()
+	}
+	if _, ok := m.destinations[id]; ok {
+		return "", ErrDestinationExists
+	}
+	now := time.Now()
+	m.destinations[id] = &Destination{
 		id:        id,
 		config:    config,
-		createdAt: time.Now(),
+		armed:     armed,
+		createdAt: now,
 	}
-
-	m.mu.Lock()
-	m.destinations[id] = dest
-	m.mu.Unlock()
+	if armed {
+		m.destinations[id].changedAt = now
+	}
 
 	m.log.Info("destination added", "id", id, "type", config.Type, "name", config.Name)
 	return id, nil
@@ -739,10 +789,45 @@ func (m *Manager) RemoveDestination(id string) error {
 	return nil
 }
 
-// StartDestination starts the adapter for the given destination ID.
-// Returns ErrDestinationNotFound if the ID doesn't exist, or
-// ErrDestinationActive if already running.
+// StartDestination arms the destination: the engine that sends it starts
+// its adapter, any other engine of a pair holds it on standby, ready to take
+// over. Returns ErrDestinationNotFound if the ID doesn't exist, or
+// ErrDestinationActive if it already runs here.
 func (m *Manager) StartDestination(id string) error {
+	m.mu.Lock()
+	dest, ok := m.destinations[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrDestinationNotFound
+	}
+	dest.mu.Lock()
+	sends := m.sendsLocked(dest)
+	wasArmed := dest.armed
+	now := time.Now()
+	switch {
+	case sends && !dest.active:
+		dest.operatorChangedAt = now
+	case !sends && dest.setArmedLocked(true, now):
+		dest.operatorChangedAt = now
+	}
+	dest.mu.Unlock()
+	fn := m.onState
+	m.mu.Unlock()
+
+	if sends {
+		return m.startAdapter(id)
+	}
+	if !wasArmed {
+		m.log.Info("destination on standby", "id", id)
+		if fn != nil {
+			fn()
+		}
+	}
+	return nil
+}
+
+// startAdapter starts the destination's adapter on this engine and arms it.
+func (m *Manager) startAdapter(id string) error {
 	m.mu.Lock()
 	dest, ok := m.destinations[id]
 	if !ok {
@@ -751,13 +836,6 @@ func (m *Manager) StartDestination(id string) error {
 	}
 
 	dest.mu.Lock()
-	if m.engineLabel != "" && dest.config.Engine != "" && dest.config.Engine != m.engineLabel {
-		configured := dest.config.Engine
-		dest.mu.Unlock()
-		m.mu.Unlock()
-		return fmt.Errorf("%w: destination %q is assigned to engine %q, not local engine %q",
-			ErrDestinationWrongEngine, id, configured, m.engineLabel)
-	}
 	if dest.active {
 		dest.mu.Unlock()
 		m.mu.Unlock()
@@ -886,6 +964,8 @@ func (m *Manager) StartDestination(id string) error {
 		now := time.Now()
 		dest.frameAdapter = rtmpDirect
 		dest.active = true
+		dest.setArmedLocked(true, now)
+		dest.changedAt = now
 		dest.startedAt = &now
 		dest.mu.Unlock()
 
@@ -909,6 +989,8 @@ func (m *Manager) StartDestination(id string) error {
 	now := time.Now()
 	dest.adapter = adapter
 	dest.active = true
+	dest.setArmedLocked(true, now)
+	dest.changedAt = now
 	dest.startedAt = &now
 	dest.mu.Unlock()
 	m.mu.Unlock()
@@ -921,6 +1003,7 @@ func (m *Manager) StartDestination(id string) error {
 		if dest.adapter == adapter {
 			dest.adapter = nil
 			dest.active = false
+			dest.setArmedLocked(false, time.Now())
 			dest.startedAt = nil
 			// Only remove the stats entry while this adapter still owns the
 			// slot. Adapter IDs are type constants, so a concurrently
@@ -972,11 +1055,18 @@ func (m *Manager) StartDestination(id string) error {
 	return nil
 }
 
-// StopDestination stops the adapter for the given destination ID.
-// The destination remains in the list and can be restarted.
+// StopDestination disarms the destination and stops its adapter if it runs
+// here. The destination remains in the list and can be restarted.
 // Returns ErrDestinationNotFound if the ID doesn't exist, or
-// ErrDestinationStopped if not currently active.
+// ErrDestinationStopped if it was neither armed nor running.
 func (m *Manager) StopDestination(id string) error {
+	return m.stopDestination(id, true)
+}
+
+// stopDestination stops the destination's adapter on this engine. With
+// disarm it also clears the operator's start, otherwise the destination
+// stays armed on standby.
+func (m *Manager) stopDestination(id string, disarm bool) error {
 	m.mu.Lock()
 	dest, ok := m.destinations[id]
 	if !ok {
@@ -985,22 +1075,22 @@ func (m *Manager) StopDestination(id string) error {
 	}
 
 	dest.mu.Lock()
+	wasArmed := dest.armed
+	if now := time.Now(); disarm && dest.setArmedLocked(false, now) {
+		dest.operatorChangedAt = now
+	}
 	if !dest.active {
-		// Distinguish "genuinely stopped" from "stopped locally because this
-		// destination runs on a different engine" — the latter is a routing
-		// error that a plain ErrDestinationStopped would hide. An active
-		// mismatched destination (legacy state) is still stoppable here as
-		// a recovery path.
-		if m.engineLabel != "" && dest.config.Engine != "" && dest.config.Engine != m.engineLabel {
-			configured := dest.config.Engine
-			dest.mu.Unlock()
-			m.mu.Unlock()
-			return fmt.Errorf("%w: destination %q is assigned to engine %q, not local engine %q",
-				ErrDestinationWrongEngine, id, configured, m.engineLabel)
-		}
 		dest.mu.Unlock()
+		fn := m.onState
 		m.mu.Unlock()
-		return ErrDestinationStopped
+		if !wasArmed || !disarm {
+			return ErrDestinationStopped
+		}
+		if fn != nil {
+			fn()
+		}
+		m.log.Info("destination disarmed on standby", "id", id)
+		return nil
 	}
 
 	adapter := dest.adapter

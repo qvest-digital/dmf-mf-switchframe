@@ -2,7 +2,6 @@ package output
 
 import (
 	"errors"
-	"strings"
 	"testing"
 )
 
@@ -181,7 +180,7 @@ func TestReassignDestinationEngine_TriggersStateCallback(t *testing.T) {
 	}
 }
 
-func TestStartDestination_RejectsWrongEngine(t *testing.T) {
+func TestStartDestination_StandbyOnOtherEngine(t *testing.T) {
 	m := NewManager()
 	defer func() { _ = m.Close() }()
 
@@ -197,30 +196,15 @@ func TestStartDestination_RejectsWrongEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = m.StartDestination(id)
-	if err == nil {
-		t.Fatal("expected error starting destination for engine 'b' on engine 'a', got nil")
+	if err := m.StartDestination(id); err != nil {
+		t.Fatalf("start on the engine that does not send: %v", err)
 	}
-	if !errors.Is(err, ErrDestinationWrongEngine) {
-		t.Errorf("expected ErrDestinationWrongEngine, got: %v", err)
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, id) {
-		t.Errorf("error should include destination ID %q; got: %v", id, err)
-	}
-	if !strings.Contains(msg, `"b"`) {
-		t.Errorf("error should reference configured engine \"b\"; got: %v", err)
-	}
-	if !strings.Contains(msg, `"a"`) {
-		t.Errorf("error should reference local engine \"a\"; got: %v", err)
-	}
-
 	status, err := m.GetDestination(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.State != "stopped" {
-		t.Errorf("expected state 'stopped' after rejected start, got %q", status.State)
+	if status.State != "standby" || !status.Armed {
+		t.Errorf("expected an armed standby, got state %q armed %v", status.State, status.Armed)
 	}
 }
 
@@ -292,10 +276,7 @@ func TestStartDestination_AcceptsWildcardManager(t *testing.T) {
 	}
 }
 
-func TestStopDestination_RejectsWrongEngineWhenInactive(t *testing.T) {
-	// If an operator mis-routes a stop call to the wrong engine, the old
-	// behavior returned ErrDestinationStopped (misleading — the destination
-	// is active elsewhere). The guard surfaces the routing error instead.
+func TestStopDestination_DisarmsStandby(t *testing.T) {
 	m := NewManager()
 	defer func() { _ = m.Close() }()
 
@@ -310,16 +291,15 @@ func TestStopDestination_RejectsWrongEngineWhenInactive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := m.StartDestination(id); err != nil {
+		t.Fatal(err)
+	}
 
-	err = m.StopDestination(id)
-	if err == nil {
-		t.Fatal("expected error stopping destination for engine 'b' on engine 'a', got nil")
+	if err := m.StopDestination(id); err != nil {
+		t.Fatalf("stop of an armed standby: %v", err)
 	}
-	if !errors.Is(err, ErrDestinationWrongEngine) {
-		t.Errorf("expected ErrDestinationWrongEngine, got: %v", err)
-	}
-	if errors.Is(err, ErrDestinationStopped) {
-		t.Errorf("wrong-engine stop must not masquerade as ErrDestinationStopped; got: %v", err)
+	if err := m.StopDestination(id); !errors.Is(err, ErrDestinationStopped) {
+		t.Errorf("second stop: expected ErrDestinationStopped, got %v", err)
 	}
 }
 

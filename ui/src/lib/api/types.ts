@@ -169,7 +169,7 @@ export interface DestinationConfig {
 	maxConns?: number;
 	name?: string;
 	scte35Enabled?: boolean;
-	engine?: string; // "a", "b", or "" (default = local engine)
+	engine?: string; // engine of a pair that sends: "a" (default), "b", or "" for both
 	allowUntrustedCert?: boolean; // rtmps:// only: skip verifying the server certificate
 }
 
@@ -180,8 +180,9 @@ export interface DestinationInfo {
 	address?: string;
 	port?: number;
 	url?: string;
+	engine?: string;
 	allowUntrustedCert?: boolean;
-	state: string;
+	state: string; // "standby" on the engine of a pair that does not send it
 	bytesWritten?: number;
 	droppedPackets?: number;
 	connections?: number;

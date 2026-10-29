@@ -123,7 +123,7 @@
 **Purpose:** create a new destination.
 **Handler:** `(*API).handleAddDestination`.
 
-**Request body** (`output.DestinationConfig`): discriminated by `type`.
+**Request body** (`output.DestinationConfig`): discriminated by `type`, plus an optional `id` of 8 lowercase hex characters. A client of an engine pair sends one `id` to both engines so both store the destination under it. `engine` names the engine of a pair that sends it, `"a"` when omitted on an engine with a label.
 
 Per-type requirements:
 
@@ -133,7 +133,7 @@ Per-type requirements:
 
 **Response 201:** `output.DestinationStatus`.
 
-**Errors:** 400 (missing required fields, port not allowed), 409 on engine ownership conflicts, 501.
+**Errors:** 400 (missing required fields, port not allowed, invalid `id`), 409 (`id` already in use), 501.
 
 ---
 
@@ -159,16 +159,16 @@ Per-type requirements:
 
 ### `POST /api/output/destinations/{id}/start`
 
-**Purpose:** start the destination's adapter (begin sending).
+**Purpose:** arm the destination. The engine that sends it starts its adapter; the other engine of a pair holds it on standby and answers 200 with state `standby`.
 **Handler:** `(*API).handleStartDestination`.
 
-**Errors:** 409 (`output.ErrDestinationActive`, `output.ErrDestinationWrongEngine`).
+**Errors:** 409 (`output.ErrDestinationActive`).
 
 ---
 
 ### `POST /api/output/destinations/{id}/stop`
 
-**Purpose:** stop the destination's adapter.
+**Purpose:** disarm the destination and stop its adapter where it runs.
 **Handler:** `(*API).handleStopDestination`.
 
 **Errors:** 409 (`output.ErrDestinationStopped`).
@@ -177,12 +177,14 @@ Per-type requirements:
 
 ### `PUT /api/output/destinations/{id}/engine`
 
-**Purpose:** reassign a destination between engines in a dual-engine setup.
+**Purpose:** move the sending of a destination to another engine of a pair; sent to both engines, it is the manual switch-over. `""` sends it from every engine.
 **Handler:** `(*API).handleReassignDestinationEngine`.
 
-**Request body:** `{ "engine": "a" | "b" }`.
+**Request body:** `{ "engine": "a" | "b" | "" }`.
 
 **Response 200:** updated `output.DestinationStatus`.
+
+**Errors:** 409 on a follower cut off from its peer, and on a move to the peer while the peer is down: the engine would take the destination back on its next failover tick.
 
 ---
 

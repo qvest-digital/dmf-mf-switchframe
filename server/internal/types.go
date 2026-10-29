@@ -229,7 +229,8 @@ type DestinationInfo struct {
 	Type    string `json:"type"`
 	Address string `json:"address,omitempty"`
 	Port    int    `json:"port,omitempty"`
-	URL     string `json:"url,omitempty"` // RTMP destinations
+	URL     string `json:"url,omitempty"`    // RTMP destinations
+	Engine  string `json:"engine,omitempty"` // engine of a pair that sends it
 	// AllowUntrustedCert is set on an rtmps:// destination that does not
 	// verify the server certificate.
 	AllowUntrustedCert bool   `json:"allowUntrustedCert,omitempty"`
