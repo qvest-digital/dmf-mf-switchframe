@@ -109,5 +109,6 @@ func TestInitPlayout_LiveItemAirsInputWithoutGPU(t *testing.T) {
 		defer mu.Unlock()
 		return aired
 	}, 10*time.Second, 20*time.Millisecond)
-	require.NotNil(t, a.sw.ReadLiveTap("mxl:mxl-2"), "the item after the one on air must be armed")
+	_, armed := a.sw.ReadLiveTap("mxl:mxl-2", nil)
+	require.True(t, armed, "the item after the one on air must be armed")
 }

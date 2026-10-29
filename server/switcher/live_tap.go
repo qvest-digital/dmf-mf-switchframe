@@ -27,10 +27,25 @@ type liveTaps struct {
 	entries sync.Map // source key -> *liveTapEntry
 }
 
+// liveTapEntry keeps two buffers per source and swaps them, so a source
+// costs no allocation per picture: the writer fills the spare, which no
+// reader can see, and publishes it under mu, which waits for reads of the
+// one it replaces to finish.
 type liveTapEntry struct {
 	lastRead     atomic.Int64 // UnixNano
-	frame        atomic.Pointer[LiveTapFrame]
 	warnedFormat atomic.Bool
+
+	writeMu sync.Mutex    // one writer fills spare at a time
+	spare   liveTapBuffer // guarded by writeMu
+
+	mu  sync.RWMutex
+	cur liveTapBuffer // guarded by mu; data is nil before the first picture
+}
+
+type liveTapBuffer struct {
+	data          []byte
+	width, height int
+	pts           int64
 }
 
 // ArmLiveTap starts or keeps copying sourceKey's pictures without reading
@@ -41,26 +56,34 @@ func (s *Switcher) ArmLiveTap(sourceKey string) {
 }
 
 func (s *Switcher) armLiveTap(sourceKey string) *liveTapEntry {
-	v, _ := s.liveTaps.entries.LoadOrStore(sourceKey, &liveTapEntry{})
+	v, ok := s.liveTaps.entries.Load(sourceKey)
+	if !ok {
+		v, _ = s.liveTaps.entries.LoadOrStore(sourceKey, &liveTapEntry{})
+	}
 	e := v.(*liveTapEntry)
 	e.lastRead.Store(time.Now().UnixNano())
 	return e
 }
 
-// ReadLiveTap returns a copy of the latest picture of sourceKey, or nil
-// before one has arrived. The first read of a source nothing armed starts
-// copying its pictures as they arrive, so it returns nil. Each call returns a buffer
-// of its own, since the caller ingests it into the pipeline like any
-// produced frame. Builds with a GPU source manager feed that cache
-// instead, so this stays empty there.
-func (s *Switcher) ReadLiveTap(sourceKey string) *LiveTapFrame {
-	f := s.armLiveTap(sourceKey).frame.Load()
-	if f == nil {
-		return nil
+// ReadLiveTap copies the latest picture of sourceKey into dst, which it
+// grows only if dst is too small, and reports false before one has
+// arrived. The first read of a source nothing armed starts copying its
+// pictures as they arrive, so it reports false. The caller owns the copy:
+// it ingests it into the pipeline like any produced frame. Builds with a
+// GPU source manager feed that cache instead, so this stays empty there.
+func (s *Switcher) ReadLiveTap(sourceKey string, dst []byte) (LiveTapFrame, bool) {
+	e := s.armLiveTap(sourceKey)
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.cur.data == nil {
+		return LiveTapFrame{}, false
 	}
-	out := *f
-	out.Data = append([]byte(nil), f.Data...)
-	return &out
+	return LiveTapFrame{
+		Data:   append(dst[:0], e.cur.data...),
+		Width:  e.cur.width,
+		Height: e.cur.height,
+		PTS:    e.cur.pts,
+	}, true
 }
 
 // recordLiveTap keeps a copy of pf when a live item reads sourceKey. The
@@ -88,10 +111,15 @@ func (s *Switcher) recordLiveTap(sourceKey string, pf *ProcessingFrame) {
 	if len(pf.Data) != ColorYUV420_8bit.FrameSize(pf.Width, pf.Height) {
 		return
 	}
-	e.frame.Store(&LiveTapFrame{
-		Data:   append([]byte(nil), pf.Data...),
-		Width:  pf.Width,
-		Height: pf.Height,
-		PTS:    pf.PTS,
-	})
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+	e.spare = liveTapBuffer{
+		data:   append(e.spare.data[:0], pf.Data...),
+		width:  pf.Width,
+		height: pf.Height,
+		pts:    pf.PTS,
+	}
+	e.mu.Lock()
+	e.cur, e.spare = e.spare, e.cur
+	e.mu.Unlock()
 }
