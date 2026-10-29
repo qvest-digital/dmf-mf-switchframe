@@ -271,6 +271,14 @@ Read by [`graphics.MetricsCollector`](../../server/graphics/metrics_collector.go
 | `switchframe_graphics_layer_on_air` | gauge | `layer` | 1 while the graphics layer is on program. Layer names and templates are left out: the client names both freely. |
 | `switchframe_graphics_layers_on_air` | gauge | - | Graphics layers on program. |
 
+### HTML5 graphics metrics
+
+Read by [`htmlgfx.MetricsCollector`](../../server/htmlgfx/metrics_collector.go), registered while the engine runs an HTML5 graphics manager.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `switchframe_htmlgfx_frames_delivered_total` | counter | - | Frames the sidecar painted that reached the compositor on a graphics layer. Frames for a pool slot with no layer are not counted. |
+
 ### Redundancy and NMOS metrics
 
 Read by [`redundancyCollector`](../../server/cmd/switchframe/metrics_redundancy.go), from the peer poller of a redundant pair and the NMOS node.

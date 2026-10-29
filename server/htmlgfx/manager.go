@@ -51,6 +51,8 @@ type Manager struct {
 	restartCh    chan struct{} // buffered(1), signals restart loop
 	socketDir    string        // temp directory for Unix sockets (test path only)
 
+	framesDelivered atomic.Uint64 // frames handed to the compositor, over all spawns
+
 	onStateChange func()
 }
 
@@ -214,6 +216,12 @@ func (m *Manager) RestartCount() int64 {
 	}
 	// Test path: use local counter.
 	return m.restartCount.Load()
+}
+
+// FramesDelivered returns how many sidecar frames reached the compositor
+// on a mapped layer since the Manager was created.
+func (m *Manager) FramesDelivered() uint64 {
+	return m.framesDelivered.Load()
 }
 
 // SocketDir returns the current socket directory path. Returns "" if no
@@ -721,7 +729,9 @@ func (m *Manager) frameReadLoop(gen int64) {
 		// Deliver to compositor.
 		if err := m.compositor.SetOverlay(layerID, frame.Pixels, int(frame.Width), int(frame.Height), "html5"); err != nil {
 			slog.Warn("htmlgfx: compositor SetOverlay failed", "layer", layerID, "error", err)
+			continue
 		}
+		m.framesDelivered.Add(1)
 	}
 }
 
