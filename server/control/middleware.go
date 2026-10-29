@@ -86,10 +86,12 @@ func loggerMiddleware(base *slog.Logger, limiter *errorLogLimiter) func(http.Han
 					return
 				}
 				// Behind an ingress every request comes from the ingress, so
-				// only these name the client that keeps failing.
+				// only these name the client that keeps failing, and the UI
+				// build says whether it runs code the engine still serves.
 				attrs = append(attrs,
 					"user_agent", r.UserAgent(),
 					"forwarded_for", r.Header.Get("X-Forwarded-For"),
+					"ui_build", r.Header.Get(UIBuildHeader),
 				)
 				if suppressed > 0 {
 					attrs = append(attrs, "suppressed", suppressed)
@@ -99,6 +101,12 @@ func loggerMiddleware(base *slog.Logger, limiter *errorLogLimiter) func(http.Han
 		})
 	}
 }
+
+// UIBuildHeader carries the build of the UI that sent a request. The UI
+// sends it to the engine that served the page only: a custom header on a
+// request to the other engine would need that engine's preflight to allow
+// it, which an engine on an older build does not.
+const UIBuildHeader = "X-Switchframe-UI-Build"
 
 // isRead reports whether a request method only reads.
 func isRead(method string) bool {

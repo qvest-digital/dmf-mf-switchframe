@@ -418,10 +418,11 @@ func TestFailedReadLoggedAtInfoWithClient(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/playout/clips", nil)
 	req.Header.Set("User-Agent", "test-browser/1.0")
 	req.Header.Set("X-Forwarded-For", "192.0.2.7")
+	req.Header.Set("X-Switchframe-UI-Build", "1700000000000")
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	out := buf.String()
-	for _, field := range []string{"status=401", "path=/api/playout/clips", "user_agent=test-browser/1.0", "forwarded_for=192.0.2.7"} {
+	for _, field := range []string{"status=401", "path=/api/playout/clips", "user_agent=test-browser/1.0", "forwarded_for=192.0.2.7", "ui_build=1700000000000"} {
 		require.Contains(t, out, field)
 	}
 }
