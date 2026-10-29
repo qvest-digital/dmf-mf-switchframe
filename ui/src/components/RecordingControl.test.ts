@@ -244,3 +244,28 @@ describe('RecordingControl', () => {
 		expect(engineStatus).toBeFalsy();
 	});
 });
+
+describe('RecordingControl without program video', () => {
+	it('flags a running recording that has written nothing after two seconds', () => {
+		const state = { ...baseState, recording: { active: true, filename: 'r.ts', durationSecs: 5 } };
+		const { container } = render(RecordingControl, { props: { state } });
+		expect(container.querySelector('.rec-waiting')?.textContent).toContain('NO VIDEO');
+	});
+
+	it('does not flag one that is writing, or one that just started', () => {
+		for (const recording of [
+			{ active: true, filename: 'r.ts', durationSecs: 5, bytesWritten: 1880 },
+			{ active: true, filename: 'r.ts', durationSecs: 0.5 },
+		]) {
+			const { container, unmount } = render(RecordingControl, { props: { state: { ...baseState, recording } } });
+			expect(container.querySelector('.rec-waiting')).toBeNull();
+			unmount();
+		}
+	});
+
+	it('shows why a stopped recording recorded nothing', () => {
+		const state = { ...baseState, recording: { active: false, error: 'no program video reached the recorder, so nothing was recorded' } };
+		const { container } = render(RecordingControl, { props: { state } });
+		expect(container.textContent).toContain('no program video');
+	});
+});

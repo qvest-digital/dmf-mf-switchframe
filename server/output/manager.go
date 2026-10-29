@@ -45,11 +45,15 @@ type Manager struct {
 	// Bypasses the relay → viewer → channel path entirely.
 	directMuxer atomic.Pointer[TSMuxer]
 
-	recorder      *FileRecorder
-	srtOutput     Adapter // SRTCaller or SRTListener (legacy single output)
-	destinations  map[string]*Destination
-	adapters      atomic.Pointer[[]Adapter]
-	frameAdapters atomic.Pointer[[]FrameAdapter] // RTMP direct (raw frames, bypass TSMuxer)
+	recorder *FileRecorder
+	// Stopped recorders, newest last: the newest says how the last
+	// recording ended, the others stay while a file of theirs is still
+	// being copied into the recording archive.
+	stoppedRecorders []*FileRecorder
+	srtOutput        Adapter // SRTCaller or SRTListener (legacy single output)
+	destinations     map[string]*Destination
+	adapters         atomic.Pointer[[]Adapter]
+	frameAdapters    atomic.Pointer[[]FrameAdapter] // RTMP direct (raw frames, bypass TSMuxer)
 
 	// asyncWrappers tracks AsyncAdapter wrappers by inner adapter ID,
 	// so they can be stopped when adapters are removed.
@@ -379,6 +383,7 @@ func (m *Manager) StopRecording() error {
 
 	rec := m.recorder
 	m.recorder = nil
+	m.stoppedRecorders = append(m.stoppedRecorders, rec)
 	stale := m.rebuildAdaptersLocked()
 	m.stopMuxerIfNoAdaptersLocked()
 	fn := m.onState
@@ -1046,6 +1051,13 @@ func (m *Manager) RecordingStatus() RecordingStatus {
 	m.mu.Unlock()
 
 	if rec == nil {
+		// A recording that recorded nothing says so until the next one
+		// starts; one that did is just inactive.
+		if last := m.lastStoppedRecorder(); last != nil {
+			if final := last.FinalStatus(); final.Error != "" {
+				return final
+			}
+		}
 		return RecordingStatus{Active: false}
 	}
 	status := rec.RecordingStatusSnapshot()
@@ -1053,6 +1065,48 @@ func (m *Manager) RecordingStatus() RecordingStatus {
 		status.DroppedPackets = wrapper.Dropped()
 	}
 	return status
+}
+
+func (m *Manager) lastStoppedRecorder() *FileRecorder {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if n := len(m.stoppedRecorders); n > 0 {
+		return m.stoppedRecorders[n-1]
+	}
+	return nil
+}
+
+// FinalizingRecordings returns the basenames of finished recording files
+// still being copied into the recording archive: listed, they are neither
+// the running recording nor ready to download from where they will end up.
+func (m *Manager) FinalizingRecordings() []string {
+	m.mu.Lock()
+	recs := append([]*FileRecorder(nil), m.stoppedRecorders...)
+	if m.recorder != nil {
+		recs = append(recs, m.recorder)
+	}
+	m.mu.Unlock()
+
+	var names []string
+	busy := map[*FileRecorder]bool{}
+	for _, r := range recs {
+		a := r.Archiving()
+		busy[r] = len(a) > 0
+		names = append(names, a...)
+	}
+
+	// Forget stopped recorders with nothing left to copy, except the
+	// newest, which RecordingStatus reads.
+	m.mu.Lock()
+	kept := m.stoppedRecorders[:0]
+	for i, r := range m.stoppedRecorders {
+		if busy[r] || i == len(m.stoppedRecorders)-1 {
+			kept = append(kept, r)
+		}
+	}
+	m.stoppedRecorders = kept
+	m.mu.Unlock()
+	return names
 }
 
 // SRTOutputStatus returns the current SRT output status for inclusion in

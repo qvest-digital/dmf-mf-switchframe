@@ -584,17 +584,25 @@ export interface ClipInfo {
 	libraryPath?: string;
 }
 
+/** Where a recording file is in its life: being written, being copied into
+ * the recording archive, complete, or empty. */
+export type RecordingFileState = 'recording' | 'finalizing' | 'ready' | 'failed';
+
 export interface RecordingFileInfo {
 	filename: string;
 	path: string;
 	byteSize: number;
 	modTime: string;
+	state: RecordingFileState;
+	error?: string;
 }
 
 export interface EngineRecordingGroup {
 	engineId: EngineId;
 	engineUrl: string;
 	recordings: RecordingFileInfo[];
+	/** The engine did not answer; its recordings are unknown, not absent. */
+	unreachable?: boolean;
 }
 
 export interface SCTE35State {
