@@ -170,6 +170,7 @@ export interface DestinationConfig {
 	name?: string;
 	scte35Enabled?: boolean;
 	engine?: string; // engine of a pair that sends: "a" (default), "b", or "" for both
+	allowUntrustedCert?: boolean; // rtmps:// only: skip verifying the server certificate
 }
 
 export interface DestinationInfo {
@@ -180,6 +181,7 @@ export interface DestinationInfo {
 	port?: number;
 	url?: string;
 	engine?: string;
+	allowUntrustedCert?: boolean;
 	state: string; // "standby" on the engine of a pair that does not send it
 	bytesWritten?: number;
 	droppedPackets?: number;

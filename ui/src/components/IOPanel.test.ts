@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import IOPanel from './IOPanel.svelte';
-import { stopDestination, reassignDestinationEngine } from '$lib/api/switch-api';
+import { addDestination, stopDestination, reassignDestinationEngine } from '$lib/api/switch-api';
 import type { ControlRoomState, SourceHealthStatus } from '$lib/api/types';
 
 vi.mock('$lib/api/switch-api', () => ({
@@ -428,6 +428,56 @@ describe('IOPanel', () => {
 		const options = select!.querySelectorAll('option');
 		const optionValues = Array.from(options).map((o) => o.value);
 		expect(optionValues).toContain('rtmp');
+	});
+});
+
+describe('IOPanel RTMPS certificate', () => {
+	async function openRTMPForm(container: HTMLElement, url: string) {
+		const addDestBtn = Array.from(container.querySelectorAll('.add-btn')).find((b) => b.textContent?.includes('Add Destination'));
+		await fireEvent.click(addDestBtn!);
+		const select = container.querySelector('.add-form select') as HTMLSelectElement;
+		await fireEvent.change(select, { target: { value: 'rtmp' } });
+		const input = container.querySelector('.add-form input[placeholder^="rtmp://"]') as HTMLInputElement;
+		await fireEvent.input(input, { target: { value: url } });
+	}
+
+	function untrustedBox(container: HTMLElement): HTMLInputElement | undefined {
+		return Array.from(container.querySelectorAll('.add-form label'))
+			.find((l) => l.textContent?.includes('Allow untrusted certificate'))
+			?.querySelector('input') as HTMLInputElement | undefined;
+	}
+
+	it('verifies by default and sends the opt-out only when ticked', async () => {
+		const { container } = render(IOPanel, { props: { state: makeState(), visible: true } });
+		await openRTMPForm(container, 'rtmps://ingest.example.com/live/key');
+		const box = untrustedBox(container);
+		expect(box).toBeTruthy();
+		expect(box!.checked).toBe(false);
+		expect(container.textContent).toContain('verified against the system CA bundle');
+
+		await fireEvent.click(box!);
+		expect(container.textContent).toContain('is not verified');
+		const create = Array.from(container.querySelectorAll('.add-form .form-btn.primary'))[0] as HTMLButtonElement;
+		await fireEvent.click(create);
+		expect(addDestination).toHaveBeenLastCalledWith(expect.objectContaining({ url: 'rtmps://ingest.example.com/live/key', allowUntrustedCert: true }));
+	});
+
+	it('offers no opt-out for plain rtmp', async () => {
+		const { container } = render(IOPanel, { props: { state: makeState(), visible: true } });
+		await openRTMPForm(container, 'rtmp://ingest.example.com/live/key');
+		expect(untrustedBox(container)).toBeUndefined();
+	});
+
+	it('shows an unverified certificate on the destination', async () => {
+		const { container } = render(IOPanel, {
+			props: {
+				state: makeState({ destinations: [{ id: 'd9', name: 'Secure', type: 'rtmp', url: 'rtmps://ingest.example.com/live/key', allowUntrustedCert: true, state: 'active' }] }),
+				visible: true,
+			},
+		});
+		const row = Array.from(container.querySelectorAll('.dest-row')).find((r) => r.textContent?.includes('Secure'))!;
+		await fireEvent.click(row.querySelector('.row-header')!);
+		expect(row.textContent).toContain('Not verified (untrusted allowed)');
 	});
 });
 

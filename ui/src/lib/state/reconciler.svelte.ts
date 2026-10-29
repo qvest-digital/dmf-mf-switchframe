@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State, ClipUploadProgress, ClipUploadStage, ClipPlayerState, DestinationInfo } from '$lib/api/types';
+import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State, ClipUploadProgress, ClipUploadStage, ClipPlayerState, MacroExecutionState, DestinationInfo } from '$lib/api/types';
 
 /** Minimum RTT delta (ms) required to switch authority based on RTT alone. Prevents jitter flapping. */
 export const RTT_HYSTERESIS_MS = 100;
@@ -164,11 +164,12 @@ function audioChannelsSettingsEqual(
 	return true;
 }
 
-/** A divergence field without its live measurements and local timestamps:
- * the limiter's meters, the elapsed and remaining time of active SCTE-35
- * events and the CBR muxer's running totals change on every state update,
- * and SCTE-35 start and log times come from each engine's own clock; they
- * differ between engines without either being out of step. */
+/** A divergence field without its live measurements, local timestamps and
+ * local history: the limiter's meters, the elapsed and remaining time of
+ * active SCTE-35 events and the CBR muxer's running totals change on every
+ * state update, SCTE-35 event and macro wait step start times come from
+ * each engine's own clock, and the SCTE-35 event log is each engine's own;
+ * they differ between engines without either being out of step. */
 function comparableField(field: keyof ControlRoomState, value: unknown): unknown {
 	if (value == null || typeof value !== 'object') return value;
 	if (field === 'limiter') {
@@ -186,10 +187,17 @@ function comparableField(field: keyof ControlRoomState, value: unknown): unknown
 			const { elapsedMs: _e, remainingMs: _r, startedAt: _s, ...rest } = ev;
 			activeEvents[id] = rest;
 		}
-		// Each engine stamps an event's start and log entries from its own
-		// clock.
-		const eventLog = (st.eventLog ?? []).map(({ timestamp: _t, ...rest }) => rest);
-		return { ...st, activeEvents, eventLog };
+		// The event log is each engine's own history, kept in memory: an
+		// engine that restarted holds none of it, and no snapshot push
+		// restores it, so comparing it would report the pair diverged for
+		// good. The events on air are compared instead.
+		const { eventLog: _l, ...rest } = st;
+		return { ...rest, activeEvents };
+	}
+	if (field === 'macro') {
+		// Each engine stamps the start of a wait step from its own clock.
+		const st = value as MacroExecutionState;
+		return { ...st, steps: (st.steps ?? []).map(({ waitStartMs: _w, ...step }) => step) };
 	}
 	return value;
 }

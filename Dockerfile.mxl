@@ -80,7 +80,7 @@ FROM ghcr.io/qvest-digital/go-mxl-runtime:${GO_MXL_TAG} AS runtime-base
 RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
  && apt-get update && apt-get install -y --no-install-recommends \
       libavcodec61 libavformat61 libavutil59 libswscale8 libswresample5 \
-      libx264-164 libfdk-aac2 libopus0 libopusfile0 curl \
+      libx264-164 libfdk-aac2 libopus0 libopusfile0 curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 COPY LICENSE /usr/share/doc/switchframe/LICENSE
 EXPOSE 8080/udp 8080/tcp 9090/tcp

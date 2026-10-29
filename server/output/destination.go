@@ -35,6 +35,9 @@ type DestinationConfig struct {
 	// every engine. A labeled engine stores "a" when none is given, so
 	// both engines of a pair agree on the sender.
 	Engine string `json:"engine,omitempty"`
+
+	// AllowUntrustedCert skips verifying an rtmps:// server certificate.
+	AllowUntrustedCert bool `json:"allowUntrustedCert,omitempty"`
 }
 
 // DestinationStatus is the runtime status of a destination.

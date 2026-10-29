@@ -101,18 +101,18 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		destInfos := make([]internal.DestinationInfo, len(dests))
 		for i, d := range dests {
 			destInfos[i] = internal.DestinationInfo{
-				ID:             d.ID,
-				Name:           d.Config.Name,
-				Type:           d.Config.Type,
-				Address:        d.Config.Address,
-				Port:           d.Config.Port,
-				URL:            d.Config.URL,
-				Engine:         d.Config.Engine,
-				State:          d.State,
-				BytesWritten:   d.BytesWritten,
-				DroppedPackets: d.DroppedPackets,
-				Connections:    d.Connections,
-				Error:          d.Error,
+				ID:                 d.ID,
+				Name:               d.Config.Name,
+				Type:               d.Config.Type,
+				Address:            d.Config.Address,
+				Port:               d.Config.Port,
+				URL:                d.Config.URL,
+				State:              d.State,
+				AllowUntrustedCert: d.Config.AllowUntrustedCert,
+				BytesWritten:       d.BytesWritten,
+				DroppedPackets:     d.DroppedPackets,
+				Connections:        d.Connections,
+				Error:              d.Error,
 			}
 		}
 		state.Destinations = destInfos
