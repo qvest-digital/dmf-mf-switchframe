@@ -258,7 +258,7 @@ func TestCORSMiddleware_AllowsEveryUIRequest(t *testing.T) {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		if strings.HasSuffix(path, ".test.ts") || !(strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".svelte")) {
+		if strings.HasSuffix(path, ".test.ts") || (!strings.HasSuffix(path, ".ts") && !strings.HasSuffix(path, ".svelte")) {
 			return nil
 		}
 		src, err := os.ReadFile(path)
