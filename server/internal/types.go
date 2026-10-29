@@ -224,17 +224,20 @@ type ReplayBufferInfo struct {
 
 // DestinationInfo describes an output destination for ControlRoomState broadcast.
 type DestinationInfo struct {
-	ID             string `json:"id"`
-	Name           string `json:"name,omitempty"`
-	Type           string `json:"type"`
-	Address        string `json:"address,omitempty"`
-	Port           int    `json:"port,omitempty"`
-	URL            string `json:"url,omitempty"` // RTMP destinations
-	State          string `json:"state"`
-	BytesWritten   int64  `json:"bytesWritten,omitempty"`
-	DroppedPackets int64  `json:"droppedPackets,omitempty"`
-	Connections    int    `json:"connections,omitempty"`
-	Error          string `json:"error,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	Type    string `json:"type"`
+	Address string `json:"address,omitempty"`
+	Port    int    `json:"port,omitempty"`
+	URL     string `json:"url,omitempty"` // RTMP destinations
+	// AllowUntrustedCert is set on an rtmps:// destination that does not
+	// verify the server certificate.
+	AllowUntrustedCert bool   `json:"allowUntrustedCert,omitempty"`
+	State              string `json:"state"`
+	BytesWritten       int64  `json:"bytesWritten,omitempty"`
+	DroppedPackets     int64  `json:"droppedPackets,omitempty"`
+	Connections        int    `json:"connections,omitempty"`
+	Error              string `json:"error,omitempty"`
 }
 
 // OperatorInfo describes a registered operator for ControlRoomState broadcast.
@@ -332,71 +335,71 @@ type PlayoutState struct {
 // ControlRoomState is the full state of the switcher control room,
 // broadcast to all connected browsers via the MoQ "control" track.
 type ControlRoomState struct {
-	ProgramSource        string                  `json:"programSource"`
-	PreviewSource        string                  `json:"previewSource"`
-	TransitionType       string                  `json:"transitionType"`
-	TransitionDurationMs int                     `json:"transitionDurationMs,omitempty"`
-	TransitionPosition   float64                 `json:"transitionPosition,omitempty"`
-	TransitionEasing     string                  `json:"transitionEasing,omitempty"`
-	InTransition         bool                    `json:"inTransition,omitempty"`
-	FTBActive            bool                    `json:"ftbActive,omitempty"`
-	FTBDurationMs        int                     `json:"ftbDurationMs,omitempty"`
-	TransitionAbortThreshold float64             `json:"transitionAbortThreshold,omitempty"`
+	ProgramSource            string  `json:"programSource"`
+	PreviewSource            string  `json:"previewSource"`
+	TransitionType           string  `json:"transitionType"`
+	TransitionDurationMs     int     `json:"transitionDurationMs,omitempty"`
+	TransitionPosition       float64 `json:"transitionPosition,omitempty"`
+	TransitionEasing         string  `json:"transitionEasing,omitempty"`
+	InTransition             bool    `json:"inTransition,omitempty"`
+	FTBActive                bool    `json:"ftbActive,omitempty"`
+	FTBDurationMs            int     `json:"ftbDurationMs,omitempty"`
+	TransitionAbortThreshold float64 `json:"transitionAbortThreshold,omitempty"`
 	// UnavailableTransitions maps each transition type this engine refuses
 	// to the reason; StartTransition fails for them.
-	UnavailableTransitions map[string]string `json:"unavailableTransitions,omitempty"`
-	DSKFadeDurationMs    int                     `json:"dskFadeDurationMs,omitempty"`
-	AudioChannels        map[string]AudioChannel `json:"audioChannels"`
-	MasterLevel          float64                 `json:"masterLevel"`
-	ProgramPeak          [2]float64              `json:"programPeak"`
-	GainReduction        float64                 `json:"gainReduction,omitempty"`
-	Limiter              *LimiterSettings        `json:"limiter,omitempty"`
-	MomentaryLUFS        float64                 `json:"momentaryLufs,omitempty"`
-	ShortTermLUFS        float64                 `json:"shortTermLufs,omitempty"`
-	IntegratedLUFS       float64                 `json:"integratedLufs,omitempty"`
-	TallyState           map[string]string       `json:"tallyState"`
-	Recording            *RecordingStatus        `json:"recording,omitempty"`
-	SRTOutput            *SRTOutputStatus        `json:"srtOutput,omitempty"`
-	Destinations         []DestinationInfo       `json:"destinations,omitempty"`
-	Sources              map[string]SourceInfo   `json:"sources"`
-	Presets              []PresetInfo            `json:"presets,omitempty"`
-	Graphics             *GraphicsState          `json:"graphics,omitempty"`
-	Layout               *LayoutState            `json:"layout,omitempty"`
-	Replay               *ReplayState            `json:"replay,omitempty"`
-	ClipPlayers          []ClipPlayerInfo        `json:"clipPlayers,omitempty"`
-	ClipCount            int                     `json:"clipCount,omitempty"`
-	ClipUpload           *ClipUploadProgress     `json:"clipUpload,omitempty"`
-	Operators            []OperatorInfo          `json:"operators,omitempty"`
-	Locks                map[string]LockInfo     `json:"locks,omitempty"`
-	PipelineFormat       *PipelineFormatInfo     `json:"pipelineFormat,omitempty"`
-	Encoder              *EncoderState           `json:"encoder,omitempty"`
-	SCTE35               *SCTE35State            `json:"scte35,omitempty"`
-	CBR                  *CBRStatus              `json:"cbr,omitempty"`
-	ConnectionInfo       *ConnectionInfo         `json:"connectionInfo,omitempty"`
-	Captions             *CaptionState           `json:"captions,omitempty"`
-	Comms                *CommsState             `json:"comms,omitempty"`
-	STMap                *STMapState             `json:"stmap,omitempty"`
-	AISegmentation       *AISegmentationState    `json:"aiSegmentation,omitempty"`
-	NeuralKey            *NeuralKeyState         `json:"neuralKey,omitempty"`
-	ASR                  *ASRState               `json:"asr,omitempty"`
-	Macro                *MacroExecutionState    `json:"macro,omitempty"`
-	ColorGrade           *ColorGradeState        `json:"colorGrade,omitempty"`
-	Playout              *PlayoutState           `json:"playout,omitempty"`
-	PeerReachable        *bool                   `json:"peerReachable,omitempty"` // nil when no peer configured
-	PeerLastSeenMs       int64                   `json:"peerLastSeenMs,omitempty"`
-	EngineLabel          string                  `json:"engineLabel,omitempty"`          // "" (standalone), "a", or "b"
-	Role                 string                  `json:"role,omitempty"`                 // "standalone" | "leader" | "follower-healthy" | "follower-partitioned"
-	EngineBURL           string                  `json:"engineBUrl,omitempty"`
-	SessionID            string                  `json:"sessionId,omitempty"`
-	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
-	Seq                  uint64                  `json:"seq"`
-	LastCommandSeq       uint64                  `json:"lastCommandSeq"`
-	LastExecutedSeq      uint64                  `json:"lastExecutedSeq"`
-	LastExecutedErr      string                  `json:"lastExecutedErr,omitempty"`
-	LateCommands         int64                   `json:"lateCommands,omitempty"`
-	RecentCommandErrors  []CommandError          `json:"recentCommandErrors,omitempty"`
-	ClockSync            ClockSyncInfo           `json:"clockSync"`
-	Timestamp            int64                   `json:"timestamp"`
+	UnavailableTransitions map[string]string       `json:"unavailableTransitions,omitempty"`
+	DSKFadeDurationMs      int                     `json:"dskFadeDurationMs,omitempty"`
+	AudioChannels          map[string]AudioChannel `json:"audioChannels"`
+	MasterLevel            float64                 `json:"masterLevel"`
+	ProgramPeak            [2]float64              `json:"programPeak"`
+	GainReduction          float64                 `json:"gainReduction,omitempty"`
+	Limiter                *LimiterSettings        `json:"limiter,omitempty"`
+	MomentaryLUFS          float64                 `json:"momentaryLufs,omitempty"`
+	ShortTermLUFS          float64                 `json:"shortTermLufs,omitempty"`
+	IntegratedLUFS         float64                 `json:"integratedLufs,omitempty"`
+	TallyState             map[string]string       `json:"tallyState"`
+	Recording              *RecordingStatus        `json:"recording,omitempty"`
+	SRTOutput              *SRTOutputStatus        `json:"srtOutput,omitempty"`
+	Destinations           []DestinationInfo       `json:"destinations,omitempty"`
+	Sources                map[string]SourceInfo   `json:"sources"`
+	Presets                []PresetInfo            `json:"presets,omitempty"`
+	Graphics               *GraphicsState          `json:"graphics,omitempty"`
+	Layout                 *LayoutState            `json:"layout,omitempty"`
+	Replay                 *ReplayState            `json:"replay,omitempty"`
+	ClipPlayers            []ClipPlayerInfo        `json:"clipPlayers,omitempty"`
+	ClipCount              int                     `json:"clipCount,omitempty"`
+	ClipUpload             *ClipUploadProgress     `json:"clipUpload,omitempty"`
+	Operators              []OperatorInfo          `json:"operators,omitempty"`
+	Locks                  map[string]LockInfo     `json:"locks,omitempty"`
+	PipelineFormat         *PipelineFormatInfo     `json:"pipelineFormat,omitempty"`
+	Encoder                *EncoderState           `json:"encoder,omitempty"`
+	SCTE35                 *SCTE35State            `json:"scte35,omitempty"`
+	CBR                    *CBRStatus              `json:"cbr,omitempty"`
+	ConnectionInfo         *ConnectionInfo         `json:"connectionInfo,omitempty"`
+	Captions               *CaptionState           `json:"captions,omitempty"`
+	Comms                  *CommsState             `json:"comms,omitempty"`
+	STMap                  *STMapState             `json:"stmap,omitempty"`
+	AISegmentation         *AISegmentationState    `json:"aiSegmentation,omitempty"`
+	NeuralKey              *NeuralKeyState         `json:"neuralKey,omitempty"`
+	ASR                    *ASRState               `json:"asr,omitempty"`
+	Macro                  *MacroExecutionState    `json:"macro,omitempty"`
+	ColorGrade             *ColorGradeState        `json:"colorGrade,omitempty"`
+	Playout                *PlayoutState           `json:"playout,omitempty"`
+	PeerReachable          *bool                   `json:"peerReachable,omitempty"` // nil when no peer configured
+	PeerLastSeenMs         int64                   `json:"peerLastSeenMs,omitempty"`
+	EngineLabel            string                  `json:"engineLabel,omitempty"` // "" (standalone), "a", or "b"
+	Role                   string                  `json:"role,omitempty"`        // "standalone" | "leader" | "follower-healthy" | "follower-partitioned"
+	EngineBURL             string                  `json:"engineBUrl,omitempty"`
+	SessionID              string                  `json:"sessionId,omitempty"`
+	LastChangedBy          string                  `json:"lastChangedBy,omitempty"`
+	Seq                    uint64                  `json:"seq"`
+	LastCommandSeq         uint64                  `json:"lastCommandSeq"`
+	LastExecutedSeq        uint64                  `json:"lastExecutedSeq"`
+	LastExecutedErr        string                  `json:"lastExecutedErr,omitempty"`
+	LateCommands           int64                   `json:"lateCommands,omitempty"`
+	RecentCommandErrors    []CommandError          `json:"recentCommandErrors,omitempty"`
+	ClockSync              ClockSyncInfo           `json:"clockSync"`
+	Timestamp              int64                   `json:"timestamp"`
 }
 
 // ClockSyncInfo reports clock-synchronization status to the browser so

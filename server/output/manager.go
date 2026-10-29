@@ -857,7 +857,8 @@ func (m *Manager) StartDestination(id string) error {
 
 	case "rtmp":
 		rtmpDirect, err := NewRTMPDirect(RTMPCallerConfig{
-			URL: dest.config.URL,
+			URL:                dest.config.URL,
+			AllowUntrustedCert: dest.config.AllowUntrustedCert,
 		})
 		if err != nil {
 			dest.mu.Unlock()
