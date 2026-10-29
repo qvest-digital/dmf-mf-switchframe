@@ -109,6 +109,7 @@ jobs:
           name: digest-${{ matrix.target }}
           path: digest-${{ matrix.target }}
           if-no-files-found: error
+          overwrite: true
           retention-days: 1
 
   # The sidecar has to start, connect, render a template and deliver frames to
@@ -166,6 +167,9 @@ jobs:
             -v "$PWD/cef-sidecar/test-templates:/smoke-templates:ro" switchframe-mxl:smoke \
             --http-fallback --api-token smoke --html5-graphics=true --cef-templates-dir /smoke-templates
           trap 'docker logs sf-smoke 2>&1 | grep -E "htmlgfx|sidecar" || true; docker rm -f sf-smoke >/dev/null' EXIT
+          # The run above overrides --cef-templates-dir, so check that the
+          # image ships the demo templates at the engine's default path.
+          docker exec sf-smoke test -f /opt/switchframe-cef/demo-templates/ograf-lower-third/index.html
           api() { curl -fsS --max-time 10 -H 'Authorization: Bearer smoke' "$@"; }
           frames() {
             curl -fsS --max-time 10 http://localhost:9090/metrics \
@@ -209,7 +213,11 @@ jobs:
     permissions:
       contents: read
       packages: write
+    concurrency:
+      group: mxl-push-${{ github.sha }}-${{ matrix.target }}
+      cancel-in-progress: false
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: cpu
