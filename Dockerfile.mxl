@@ -58,7 +58,11 @@ RUN curl -fsSLo /tmp/cef.tar.bz2 \
  && rm -f /opt/cef/Release/chrome-sandbox \
  && find /opt/cef/Resources/locales -type f ! -name en-US.pak -delete \
  && strip --strip-unneeded /opt/cef/Release/*.so*
-COPY cef-sidecar/ /src/cef-sidecar/
+# Only what CMakeLists.txt reads, so a template or test edit does not
+# recompile the sidecar.
+COPY cef-sidecar/CMakeLists.txt /src/cef-sidecar/
+COPY cef-sidecar/src/ /src/cef-sidecar/src/
+COPY cef-sidecar/resources/ /src/cef-sidecar/resources/
 # The install rpath ($ORIGIN) instead of the build tree's, so the binary
 # finds libcef.so beside it once copied out.
 RUN cmake -S /src/cef-sidecar -B /build -DCEF_ROOT=/opt/cef \
@@ -127,10 +131,10 @@ RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.li
  && rm -rf /var/lib/apt/lists/*
 COPY LICENSE /usr/share/doc/switchframe/LICENSE
 # The engine looks for switchframe-cef beside its own binary; the sidecar
-# finds libcef.so and its resources beside the link's target.
+# finds libcef.so and its resources beside the link's target. The CEF
+# distribution changes only with CEF_VERSION, so it sits below the CUDA
+# layers; the sidecar binary and the templates go in the last stages.
 COPY --from=cef /opt/cef/Release/ /opt/cef/Resources/ /opt/switchframe-cef/bin/
-COPY --from=cef /out/switchframe-cef /opt/switchframe-cef/bin/
-COPY cef-sidecar/demo-templates/ /opt/switchframe-cef/demo-templates/
 RUN ln -s /opt/switchframe-cef/bin/switchframe-cef /usr/local/bin/switchframe-cef
 EXPOSE 8080/udp 8080/tcp 9090/tcp
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
@@ -141,6 +145,8 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 ENTRYPOINT ["switchframe", "--admin-addr=0.0.0.0:9090"]
 
 FROM runtime-base AS cpu
+COPY --from=cef /out/switchframe-cef /opt/switchframe-cef/bin/
+COPY cef-sidecar/demo-templates/ /opt/switchframe-cef/demo-templates/
 COPY --from=build-cpu /out/switchframe /usr/local/bin/switchframe
 
 FROM runtime-base AS cuda
@@ -155,4 +161,6 @@ RUN curl -fsSLo /tmp/keyring.deb https://developer.download.nvidia.com/compute/c
 # Read by the NVIDIA container runtime: NVENC and NVDEC need the video
 # capability on top of compute.
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+COPY --from=cef /out/switchframe-cef /opt/switchframe-cef/bin/
+COPY cef-sidecar/demo-templates/ /opt/switchframe-cef/demo-templates/
 COPY --from=build-cuda /out/switchframe /usr/local/bin/switchframe
