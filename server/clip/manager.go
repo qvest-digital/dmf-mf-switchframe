@@ -236,24 +236,30 @@ func (m *Manager) Load(playerID int, clipID string) error {
 // keeps into the next pass holds the previous pass's references and puts
 // out wrong pictures for them. Starting at the keyframe gives every pass
 // the same pictures, and the audio, spread over the pictures, stays with
-// them. A clip with no keyframe, or one that starts on a keyframe
-// without leading pictures, is returned as it is, with any audio
-// before its first picture.
+// them. Audio is cut only when a frame was: the AAC frame that spans the
+// keyframe stays, and so does all audio of a clip that starts on a
+// keyframe.
+//
+// A frame demuxed without a PTS carries 0 and is never a leading
+// picture. Across a PTS wrap presentation order cannot be read from the
+// PTS, so leading pictures and audio are kept and only the frames before
+// the keyframe go. A clip with no keyframe is returned as it is.
 func fromFirstKeyframe(frames []BufferedFrame, audio []BufferedAudioFrame) ([]BufferedFrame, []BufferedAudioFrame) {
 	first := slices.IndexFunc(frames, func(f BufferedFrame) bool { return f.isKeyframe })
 	if first < 0 {
 		return frames, audio
 	}
 	key := frames[first].pts
+	wrapped := ptsWraps(frames, audio)
 	// Capacity 1 makes the first append copy, leaving the demuxed slice as
 	// it was.
 	kept := frames[first : first+1 : first+1]
-	leading := true
+	leading := !wrapped
 	for _, f := range frames[first+1:] {
 		if f.isKeyframe {
 			leading = false
 		}
-		if leading && f.pts < key {
+		if leading && f.pts != 0 && f.pts < key {
 			continue
 		}
 		kept = append(kept, f)
@@ -261,10 +267,40 @@ func fromFirstKeyframe(frames []BufferedFrame, audio []BufferedAudioFrame) ([]Bu
 	if len(kept) == len(frames) {
 		return frames, audio
 	}
+	if wrapped {
+		return kept, audio
+	}
 	audio = audio[sort.Search(len(audio), func(j int) bool {
-		return audio[j].pts >= key
+		return audio[j].pts >= key || audio[j].pts+aacFrameTicks(audio[j]) > key
 	}):]
 	return kept, audio
+}
+
+// ptsWraps reports whether the video or the audio PTS steps back by more
+// than half the 33-bit PTS range, which reordering never does and a
+// wrap always does.
+func ptsWraps(frames []BufferedFrame, audio []BufferedAudioFrame) bool {
+	const half = 1 << 32
+	for i := 1; i < len(frames); i++ {
+		if frames[i-1].pts-frames[i].pts > half {
+			return true
+		}
+	}
+	for i := 1; i < len(audio); i++ {
+		if audio[i-1].pts-audio[i].pts > half {
+			return true
+		}
+	}
+	return false
+}
+
+// aacFrameTicks is the duration of an AAC frame of 1024 samples in 90 kHz
+// ticks, 0 when the sample rate is unknown.
+func aacFrameTicks(a BufferedAudioFrame) int64 {
+	if a.sampleRate <= 0 {
+		return 0
+	}
+	return 1024 * 90000 / int64(a.sampleRate)
 }
 
 // LoadByName resolves a clip name to its ID via the store and loads it

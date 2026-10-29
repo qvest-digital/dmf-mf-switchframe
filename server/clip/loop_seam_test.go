@@ -262,7 +262,10 @@ func (r *loopRecorder) waitPics(t *testing.T, n int, timeout time.Duration) {
 func TestManagerLoopSkipsFramesBeforeFirstKeyframe(t *testing.T) {
 	const n, passes = 20, 3
 	// Each frame is {nal, pts in frame periods}, in decode order; a frame's
-	// picture and the audio frame at its pts carry its index.
+	// picture and the audio frame at its pts carry its index. PTS start one
+	// period in, since a PTS of 0 reads as none. At 51.2 kHz an AAC frame
+	// lasts one frame period, so none spans the keyframe and every
+	// picture has one audio frame.
 	cases := []struct {
 		name   string
 		frames func(i int) (nal byte, pts int)
@@ -301,8 +304,8 @@ func TestManagerLoopSkipsFramesBeforeFirstKeyframe(t *testing.T) {
 			audio := make([]BufferedAudioFrame, n)
 			for i := range frames {
 				nal, pts := tc.frames(i)
-				frames[i] = BufferedFrame{wireData: []byte{0, 0, 0, 2, nal, byte(i)}, pts: int64(pts) * 1800, isKeyframe: nal == 0x65 || nal == 0x61}
-				audio[i] = BufferedAudioFrame{data: []byte{byte(i)}, pts: int64(i) * 1800, sampleRate: 48000, channels: 2}
+				frames[i] = BufferedFrame{wireData: []byte{0, 0, 0, 2, nal, byte(i)}, pts: int64(pts+1) * 1800, isKeyframe: nal == 0x65 || nal == 0x61}
+				audio[i] = BufferedAudioFrame{data: []byte{byte(i)}, pts: int64(i+1) * 1800, sampleRate: 51200, channels: 2}
 			}
 			dir := t.TempDir()
 			store, err := NewStore(dir, 1<<30)
@@ -363,8 +366,8 @@ func seq(from, to int) []byte {
 
 // The same with the real demuxer and decoder, on 50 fps clips cut before
 // their first keyframe. Every pass puts out the pictures of the first,
-// and each starts its audio with the first audio frame at or after the
-// keyframe, then plays all audio from there.
+// and each starts its audio with the AAC frame that spans the keyframe,
+// then plays all audio from there.
 func TestManagerLoopCutBeforeKeyframeIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -382,13 +385,15 @@ func TestManagerLoopCutBeforeKeyframeIntegration(t *testing.T) {
 			writeCutTS(t, path, cut.args)
 
 			// What a pass has to play, read from the file: the audio from
-			// the first keyframe's PTS on.
+			// the frame that spans the first keyframe's PTS on.
 			frames, srcAudio, err := DemuxFile(path)
 			require.NoError(t, err)
 			first := slices.IndexFunc(frames, func(f BufferedFrame) bool { return f.isKeyframe })
 			require.Positive(t, first, "the cut has to start before a keyframe")
-			start := slices.IndexFunc(srcAudio, func(a BufferedAudioFrame) bool { return a.pts >= frames[first].pts })
+			key := frames[first].pts
+			start := slices.IndexFunc(srcAudio, func(a BufferedAudioFrame) bool { return a.pts+aacFrameTicks(a) > key })
 			require.Positive(t, start)
+			require.Less(t, srcAudio[start].pts, key, "the clip has to have an audio frame spanning the keyframe")
 			wantAudio := len(srcAudio) - start
 
 			store, err := NewStore(dir, 1<<30)
@@ -422,7 +427,7 @@ func TestManagerLoopCutBeforeKeyframeIntegration(t *testing.T) {
 			for pass := 0; pass < passes; pass++ {
 				at := rec.audioAtPics[pass*shown]
 				assert.True(t, bytes.Equal(srcAudio[start].data, rec.audio[at]),
-					"pass %d does not start its audio at the first frame from the keyframe on", pass)
+					"pass %d does not start its audio at the frame spanning the keyframe", pass)
 				got := rec.audioAtPics[(pass+1)*shown] - at
 				assert.Equal(t, wantAudio, got, "audio frames in pass %d", pass)
 			}
@@ -445,6 +450,77 @@ func TestFromFirstKeyframeKeepsKeyframeStart(t *testing.T) {
 	gotFrames, gotAudio := fromFirstKeyframe(frames, audio)
 	assert.Equal(t, frames, gotFrames)
 	assert.Equal(t, audio, gotAudio)
+}
+
+// A clip cut before its keyframe keeps the AAC frame that spans the
+// keyframe, as a playout channel does: dropping it starts the sound up
+// to one AAC frame after the first picture.
+func TestFromFirstKeyframeKeepsAudioSpanningKeyframe(t *testing.T) {
+	frames := []BufferedFrame{
+		{pts: 1800},
+		{pts: 2 * 1800, isKeyframe: true},
+		{pts: 3 * 1800},
+	}
+	// 1920 ticks each: the second ends at 3720, after the keyframe.
+	audio := []BufferedAudioFrame{
+		{pts: 0, sampleRate: 48000},
+		{pts: 1800, sampleRate: 48000},
+		{pts: 3720, sampleRate: 48000},
+	}
+	gotFrames, gotAudio := fromFirstKeyframe(frames, audio)
+	assert.Equal(t, frames[1:], gotFrames)
+	assert.Equal(t, audio[1:], gotAudio)
+}
+
+// The TS demuxer gives a frame without a PTS the PTS 0. Its place in
+// presentation order is unknown, so it is not a leading picture and the
+// clip plays every frame.
+func TestFromFirstKeyframeKeepsFramesWithoutPTS(t *testing.T) {
+	frames := []BufferedFrame{
+		{pts: 70 * 1800, isKeyframe: true},
+		{pts: 0},
+		{pts: 0},
+		{pts: 73 * 1800},
+		{pts: 74 * 1800, isKeyframe: true},
+	}
+	audio := []BufferedAudioFrame{
+		{pts: 69 * 1800, sampleRate: 48000},
+		{pts: 70 * 1800, sampleRate: 48000},
+	}
+	gotFrames, gotAudio := fromFirstKeyframe(frames, audio)
+	assert.Equal(t, frames, gotFrames)
+	assert.Equal(t, audio, gotAudio)
+}
+
+// Across a PTS wrap every picture after the wrap reads as before the
+// keyframe and so does the audio, which emptied most of the first GOP and
+// the sound with it. Across a wrap only the frames before the keyframe go.
+func TestFromFirstKeyframeAcrossPTSWrap(t *testing.T) {
+	const wrap = 1 << 33
+	pts := func(i int) int64 { return (wrap - 3*1800 + int64(i)*1800 + 900) % wrap }
+	clip := func(n int) ([]BufferedFrame, []BufferedAudioFrame) {
+		frames := make([]BufferedFrame, n)
+		audio := make([]BufferedAudioFrame, n)
+		for i := range frames {
+			frames[i] = BufferedFrame{pts: pts(i), isKeyframe: i%50 == 0}
+			audio[i] = BufferedAudioFrame{pts: pts(i) - 900, sampleRate: 48000}
+		}
+		return frames, audio
+	}
+
+	t.Run("starts on a keyframe", func(t *testing.T) {
+		frames, audio := clip(100)
+		gotFrames, gotAudio := fromFirstKeyframe(frames, audio)
+		assert.Equal(t, frames, gotFrames)
+		assert.Equal(t, audio, gotAudio)
+	})
+	t.Run("cut before a keyframe", func(t *testing.T) {
+		frames, audio := clip(100)
+		frames[0].isKeyframe, frames[1].isKeyframe = false, true
+		gotFrames, gotAudio := fromFirstKeyframe(frames, audio)
+		assert.Equal(t, frames[1:], gotFrames)
+		assert.Equal(t, audio, gotAudio)
+	})
 }
 
 func TestFromFirstKeyframeKeepsKeyframeStartIntegration(t *testing.T) {
