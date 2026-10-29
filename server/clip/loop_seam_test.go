@@ -108,15 +108,16 @@ func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
 	}
 	// Output i is due i periods after output 0, which anchors the pacing,
 	// and comes out a decode call after that. Measured against that grid,
-	// no output is ahead of its slot, and a wrap costs no time: each pass
-	// sits where the first one does. A pass's median offset ignores the
-	// odd output a busy host delays; a decoder refill at the wrap moves
-	// every output after it.
+	// no output is ahead of its slot or held far past it, and a wrap costs
+	// no time: each pass sits where the first one does. A pass's median
+	// offset ignores the odd output a busy host delays; a decoder refill at
+	// the wrap moves every output after it.
 	period := 20 * time.Millisecond
 	offset := make([]time.Duration, len(at))
 	for i := range at {
 		offset[i] = at[i].Sub(at[0]) - time.Duration(i)*period
 		assert.Greater(t, offset[i], -period/2, "output %d (picture %d) ahead of its slot", i, shown[i])
+		assert.Less(t, offset[i], 3*period, "output %d (picture %d) held past its slot", i, shown[i])
 	}
 	first := medianDuration(offset[:pictures])
 	for pass := 1; pass*pictures < len(offset); pass++ {

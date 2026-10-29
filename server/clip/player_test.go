@@ -1976,15 +1976,16 @@ func TestPlayerDelayedDecoderKeepsPacingAndLipSync(t *testing.T) {
 		assert.Equal(t, k, n, "audio frames emitted before picture %d", k)
 	}
 
-	// No picture comes out ahead of its slot. Slot k starts k periods after
-	// picture 0, which anchors the pacing. A decoded picture leaves a decode
-	// call after its slot starts and a drained one does not, and a late
-	// picture is followed by a short gap on the absolute schedule, so the
-	// gap between two pictures says nothing on its own; the offset from the
-	// slot grid does.
+	// No picture comes out ahead of its slot or is held far past it. Slot
+	// k starts k periods after picture 0, which anchors the pacing. A
+	// decoded picture leaves a decode call after its slot starts and a
+	// drained one does not, and a late picture is followed by a short gap
+	// on the absolute schedule, so the gap between two pictures says
+	// nothing on its own; the offset from the slot grid does.
 	period := time.Second / 30
 	for k := 1; k < len(videoAt); k++ {
-		early := time.Duration(k)*period - videoAt[k].Sub(videoAt[0])
-		assert.Less(t, early, period/2, "picture %d ahead of its slot", k)
+		late := videoAt[k].Sub(videoAt[0]) - time.Duration(k)*period
+		assert.Greater(t, late, -period/2, "picture %d ahead of its slot", k)
+		assert.Less(t, late, 3*period, "picture %d held past its slot", k)
 	}
 }
