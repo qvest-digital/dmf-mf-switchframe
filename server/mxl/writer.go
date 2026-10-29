@@ -207,9 +207,8 @@ func (w *Writer) WriteDataGrain(data []byte) error {
 	return nil
 }
 
-// WriteVideo converts a YUV420p frame to V210 and stores it for the
-// the video goroutine. Does NOT write to MXL directly — the
-// video goroutine handles that at a fixed frame rate.
+// WriteVideo converts a YUV420p frame to V210 and hands it to the video
+// goroutine, which writes it to MXL.
 //
 // Called from a single goroutine (video processing loop).
 func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
