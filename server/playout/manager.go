@@ -42,6 +42,9 @@ type Manager struct {
 	// GPU source tap for live source pass-through (CPU fallback).
 	gpuSourceTap func(channelKey, sourceKey string) *DecodedFrame
 
+	// Told the live sources a channel airs now or next.
+	liveSourcePrep func(sourceKey string)
+
 	// Pipeline format for all channels.
 	pipelineWidth  int
 	pipelineHeight int
@@ -144,6 +147,7 @@ func (m *Manager) Start(channelID int) error {
 	wd := m.watchdog
 	gpuAliasFn := m.gpuAlias
 	gpuTap := m.gpuSourceTap
+	liveSourcePrep := m.liveSourcePrep
 	liveAudioFn := m.onLiveAudio
 	m.mu.Unlock()
 
@@ -220,6 +224,10 @@ func (m *Manager) Start(channelID int) error {
 		ch.SetGPUSourceTap(func(sourceKey string) *DecodedFrame {
 			return gpuTap(channelKey, sourceKey)
 		})
+	}
+
+	if liveSourcePrep != nil {
+		ch.SetLiveSourcePrepare(liveSourcePrep)
 	}
 
 	// Wire pod board callbacks.
@@ -677,6 +685,14 @@ func (m *Manager) SetGPUSourceTap(fn func(channelKey, sourceKey string) *Decoded
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.gpuSourceTap = fn
+}
+
+// SetLiveSourcePrepare registers a function told the sources of the live
+// items each channel airs now or next, ahead of the tap reading them.
+func (m *Manager) SetLiveSourcePrepare(fn func(sourceKey string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.liveSourcePrep = fn
 }
 
 // SetPipelineFormat configures the video dimensions and frame rate for all channels.

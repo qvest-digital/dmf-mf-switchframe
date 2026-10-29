@@ -226,6 +226,15 @@ func (a *App) initPlayout() error {
 		}
 	})
 
+	// The switcher copies a source's pictures only once something asks for
+	// them, so the item after the one on air is asked for ahead of time.
+	// The GPU source manager caches every source anyway.
+	mgr.SetLiveSourcePrepare(func(sourceKey string) {
+		if gs := a.gpu(); gs == nil || gs.sourceManager == nil {
+			a.sw.ArmLiveTap(sourceKey)
+		}
+	})
+
 	// Live audio routing: forward live source's audio to playout mixer channel.
 	mgr.SetOnLiveAudio(func(channelKey, liveSourceKey string, active bool) {
 		if active {

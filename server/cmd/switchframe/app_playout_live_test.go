@@ -61,6 +61,7 @@ func TestInitPlayout_LiveItemAirsInputWithoutGPU(t *testing.T) {
 	})
 
 	a.sw.RegisterMXLSourceLabeled("mxl:mxl-1", "sender-a")
+	a.sw.RegisterMXLSourceLabeled("mxl:mxl-2", "sender-b")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
@@ -72,6 +73,12 @@ func TestInitPlayout_LiveItemAirsInputWithoutGPU(t *testing.T) {
 				return
 			case <-tick.C:
 			}
+			// The next item's input first, so that any picture of the
+			// input on air that came after both were armed implies one of it.
+			a.sw.IngestRawVideo("mxl:mxl-2", &switcher.ProcessingFrame{
+				Data: append([]byte(nil), picture...), Format: switcher.ColorYUV420_8bit,
+				Width: w, Height: h, PTS: pts, DTS: pts, Codec: "h264",
+			})
 			a.sw.IngestRawVideo("mxl:mxl-1", &switcher.ProcessingFrame{
 				Data: append([]byte(nil), picture...), Format: switcher.ColorYUV420_8bit,
 				Width: w, Height: h, PTS: pts, DTS: pts, Codec: "h264",
@@ -81,6 +88,7 @@ func TestInitPlayout_LiveItemAirsInputWithoutGPU(t *testing.T) {
 
 	require.NoError(t, a.playoutMgr.LoadPlaylist(1, &playout.Playlist{ID: "pl", Name: "pl", Items: []playout.PlaylistItem{
 		{ID: "l", Type: playout.ItemLive, Source: "mxl:mxl-1", Title: "cam"},
+		{ID: "n", Type: playout.ItemLive, Source: "mxl:mxl-2", Title: "next cam"},
 	}}))
 	require.NoError(t, a.playoutMgr.Start(1))
 	defer func() { _ = a.playoutMgr.Stop(1) }()
@@ -90,4 +98,16 @@ func TestInitPlayout_LiveItemAirsInputWithoutGPU(t *testing.T) {
 		defer mu.Unlock()
 		return aired
 	}, 10*time.Second, 20*time.Millisecond, "the channel must air the input's picture, not its idle picture")
+
+	// Airing the next item's input on its first tick needs its picture
+	// before anything reads it: the first read of an unarmed source is nil.
+	mu.Lock()
+	aired = false
+	mu.Unlock()
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return aired
+	}, 10*time.Second, 20*time.Millisecond)
+	require.NotNil(t, a.sw.ReadLiveTap("mxl:mxl-2"), "the item after the one on air must be armed")
 }

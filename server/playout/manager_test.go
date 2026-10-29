@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/zsiec/switchframe/server/internal/video"
 )
 
@@ -536,6 +538,29 @@ func TestManager_SetAudioOutput_PropagatesToChannels(t *testing.T) {
 			t.Errorf("call[%d].channels = %d, want 2", i, call.channels)
 		}
 	}
+}
+
+// A channel told nobody about the live item it starts with or airs next,
+// so a tap that keeps pictures only on request had none on its first tick.
+func TestManager_SetLiveSourcePrepare_PropagatesToChannels(t *testing.T) {
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}})
+	defer m.Close()
+	var mu sync.Mutex
+	prepared := map[string]bool{}
+	m.SetLiveSourcePrepare(func(sourceKey string) {
+		mu.Lock()
+		defer mu.Unlock()
+		prepared[sourceKey] = true
+	})
+
+	require.NoError(t, m.LoadPlaylist(1, testPlaylist(liveItem("a", "cam-1"), liveItem("b", "cam-2"), liveItem("c", "cam-3"))))
+	require.NoError(t, m.Start(1))
+	defer func() { _ = m.Stop(1) }()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, map[string]bool{"cam-1": true, "cam-2": true}, prepared,
+		"Start prepares the item it airs and the one after it, nothing further ahead")
 }
 
 func TestManager_SetGPUSourceTap_PropagatesToChannels(t *testing.T) {
