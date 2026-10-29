@@ -881,3 +881,65 @@ func TestManager_RecoverChannel_NoPlaylist(t *testing.T) {
 		t.Error("expected error for channel with no playlist")
 	}
 }
+
+// A cue survives an engine restart: the persisted cursor of a cued channel
+// is the cued item, and Start after recovery puts that item on air.
+func TestManager_Recover_KeepsCue(t *testing.T) {
+	provider := fakeProvider(5)
+	pl := testPlaylist(liveItem("a", "cam-1"), liveItem("b", "cam-2"), liveItem("c", "cam-3"))
+
+	m1 := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
+	if err := m1.LoadPlaylist(1, pl); err != nil {
+		t.Fatal(err)
+	}
+	if err := m1.JumpTo(1, "c"); err != nil {
+		t.Fatal(err)
+	}
+	snap := m1.Snapshot()
+	statePath := filepath.Join(t.TempDir(), "playout-state.json")
+	if err := atomicWriteJSON(statePath, &snap); err != nil {
+		t.Fatal(err)
+	}
+
+	m2 := NewManager(ManagerConfig{AssetProvider: provider, AllowedLocalPrefixes: []string{"/"}})
+	if err := m2.Recover(statePath); err != nil {
+		t.Fatal(err)
+	}
+	defer m2.Close()
+	if st := m2.ChannelStates()[0]; st.State != "cued" || st.CurrentItemID != "c" {
+		t.Fatalf("after recovery: state %q item %q, want cued at c", st.State, st.CurrentItemID)
+	}
+	if err := m2.Start(1); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if st := m2.ChannelStates()[0]; st.State != "on_air" || st.CurrentItemID != "c" {
+		t.Fatalf("after Start: state %q item %q, want on air at c", st.State, st.CurrentItemID)
+	}
+}
+
+// RecoverChannel re-cues at the current item and restarts there, not at
+// the top of the playlist.
+func TestManager_RecoverChannel_ResumesAtCurrentItem(t *testing.T) {
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
+	defer m.Close()
+	pl := testPlaylist(liveItem("a", "cam-1"), liveItem("b", "cam-2"))
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Start(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Next(1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return m.ChannelStates()[0].CurrentItemID == "b" })
+
+	if err := m.RecoverChannel(1); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if st := m.ChannelStates()[0]; st.State != "on_air" || st.CurrentItemID != "b" {
+		t.Fatalf("after RecoverChannel: state %q item %q, want on air at b", st.State, st.CurrentItemID)
+	}
+}

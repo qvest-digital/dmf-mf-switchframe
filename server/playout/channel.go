@@ -856,12 +856,15 @@ func (c *Channel) SetGPUSourceTap(fn func(sourceKey string) *DecodedFrame) {
 }
 
 // SetCursor overrides the scheduler's cursor position. Used by the Manager
-// during state recovery to restore the exact playlist position.
+// during state recovery to restore the exact playlist position, which the
+// next Start puts on air.
 func (c *Channel) SetCursor(cursor int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.scheduler.mu.Lock()
 	c.scheduler.cursor = cursor
+	// The restored position is a cue: Start puts this item on air.
+	c.scheduler.startAt = cursor
 	c.scheduler.resetItemState()
 	// Restoring a cursor must also clear any in-flight transition. If the
 	// scheduler was mid-transition (SchedTransitioning), the next Tick would
