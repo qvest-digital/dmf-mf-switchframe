@@ -25,6 +25,8 @@ let sent: SentUpload[];
 let respond: (url: string, attempt: number, id: string) => { status: number; body: unknown };
 /** Engines whose upload is held open until release() is called. */
 let held: Map<string, FakeXHR | undefined>;
+import { changesInFlight } from '$lib/util/activity';
+
 let fetchMock: ReturnType<typeof vi.fn>;
 
 class FakeXHR {
@@ -121,6 +123,18 @@ describe('uploadClip (dual engine)', () => {
 
 		release(A);
 		expect((await done).id).toBe(sent[0].id);
+	});
+
+	// A page that reloads itself while an upload runs would drop the upload.
+	it('counts an upload as a change in flight until every engine answered', async () => {
+		hold(B);
+		const done = uploadClip(new File(['data'], 'bunny.mov'));
+		await Promise.resolve();
+		expect(changesInFlight()).toBe(true);
+
+		release(B);
+		await done;
+		expect(changesInFlight()).toBe(false);
 	});
 
 	it('waits for a secondary that takes longer than the primary, however long', async () => {
