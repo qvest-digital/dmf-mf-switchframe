@@ -465,9 +465,9 @@ type RecordingFileInfo struct {
 	ModTime  time.Time `json:"modTime"`
 }
 
-// recordingDirs returns the directories recordings are listed and imported
-// from, as absolute paths: where they are written, then where finished ones
-// are archived.
+// recordingDirs returns the directories recordings are imported from and
+// downloaded from, as absolute paths: where they are written, and the
+// archive with every engine's subdirectory in it.
 func (a *API) recordingDirs() []string {
 	var dirs []string
 	for _, d := range []string{a.loadRecordingDir(), a.recArchiveDir} {
@@ -502,9 +502,36 @@ func (a *API) inRecordingDirs(path string) bool {
 	return false
 }
 
-// handleClipRecordings lists available recording files for clip import.
-// Returns .ts files in the recording directory and the recording archive,
-// excluding the currently active recording file (if any).
+// recordingFiles lists the .ts files directly in dir.
+func recordingFiles(dir string) []RecordingFileInfo {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []RecordingFileInfo
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(name), ".ts") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, RecordingFileInfo{
+			Filename: name,
+			Path:     filepath.Join(dir, name),
+			ByteSize: info.Size(),
+			ModTime:  info.ModTime(),
+		})
+	}
+	return out
+}
+
+// handleClipRecordings lists available recording files for clip import:
+// the .ts files in the recording directory, except the one being recorded,
+// and those in the recording archive and in each engine's subdirectory of
+// it, so recordings any engine made in an earlier run are offered too.
 func (a *API) handleClipRecordings(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -517,48 +544,37 @@ func (a *API) handleClipRecordings(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	var result []RecordingFileInfo
-	listed := map[string]bool{}
-	archive := filepath.Clean(a.recArchiveDir)
-	for _, recDir := range a.recordingDirs() {
-		entries, err := os.ReadDir(recDir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if entry.IsDir() {
+	result := []RecordingFileInfo{}
+	local := map[string]bool{}
+	if dir := a.loadRecordingDir(); dir != "" {
+		for _, f := range recordingFiles(dir) {
+			if f.Filename == activeFilename {
 				continue
 			}
-			name := entry.Name()
-			if !strings.HasSuffix(strings.ToLower(name), ".ts") {
-				continue
-			}
-			// The active file is only ever in the recording directory;
-			// an archived file of the same name is a finished one.
-			if name == activeFilename && recDir != archive {
-				continue
-			}
-			// A file both written and already archived, on its way out of
-			// the recording directory, is listed once.
-			if listed[name] {
-				continue
-			}
-			info, err := entry.Info()
-			if err != nil {
-				continue
-			}
-			listed[name] = true
-			result = append(result, RecordingFileInfo{
-				Filename: name,
-				Path:     filepath.Join(recDir, name),
-				ByteSize: info.Size(),
-				ModTime:  info.ModTime(),
-			})
+			local[f.Filename] = true
+			result = append(result, f)
 		}
 	}
-
-	if result == nil {
-		result = []RecordingFileInfo{}
+	if root := a.recArchiveDir; root != "" {
+		dirs := []string{root}
+		if entries, err := os.ReadDir(root); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					dirs = append(dirs, filepath.Join(root, e.Name()))
+				}
+			}
+		}
+		own := filepath.Clean(a.recArchiveOwn)
+		for _, dir := range dirs {
+			for _, f := range recordingFiles(dir) {
+				// This engine's file, archived but not yet removed from
+				// the recording directory, is listed once.
+				if filepath.Clean(dir) == own && local[f.Filename] {
+					continue
+				}
+				result = append(result, f)
+			}
+		}
 	}
 	_ = json.NewEncoder(w).Encode(result)
 }

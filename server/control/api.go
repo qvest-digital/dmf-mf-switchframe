@@ -515,9 +515,12 @@ func WithAllowedOutputPorts(ports []int) APIOption {
 }
 
 // WithRecordingArchiveDir sets the directory finished recordings are
-// archived to, listed for import beside the recording directory.
-func WithRecordingArchiveDir(dir string) APIOption {
-	return func(a *API) { a.recArchiveDir = dir }
+// archived to, every engine sharing it into a subdirectory named after its
+// label, and own the one this engine archives to. All of it is listed for
+// import beside the recording directory, so a later run sees what any
+// engine recorded.
+func WithRecordingArchiveDir(root, own string) APIOption {
+	return func(a *API) { a.recArchiveDir, a.recArchiveOwn = root, own }
 }
 
 // WithRecordingDir sets the directory where recordings are stored.
@@ -557,6 +560,7 @@ type API struct {
 	playoutSamples     []playout.SampleClip
 	recordingDir       atomic.Pointer[string]
 	recArchiveDir      string // finished recordings, listed beside recordingDir
+	recArchiveOwn      string // where in recArchiveDir this engine archives
 	operatorStore      *operator.Store
 	sessionMgr         *operator.SessionManager
 	scte35             SCTE35API
