@@ -19,6 +19,7 @@ import (
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/metrics"
+	"github.com/zsiec/switchframe/server/mxl"
 	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/replay"
 )
@@ -67,6 +68,9 @@ func (a *App) registerSubsystemCollectors() {
 	// Reads the peer poller, which initAPI creates after this, at scrape
 	// time.
 	cs = append(cs, &redundancyCollector{a: a})
+	// initMXL has run: the configured inputs do not change after start.
+	sources := a.mxlSources
+	cs = append(cs, &mxlReaderCollector{sources: func() []*mxl.Source { return sources }})
 	registerCollectors(metrics.GetRegistry(), cs...)
 }
 

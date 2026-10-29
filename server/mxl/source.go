@@ -303,6 +303,18 @@ func (s *Source) Stop() {
 	})
 }
 
+// ReaderStats returns what each of the source's readers has lost, by
+// essence: video, audio and data, for the readers the source runs.
+func (s *Source) ReaderStats() map[string]ReaderStats {
+	out := map[string]ReaderStats{}
+	for essence, r := range map[string]*Reader{"video": s.videoReader, "audio": s.audioReader, "data": s.dataReader} {
+		if r != nil {
+			out[essence] = r.Stats()
+		}
+	}
+	return out
+}
+
 // FlowName returns the human-readable source name from the config.
 func (s *Source) FlowName() string {
 	return s.config.FlowName
