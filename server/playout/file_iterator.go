@@ -182,15 +182,17 @@ func NewFileFrameIteratorWithDecoder(path string, factory DecoderFactory) (*File
 }
 
 // newFileFrameIterator builds an iterator over demuxed frames. A stream cut
-// mid-GOP starts with frames that reference pictures it does not carry. A
-// fresh decoder drops them, but one that keeps running into the next pass
-// of a loop holds the previous pass's references and puts out wrong
-// pictures for them, so every pass would be longer than the first. They
-// are dropped here, with the audio that ends before the first keyframe, so
-// every pass starts at the keyframe with its audio and frame indices count
-// shown pictures. The audio is dropped even when the stream starts at the
-// keyframe: a clip whose video was cut and audio was not would otherwise
-// play the cut-off audio over its first pictures.
+// mid-GOP starts with frames that reference pictures it does not carry, and
+// a stream cut at an open-GOP keyframe follows it with leading pictures,
+// shown before it, that reference the GOP before. A fresh decoder drops
+// both, but one that keeps running into the next pass of a loop holds the
+// previous pass's references and puts out wrong pictures for them, so
+// every pass would differ from the first. They are dropped here, with the
+// audio that ends before the first keyframe, so every pass starts at the
+// keyframe with its audio and frame indices count shown pictures. The
+// audio is dropped even when the stream starts at the keyframe: a clip
+// whose video was cut and audio was not would otherwise play the cut-off
+// audio over its first pictures.
 func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decoder VideoDecoder, factory DecoderFactory) *FileFrameIterator {
 	for i, ef := range encoded {
 		if !ef.isKeyframe {
@@ -199,7 +201,16 @@ func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decode
 		audio = audio[sort.Search(len(audio), func(j int) bool {
 			return audio[j].pts >= ef.pts || audio[j].pts+audioFrameTicks(audio[j]) > ef.pts
 		}):]
-		encoded = encoded[i:]
+		// Leading pictures come before the next keyframe in decode order
+		// and below the keyframe in presentation order.
+		kept := []encodedFrame{ef}
+		j := i + 1
+		for ; j < len(encoded) && !encoded[j].isKeyframe; j++ {
+			if encoded[j].pts >= ef.pts {
+				kept = append(kept, encoded[j])
+			}
+		}
+		encoded = append(kept, encoded[j:]...)
 		break
 	}
 

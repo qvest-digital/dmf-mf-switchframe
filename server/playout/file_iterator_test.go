@@ -1628,6 +1628,53 @@ func TestFileFrameIterator_LoopSkipsFramesBeforeFirstKeyframe(t *testing.T) {
 	}
 }
 
+// A stream cut at an open-GOP keyframe follows it with leading pictures,
+// shown before it, that reference the GOP before. A fresh decoder drops
+// them; a pass has to drop them too, or it shows pictures a fresh decode
+// does not and TotalFrames counts them.
+func TestFileFrameIterator_LoopDropsLeadingPictures(t *testing.T) {
+	const passes = 3
+	pts := []int64{2, 0, 1, 3, 4, 5, 6, 7, 8, 9}
+	encoded := make([]encodedFrame, len(pts))
+	for i := range encoded {
+		nal := byte(0x41)
+		if i == 0 {
+			nal = 0x65
+		}
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: pts[i] * 1800, isKeyframe: i == 0}
+	}
+	iter := newFileFrameIterator(encoded, nil, &delayDecoder{depth: 2},
+		func() (VideoDecoder, error) { return &delayDecoder{depth: 2}, nil })
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	want := []byte{0, 3, 4, 5, 6, 7, 8, 9}
+	for pass := 0; pass < passes; pass++ {
+		if pass > 0 {
+			if err := iter.Rewind(); err != nil {
+				t.Fatalf("pass %d: Rewind: %v", pass, err)
+			}
+		}
+		var pics []byte
+		for {
+			f, err := iter.Next()
+			if err != nil {
+				t.Fatalf("pass %d: Next: %v", pass, err)
+			}
+			if f == nil {
+				break
+			}
+			pics = append(pics, f.YUV[0])
+		}
+		if string(pics) != string(want) {
+			t.Fatalf("pass %d pictures = %v, want %v", pass, pics, want)
+		}
+	}
+	if iter.TotalFrames() != len(want) {
+		t.Fatalf("TotalFrames = %d, want %d", iter.TotalFrames(), len(want))
+	}
+}
+
 // Audio that ends before the first picture is dropped even when the stream
 // starts at its keyframe: a clip whose video was cut and audio was not
 // would otherwise play the cut-off audio over its first pictures.
