@@ -75,7 +75,7 @@ The sidecar binary ships as `switchframe-cef` (built from [`cef-sidecar/src/`](.
 
 On crash, the `sidecar.Host` observes the process exit, triggers a restart, and reconnects both sockets. The engine keeps running through the gap — browsers are transient, not durable state, and the operator sees a brief graphics blackout at worst.
 
-If the sidecar binary isn't found at startup (`switchframe-cef` beside the `switchframe` binary, or the `--cef-binary` path), `Manager.Start` logs a warning and returns `nil`; `--html5-graphics=false` skips the spawn the same way. The rest of the engine works; every HTML5 graphics REST endpoint but the template list returns 503 until the sidecar is available.
+If the sidecar binary isn't found at startup (`switchframe-cef` beside the `switchframe` binary, or the `--cef-binary` path), `Manager.Start` logs a warning and returns `nil`. The sidecar is spawned only with `--html5-graphics=true`; without it the spawn is skipped the same way. The rest of the engine works; every HTML5 graphics REST endpoint but the template list returns 503 until the sidecar is available.
 
 ### The browser pool
 

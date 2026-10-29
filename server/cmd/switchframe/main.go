@@ -435,7 +435,7 @@ func parseConfig() (AppConfig, error) {
 	asrWhisperThreadsFlag := flag.Int("asr-whisper-threads", 0, "Whisper inference threads (0 = auto: min(NumCPU, 8))")
 
 	// CEF (HTML5 graphics) sidecar flags.
-	html5GraphicsFlag := flag.Bool("html5-graphics", true, "spawn the switchframe-cef sidecar for HTML5 graphics when its binary exists; false = never spawn it")
+	html5GraphicsFlag := flag.Bool("html5-graphics", false, "spawn the switchframe-cef sidecar for HTML5 graphics when its binary exists; false = never spawn it, so no Chromium runs")
 	cefBinaryFlag := flag.String("cef-binary", "", "Path to switchframe-cef sidecar binary (relative to the switchframe binary or absolute). Empty = use built-in Linux default.")
 	cefTemplatesDirFlag := flag.String("cef-templates-dir", "", "Path to HTML5 graphics templates directory. Empty = use built-in Linux default.")
 

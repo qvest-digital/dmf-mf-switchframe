@@ -321,7 +321,7 @@ func TestParseConfig_HTML5Graphics(t *testing.T) {
 		args []string
 		want bool
 	}{
-		{"default", nil, true},
+		{"default", nil, false},
 		{"false", []string{"--html5-graphics=false"}, false},
 		{"true", []string{"--html5-graphics=true"}, true},
 	} {

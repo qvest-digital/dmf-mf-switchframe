@@ -201,7 +201,7 @@ switchframe --mxl-domain /run/mxl/domain \
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--html5-graphics` | bool | `true` | Spawn the `switchframe-cef` sidecar when its binary exists; `false`: never spawn it, and every HTML5 graphics endpoint but the template list answers 503 |
+| `--html5-graphics` | bool | `false` | `true`: spawn the `switchframe-cef` sidecar when its binary exists. `false`: never spawn it, so no Chromium process runs, and every HTML5 graphics endpoint but the template list answers 503 |
 | `--cef-binary` | string | `""` | Path to the sidecar binary, absolute or relative to the `switchframe` binary; `""`: `switchframe-cef` beside it |
 | `--cef-templates-dir` | string | `""` | Directory of HTML5 templates; `""`: `/opt/switchframe-cef/demo-templates` |
 
