@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>probe-start</title>
+<!--
+Loaded from the templates directory as a file URL. Every probe tries to
+reach something the sidecar's URL policy refuses and reports what it got
+in the title, "probe-result:<json>", which the sidecar logs. Anything a
+probe does receive is drawn on the page, so it reaches the frames too;
+refused, the page is solid green. The main frame navigation goes last:
+allowed, it replaces this page and no result is ever reported.
+-->
+<style>
+html, body { margin: 0; width: 100%; height: 100%; background: #00ff00; overflow: hidden; }
+iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+pre { position: absolute; inset: 0; margin: 0; font: 64px monospace; color: #ff0000; background: #ffffff; }
+</style>
+</head>
+<body>
+<script>
+const outside = 'file:///etc/passwd';
+const result = {page: 'file'};
+
+function leak(text) {
+    const pre = document.createElement('pre');
+    pre.textContent = text;
+    document.body.appendChild(pre);
+}
+
+// A refused navigation leaves the frame on its initial about:blank, which
+// shares this page's origin; a loaded file has an origin of its own.
+function iframe() {
+    return new Promise((resolve) => {
+        const f = document.createElement('iframe');
+        f.src = outside;
+        document.body.appendChild(f);
+        setTimeout(() => {
+            const doc = f.contentDocument;
+            resolve(doc && doc.URL === 'about:blank' && !doc.body.textContent ? 'refused' : 'loaded');
+        }, 3000);
+    });
+}
+
+function fetched(url) {
+    return fetch(url, {mode: 'no-cors'}).then(
+        (r) => r.text().then((t) => { leak(t); return 'reached'; }),
+        () => 'refused');
+}
+
+(async () => {
+    [result.file_iframe, result.file_fetch, result.http_fetch] = await Promise.all([
+        iframe(),
+        fetched(outside),
+        fetched('http://127.0.0.1:18081/from-file-page'),
+    ]);
+    document.title = 'probe-partial:' + JSON.stringify(result);
+    location.href = outside;
+    setTimeout(() => {
+        result.file_navigation = 'refused';
+        document.title = 'probe-result:' + JSON.stringify(result);
+    }, 3000);
+})();
+</script>
+</body>
+</html>

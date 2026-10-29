@@ -17,23 +17,24 @@ import (
 
 // mockHTMLGfxManager is a test double for HTMLGfxManager.
 type mockHTMLGfxManager struct {
-	allocated   map[int]int // browserID -> layerID
-	nextID      int
-	poolSize    int
-	urls        map[int]string
-	data        map[int]string
-	played      map[int]bool
-	stopped     map[int]bool
-	nexted      map[int]bool
-	customs     map[int][]customCall
-	freed       map[int]bool
-	allocateErr error
-	loadErr     error
-	playErr     error
-	stopErr     error
-	nextErr     error
-	updateErr   error
-	customErr   error
+	allocated    map[int]int // browserID -> layerID
+	nextID       int
+	poolSize     int
+	urls         map[int]string
+	data         map[int]string
+	played       map[int]bool
+	stopped      map[int]bool
+	nexted       map[int]bool
+	customs      map[int][]customCall
+	freed        map[int]bool
+	templatesDir string
+	allocateErr  error
+	loadErr      error
+	playErr      error
+	stopErr      error
+	nextErr      error
+	updateErr    error
+	customErr    error
 }
 
 type customCall struct {
@@ -80,6 +81,10 @@ func (m *mockHTMLGfxManager) BrowserForLayer(layerID int) int {
 		}
 	}
 	return -1
+}
+
+func (m *mockHTMLGfxManager) CheckURL(url string) error {
+	return htmlgfx.CheckURL(url, m.templatesDir)
 }
 
 func (m *mockHTMLGfxManager) LoadURL(browserID int, url string) error {
@@ -197,6 +202,30 @@ func TestHTML5Load_WithInitialData(t *testing.T) {
 	browserID := mgr.BrowserForLayer(layerID)
 	require.NotEqual(t, -1, browserID)
 	require.Equal(t, `{"home":0,"away":0}`, mgr.data[browserID])
+}
+
+// A URL the sidecar must not load is refused before a browser is taken.
+func TestHTML5Load_RefusesDisallowedURL(t *testing.T) {
+	for _, u := range []string{
+		"file:///var/run/secrets/kubernetes.io/serviceaccount/token",
+		"http://10.0.0.1:9090/metrics",
+		"javascript:alert(1)",
+	} {
+		mgr := newMockHTMLGfxManager(4)
+		mgr.templatesDir = t.TempDir()
+		api, _ := setupHTML5GfxTestAPI(t, mgr)
+		layerID := addLayerViaAPI(t, api)
+
+		body, _ := json.Marshal(map[string]string{"url": u})
+		req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/html5", layerID), strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusBadRequest, rec.Code, "%s: body: %s", u, rec.Body.String())
+		require.Empty(t, mgr.allocated, "%s: a browser was allocated", u)
+		require.Empty(t, mgr.urls, "%s: the URL was loaded", u)
+	}
 }
 
 func TestHTML5Load_MissingURL(t *testing.T) {

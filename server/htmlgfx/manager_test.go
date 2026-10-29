@@ -3,6 +3,7 @@ package htmlgfx
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -501,7 +502,7 @@ func TestManagerLoadAndPlay(t *testing.T) {
 	mock.waitForCommands(1, 2*time.Second)
 
 	// Load URL.
-	if err := mgr.LoadURL(id, "file:///test.html"); err != nil {
+	if err := mgr.LoadURL(id, "https://templates.test/test.html"); err != nil {
 		t.Fatalf("LoadURL: %v", err)
 	}
 
@@ -519,8 +520,8 @@ func TestManagerLoadAndPlay(t *testing.T) {
 	if cmds[1].Cmd != "load" {
 		t.Errorf("command 1: got %q, want %q", cmds[1].Cmd, "load")
 	}
-	if cmds[1].URL != "file:///test.html" {
-		t.Errorf("command 1 url: got %q, want %q", cmds[1].URL, "file:///test.html")
+	if cmds[1].URL != "https://templates.test/test.html" {
+		t.Errorf("command 1 url: got %q, want %q", cmds[1].URL, "https://templates.test/test.html")
 	}
 	if cmds[1].ID == nil || *cmds[1].ID != id {
 		t.Errorf("command 1 id: got %v, want %d", cmds[1].ID, id)
@@ -535,8 +536,8 @@ func TestManagerLoadAndPlay(t *testing.T) {
 
 	// Check state.
 	states := mgr.BrowserStates()
-	if states[id].URL != "file:///test.html" {
-		t.Errorf("browser URL: got %q, want %q", states[id].URL, "file:///test.html")
+	if states[id].URL != "https://templates.test/test.html" {
+		t.Errorf("browser URL: got %q, want %q", states[id].URL, "https://templates.test/test.html")
 	}
 	if states[id].Status != "playing" {
 		t.Errorf("browser status: got %q, want %q", states[id].Status, "playing")
@@ -803,6 +804,211 @@ func TestManagerUpdateCommand(t *testing.T) {
 	states := mgr.BrowserStates()
 	if states[id].LastData != `{"name":"Alice"}` {
 		t.Errorf("LastData: got %q, want %q", states[id].LastData, `{"name":"Alice"}`)
+	}
+}
+
+// Data sent with a load reaches the sidecar before the page's adapter
+// exists, where it is dropped. The manager has to send it again once the
+// sidecar reports the adapter's format, or the graphic plays with its
+// defaults instead of the operator's data.
+func TestManagerReplaysLastDataOnFormatDetected(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mock.close()
+	defer func() { _ = mgr.Close() }()
+
+	id, err := mgr.AllocateBrowser(0)
+	if err != nil {
+		t.Fatalf("AllocateBrowser: %v", err)
+	}
+	if err := mgr.LoadURL(id, "https://templates.test/lower-third.html"); err != nil {
+		t.Fatalf("LoadURL: %v", err)
+	}
+	if err := mgr.Update(id, `{"name":"Alice"}`); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	// create + load + update.
+	if cmds := mock.waitForCommands(3, 2*time.Second); len(cmds) != 3 {
+		t.Fatalf("expected 3 commands before format detection, got %d", len(cmds))
+	}
+
+	if err := mock.sendResponse(ControlResponse{ID: id, Event: "format_detected", Format: "ograf"}); err != nil {
+		t.Fatalf("sendResponse: %v", err)
+	}
+
+	cmds := mock.waitForCommands(4, 2*time.Second)
+	if len(cmds) != 4 {
+		t.Fatalf("expected the update to be sent again after format detection, got %d commands", len(cmds))
+	}
+	last := cmds[3]
+	if last.Cmd != "update" || last.ID == nil || *last.ID != id || last.Data != `{"name":"Alice"}` {
+		t.Errorf("replayed command: got %+v, want update of %d with the last data", last, id)
+	}
+}
+
+// Events are handled in order, so waiting for the status the last one sets
+// waits for every event before it.
+func sendEvents(t *testing.T, mock *mockSidecar, id int, events ...ControlResponse) {
+	t.Helper()
+	for _, e := range events {
+		e.ID = id
+		if err := mock.sendResponse(e); err != nil {
+			t.Fatalf("sendResponse: %v", err)
+		}
+	}
+}
+
+func countUpdates(cmds []ControlCommand) int {
+	n := 0
+	for _, c := range cmds {
+		if c.Cmd == "update" {
+			n++
+		}
+	}
+	return n
+}
+
+// The sidecar reports "unknown" while a slow graphic loads, once per check,
+// and can report the same format twice. Only the change to a format a page
+// takes data in is the adapter reporting in; an update per report would send
+// the operator's data to a page that drops it, then again to one that has
+// it already.
+func TestManagerReplaysDataOnceWhenFormatBecomesKnown(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mock.close()
+	defer func() { _ = mgr.Close() }()
+
+	id, err := mgr.AllocateBrowser(0)
+	require.NoError(t, err)
+	require.NoError(t, mgr.LoadURL(id, "https://templates.test/ograf-host.html"))
+	require.NoError(t, mgr.Update(id, `{"name":"Alice"}`))
+	require.Len(t, mock.waitForCommands(3, 2*time.Second), 3)
+
+	unknown := ControlResponse{Event: "format_detected", Format: "unknown"}
+	ograf := ControlResponse{Event: "format_detected", Format: "ograf"}
+	sendEvents(t, mock, id, unknown, unknown, unknown, ograf, ograf, ControlResponse{Event: "stopped"})
+	waitForStatus(t, mgr, id, "stopped", 2*time.Second)
+
+	require.Equal(t, 2, countUpdates(mock.getCommands()), "the operator's update and one replay")
+
+	// A new page in the slot reports its format afresh and gets the data.
+	require.NoError(t, mgr.LoadURL(id, "https://templates.test/other.html"))
+	sendEvents(t, mock, id, ograf, ControlResponse{Event: "stopped"})
+	waitForStatus(t, mgr, id, "stopped", 2*time.Second)
+	require.Equal(t, 3, countUpdates(mock.getCommands()))
+}
+
+// A template reports a failure as a load error early, and the sidecar's
+// format check after the load reports "unknown" for it later. The layer has
+// to stay in error rather than read as a graphic ready to play.
+func TestManagerLoadErrorOutlastsLaterFormatCheck(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mock.close()
+	defer func() { _ = mgr.Close() }()
+
+	id, err := mgr.AllocateBrowser(0)
+	require.NoError(t, err)
+	other, err := mgr.AllocateBrowser(1)
+	require.NoError(t, err)
+	require.NoError(t, mgr.LoadURL(id, "https://templates.test/ograf-host.html"))
+	require.NoError(t, mgr.Update(id, `{"name":"Alice"}`))
+
+	sendEvents(t, mock, id,
+		ControlResponse{Event: "load_error", Error: "no ?manifest= given"},
+		ControlResponse{Event: "format_detected", Format: "unknown"},
+		ControlResponse{Event: "format_detected", Format: "ograf"})
+	sendEvents(t, mock, other, ControlResponse{Event: "stopped"})
+	waitForStatus(t, mgr, other, "stopped", 2*time.Second)
+
+	require.Equal(t, "error", mgr.BrowserStates()[id].Status)
+	require.Equal(t, 1, countUpdates(mock.getCommands()), "no replay into a failed page")
+
+	// The next load starts afresh.
+	require.NoError(t, mgr.LoadURL(id, "https://templates.test/other.html"))
+	sendEvents(t, mock, id, ControlResponse{Event: "format_detected", Format: "ograf"})
+	waitForStatus(t, mgr, id, "ready", 2*time.Second)
+}
+
+// An event can arrive after its slot was freed. Applied, it gives the empty
+// slot a status, and AllocateBrowser never hands that slot out again.
+func TestManagerIgnoresEventsForFreedSlot(t *testing.T) {
+	for _, event := range []ControlResponse{
+		{Event: "format_detected", Format: "ograf"},
+		{Event: "load_error", Error: "aborted"},
+		{Event: "stopped"},
+	} {
+		t.Run(event.Event, func(t *testing.T) {
+			mgr, mock, _ := setupManagerWithMock(t)
+			defer mock.close()
+			defer func() { _ = mgr.Close() }()
+
+			freed, err := mgr.AllocateBrowser(0)
+			require.NoError(t, err)
+			other, err := mgr.AllocateBrowser(1)
+			require.NoError(t, err)
+			require.NoError(t, mgr.LoadURL(freed, "https://templates.test/a.html"))
+			mgr.FreeBrowser(freed)
+
+			sendEvents(t, mock, freed, event)
+			sendEvents(t, mock, other, ControlResponse{Event: "stopped"})
+			waitForStatus(t, mgr, other, "stopped", 2*time.Second)
+
+			require.Equal(t, "empty", mgr.BrowserStates()[freed].Status)
+			again, err := mgr.AllocateBrowser(2)
+			require.NoError(t, err)
+			require.Equal(t, freed, again, "the freed slot is handed out again")
+		})
+	}
+}
+
+// A page with no data yet gets no empty update.
+func TestManagerFormatDetectedWithoutDataSendsNothing(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mock.close()
+	defer func() { _ = mgr.Close() }()
+
+	id, err := mgr.AllocateBrowser(0)
+	if err != nil {
+		t.Fatalf("AllocateBrowser: %v", err)
+	}
+	if err := mgr.LoadURL(id, "https://templates.test/lower-third.html"); err != nil {
+		t.Fatalf("LoadURL: %v", err)
+	}
+	mock.waitForCommands(2, 2*time.Second)
+	if err := mock.sendResponse(ControlResponse{ID: id, Event: "format_detected", Format: "ograf"}); err != nil {
+		t.Fatalf("sendResponse: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && mgr.BrowserStates()[id].Status != "ready" {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if cmds := mock.getCommands(); len(cmds) != 2 {
+		t.Errorf("expected create + load only, got %d commands: %+v", len(cmds), cmds)
+	}
+}
+
+// LoadURL is the one way a URL reaches the sidecar, so it refuses what
+// CheckURL refuses even when a caller skipped the check.
+func TestManagerLoadURLRefusesDisallowedURL(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mock.close()
+	defer func() { _ = mgr.Close() }()
+
+	id, err := mgr.AllocateBrowser(0)
+	if err != nil {
+		t.Fatalf("AllocateBrowser: %v", err)
+	}
+	mock.waitForCommands(1, 2*time.Second)
+
+	if err := mgr.LoadURL(id, "file:///etc/passwd"); !errors.Is(err, ErrURLNotAllowed) {
+		t.Fatalf("LoadURL: got %v, want ErrURLNotAllowed", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if cmds := mock.getCommands(); len(cmds) != 1 {
+		t.Errorf("expected only the create command, got %+v", cmds)
+	}
+	if st := mgr.BrowserStates()[id]; st.URL != "" || st.Status != "allocated" {
+		t.Errorf("state after refused load: URL=%q status=%q", st.URL, st.Status)
 	}
 }
 

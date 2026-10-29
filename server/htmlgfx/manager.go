@@ -101,16 +101,7 @@ func (m *Manager) Start() error {
 		Binary:                 binPath,
 		ReadyTimeout:           10 * time.Second,
 		DisableShutdownMessage: true, // Manager sends CEF-format shutdown in Close()
-		BuildArgs: func(socketDir string) []string {
-			controlPath := filepath.Join(socketDir, "control.sock")
-			framePath := filepath.Join(socketDir, "frames.sock")
-			userDataDir := filepath.Join(socketDir, "cef-data")
-			return []string{
-				"--control-socket", controlPath,
-				"--frame-socket", framePath,
-				"--user-data-dir", userDataDir,
-			}
-		},
+		BuildArgs:              m.sidecarArgs,
 		Connect: func(socketDir string) (net.Conn, error) {
 			// CEF creates listeners, we connect to them.
 			controlPath := filepath.Join(socketDir, "control.sock")
@@ -140,6 +131,25 @@ func (m *Manager) Start() error {
 	// Connect the frame socket and start read loops.
 	m.connectAfterSpawn()
 	return nil
+}
+
+// sidecarArgs returns the sidecar's command line for a spawn into socketDir.
+// The templates directory is what the sidecar's own URL policy allows file
+// URLs below; it is made absolute here because the sidecar resolves it
+// independently of the engine's working directory.
+func (m *Manager) sidecarArgs(socketDir string) []string {
+	args := []string{
+		"--control-socket", filepath.Join(socketDir, "control.sock"),
+		"--frame-socket", filepath.Join(socketDir, "frames.sock"),
+		"--user-data-dir", filepath.Join(socketDir, "cef-data"),
+	}
+	if dir := m.config.TemplatesDir; dir != "" {
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = abs
+		}
+		args = append(args, "--templates-dir", dir)
+	}
+	return args
 }
 
 // connectAfterSpawn connects the frame socket and starts the control and
@@ -426,8 +436,13 @@ func (m *Manager) FreeBrowser(browserID int) {
 	m.notifyStateChange()
 }
 
-// LoadURL sets the URL on a browser and sends a "load" command.
+// LoadURL sets the URL on a browser and sends a "load" command. A URL
+// CheckURL refuses is not sent.
 func (m *Manager) LoadURL(browserID int, url string) error {
+	if err := m.CheckURL(url); err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -437,9 +452,12 @@ func (m *Manager) LoadURL(browserID int, url string) error {
 
 	prevURL := m.browsers[browserID].URL
 	prevStatus := m.browsers[browserID].Status
+	prevFormat := m.browsers[browserID].Format
 
+	// A new page reports its format afresh, and its data is replayed then.
 	m.browsers[browserID].URL = url
 	m.browsers[browserID].Status = "loading"
+	m.browsers[browserID].Format = ""
 
 	m.notifyStateChange()
 
@@ -451,6 +469,7 @@ func (m *Manager) LoadURL(browserID int, url string) error {
 		// Roll back state on send failure.
 		m.browsers[browserID].URL = prevURL
 		m.browsers[browserID].Status = prevStatus
+		m.browsers[browserID].Format = prevFormat
 		m.notifyStateChange()
 		return err
 	}
@@ -769,14 +788,41 @@ func (m *Manager) controlReadLoop(gen int64) {
 		}
 
 		m.mu.Lock()
-		if resp.ID >= 0 && resp.ID < len(m.browsers) {
+		// An event can arrive for a slot freed since: applying it would
+		// give the empty slot a status, and AllocateBrowser would never
+		// hand it out again.
+		if resp.ID >= 0 && resp.ID < len(m.browsers) && m.browsers[resp.ID].Status != "empty" {
 			bs := m.browsers[resp.ID]
 			switch resp.Event {
 			case "format_detected":
+				// The sidecar's own format check runs after the page has
+				// loaded, so it can report "unknown" for a page that has
+				// already reported an error; the error stands until the
+				// next load.
+				if bs.Status == "error" {
+					break
+				}
+				// Data sent with or right after a load reaches the page
+				// before its adapter exists and is dropped there, so the
+				// last data is sent again once the adapter reports a
+				// format. The sidecar reports "unknown" until a graphic
+				// that loads slowly is ready, and may report the same
+				// format again: neither is a page that can take data.
+				replay := resp.Format != bs.Format && resp.Format != "" && resp.Format != "unknown"
 				bs.Format = resp.Format
 				bs.Status = "ready"
+				if replay && bs.LastData != "" {
+					if err := m.sendCommand(ControlCommand{
+						Cmd:  "update",
+						ID:   intPtrHelper(resp.ID),
+						Data: bs.LastData,
+					}); err != nil {
+						slog.Warn("htmlgfx: replay data after format detection failed", "browser", resp.ID, "error", err)
+					}
+				}
 			case "load_error":
 				bs.Status = "error"
+				slog.Warn("htmlgfx: page failed", "browser", resp.ID, "url", bs.URL, "error", resp.Error)
 			case "stopped":
 				bs.Status = "stopped"
 			}

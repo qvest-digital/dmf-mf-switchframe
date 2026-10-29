@@ -192,4 +192,21 @@ inline std::string MakeEventResponse(int id, const std::string& event,
     return resp;
 }
 
+// A page reports to the engine through its title: "switchframe-format:<fmt>"
+// as format_detected, "switchframe-error:<message>" as load_error. Returns
+// the event line for slot |id|, or "" for any other title.
+inline std::string MakeTitleEventResponse(int id, const std::string& title) {
+    static const std::string kFormat = "switchframe-format:";
+    static const std::string kError = "switchframe-error:";
+    if (title.compare(0, kFormat.size(), kFormat) == 0) {
+        return MakeEventResponse(id, "format_detected", "format",
+                                 title.substr(kFormat.size()));
+    }
+    if (title.compare(0, kError.size(), kError) == 0) {
+        return MakeEventResponse(id, "load_error", "error",
+                                 title.substr(kError.size()));
+    }
+    return "";
+}
+
 }  // namespace protocol

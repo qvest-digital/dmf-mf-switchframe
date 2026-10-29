@@ -86,6 +86,10 @@ func (a *API) handleHTML5Load(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "url is required")
 		return
 	}
+	if err := a.htmlGfxMgr.CheckURL(req.URL); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	a.layerBindMu.Lock()
 	browserID, err := a.htmlGfxMgr.AllocateBrowser(layerID)

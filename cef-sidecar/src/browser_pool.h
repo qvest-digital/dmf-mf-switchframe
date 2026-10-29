@@ -11,6 +11,8 @@
 #include "include/cef_life_span_handler.h"
 #include "include/cef_display_handler.h"
 #include "include/cef_load_handler.h"
+#include "include/cef_request_context.h"
+#include "include/cef_request_handler.h"
 
 #include "render_handler.h"
 
@@ -27,15 +29,30 @@ public:
     using TitleChangeCallback =
         std::function<void(int browser_id, const std::string& title)>;
 
-    explicit BrowserClient(CefRefPtr<OffscreenRenderHandler> handler);
+    BrowserClient(CefRefPtr<OffscreenRenderHandler> handler,
+                  CefRefPtr<CefRequestHandler> request_handler);
 
     // CefClient overrides
     CefRefPtr<CefRenderHandler> GetRenderHandler() override { return handler_; }
     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
     CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
     CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
+    CefRefPtr<CefRequestHandler> GetRequestHandler() override {
+        return request_handler_;
+    }
 
     // CefLifeSpanHandler overrides
+    // Refuses every popup: a popup is a browser outside the pool, which
+    // nothing renders or closes.
+    bool OnBeforePopup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+                       int popup_id, const CefString& target_url,
+                       const CefString& target_frame_name,
+                       WindowOpenDisposition target_disposition,
+                       bool user_gesture, const CefPopupFeatures& popupFeatures,
+                       CefWindowInfo& windowInfo, CefRefPtr<CefClient>& client,
+                       CefBrowserSettings& settings,
+                       CefRefPtr<CefDictionaryValue>& extra_info,
+                       bool* no_javascript_access) override;
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
     void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
 
@@ -60,6 +77,7 @@ public:
 
 private:
     CefRefPtr<OffscreenRenderHandler> handler_;
+    CefRefPtr<CefRequestHandler> request_handler_;
     LoadEndCallback on_load_end_;
     LoadErrorCallback on_load_error_;
     TitleChangeCallback on_title_change_;
@@ -74,7 +92,12 @@ class BrowserPool {
 public:
     // max_browsers: maximum simultaneous browser instances (slot IDs 0..N-1).
     // on_frame: called on the CEF UI thread when a browser paints a frame.
-    BrowserPool(int max_browsers, FrameCallback on_frame);
+    // request_handler: decides what every browser may navigate to and load.
+    // request_context: every browser's context; its handler holds the
+    // requests CEF does not pass to request_handler.
+    BrowserPool(int max_browsers, FrameCallback on_frame,
+                CefRefPtr<CefRequestHandler> request_handler,
+                CefRefPtr<CefRequestContext> request_context);
     ~BrowserPool();
 
     // Create a browser in the given slot. Returns false if the slot is invalid,
@@ -111,5 +134,7 @@ private:
     int max_browsers_;
     std::vector<BrowserSlot> slots_;
     FrameCallback on_frame_;
+    CefRefPtr<CefRequestHandler> request_handler_;
+    CefRefPtr<CefRequestContext> request_context_;
     mutable std::mutex mutex_;
 };

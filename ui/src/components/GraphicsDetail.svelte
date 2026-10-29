@@ -594,7 +594,7 @@
 						<input
 							class="field-inp"
 							type="text"
-							placeholder="file:///path/to/template.html or http://..."
+							placeholder="https://... or a template from the list"
 							bind:value={html5Url}
 							aria-label="HTML5 template URL"
 							onkeydown={(e) => { if (e.key === 'Enter') handleHTML5Load(); }}

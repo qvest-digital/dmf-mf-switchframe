@@ -157,16 +157,40 @@ jobs:
           ref="$IMAGE@$(cat digest-cpu)"
           docker pull "$ref"
           docker tag "$ref" switchframe-mxl:smoke
-      - name: Smoke test HTML5 graphics
-        timeout-minutes: 5
+      # The refusal probe's https page needs a certificate Chromium trusts
+      # without a flag the engine never passes: a CA in the NSS database
+      # Chromium reads from $HOME, which the smoke run mounts.
+      - name: Prepare the refusal probe
+        timeout-minutes: 3
         shell: bash
         run: |
           set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libnss3-tools python3-pil >/dev/null
+          d="$RUNNER_TEMP/probe"
+          mkdir -p "$d/nssdb"
+          cd "$d"
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -days 1 \
+            -subj "/CN=refusal probe CA" \
+            -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign
+          openssl req -newkey rsa:2048 -nodes -keyout leaf.key -out leaf.csr -subj /CN=localhost
+          printf 'subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n' > leaf.ext
+          openssl x509 -req -in leaf.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+            -out leaf.pem -days 1 -extfile leaf.ext
+          certutil -N -d "sql:$d/nssdb" --empty-password
+          certutil -A -d "sql:$d/nssdb" -n refusal-probe-ca -t C,, -i ca.pem
+      - name: Smoke test HTML5 graphics
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/probe"
           docker image inspect switchframe-mxl:smoke --format 'image size: {{.Size}} bytes'
           docker run -d --name sf-smoke -p 8081:8081 -p 9090:9090 \
-            -v "$PWD/cef-sidecar/test-templates:/smoke-templates:ro" switchframe-mxl:smoke \
+            -v "$PWD/cef-sidecar/test-templates:/smoke-templates:ro" \
+            -v "$probe/nssdb:/root/.pki/nssdb" switchframe-mxl:smoke \
             --http-fallback --api-token smoke --html5-graphics=true --cef-templates-dir /smoke-templates
-          trap 'docker logs sf-smoke 2>&1 | grep -E "htmlgfx|sidecar" || true; docker rm -f sf-smoke >/dev/null' EXIT
+          trap 'docker logs sf-smoke 2>&1 | grep -E "htmlgfx|sidecar|policy|probe-" || true; docker rm -f sf-smoke >/dev/null; sudo kill "${server:-}" 2>/dev/null || true' EXIT
           # The run above overrides --cef-templates-dir, so check that the
           # image ships the demo templates at the engine's default path.
           docker exec sf-smoke test -f /opt/switchframe-cef/demo-templates/ograf-lower-third/index.html
@@ -204,6 +228,92 @@ jobs:
           api -X POST "http://localhost:8081/api/graphics/$layer/html5/play" >/dev/null
           played=$(wait_frames "$loaded")
           echo "frames delivered after play: $played"
+          api -X DELETE "http://localhost:8081/api/graphics/$layer/html5" >/dev/null
+
+          # Refusal probe: test-templates/refusal-probe aims every way a page
+          # can reach a file outside the templates directory, plain http or
+          # ws at a listener on the engine's loopback. It must be refused
+          # each time, the listener must see no request, and program must
+          # show the probe's green page and nothing a probe received.
+          [[ "$(docker exec sf-smoke sh -c 'echo $HOME')" == /root ]]
+          : > "$probe/hits"
+          : > "$probe/server.log"
+          sudo nsenter -t "$(docker inspect -f '{{.State.Pid}}' sf-smoke)" -n \
+            python3 cef-sidecar/scripts/refusal-probe-server.py \
+            cef-sidecar/test-templates "$probe/leaf.pem" "$probe/leaf.key" "$probe/hits" \
+            > "$probe/server.log" 2>&1 &
+          server=$!
+          for _ in $(seq 10); do grep -q serving "$probe/server.log" && break; sleep 1; done
+          grep -q serving "$probe/server.log" || { cat "$probe/server.log"; exit 1; }
+          api -X POST -H 'Content-Type: application/json' -d '{"source":"source:black"}' \
+            http://localhost:8081/api/switch/cut >/dev/null
+          # Waits for a program thumbnail in which every pixel is the probe
+          # page's green.
+          wait_green() {
+            for _ in $(seq 30); do
+              if api -o "$probe/thumb.jpg" -w '%{http_code}' \
+                  http://localhost:8081/api/output/confidence | grep -qx 200 &&
+                python3 -c '
+          import sys
+          from PIL import Image
+          px = list(Image.open(sys.argv[1]).convert("RGB").getdata())
+          off = sum(1 for r, g, b in px if not (r < 64 and g > 192 and b < 64))
+          print(f"program thumbnail: {off} of {len(px)} pixels not green")
+          sys.exit(off != 0)' "$probe/thumb.jpg"; then return 0; fi
+              sleep 1
+            done
+            echo "program never showed only the probe page"; return 1
+          }
+          probe_page() {
+            local page=$1 url=$2 result id
+            id=$(api -X POST http://localhost:8081/api/graphics | jq -er .id)
+            api -X POST -H 'Content-Type: application/json' -d "{\"url\":\"$url\"}" \
+              "http://localhost:8081/api/graphics/$id/html5" >/dev/null
+            # A layer takes "on" only once the sidecar's first frame for it
+            # has arrived.
+            for _ in $(seq 30); do
+              api -X POST "http://localhost:8081/api/graphics/$id/on" >/dev/null 2>&1 && break
+              sleep 1
+            done
+            api -X POST "http://localhost:8081/api/graphics/$id/on" >/dev/null
+            # The engine logs the sidecar's line with its quotes escaped.
+            wait_log 'probe-result:{\"page\":\"'"$page"'\"'
+            result=$(docker logs sf-smoke 2>&1 | grep -o 'probe-result:{.*}' | sed 's/\\"/"/g' |
+              grep -F "{\"page\":\"$page\"" | tail -1)
+            result=${result#probe-result:}
+            echo "$page: $result"
+            echo "$result" | jq -e 'del(.page) | length > 0 and all(.[]; . == "refused")' >/dev/null
+            wait_green
+            api -X POST "http://localhost:8081/api/graphics/$id/off" >/dev/null
+            api -X DELETE "http://localhost:8081/api/graphics/$id/html5" >/dev/null
+          }
+          probe_url=$(echo "$templates" | jq -er '.[] | select(.id == "refusal-probe") | .url')
+          before=$(frames)
+          probe_page file "$probe_url"
+          probe_page https https://localhost:8443/refusal-probe/net.html
+          wait_frames "$before" >/dev/null
+          # Each request the URL policy holds is logged with the handler
+          # that held it: a service worker's go to the request context's.
+          # The log is read once: grep -q ends early and would fail the
+          # pipe under pipefail.
+          docker logs sf-smoke > "$probe/engine.log" 2>&1
+          for line in \
+            'refused navigation: file:///etc/passwd' \
+            'refused load (browser): http://127.0.0.1:18081/from-file-page' \
+            'refused load (browser): http://127.0.0.1:18081/from-https-page' \
+            'refused load (browser): http://127.0.0.1:18081/worker-fetch' \
+            'refused load (browser): http://127.0.0.1:18081/worker-import.js' \
+            'refused load (browser): http://127.0.0.1:18081/module-import.js' \
+            'refused load (context): http://127.0.0.1:18081/shared-fetch' \
+            'refused load (context): http://127.0.0.1:18081/sw-import.js' \
+            'refused load (context): http://127.0.0.1:18081/sw-install-fetch' \
+            'refused load (context): http://127.0.0.1:18081/sw-fetch'; do
+            grep -qF "[policy] $line" "$probe/engine.log" || { echo "not logged: $line"; exit 1; }
+          done
+          if [[ -s "$probe/hits" ]]; then
+            echo "requests reached the listener:"; cat "$probe/hits"; exit 1
+          fi
+          echo "refusal probe: every probe refused, no request reached the listener"
 
   # Tags the digests the image job pushed; nothing is built here.
   push:

@@ -24,6 +24,8 @@ set(SOURCES
   src/frame_socket.cpp
   src/json_parse.cpp
   src/adapter.cpp
+  src/url_policy.cpp
+  src/request_policy.cpp
 )
 
 add_executable(switchframe-cef ${SOURCES})

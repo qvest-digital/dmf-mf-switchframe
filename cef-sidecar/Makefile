@@ -1,12 +1,13 @@
 .PHONY: test clean
 
-test: build/protocol_test build/adapter_test build/json_parse_test build/control_socket_test build/control_socket_lifecycle_test build/frame_socket_test
+test: build/protocol_test build/adapter_test build/json_parse_test build/control_socket_test build/control_socket_lifecycle_test build/frame_socket_test build/url_policy_test
 	./build/protocol_test
 	./build/adapter_test
 	./build/json_parse_test
 	./build/control_socket_test
 	./build/control_socket_lifecycle_test
 	./build/frame_socket_test
+	./build/url_policy_test
 
 build/protocol_test: tests/protocol_test.cpp src/protocol.h
 	@mkdir -p build
@@ -34,6 +35,10 @@ build/control_socket_lifecycle_test: tests/control_socket_lifecycle_test.cpp src
 build/frame_socket_test: tests/frame_socket_test.cpp src/frame_socket.h src/frame_socket.cpp src/protocol.h
 	@mkdir -p build
 	$(CXX) -std=c++17 -Wall -Wextra -pthread -o $@ tests/frame_socket_test.cpp src/frame_socket.cpp -I src
+
+build/url_policy_test: tests/url_policy_test.cpp src/url_policy.h src/url_policy.cpp
+	@mkdir -p build
+	$(CXX) -std=c++17 -Wall -Wextra -o $@ tests/url_policy_test.cpp src/url_policy.cpp -I src
 
 clean:
 	rm -rf build

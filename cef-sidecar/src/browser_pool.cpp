@@ -6,8 +6,23 @@
 
 // ---------- BrowserClient ----------
 
-BrowserClient::BrowserClient(CefRefPtr<OffscreenRenderHandler> handler)
-    : handler_(handler) {}
+BrowserClient::BrowserClient(CefRefPtr<OffscreenRenderHandler> handler,
+                             CefRefPtr<CefRequestHandler> request_handler)
+    : handler_(handler), request_handler_(request_handler) {}
+
+bool BrowserClient::OnBeforePopup(
+    CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> /*frame*/,
+    int /*popup_id*/, const CefString& target_url,
+    const CefString& /*target_frame_name*/,
+    WindowOpenDisposition /*target_disposition*/, bool /*user_gesture*/,
+    const CefPopupFeatures& /*popupFeatures*/, CefWindowInfo& /*windowInfo*/,
+    CefRefPtr<CefClient>& /*client*/, CefBrowserSettings& /*settings*/,
+    CefRefPtr<CefDictionaryValue>& /*extra_info*/,
+    bool* /*no_javascript_access*/) {
+    std::cerr << "[policy] refused popup: id=" << browser->GetIdentifier()
+              << " url=" << target_url.ToString() << std::endl;
+    return true;
+}
 
 void BrowserClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
     std::cerr << "[browser] OnAfterCreated: id=" << browser->GetIdentifier() << std::endl;
@@ -70,10 +85,14 @@ void BrowserClient::OnTitleChange(CefRefPtr<CefBrowser> browser,
 
 // ---------- BrowserPool ----------
 
-BrowserPool::BrowserPool(int max_browsers, FrameCallback on_frame)
+BrowserPool::BrowserPool(int max_browsers, FrameCallback on_frame,
+                         CefRefPtr<CefRequestHandler> request_handler,
+                         CefRefPtr<CefRequestContext> request_context)
     : max_browsers_(max_browsers),
       slots_(static_cast<size_t>(max_browsers)),
-      on_frame_(std::move(on_frame)) {}
+      on_frame_(std::move(on_frame)),
+      request_handler_(request_handler),
+      request_context_(request_context) {}
 
 BrowserPool::~BrowserPool() {
     // Close all active browsers.
@@ -106,7 +125,7 @@ bool BrowserPool::Create(int id, int width, int height, int fps) {
         new OffscreenRenderHandler(id, width, height, on_frame_));
 
     // Create the client that wires up render + lifecycle + load handlers.
-    CefRefPtr<BrowserClient> client(new BrowserClient(handler));
+    CefRefPtr<BrowserClient> client(new BrowserClient(handler, request_handler_));
 
     // Configure the browser window (offscreen).
     CefWindowInfo window_info;
@@ -119,7 +138,8 @@ bool BrowserPool::Create(int id, int width, int height, int fps) {
 
     // CreateBrowserSync must be called on the CEF UI thread.
     CefRefPtr<CefBrowser> browser = CefBrowserHost::CreateBrowserSync(
-        window_info, client, "about:blank", browser_settings, nullptr, nullptr);
+        window_info, client, "about:blank", browser_settings, nullptr,
+        request_context_);
 
     if (!browser) {
         std::cerr << "BrowserPool::Create: CreateBrowserSync failed for slot "

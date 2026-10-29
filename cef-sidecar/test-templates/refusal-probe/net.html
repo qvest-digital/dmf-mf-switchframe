@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>probe-start</title>
+<!--
+Served over https by the test harness, since a service worker needs a
+secure origin and a file page can start no worker. Every probe aims at
+plain http or ws on loopback, which the URL policy refuses and Blink
+itself lets through. The result goes in the title as for index.html, and
+anything a probe receives turns the page red.
+-->
+<style>
+html, body { margin: 0; width: 100%; height: 100%; background: #00ff00; overflow: hidden; }
+</style>
+</head>
+<body>
+<script>
+const target = 'http://127.0.0.1:18081/';
+const result = {page: 'https'};
+
+function settled(promise, ms) {
+    return Promise.race([promise, new Promise((r) => setTimeout(() => r('timeout'), ms))]);
+}
+
+function fetched(url) {
+    return fetch(url, {mode: 'no-cors'}).then(() => 'reached', () => 'refused');
+}
+
+function socket(url) {
+    return new Promise((r) => {
+        const ws = new WebSocket(url);
+        ws.onopen = () => r('reached');
+        ws.onerror = () => r('refused');
+    });
+}
+
+function worker(url, options) {
+    return new Promise((r) => {
+        try {
+            const w = new Worker(url, options);
+            w.onmessage = (e) => r(e.data);
+            w.onerror = () => r({script: 'refused'});
+        } catch (e) {
+            r({script: 'refused'});
+        }
+    });
+}
+
+function shared() {
+    return new Promise((r) => {
+        const w = new SharedWorker('shared.js');
+        w.port.onmessage = (e) => r(e.data);
+        w.onerror = () => r('error');
+    });
+}
+
+async function serviceWorker() {
+    await navigator.serviceWorker.register('sw.js');
+    if (!navigator.serviceWorker.controller) {
+        await new Promise((r) => navigator.serviceWorker.addEventListener('controllerchange', r, {once: true}));
+    }
+    const status = await (await fetch('sw-status')).json();
+    status.sw_fetch = await (await fetch('via-sw')).text();
+    return status;
+}
+
+(async () => {
+    const [httpFetch, wsPage, dedicated, refusedScript, moduleImport, sharedFetch, sw] = await Promise.all([
+        settled(fetched(target + 'from-https-page'), 10000),
+        settled(socket('ws://127.0.0.1:18081/ws-page'), 10000),
+        settled(worker('worker.js'), 10000),
+        settled(worker(target + 'worker-script.js'), 10000),
+        settled(worker('module-worker.js', {type: 'module'}), 10000),
+        settled(shared(), 10000),
+        settled(serviceWorker().catch((e) => ({sw_register: 'failed: ' + e.name})), 20000),
+    ]);
+    Object.assign(result, {
+        http_fetch: httpFetch,
+        ws_page: wsPage,
+        worker_script: refusedScript.script || refusedScript,
+        worker_module_import: moduleImport.script || moduleImport,
+        shared_worker_fetch: sharedFetch,
+    }, dedicated, sw);
+    if (Object.entries(result).some(([k, v]) => k !== 'page' && v !== 'refused')) {
+        document.body.style.background = '#ff0000';
+    }
+    document.title = 'probe-result:' + JSON.stringify(result);
+})();
+</script>
+</body>
+</html>
