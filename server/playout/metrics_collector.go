@@ -14,15 +14,15 @@ var (
 	descChannelState = prometheus.NewDesc("switchframe_playout_channel_state",
 		"1 for the playout channel's state, 0 for the others.", []string{"channel", "state"}, nil)
 	descItemIndex = prometheus.NewDesc("switchframe_playout_item_index",
-		"Position of the item on air in its playlist, from 0.", []string{"channel"}, nil)
+		"Position of the item on air in its playlist, from 0. Absent while the playlist is empty.", []string{"channel"}, nil)
 	descItemCount = prometheus.NewDesc("switchframe_playout_items",
 		"Items in the channel's playlist.", []string{"channel"}, nil)
 	descItemRemaining = prometheus.NewDesc("switchframe_playout_item_remaining_seconds",
 		"Time left of the item on air.", []string{"channel"}, nil)
 	descPodsArmed = prometheus.NewDesc("switchframe_playout_pods_armed",
 		"Ad pods armed on the channel.", []string{"channel"}, nil)
-	descPodsCompleted = prometheus.NewDesc("switchframe_playout_pods_completed_total",
-		"Ad pods the channel completed.", []string{"channel"}, nil)
+	descPodsCompleted = prometheus.NewDesc("switchframe_playout_pods_completed",
+		"Ad pods on the channel's board that completed: rejoined or dumped out. Deleting a pod from the board lowers it.", []string{"channel"}, nil)
 	descStalled = prometheus.NewDesc("switchframe_playout_channel_stalled",
 		"1 while the watchdog finds a running channel delivering no frames.", []string{"channel"}, nil)
 	descSinceFrame = prometheus.NewDesc("switchframe_playout_last_frame_age_seconds",
@@ -33,7 +33,7 @@ var (
 	descCacheMax = prometheus.NewDesc("switchframe_playout_cache_max_bytes",
 		"Bytes the playout asset cache may hold.", nil, nil)
 	descCacheItems = prometheus.NewDesc("switchframe_playout_cache_items",
-		"Assets in the playout cache, by state: ready, fetching (or transcoding) and error.", []string{"state"}, nil)
+		"Assets in the playout cache, by state: ready, pending (queued for a fetch), fetching (or transcoding) and error.", []string{"state"}, nil)
 )
 
 // MetricsCollector exposes the playout channels, their watchdog and the
@@ -74,14 +74,16 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 			}
 			gauge(descChannelState, v, id, s.String())
 		}
-		gauge(descItemIndex, float64(st.ItemIndex), id)
+		if st.ItemCount > 0 {
+			gauge(descItemIndex, float64(st.ItemIndex), id)
+		}
 		gauge(descItemCount, float64(st.ItemCount), id)
 		if st.State == StateOnAir.String() {
 			gauge(descItemRemaining, float64(st.ItemRemainMs)/1e3, id)
 		}
 		if st.Pods != nil {
 			gauge(descPodsArmed, float64(st.Pods.PodsArmed), id)
-			ch <- prometheus.MustNewConstMetric(descPodsCompleted, prometheus.CounterValue, float64(st.Pods.PodsCompleted), id)
+			gauge(descPodsCompleted, float64(st.Pods.PodsCompleted), id)
 		}
 	}
 	for _, h := range c.m.HealthSummary() {
@@ -97,7 +99,8 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 		cs := c.cache.Status()
 		gauge(descCacheUsed, float64(cs.UsedBytes))
 		gauge(descCacheMax, float64(cs.MaxBytes))
-		gauge(descCacheItems, float64(cs.ItemCount-cs.FetchingCount-cs.ErrorCount), "ready")
+		gauge(descCacheItems, float64(cs.ItemCount-cs.PendingCount-cs.FetchingCount-cs.ErrorCount), "ready")
+		gauge(descCacheItems, float64(cs.PendingCount), "pending")
 		gauge(descCacheItems, float64(cs.FetchingCount), "fetching")
 		gauge(descCacheItems, float64(cs.ErrorCount), "error")
 	}

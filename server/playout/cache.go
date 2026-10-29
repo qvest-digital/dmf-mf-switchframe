@@ -159,10 +159,12 @@ func (c *Cache) Status() CacheStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	var fetching, errCount int
+	var pending, fetching, errCount int
 
 	for _, e := range c.entries {
 		switch e.State {
+		case AssetPending:
+			pending++
 		case AssetFetching, AssetTranscoding:
 			fetching++
 		case AssetError:
@@ -175,6 +177,7 @@ func (c *Cache) Status() CacheStatus {
 		MaxBytes:      c.config.MaxBytes,
 		UsedBytes:     c.usedBytes,
 		ItemCount:     len(c.entries),
+		PendingCount:  pending,
 		FetchingCount: fetching,
 		ErrorCount:    errCount,
 	}
