@@ -491,3 +491,40 @@ func TestRTMPDirect_HungConnectTimesOutIntoReconnect(t *testing.T) {
 		return *r.state.Load() == StateReconnecting
 	}, 3*time.Second, 10*time.Millisecond, "connect never gave up")
 }
+
+// An ingest that refuses every connection must see the retries back off.
+// Without a cached sequence header the reconnect loop hands the retry back
+// to the next keyframe, and resetting the backoff there turned every retry
+// into a fresh first attempt.
+func TestRTMPDirect_FailedFirstConnectBacksOff(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = ln.Close() }()
+	var attempts atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			attempts.Add(1)
+			_ = c.Close()
+		}
+	}()
+
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://" + ln.Addr().String() + "/live/key"})
+	require.NoError(t, err)
+	r.bo.Initial = 20 * time.Millisecond
+	r.bo.JitterPct = 0
+	require.NoError(t, r.Start(context.Background()))
+	defer func() { _ = r.Close() }()
+
+	// Keyframes every 10 ms for 1.3 s. Backing off from 20 ms doubles
+	// through 40, 80, 160, 320 and 640 ms: about seven attempts.
+	for end := time.Now().Add(1300 * time.Millisecond); time.Now().Before(end); {
+		require.NoError(t, r.WriteVideo(rtmpTestKeyframe(90000)))
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.LessOrEqual(t, attempts.Load(), int32(10), "retries did not back off")
+	require.GreaterOrEqual(t, attempts.Load(), int32(3), "adapter stopped retrying")
+}

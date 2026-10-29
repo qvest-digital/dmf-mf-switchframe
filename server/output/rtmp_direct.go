@@ -865,6 +865,7 @@ func (r *RTMPDirect) initConnection(frame *media.VideoFrame) error {
 
 	r.ptsBase = frame.PTS
 	r.initialized.Store(true)
+	r.bo.Reset()
 	return nil
 }
 
@@ -928,7 +929,9 @@ func (r *RTMPDirect) reconnectLoop() {
 		default:
 		}
 
+		r.mu.Lock()
 		wait := r.bo.Next()
+		r.mu.Unlock()
 		slog.Info("RTMP direct reconnecting", "backoff", wait, "url", rtmpMaskURL(r.config.URL))
 
 		select {
@@ -961,13 +964,13 @@ func (r *RTMPDirect) reconnectLoop() {
 			C.free(unsafe.Pointer(cURL))
 
 			if rc == 0 {
+				r.bo.Reset()
 				r.mu.Unlock()
 				// Eagerly reconnected — need a keyframe to resume cleanly.
 				r.initialized.Store(true)
 				r.pendingIDR.Store(true)
 				r.state.Store(ptrTo(StateActive))
 				r.lastError.Store(ptrTo(""))
-				r.bo.Reset()
 
 				slog.Info("RTMP direct reconnected", "url", rtmpMaskURL(r.config.URL))
 				if r.onReconnect != nil {
@@ -985,12 +988,13 @@ func (r *RTMPDirect) reconnectLoop() {
 
 		r.mu.Unlock()
 
-		// No cached SPS/PPS — reset and wait for next keyframe.
+		// No cached SPS/PPS — reset and wait for next keyframe. The
+		// backoff stays where it is: nothing has connected yet, and
+		// initConnection resets it once something does.
 		r.initialized.Store(false)
 		r.pendingIDR.Store(true)
 		r.state.Store(ptrTo(StateActive))
 		r.lastError.Store(ptrTo(""))
-		r.bo.Reset()
 
 		slog.Info("RTMP direct ready for reconnect (waiting for keyframe)",
 			"url", rtmpMaskURL(r.config.URL))
