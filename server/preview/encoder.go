@@ -288,7 +288,7 @@ func (e *Encoder) loop() {
 		// origYUV is the caller-owned source buffer that must be returned via
 		// job.release. job.yuv may be rebased onto an encoder-internal buffer
 		// (downconvertBuf, scaleBuf) below, but the release callback must always
-		// receive the original owned buffer — never an encoder-internal buffer.
+		// receive the original owned buffer, never an encoder-internal buffer.
 		origYUV := job.yuv
 
 		// Detect 10-bit YUV422P10LE input by buffer size.

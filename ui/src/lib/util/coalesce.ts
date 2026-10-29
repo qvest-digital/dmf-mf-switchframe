@@ -12,7 +12,9 @@
  * Unlike a plain throttle, a slow engine slows the requests down instead of
  * having them pile up behind it. A request still unanswered after
  * `STALL_MS` no longer holds the next one back, so one lost request cannot
- * freeze the control.
+ * freeze the control. When such an overtaken request settles at last, the
+ * newest value is sent once more: the engine may have applied the old one
+ * after the new one, and aborting it on this side would not stop that.
  */
 export const STALL_MS = 2000;
 
@@ -24,6 +26,8 @@ export function coalesce<A extends unknown[]>(
 	interface Slot {
 		busy: boolean;
 		gen: number;
+		/** Arguments of the newest request started. */
+		newest: A | null;
 		lastStart: number;
 		pending: A | null;
 		timer: ReturnType<typeof setTimeout> | null;
@@ -33,6 +37,7 @@ export function coalesce<A extends unknown[]>(
 	function start(slot: Slot, args: A) {
 		slot.busy = true;
 		slot.lastStart = Date.now();
+		slot.newest = args;
 		const gen = ++slot.gen;
 		const settle = () => {
 			if (slot.gen !== gen || !slot.busy) return;
@@ -50,6 +55,14 @@ export function coalesce<A extends unknown[]>(
 			.catch(() => {})
 			.finally(() => {
 				clearTimeout(stall);
+				if (slot.gen !== gen && !slot.pending && slot.newest && slot.newest !== args) {
+					// Overtaken by a newer value: put that back on top. An
+					// overtaken resend of the newest value itself needs none,
+					// or an engine slower than STALL_MS is sent it forever.
+					slot.pending = slot.newest;
+					pump(slot);
+					return;
+				}
 				settle();
 			});
 	}
@@ -73,7 +86,7 @@ export function coalesce<A extends unknown[]>(
 		const key = keyOf(...args);
 		let slot = slots.get(key);
 		if (!slot) {
-			slot = { busy: false, gen: 0, lastStart: 0, pending: null, timer: null };
+			slot = { busy: false, gen: 0, newest: null, lastStart: 0, pending: null, timer: null };
 			slots.set(key, slot);
 		}
 		slot.pending = args;
