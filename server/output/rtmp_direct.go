@@ -49,7 +49,10 @@ typedef struct {
 	int video_idx;
 	int audio_idx;
 	int header_written;
+	int av_err; // FFmpeg's error of the last failed rtmp_flv_open step
 } rtmp_flv_ctx_t;
+
+static int rtmp_err_is_eio(int err) { return err == AVERROR(EIO); }
 
 // --- Minimal H.264 SPS parser for extracting width/height ---
 
@@ -225,8 +228,12 @@ static int rtmp_flv_open(rtmp_flv_ctx_t* ctx, const char* url,
 	int sample_rate, int channels, rtmp_intr_t* intr,
 	int tls_verify, const char* ca_file) {
 
+	ctx->av_err = 0;
 	int rc = avformat_alloc_output_context2(&ctx->out_ctx, NULL, "flv", url);
-	if (rc < 0 || !ctx->out_ctx) return -1;
+	if (rc < 0 || !ctx->out_ctx) {
+		ctx->av_err = rc;
+		return -1;
+	}
 	ctx->out_ctx->interrupt_callback.callback = rtmp_interrupt_cb;
 	ctx->out_ctx->interrupt_callback.opaque = intr;
 
@@ -342,6 +349,7 @@ static int rtmp_flv_open(rtmp_flv_ctx_t* ctx, const char* url,
 		&ctx->out_ctx->interrupt_callback, &opts);
 	av_dict_free(&opts);
 	if (rc < 0) {
+		ctx->av_err = rc;
 		avformat_free_context(ctx->out_ctx);
 		ctx->out_ctx = NULL;
 		return -6;
@@ -350,6 +358,7 @@ static int rtmp_flv_open(rtmp_flv_ctx_t* ctx, const char* url,
 	// Write FLV header.
 	rc = avformat_write_header(ctx->out_ctx, NULL);
 	if (rc < 0) {
+		ctx->av_err = rc;
 		avio_closep(&ctx->out_ctx->pb);
 		avformat_free_context(ctx->out_ctx);
 		ctx->out_ctx = NULL;
@@ -440,9 +449,11 @@ import "C"
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -922,13 +933,31 @@ func (r *RTMPDirect) initConnection(frame *media.VideoFrame) error {
 		C.int(r.config.Channels),
 		r.intr, r.tlsVerify(), cCA)
 	if rc < 0 {
-		return fmt.Errorf("rtmp_flv_open failed (code %d)", int(rc))
+		return r.openErrorLocked(rc)
 	}
 
 	r.ptsBase = frame.PTS
 	r.initialized.Store(true)
 	r.bo.Reset()
 	return nil
+}
+
+// openErrorLocked describes a failed rtmp_flv_open: its step code alone
+// does not tell a refused connection from a refused certificate. Holds r.mu.
+func (r *RTMPDirect) openErrorLocked(rc C.int) error {
+	averr := r.ctx.av_err
+	if averr == 0 {
+		return fmt.Errorf("rtmp_flv_open failed (code %d)", int(rc))
+	}
+	var buf [C.AV_ERROR_MAX_STRING_SIZE]C.char
+	C.av_strerror(averr, &buf[0], C.size_t(len(buf)))
+	msg := fmt.Sprintf("rtmp_flv_open failed (code %d): %s", int(rc), C.GoString(&buf[0]))
+	// FFmpeg's TLS layer reports a failed handshake, a refused certificate
+	// among them, as a plain I/O error.
+	if rc == -6 && C.rtmp_err_is_eio(averr) != 0 && r.tlsVerify() != 0 && strings.HasPrefix(r.config.URL, "rtmps://") {
+		msg += "; TLS handshake or certificate verification failed; allowUntrustedCert skips verification"
+	}
+	return errors.New(msg)
 }
 
 // enterReconnect transitions to reconnect state and spawns the reconnect loop.
@@ -1043,10 +1072,11 @@ func (r *RTMPDirect) reconnectLoop() {
 				return
 			}
 			// Eager reconnect failed — retry with backoff.
-			slog.Warn("RTMP direct eager reconnect failed", "rc", int(rc),
+			err := r.openErrorLocked(rc)
+			slog.Warn("RTMP direct eager reconnect failed", "err", err,
 				"url", rtmpMaskURL(r.config.URL))
 			r.mu.Unlock()
-			r.lastError.Store(ptrTo("RTMP reconnect failed"))
+			r.lastError.Store(ptrTo(err.Error()))
 			continue
 		}
 

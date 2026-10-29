@@ -184,6 +184,8 @@ Per-type requirements:
 
 **Response 200:** updated `output.DestinationStatus`.
 
+**Errors:** 409 on a follower cut off from its peer, and on a move to the peer while the peer is down: the engine would take the destination back on its next failover tick.
+
 ---
 
 ## Confidence and CBR

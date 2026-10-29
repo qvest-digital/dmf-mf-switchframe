@@ -49,3 +49,20 @@ func TestApplyOutputDestinations_AddsPeerDestinationsOnStandby(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "stopped", st.State)
 }
+
+// A running adapter is captured as active, a reconnecting one too: a peer
+// reading a snapshot without the armed field falls back on it.
+func TestDestinationSnapshots_ActiveWhileAdapterRuns(t *testing.T) {
+	for state, want := range map[string]bool{
+		string(output.StateActive):       true,
+		string(output.StateReconnecting): true,
+		string(output.StateStarting):     true,
+		"standby":                        false,
+		"stopped":                        false,
+	} {
+		snaps := destinationSnapshots([]output.DestinationStatus{{ID: "0a1b2c3d", State: state}})
+		require.Len(t, snaps, 1)
+		require.Equal(t, want, snaps[0].Active, state)
+	}
+	require.Nil(t, destinationSnapshots(nil))
+}

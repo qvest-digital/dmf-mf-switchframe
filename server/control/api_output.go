@@ -368,7 +368,8 @@ func (a *API) handleStopDestination(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReassignDestinationEngine moves a destination to another engine of a
-// pair: sent to both engines, it is the manual switch-over.
+// pair: sent to both engines, it is the manual switch-over. A move to a peer
+// that is down is refused.
 // Gated on the partitioned follower — accepting a reassign here would diverge
 // from the leader's record with no merge at heal. The cleanup path for the
 // minority side is /api/peer/force-leader, which promotes this engine and
@@ -389,6 +390,12 @@ func (a *API) handleReassignDestinationEngine(w http.ResponseWriter, r *http.Req
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	// A move to a peer that is down would not hold: this engine takes the
+	// destination back on its next failover tick.
+	if local := a.peerPoller.LocalLabel(); local != "" && body.Engine != "" && body.Engine != local && !a.peerPoller.PeerReachable() {
+		httperr.Write(w, http.StatusConflict, "peer engine "+body.Engine+" is down; the destination stays on engine "+local)
 		return
 	}
 	if err := a.outputMgr.ReassignDestinationEngine(id, body.Engine); err != nil {

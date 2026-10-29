@@ -13,6 +13,7 @@ import (
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/peer"
 	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/stmap"
@@ -986,35 +987,7 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 	}
 
 	// --- Output destinations ---
-	if dests := a.outputMgr.ListDestinations(); len(dests) > 0 {
-		snap.OutputDestinations = make([]internal.DestinationSnapshot, 0, len(dests))
-		for _, d := range dests {
-			armed := d.Armed
-			snap.OutputDestinations = append(snap.OutputDestinations, internal.DestinationSnapshot{
-				ID: d.ID,
-				Config: internal.DestinationSnapshotConfig{
-					Type:     d.Config.Type,
-					Address:  d.Config.Address,
-					Port:     d.Config.Port,
-					URL:      d.Config.URL,
-					Latency:  d.Config.Latency,
-					StreamID: d.Config.StreamID,
-					Name:     d.Config.Name,
-					Engine:   d.Config.Engine,
-
-					Encryption:    d.Config.Encryption,
-					Passphrase:    d.Config.Passphrase,
-					MaxBW:         d.Config.MaxBW,
-					MaxConns:      d.Config.MaxConns,
-					SCTE35Enabled: d.Config.SCTE35Enabled,
-
-					AllowUntrustedCert: d.Config.AllowUntrustedCert,
-				},
-				Active: d.State == "connected" || d.State == "starting",
-				Armed:  &armed,
-			})
-		}
-	}
+	snap.OutputDestinations = destinationSnapshots(a.outputMgr.ListDestinations())
 
 	// --- Replay marks & player ---
 	if a.replayMgr != nil {
@@ -1259,4 +1232,40 @@ func clipPlayerInfos(states []clip.ClipPlayerState) []internal.ClipPlayerInfo {
 		}
 	}
 	return infos
+}
+
+// destinationSnapshots captures the output destinations for the peer's
+// snapshot. Active is set while an adapter runs, reconnecting included.
+func destinationSnapshots(dests []output.DestinationStatus) []internal.DestinationSnapshot {
+	if len(dests) == 0 {
+		return nil
+	}
+	out := make([]internal.DestinationSnapshot, 0, len(dests))
+	for _, d := range dests {
+		armed := d.Armed
+		out = append(out, internal.DestinationSnapshot{
+			ID: d.ID,
+			Config: internal.DestinationSnapshotConfig{
+				Type:     d.Config.Type,
+				Address:  d.Config.Address,
+				Port:     d.Config.Port,
+				URL:      d.Config.URL,
+				Latency:  d.Config.Latency,
+				StreamID: d.Config.StreamID,
+				Name:     d.Config.Name,
+				Engine:   d.Config.Engine,
+
+				Encryption:    d.Config.Encryption,
+				Passphrase:    d.Config.Passphrase,
+				MaxBW:         d.Config.MaxBW,
+				MaxConns:      d.Config.MaxConns,
+				SCTE35Enabled: d.Config.SCTE35Enabled,
+
+				AllowUntrustedCert: d.Config.AllowUntrustedCert,
+			},
+			Active: d.State == string(output.StateActive) || d.State == string(output.StateReconnecting) || d.State == string(output.StateStarting),
+			Armed:  &armed,
+		})
+	}
+	return out
 }
