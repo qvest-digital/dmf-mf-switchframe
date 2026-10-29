@@ -345,6 +345,10 @@ static int rtmp_flv_write_video(rtmp_flv_ctx_t* ctx,
 	if (is_keyframe) {
 		pkt->flags |= AV_PKT_FLAG_KEY;
 	}
+	// avformat_write_header sets the FLV stream time base to 1/1000;
+	// unscaled 90 kHz ticks would play back 90 times too fast.
+	av_packet_rescale_ts(pkt, (AVRational){1, 90000},
+		ctx->out_ctx->streams[ctx->video_idx]->time_base);
 
 	rc = av_interleaved_write_frame(ctx->out_ctx, pkt);
 	av_packet_free(&pkt);
@@ -371,6 +375,8 @@ static int rtmp_flv_write_audio(rtmp_flv_ctx_t* ctx,
 	pkt->pts = pts_90k;
 	pkt->dts = pts_90k;
 	pkt->stream_index = ctx->audio_idx;
+	av_packet_rescale_ts(pkt, (AVRational){1, 90000},
+		ctx->out_ctx->streams[ctx->audio_idx]->time_base);
 
 	rc = av_interleaved_write_frame(ctx->out_ctx, pkt);
 	av_packet_free(&pkt);
@@ -732,6 +738,18 @@ func (r *RTMPDirect) handleAudio(frame *media.AudioFrame) {
 	if state != StateActive || !r.initialized.Load() {
 		return
 	}
+	// Until the keyframe after a reconnect rebases ptsBase, audio would be
+	// stamped against the previous connection's timeline.
+	if r.pendingIDR.Load() {
+		return
+	}
+	// Audio from before the first video frame has no place on this
+	// connection's timeline; clamping it to zero would stack frames on
+	// one timestamp.
+	pts := frame.PTS - r.ptsBase
+	if pts < 0 {
+		return
+	}
 
 	data := stripADTS(frame.Data)
 	if len(data) == 0 {
@@ -742,11 +760,6 @@ func (r *RTMPDirect) handleAudio(frame *media.AudioFrame) {
 	if r.connectFn != nil {
 		r.bytesWritten.Add(int64(len(data)))
 		return
-	}
-
-	pts := frame.PTS - r.ptsBase
-	if pts < 0 {
-		pts = 0
 	}
 
 	r.mu.Lock()
