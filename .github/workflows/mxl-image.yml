@@ -294,6 +294,9 @@ jobs:
           wait_frames "$before" >/dev/null
           # Each request the URL policy holds is logged with the handler
           # that held it: a service worker's go to the request context's.
+          # The log is read once: grep -q ends early and would fail the
+          # pipe under pipefail.
+          docker logs sf-smoke > "$probe/engine.log" 2>&1
           for line in \
             'refused navigation: file:///etc/passwd' \
             'refused load (browser): http://127.0.0.1:18081/from-file-page' \
@@ -305,7 +308,7 @@ jobs:
             'refused load (context): http://127.0.0.1:18081/sw-import.js' \
             'refused load (context): http://127.0.0.1:18081/sw-install-fetch' \
             'refused load (context): http://127.0.0.1:18081/sw-fetch'; do
-            docker logs sf-smoke 2>&1 | grep -qF "[policy] $line" || { echo "not logged: $line"; exit 1; }
+            grep -qF "[policy] $line" "$probe/engine.log" || { echo "not logged: $line"; exit 1; }
           done
           if [[ -s "$probe/hits" ]]; then
             echo "requests reached the listener:"; cat "$probe/hits"; exit 1
