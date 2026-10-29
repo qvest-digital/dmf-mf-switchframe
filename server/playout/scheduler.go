@@ -138,6 +138,9 @@ func (s *Scheduler) Stop() {
 	s.stopped = true
 	s.started = false
 	s.state = SchedIdle
+	// Stop drops a cue, so the next Start begins at the top on every
+	// engine, whatever cue a restart left on one of them.
+	s.startAt = 0
 	s.resetItemState()
 }
 

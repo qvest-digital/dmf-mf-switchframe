@@ -14,7 +14,7 @@
 		setDSKFadeDuration,
 		graphicsSetLayerSettings, graphicsSetLayerOrder,
 		graphicsExportLayers, graphicsImportLayers,
-		apiCall,
+		apiCall, SwitchApiError,
 	} from '$lib/api/switch-api';
 	import { onDestroy } from 'svelte';
 	import {
@@ -101,18 +101,42 @@
 		return pendingConfigs[id] ?? storedConfig(layers.find(l => l.id === id));
 	}
 
+	function clearUnsaved(id: number) {
+		if (unsavedLayers[id]) {
+			const { [id]: _, ...rest } = unsavedLayers;
+			unsavedLayers = rest;
+		}
+	}
+
+	// Forgets an edit that will never reach the engine, and its retry.
+	function dropPending(id: number) {
+		const t = saveTimers.get(id);
+		if (t) clearTimeout(t);
+		saveTimers.delete(id);
+		if (id in pendingConfigs) {
+			const { [id]: _, ...rest } = pendingConfigs;
+			pendingConfigs = rest;
+		}
+		clearUnsaved(id);
+	}
+
 	function saveConfig(id: number) {
 		saveTimers.delete(id);
 		const cfg = pendingConfigs[id];
 		if (!cfg) return;
 		graphicsSetLayerSettings(id, { config: cfg as Record<string, unknown> }).then(() => {
-			if (unsavedLayers[id]) {
-				const { [id]: _, ...rest } = unsavedLayers;
-				unsavedLayers = rest;
-			}
+			clearUnsaved(id);
 		}).catch((err) => {
+			const msg = (err as Error)?.message ?? 'request failed';
+			// A 4xx is the engine refusing this edit, and it would refuse every
+			// retry: show it and fall back to what the engine holds.
+			if (err instanceof SwitchApiError && err.status >= 400 && err.status < 500) {
+				notify('error', `Layer settings refused: ${msg}`);
+				if (!saveTimers.has(id)) dropPending(id);
+				return;
+			}
 			if (!unsavedLayers[id]) {
-				notify('error', `Layer settings not saved: ${(err as Error)?.message ?? 'request failed'}`);
+				notify('error', `Layer settings not saved: ${msg}`);
 				unsavedLayers = { ...unsavedLayers, [id]: true };
 			}
 			// Keep the edit and retry, unless a newer edit already queued a save.
@@ -136,8 +160,7 @@
 			if (saveTimers.has(id)) continue;
 			const layer = layers.find(l => l.id === id);
 			if (layer && JSON.stringify(storedConfig(layer)) === JSON.stringify(pendingConfigs[id])) {
-				const { [id]: _, ...rest } = pendingConfigs;
-				pendingConfigs = rest;
+				dropPending(id);
 			}
 		}
 	});
@@ -203,10 +226,8 @@
 		const currentIds = new Set(layers.map(l => l.id));
 		if (prevLayerIdSet) {
 			for (const id of prevLayerIdSet) {
-				if (!currentIds.has(id) && id in pendingConfigs) {
-					const { [id]: _, ...rest } = pendingConfigs;
-					pendingConfigs = rest;
-				}
+				// Removed here or by another session: nothing left to save.
+				if (!currentIds.has(id)) dropPending(id);
 			}
 		}
 		prevLayerIdSet = currentIds;
@@ -226,9 +247,7 @@
 
 	function handleRemoveLayer(id: number) {
 		apiCall(graphicsRemoveLayer(id), 'Remove layer failed');
-		const t = saveTimers.get(id);
-		if (t) clearTimeout(t);
-		saveTimers.delete(id);
+		dropPending(id);
 	}
 
 	async function handleCutOn(id: number) {
@@ -392,7 +411,8 @@
 		}
 		try {
 			await graphicsImportLayers(doc);
-			pendingConfigs = {};
+			// The import replaced every layer, so no edit applies any more.
+			for (const id of [...Object.keys(pendingConfigs), ...Object.keys(unsavedLayers)].map(Number)) dropPending(id);
 			notify('info', `Imported ${doc.layers.length} graphics layer${doc.layers.length === 1 ? '' : 's'}`);
 		} catch (err) {
 			notify('error', `Graphics import refused: ${(err as Error).message}`);

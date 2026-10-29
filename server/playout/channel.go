@@ -615,7 +615,6 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 			c.clipItemID = item.ID
 			c.clipFPS = frameSource.EstimateFPS()
 			c.clipTotal = frameSource.TotalFrames()
-			c.clipStartTime = time.Now().Add(-elapsed)
 
 			// Calculate target frame from elapsed time.
 			fps := c.clipFPS
@@ -623,6 +622,14 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 				fps = 30.0
 			}
 			targetFrame := int(float64(elapsedMs) * fps / 1000.0)
+			// The elapsed time of a looping item counts every pass; the
+			// position in the clip is where the current pass is.
+			passElapsed := elapsed
+			if item.Loop && c.clipTotal > 0 && targetFrame >= c.clipTotal {
+				targetFrame %= c.clipTotal
+				passElapsed = time.Duration(float64(targetFrame) / fps * float64(time.Second))
+			}
+			c.clipStartTime = time.Now().Add(-passElapsed)
 
 			// Seek the iterator if it supports seeking. targetFrame is on the
 			// item's playback timeline: for trimmed clips TrimIterator.Seek
@@ -849,12 +856,28 @@ func (c *Channel) SetGPUSourceTap(fn func(sourceKey string) *DecodedFrame) {
 }
 
 // SetCursor overrides the scheduler's cursor position. Used by the Manager
-// during state recovery to restore the exact playlist position.
+// during state recovery to restore the exact playlist position. Start still
+// begins at the first item; CueAt makes the position the one Start plays.
 func (c *Channel) SetCursor(cursor int) {
+	c.setCursor(cursor, false)
+}
+
+// CueAt restores the cursor like SetCursor and cues the channel there, so
+// the next Start puts that item on air. A cursor outside the playlist is
+// restored without a cue.
+func (c *Channel) CueAt(cursor int) {
+	c.setCursor(cursor, true)
+}
+
+func (c *Channel) setCursor(cursor int, cue bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.scheduler.mu.Lock()
 	c.scheduler.cursor = cursor
+	c.scheduler.startAt = 0
+	if cue && c.scheduler.playlist != nil && cursor >= 0 && cursor < len(c.scheduler.playlist.Items) {
+		c.scheduler.startAt = cursor
+	}
 	c.scheduler.resetItemState()
 	// Restoring a cursor must also clear any in-flight transition. If the
 	// scheduler was mid-transition (SchedTransitioning), the next Tick would
