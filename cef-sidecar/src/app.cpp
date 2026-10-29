@@ -5,6 +5,15 @@ void SwitchframeCefApp::OnBeforeCommandLineProcessing(
     const CefString& process_type,
     CefRefPtr<CefCommandLine> command_line) {
 
+    // A WebSocket handshake reaches neither CEF request handler, so the URL
+    // policy cannot refuse ws://. Chromium picks the proxy for ws:// as for
+    // http://, so plain http is sent to a proxy at loopback port 1, where
+    // none runs, and loopback hosts are taken off the list Chromium never
+    // proxies. The policy refuses plain http itself before any connection;
+    // https and wss go direct.
+    command_line->AppendSwitchWithValue("proxy-server", "http=127.0.0.1:1");
+    command_line->AppendSwitchWithValue("proxy-bypass-list", "<-loopback>");
+
     // Disable GPU compositing for reliable software rendering in offscreen mode
     command_line->AppendSwitch("disable-gpu");
     command_line->AppendSwitch("disable-gpu-compositing");
