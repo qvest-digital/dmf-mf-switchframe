@@ -806,6 +806,71 @@ func TestManagerUpdateCommand(t *testing.T) {
 	}
 }
 
+// Data sent with a load reaches the sidecar before the page's adapter
+// exists, where it is dropped. The manager has to send it again once the
+// sidecar reports the adapter's format, or the graphic plays with its
+// defaults instead of the operator's data.
+func TestManagerReplaysLastDataOnFormatDetected(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mock.close()
+	defer func() { _ = mgr.Close() }()
+
+	id, err := mgr.AllocateBrowser(0)
+	if err != nil {
+		t.Fatalf("AllocateBrowser: %v", err)
+	}
+	if err := mgr.LoadURL(id, "https://templates.test/lower-third.html"); err != nil {
+		t.Fatalf("LoadURL: %v", err)
+	}
+	if err := mgr.Update(id, `{"name":"Alice"}`); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	// create + load + update.
+	if cmds := mock.waitForCommands(3, 2*time.Second); len(cmds) != 3 {
+		t.Fatalf("expected 3 commands before format detection, got %d", len(cmds))
+	}
+
+	if err := mock.sendResponse(ControlResponse{ID: id, Event: "format_detected", Format: "ograf"}); err != nil {
+		t.Fatalf("sendResponse: %v", err)
+	}
+
+	cmds := mock.waitForCommands(4, 2*time.Second)
+	if len(cmds) != 4 {
+		t.Fatalf("expected the update to be sent again after format detection, got %d commands", len(cmds))
+	}
+	last := cmds[3]
+	if last.Cmd != "update" || last.ID == nil || *last.ID != id || last.Data != `{"name":"Alice"}` {
+		t.Errorf("replayed command: got %+v, want update of %d with the last data", last, id)
+	}
+}
+
+// A page with no data yet gets no empty update.
+func TestManagerFormatDetectedWithoutDataSendsNothing(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mock.close()
+	defer func() { _ = mgr.Close() }()
+
+	id, err := mgr.AllocateBrowser(0)
+	if err != nil {
+		t.Fatalf("AllocateBrowser: %v", err)
+	}
+	if err := mgr.LoadURL(id, "https://templates.test/lower-third.html"); err != nil {
+		t.Fatalf("LoadURL: %v", err)
+	}
+	mock.waitForCommands(2, 2*time.Second)
+	if err := mock.sendResponse(ControlResponse{ID: id, Event: "format_detected", Format: "ograf"}); err != nil {
+		t.Fatalf("sendResponse: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && mgr.BrowserStates()[id].Status != "ready" {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if cmds := mock.getCommands(); len(cmds) != 2 {
+		t.Errorf("expected create + load only, got %d commands: %+v", len(cmds), cmds)
+	}
+}
+
 // LoadURL is the one way a URL reaches the sidecar, so it refuses what
 // CheckURL refuses even when a caller skipped the check.
 func TestManagerLoadURLRefusesDisallowedURL(t *testing.T) {

@@ -769,6 +769,18 @@ func (m *Manager) controlReadLoop(gen int64) {
 			case "format_detected":
 				bs.Format = resp.Format
 				bs.Status = "ready"
+				// Data sent with or right after a load reaches the page
+				// before its adapter exists and is dropped there, so the
+				// last data is sent again once the adapter reports in.
+				if bs.LastData != "" {
+					if err := m.sendCommand(ControlCommand{
+						Cmd:  "update",
+						ID:   intPtrHelper(resp.ID),
+						Data: bs.LastData,
+					}); err != nil {
+						slog.Warn("htmlgfx: replay data after format detection failed", "browser", resp.ID, "error", err)
+					}
+				}
 			case "load_error":
 				bs.Status = "error"
 			case "stopped":
