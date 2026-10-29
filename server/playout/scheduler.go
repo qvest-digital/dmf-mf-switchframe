@@ -416,6 +416,9 @@ func (s *Scheduler) SetCursor(index int, mode OnAirMode, elapsed time.Duration) 
 	s.itemComplete = false
 	s.advancePend = false
 	s.holdComplete = false
+	// A loop release belongs to the item it was given for and to the engine
+	// state the cursor is taken from; the snapshot carries it separately.
+	s.loopExit = false
 	s.idleWaiting = false
 	item := s.playlist.Items[index]
 	if item.DurationMs > 0 {

@@ -1217,3 +1217,33 @@ func TestScheduler_EndLoop_ClearedByNextAndStart(t *testing.T) {
 		t.Fatal("LoopExitPending survived a restart")
 	}
 }
+
+// Snapshot sync moves the cursor with SetCursor. A release given for the
+// item the engine was on must not make the item it is synced to end after
+// one pass, or the two engines diverge.
+func TestScheduler_SetCursorClearsEndLoop(t *testing.T) {
+	s := NewScheduler()
+	a := schedClipItem("a", 1000)
+	a.Loop = true
+	b := schedClipItem("b", 1000)
+	b.Loop = true
+	if err := s.LoadPlaylist(schedPlaylist(a, b, schedClipItem("c", 1000))); err != nil {
+		t.Fatal(err)
+	}
+	s.Start()
+	now := time.Now()
+	s.Tick(now)
+	if err := s.EndLoop(); err != nil {
+		t.Fatal(err)
+	}
+
+	s.SetCursor(1, ModeAutomated, 200*time.Millisecond)
+	if s.LoopExitPending() {
+		t.Fatal("LoopExitPending survived SetCursor")
+	}
+	s.Tick(now)
+	s.SignalItemComplete()
+	if d := s.Tick(now); d.Item == nil || d.Item.ID != "b" {
+		t.Fatalf("synced looping item ended after one pass: %+v", d)
+	}
+}

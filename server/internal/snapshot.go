@@ -350,6 +350,8 @@ type PlayoutChannelSnapshot struct {
 	SchedulerMode      string  `json:"schedulerMode,omitempty"`
 	TransitionProgress float64 `json:"transitionProgress,omitempty"`
 	PlaylistHash       string  `json:"playlistHash,omitempty"`
+	// LoopExit: the looping clip on air ends after its current pass.
+	LoopExit bool `json:"loopExit,omitempty"`
 }
 
 // SCTE35ActiveEventSnapshot captures an in-flight SCTE-35 event.
