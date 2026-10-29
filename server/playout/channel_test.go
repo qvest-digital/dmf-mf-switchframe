@@ -3366,3 +3366,78 @@ func TestChannel_EndLoop_NotOnAir(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
 	require.ErrorIs(t, ch.EndLoop(), ErrNotOnAir)
 }
+
+// Cue top on a loaded or finished channel moves the cursor without going on
+// air; a jump that needed the channel on air could never act there.
+func TestChannel_JumpToOffAir_CuesItem(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider:        fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
+	})
+	pl := testPlaylist(
+		liveItem("first", "cam-1"),
+		liveItem("second", "cam-2"),
+		liveItem("third", "cam-3"),
+	)
+	require.NoError(t, ch.LoadPlaylist(pl))
+
+	var states []ChannelState
+	ch.SetOnStateChange(func(s ChannelState) { states = append(states, s) })
+
+	require.NoError(t, ch.JumpTo("third"))
+	require.Equal(t, StateCued, ch.State())
+	st := ch.Status()
+	require.Equal(t, 2, st.ItemIndex)
+	require.Equal(t, "third", st.CurrentItemID)
+	require.Equal(t, []ChannelState{StateCued}, states)
+
+	require.NoError(t, ch.Start())
+	defer ch.Stop()
+	waitFor(t, 2*time.Second, func() bool { return ch.Status().CurrentItemID == "third" })
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, "third", ch.Status().CurrentItemID, "the cued item stays on air")
+}
+
+func TestChannel_CueTopAfterStop(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider:        fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
+	})
+	pl := testPlaylist(liveItem("first", "cam-1"), liveItem("second", "cam-2"))
+	require.NoError(t, ch.LoadPlaylist(pl))
+	require.NoError(t, ch.Start())
+	require.NoError(t, ch.Next())
+	waitFor(t, 2*time.Second, func() bool { return ch.Status().CurrentItemID == "second" })
+	ch.Stop()
+	require.Equal(t, StateStopped, ch.State())
+
+	require.NoError(t, ch.JumpTo("first"))
+	require.Equal(t, StateCued, ch.State())
+	require.Equal(t, 0, ch.Status().ItemIndex)
+}
+
+// A playlist that ran out leaves the channel completed with its scheduler
+// still started; cueing must work there too.
+func TestChannel_CueTopAfterCompletion(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider:        fakeProvider(3),
+		AllowedLocalPrefixes: []string{"/"},
+	})
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(clipItem("a"), clipItem("b"))))
+	require.NoError(t, ch.Start())
+	waitFor(t, 5*time.Second, func() bool { return ch.State() == StateCompleted })
+
+	require.NoError(t, ch.JumpTo("a"))
+	require.Equal(t, StateCued, ch.State())
+	require.Equal(t, 0, ch.Status().ItemIndex)
+
+	require.NoError(t, ch.Start())
+	defer ch.Stop()
+	require.Equal(t, StateOnAir, ch.State())
+}
+
+func TestChannel_JumpToWithoutPlaylist(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}})
+	require.ErrorIs(t, ch.JumpTo("x"), ErrNoPlaylist)
+	require.Equal(t, StateStopped, ch.State())
+}

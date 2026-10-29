@@ -75,7 +75,7 @@
 
 ### `GET /api/clips/recordings`
 
-**Purpose:** list `.ts` files in the recording directory, and in `--recording-archive-dir`, that can be imported as clips.
+**Purpose:** list `.ts` files that can be imported as clips: in the recording directory, in `--recording-archive-dir` and in each engine's subdirectory of it.
 **Handler:** `(*API).handleClipRecordings`.
 
 **Response 200:** `[{ "filename": "...", "sizeBytes": ..., "modifiedMs": ... }, ...]`.

@@ -2,58 +2,46 @@ package mxl
 
 import "testing"
 
-func TestNextVideoIndex(t *testing.T) {
+func TestVideoIndexFor(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		now      uint64
 		last     uint64
 		haveLast bool
+		fresh    bool
+		stalled  bool
 		want     uint64
 		wantOK   bool
 	}{
-		{"first tick writes the clock", 100, 0, false, 100, true},
-		{"on the grid", 101, 100, true, 101, true},
-		// Two ticks in one grain period: the second takes the next index
-		// rather than repeating one libmxl refuses.
-		{"second tick in a period", 100, 100, true, 101, true},
-		// Already a grain ahead: another early tick must not run further.
-		{"early tick while ahead", 100, 101, true, 0, false},
-		// A late tick catches up to the clock; libmxl invalidates the gap.
-		{"late tick", 105, 100, true, 105, true},
+		{"first frame writes the clock", 100, 0, false, true, false, 100, true},
+		{"new frame on the grid", 101, 100, true, true, false, 101, true},
+		// A second frame in one period takes the next grain instead of
+		// replacing the first, which would lose it.
+		{"new frame a grain ahead", 100, 100, true, true, false, 101, true},
+		// Two grains ahead it waits for the clock.
+		{"new frame two grains ahead", 100, 101, true, true, false, 0, false},
+		// A frame late for its period still takes the grain it was late for.
+		{"new frame a grain late", 102, 100, true, true, false, 101, true},
+		// Far behind, the writer resumes at the grain before the clock.
+		{"new frame far behind", 110, 100, true, true, false, 109, true},
+		// Nothing new: the last frame is repeated only once the clock is
+		// past the grain after it, so a late frame can still take it.
+		{"repeat while the next grain is current", 101, 100, true, false, false, 0, false},
+		{"repeat once the next grain has passed", 102, 100, true, false, false, 101, true},
+		{"repeat while ahead", 100, 100, true, false, false, 0, false},
+		{"repeat far behind", 110, 100, true, false, false, 109, true},
+		// Stalled: each further repeat takes its grain as the grain starts.
+		{"stalled repeat as its grain starts", 101, 100, true, false, true, 101, true},
+		{"stalled repeat ahead of its grain", 100, 100, true, false, true, 0, false},
+		// A frame arriving after a stall is new and goes in at once.
+		{"new frame after a stall", 101, 101, true, true, true, 102, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := nextVideoIndex(tc.now, tc.last, tc.haveLast)
+			got, ok := videoIndexFor(tc.now, tc.last, tc.haveLast, tc.fresh, tc.stalled)
 			if got != tc.want || ok != tc.wantOK {
-				t.Fatalf("nextVideoIndex(%d, %d, %v) = %d, %v; want %d, %v",
-					tc.now, tc.last, tc.haveLast, got, ok, tc.want, tc.wantOK)
+				t.Fatalf("videoIndexFor(%d, %d, %v, %v, %v) = %d, %v; want %d, %v",
+					tc.now, tc.last, tc.haveLast, tc.fresh, tc.stalled, got, ok, tc.want, tc.wantOK)
 			}
 		})
-	}
-}
-
-// Over a run of ticks that jitter around the grain grid, every committed index
-// is past the one before it and none is skipped.
-func TestNextVideoIndex_JitteredTicksStayContiguous(t *testing.T) {
-	// Wall-clock grain index seen at each tick: a period with two ticks,
-	// then one with none.
-	clock := []uint64{10, 11, 11, 13, 14, 14, 16, 17, 18, 18, 20}
-	var last uint64
-	have := false
-	var written []uint64
-	for _, now := range clock {
-		idx, ok := nextVideoIndex(now, last, have)
-		if !ok {
-			continue
-		}
-		written = append(written, idx)
-		last, have = idx, true
-	}
-	for i := 1; i < len(written); i++ {
-		if written[i] != written[i-1]+1 {
-			t.Fatalf("indices %v are not contiguous at %d", written, i)
-		}
-	}
-	if written[len(written)-1] < clock[len(clock)-1] {
-		t.Fatalf("writer fell behind the clock: last %d, clock %d", written[len(written)-1], clock[len(clock)-1])
 	}
 }

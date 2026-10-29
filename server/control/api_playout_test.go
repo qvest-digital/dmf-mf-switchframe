@@ -936,3 +936,25 @@ func TestPlayoutRoutes_EndLoop(t *testing.T) {
 	require.True(t, ch.Looping)
 	require.True(t, ch.LoopExit)
 }
+
+// Cue top is a jump to the first item on a channel that is not on air.
+func TestPlayoutRoutes_JumpOffAirCues(t *testing.T) {
+	api := setupTestPlayoutAPI(t)
+
+	loadReq := httptest.NewRequest("POST", "/api/playout/channels/1/load", strings.NewReader(validPlaylistJSON()))
+	loadReq.Header.Set("Content-Type", "application/json")
+	loadRec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(loadRec, loadReq)
+	require.Equal(t, http.StatusOK, loadRec.Code)
+
+	jumpReq := httptest.NewRequest("POST", "/api/playout/channels/1/jump", strings.NewReader(`{"itemId": "item-1"}`))
+	jumpReq.Header.Set("Content-Type", "application/json")
+	jumpRec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(jumpRec, jumpReq)
+	require.Equal(t, http.StatusOK, jumpRec.Code, jumpRec.Body.String())
+
+	var ch playout.ChannelStatus
+	require.NoError(t, json.NewDecoder(jumpRec.Body).Decode(&ch))
+	require.Equal(t, "cued", ch.State)
+	require.Equal(t, 0, ch.ItemIndex)
+}

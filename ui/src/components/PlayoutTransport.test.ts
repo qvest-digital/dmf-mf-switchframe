@@ -396,3 +396,37 @@ describe('PlayoutTransport end loop', () => {
 		expect(container.querySelector('.t-end-loop')).toBeNull();
 	});
 });
+
+describe('PlayoutTransport cue top', () => {
+	beforeEach(() => vi.clearAllMocks());
+
+	it('offers cue top on a stopped, completed or cued channel and calls it', async () => {
+		for (const state of ['stopped', 'completed', 'cued'] as const) {
+			const onCueTop = vi.fn();
+			const { container, unmount } = render(PlayoutTransport, {
+				props: { channel: makeChannel({ state, itemIndex: 2, itemCount: 3 }), onCueTop },
+			});
+			const btn = container.querySelector('.t-cue-top') as HTMLButtonElement;
+			expect(btn, state).toBeTruthy();
+			expect(btn.disabled, state).toBe(false);
+			await fireEvent.click(btn);
+			expect(onCueTop, state).toHaveBeenCalledTimes(1);
+			unmount();
+		}
+	});
+
+	it('is disabled once the channel is cued at the first item', () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'cued', itemIndex: 0, itemCount: 3 }), onCueTop: vi.fn() },
+		});
+		const btn = container.querySelector('.t-cue-top') as HTMLButtonElement;
+		expect(btn.disabled).toBe(true);
+	});
+
+	it('is not offered on air', () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', itemIndex: 1, itemCount: 3 }), onCueTop: vi.fn() },
+		});
+		expect(container.querySelector('.t-cue-top')).toBeNull();
+	});
+});

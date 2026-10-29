@@ -79,6 +79,10 @@ type Scheduler struct {
 	started bool
 	stopped bool
 
+	// startAt is the item Start puts on air. Cue sets it while the
+	// scheduler is off air; anything else starts from the first item.
+	startAt int
+
 	// idleWaiting means we've advanced past a completed item but the next
 	// item has a future ScheduledTime, so we sit idle until then.
 	idleWaiting bool
@@ -101,11 +105,13 @@ func (s *Scheduler) LoadPlaylist(pl *Playlist) error {
 	defer s.mu.Unlock()
 	s.playlist = pl
 	s.cursor = 0
+	s.startAt = 0
 	s.resetItemState()
 	return nil
 }
 
-// Start transitions the scheduler to the playing state.
+// Start transitions the scheduler to the playing state, from the item Cue
+// selected or else from the first item.
 func (s *Scheduler) Start() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -115,7 +121,8 @@ func (s *Scheduler) Start() {
 	s.started = true
 	s.stopped = false
 	s.state = SchedPlaying
-	s.cursor = 0
+	s.cursor = s.startAt
+	s.startAt = 0
 	s.itemStartTime = time.Time{} // will be set on first Tick
 	s.itemComplete = false
 	s.advancePend = false
@@ -327,6 +334,26 @@ func (s *Scheduler) LoopExitPending() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.loopExit
+}
+
+// Cue moves the cursor to the item with the given ID, so the next Start
+// puts that item on air first. The channel calls it only while off air; a
+// scheduler whose playlist ran out still counts as started.
+func (s *Scheduler) Cue(itemID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.playlist == nil {
+		return ErrNoPlaylist
+	}
+	for i, item := range s.playlist.Items {
+		if item.ID == itemID {
+			s.cursor = i
+			s.startAt = i
+			s.resetItemState()
+			return nil
+		}
+	}
+	return ErrItemNotFound
 }
 
 // TakeManual switches to manual mode, blocking auto-advancement.
