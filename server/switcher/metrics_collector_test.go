@@ -148,3 +148,24 @@ func TestMetricsCollector_Lint(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, problems)
 }
+
+// An SRT listener input is keyed by its publisher's stream id; no series
+// carries it, in any label.
+func TestMetricsCollector_HidesSRTStreamIDs(t *testing.T) {
+	sw := NewTestSwitcher(t, distribution.NewRelay())
+	key := "srt:secret-stream-key"
+	sw.RegisterSource(key, newTestRelay())
+	require.NoError(t, sw.SetLabel(context.Background(), key, "secret-stream-key"))
+	sw.health.recordFrame(key, time.Now())
+	require.NoError(t, sw.Cut(context.Background(), key))
+
+	for name, f := range gather(t, NewMetricsCollector(sw)) {
+		for _, m := range f.GetMetric() {
+			for _, l := range m.GetLabel() {
+				require.NotContains(t, l.GetValue(), "secret", "%s{%s}", name, l.GetName())
+			}
+		}
+	}
+	require.Equal(t, map[string]float64{metrics.SourceLabel(key): 1},
+		values(gather(t, NewMetricsCollector(sw))["switchframe_program_source_info"]))
+}

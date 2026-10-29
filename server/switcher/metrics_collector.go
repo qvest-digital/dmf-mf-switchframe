@@ -1,9 +1,11 @@
 package switcher
 
 import (
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 // sourceHealthStatuses are the values switchframe_source_health is
@@ -105,10 +107,10 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	seconds := func(ns int64) float64 { return float64(ns) / 1e9 }
 
 	if state.ProgramSource != "" {
-		gauge(descProgramSource, 1, state.ProgramSource)
+		gauge(descProgramSource, 1, metrics.SourceLabel(state.ProgramSource))
 	}
 	if state.PreviewSource != "" {
-		gauge(descPreviewSource, 1, state.PreviewSource)
+		gauge(descPreviewSource, 1, metrics.SourceLabel(state.PreviewSource))
 	}
 	gauge(descTransitionActive, flag(state.InTransition))
 	gauge(descFTBActive, flag(state.FTBActive))
@@ -132,22 +134,30 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	for key, info := range state.Sources {
-		gauge(descSourceInfo, 1, key, info.Type, info.Label)
+		source := metrics.SourceLabel(key)
+		// A listener input is labelled after its stream id until an
+		// operator names it, so its display label goes the same way.
+		label := info.Label
+		if source != key && label != "" && strings.Contains(key, label) {
+			label = source
+		}
+		gauge(descSourceInfo, 1, source, info.Type, label)
 		status := SourceHealthStatus(info.Status)
 		for _, st := range sourceHealthStatuses {
-			gauge(descSourceHealth, flag(st == status), key, string(st))
+			gauge(descSourceHealth, flag(st == status), source, string(st))
 		}
 		if ms := s.health.lastFrameAgoMs(key); ms >= 0 {
-			gauge(descSourceLastFrameAge, float64(ms)/1e3, key)
+			gauge(descSourceLastFrameAge, float64(ms)/1e3, source)
 		}
 	}
 	for key, src := range perf.Sources {
-		counter(descSourceFrames, src.RawFrameCount, key)
-		gauge(descSourceDecodeFPS, src.AvgFPS, key)
-		counter(descSourceDecodeDrops, src.DecodeDrops, key)
-		gauge(descSourceDecodeLatency, seconds(src.DecodeLastNs), key)
+		source := metrics.SourceLabel(key)
+		counter(descSourceFrames, src.RawFrameCount, source)
+		gauge(descSourceDecodeFPS, src.AvgFPS, source)
+		counter(descSourceDecodeDrops, src.DecodeDrops, source)
+		gauge(descSourceDecodeLatency, seconds(src.DecodeLastNs), source)
 		if src.DriftSamples > 0 {
-			gauge(descSourceDrift, float64(src.DriftPPM), key)
+			gauge(descSourceDrift, float64(src.DriftPPM), source)
 		}
 	}
 }

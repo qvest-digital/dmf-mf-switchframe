@@ -2,6 +2,7 @@ package audio
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 var (
@@ -74,7 +75,8 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	gauge(descProgramPeak, peak[0], "left")
 	gauge(descProgramPeak, peak[1], "right")
 
-	for source, st := range c.m.ChannelStates() {
+	for key, st := range c.m.ChannelStates() {
+		source := metrics.SourceLabel(key)
 		gauge(descChannelPeak, st.PeakL, source, "left")
 		gauge(descChannelPeak, st.PeakR, source, "right")
 		gauge(descChannelLevel, st.Level, source)
