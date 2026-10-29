@@ -222,7 +222,8 @@ static void sps_get_dimensions(const uint8_t* sps, int sps_len,
 static int rtmp_flv_open(rtmp_flv_ctx_t* ctx, const char* url,
 	const unsigned char* sps, int sps_len,
 	const unsigned char* pps, int pps_len,
-	int sample_rate, int channels, rtmp_intr_t* intr) {
+	int sample_rate, int channels, rtmp_intr_t* intr,
+	int tls_verify, const char* ca_file) {
 
 	int rc = avformat_alloc_output_context2(&ctx->out_ctx, NULL, "flv", url);
 	if (rc < 0 || !ctx->out_ctx) return -1;
@@ -329,8 +330,17 @@ static int rtmp_flv_open(rtmp_flv_ctx_t* ctx, const char* url,
 	ast->codecpar->extradata_size = 2;
 
 	// Open RTMP connection.
+	// libavformat's TLS protocol does not verify the server certificate
+	// unless told to. The RTMP protocol hands these options on to the TLS
+	// connection beneath it.
+	AVDictionary* opts = NULL;
+	if (strncmp(url, "rtmps://", 8) == 0) {
+		av_dict_set(&opts, "tls_verify", tls_verify ? "1" : "0", 0);
+		if (tls_verify && ca_file && ca_file[0]) av_dict_set(&opts, "ca_file", ca_file, 0);
+	}
 	rc = avio_open2(&ctx->out_ctx->pb, url, AVIO_FLAG_WRITE,
-		&ctx->out_ctx->interrupt_callback, NULL);
+		&ctx->out_ctx->interrupt_callback, &opts);
+	av_dict_free(&opts);
 	if (rc < 0) {
 		avformat_free_context(ctx->out_ctx);
 		ctx->out_ctx = NULL;
@@ -432,6 +442,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -469,6 +480,10 @@ type RTMPDirect struct {
 	cancel context.CancelFunc
 	stopCh chan struct{}
 	doneCh chan struct{}
+
+	// caFile is the CA bundle an rtmps:// server certificate is verified
+	// against.
+	caFile string
 
 	// intr is the interrupt state every blocking libavformat call polls:
 	// Close aborts through it without taking mu, which a blocked call
@@ -529,10 +544,39 @@ func NewRTMPDirect(config RTMPCallerConfig) (*RTMPDirect, error) {
 		config:    config,
 		bo:        backoff.Backoff{JitterPct: 0.20},
 		ioTimeout: rtmpIOTimeout,
+		caFile:    systemCABundle(),
 	}
 	r.state.Store(ptrTo(StateStopped))
 	r.lastError.Store(ptrTo(""))
 	return r, nil
+}
+
+// systemCABundles are where distributions keep the bundle of trusted CA
+// certificates.
+var systemCABundles = []string{
+	"/etc/ssl/certs/ca-certificates.crt", // Debian, Ubuntu, Arch, Alpine
+	"/etc/pki/tls/certs/ca-bundle.crt",   // Fedora, RHEL
+	"/etc/ssl/cert.pem",                  // macOS, BSD
+}
+
+// systemCABundle returns the first CA bundle present, or "" to leave the
+// choice to the TLS library.
+func systemCABundle() string {
+	for _, p := range systemCABundles {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// tlsVerify reports, as a C flag, whether an rtmps:// connection verifies
+// the server certificate.
+func (r *RTMPDirect) tlsVerify() C.int {
+	if r.config.AllowUntrustedCert {
+		return 0
+	}
+	return 1
 }
 
 // ID returns the adapter identifier.
@@ -864,6 +908,8 @@ func (r *RTMPDirect) initConnection(frame *media.VideoFrame) error {
 
 	cURL := C.CString(r.config.URL)
 	defer C.free(unsafe.Pointer(cURL))
+	cCA := C.CString(r.caFile)
+	defer C.free(unsafe.Pointer(cCA))
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -874,7 +920,7 @@ func (r *RTMPDirect) initConnection(frame *media.VideoFrame) error {
 		(*C.uchar)(unsafe.Pointer(&frame.PPS[0])), C.int(len(frame.PPS)),
 		C.int(r.config.SampleRate),
 		C.int(r.config.Channels),
-		r.intr)
+		r.intr, r.tlsVerify(), cCA)
 	if rc < 0 {
 		return fmt.Errorf("rtmp_flv_open failed (code %d)", int(rc))
 	}
@@ -970,14 +1016,16 @@ func (r *RTMPDirect) reconnectLoop() {
 		// Try eager reconnect if we have cached SPS/PPS.
 		if len(r.lastSPS) > 0 && len(r.lastPPS) > 0 {
 			cURL := C.CString(r.config.URL)
+			cCA := C.CString(r.caFile)
 			r.armLocked()
 			rc := C.rtmp_flv_open(&r.ctx, cURL,
 				(*C.uchar)(unsafe.Pointer(&r.lastSPS[0])), C.int(len(r.lastSPS)),
 				(*C.uchar)(unsafe.Pointer(&r.lastPPS[0])), C.int(len(r.lastPPS)),
 				C.int(r.config.SampleRate),
 				C.int(r.config.Channels),
-				r.intr)
+				r.intr, r.tlsVerify(), cCA)
 			C.free(unsafe.Pointer(cURL))
+			C.free(unsafe.Pointer(cCA))
 
 			if rc == 0 {
 				r.bo.Reset()
