@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { reloadHolds } from '$lib/util/activity';
 import { monitorSubscriberCount, setMonitorDimmed, setMonitorMuted, setMonitorSolo, setMonitorVolume } from '$lib/audio/monitor.svelte';
 import { createMediaPipeline, RECONNECT_BASE_MS, RECONNECT_MAX_MS, CONNECT_TIMEOUT_MS, RECONNECT_STABLE_MS, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
 import { isSourceStalled, clearAllStalls, clearSourceStall } from './source-errors.svelte';
@@ -948,6 +949,54 @@ describe('MediaPipeline audio', () => {
 			setMonitorVolume(1);
 			setMonitorMuted(false);
 			setMonitorDimmed(false);
+			vi.unstubAllGlobals();
+		}
+	});
+
+	// A hidden tab can still be what the operator listens to: program or a
+	// PFL/AFL channel on the monitor. A stale-build reload would cut it.
+	it('holds a reload while the monitor plays audio', () => {
+		const contexts: Array<{ state: string; onstatechange: (() => void) | null }> = [];
+		class FakeAudioContext {
+			state = 'running';
+			onstatechange: (() => void) | null = null;
+			suspend = vi.fn(async () => { this.state = 'suspended'; this.onstatechange?.(); });
+			close = vi.fn().mockResolvedValue(undefined);
+			destination = {};
+			currentTime = 0;
+			createGain = makeFakeGain;
+			constructor() { contexts.push(this); }
+		}
+		vi.stubGlobal('AudioContext', FakeAudioContext);
+		const userActivation = Object.getOwnPropertyDescriptor(navigator, 'userActivation');
+		Object.defineProperty(navigator, 'userActivation', { configurable: true, value: { hasBeenActive: true } });
+		try {
+			mockTransports.length = 0;
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('program-preview');
+			pipeline.connectSource('program-preview');
+			expect(reloadHolds()).not.toContain('audio monitor');
+			mockTransports[0].callbacks.onTrackInfo([{ type: 'audio', codec: 'mp4a.40.2', sampleRate: 48000, channels: 2 }]);
+			expect(reloadHolds()).toContain('audio monitor');
+
+			setMonitorMuted(true);
+			expect(reloadHolds()).not.toContain('audio monitor');
+			setMonitorMuted(false);
+			expect(reloadHolds()).toContain('audio monitor');
+
+			contexts[0].state = 'suspended';
+			contexts[0].onstatechange?.();
+			expect(reloadHolds()).not.toContain('audio monitor');
+			contexts[0].state = 'running';
+			contexts[0].onstatechange?.();
+			expect(reloadHolds()).toContain('audio monitor');
+
+			pipeline.destroy();
+			expect(reloadHolds()).not.toContain('audio monitor');
+		} finally {
+			setMonitorMuted(false);
+			if (userActivation) Object.defineProperty(navigator, 'userActivation', userActivation);
+			else delete (navigator as unknown as Record<string, unknown>).userActivation;
 			vi.unstubAllGlobals();
 		}
 	});

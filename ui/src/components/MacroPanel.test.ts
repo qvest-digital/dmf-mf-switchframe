@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import MacroPanel from './MacroPanel.svelte';
+import { reloadHolds } from '$lib/util/activity';
 import type { ControlRoomState, SourceInfo } from '$lib/api/types';
 
 vi.mock('$lib/api/switch-api', () => ({
@@ -190,6 +191,17 @@ describe('MacroPanel', () => {
 		const saveBtn = container.querySelector('.save-btn') as HTMLButtonElement;
 		await fireEvent.click(saveBtn);
 		expect(container.querySelector('.editor-error')).toBeTruthy();
+	});
+
+	// The macro being edited exists only in this panel until it is saved,
+	// so a stale-build reload must wait for the editor to close.
+	it('holds a reload while the editor is open', async () => {
+		const { container } = render(MacroPanel, { props: { state: makeState() } });
+		expect(reloadHolds()).not.toContain('unsaved macro');
+		await fireEvent.click(container.querySelector('.add-btn') as HTMLButtonElement);
+		expect(reloadHolds()).toContain('unsaved macro');
+		await fireEvent.click(container.querySelector('.cancel-btn') as HTMLButtonElement);
+		expect(reloadHolds()).not.toContain('unsaved macro');
 	});
 
 	it('returns to list mode on cancel', async () => {

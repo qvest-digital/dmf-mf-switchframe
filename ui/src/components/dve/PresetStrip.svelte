@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { holdReload } from '$lib/util/activity';
 	import type { DVEPresetInfo } from '$lib/api/types';
 	import {
 		ICON_GRID, ICON_PLUS, ICON_SAVE, ICON_CLOSE, ICON_TRASH, ICON_CHECK,
@@ -38,6 +39,7 @@
 
 	let saving = $state(false);
 	let presetName = $state('');
+	$effect(() => { if (saving) return holdReload('unsaved preset'); });
 	let deleteConfirmId = $state<string | null>(null);
 	let transitionMs = $state(300);
 
