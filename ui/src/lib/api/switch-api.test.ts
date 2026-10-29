@@ -1712,4 +1712,19 @@ describe('recording download and confidence thumbnail', () => {
 		expect(reqUrl).toBe('https://engine-a/api/output/confidence');
 		expect(init.headers).toMatchObject({ Authorization: 'Bearer tok' });
 	});
+
+	it('listRecordingsDualEngine marks an engine that does not answer as unreachable', async () => {
+		const { listRecordingsDualEngine } = await import('./switch-api');
+		setEngineUrls([{ id: 'A', url: 'https://engine-a' }, { id: 'B', url: 'https://engine-b' }] as never);
+		vi.stubGlobal('fetch', vi.fn((url: string) => url.startsWith('https://engine-b')
+			? Promise.reject(new TypeError('network'))
+			: Promise.resolve({ ok: true, json: () => Promise.resolve([]) })));
+		try {
+			const groups = await listRecordingsDualEngine();
+			expect(groups.map((g) => [g.engineId, g.unreachable])).toEqual([['A', false], ['B', true]]);
+		} finally {
+			setEngineUrls(null);
+			vi.unstubAllGlobals();
+		}
+	});
 });

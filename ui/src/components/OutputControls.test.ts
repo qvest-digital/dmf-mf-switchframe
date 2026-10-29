@@ -412,4 +412,49 @@ describe('OutputControls confidence thumbnail', () => {
 			vi.unstubAllGlobals();
 		}
 	});
+
+	// A hidden tab polls nothing: the thumbnail is not visible there.
+	it('fetches nothing while the tab is hidden, then resumes', async () => {
+		const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, blob: async () => new Blob(['jpg']) });
+		vi.stubGlobal('fetch', fetchMock);
+		vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn().mockReturnValue('blob:t'), revokeObjectURL: vi.fn() }));
+		const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+		vi.useFakeTimers();
+		try {
+			const state = { ...baseState, recording: { active: true, filename: 'r.ts' } };
+			render(OutputControls, { props: { state } as never });
+			await vi.advanceTimersByTimeAsync(3500);
+			expect(fetchMock).not.toHaveBeenCalled();
+			hidden.mockReturnValue(false);
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+			hidden.mockRestore();
+			vi.unstubAllGlobals();
+		}
+	});
+
+	// Every object URL made for a thumbnail is released: the previous one on
+	// each new thumbnail, the last one when recording stops.
+	it('revokes the previous thumbnail URL and the last one on teardown', async () => {
+		let n = 0;
+		const createObjectURL = vi.fn(() => `blob:t${++n}`);
+		const revokeObjectURL = vi.fn();
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, blob: async () => new Blob(['jpg']) }));
+		vi.stubGlobal('URL', Object.assign(URL, { createObjectURL, revokeObjectURL }));
+		vi.useFakeTimers();
+		try {
+			const state = { ...baseState, recording: { active: true, filename: 'r.ts' } };
+			const { rerender } = render(OutputControls, { props: { state } as never });
+			await vi.advanceTimersByTimeAsync(1100);
+			expect(createObjectURL).toHaveBeenCalledTimes(2);
+			expect(revokeObjectURL).toHaveBeenCalledWith('blob:t1');
+			await rerender({ state: { ...baseState, recording: { active: false } } } as never);
+			expect(revokeObjectURL).toHaveBeenCalledWith('blob:t2');
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllGlobals();
+		}
+	});
 });

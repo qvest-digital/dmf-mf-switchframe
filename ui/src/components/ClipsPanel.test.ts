@@ -257,5 +257,52 @@ describe('ClipsPanel', () => {
 				vi.useRealTimers();
 			}
 		});
+			it('stops polling after a failed read instead of retrying every 2 s', async () => {
+			vi.useFakeTimers();
+			try {
+				vi.mocked(listRecordingsDualEngine).mockResolvedValue([
+					{ engineId: 'A', engineUrl: '', recordings: [recordings[0]] },
+				] as never);
+				render(ClipsPanel, { props: { state: makeState() } });
+				await vi.advanceTimersByTimeAsync(0);
+				vi.mocked(listRecordingsDualEngine).mockRejectedValue(new Error('engine unreachable'));
+				await vi.advanceTimersByTimeAsync(2100);
+				const afterFailure = vi.mocked(listRecordingsDualEngine).mock.calls.length;
+				await vi.advanceTimersByTimeAsync(10000);
+				expect(vi.mocked(listRecordingsDualEngine).mock.calls.length).toBe(afterFailure);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('says an engine is not reachable and does not poll for it', async () => {
+			vi.useFakeTimers();
+			try {
+				vi.mocked(listRecordingsDualEngine).mockResolvedValue([
+					{ engineId: 'A', engineUrl: 'https://engine-a', recordings: [recordings[2]] },
+					{ engineId: 'B', engineUrl: 'https://engine-b', recordings: [], unreachable: true },
+				] as never);
+				const { container } = render(ClipsPanel, { props: { state: makeState() } });
+				await vi.advanceTimersByTimeAsync(0);
+				expect(container.textContent).toContain('Engine B not reachable');
+				const calls = vi.mocked(listRecordingsDualEngine).mock.calls.length;
+				await vi.advanceTimersByTimeAsync(10000);
+				expect(vi.mocked(listRecordingsDualEngine).mock.calls.length).toBe(calls);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('reads again after an in-flight read when a recording stops meanwhile', async () => {
+			let release!: (v: unknown) => void;
+			vi.mocked(listRecordingsDualEngine).mockImplementationOnce(() => new Promise((r) => { release = r; }) as never);
+			const { rerender } = render(ClipsPanel, { props: { state: makeState({ recording: { active: true, filename: 'r.ts' } } as never) } });
+			await waitFor(() => expect(listRecordingsDualEngine).toHaveBeenCalledTimes(1));
+			vi.mocked(listRecordingsDualEngine).mockResolvedValue([{ engineId: 'A', engineUrl: '', recordings: [] }] as never);
+			await rerender({ state: makeState({ recording: { active: false } } as never) });
+			expect(listRecordingsDualEngine).toHaveBeenCalledTimes(1); // not concurrently
+			release([{ engineId: 'A', engineUrl: '', recordings: [recordings[0]] }]);
+			await waitFor(() => expect(listRecordingsDualEngine).toHaveBeenCalledTimes(2));
+		});
 	});
 });

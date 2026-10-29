@@ -597,6 +597,8 @@ export interface EngineRecordingGroup {
 	engineId: EngineId;
 	engineUrl: string;
 	recordings: RecordingFileInfo[];
+	/** The engine did not answer; its recordings are unknown, not absent. */
+	unreachable?: boolean;
 }
 
 export interface SCTE35State {

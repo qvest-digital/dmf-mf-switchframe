@@ -1941,17 +1941,23 @@ export function listRecordings(): Promise<RecordingFileInfo[]> {
 	return request('/api/clips/recordings');
 }
 
-/** Fetch recordings from a specific engine URL. Returns [] on failure. */
-export async function listRecordingsFromEngine(engineUrl: string): Promise<RecordingFileInfo[]> {
+/** Recordings of one engine, or null when it does not answer in time. */
+async function fetchEngineRecordings(engineUrl: string): Promise<RecordingFileInfo[] | null> {
 	try {
 		const res = await fetch(`${engineUrl}/api/clips/recordings`, {
 			headers: authHeaders(),
+			signal: AbortSignal.timeout(ENGINE_FETCH_TIMEOUT_MS),
 		});
-		if (!res.ok) return [];
-		return res.json();
+		if (!res.ok) return null;
+		return await res.json();
 	} catch {
-		return [];
+		return null;
 	}
+}
+
+/** Fetch recordings from a specific engine URL. Returns [] on failure. */
+export async function listRecordingsFromEngine(engineUrl: string): Promise<RecordingFileInfo[]> {
+	return (await fetchEngineRecordings(engineUrl)) ?? [];
 }
 
 /** Fetch recordings from all engines, grouped by engine. Single-engine falls back to standard list. */
@@ -1963,11 +1969,15 @@ export async function listRecordingsDualEngine(): Promise<EngineRecordingGroup[]
 	}
 
 	const results = await Promise.allSettled(
-		engines.map(async (eng) => ({
-			engineId: eng.id,
-			engineUrl: eng.url,
-			recordings: await listRecordingsFromEngine(eng.url),
-		}))
+		engines.map(async (eng) => {
+			const recordings = await fetchEngineRecordings(eng.url);
+			return {
+				engineId: eng.id,
+				engineUrl: eng.url,
+				recordings: recordings ?? [],
+				unreachable: recordings === null,
+			};
+		})
 	);
 
 	return results

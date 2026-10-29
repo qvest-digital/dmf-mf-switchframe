@@ -101,8 +101,14 @@
 		void recordingKey;
 		refreshRecordings();
 	});
+	// A failed read stops the poll: the list then shows what was last known,
+	// and the next start or stop reads it again.
+	let recordingsFailed = $state(false);
+	let recordingsInFlight = false;
+	let recordingsAgain = false;
 	const recordingsInProgress = $derived(
-		recordingGroups.some((g) => g.recordings.some((r) => r.state === 'recording' || r.state === 'finalizing')),
+		!recordingsFailed &&
+			recordingGroups.some((g) => g.recordings.some((r) => r.state === 'recording' || r.state === 'finalizing')),
 	);
 	$effect(() => {
 		if (!recordingsInProgress) return;
@@ -165,11 +171,27 @@
 		}
 	}
 
+	// One read at a time; a request made meanwhile (a start or stop) runs
+	// once the current read is back, so an unreachable engine cannot pile up
+	// requests and a stop is never answered by a read that predates it.
 	async function refreshRecordings() {
+		if (recordingsInFlight) {
+			recordingsAgain = true;
+			return;
+		}
+		recordingsInFlight = true;
 		try {
-			recordingGroups = await listRecordingsDualEngine();
-		} catch {
-			// ignore on load
+			do {
+				recordingsAgain = false;
+				try {
+					recordingGroups = await listRecordingsDualEngine();
+					recordingsFailed = false;
+				} catch {
+					recordingsFailed = true;
+				}
+			} while (recordingsAgain);
+		} finally {
+			recordingsInFlight = false;
 		}
 	}
 
@@ -519,14 +541,16 @@
 					</button>
 					{#if sectionOpen.recordings}
 						<div class="section-body">
-							{#if totalRecordings === 0}
+							{#if totalRecordings === 0 && !recordingGroups.some((g) => g.unreachable)}
 								<div class="empty-hint">No recordings</div>
 							{:else}
 								{#each recordingGroups as group (group.engineId)}
 									{#if isDualEngine}
 										<div class="engine-group-label">Engine {group.engineId}</div>
 									{/if}
-									{#if isDualEngine && group.recordings.length === 0}
+									{#if group.unreachable}
+										<div class="empty-hint">Engine {group.engineId} not reachable</div>
+									{:else if isDualEngine && group.recordings.length === 0}
 										<div class="empty-hint">No recordings</div>
 									{/if}
 									{#each group.recordings as rec (rec.path)}
