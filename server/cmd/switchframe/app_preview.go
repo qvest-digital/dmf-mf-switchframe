@@ -23,6 +23,23 @@ func (a *App) sourcePreviewConfig(key string, relay preview.Relay, fpsNum, fpsDe
 	}
 }
 
+// programPreviewConfig configures the CPU encoder of the program monitor's
+// relay. Under the preview proxy it is 720p, the size the GPU program
+// preview encodes; otherwise it keeps the program's own size.
+func (a *App) programPreviewConfig(relay preview.Relay, fpsNum, fpsDen int) preview.Config {
+	return preview.Config{
+		SourceKey: "program-preview",
+		Width:     1280,
+		Height:    720,
+		Bitrate:   3_000_000,
+		FPSNum:    fpsNum,
+		FPSDen:    fpsDen,
+		Relay:     relay,
+		Preset:    "veryfast",
+		ScaleDown: a.cfg.PreviewProxy,
+	}
+}
+
 // parsePreviewResolution converts a resolution string to width and height.
 func parsePreviewResolution(res string) (int, int) {
 	switch res {

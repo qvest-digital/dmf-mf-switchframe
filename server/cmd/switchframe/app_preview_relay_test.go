@@ -75,3 +75,20 @@ func TestBuiltinPreviewConfig_ScalesUnderThePreviewProxy(t *testing.T) {
 	require.Equal(t, 1920, info.Width)
 	require.Equal(t, 1080, info.Height)
 }
+
+// The program monitor of a CPU engine is 720p under the preview proxy, as
+// the GPU program preview encodes it; without the proxy it keeps the
+// program's size.
+func TestProgramPreviewConfig_Is720pUnderThePreviewProxy(t *testing.T) {
+	a := &App{cfg: AppConfig{PreviewProxy: true}}
+	info, w, h := relayVideoSize(t, a.programPreviewConfig(nil, 50, 1))
+	require.Equal(t, 1280, info.Width)
+	require.Equal(t, 720, info.Height)
+	require.Equal(t, 1280, w)
+	require.Equal(t, 720, h)
+
+	a.cfg.PreviewProxy = false
+	info, _, _ = relayVideoSize(t, a.programPreviewConfig(nil, 50, 1))
+	require.Equal(t, 1920, info.Width)
+	require.Equal(t, 1080, info.Height)
+}

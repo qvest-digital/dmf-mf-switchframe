@@ -2058,17 +2058,8 @@ func (a *App) Run(ctx context.Context) error {
 		slog.Info("program preview uses GPU encode, skipping CPU preview encoder")
 	} else {
 		pf := a.sw.PipelineFormat()
-		previewW, previewH := 1280, 720
-		pe, err := preview.NewEncoder(preview.Config{
-			SourceKey: "program-preview",
-			Width:     previewW,
-			Height:    previewH,
-			Bitrate:   3_000_000,
-			FPSNum:    pf.FPSNum,
-			FPSDen:    pf.FPSDen,
-			Relay:     a.programPreviewRelay,
-			Preset:    "veryfast",
-		})
+		pcfg := a.programPreviewConfig(a.programPreviewRelay, pf.FPSNum, pf.FPSDen)
+		pe, err := preview.NewEncoder(pcfg)
 		if err != nil {
 			slog.Error("program preview encoder failed", "error", err)
 		} else {
@@ -2105,8 +2096,8 @@ func (a *App) Run(ctx context.Context) error {
 			}))
 
 			slog.Info("program preview encoder enabled (CPU fallback)",
-				"width", previewW, "height", previewH,
-				"bitrate", 3_000_000)
+				"width", pcfg.Width, "height", pcfg.Height, "scale_down", pcfg.ScaleDown,
+				"bitrate", pcfg.Bitrate)
 		}
 	}
 
