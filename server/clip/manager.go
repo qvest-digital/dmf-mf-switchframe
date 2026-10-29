@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 )
@@ -155,6 +156,8 @@ func (m *Manager) Load(playerID int, clipID string) error {
 	if len(frames) == 0 {
 		return ErrNoVideo
 	}
+	demuxed := len(frames)
+	frames, audio = fromFirstKeyframe(frames, audio)
 
 	m.mu.Lock()
 
@@ -197,15 +200,13 @@ func (m *Manager) Load(playerID int, clipID string) error {
 
 	// Count keyframes and check for SPS/PPS presence.
 	keyframes := 0
-	firstKeyIdx := -1
 	hasSPS := false
-	for i, f := range frames {
+	for _, f := range frames {
 		if f.isKeyframe {
-			keyframes++
-			if firstKeyIdx < 0 {
-				firstKeyIdx = i
+			if keyframes == 0 {
 				hasSPS = len(f.sps) > 0
 			}
+			keyframes++
 		}
 	}
 	m.log.Info("clip loaded",
@@ -213,8 +214,8 @@ func (m *Manager) Load(playerID int, clipID string) error {
 		"clipID", clipID,
 		"clipName", c.Name,
 		"frames", len(frames),
+		"droppedBeforeKeyframe", demuxed-len(frames),
 		"keyframes", keyframes,
-		"firstKeyframeIdx", firstKeyIdx,
 		"hasSPS", hasSPS,
 		"audioFrames", len(audio),
 		"width", c.Width,
@@ -223,6 +224,30 @@ func (m *Manager) Load(playerID int, clipID string) error {
 	m.mu.Unlock()
 	m.notifyStateChange()
 	return nil
+}
+
+// fromFirstKeyframe drops the frames before the first keyframe and the
+// audio before it. A stream cut mid-GOP starts with frames that reference
+// pictures it does not carry. A fresh decoder fails them, so the first
+// pass spends their slots without a picture, and the decoder a looping
+// player keeps into the next pass holds the previous pass's references
+// and puts out wrong pictures for them. Starting at the keyframe gives every pass the same pictures,
+// and the audio, spread over the pictures, stays with them. A clip with no
+// keyframe is returned as it is.
+func fromFirstKeyframe(frames []BufferedFrame, audio []BufferedAudioFrame) ([]BufferedFrame, []BufferedAudioFrame) {
+	for i, f := range frames {
+		if !f.isKeyframe {
+			continue
+		}
+		if i > 0 {
+			frames = frames[i:]
+			audio = audio[sort.Search(len(audio), func(j int) bool {
+				return audio[j].pts >= f.pts
+			}):]
+		}
+		break
+	}
+	return frames, audio
 }
 
 // LoadByName resolves a clip name to its ID via the store and loads it

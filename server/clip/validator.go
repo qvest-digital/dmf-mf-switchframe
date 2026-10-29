@@ -157,6 +157,8 @@ func Validate(path string) (*ProbeResult, error) {
 
 	// --- Stage 3: Metadata extraction ---
 
+	// Playback starts at the first keyframe; the duration is what plays.
+	videoFrames, _ = fromFirstKeyframe(videoFrames, nil)
 	frameCount := len(videoFrames)
 
 	// Compute duration from PTS span. Frames may be in decode order (B-frames),
