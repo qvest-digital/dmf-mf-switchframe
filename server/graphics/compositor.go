@@ -24,7 +24,7 @@ var (
 	ErrLayerNotFound          = errors.New("graphics: layer not found")
 	ErrTooManyLayers          = errors.New("graphics: maximum layers reached")
 	ErrLayerExists            = errors.New("graphics: layer id already in use")
-	ErrInvalidLayerID         = errors.New("graphics: layer id must not be negative")
+	ErrInvalidLayerID         = errors.New("graphics: layer id must be in [0, 2147483648)")
 	ErrSequenceProcessing     = errors.New("graphics: sequence still processing")
 	ErrInvalidDSKFadeDuration = errors.New("graphics: DSK fade duration must be in [100, 5000] ms")
 )
@@ -231,12 +231,17 @@ func (c *Compositor) AddLayer() (int, error) {
 	return c.addLayer(-1)
 }
 
+// maxLayerID bounds a caller-chosen layer ID: the next automatic ID follows
+// the highest one chosen, and every ID has to round-trip through a
+// JavaScript number in the UI.
+const maxLayerID = 1 << 31
+
 // AddLayerWithID is AddLayer under a caller-chosen ID, so that engines
 // sharing a layer can refer to it by the same ID whatever IDs each has
-// handed out before. Returns ErrInvalidLayerID for a negative ID and
-// ErrLayerExists if the ID is taken.
+// handed out before. Returns ErrInvalidLayerID for an ID outside
+// [0, maxLayerID) and ErrLayerExists if the ID is taken.
 func (c *Compositor) AddLayerWithID(id int) error {
-	if id < 0 {
+	if id < 0 || id >= maxLayerID {
 		return ErrInvalidLayerID
 	}
 	_, err := c.addLayer(id)
@@ -260,7 +265,7 @@ func (c *Compositor) addLayer(id int) (int, error) {
 		return 0, ErrLayerExists
 	}
 
-	if id < 0 {
+	if id < 0 || id >= maxLayerID {
 		id = c.nextID
 	}
 	// Never hand out a chosen ID again.

@@ -51,6 +51,12 @@ func TestGraphicsAddLayer_RefusesTakenOrNegativeID(t *testing.T) {
 	require.Equal(t, http.StatusCreated, serve(t, api, "POST", "/api/graphics", `{"id":1}`).Code)
 	require.Equal(t, http.StatusConflict, serve(t, api, "POST", "/api/graphics", `{"id":1}`).Code)
 	require.Equal(t, http.StatusBadRequest, serve(t, api, "POST", "/api/graphics", `{"id":-1}`).Code)
+
+	// An unbounded ID would carry the next automatic ID past the int range
+	// into negative numbers, which the peer engine then refuses.
+	require.Equal(t, http.StatusBadRequest, serve(t, api, "POST", "/api/graphics", `{"id":2147483648}`).Code)
+	require.Equal(t, http.StatusBadRequest, serve(t, api, "POST", "/api/graphics", `{"id":9223372036854775807}`).Code)
+	require.Equal(t, 2, addLayerViaAPI(t, api))
 }
 
 // A pod created on both engines of a pair is armed, fired and deleted by
