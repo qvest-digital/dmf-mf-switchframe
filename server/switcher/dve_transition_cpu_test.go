@@ -85,3 +85,46 @@ func TestCPUTransition_DVEIsNotAMix(t *testing.T) {
 	}
 	require.False(t, bytes.Equal(got[:w*h], mix[:w*h]))
 }
+
+// TestCPUTransition_RefusedTypes: a 3D DVE, or corner-peel, on an engine
+// with no GPU fails with a reason instead of coming out as a mix, and the
+// state lists them.
+func TestCPUTransition_RefusedTypes(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+	defer sw.Close()
+	sw.SetTransitionConfig(TransitionConfig{})
+	sw.RegisterSource("cam1", newTestRelay())
+	sw.RegisterSource("cam2", newTestRelay())
+	ctx := context.Background()
+	require.NoError(t, sw.Cut(ctx, "cam1"))
+	require.NoError(t, sw.SetPreview(ctx, "cam2"))
+
+	un := sw.State().UnavailableTransitions
+	require.Equal(t, "3D DVE transitions need a GPU engine", un["dve-cube"])
+	require.Contains(t, un, "dve-corner-peel")
+	require.NotContains(t, un, "dve-push-left")
+	for _, ty := range []string{"dve-cube", "dve-corner-peel"} {
+		err := sw.StartTransition(ctx, "cam2", ty, 1000, "")
+		require.ErrorIs(t, err, ErrTransitionNeedsGPU, ty)
+		require.Contains(t, err.Error(), un[ty])
+		require.False(t, sw.State().InTransition)
+		require.Equal(t, "cam1", sw.State().ProgramSource)
+	}
+
+	require.NoError(t, sw.StartTransition(ctx, "cam2", "dve-push-left", 60000, ""), "2D DVE runs on the CPU")
+	sw.AbortTransition()
+}
+
+func TestGPUTransition_RefusedTypesAllowed(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+	defer sw.Close()
+	sw.SetTransitionConfig(TransitionConfig{})
+	sw.SetGPUPipeline(&mockGPUPipelineRunner{})
+	sw.RegisterSource("cam1", newTestRelay())
+	sw.RegisterSource("cam2", newTestRelay())
+	ctx := context.Background()
+	require.NoError(t, sw.Cut(ctx, "cam1"))
+	require.Empty(t, sw.State().UnavailableTransitions)
+	require.NoError(t, sw.StartTransition(ctx, "cam2", "dve-cube", 60000, ""))
+	sw.AbortTransition()
+}

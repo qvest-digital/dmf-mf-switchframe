@@ -2838,3 +2838,29 @@ describe('sortedStringify', () => {
 		expect(result).toBe('["2026-06-15T08:30:00.000Z",42]');
 	});
 });
+
+// Mutations go to both engines. A transition only one engine refuses (a
+// 3D DVE on a pair where one engine has no GPU) would put the engines'
+// programs apart, so the panel offers a type only if every engine accepts it.
+describe('merged unavailable transitions', () => {
+	const cpu = { 'dve-cube': '3D DVE transitions need a GPU engine', 'dve-corner-peel': 'Peel needs a GPU engine' };
+
+	it('is the union over connected engines, whichever is authoritative', () => {
+		const r = createReconciler();
+		r.ingest('A', makeState({}));
+		r.ingest('B', makeState({ unavailableTransitions: cpu }));
+		expect(r.health.authoritative).toBe('A');
+		expect(r.state.unavailableTransitions).toEqual(cpu);
+
+		r.ingest('A', makeState({ unavailableTransitions: { 'dve-fold': 'x' } }));
+		expect(r.state.unavailableTransitions).toEqual({ ...cpu, 'dve-fold': 'x' });
+	});
+
+	it('ignores a disconnected engine', () => {
+		const r = createReconciler();
+		r.ingest('A', makeState({}));
+		r.ingest('B', makeState({ unavailableTransitions: cpu }));
+		r.disconnect('B');
+		expect(r.state.unavailableTransitions).toBeUndefined();
+	});
+});
