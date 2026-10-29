@@ -748,8 +748,9 @@ export function createReconciler() {
 		return false;
 	}
 
-	/** Whether the engines' on-air playout channels differ: more than one
-	 * item apart, or on the same item more than PLAYOUT_ELAPSED_TOLERANCE_MS
+	/** Whether the engines' on-air playout channels differ: one unable to
+	 * open the item on air while the other is not, more than one item
+	 * apart, or on the same item more than PLAYOUT_ELAPSED_TOLERANCE_MS
 	 * apart or with different titles. */
 	function playoutDiffers(): boolean {
 		if (!stateA || !stateB || !connectedA || !connectedB) return false;
@@ -765,6 +766,9 @@ export function createReconciler() {
 				if (!chA || !chB) continue;
 				// Skip channels not on-air
 				if (chA.state !== 'on_air' && chB.state !== 'on_air') continue;
+				// An engine on air with an item it cannot open plays nothing
+				// while the other plays it.
+				if (!!chA.itemError !== !!chB.itemError) return true;
 				// Tolerate <=1 item index difference (natural scheduler drift)
 				const indexDelta = Math.abs((chA.itemIndex ?? 0) - (chB.itemIndex ?? 0));
 				if (indexDelta > 1) return true;

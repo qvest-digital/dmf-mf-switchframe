@@ -189,6 +189,9 @@ type ChannelStatus struct {
 	ItemCount      int     `json:"itemCount"`
 	ItemProgress   float64 `json:"itemProgress,omitempty"`
 	ItemRemainMs   int64   `json:"itemRemainMs,omitempty"`
+	// ItemError says why the item on air could not be opened, empty while
+	// it plays.
+	ItemError string `json:"itemError,omitempty"`
 	// Looping is set while a looping clip is on air, LoopExit once EndLoop
 	// has it end after the current pass.
 	Looping  bool            `json:"looping,omitempty"`

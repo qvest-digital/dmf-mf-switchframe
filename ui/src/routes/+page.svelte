@@ -31,6 +31,7 @@
 	import CommsBar from '../components/CommsBar.svelte';
 	import BottomTabs from '../components/BottomTabs.svelte';
 	import RedundancyPanel from '../components/RedundancyPanel.svelte';
+	import { comparePlayout } from '$lib/state/playout-comparison';
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cutToPreview, autoTransitionToPreview } from '$lib/state/switch-actions';
@@ -411,24 +412,10 @@
 	// Playout comparison for RedundancyPanel (compares channel 0 across engines)
 	const playoutComparison = $derived.by(() => {
 		if (!isDualEngine) return null;
-		const stateA = connectionManager.rawStates?.A;
-		const stateB = connectionManager.rawStates?.B;
-		if (!stateA?.playout?.channels?.[0] || !stateB?.playout?.channels?.[0]) return null;
-
-		const chA = stateA.playout.channels[0];
-		const chB = stateB.playout.channels[0];
-
-		// Only show when at least one engine is actively playing
-		if (chA.state === 'stopped' && chB.state === 'stopped') return null;
-
-		return {
-			itemA: chA.currentTitle ?? `Item ${chA.itemIndex}`,
-			itemB: chB.currentTitle ?? `Item ${chB.itemIndex}`,
-			inSync: chA.itemIndex === chB.itemIndex && chA.currentTitle === chB.currentTitle,
-			ptsFrameDelta: undefined as number | undefined,
-			cacheA: undefined as string | undefined,
-			cacheB: undefined as string | undefined,
-		};
+		return comparePlayout(
+			connectionManager.rawStates?.A?.playout?.channels?.[0],
+			connectionManager.rawStates?.B?.playout?.channels?.[0],
+		);
 	});
 
 	// Audio comparison for RedundancyPanel (per-channel mix settings)

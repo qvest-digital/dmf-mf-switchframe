@@ -478,6 +478,28 @@ describe('RedundancyPanel', () => {
 		expect(expanded).toContain('5 frames');
 	});
 
+	it('names the engine that cannot open its playout item', async () => {
+		const { container } = render(RedundancyPanel, {
+			props: makeDefaultProps({
+				playoutComparison: {
+					itemA: 'Replay',
+					itemB: 'Replay',
+					inSync: false,
+					errorB: 'asset open failed: playout: asset not yet cached',
+				},
+			}),
+		});
+		await tick();
+		if (!container.querySelector('.playout-comparison')) {
+			const toggle = Array.from(container.querySelectorAll('.section-toggle')).find(t => t.textContent?.includes('PLAYOUT SYNC'));
+			await fireEvent.click(toggle!);
+		}
+		const text = container.textContent ?? '';
+		expect(text).toContain('out of sync');
+		const rows = Array.from(container.querySelectorAll('.playout-row')).map((r) => r.textContent?.replace(/\s+/g, ' ').trim());
+		expect(rows).toContain('Engine B: asset open failed: playout: asset not yet cached');
+	});
+
 	it('shows playout in sync when matched', () => {
 		const { container } = render(RedundancyPanel, {
 			props: makeDefaultProps({

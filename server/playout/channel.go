@@ -170,6 +170,11 @@ type Channel struct {
 	// Atomic progress counters for lock-free reads.
 	itemProgress atomic.Int64 // 0-1000 milliprogress
 	itemRemainMs atomic.Int64
+	// itemError is why the asset of the item on air could not be opened,
+	// "" while it plays. The scheduler moves past such an item and comes
+	// back to it on a loop, so the channel stays on air with nothing
+	// playing; this is what tells that apart from an item that plays.
+	itemError atomic.Pointer[string]
 }
 
 // NewChannel creates a new playout channel with the given ID and config.
@@ -269,6 +274,9 @@ func (c *Channel) Status() ChannelStatus {
 
 	st.ItemProgress = float64(c.itemProgress.Load()) / 1000.0
 	st.ItemRemainMs = c.itemRemainMs.Load()
+	if e := c.itemError.Load(); e != nil {
+		st.ItemError = *e
+	}
 	return st
 }
 
@@ -374,6 +382,7 @@ func (c *Channel) LoadPlaylist(pl *Playlist) error {
 	c.state = StateCued
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(0)
+	c.itemError.Store(nil)
 
 	fn := c.onStateChange
 	c.mu.Unlock()
@@ -424,6 +433,7 @@ func (c *Channel) Start() error {
 	// The previous run's position no longer describes the item on air.
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(0)
+	c.itemError.Store(nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
@@ -542,6 +552,7 @@ func (c *Channel) JumpTo(itemID string) error {
 	c.state = StateCued
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(0)
+	c.itemError.Store(nil)
 	fn := c.onStateChange
 	c.mu.Unlock()
 
@@ -613,6 +624,7 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 
 			c.clipIter = frameSource
 			c.clipItemID = item.ID
+			c.itemError.Store(nil)
 			c.clipFPS = frameSource.EstimateFPS()
 			c.clipTotal = frameSource.TotalFrames()
 
@@ -1240,6 +1252,8 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 		iter, err := provider.Open(item.AssetURI)
 		if err != nil {
 			slog.Warn("playout: asset open failed", "item", item.ID, "error", err)
+			msg := fmt.Sprintf("asset open failed: %v", err)
+			c.itemError.Store(&msg)
 			if asRunFn != nil {
 				asRunFn(AsRunEvent{
 					Timestamp: time.Now().UTC(),
@@ -1266,6 +1280,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 		}
 
 		c.clipIter = frameSource
+		c.itemError.Store(nil)
 		c.clipFPS = frameSource.EstimateFPS()
 		c.clipTotal = frameSource.TotalFrames()
 
