@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
 	fetchOIDCConfig, consumeSignInFragment, tokenExpiry, isSignedIn,
-	refreshToken, renewLapsedToken, signInHandoff, startTokenRefresh, signOut,
+	refreshToken, renewLapsedToken, renewRefusedToken, signInHandoff, startTokenRefresh, signOut,
 } from './oidc';
+import { isTokenRefused, tokenRefusedBy, tokenReplaced } from './auth-gate';
 import { getAuthToken, setAuthToken } from './switch-api';
 import { setEngineUrls } from './base-url';
 
@@ -158,6 +159,65 @@ describe('renewLapsedToken', () => {
 		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(401, { error: 'refused' })));
 
 		expect(await renewLapsedToken()).toEqual({ outcome: 'rejected' });
+		expect(localStorage.getItem(REFRESH_KEY)).toBeNull();
+	});
+});
+
+describe('renewRefusedToken', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2031-01-01T00:00:00Z'));
+	});
+
+	afterEach(() => {
+		tokenReplaced();
+		vi.useRealTimers();
+	});
+
+	function refuse() {
+		tokenRefusedBy(window.location.origin, [window.location.origin]);
+	}
+
+	// A renewal the engines refuse as well must not turn into a refresh
+	// per refused request.
+	it('renews a refused sign-in once, then leaves it to the operator', async () => {
+		setAuthToken(jwt(Math.floor(Date.now() / 1000) + 30));
+		localStorage.setItem(REFRESH_KEY, 'rt-1');
+		const fresh = jwt(2_000_000_000);
+		const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { id_token: fresh, refresh_token: 'rt-2' }));
+		vi.stubGlobal('fetch', fetchMock);
+
+		refuse();
+		expect(await renewRefusedToken()).toEqual({ renewed: true });
+		expect(isTokenRefused()).toBe(false);
+		expect(getAuthToken()).toBe(fresh);
+
+		refuse();
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(await renewRefusedToken()).toEqual({ renewed: false, message: null });
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(isTokenRefused()).toBe(true);
+	});
+
+	it('leaves a pasted API token to the prompt without a refresh', async () => {
+		setAuthToken('a'.repeat(64));
+		const fetchMock = vi.fn();
+		vi.stubGlobal('fetch', fetchMock);
+
+		refuse();
+		expect(await renewRefusedToken()).toEqual({ renewed: false, message: null });
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it('reports an expired session when the provider refuses the refresh', async () => {
+		// Clear of the renewal an earlier case made.
+		vi.setSystemTime(new Date('2031-01-02T00:00:00Z'));
+		setAuthToken(jwt(Math.floor(Date.now() / 1000) + 30));
+		localStorage.setItem(REFRESH_KEY, 'rt-1');
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(401, { error: 'refused' })));
+
+		refuse();
+		expect(await renewRefusedToken()).toEqual({ renewed: false, message: 'Session expired' });
 		expect(localStorage.getItem(REFRESH_KEY)).toBeNull();
 	});
 });

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { getPerfData } from '$lib/api/switch-api';
+	import { poll } from '$lib/util/poll';
 	import type { MediaPipeline } from '$lib/transport/media-pipeline';
 	import type { PipelineGraph as PipelineGraphType } from './pipeline-graph/types';
 	import type { GraphLayout, NodeLayout, EdgeLayout } from './pipeline-graph/layout';
@@ -40,17 +41,19 @@
 	let containerWidth = $state(0);
 	let containerHeight = $state(0);
 
-	let intervalId: ReturnType<typeof setInterval> | undefined;
 	let abortController: AbortController | undefined;
 
 	// --- Polling ---
-	async function poll() {
+	// A failed engine read still rebuilds the graph from the browser side,
+	// then throws so the poll backs off.
+	async function pollOnce() {
+		let perfError: unknown = null;
 		try {
 			abortController?.abort();
 			abortController = new AbortController();
 			perfData = await getPerfData({ signal: abortController.signal });
-		} catch {
-			/* ignore network + abort errors */
+		} catch (e) {
+			perfError = e;
 		}
 
 		// Browser diagnostics
@@ -67,6 +70,7 @@
 		// Rebuild graph
 		pulseOn = !pulseOn;
 		rebuildGraph();
+		if (perfError) throw perfError;
 	}
 
 	function rebuildGraph() {
@@ -85,24 +89,14 @@
 
 	// Start/stop polling on visibility change
 	$effect(() => {
-		if (visible) {
-			perfData = null;
-			browserDiag = null;
-			selectedNode = null;
-			poll();
-			intervalId = setInterval(poll, 1000);
-		} else {
-			if (intervalId) {
-				clearInterval(intervalId);
-				intervalId = undefined;
-			}
-		}
+		if (!visible) return;
+		perfData = null;
+		browserDiag = null;
+		selectedNode = null;
+		const stop = poll(pollOnce, 1000);
 		return () => {
+			stop();
 			abortController?.abort();
-			if (intervalId) {
-				clearInterval(intervalId);
-				intervalId = undefined;
-			}
 		};
 	});
 

@@ -58,7 +58,8 @@
 	import { ControlPlaneDiscovery } from '$lib/transport/control-plane-discovery';
 	import { CaptionRenderer } from '$lib/prism/captions';
 	import type { ControlRoomState, Macro } from '$lib/api/types';
-	import { fetchOIDCConfig, consumeSignInFragment, signIn, signOut, isSignedIn, renewLapsedToken, startTokenRefresh, clearRefreshToken, type OIDCConfig } from '$lib/api/oidc';
+	import { fetchOIDCConfig, consumeSignInFragment, signIn, signOut, isSignedIn, renewLapsedToken, renewRefusedToken, startTokenRefresh, clearRefreshToken, type OIDCConfig } from '$lib/api/oidc';
+	import { setTokenRefusedHandler } from '$lib/api/auth-gate';
 
 	// Extract token from URL fragment BEFORE any connections are created.
 	// Must run at module level, not in onMount, to avoid race conditions
@@ -728,6 +729,8 @@
 		onInitialLoadComplete: () => {
 			initialLoading = false;
 			connectionError = null;
+			// A token renewed after the first fetch was refused let a retry in.
+			tokenRequired = false;
 		},
 		onInitialLoadError: handleInitialLoadError,
 		// Off by default: commands run on arrival on each engine.
@@ -1568,6 +1571,20 @@
 		await connectionManager.start();
 	}
 
+	// The engines refused the token: every request now stops at the auth
+	// gate until a renewal or a sign-in sets a new one.
+	setTokenRefusedHandler(async () => {
+		const result = await renewRefusedToken();
+		if (result.renewed) {
+			tokenRequired = false;
+			return;
+		}
+		signedIn = false;
+		signInMessage = result.message;
+		tokenRequired = true;
+		initialLoading = false;
+	});
+
 	onMount(async () => {
 		keyboard.attach();
 		document.addEventListener('keydown', handleGlobalShortcuts);
@@ -1661,6 +1678,7 @@
 		pipeline.destroy();
 		operatorState.destroy();
 		stopTokenRefresh?.();
+		setTokenRefusedHandler(null);
 		setEngineUrls(null);
 		setDualTimestampProvider(null);
 		setPartialFailureCallback(null);

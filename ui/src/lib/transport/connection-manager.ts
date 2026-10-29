@@ -1,5 +1,5 @@
 import { createPrismConnection } from '$lib/transport/connection';
-import { getAuthHeaders, SwitchApiError } from '$lib/api/switch-api';
+import { engineFetch, getAuthHeaders, SwitchApiError } from '$lib/api/switch-api';
 import type { ControlRoomState } from '$lib/api/types';
 
 export type ConnectionStatus = 'webtransport' | 'polling' | 'disconnected';
@@ -33,6 +33,11 @@ export class ConnectionManager {
 	private pollDelay = 500;
 	private readonly POLL_MIN = 500;
 	private readonly POLL_MAX = 5000;
+	// The initial fetch is retried after INITIAL_RETRY_MIN, doubling while
+	// the engine stays unreachable.
+	private readonly INITIAL_RETRY_MIN = 3000;
+	private readonly INITIAL_RETRY_MAX = 30_000;
+	private initialRetryDelay = this.INITIAL_RETRY_MIN;
 
 	constructor(config: ConnectionManagerConfig) {
 		this.config = config;
@@ -66,6 +71,7 @@ export class ConnectionManager {
 
 	async start(): Promise<void> {
 		this.stopped = false;
+		this.initialRetryDelay = this.INITIAL_RETRY_MIN;
 
 		// Initial state fetch via REST (with retry on failure)
 		await this.fetchInitialState();
@@ -148,7 +154,7 @@ export class ConnectionManager {
 		const gen = ++this.pollGen;
 		const poll = async () => {
 			try {
-				const res = await fetch(`${this.config.url}/api/switch/state`, {
+				const res = await engineFetch(`${this.config.url}/api/switch/state`, {
 					headers: getAuthHeaders(),
 				});
 				if (!res.ok) throw new Error(`Poll failed: ${res.status}`);
@@ -195,7 +201,7 @@ export class ConnectionManager {
 	private async fetchInitialState(): Promise<void> {
 		if (this.stopped) return;
 		try {
-			const res = await fetch(`${this.config.url}/api/switch/state`, {
+			const res = await engineFetch(`${this.config.url}/api/switch/state`, {
 				headers: getAuthHeaders(),
 			});
 			if (!res.ok) {
@@ -205,6 +211,7 @@ export class ConnectionManager {
 			const state = await res.json() as ControlRoomState;
 			if (this.stopped) return; // stop() raced the in-flight fetch
 			this.config.onStateUpdate(state);
+			this.initialRetryDelay = this.INITIAL_RETRY_MIN;
 			if (!this.initialLoadDone) {
 				this.initialLoadDone = true;
 				this.config.onInitialLoadComplete();
@@ -216,11 +223,12 @@ export class ConnectionManager {
 			if (this.stopped) return;
 			const msg = e instanceof Error ? e.message : String(e);
 			this.config.onInitialLoadError(msg, e);
-			// Retry every 3 seconds until successful
+			const delay = this.initialRetryDelay;
+			this.initialRetryDelay = Math.min(delay * 2, this.INITIAL_RETRY_MAX);
 			this.retryTimer = setTimeout(() => {
 				this.retryTimer = undefined;
 				this.fetchInitialState();
-			}, 3000);
+			}, delay);
 		}
 	}
 }

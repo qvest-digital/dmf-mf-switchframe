@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { setEncoderBackend, getEncoder, getDebugSnapshot, getPerfData, savePerfBaseline } from '$lib/api/switch-api';
+	import { poll } from '$lib/util/poll';
 	import { notify } from '$lib/state/notifications.svelte';
 	import type { EncoderInfo } from '$lib/api/types';
 	import type { MediaPipeline, SourceDiagnostics } from '$lib/transport/media-pipeline';
@@ -403,7 +404,6 @@
 
 	// --- State ---
 	let snapshot = $state<DebugSnapshot | null>(null);
-	let intervalId: ReturnType<typeof setInterval> | undefined;
 	let abortController: AbortController | undefined;
 	let nodeHistory = $state<Map<string, number[]>>(new Map());
 	let lastUpdateTime = $state(0);
@@ -450,14 +450,13 @@
 	let activeBaseline = $state('');
 
 	// --- Polling ---
-	async function poll() {
-		try {
-			abortController?.abort();
-			abortController = new AbortController();
-			snapshot = await getDebugSnapshot({ signal: abortController.signal });
-			lastUpdateTime = Date.now();
-			recordHistory();
-		} catch { /* ignore network + abort errors */ }
+	// An engine read that fails throws, so the poll backs off.
+	async function pollDebug() {
+		abortController?.abort();
+		abortController = new AbortController();
+		snapshot = await getDebugSnapshot({ signal: abortController.signal });
+		lastUpdateTime = Date.now();
+		recordHistory();
 	}
 
 	function recordHistory() {
@@ -474,15 +473,13 @@
 	}
 
 	async function pollPerf() {
-		try {
-			abortController?.abort();
-			abortController = new AbortController();
-			perfData = await getPerfData({
-				baseline: activeBaseline || undefined,
-				signal: abortController.signal,
-			}) as unknown as PerfSnapshot;
-			lastUpdateTime = Date.now();
-		} catch { /* ignore network + abort errors */ }
+		abortController?.abort();
+		abortController = new AbortController();
+		perfData = await getPerfData({
+			baseline: activeBaseline || undefined,
+			signal: abortController.signal,
+		}) as unknown as PerfSnapshot;
+		lastUpdateTime = Date.now();
 	}
 
 	async function pollBrowser() {
@@ -494,25 +491,20 @@
 	}
 
 	$effect(() => {
-		if (visible) {
-			if (viewMode === 'debug') {
-				nodeHistory = new Map();
-				poll();
-				fetchEncoderInfo();
-				intervalId = setInterval(poll, POLL_INTERVAL_MS);
-			} else if (viewMode === 'perf') {
-				pollPerf();
-				intervalId = setInterval(pollPerf, POLL_INTERVAL_MS);
-			} else {
-				pollBrowser();
-				intervalId = setInterval(pollBrowser, POLL_INTERVAL_MS);
-			}
+		if (!visible) return;
+		let stop: () => void;
+		if (viewMode === 'debug') {
+			nodeHistory = new Map();
+			fetchEncoderInfo();
+			stop = poll(pollDebug, POLL_INTERVAL_MS);
+		} else if (viewMode === 'perf') {
+			stop = poll(pollPerf, POLL_INTERVAL_MS);
 		} else {
-			if (intervalId) { clearInterval(intervalId); intervalId = undefined; }
+			stop = poll(pollBrowser, POLL_INTERVAL_MS);
 		}
 		return () => {
+			stop();
 			abortController?.abort();
-			if (intervalId) { clearInterval(intervalId); intervalId = undefined; }
 		};
 	});
 

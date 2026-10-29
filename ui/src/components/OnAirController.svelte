@@ -2,7 +2,8 @@
 	import type { ControlRoomState, PlaylistItem } from '$lib/api/types';
 	import type { MediaPipeline } from '$lib/transport/media-pipeline';
 	import type { FastControl } from '$lib/transport/fast-control';
-	import { playoutPlaylist, playoutAsRun, setCaptionMode } from '$lib/api/switch-api';
+	import { playoutPlaylist, playoutAsRun, setCaptionMode, engineFetch, authHeaders } from '$lib/api/switch-api';
+	import { poll } from '$lib/util/poll';
 	import { resolveApiUrl } from '$lib/api/base-url';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import OAStatusBar from './on-air/OAStatusBar.svelte';
@@ -308,18 +309,13 @@
 
 	$effect(() => {
 		if (routingOverlayVisible) return; // overlay does its own polling
-		const id = setInterval(async () => {
-			try {
-				const res = await fetch(resolveApiUrl('/api/pipeline/snapshot'));
-				if (res.ok) {
-					const data = await res.json();
-					bypassCount = data.bypassCount ?? 0;
-				}
-			} catch {
-				// API unavailable, keep current count
-			}
-		}, 5000);
-		return () => clearInterval(id);
+		// A failed read keeps the current count.
+		return poll(async () => {
+			const res = await engineFetch(resolveApiUrl('/api/pipeline/snapshot'), { headers: authHeaders() });
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const data = await res.json();
+			bypassCount = data.bypassCount ?? 0;
+		}, 5000, { immediate: false });
 	});
 
 	/** Cycle caption mode: off → passthrough → author → off */

@@ -1,5 +1,6 @@
 import type { OperatorRole } from '$lib/api/types';
-import { operatorRegister, operatorReconnect, operatorHeartbeat, setAuthToken } from '$lib/api/switch-api';
+import { operatorRegister, operatorReconnect, operatorHeartbeat, setAuthToken, SwitchApiError } from '$lib/api/switch-api';
+import { poll } from '$lib/util/poll';
 
 const STORAGE_KEY = 'switchframe_operator_token';
 const SESSION_CACHE_KEY = 'switchframe_operator_session';
@@ -13,7 +14,7 @@ export interface OperatorSession {
 }
 
 let session = $state<OperatorSession | null>(null);
-let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+let stopHeartbeatPoll: (() => void) | undefined;
 
 function getStoredToken(): string | null {
 	if (typeof localStorage === 'undefined') return null;
@@ -43,20 +44,30 @@ function clearCachedSession(): void {
 	try { sessionStorage.removeItem(SESSION_CACHE_KEY); } catch { /* ignore */ }
 }
 
+// A 401 means the engines no longer know the operator: the heartbeat
+// stops and one reconnect is tried, which restarts it if the operator is
+// still known. Any other failure backs the heartbeat off.
+async function heartbeat(): Promise<void> {
+	try {
+		await operatorHeartbeat();
+	} catch (e) {
+		if (e instanceof SwitchApiError && e.status === 401) {
+			stopHeartbeat();
+			void reconnect();
+			return;
+		}
+		throw e;
+	}
+}
+
 function startHeartbeat(): void {
 	stopHeartbeat();
-	heartbeatTimer = setInterval(() => {
-		operatorHeartbeat().catch(() => {
-			// Heartbeat failed — session may have expired
-		});
-	}, HEARTBEAT_INTERVAL);
+	stopHeartbeatPoll = poll(heartbeat, HEARTBEAT_INTERVAL, { immediate: false });
 }
 
 function stopHeartbeat(): void {
-	if (heartbeatTimer !== undefined) {
-		clearInterval(heartbeatTimer);
-		heartbeatTimer = undefined;
-	}
+	stopHeartbeatPoll?.();
+	stopHeartbeatPoll = undefined;
 }
 
 /** A bearer token in the form the engine generates: 32 random bytes as hex. */

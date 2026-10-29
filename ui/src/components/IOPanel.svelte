@@ -8,6 +8,7 @@
 		CreateSRTSourceConfig,
 		DestinationConfig,
 	} from '$lib/api/types';
+	import { poll } from '$lib/util/poll';
 	import {
 		createSRTSource,
 		deleteSRTSource,
@@ -61,7 +62,7 @@
 	// --- SRT stats polling ---
 	let srtStats = $state<Record<string, SRTSourceStats>>({});
 	let srtStatsDual = $state<Record<string, { A: SRTSourceStats | null; B: SRTSourceStats | null }>>({});
-	let srtPollIntervals = $state<Record<string, ReturnType<typeof setInterval>>>({});
+	const srtPolls = new Map<string, () => void>();
 
 	// --- Add forms ---
 	let showAddSource = $state(false);
@@ -199,45 +200,34 @@
 
 	// --- SRT stats polling ---
 	function startPolling(key: string) {
-		// Fetch immediately
-		fetchSRTStats(key);
-		// Poll every 2 seconds
-		const id = setInterval(() => fetchSRTStats(key), 2000);
-		srtPollIntervals = { ...srtPollIntervals, [key]: id };
+		stopPolling(key);
+		srtPolls.set(key, poll(() => fetchSRTStats(key), 2000));
 	}
 
 	function stopPolling(key: string) {
-		const id = srtPollIntervals[key];
-		if (id) {
-			clearInterval(id);
-			const next = { ...srtPollIntervals };
-			delete next[key];
-			srtPollIntervals = next;
-		}
+		srtPolls.get(key)?.();
+		srtPolls.delete(key);
 	}
 
+	// Throws when no engine answered, so the poll backs off.
 	async function fetchSRTStats(key: string) {
-		try {
-			if (isDualEngine) {
-				const dual = await getSRTSourceStatsDual(key);
-				srtStatsDual = { ...srtStatsDual, [key]: dual };
-				// Use Engine A stats as primary display (backward compat)
-				if (dual.A) srtStats = { ...srtStats, [key]: dual.A };
-			} else {
-				const stats = await getSRTSourceStats(key);
-				srtStats = { ...srtStats, [key]: stats };
-			}
-		} catch {
-			// Ignore errors silently
+		if (isDualEngine) {
+			const dual = await getSRTSourceStatsDual(key);
+			srtStatsDual = { ...srtStatsDual, [key]: dual };
+			// Use Engine A stats as primary display (backward compat)
+			if (dual.A) srtStats = { ...srtStats, [key]: dual.A };
+			if (!dual.A && !dual.B) throw new Error('no SRT stats from either engine');
+		} else {
+			const stats = await getSRTSourceStats(key);
+			srtStats = { ...srtStats, [key]: stats };
 		}
 	}
 
 	// --- Cleanup polling on component destroy ---
 	$effect(() => {
 		return () => {
-			for (const id of Object.values(srtPollIntervals)) {
-				clearInterval(id);
-			}
+			for (const stop of srtPolls.values()) stop();
+			srtPolls.clear();
 		};
 	});
 

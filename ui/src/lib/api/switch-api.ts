@@ -1,6 +1,7 @@
 import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, EngineRecordingGroup, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, DVEPresetInfo, WipePattern, WipeConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl, getEngineUrls, setFlushTimestampInjector, isNonIdempotent, isTimedPath, getAuthoritativeEngine, getEmergencyEngineBUrl, type EngineEndpoint } from './base-url';
+import { isTokenRefused, tokenAcceptedBy, tokenRefusedBy, tokenReplaced } from './auth-gate';
 
 export class SwitchApiError extends Error {
 	constructor(
@@ -18,7 +19,9 @@ export function getAuthToken(): string | null {
 }
 
 export function setAuthToken(token: string): void {
+	const previous = getAuthToken();
 	localStorage.setItem('switchframe_operator_token', token);
+	if (token !== previous) tokenReplaced();
 }
 
 /**
@@ -52,6 +55,60 @@ export function getAuthHeaders(): Record<string, string> {
 	return authHeaders();
 }
 
+// -- Refused token --
+
+// A 401 on these paths is about something other than the page's bearer
+// token: an operator's own session, a one-time download link, sign-in.
+const OWN_AUTH_PATH = /^\/(?:api\/(?:v1\/)?(?:operator|peer)\/|api\/cert-hash$|api\/clips\/recordings\/download$|auth\/|health$|metrics$)/;
+
+function pageOrigin(): string {
+	return typeof location !== 'undefined' ? location.origin : 'http://page.invalid';
+}
+
+function originOf(url: string): string {
+	try {
+		return new URL(url, pageOrigin()).origin;
+	} catch {
+		return pageOrigin();
+	}
+}
+
+function hasOwnAuth(url: string): boolean {
+	let path = url;
+	try {
+		path = new URL(url, pageOrigin()).pathname;
+	} catch { /* not a URL: match it as a path */ }
+	return OWN_AUTH_PATH.test(path);
+}
+
+/** The origins of the engines this page sends requests to. */
+function engineOrigins(): string[] {
+	const engines = getEngineUrls();
+	return engines && engines.length > 0 ? engines.map((e) => originOf(e.url)) : [pageOrigin()];
+}
+
+/**
+ * fetch() for engine API requests. Once every engine has answered 401 the
+ * auth gate is closed, and while it is closed a request is answered with a
+ * 401 here instead of reaching an engine, so nothing that polls or retries
+ * keeps sending a token the engines refuse.
+ */
+export async function engineFetch(url: string, init?: RequestInit): Promise<Response> {
+	const ownAuth = hasOwnAuth(url);
+	if (!ownAuth && isTokenRefused()) {
+		return new Response(JSON.stringify({ error: 'sign-in required' }), {
+			status: 401,
+			headers: { 'Content-Type': 'application/json' },
+		});
+	}
+	const res = await fetch(url, init);
+	if (!ownAuth) {
+		if (res.status === 401) tokenRefusedBy(originOf(url), engineOrigins());
+		else if (res.ok) tokenAcceptedBy(originOf(url));
+	}
+	return res;
+}
+
 // ── Per-engine fetch timeout for dual fan-out ──
 
 const ENGINE_FETCH_TIMEOUT_MS = 3_000;
@@ -78,7 +135,7 @@ function engineFetchTimeoutMs(path: string): number {
 function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs: number = ENGINE_FETCH_TIMEOUT_MS): Promise<Response> {
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
-	return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
+	return engineFetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
 /** Best-effort retry of failed engines after 500ms delay. Uses original bodies
@@ -508,7 +565,7 @@ async function primaryWithFallback<T>(url: string, options: RequestInit | undefi
 	for (let i = 0; i < availableEngines.length; i++) {
 		const engine = availableEngines[i];
 		try {
-			const res = await fetch(`${engine.url}${url}`, opts);
+			const res = await engineFetch(`${engine.url}${url}`, opts);
 			if (res.ok) {
 				recordSuccess(engine.url);
 				if (isFirstEngine(engine.url)) {
@@ -565,7 +622,7 @@ async function targetEngine<T>(url: string, options: RequestInit | undefined, en
 		throw new Error(`Engine ${engineId} not found`);
 	}
 	const opts: RequestInit = { ...options, headers: { ...authHeaders(), ...options?.headers } };
-	const res = await fetch(`${engine.url}${url}`, opts);
+	const res = await engineFetch(`${engine.url}${url}`, opts);
 	if (!res.ok) {
 		const body = await res.json().catch(() => ({ error: 'unknown error' }));
 		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
@@ -673,7 +730,7 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 			for (let i = 0; i < orderedEngines.length; i++) {
 				const engine = orderedEngines[i];
 				try {
-					const res = await fetch(`${engine.url}${url}`, opts);
+					const res = await engineFetch(`${engine.url}${url}`, opts);
 					if (res.ok) {
 						// If a non-primary engine succeeded after failover, make it sticky
 						const isFirstEngine = engines.length > 0 && engines[0].url === engine.url;
@@ -703,12 +760,12 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 	}
 	// Single-engine mode (includes pre-discovery period)
 	try {
-		return await fetch(resolveApiUrl(url), { ...options, headers: { ...authHeaders(), ...options.headers } });
+		return await engineFetch(resolveApiUrl(url), { ...options, headers: { ...authHeaders(), ...options.headers } });
 	} catch (err) {
 		// Primary engine unreachable — try emergency Engine B URL if available
 		const emergencyUrl = getEmergencyEngineBUrl();
 		if (emergencyUrl) {
-			return fetch(`${emergencyUrl}${url}`, { ...options, headers: { ...authHeaders(), ...options.headers } });
+			return engineFetch(`${emergencyUrl}${url}`, { ...options, headers: { ...authHeaders(), ...options.headers } });
 		}
 		throw err;
 	}
@@ -725,7 +782,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 		headers: { ...authHeaders(), ...options?.headers },
 	};
 	try {
-		const res = await fetch(resolveApiUrl(url), opts);
+		const res = await engineFetch(resolveApiUrl(url), opts);
 		if (!res.ok) {
 			const body = await res.json().catch(() => ({ error: 'unknown error' }));
 			throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
@@ -739,7 +796,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 		if (err instanceof SwitchApiError) throw err;
 		const emergencyUrl = getEmergencyEngineBUrl();
 		if (emergencyUrl) {
-			const res = await fetch(`${emergencyUrl}${url}`, opts);
+			const res = await engineFetch(`${emergencyUrl}${url}`, opts);
 			if (!res.ok) {
 				const body = await res.json().catch(() => ({ error: 'unknown error' }));
 				throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
@@ -829,8 +886,8 @@ export async function getSRTSourceStatsDual(key: string): Promise<{ A: SRTSource
 	const url = `/api/sources/${encodeURIComponent(key)}/srt/stats`;
 	const opts: RequestInit = { headers: authHeaders() };
 	const [a, b] = await Promise.allSettled([
-		fetch(`${engines[0].url}${url}`, opts).then(r => r.ok ? r.json() as Promise<SRTSourceStats> : null),
-		fetch(`${engines[1].url}${url}`, opts).then(r => r.ok ? r.json() as Promise<SRTSourceStats> : null),
+		engineFetch(`${engines[0].url}${url}`, opts).then(r => r.ok ? r.json() as Promise<SRTSourceStats> : null),
+		engineFetch(`${engines[1].url}${url}`, opts).then(r => r.ok ? r.json() as Promise<SRTSourceStats> : null),
 	]);
 	return {
 		A: a.status === 'fulfilled' ? a.value : null,
@@ -949,7 +1006,7 @@ export async function startRecordingOnEngine(engineId: string): Promise<void> {
 	if (!engines) return post('/api/recording/start', {});
 	const engine = engines.find(e => e.id === engineId);
 	if (!engine) throw new Error(`Engine ${engineId} not found`);
-	const res = await fetch(`${engine.url}/api/recording/start`, {
+	const res = await engineFetch(`${engine.url}/api/recording/start`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json', ...authHeaders() },
 		body: '{}',
@@ -965,7 +1022,7 @@ export async function stopRecordingOnEngine(engineId: string): Promise<void> {
 	if (!engines) return post('/api/recording/stop', {});
 	const engine = engines.find(e => e.id === engineId);
 	if (!engine) throw new Error(`Engine ${engineId} not found`);
-	const res = await fetch(`${engine.url}/api/recording/stop`, {
+	const res = await engineFetch(`${engine.url}/api/recording/stop`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json', ...authHeaders() },
 		body: '{}',
@@ -1833,7 +1890,7 @@ export function clipNameFor(fileName: string): string {
 /** Returns the clip the engine at baseUrl holds under id and name, or null. */
 async function engineClip(baseUrl: string, id: string, name: string): Promise<ClipInfo | null> {
 	try {
-		const res = await fetch(`${baseUrl}/api/clips/${encodeURIComponent(id)}`, {
+		const res = await engineFetch(`${baseUrl}/api/clips/${encodeURIComponent(id)}`, {
 			headers: authHeaders(),
 		});
 		if (!res.ok) return null;
@@ -1970,7 +2027,7 @@ export function listRecordings(): Promise<RecordingFileInfo[]> {
 /** Recordings of one engine, or null when it does not answer in time. */
 async function fetchEngineRecordings(engineUrl: string): Promise<RecordingFileInfo[] | null> {
 	try {
-		const res = await fetch(`${engineUrl}/api/clips/recordings`, {
+		const res = await engineFetch(`${engineUrl}/api/clips/recordings`, {
 			headers: authHeaders(),
 			signal: AbortSignal.timeout(ENGINE_FETCH_TIMEOUT_MS),
 		});
@@ -2017,7 +2074,7 @@ export async function listRecordingsDualEngine(): Promise<EngineRecordingGroup[]
  * single-use link that stands in for it for a minute.
  */
 export async function recordingDownloadUrl(engineUrl: string, path: string): Promise<string> {
-	const res = await fetch(`${engineUrl}/api/clips/recordings/download-url`, {
+	const res = await engineFetch(`${engineUrl}/api/clips/recordings/download-url`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json', ...authHeaders() },
 		body: JSON.stringify({ path }),
@@ -2036,7 +2093,7 @@ export async function recordingDownloadUrl(engineUrl: string, path: string): Pro
  * an <img src> because an image request cannot carry the bearer token.
  */
 export async function fetchConfidenceThumbnail(baseUrl: string, signal?: AbortSignal): Promise<Blob | null> {
-	const res = await fetch(`${baseUrl}/api/output/confidence`, {
+	const res = await engineFetch(`${baseUrl}/api/output/confidence`, {
 		headers: authHeaders(),
 		cache: 'no-store',
 		signal,
@@ -2048,7 +2105,7 @@ export async function fetchConfidenceThumbnail(baseUrl: string, signal?: AbortSi
 
 /** Import a recording from a specific engine. The file path is local to that engine. */
 export async function importRecordingFromEngine(engineUrl: string, path: string): Promise<ClipInfo> {
-	const res = await fetch(`${engineUrl}/api/clips/from-recording`, {
+	const res = await engineFetch(`${engineUrl}/api/clips/from-recording`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json', ...authHeaders() },
 		body: JSON.stringify({ path }),
@@ -2414,7 +2471,7 @@ export async function playoutNextWithCacheCheck(channelId: number): Promise<void
 	if (engines && engines.length > 1) {
 		try {
 			const results = await Promise.allSettled(
-				engines.map(e => fetch(`${e.url}/api/playout/channels/${channelId}/cache-status`, {
+				engines.map(e => engineFetch(`${e.url}/api/playout/channels/${channelId}/cache-status`, {
 					headers: authHeaders(),
 				}).then(r => r.ok ? r.json() : null))
 			);
@@ -2457,7 +2514,7 @@ export async function playoutEngineCacheStatus(engineId: 'A' | 'B'): Promise<Cac
 	const engines = getEngineUrls();
 	const eng = engines?.find(e => e.id === engineId);
 	const url = eng ? `${eng.url}/api/playout/cache/status` : resolveApiUrl('/api/playout/cache/status');
-	const res = await fetch(url, { headers: authHeaders() });
+	const res = await engineFetch(url, { headers: authHeaders() });
 	if (!res.ok) {
 		const body = await res.json().catch(() => ({ error: 'unknown error' }));
 		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { SyncHealth, SyncStatus, EngineHealthDetail } from '$lib/state/reconciler.svelte';
 	import type { DivergenceLogEntry } from '$lib/state/divergence-log.svelte';
-	import { authHeaders } from '$lib/api/switch-api';
+	import { authHeaders, engineFetch } from '$lib/api/switch-api';
+	import { poll } from '$lib/util/poll';
 	import type { AudioChannelComparison } from '$lib/util/audio-drift';
 	import EngineDot from './EngineDot.svelte';
 
@@ -66,48 +67,51 @@
 		const abort = new AbortController();
 		let cancelled = false;
 
+		// Throws when an engine did not answer, so the poll backs off.
 		async function fetchThumbnails() {
 			if (cancelled) return;
+			let failed = false;
 
 			// Engine A: same origin
 			try {
-				const res = await fetch('/api/output/confidence', {
+				const res = await engineFetch('/api/output/confidence', {
 					headers: authHeaders(),
 					signal: abort.signal,
 				});
-				if (res.ok && !cancelled) {
+				if (!res.ok) failed = true;
+				else if (!cancelled) {
 					const blob = await res.blob();
 					const oldUrl = thumbUrlA;
 					thumbUrlA = URL.createObjectURL(blob);
 					if (oldUrl) URL.revokeObjectURL(oldUrl);
 				}
-			} catch { /* aborted or network error */ }
+			} catch { failed = true; }
 
 			// Engine B: different origin
 			if (pollEngineBUrl && connectedB) {
 				try {
-					const res = await fetch(`${pollEngineBUrl}/api/output/confidence`, {
+					const res = await engineFetch(`${pollEngineBUrl}/api/output/confidence`, {
 						headers: authHeaders(),
 						signal: abort.signal,
 					});
-					if (res.ok && !cancelled) {
+					if (!res.ok) failed = true;
+					else if (!cancelled) {
 						const blob = await res.blob();
 						const oldUrl = thumbUrlB;
 						thumbUrlB = URL.createObjectURL(blob);
 						if (oldUrl) URL.revokeObjectURL(oldUrl);
 					}
-				} catch { /* aborted or network error */ }
+				} catch { failed = true; }
 			}
+			if (failed) throw new Error('confidence thumbnail unavailable');
 		}
 
-		// Fetch immediately, then every 1s
-		fetchThumbnails();
-		const interval = setInterval(fetchThumbnails, 1000);
+		const stop = poll(fetchThumbnails, 1000);
 
 		return () => {
 			cancelled = true;
 			abort.abort();
-			clearInterval(interval);
+			stop();
 			if (thumbUrlA) { URL.revokeObjectURL(thumbUrlA); thumbUrlA = ''; }
 			if (thumbUrlB) { URL.revokeObjectURL(thumbUrlB); thumbUrlB = ''; }
 		};
