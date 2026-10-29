@@ -91,6 +91,44 @@ describe('video decoder worker backlog', () => {
 		expect(decoded).toEqual([3_600_000_000]);
 	});
 
+	// A keyframe arrives with the deltas after it, before the decoder has
+	// put it out. Measured against the frame put out before the drop, a GOP
+	// or more back, every one of those deltas read as a second behind: the
+	// worker took one picture per keyframe, for good, until a reload.
+	it('decodes the deltas after the keyframe it waited for', () => {
+		for (let i = 1; i <= 60; i++) {
+			send({ type: 'decode', data: new ArrayBuffer(1), isKeyframe: false, timestamp: i * FRAME_US, isDisco: false });
+		}
+		emit!({ timestamp: 50 * FRAME_US });
+		queued = 0;
+		decoded.length = 0;
+
+		// The stream runs on without a gap, a keyframe every 100 frames.
+		// Each keyframe is followed by four deltas before the decoder puts
+		// out what it was given; after that it keeps up frame by frame.
+		for (let i = 61; i < 400; i++) {
+			send({ type: 'decode', data: new ArrayBuffer(1), isKeyframe: i % 100 === 0, timestamp: i * FRAME_US, isDisco: false });
+			if (i % 100 >= 4 && queued > 0) {
+				emit!({ timestamp: decoded[decoded.length - 1] });
+				queued = 0;
+			}
+		}
+		// Every frame from the first keyframe on, 100 to 399.
+		expect(decoded).toHaveLength(300);
+		expect(decoded[0]).toBe(100 * FRAME_US);
+	});
+
+	// An input that was off, or moved to another flow, resumes with its
+	// timestamps as far ahead as it was gone. That is no backlog: the
+	// decoder has nothing of the old stream queued to fall behind on.
+	it('decodes a stream that resumes after a gap', () => {
+		const resume = 100_000_000; // 100 s after the last frame put out
+		for (let i = 0; i < 10; i++) {
+			send({ type: 'decode', data: new ArrayBuffer(1), isKeyframe: false, timestamp: resume + i * FRAME_US, isDisco: false });
+		}
+		expect(decoded).toHaveLength(10);
+	});
+
 	// After an error the decoder is reset and has put out nothing: lag
 	// against the old decoder's last frame would drop its first keyframe.
 	it('measures lag afresh after a decoder error', async () => {

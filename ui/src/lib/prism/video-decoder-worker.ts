@@ -16,6 +16,8 @@ let videoDecoder: VideoDecoder | null = null;
 let waitForKeyframe = true;
 /** Timestamp of the last frame the decoder put out, -1 before the first. */
 let lastOutputTs = -1;
+/** Timestamp of the last chunk handed to the worker, -1 before the first. */
+let lastInputTs = -1;
 let discardedDelta = 0;
 let discardedBufferFull = 0;
 
@@ -190,6 +192,13 @@ self.onmessage = async (e: MessageEvent) => {
 			waitForKeyframe = true;
 			lastOutputTs = -1;
 		}
+		// Neither does a stream resuming after a gap, as an input that was
+		// off or moved to another flow does: its timestamps run ahead by the
+		// gap, with nothing of the old stream left queued to lag behind.
+		if (lastInputTs >= 0 && msg.timestamp - lastInputTs > MAX_DECODE_LAG_US) {
+			lastOutputTs = -1;
+		}
+		lastInputTs = msg.timestamp;
 
 		const lagging = lastOutputTs >= 0 && videoDecoder.decodeQueueSize > 0 &&
 			msg.timestamp - lastOutputTs > MAX_DECODE_LAG_US;
@@ -221,6 +230,11 @@ self.onmessage = async (e: MessageEvent) => {
 			self.postMessage({ type: "warning", message: `Discarded ${discardedDelta} delta frames before key` });
 			discardedDelta = 0;
 		}
+		// The keyframe waited for starts afresh: the last frame put out lies
+		// before the chunks dropped, a GOP or more back, and the deltas that
+		// follow the keyframe before it is put out would all read as lagging
+		// against it, leaving one picture per keyframe for good.
+		if (waitForKeyframe) lastOutputTs = -1;
 		waitForKeyframe = false;
 		if (isKeyframe) {
 			diagKeyframeCount++;
