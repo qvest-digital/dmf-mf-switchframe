@@ -276,8 +276,10 @@ jobs:
               sleep 1
             done
             api -X POST "http://localhost:8081/api/graphics/$id/on" >/dev/null
-            wait_log "probe-result:{\"page\":\"$page\""
-            result=$(docker logs sf-smoke 2>&1 | grep -o "probe-result:{\"page\":\"$page\".*" | tail -1)
+            # The engine logs the sidecar's line with its quotes escaped.
+            wait_log 'probe-result:{\"page\":\"'"$page"'\"'
+            result=$(docker logs sf-smoke 2>&1 | grep -o 'probe-result:{.*}' | sed 's/\\"/"/g' |
+              grep -F "{\"page\":\"$page\"" | tail -1)
             result=${result#probe-result:}
             echo "$page: $result"
             echo "$result" | jq -e 'del(.page) | length > 0 and all(.[]; . == "refused")' >/dev/null
