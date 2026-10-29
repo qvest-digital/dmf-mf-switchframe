@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { holdReload } from '$lib/util/activity';
 	import type { ControlRoomState, GraphicsLayerState } from '$lib/api/types';
 	import {
 		graphicsAddLayer, graphicsRemoveLayer,
@@ -45,6 +46,8 @@
 	const SAVE_RETRY_MS = 3000;
 	// Layers whose last save failed: flagged in the header and retried.
 	let unsavedLayers = $state<Record<number, boolean>>({});
+	// A reload would drop the edits still being retried.
+	$effect(() => { if (Object.keys(unsavedLayers).length > 0) return holdReload('unsaved graphics settings'); });
 	let destroyed = false;
 
 	// ── Selection state ──

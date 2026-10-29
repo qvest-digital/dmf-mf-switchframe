@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { holdReload } from '$lib/util/activity';
 	import type { GraphicsLayerState } from '$lib/api/types';
 	import {
 		ICON_GRIP, ICON_PLUS, ICON_TRASH, renderIcon,
@@ -77,6 +78,7 @@
 	// Rename
 	let renamingId = $state<number | null>(null);
 	let renameValue = $state('');
+	$effect(() => { if (renamingId !== null) return holdReload('layer rename'); });
 
 	function startRename(layer: GraphicsLayerState) {
 		renamingId = layer.id;

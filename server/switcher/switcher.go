@@ -559,6 +559,10 @@ type Switcher struct {
 	gpuFallbackFrames   atomic.Int64 // frames that fell back to CPU pipeline
 	gpuTransActive      atomic.Bool  // true while GPU handles a transition (gates videoProcCh drain)
 
+	// frameInterval observes the gap between program frames; nil without
+	// metrics. A pointer of its own because the broadcast path holds no lock.
+	frameInterval atomic.Pointer[prometheus.Histogram]
+
 	// Frame deadline monitor: tracks pipeline latency violations.
 	frameBudgetNs      atomic.Int64 // frame budget in nanoseconds (33ms for 30fps)
 	deadlineViolations atomic.Int64 // count of frames that exceeded budget
@@ -774,9 +778,11 @@ func (s *Switcher) SetMetrics(m *metrics.Metrics) {
 	s.configMu.Unlock()
 
 	if m == nil {
+		s.frameInterval.Store(nil)
 		s.health.setHooks(nil, nil)
 		return
 	}
+	s.frameInterval.Store(&m.ProgramFrameInterval)
 	// A removed source's series go with it: SRT listener inputs come and go
 	// with every stream id a publisher sends, and would otherwise pile up.
 	s.health.setHooks(func(source string, from, to SourceHealthStatus) {
@@ -1699,6 +1705,9 @@ func (s *Switcher) trackBroadcastInterval() {
 	}
 	gap := now - prev
 	s.lastBroadcastIntervalNano.Store(gap)
+	if h := s.frameInterval.Load(); h != nil {
+		(*h).Observe(float64(gap) / 1e9)
+	}
 	atomicutil.UpdateMax(&s.maxBroadcastIntervalNano, gap)
 	// Log when gap exceeds 100ms (>2 frame times at 24fps) to pinpoint stalls
 	if gap > 100_000_000 { // 100ms in nanoseconds

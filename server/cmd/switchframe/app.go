@@ -628,6 +628,10 @@ func (a *App) initSwitcherCommon() error {
 	// Create switcher with Prism's relay so frames reach MoQ viewers.
 	a.sw = switcher.New(a.programRelay)
 	a.sw.SetMetrics(a.appMetrics)
+	if a.appMetrics != nil {
+		registerCollectors(metrics.GetRegistry(),
+			switcher.NewMetricsCollector(a.sw), audio.NewMetricsCollector(a.mixer))
+	}
 
 	// Persist + seed lastCommandSeq so /api/peer/health survives a restart
 	// without the peer interpreting seq=0 as divergence. Wire
@@ -742,6 +746,9 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetRecordingArchiveDir(a.cfg.RecordingArchiveDir)
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
+	if a.appMetrics != nil {
+		registerCollectors(metrics.GetRegistry(), output.NewMetricsCollector(a.outputMgr))
+	}
 	if pf := a.sw.PipelineFormat(); pf.Width > 0 && pf.Height > 0 {
 		a.outputMgr.SetResolution(pf.Width, pf.Height)
 	}
@@ -1647,6 +1654,8 @@ func (a *App) initSCTE104() error {
 
 // initAPI creates the REST API and wires state callbacks.
 func (a *App) initAPI() error {
+	a.registerSubsystemCollectors()
+
 	// Create and start the performance sampler.
 	a.perfSampler = perf.NewSampler(
 		&perf.SwitcherAdapter{SW: a.sw},

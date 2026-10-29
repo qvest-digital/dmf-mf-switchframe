@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { holdReload } from '$lib/util/activity';
 	import { onDestroy } from 'svelte';
 	import type { CommsState, EngineId } from '$lib/api/types';
 	import { commsJoin, commsLeave, commsMute, apiCall, getAuthToken } from '$lib/api/switch-api';
@@ -26,6 +27,8 @@
 	const isJoined = $derived(
 		(commsState?.participants ?? []).some((p) => p.operatorId === operatorId)
 	);
+	// A reload would drop the operator out of comms.
+	$effect(() => { if (isJoined) return holdReload('comms'); });
 	const selfParticipant = $derived(
 		(commsState?.participants ?? []).find((p) => p.operatorId === operatorId)
 	);

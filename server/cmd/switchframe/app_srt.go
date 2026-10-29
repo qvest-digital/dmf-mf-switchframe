@@ -17,6 +17,7 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/gpu"
+	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/preview"
 	"github.com/zsiec/switchframe/server/srt"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -115,6 +116,9 @@ func (a *App) initSRT() error {
 	statsMgr := srt.NewStatsManager()
 	a.srtStats = statsMgr
 	a.debugCollector.Register("srt", statsMgr)
+	if a.appMetrics != nil {
+		registerCollectors(metrics.GetRegistry(), srt.NewMetricsCollector(statsMgr))
+	}
 	a.debugCollector.Register("relay_drops", &relayDropProvider{app: a})
 
 	// Wire stats manager into output manager so SRT output adapters

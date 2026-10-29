@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.0.0-rc.32](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.31...mxl-v1.0.0-rc.32) (2026-10-29)
+
+
+### Features
+
+* **control:** count rejected API requests under their route ([95e5ac1](https://github.com/qvest-digital/dmf-mf-switchframe/commit/95e5ac1c473a87ec39e6a69382205c7192a6905c))
+* **output:** verify RTMPS server certificates by default ([#150](https://github.com/qvest-digital/dmf-mf-switchframe/issues/150)) ([5e8acb2](https://github.com/qvest-digital/dmf-mf-switchframe/commit/5e8acb2909bf259a7977f5139c4b5c1a802002fd))
+
+
+### Bug Fixes
+
+* **control:** allow PATCH in the CORS preflight answer ([#132](https://github.com/qvest-digital/dmf-mf-switchframe/issues/132)) ([33fe8b4](https://github.com/qvest-digital/dmf-mf-switchframe/commit/33fe8b44a46837e6500945fdae56c6dc113384b4))
+* **metrics:** write the subsystem families nothing wrote ([95e5ac1](https://github.com/qvest-digital/dmf-mf-switchframe/commit/95e5ac1c473a87ec39e6a69382205c7192a6905c))
+* **nmos:** keep IS-05 receiver connections across a restart ([#137](https://github.com/qvest-digital/dmf-mf-switchframe/issues/137)) ([2de317a](https://github.com/qvest-digital/dmf-mf-switchframe/commit/2de317a63ecd58182403162c31543edbaaef838d))
+* **output:** bound RTMP I/O and back off failed connects ([#139](https://github.com/qvest-digital/dmf-mf-switchframe/issues/139)) ([f5371bd](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f5371bd51b7b2f969781d513e9c8d1e9e26be36f))
+* **output:** keep RTMP timestamps monotonic across a 33-bit PTS wrap ([#151](https://github.com/qvest-digital/dmf-mf-switchframe/issues/151)) ([de087fd](https://github.com/qvest-digital/dmf-mf-switchframe/commit/de087fd2dcb096955173d5fbf15b0394184613c1))
+* **output:** write RTMP timestamps in the FLV time base ([#138](https://github.com/qvest-digital/dmf-mf-switchframe/issues/138)) ([a235871](https://github.com/qvest-digital/dmf-mf-switchframe/commit/a235871fee4508e4cb38911a72ef44bfcf68d789))
+* **preview:** encode every browser relay at preview size under proxy ([#140](https://github.com/qvest-digital/dmf-mf-switchframe/issues/140)) ([b458662](https://github.com/qvest-digital/dmf-mf-switchframe/commit/b4586621b23b7ddcc4580d6cf4b0ecac9a200aba))
+* **replay:** name a replay's file after its clip ID ([#147](https://github.com/qvest-digital/dmf-mf-switchframe/issues/147)) ([233654b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/233654b24006847cf30eb24d9e0bc403c42d78d2))
+* **replay:** store a replay under one clip ID on both engines ([#141](https://github.com/qvest-digital/dmf-mf-switchframe/issues/141)) ([9faf766](https://github.com/qvest-digital/dmf-mf-switchframe/commit/9faf7662c40e8597901d6dcf579526cfe6dc8bcd))
+* **transition:** box pre-shrink a preview only from twice its size ([#142](https://github.com/qvest-digital/dmf-mf-switchframe/issues/142)) ([b8fcede](https://github.com/qvest-digital/dmf-mf-switchframe/commit/b8fcede33f438249a78481a114f0d3d96d514a16))
+* **ui:** create layers, pods and SCTE-35 events under one ID per pair ([#143](https://github.com/qvest-digital/dmf-mf-switchframe/issues/143)) ([5a50b24](https://github.com/qvest-digital/dmf-mf-switchframe/commit/5a50b248af0b85f9318235db65439739ba4ace84))
+* **ui:** keep engine-local history out of the dual-engine sync check ([#149](https://github.com/qvest-digital/dmf-mf-switchframe/issues/149)) ([7921463](https://github.com/qvest-digital/dmf-mf-switchframe/commit/7921463130123783a69a9ff4ee1adfe56fc8f2dc))
+* **ui:** measure decode lag afresh after a drop and after a gap ([#136](https://github.com/qvest-digital/dmf-mf-switchframe/issues/136)) ([7f08e81](https://github.com/qvest-digital/dmf-mf-switchframe/commit/7f08e81842f464f1973531cea16be7b8d1938274))
+* **ui:** name the action and error in the partial failure warning ([#133](https://github.com/qvest-digital/dmf-mf-switchframe/issues/133)) ([203a57e](https://github.com/qvest-digital/dmf-mf-switchframe/commit/203a57e61d2a1e22218253b8a6de752fa5bf8554))
+
 ## [1.0.0-rc.31](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.30...mxl-v1.0.0-rc.31) (2026-10-29)
 
 

@@ -371,18 +371,22 @@ func TestSwitcher_SetMetricsDeletesARemovedSourcesSeries(t *testing.T) {
 	s := &Switcher{health: newHealthMonitor()}
 	s.SetMetrics(pm)
 
-	for _, key := range []string{"cam1", "cam2"} {
+	// An SRT key is labelled by its digest, so deleting under the raw key
+	// would leave its series behind.
+	keys := []string{"cam1", "cam2", "srt:live/feed"}
+	for _, key := range keys {
 		s.health.registerSource(key)
 		s.health.recordFrame(key, time.Now().Add(-1500*time.Millisecond))
 	}
 	s.health.checkForChanges()
-	for _, key := range []string{"cam1", "cam2"} {
+	for _, key := range keys {
 		s.health.recordFrame(key, time.Now())
 	}
 	s.health.checkForChanges()
-	require.Equal(t, 2, testutil.CollectAndCount(pm.SourceStatusChangesTotal))
+	require.Equal(t, 3, testutil.CollectAndCount(pm.SourceStatusChangesTotal))
 
 	s.health.removeSource("cam1")
+	s.health.removeSource("srt:live/feed")
 	require.Equal(t, 1, testutil.CollectAndCount(pm.SourceStatusChangesTotal))
 	require.Equal(t, float64(1), testutil.ToFloat64(pm.SourceStatusChangesTotal.WithLabelValues("cam2", "stale", "healthy")))
 }
