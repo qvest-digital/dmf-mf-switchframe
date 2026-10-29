@@ -75,11 +75,11 @@ The sidecar binary ships as `switchframe-cef` (built from [`cef-sidecar/src/`](.
 
 On crash, the `sidecar.Host` observes the process exit, triggers a restart, and reconnects both sockets. The engine keeps running through the gap — browsers are transient, not durable state, and the operator sees a brief graphics blackout at worst.
 
-If the sidecar binary isn't found at startup (`--html5-graphics-bin` not set, or the file doesn't exist), `Manager.Start` logs a warning and returns `nil`. The rest of the engine works; every HTML5 graphics REST endpoint returns an error until the sidecar is available. This graceful degradation is important — Linux CI environments without a display server can't run CEF and shouldn't need to.
+If the sidecar binary isn't found at startup (`switchframe-cef` beside the `switchframe` binary, or the `--cef-binary` path), `Manager.Start` logs a warning and returns `nil`. The sidecar is spawned only with `--html5-graphics=true`; with `--html5-graphics=false` the engine logs at info that the flag is off and skips the spawn. The rest of the engine works; every HTML5 graphics REST endpoint but the template list returns 503 until the sidecar is available.
 
 ### The browser pool
 
-The sidecar keeps a fixed-size pool of browser instances (default `N = 8`, configurable via `--html5-graphics-pool-size`). Each browser is an offscreen-rendered Chromium tab with its own `OffscreenRenderHandler` that captures paint events. Browsers are addressed by their pool slot (`browser_id: 0 .. N-1`), not by URL — the engine recycles slots by first sending a `destroy` and then a fresh `create`.
+The sidecar keeps a fixed-size pool of browser instances of `N = 4`, a constant on both sides: `PoolSize` in the engine's [`buildHTMLGfxConfig`](../../server/cmd/switchframe/app.go) and the `BrowserPool` size in [`main.cpp`](../../cef-sidecar/src/main.cpp). Each browser is an offscreen-rendered Chromium tab with its own `OffscreenRenderHandler` that captures paint events. Browsers are addressed by their pool slot (`browser_id: 0 .. N-1`), not by URL; the engine recycles slots by first sending a `destroy` and then a fresh `create`.
 
 A browser in the pool is in one of these logical states (tracked in [`server/htmlgfx/types.go`](../../server/htmlgfx/types.go)):
 
@@ -257,7 +257,8 @@ The frame cadence is driven by the target FPS the engine passed on `create`. CEF
   - [`cef-sidecar/test-templates/`](../../cef-sidecar/test-templates/) → integration-test fixtures
 - **Build + setup:**
   - [`cef-sidecar/CMakeLists.txt`](../../cef-sidecar/CMakeLists.txt), [`cef-sidecar/Makefile`](../../cef-sidecar/Makefile)
-  - [`cef-sidecar/scripts/`](../../cef-sidecar/scripts/) → Linux headless rendering setup (Xvfb service)
+  - [`cef-sidecar/scripts/`](../../cef-sidecar/scripts/) -> bare-metal Linux setup; the sidecar selects Chromium's headless Ozone platform itself, so it needs no X server
+  - [`Dockerfile.mxl`](../../Dockerfile.mxl) -> the `cef` stage: pinned CEF minimal distribution, stripped, installed under `/opt/switchframe-cef`
 - **REST:** [`server/control/api_graphics.go`](../../server/control/api_graphics.go) (HTML5-specific handlers)
 
 ## Gotchas and invariants

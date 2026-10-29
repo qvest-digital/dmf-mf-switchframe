@@ -197,6 +197,14 @@ switchframe --mxl-domain /run/mxl/domain \
 | `--asr-whisper-models-dir` | string | `""` | Whisper GGML models directory |
 | `--asr-default-backend` | string | `parakeet` | Default ASR backend: `parakeet` or `whisper` |
 
+### HTML5 graphics (CEF sidecar)
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--html5-graphics` | bool | `false` | `true`: spawn the `switchframe-cef` sidecar when its binary exists. `false`: never spawn it, so no Chromium process runs, and every HTML5 graphics endpoint but the template list answers 503 |
+| `--cef-binary` | string | `""` | Path to the sidecar binary, absolute or relative to the `switchframe` binary; `""`: `switchframe-cef` beside it |
+| `--cef-templates-dir` | string | `""` | Directory of HTML5 templates; `""`: `/opt/switchframe-cef/demo-templates` |
+
 ### Cache
 
 | Flag | Type | Default | Description |

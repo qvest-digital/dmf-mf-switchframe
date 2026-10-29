@@ -2,7 +2,7 @@ name: MXL image
 
 # Builds the MXL images from Dockerfile.mxl and runs the tests that need
 # libmxl, which the upstream workflows skip. Pull requests build and test
-# without publishing; main and mxl-v* tags publish.
+# without publishing; main, mxl-v* tags and manual runs publish.
 
 on:
   push:
@@ -17,7 +17,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   IMAGE: ghcr.io/qvest-digital/dmf-mf-switchframe
@@ -48,17 +47,33 @@ jobs:
           docker run --rm switchframe-build:test \
             go test -tags mxl -race -count=1 ./mxl/... ./output/...
 
+  # The sidecar's own tests build without CEF; nothing upstream runs them.
+  test-cef-sidecar:
+    if: github.repository == 'qvest-digital/dmf-mf-switchframe'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # ThreadSanitizer, which one of the tests runs under, cannot map its
+      # shadow memory at the runner kernel's default ASLR entropy.
+      - name: Lower mmap randomisation for ThreadSanitizer
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Test the CEF sidecar
+        run: make -C cef-sidecar test
+
+  # Builds both images. Outside pull requests each is pushed by digest
+  # alone, with no tag: the smoke test runs that digest and the push job tags
+  # it, so a tag names exactly the image that was tested. A pull request
+  # pushes nothing, and the smoke test rebuilds its image from the cache.
   image:
     if: github.repository == 'qvest-digital/dmf-mf-switchframe'
-    needs: test-mxl
+    needs: [test-mxl, test-cef-sidecar]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
-        include:
-          - target: cpu
-            suffix: ""
-          - target: cuda
-            suffix: "-cuda"
+        target: [cpu, cuda]
     steps:
       - uses: actions/checkout@v4
       - name: Log in to GHCR
@@ -69,24 +84,176 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v3
-      - name: Derive image tags
-        id: tags
-        shell: bash
-        run: |
-          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          if [[ "$GITHUB_REF" == refs/tags/mxl-v* ]]; then
-            echo "version=${GITHUB_REF_NAME#mxl-v}" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Build and push
+      - name: Build
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.mxl
           target: ${{ matrix.target }}
           platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.tags.outputs.sha }}${{ matrix.suffix }}
-            ${{ steps.tags.outputs.version && format('{0}:{1}{2}', env.IMAGE, steps.tags.outputs.version, matrix.suffix) || '' }}
+          outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) || '' }}
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,scope=${{ matrix.target }},mode=max
+      - name: Record the digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest pushed: '$DIGEST'"; exit 1; }
+          echo "$DIGEST" > "digest-$TARGET"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: digest-${{ matrix.target }}
+          path: digest-${{ matrix.target }}
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  # The sidecar has to start, connect, render a template and deliver frames to
+  # the compositor in the image as shipped: with no display, no extra
+  # capabilities and the default seccomp profile. The CUDA image cannot start
+  # without a driver; its sidecar comes from the same stage. The template is
+  # the sidecar's test fixture, which loads nothing from the network, so a
+  # CDN outage cannot hold back a push.
+  smoke:
+    if: github.repository == 'qvest-digital/dmf-mf-switchframe'
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+        if: github.event_name == 'pull_request'
+      - name: Load the CPU image
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.mxl
+          target: cpu
+          platforms: linux/amd64
+          load: true
+          tags: switchframe-mxl:smoke
+          cache-from: type=gha,scope=cpu
+      - uses: actions/download-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: digest-cpu
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull the pushed CPU image
+        if: github.event_name != 'pull_request'
+        run: |
+          ref="$IMAGE@$(cat digest-cpu)"
+          docker pull "$ref"
+          docker tag "$ref" switchframe-mxl:smoke
+      - name: Smoke test HTML5 graphics
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker image inspect switchframe-mxl:smoke --format 'image size: {{.Size}} bytes'
+          docker run -d --name sf-smoke -p 8081:8081 -p 9090:9090 \
+            -v "$PWD/cef-sidecar/test-templates:/smoke-templates:ro" switchframe-mxl:smoke \
+            --http-fallback --api-token smoke --html5-graphics=true --cef-templates-dir /smoke-templates
+          trap 'docker logs sf-smoke 2>&1 | grep -E "htmlgfx|sidecar" || true; docker rm -f sf-smoke >/dev/null' EXIT
+          # The run above overrides --cef-templates-dir, so check that the
+          # image ships the demo templates at the engine's default path.
+          docker exec sf-smoke test -f /opt/switchframe-cef/demo-templates/ograf-lower-third/index.html
+          api() { curl -fsS --max-time 10 -H 'Authorization: Bearer smoke' "$@"; }
+          frames() {
+            curl -fsS --max-time 10 http://localhost:9090/metrics \
+              | awk '$1 == "switchframe_htmlgfx_frames_delivered_total" { print int($2) }'
+          }
+          wait_log() {
+            for _ in $(seq 60); do
+              if docker logs sf-smoke 2>&1 | grep -qF "$1"; then return 0; fi
+              sleep 1
+            done
+            echo "not logged within 60s: $1"; docker logs sf-smoke 2>&1 | tail -50; return 1
+          }
+          # Waits for the frame counter to pass $1.
+          wait_frames() {
+            for _ in $(seq 30); do
+              n=$(frames)
+              if (( ${n:-0} > $1 )); then echo "$n"; return 0; fi
+              sleep 1
+            done
+            echo "frames delivered stayed at ${n:-none}, want more than $1" >&2; return 1
+          }
+          wait_log 'htmlgfx: sidecar connected'
+          templates=$(api http://localhost:8081/api/graphics/html5/templates)
+          echo "$templates" | jq -e 'length > 0' >/dev/null
+          url=$(echo "$templates" | jq -er '.[] | select(.id == "ograf-lower-third") | .url')
+          layer=$(api -X POST http://localhost:8081/api/graphics | jq -er .id)
+          api -X POST -H 'Content-Type: application/json' -d "{\"url\":\"$url\"}" \
+            "http://localhost:8081/api/graphics/$layer/html5" >/dev/null
+          wait_log 'Format detected: slot=0 format=ograf'
+          loaded=$(wait_frames 0)
+          echo "frames delivered after load: $loaded"
+          api -X POST "http://localhost:8081/api/graphics/$layer/html5/play" >/dev/null
+          played=$(wait_frames "$loaded")
+          echo "frames delivered after play: $played"
+
+  # Tags the digests the image job pushed; nothing is built here.
+  push:
+    if: github.repository == 'qvest-digital/dmf-mf-switchframe' && github.event_name != 'pull_request'
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: mxl-push-${{ github.sha }}-${{ matrix.target }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: cpu
+            suffix: ""
+          - target: cuda
+            suffix: "-cuda"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: digest-${{ matrix.target }}
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Tag the tested image
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          set -euo pipefail
+          digest=$(cat "digest-$TARGET")
+          tags=("$IMAGE:${GITHUB_SHA::7}$SUFFIX")
+          if [[ "$GITHUB_REF" == refs/tags/mxl-v* ]]; then
+            tags+=("$IMAGE:${GITHUB_REF_NAME#mxl-v}$SUFFIX")
+          fi
+          args=()
+          for tag in "${tags[@]}"; do args+=(-t "$tag"); done
+          docker buildx imagetools create "${args[@]}" "$IMAGE@$digest"
+          for tag in "${tags[@]}"; do
+            got=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)
+            if [[ "$got" != "$digest" ]]; then
+              echo "$tag is $got, want the tested $digest"; exit 1
+            fi
+            echo "$tag -> $digest"
+          done

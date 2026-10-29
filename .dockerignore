@@ -12,3 +12,4 @@ research/
 .claude/
 *.md
 !ui/package*.json
+cef-sidecar/build/

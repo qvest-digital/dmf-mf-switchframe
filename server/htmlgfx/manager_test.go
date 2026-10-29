@@ -16,10 +16,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mockCompositor records SetOverlay calls.
+// mockCompositor records SetOverlay calls and answers each with err.
 type mockCompositor struct {
 	mu       sync.Mutex
 	overlays []overlayCall
+	err      error
 }
 
 type overlayCall struct {
@@ -36,7 +37,7 @@ func (mc *mockCompositor) SetOverlay(id int, rgba []byte, width, height int, tem
 	cp := make([]byte, len(rgba))
 	copy(cp, rgba)
 	mc.overlays = append(mc.overlays, overlayCall{id, cp, width, height, template})
-	return nil
+	return mc.err
 }
 
 func (mc *mockCompositor) getOverlays() []overlayCall {

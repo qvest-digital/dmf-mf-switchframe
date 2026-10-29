@@ -37,7 +37,7 @@ make -j$(nproc)
 
 ## Running
 
-The sidecar is launched by the Go server automatically, but can be run manually for testing:
+The Go server launches the sidecar when run with `--html5-graphics=true`. It can also be run manually for testing:
 
 ```bash
 ./switchframe-cef \
@@ -63,5 +63,3 @@ Go server                       CEF sidecar
    |<-- frame socket (binary) -----|  BGRA pixel data per frame
    |                                |
 ```
-
-Tasks 10-11 will implement the browser pool, offscreen rendering, and socket protocols.
