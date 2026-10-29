@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import PresetPanel from './PresetPanel.svelte';
+import { reloadHolds } from '$lib/util/activity';
 
 vi.mock('$lib/api/switch-api', () => ({
 	listPresets: vi.fn().mockResolvedValue([]),
@@ -29,6 +30,16 @@ describe('PresetPanel', () => {
 	it('shows empty state when no presets', () => {
 		const { container } = render(PresetPanel);
 		expect(container.textContent).toContain('No presets saved');
+	});
+
+	// A stale-build reload of an untouched tab would drop the name being typed.
+	it('holds the reload while a preset name is being entered', async () => {
+		const { container } = render(PresetPanel);
+		expect(reloadHolds()).not.toContain('unsaved switcher preset');
+		await fireEvent.click(container.querySelector('.add-preset') as HTMLButtonElement);
+		expect(reloadHolds()).toContain('unsaved switcher preset');
+		await fireEvent.click(container.querySelector('.save-cancel') as HTMLButtonElement);
+		expect(reloadHolds()).not.toContain('unsaved switcher preset');
 	});
 
 	it('shows name input when add preset clicked', async () => {

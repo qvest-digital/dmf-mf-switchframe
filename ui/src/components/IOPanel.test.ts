@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import IOPanel from './IOPanel.svelte';
+import { reloadHolds } from '$lib/util/activity';
 import { addDestination, stopDestination, reassignDestinationEngine } from '$lib/api/switch-api';
 import type { ControlRoomState, SourceHealthStatus } from '$lib/api/types';
 
@@ -216,6 +217,23 @@ describe('IOPanel', () => {
 			props: { state: makeState(), visible: true },
 		});
 		expect(container.textContent).toContain('Add Destination');
+	});
+
+	// A stale-build reload of an untouched tab would drop a half-filled form.
+	it.each([
+		['Add SRT Source', 'unsaved source'],
+		['Add Destination', 'unsaved destination'],
+	])('holds the reload while the %s form is open', async (opener, reason) => {
+		const { container } = render(IOPanel, {
+			props: { state: makeState(), visible: true },
+		});
+		const button = (text: string) =>
+			Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes(text)) as HTMLButtonElement;
+		expect(reloadHolds()).not.toContain(reason);
+		await fireEvent.click(button(opener));
+		expect(reloadHolds()).toContain(reason);
+		await fireEvent.click(button('Cancel'));
+		expect(reloadHolds()).not.toContain(reason);
 	});
 
 	it('expands source row on click showing details', async () => {

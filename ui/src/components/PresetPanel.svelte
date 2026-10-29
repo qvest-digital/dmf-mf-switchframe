@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { holdReload } from '$lib/util/activity';
 	import type { Preset } from '$lib/api/types';
 	import { listPresets, createPreset, recallPresetByName, deletePresetByName } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
@@ -20,6 +21,7 @@
 	let presets = $state<Preset[]>([]);
 	let saving = $state(false);
 	let presetName = $state('');
+	$effect(() => { if (saving) return holdReload('unsaved switcher preset'); });
 	let deleteConfirmId = $state<string | null>(null);
 
 	const iconSm = 12;

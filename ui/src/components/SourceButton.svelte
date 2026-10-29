@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { holdReload } from '$lib/util/activity';
 	import type { SourceInfo, TallyStatus, LayoutSlotState } from '$lib/api/types';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import { computeSRTHealth } from '$lib/util/srt-health';
@@ -38,6 +39,7 @@
 	});
 
 	let editing = $state(false);
+	$effect(() => { if (editing) return holdReload('source rename'); });
 	let editValue = $state('');
 	let inputEl: HTMLInputElement | undefined = $state();
 

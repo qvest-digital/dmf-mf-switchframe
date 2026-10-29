@@ -9,6 +9,7 @@
 		DestinationConfig,
 	} from '$lib/api/types';
 	import { poll } from '$lib/util/poll';
+	import { holdReload } from '$lib/util/activity';
 	import {
 		createSRTSource,
 		deleteSRTSource,
@@ -68,6 +69,8 @@
 	// --- Add forms ---
 	let showAddSource = $state(false);
 	let showAddDest = $state(false);
+	$effect(() => { if (showAddSource) return holdReload('unsaved source'); });
+	$effect(() => { if (showAddDest) return holdReload('unsaved destination'); });
 
 	// --- Add SRT Source form state ---
 	let newSourceAddress = $state('');

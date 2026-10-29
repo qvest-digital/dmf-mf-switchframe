@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { holdReload } from '$lib/util/activity';
 	import type { SourceInfo, TallyStatus, LayoutSlotState, SourceHealthStatus } from '$lib/api/types';
 	import { computeSRTHealth } from '$lib/util/srt-health';
 	import { healthDotColor } from '$lib/util/health-dots';
@@ -28,6 +29,7 @@
 	let stalled = $derived(isSourceStalled(source.key));
 
 	let editing = $state(false);
+	$effect(() => { if (editing) return holdReload('source rename'); });
 	let editValue = $state('');
 	let inputEl: HTMLInputElement | undefined = $state();
 
