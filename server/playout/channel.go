@@ -933,6 +933,7 @@ func (c *Channel) configDimensions() (int, int) {
 func (c *Channel) run(ctx context.Context) {
 	defer close(c.done)
 
+	clock := tickClock{period: c.frameDuration, next: time.Now().Add(c.frameDuration)}
 	ticker := time.NewTicker(c.frameDuration)
 	defer ticker.Stop()
 
@@ -945,12 +946,47 @@ func (c *Channel) run(ctx context.Context) {
 			// Always tick at pipeline rate. Frame rate conversion for
 			// clips with a different native FPS is handled by timestamp-
 			// based frame selection in nextClipFrame().
-			if c.tick(time.Now()) {
-				c.cleanup()
-				return // playlist completed
+			for n := clock.due(time.Now()); n > 0; n-- {
+				if c.tick(time.Now()) {
+					c.cleanup()
+					return // playlist completed
+				}
 			}
 		}
 	}
+}
+
+// maxTickBacklog bounds how far behind the run loop makes up ticks. A loop
+// further behind than this skips ahead rather than catch up for longer.
+const maxTickBacklog = time.Second
+
+// tickClock counts the run loop's ticks on the frame grid. A time.Ticker
+// drops the ticks a slow receiver misses, so a tick that blocks for several
+// frame periods would cost the output those frames for good. tickClock makes
+// them up instead, one extra tick per period so they do not go out as a burst.
+type tickClock struct {
+	period time.Duration
+	next   time.Time // when the next tick is due
+}
+
+// due returns how many ticks to run at now: none before the next tick is
+// due, one when on time, two while making up a backlog.
+func (k *tickClock) due(now time.Time) int {
+	if now.Before(k.next) {
+		return 0
+	}
+	behind := now.Sub(k.next)
+	if behind >= maxTickBacklog {
+		slog.Warn("playout: tick loop fell behind, skipping ahead", "behind", behind)
+		k.next = now.Add(k.period)
+		return 1
+	}
+	n := 1
+	if behind >= k.period {
+		n = 2
+	}
+	k.next = k.next.Add(time.Duration(n) * k.period)
+	return n
 }
 
 // tick processes one frame period. Returns true when the playlist is done.

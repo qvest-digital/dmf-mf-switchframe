@@ -3585,3 +3585,41 @@ func TestChannel_LoopClip_WrapsWithoutGapOrReopen(t *testing.T) {
 	require.Equal(t, 1, prov.openCount(loop.AssetURI), "the asset opens once for every pass")
 	require.Equal(t, passes, prov.passCount(loop.AssetURI))
 }
+
+// time.Ticker drops the ticks a slow receiver misses. The run loop makes
+// them up, one extra per period, so a tick that blocks for several frame
+// periods does not cost the output frames.
+func TestTickClock_MakesUpBlockedTicks(t *testing.T) {
+	const p = 20 * time.Millisecond
+	start := time.Now()
+	k := tickClock{period: p, next: start.Add(p)}
+	at := func(periods float64) time.Time { return start.Add(time.Duration(periods * float64(p))) }
+
+	ticks := k.due(at(1)) + k.due(at(2))
+	require.Equal(t, 2, ticks)
+	require.Zero(t, k.due(at(2.5)), "no tick before the next is due")
+
+	// The tick at 2 blocks until 9.1: the ticker hands over its one buffered
+	// fire at once, then fires on its grid.
+	fires := []float64{9.1}
+	for f := 10; f <= 20; f++ {
+		fires = append(fires, float64(f))
+	}
+	for _, f := range fires {
+		n := k.due(at(f))
+		require.LessOrEqual(t, n, 2, "made-up ticks go out one extra per period, not as a burst")
+		ticks += n
+	}
+	require.Equal(t, 20, ticks, "every frame period from 1 to 20 gets its tick")
+	require.Zero(t, k.due(at(20.5)), "caught up")
+}
+
+// A loop that fell further behind than it should make up skips ahead.
+func TestTickClock_SkipsAheadPastMaxBacklog(t *testing.T) {
+	const p = 20 * time.Millisecond
+	start := time.Now()
+	k := tickClock{period: p, next: start.Add(p)}
+	now := start.Add(p + maxTickBacklog)
+	require.Equal(t, 1, k.due(now))
+	require.Equal(t, now.Add(p), k.next)
+}
