@@ -72,11 +72,13 @@ void BrowserClient::OnTitleChange(CefRefPtr<CefBrowser> browser,
 // ---------- BrowserPool ----------
 
 BrowserPool::BrowserPool(int max_browsers, FrameCallback on_frame,
-                         CefRefPtr<CefRequestHandler> request_handler)
+                         CefRefPtr<CefRequestHandler> request_handler,
+                         CefRefPtr<CefRequestContext> request_context)
     : max_browsers_(max_browsers),
       slots_(static_cast<size_t>(max_browsers)),
       on_frame_(std::move(on_frame)),
-      request_handler_(request_handler) {}
+      request_handler_(request_handler),
+      request_context_(request_context) {}
 
 BrowserPool::~BrowserPool() {
     // Close all active browsers.
@@ -122,7 +124,8 @@ bool BrowserPool::Create(int id, int width, int height, int fps) {
 
     // CreateBrowserSync must be called on the CEF UI thread.
     CefRefPtr<CefBrowser> browser = CefBrowserHost::CreateBrowserSync(
-        window_info, client, "about:blank", browser_settings, nullptr, nullptr);
+        window_info, client, "about:blank", browser_settings, nullptr,
+        request_context_);
 
     if (!browser) {
         std::cerr << "BrowserPool::Create: CreateBrowserSync failed for slot "

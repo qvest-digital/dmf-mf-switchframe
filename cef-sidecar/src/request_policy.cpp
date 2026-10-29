@@ -30,14 +30,16 @@ PolicyRequestHandler::GetResourceRequestHandler(
 }
 
 CefResourceRequestHandler::ReturnValue
-PolicyRequestHandler::OnBeforeResourceLoad(CefRefPtr<CefBrowser> /*browser*/,
+PolicyRequestHandler::OnBeforeResourceLoad(CefRefPtr<CefBrowser> browser,
                                            CefRefPtr<CefFrame> /*frame*/,
                                            CefRefPtr<CefRequest> request,
                                            CefRefPtr<CefCallback> /*callback*/) {
     const std::string url = request->GetURL().ToString();
+    // Names the path CEF took, so a run shows which handler holds a request.
+    const char* via = browser ? "browser" : "context";
     if (url_policy::Allowed(url, root_)) {
         return RV_CONTINUE;
     }
-    std::cerr << "[policy] refused load: " << url << std::endl;
+    std::cerr << "[policy] refused load (" << via << "): " << url << std::endl;
     return RV_CANCEL;
 }

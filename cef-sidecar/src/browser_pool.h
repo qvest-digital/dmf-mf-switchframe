@@ -11,6 +11,7 @@
 #include "include/cef_life_span_handler.h"
 #include "include/cef_display_handler.h"
 #include "include/cef_load_handler.h"
+#include "include/cef_request_context.h"
 #include "include/cef_request_handler.h"
 
 #include "render_handler.h"
@@ -81,8 +82,11 @@ public:
     // max_browsers: maximum simultaneous browser instances (slot IDs 0..N-1).
     // on_frame: called on the CEF UI thread when a browser paints a frame.
     // request_handler: decides what every browser may navigate to and load.
+    // request_context: every browser's context; its handler holds the
+    // requests CEF does not pass to request_handler.
     BrowserPool(int max_browsers, FrameCallback on_frame,
-                CefRefPtr<CefRequestHandler> request_handler);
+                CefRefPtr<CefRequestHandler> request_handler,
+                CefRefPtr<CefRequestContext> request_context);
     ~BrowserPool();
 
     // Create a browser in the given slot. Returns false if the slot is invalid,
@@ -120,5 +124,6 @@ private:
     std::vector<BrowserSlot> slots_;
     FrameCallback on_frame_;
     CefRefPtr<CefRequestHandler> request_handler_;
+    CefRefPtr<CefRequestContext> request_context_;
     mutable std::mutex mutex_;
 };

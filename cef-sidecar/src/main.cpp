@@ -169,12 +169,21 @@ int main(int argc, char* argv[]) {
     // Create frame socket and accept connection (blocks until Go connects).
     auto frame_socket = std::make_shared<FrameSocket>(frame_fd);
 
+    // One policy for every browser, installed both as each browser's request
+    // handler and as the handler of the context they share, which shares its
+    // storage with the global context.
+    CefRefPtr<PolicyRequestHandler> policy(
+        new PolicyRequestHandler(templates_root));
+    CefRefPtr<CefRequestContext> request_context =
+        CefRequestContext::CreateContext(CefRequestContext::GetGlobalContext(),
+                                         policy);
+
     // Create browser pool wired to the frame socket.
     auto browser_pool = std::make_shared<BrowserPool>(
         4, [frame_socket](int id, int w, int h, const void* buf, size_t sz) {
             frame_socket->SendFrame(id, w, h, buf, sz);
         },
-        new PolicyRequestHandler(templates_root));
+        policy, request_context);
 
     // Get adapter.js source for injection on page load.
     const std::string& adapter_js = adapter::GetAdapterJS();
