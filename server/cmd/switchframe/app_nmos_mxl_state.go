@@ -71,6 +71,10 @@ func (s *mxlNMOSState) load(known map[string]mxlReceiverRef) {
 	if err == nil {
 		err = json.Unmarshal(data, &s.saved)
 	}
+	// A JSON null leaves the map nil, and the next save would panic.
+	if s.saved == nil {
+		s.saved = map[string]savedActivation{}
+	}
 	if err != nil {
 		slog.Warn("mxl nmos: saved connections not readable, inputs read their booked flows", "file", s.path, "error", err)
 		s.saved = map[string]savedActivation{}

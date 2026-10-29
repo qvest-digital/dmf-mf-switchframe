@@ -201,6 +201,28 @@ func TestMXLNMOS_SavedStateOfUnknownReceiversAndBadFile(t *testing.T) {
 	}
 }
 
+// A state file holding JSON null is no saved connection, and the engine
+// still saves the next one rather than panicking on it.
+func TestMXLNMOS_NullStateFileIsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, mxlNMOSStateFile), []byte("null"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tt := newEngine(t, dir)
+	tt.app.restoreMXLNMOS(t.Context())
+	if a := tt.active(t, rxID("cam1", "video")); a.FlowID() != specV {
+		t.Errorf("active %s with a null file, want the booked flow", a.FlowID())
+	}
+	if code := tt.patch(t, rxID("cam2", "video"), activationBody(nmosFlow), false); code != 200 {
+		t.Fatalf("PATCH after a null file: %d", code)
+	}
+	re := newEngine(t, dir)
+	re.app.restoreMXLNMOS(t.Context())
+	if got := re.cam2V.FlowID(); got != nmosFlow {
+		t.Errorf("after a restart cam2 reads %q, want the connection saved after the null file", got)
+	}
+}
+
 // pair wires two engines to each other, as the peer base of each.
 func pair(a, b *nmosTestApp) {
 	a.n.peerBase = b.srv.URL
