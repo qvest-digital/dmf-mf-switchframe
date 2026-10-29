@@ -15,8 +15,12 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/metrics"
+	"github.com/zsiec/switchframe/server/playout"
+	"github.com/zsiec/switchframe/server/replay"
 )
 
 func init() {
@@ -39,6 +43,28 @@ func registerCollectors(reg prometheus.Registerer, cs ...prometheus.Collector) {
 			slog.Warn("metrics collector not registered", "err", err)
 		}
 	}
+}
+
+// registerSubsystemCollectors registers the scrape-time collectors of the
+// playout, clip, replay and graphics subsystems, each only when it runs.
+func (a *App) registerSubsystemCollectors() {
+	if a.appMetrics == nil {
+		return
+	}
+	var cs []prometheus.Collector
+	if a.playoutMgr != nil {
+		cs = append(cs, playout.NewMetricsCollector(a.playoutMgr, a.playoutCache))
+	}
+	if a.clipMgr != nil {
+		cs = append(cs, clip.NewMetricsCollector(a.clipMgr))
+	}
+	if a.replayMgr != nil {
+		cs = append(cs, replay.NewMetricsCollector(a.replayMgr))
+	}
+	if a.compositor != nil {
+		cs = append(cs, graphics.NewMetricsCollector(a.compositor))
+	}
+	registerCollectors(metrics.GetRegistry(), cs...)
 }
 
 // readyFlag is set to true once all components are initialized and the server
