@@ -1226,7 +1226,7 @@ describe('createReconciler', () => {
 	});
 
 	describe('destination divergence', () => {
-		it('detects divergence when active destination count differs', () => {
+		it('detects divergence when the started destinations differ', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({
 				lastCommandSeq: 5,
@@ -1245,8 +1245,22 @@ describe('createReconciler', () => {
 			const divs = r.health.divergences;
 			const destDiv = divs.find(d => d.field === 'destinations');
 			expect(destDiv).toBeDefined();
-			expect(destDiv?.engineA).toBe('2 active');
-			expect(destDiv?.engineB).toBe('1 active');
+			expect(destDiv?.engineA).toBe('d1,d2');
+			expect(destDiv?.engineB).toBe('d1');
+		});
+
+		// One engine of a pair sends, the other stands by: both started.
+		it('no destination divergence between a sender and its standby', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				destinations: [{ id: 'd1', type: 'rtmp', state: 'active' }],
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				destinations: [{ id: 'd1', type: 'rtmp', state: 'standby' }],
+			}));
+			expect(r.health.divergences.find(d => d.field === 'destinations')).toBeUndefined();
 		});
 
 		it('no destination divergence when active counts match', () => {
@@ -1289,8 +1303,8 @@ describe('createReconciler', () => {
 			const divs = r.health.divergences;
 			const destDiv = divs.find(d => d.field === 'destinations');
 			expect(destDiv).toBeDefined();
-			expect(destDiv?.engineA).toBe('1 active');
-			expect(destDiv?.engineB).toBe('0 active');
+			expect(destDiv?.engineA).toBe('d1');
+			expect(destDiv?.engineB).toBe('none started');
 		});
 	});
 

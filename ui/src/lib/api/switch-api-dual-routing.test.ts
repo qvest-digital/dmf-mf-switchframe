@@ -18,6 +18,7 @@ import {
 	setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, authHeaders,
 	resetPreferredEngine, resetCircuitBreakers, uploadStinger,
 	startRecording, stopRecording, addDestination, clipPlayerLoadByName,
+	startDestination, stopDestination, reassignDestinationEngine,
 	commandLatency, resetCommandLatency, graphicsSetLayerSettings,
 } from './switch-api';
 import { tokenReplaced } from './auth-gate';
@@ -1885,7 +1886,8 @@ describe('switch-api dual-engine routing', () => {
 		it('isNonIdempotent classifies output paths', () => {
 			expect(isNonIdempotent('/api/output/srt/start')).toBe(true);
 			expect(isNonIdempotent('/api/output/srt/stop')).toBe(true);
-			expect(isNonIdempotent('/api/output/destinations')).toBe(true);
+			// A create carries a client ID, so a retry cannot add a second one.
+			expect(isNonIdempotent('/api/output/destinations')).toBe(false);
 		});
 
 		it('isNonIdempotent classifies macro run', () => {
@@ -1960,25 +1962,44 @@ describe('switch-api dual-engine routing', () => {
 				expect(allCalls).toHaveLength(2);
 			});
 
-			it('non-idempotent paths do NOT get retried on partial failure (addDestination)', async () => {
+			// Both engines store a destination under one ID; the engine that
+			// missed the create gets the same ID on the retry.
+			it('addDestination sends one ID to both engines and retries with it', async () => {
+				let failB = true;
 				mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
 					fetchCalls.push({ url, opts: opts ?? {} });
-					if (url.includes('engine-b')) {
+					if (url.includes('engine-b') && failB) {
+						failB = false;
 						return Promise.resolve(errorResponse(500, 'engine B crashed'));
 					}
-					return Promise.resolve(defaultOkResponse({ id: 'dest-1', state: 'running' }));
+					return Promise.resolve(defaultOkResponse({ id: 'x', state: 'stopped' }));
 				});
 
-				await addDestination({ type: 'srt-caller', address: '1.2.3.4', port: 9000 } as any);
-
-				const initialCalls = fetchCalls.filter(c => c.url.includes('/api/output/destinations'));
-				expect(initialCalls).toHaveLength(2);
-
+				await addDestination({ type: 'srt-caller', address: '1.2.3.4', port: 9000 });
 				await vi.advanceTimersByTimeAsync(500);
 
-				// Should NOT have retried
-				const allCalls = fetchCalls.filter(c => c.url.includes('/api/output/destinations'));
-				expect(allCalls).toHaveLength(2);
+				const calls = fetchCalls.filter(c => c.url.endsWith('/api/output/destinations'));
+				expect(calls.length).toBeGreaterThanOrEqual(3);
+				const ids = calls.map(c => JSON.parse(c.opts.body as string).id);
+				expect(ids[0]).toMatch(/^[0-9a-f]{8}$/);
+				expect(new Set(ids).size).toBe(1);
+				expect(calls.filter(c => c.url.includes('engine-b')).length).toBe(2);
+			});
+
+			// Start, stop and the switch-over reach both engines: the engine
+			// that does not send answers with its standby state.
+			it('destination start, stop and engine moves fan out to both engines', async () => {
+				mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+					fetchCalls.push({ url, opts: opts ?? {} });
+					return Promise.resolve(defaultOkResponse({ id: 'x', state: 'standby' }));
+				});
+				await startDestination('0a1b2c3d');
+				await stopDestination('0a1b2c3d');
+				await reassignDestinationEngine('0a1b2c3d', 'b');
+				for (const path of ['start', 'stop', 'engine']) {
+					const hosts = fetchCalls.filter(c => c.url.endsWith(`/api/output/destinations/0a1b2c3d/${path}`)).map(c => new URL(c.url).host);
+					expect(hosts.sort(), path).toEqual(['engine-a.example.com', 'engine-b.example.com']);
+				}
 			});
 
 			it('notify message says "no retry" for non-idempotent paths', async () => {

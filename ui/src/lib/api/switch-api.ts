@@ -636,43 +636,9 @@ async function primaryWithFallback<T>(url: string, options: RequestInit | undefi
 	throw new Error(`All engines failed for GET ${url}`);
 }
 
-// ── Engine-scoped output routing ──
-
-const ENGINE_SCOPED_PATHS = new Set([
-	'/api/output/destinations',
-]);
-
-function isEngineScopedPath(path: string): boolean {
-	if (ENGINE_SCOPED_PATHS.has(path)) return true;
-	// Match /api/output/destinations/{id}/start, /stop, /engine
-	return /^\/api\/output\/destinations\/[^/]+\/(start|stop|engine)$/.test(path);
-}
-
-/**
- * Send a request to a specific engine by ID.
- */
-async function targetEngine<T>(url: string, options: RequestInit | undefined, engines: EngineEndpoint[], engineId: string): Promise<T> {
-	const engine = engines.find(e => e.id.toLowerCase() === engineId.toLowerCase());
-	if (!engine) {
-		throw new Error(`Engine ${engineId} not found`);
-	}
-	const opts: RequestInit = { ...options, headers: { ...authHeaders(), ...options?.headers } };
-	const res = await engineFetch(`${engine.url}${url}`, opts);
-	if (!res.ok) {
-		const body = await res.json().catch(() => ({ error: 'unknown error' }));
-		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
-	}
-	if (res.status === 202 || res.status === 204 || res.headers?.get('content-length') === '0') {
-		return undefined as T;
-	}
-	return res.json();
-}
-
 /**
  * JSON API fan-out. Called by request() when dual-engine is active.
  * Routes GET/HEAD to primaryWithFallback, mutations to allSettled fan-out.
- * Engine-scoped output paths are routed to a specific engine when the
- * request body contains an engine field.
  */
 async function dualRequest<T>(url: string, options: RequestInit | undefined, engines: EngineEndpoint[]): Promise<T> {
 	const method = (options?.method ?? 'GET').toUpperCase();
@@ -680,16 +646,6 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 	// Read-only requests: primary engine with fallback, not parallel fan-out.
 	if (method === 'GET' || method === 'HEAD') {
 		return primaryWithFallback<T>(url, options, engines);
-	}
-
-	// Engine-scoped paths: route to specific engine if body contains engine field
-	if (isEngineScopedPath(url) && options?.body && typeof options.body === 'string') {
-		try {
-			const parsed = JSON.parse(options.body);
-			if (parsed.engine && engines.length > 1) {
-				return targetEngine<T>(url, options, engines, parsed.engine);
-			}
-		} catch { /* fall through to fan-out */ }
 	}
 
 	// Mutations: fan out to all engines in parallel
@@ -1086,11 +1042,22 @@ export function getSRTOutputStatus(): Promise<SRTOutputStatus> {
 
 // --- Multi-Destination API ---
 
+/** A destination ID in the form an engine generates: 8 lowercase hex. */
+export function newDestinationId(): string {
+	const b = new Uint8Array(4);
+	crypto.getRandomValues(b);
+	return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+/** Creates the destination on every engine under one ID, so both engines of
+ * a pair hold one config: engine A sends it, engine B stands by and takes
+ * over when A is gone. A retry to an engine that missed the create sends
+ * the same ID again. */
 export function addDestination(config: DestinationConfig): Promise<DestinationStatus> {
 	return request('/api/output/destinations', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify(config),
+		body: JSON.stringify({ ...config, id: newDestinationId() }),
 	});
 }
 
@@ -1116,6 +1083,8 @@ export function stopDestination(id: string): Promise<DestinationStatus> {
 	return post(`/api/output/destinations/${encodeURIComponent(id)}/stop`, {});
 }
 
+/** Moves the sending of a destination to another engine of a pair: sent to
+ * both engines, the old sender stands by and the new one starts. */
 export function reassignDestinationEngine(id: string, engine: string): Promise<DestinationStatus> {
 	return request(`/api/output/destinations/${encodeURIComponent(id)}/engine`, {
 		method: 'PUT',
