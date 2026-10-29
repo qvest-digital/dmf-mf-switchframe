@@ -96,6 +96,10 @@ type RTMPCallerConfig struct {
 	URL        string // full RTMP URL, e.g. rtmp://a.rtmp.youtube.com/live2/stream-key
 	SampleRate int    // audio sample rate (default 48000)
 	Channels   int    // audio channels (default 2 = stereo)
+
+	// AllowUntrustedCert skips verifying an rtmps:// server certificate
+	// against the system CA bundle and its host name.
+	AllowUntrustedCert bool
 }
 
 // RTMPStatus holds runtime RTMP connection info for ControlRoomState.

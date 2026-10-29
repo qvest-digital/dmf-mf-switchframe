@@ -7,6 +7,7 @@ import type { TrackInfo } from '$lib/prism/transport';
 import type { CaptionData } from '$lib/prism/protocol';
 import { setSourceStalled, clearSourceStall, clearAllStalls, isSourceStalled } from '$lib/transport/source-errors.svelte';
 import { monitorGain, programGain, subscribeMonitor } from '$lib/audio/monitor.svelte';
+import { holdReload } from '$lib/util/activity';
 /** Configuration for the media pipeline. */
 export interface MediaPipelineConfig {
 	/** Called when MoQ control track delivers state data. */
@@ -275,7 +276,9 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			programBus = audioContext.createGain();
 			programBus.connect(monitorBus);
 			applyMonitor(true);
-			unsubscribeMonitor = subscribeMonitor(() => applyMonitor(false));
+			unsubscribeMonitor = subscribeMonitor(() => { applyMonitor(false); updateAudioHold(); });
+			audioContext.onstatechange = updateAudioHold;
+			updateAudioHold();
 		}
 		return audioContext;
 	}
@@ -288,6 +291,16 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	let monitorBus: GainNode | null = null;
 	let programBus: GainNode | null = null;
 	let unsubscribeMonitor: (() => void) | null = null;
+	/** Held while this browser plays audio someone may be listening to. */
+	let releaseAudioHold: (() => void) | null = null;
+	function updateAudioHold(): void {
+		const audible = audioContext?.state === 'running' && monitorGain() > 0;
+		if (audible && !releaseAudioHold) releaseAudioHold = holdReload('audio monitor');
+		else if (!audible && releaseAudioHold) {
+			releaseAudioHold();
+			releaseAudioHold = null;
+		}
+	}
 	/** Time constant of a monitor gain change: quick, but without a click. */
 	const MONITOR_RAMP_S = 0.015;
 
@@ -834,6 +847,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		}
 		unsubscribeMonitor?.();
 		unsubscribeMonitor = null;
+		releaseAudioHold?.();
+		releaseAudioHold = null;
 		monitorBus = null;
 		programBus = null;
 		void audioContext?.close();

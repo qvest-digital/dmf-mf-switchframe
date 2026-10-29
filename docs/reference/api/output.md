@@ -129,7 +129,7 @@ Per-type requirements:
 
 - `srt-caller`: `address` + `port` required.
 - `srt-listener`: `port` required; if `allowedOutputPorts` is configured, must be in the allowed set.
-- `rtmp`: `url` required.
+- `rtmp`: `url` required. An `rtmps://` destination verifies the server certificate against the system CA bundle and the host name; `allowUntrustedCert: true` skips that check.
 
 **Response 201:** `output.DestinationStatus`.
 

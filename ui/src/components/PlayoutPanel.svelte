@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { holdReload } from '$lib/util/activity';
 	import { onMount, onDestroy } from 'svelte';
 	import type { ControlRoomState, PlayoutChannelState, Playlist, PlaylistItem, PlayoutClip, SampleClip, CacheStatus as CacheStatusType } from '$lib/api/types';
 	import {
@@ -68,6 +69,8 @@
 	let savedPlaylists = $state<string[]>([]);
 	let editingName = $state(false);
 	let dirty = $state(false);
+	// The working playlist lives only here until it is saved.
+	$effect(() => { if (dirty) return holdReload('unsaved playlist'); });
 
 	// ── Source names for the item editor ──
 	const sourceNames = $derived(Object.keys(crState.sources ?? {}));

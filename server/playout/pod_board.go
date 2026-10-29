@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -105,9 +106,23 @@ func (pb *PodBoard) SetAsRunLog(fn func(AsRunEvent)) {
 
 // CreatePod creates a new pod with the given config.
 func (pb *PodBoard) CreatePod(config PodConfig) (*Pod, error) {
+	return pb.CreatePodWithID("", config)
+}
+
+// CreatePodWithID is CreatePod under a caller-chosen ID, so that engines
+// sharing a pod can refer to it by the same ID; "" picks a fresh one. The
+// ID must have the form generated ones have. Returns ErrInvalidPodID for a
+// malformed ID and ErrPodExists if the ID is taken.
+func (pb *PodBoard) CreatePodWithID(id string, config PodConfig) (*Pod, error) {
+	if id != "" && !ValidPodID(id) {
+		return nil, ErrInvalidPodID
+	}
 	pb.mu.Lock()
-	id := generatePodID()
-	for _, exists := pb.pods[id]; exists; _, exists = pb.pods[id] {
+	if _, exists := pb.pods[id]; exists {
+		pb.mu.Unlock()
+		return nil, ErrPodExists
+	}
+	for id == "" || pb.pods[id] != nil {
 		id = generatePodID()
 	}
 
@@ -128,6 +143,15 @@ func (pb *PodBoard) CreatePod(config PodConfig) (*Pod, error) {
 
 // CreateFromTemplate creates a pod from a named template.
 func (pb *PodBoard) CreateFromTemplate(typeName string) (*Pod, error) {
+	return pb.CreateFromTemplateWithID("", typeName)
+}
+
+// CreateFromTemplateWithID is CreateFromTemplate under a caller-chosen ID,
+// as for CreatePodWithID.
+func (pb *PodBoard) CreateFromTemplateWithID(id, typeName string) (*Pod, error) {
+	if id != "" && !ValidPodID(id) {
+		return nil, ErrInvalidPodID
+	}
 	pb.mu.Lock()
 	store := pb.templateStore
 	pb.mu.Unlock()
@@ -141,16 +165,15 @@ func (pb *PodBoard) CreateFromTemplate(typeName string) (*Pod, error) {
 		return nil, err
 	}
 
-	// Generate ID and use template's Instantiate.
-	id := generatePodID()
-	pod := tmpl.Instantiate(id)
-
 	pb.mu.Lock()
-	// Check for ID collision.
-	for _, exists := pb.pods[id]; exists; _, exists = pb.pods[id] {
-		id = generatePodID()
-		pod.ID = id
+	if _, exists := pb.pods[id]; exists {
+		pb.mu.Unlock()
+		return nil, ErrPodExists
 	}
+	for id == "" || pb.pods[id] != nil {
+		id = generatePodID()
+	}
+	pod := tmpl.Instantiate(id)
 	pb.pods[id] = pod
 	fn := pb.onStateChange
 	pb.mu.Unlock()
@@ -905,6 +928,20 @@ func (pb *PodBoard) restorePod(pod *Pod) {
 	if pod.State == PodBreakActive || pod.State == PodPreRoll {
 		pb.activePodID = pod.ID
 	}
+}
+
+// ValidPodID reports whether id has the form of a generated pod ID.
+func ValidPodID(id string) bool {
+	hexPart, ok := strings.CutPrefix(id, "pod-")
+	if !ok || len(hexPart) != 8 {
+		return false
+	}
+	for _, r := range hexPart {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // generatePodID creates a short random hex ID.

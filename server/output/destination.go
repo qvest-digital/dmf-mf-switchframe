@@ -31,6 +31,9 @@ type DestinationConfig struct {
 	Name          string `json:"name,omitempty"`          // user-friendly label
 	SCTE35Enabled bool   `json:"scte35Enabled,omitempty"` // default true; false strips SCTE-35
 	Engine        string `json:"engine,omitempty"`        // "a", "b", or "" (default = local engine)
+
+	// AllowUntrustedCert skips verifying an rtmps:// server certificate.
+	AllowUntrustedCert bool `json:"allowUntrustedCert,omitempty"`
 }
 
 // DestinationStatus is the runtime status of a destination.

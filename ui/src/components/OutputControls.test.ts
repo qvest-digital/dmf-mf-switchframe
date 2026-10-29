@@ -393,7 +393,7 @@ describe('OutputControls confidence thumbnail', () => {
 			expect(img.getAttribute('src')).toBe('blob:thumb-1');
 			const [url, init] = fetchMock.mock.calls[0];
 			expect(String(url)).toMatch(/\/api\/output\/confidence$/);
-			expect((init as RequestInit).headers).toMatchObject({ Authorization: 'Bearer tok' });
+			expect(new Headers((init as RequestInit).headers).get('Authorization')).toBe('Bearer tok');
 		} finally {
 			vi.unstubAllGlobals();
 			localStorage.removeItem('switchframe_operator_token');
