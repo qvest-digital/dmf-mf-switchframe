@@ -429,7 +429,7 @@ func (a *App) initPrismServer() error {
 			// A recording download is a browser navigation, which carries no
 			// bearer token; a ticket issued over the API stands in for it.
 			apiHandler = a.api.DownloadTicketMiddleware(apiHandler, unauthenticated)
-			apiHandler = control.MetricsMiddleware(apiHandler)
+			apiHandler = control.RouteMetricsMiddleware(apiSubMux)(apiHandler)
 			apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
 			apiHandler = control.CORSMiddleware(a.cfg.AllowedOrigins)(apiHandler)
 			apiHandler = control.SecurityHeadersMiddleware(apiHandler)

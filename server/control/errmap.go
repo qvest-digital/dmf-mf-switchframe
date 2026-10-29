@@ -71,6 +71,8 @@ var errorMappings = []errorMapping{
 	{graphics.ErrNotActive, http.StatusConflict},
 	{graphics.ErrFadeActive, http.StatusConflict},
 	{graphics.ErrTooManyLayers, http.StatusConflict},
+	{graphics.ErrLayerExists, http.StatusConflict},
+	{graphics.ErrInvalidLayerID, http.StatusBadRequest},
 	{graphics.ErrTextAnimActive, http.StatusConflict},
 	{graphics.ErrTickerActive, http.StatusConflict},
 	{graphics.ErrSequenceProcessing, http.StatusConflict},
@@ -176,6 +178,8 @@ var errorMappings = []errorMapping{
 	{playout.ErrPodNoDumpOut, http.StatusForbidden},
 	{playout.ErrPodNotActive, http.StatusBadRequest},
 	{playout.ErrNoPodBoard, http.StatusNotImplemented},
+	{playout.ErrPodExists, http.StatusConflict},
+	{playout.ErrInvalidPodID, http.StatusBadRequest},
 
 	// Comms
 	{comms.ErrNotInComms, http.StatusNotFound},
