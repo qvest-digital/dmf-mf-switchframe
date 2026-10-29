@@ -540,7 +540,12 @@ func (c *Channel) Previous() error {
 		return ErrNotOnAir
 	}
 	c.mu.Unlock()
-	return c.scheduler.Previous()
+	if err := c.scheduler.Previous(); err != nil {
+		return err
+	}
+	// The item airs on the next tick; its source may not have been armed.
+	c.prepareLiveSources()
+	return nil
 }
 
 // JumpTo finds the item with the given ID and moves the cursor to it. On
@@ -550,7 +555,13 @@ func (c *Channel) JumpTo(itemID string) error {
 	c.mu.Lock()
 	if c.state == StateOnAir {
 		c.mu.Unlock()
-		return c.scheduler.JumpTo(itemID)
+		if err := c.scheduler.JumpTo(itemID); err != nil {
+			return err
+		}
+		// The item airs on the next tick; unless it was the one after the
+		// cursor, nothing has armed its source.
+		c.prepareLiveSources()
+		return nil
 	}
 	if err := c.scheduler.Cue(itemID); err != nil {
 		c.mu.Unlock()
@@ -1959,12 +1970,24 @@ func (c *Channel) tapLiveSource(sourceKey string) *DecodedFrame {
 		}
 	}
 
-	// Log once when the tap fails so operators know the source is misconfigured.
-	c.logLiveTapMissOnce(sourceKey)
+	// Log once when the tap fails so operators know the source is
+	// misconfigured. A tap that starts copying a source when its item is
+	// armed has no picture until the source's next one arrives, which is
+	// no reason to report the source as missing.
+	c.mu.Lock()
+	onAirFor := time.Since(c.itemStartTime)
+	c.mu.Unlock()
+	if onAirFor >= liveTapGrace {
+		c.logLiveTapMissOnce(sourceKey)
+	}
 
 	// Fallback: return idle frame.
 	return c.idleLoop.NextFrame()
 }
+
+// liveTapGrace is how long a live item may be on air without a picture of
+// its source before the channel reports the source as not available.
+const liveTapGrace = time.Second
 
 // logLiveTapMissOnce logs a warning the first time a live source tap fails per item.
 // Prevents log spam (one warning per source per item change).
