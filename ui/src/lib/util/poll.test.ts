@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { poll } from './poll';
-import { tokenRefusedBy, tokenReplaced } from '$lib/api/auth-gate';
+import { tokenRefusedBy, tokenReplaced, tokenWaiterCount } from '$lib/api/auth-gate';
 
 describe('poll', () => {
 	beforeEach(() => {
@@ -65,6 +65,39 @@ describe('poll', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(task).toHaveBeenCalledTimes(2);
 		stop();
+	});
+
+	it('lets go of a stopped poll that waits for a token', async () => {
+		tokenRefusedBy('https://engine.example', ['https://engine.example']);
+		const stops = Array.from({ length: 3 }, () => poll(async () => {}, 1000));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(tokenWaiterCount()).toBe(3);
+
+		for (const stop of stops) stop();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(tokenWaiterCount()).toBe(0);
+	});
+
+	// A request that never answers held the panel still until the browser
+	// gave up on it.
+	it('aborts a run that hangs and counts it as failed', async () => {
+		const signals: AbortSignal[] = [];
+		const task = vi.fn((signal: AbortSignal) => {
+			signals.push(signal);
+			return new Promise<void>(() => {});
+		});
+		const stop = poll(task, 1000, { timeoutMs: 3000 });
+
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(signals[0].aborted).toBe(true);
+		// Next run after the doubled wait.
+		await vi.advanceTimersByTimeAsync(1999);
+		expect(task).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(task).toHaveBeenCalledTimes(2);
+		stop();
+		expect(signals[1].aborted).toBe(true);
 	});
 
 	it('runs nothing after stop', async () => {

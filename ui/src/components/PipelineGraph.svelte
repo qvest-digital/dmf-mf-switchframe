@@ -41,17 +41,13 @@
 	let containerWidth = $state(0);
 	let containerHeight = $state(0);
 
-	let abortController: AbortController | undefined;
-
 	// --- Polling ---
 	// A failed engine read still rebuilds the graph from the browser side,
 	// then throws so the poll backs off.
-	async function pollOnce() {
+	async function pollOnce(signal: AbortSignal) {
 		let perfError: unknown = null;
 		try {
-			abortController?.abort();
-			abortController = new AbortController();
-			perfData = await getPerfData({ signal: abortController.signal });
+			perfData = await getPerfData({ signal });
 		} catch (e) {
 			perfError = e;
 		}
@@ -93,11 +89,7 @@
 		perfData = null;
 		browserDiag = null;
 		selectedNode = null;
-		const stop = poll(pollOnce, 1000);
-		return () => {
-			stop();
-			abortController?.abort();
-		};
+		return poll(pollOnce, 1000);
 	});
 
 	// --- Escape key handler ---

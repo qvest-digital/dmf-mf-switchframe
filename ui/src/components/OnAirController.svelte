@@ -310,8 +310,8 @@
 	$effect(() => {
 		if (routingOverlayVisible) return; // overlay does its own polling
 		// A failed read keeps the current count.
-		return poll(async () => {
-			const res = await engineFetch(resolveApiUrl('/api/pipeline/snapshot'), { headers: authHeaders() });
+		return poll(async (signal) => {
+			const res = await engineFetch(resolveApiUrl('/api/pipeline/snapshot'), { headers: authHeaders(), signal });
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const data = await res.json();
 			bypassCount = data.bypassCount ?? 0;

@@ -404,7 +404,6 @@
 
 	// --- State ---
 	let snapshot = $state<DebugSnapshot | null>(null);
-	let abortController: AbortController | undefined;
 	let nodeHistory = $state<Map<string, number[]>>(new Map());
 	let lastUpdateTime = $state(0);
 
@@ -451,10 +450,8 @@
 
 	// --- Polling ---
 	// An engine read that fails throws, so the poll backs off.
-	async function pollDebug() {
-		abortController?.abort();
-		abortController = new AbortController();
-		snapshot = await getDebugSnapshot({ signal: abortController.signal });
+	async function pollDebug(signal: AbortSignal) {
+		snapshot = await getDebugSnapshot({ signal });
 		lastUpdateTime = Date.now();
 		recordHistory();
 	}
@@ -472,12 +469,10 @@
 		nodeHistory = updated;
 	}
 
-	async function pollPerf() {
-		abortController?.abort();
-		abortController = new AbortController();
+	async function pollPerf(signal: AbortSignal) {
 		perfData = await getPerfData({
 			baseline: activeBaseline || undefined,
-			signal: abortController.signal,
+			signal,
 		}) as unknown as PerfSnapshot;
 		lastUpdateTime = Date.now();
 	}
@@ -502,10 +497,7 @@
 		} else {
 			stop = poll(pollBrowser, POLL_INTERVAL_MS);
 		}
-		return () => {
-			stop();
-			abortController?.abort();
-		};
+		return stop;
 	});
 
 	// --- Helpers ---

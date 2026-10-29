@@ -385,8 +385,8 @@
 		switch (e.code) {
 			case 'KeyR':
 				e.preventDefault();
-				fetchSnapshot();
-				fetchThumbnails();
+				fetchSnapshot().catch(() => {});
+				fetchThumbnails().catch(() => {});
 				break;
 		}
 	}
@@ -408,8 +408,8 @@
 
 	// Each read throws when the engine does not answer, so the poll backs
 	// off; the overlay keeps the data it last had.
-	async function fetchSnapshot() {
-		const res = await engineFetch(resolveApiUrl('/api/pipeline/snapshot'), { headers: authHeaders() });
+	async function fetchSnapshot(signal?: AbortSignal) {
+		const res = await engineFetch(resolveApiUrl('/api/pipeline/snapshot'), { headers: authHeaders(), signal });
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		const data = await res.json();
 		if (data.nodes) {
@@ -424,9 +424,9 @@
 		if (data.connections) edges = data.connections;
 	}
 
-	async function fetchThumbnails() {
+	async function fetchThumbnails(signal?: AbortSignal) {
 		try {
-			const res = await engineFetch(resolveApiUrl('/api/pipeline/thumbnails'), { headers: authHeaders() });
+			const res = await engineFetch(resolveApiUrl('/api/pipeline/thumbnails'), { headers: authHeaders(), signal });
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const data = await res.json();
 			const apiNodes = data.nodes ?? {};
@@ -472,11 +472,13 @@
 
 	$effect(() => {
 		if (!visible) return;
-		return poll(async () => {
-			const [snapshot, thumbs] = await Promise.allSettled([fetchSnapshot(), fetchThumbnails()]);
-			if (snapshot.status === 'rejected') throw snapshot.reason;
-			if (thumbs.status === 'rejected') throw thumbs.reason;
-		}, 1000);
+		// Polled apart, so a failing thumbnail endpoint does not slow the snapshot.
+		const stopSnapshot = poll(fetchSnapshot, 1000);
+		const stopThumbnails = poll(fetchThumbnails, 1000);
+		return () => {
+			stopSnapshot();
+			stopThumbnails();
+		};
 	});
 </script>
 

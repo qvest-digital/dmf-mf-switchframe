@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { playoutClips, operatorHeartbeat, setAuthToken } from './switch-api';
+import { playoutClips, operatorHeartbeat, setAuthToken, engineFetch, authHeaders } from './switch-api';
 import { setEngineUrls } from './base-url';
-import { isTokenRefused, setTokenRefusedHandler, tokenReplaced } from './auth-gate';
+import { isTokenRefused, setTokenAcceptedHandler, setTokenRefusedHandler, tokenReplaced } from './auth-gate';
 
 const A = 'https://engine-a.example';
 const B = 'https://engine-b.example';
@@ -72,6 +72,60 @@ describe('refused token', () => {
 		await expect(playoutClips()).resolves.toEqual([]);
 		expect(fetchMock).toHaveBeenCalledTimes(3);
 		expect(fetchMock.mock.calls[2][1]?.headers).toMatchObject({ Authorization: 'Bearer fresh-sign-in' });
+	});
+
+	// Requests still in flight with the old token answer 401 after a new
+	// token was set; counting them closed the gate on a token no engine had
+	// seen, behind a sign-in prompt nothing took down.
+	it('ignores a 401 for a token that has since been replaced', async () => {
+		const pending: { auth: string | null; resolve: (r: Response) => void }[] = [];
+		vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((resolve) => {
+			pending.push({ auth: new Headers(init?.headers).get('Authorization'), resolve });
+		})));
+		const reqs = [A, B, A, B].map((e) => engineFetch(`${e}/api/perf`, { headers: authHeaders() }));
+		pending[0].resolve(respond(401));
+		pending[1].resolve(respond(401));
+		await Promise.all([reqs[0], reqs[1]]);
+		expect(isTokenRefused()).toBe(true);
+
+		setAuthToken('new-valid');
+		pending[2].resolve(respond(401));
+		pending[3].resolve(respond(401));
+		await Promise.all([reqs[2], reqs[3]]);
+
+		expect(pending.slice(2).map((p) => p.auth)).toEqual(['Bearer expired-sign-in', 'Bearer expired-sign-in']);
+		expect(isTokenRefused()).toBe(false);
+		void engineFetch(`${A}/api/perf`, { headers: authHeaders() });
+		expect(pending).toHaveLength(5);
+		expect(pending[4].auth).toBe('Bearer new-valid');
+	});
+
+	// A renewal by the refresh timer after the prompt went up left the
+	// prompt over a working token.
+	it('tells the page when a new token opens the gate', async () => {
+		vi.stubGlobal('fetch', vi.fn(async () => respond(401)));
+		const accepted = vi.fn();
+		setTokenAcceptedHandler(accepted);
+		await expect(playoutClips()).rejects.toMatchObject({ status: 401 });
+		expect(accepted).not.toHaveBeenCalled();
+
+		setAuthToken('renewed-by-timer');
+
+		expect(accepted).toHaveBeenCalledTimes(1);
+		setTokenAcceptedHandler(null);
+	});
+
+	it('opens when another tab stores a new token', async () => {
+		vi.stubGlobal('fetch', vi.fn(async () => respond(401)));
+		await expect(playoutClips()).rejects.toMatchObject({ status: 401 });
+		expect(isTokenRefused()).toBe(true);
+
+		localStorage.setItem('switchframe_operator_token', 'other-tab-sign-in');
+		window.dispatchEvent(new StorageEvent('storage', {
+			key: 'switchframe_operator_token', oldValue: 'expired-sign-in', newValue: 'other-tab-sign-in',
+		}));
+
+		expect(isTokenRefused()).toBe(false);
 	});
 
 	// The heartbeat's 401 means the engines no longer know the operator,

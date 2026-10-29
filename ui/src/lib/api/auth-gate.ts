@@ -9,6 +9,7 @@
 let refused = false;
 const refusedBy = new Set<string>();
 let refusedHandler: (() => void) | null = null;
+let acceptedHandler: (() => void) | null = null;
 let waiters: (() => void)[] = [];
 
 export function isTokenRefused(): boolean {
@@ -40,14 +41,36 @@ export function tokenReplaced(): void {
 	const resume = waiters;
 	waiters = [];
 	for (const w of resume) w();
+	acceptedHandler?.();
 }
 
-/** Resolves once the gate is open. */
-export function whenTokenAccepted(): Promise<void> {
-	if (!refused) return Promise.resolve();
-	return new Promise((resolve) => waiters.push(resolve));
+/**
+ * Resolves once the gate is open, or when signal aborts, which also drops
+ * the waiter so a stopped poll is not held until the next token.
+ */
+export function whenTokenAccepted(signal?: AbortSignal): Promise<void> {
+	if (!refused || signal?.aborted) return Promise.resolve();
+	return new Promise((resolve) => {
+		const done = () => {
+			waiters = waiters.filter((w) => w !== done);
+			signal?.removeEventListener('abort', done);
+			resolve();
+		};
+		waiters.push(done);
+		signal?.addEventListener('abort', done);
+	});
+}
+
+/** Number of callers waiting for the gate to open. */
+export function tokenWaiterCount(): number {
+	return waiters.length;
 }
 
 export function setTokenRefusedHandler(handler: (() => void) | null): void {
 	refusedHandler = handler;
+}
+
+/** Runs each time a new token opens a closed gate. */
+export function setTokenAcceptedHandler(handler: (() => void) | null): void {
+	acceptedHandler = handler;
 }

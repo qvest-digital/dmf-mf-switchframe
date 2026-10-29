@@ -64,54 +64,34 @@
 		if (!pollVisible) return;
 		if (!connectedA) return;
 
-		const abort = new AbortController();
-		let cancelled = false;
-
-		// Throws when an engine did not answer, so the poll backs off.
-		async function fetchThumbnails() {
-			if (cancelled) return;
-			let failed = false;
-
-			// Engine A: same origin
-			try {
-				const res = await engineFetch('/api/output/confidence', {
-					headers: authHeaders(),
-					signal: abort.signal,
-				});
-				if (!res.ok) failed = true;
-				else if (!cancelled) {
-					const blob = await res.blob();
-					const oldUrl = thumbUrlA;
-					thumbUrlA = URL.createObjectURL(blob);
-					if (oldUrl) URL.revokeObjectURL(oldUrl);
-				}
-			} catch { failed = true; }
-
-			// Engine B: different origin
-			if (pollEngineBUrl && connectedB) {
-				try {
-					const res = await engineFetch(`${pollEngineBUrl}/api/output/confidence`, {
-						headers: authHeaders(),
-						signal: abort.signal,
-					});
-					if (!res.ok) failed = true;
-					else if (!cancelled) {
-						const blob = await res.blob();
-						const oldUrl = thumbUrlB;
-						thumbUrlB = URL.createObjectURL(blob);
-						if (oldUrl) URL.revokeObjectURL(oldUrl);
-					}
-				} catch { failed = true; }
-			}
-			if (failed) throw new Error('confidence thumbnail unavailable');
+		// One poll per engine, so an engine that does not answer slows only
+		// its own thumbnail. A failed read throws, so that poll backs off.
+		async function fetchThumbnail(baseUrl: string, signal: AbortSignal): Promise<string> {
+			const res = await engineFetch(`${baseUrl}/api/output/confidence`, { headers: authHeaders(), signal });
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			return URL.createObjectURL(await res.blob());
 		}
 
-		const stop = poll(fetchThumbnails, 1000);
+		// Engine A: same origin
+		const stopA = poll(async (signal) => {
+			const next = await fetchThumbnail('', signal);
+			if (signal.aborted) { URL.revokeObjectURL(next); return; }
+			if (thumbUrlA) URL.revokeObjectURL(thumbUrlA);
+			thumbUrlA = next;
+		}, 1000);
+		// Engine B: different origin
+		const stopB = pollEngineBUrl && connectedB
+			? poll(async (signal) => {
+				const next = await fetchThumbnail(pollEngineBUrl, signal);
+				if (signal.aborted) { URL.revokeObjectURL(next); return; }
+				if (thumbUrlB) URL.revokeObjectURL(thumbUrlB);
+				thumbUrlB = next;
+			}, 1000)
+			: () => {};
 
 		return () => {
-			cancelled = true;
-			abort.abort();
-			stop();
+			stopA();
+			stopB();
 			if (thumbUrlA) { URL.revokeObjectURL(thumbUrlA); thumbUrlA = ''; }
 			if (thumbUrlB) { URL.revokeObjectURL(thumbUrlB); thumbUrlB = ''; }
 		};

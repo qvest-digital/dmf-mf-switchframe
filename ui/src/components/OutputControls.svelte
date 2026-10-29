@@ -79,15 +79,14 @@
 	$effect(() => {
 		if (!showConfidence) return;
 		const baseUrl = confidenceBaseUrl;
-		const abort = new AbortController();
 		let current: string | null = null;
 
 		// None while the tab is hidden. A failed read keeps the last
 		// thumbnail and throws, so the poll backs off.
-		async function fetchThumb() {
+		async function fetchThumb(signal: AbortSignal) {
 			if (document.hidden) return;
-			const blob = await fetchConfidenceThumbnail(baseUrl, abort.signal);
-			if (blob && !abort.signal.aborted) {
+			const blob = await fetchConfidenceThumbnail(baseUrl, signal);
+			if (blob && !signal.aborted) {
 				const next = URL.createObjectURL(blob);
 				if (current) URL.revokeObjectURL(current);
 				current = next;
@@ -98,7 +97,6 @@
 		const stop = poll(fetchThumb, THUMB_POLL_MS);
 		return () => {
 			stop();
-			abort.abort();
 			if (current) URL.revokeObjectURL(current);
 			thumbUrl = null;
 		};

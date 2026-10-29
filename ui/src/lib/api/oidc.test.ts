@@ -163,6 +163,29 @@ describe('renewLapsedToken', () => {
 	});
 });
 
+describe('refreshToken in flight', () => {
+	// A refused request at page load renews while onMount renews the
+	// lapsed token: two exchanges of one refresh token, the second refused
+	// by a provider that rotates them, which then discarded the first's.
+	it('shares one exchange between callers that overlap', async () => {
+		setAuthToken(jwt(1));
+		localStorage.setItem(REFRESH_KEY, 'rt-1');
+		const fresh = jwt(2_000_000_000);
+		let n = 0;
+		const fetchMock = vi.fn(async () => (++n === 1
+			? jsonResponse(200, { id_token: fresh, refresh_token: 'rt-2' })
+			: jsonResponse(401, { error: 'refresh token reused' })));
+		vi.stubGlobal('fetch', fetchMock);
+
+		const results = await Promise.all([refreshToken(), renewLapsedToken()]);
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(results).toEqual([{ outcome: 'refreshed' }, { outcome: 'refreshed' }]);
+		expect(localStorage.getItem(REFRESH_KEY)).toBe('rt-2');
+		expect(getAuthToken()).toBe(fresh);
+	});
+});
+
 describe('renewRefusedToken', () => {
 	beforeEach(() => {
 		vi.useFakeTimers();

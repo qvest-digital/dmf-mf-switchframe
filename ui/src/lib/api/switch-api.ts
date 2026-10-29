@@ -13,14 +13,24 @@ export class SwitchApiError extends Error {
 	}
 }
 
+const AUTH_TOKEN_KEY = 'switchframe_operator_token';
+
 export function getAuthToken(): string | null {
 	if (typeof localStorage === 'undefined') return null;
-	return localStorage.getItem('switchframe_operator_token');
+	return localStorage.getItem(AUTH_TOKEN_KEY);
+}
+
+// A sign-in in another tab writes the shared token: it may be the one
+// this tab's refused token is waiting for.
+if (typeof window !== 'undefined') {
+	window.addEventListener('storage', (e) => {
+		if (e.key === AUTH_TOKEN_KEY && e.newValue && e.newValue !== e.oldValue) tokenReplaced();
+	});
 }
 
 export function setAuthToken(token: string): void {
 	const previous = getAuthToken();
-	localStorage.setItem('switchframe_operator_token', token);
+	localStorage.setItem(AUTH_TOKEN_KEY, token);
 	if (token !== previous) tokenReplaced();
 }
 
@@ -101,8 +111,11 @@ export async function engineFetch(url: string, init?: RequestInit): Promise<Resp
 			headers: { 'Content-Type': 'application/json' },
 		});
 	}
+	const sent = new Headers(init?.headers).get('Authorization');
 	const res = await fetch(url, init);
-	if (!ownAuth) {
+	// An answer to a token that has since been replaced says nothing about
+	// the current one.
+	if (!ownAuth && sent === (authHeaders().Authorization ?? null)) {
 		if (res.status === 401) tokenRefusedBy(originOf(url), engineOrigins());
 		else if (res.ok) tokenAcceptedBy(originOf(url));
 	}

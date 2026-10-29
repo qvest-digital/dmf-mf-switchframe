@@ -59,7 +59,7 @@
 	import { CaptionRenderer } from '$lib/prism/captions';
 	import type { ControlRoomState, Macro } from '$lib/api/types';
 	import { fetchOIDCConfig, consumeSignInFragment, signIn, signOut, isSignedIn, renewLapsedToken, renewRefusedToken, startTokenRefresh, clearRefreshToken, type OIDCConfig } from '$lib/api/oidc';
-	import { setTokenRefusedHandler } from '$lib/api/auth-gate';
+	import { setTokenRefusedHandler, setTokenAcceptedHandler, tokenReplaced } from '$lib/api/auth-gate';
 
 	// Extract token from URL fragment BEFORE any connections are created.
 	// Must run at module level, not in onMount, to avoid race conditions
@@ -1565,6 +1565,8 @@
 		clearRefreshToken();
 		signedIn = false;
 		setAuthToken(tokenInput.trim());
+		// The same token pasted again, after the engine was fixed, is a retry.
+		tokenReplaced();
 		tokenRequired = false;
 		connectionError = null;
 		initialLoading = true;
@@ -1583,6 +1585,13 @@
 		signInMessage = result.message;
 		tokenRequired = true;
 		initialLoading = false;
+	});
+	// A new token from anywhere (the refresh timer, another tab, a renewal)
+	// takes the prompt down.
+	setTokenAcceptedHandler(() => {
+		tokenRequired = false;
+		signedIn = isSignedIn();
+		signInMessage = null;
 	});
 
 	onMount(async () => {
@@ -1679,6 +1688,7 @@
 		operatorState.destroy();
 		stopTokenRefresh?.();
 		setTokenRefusedHandler(null);
+		setTokenAcceptedHandler(null);
 		setEngineUrls(null);
 		setDualTimestampProvider(null);
 		setPartialFailureCallback(null);

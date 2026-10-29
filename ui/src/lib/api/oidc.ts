@@ -101,12 +101,21 @@ export type RefreshResult =
 	/** No engine answered. */
 	| { outcome: 'unreachable' };
 
+let refreshInFlight: Promise<RefreshResult> | null = null;
+
 /**
  * Exchanges the stored refresh token for a new ID token at the page's
  * engine, then at the peer: while Engine A is down, Engine B keeps the
- * session alive.
+ * session alive. Callers that overlap share one exchange: a provider that
+ * refuses a reused refresh token would otherwise refuse the second, and
+ * its caller would discard the token the first one stored.
  */
-export async function refreshToken(): Promise<RefreshResult> {
+export function refreshToken(): Promise<RefreshResult> {
+	refreshInFlight ??= exchangeRefreshToken().finally(() => { refreshInFlight = null; });
+	return refreshInFlight;
+}
+
+async function exchangeRefreshToken(): Promise<RefreshResult> {
 	const refresh = localStorage.getItem(REFRESH_KEY);
 	if (!refresh) return { outcome: 'rejected' };
 
