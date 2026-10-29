@@ -281,3 +281,68 @@ func slowRender(calls *int, first time.Duration) RenderFunc {
 		return true
 	}
 }
+
+// Once the final frame is handed to the render goroutine the engine is
+// idle, but the switcher's cut and abort still Stop it: a final frame and
+// OnComplete landing after that would flash the old transition and
+// complete whatever the switcher started since. Abort and ForceComplete
+// complete the transition themselves instead.
+func TestRenderFinalFrameStoppedAfterHandOff(t *testing.T) {
+	for _, end := range []string{"stop", "abort", "force"} {
+		started := make(chan struct{}, 1)
+		release := make(chan struct{})
+		var mu sync.Mutex
+		var outputs int
+		var completes []bool
+		e := NewEngine(EngineConfig{
+			Render: func(dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
+				started <- struct{}{}
+				<-release
+				return true
+			},
+			Output: func(yuv []byte, w, h int, pts int64, kf bool) {
+				mu.Lock()
+				outputs++
+				mu.Unlock()
+			},
+			OnComplete: func(aborted bool) {
+				mu.Lock()
+				completes = append(completes, aborted)
+				mu.Unlock()
+			},
+		})
+		require.NoError(t, e.Start("a", "b", Mix, 50))
+		const w, h = 32, 16
+		frame := make([]byte, video.YUV420_8bit.FrameSize(w, h))
+		e.IngestRawFrame("a", frame, w, h, 0)
+		time.Sleep(80 * time.Millisecond) // past the end: the next frame is final
+		e.IngestRawFrame("b", frame, w, h, 1)
+		<-started
+		require.Equal(t, StateIdle, e.State(), "%s: the final frame is handed off", end)
+		e.mu.Lock()
+		r := e.finalRender
+		e.mu.Unlock()
+		require.NotNil(t, r, end)
+		switch end {
+		case "stop":
+			e.Stop()
+		case "abort":
+			e.Abort()
+		case "force":
+			e.ForceComplete()
+		}
+		close(release)
+		require.Eventually(t, func() bool { return !r.running() }, time.Second, time.Millisecond, end)
+		mu.Lock()
+		require.Zero(t, outputs, "%s: the final frame went out after the engine was stopped", end)
+		switch end {
+		case "stop":
+			require.Empty(t, completes, "stop never completes")
+		case "abort":
+			require.Equal(t, []bool{true}, completes)
+		case "force":
+			require.Equal(t, []bool{false}, completes)
+		}
+		mu.Unlock()
+	}
+}

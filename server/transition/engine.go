@@ -197,6 +197,8 @@ type Engine struct {
 	rawBlender *FrameBlender
 
 	render       *asyncRender // draws config.Render frames, nil until the first; under mu
+	finalRender  *asyncRender // render finishing the transition after its final frame; under mu
+	keepFinal    bool         // the next cleanup hands over to finalRender instead of stopping it
 	overrunNoted atomic.Bool  // a Render overrun has been logged for this engine
 
 	// Reusable scratch buffers for BlendRawInto mismatched-resolution paths.
@@ -998,11 +1000,23 @@ func (e *Engine) submitRender(yuvA, yuvB []byte, pos float64, pts int64) {
 	e.render.submit(yuvA, yuvB, e.width, e.height, f, pos, pts, isKF, final)
 	if final {
 		e.log.Info("auto-complete", "type", e.transitionType)
-		// The goroutine finishes the transition; cleanup must not stop it.
-		e.render = nil
+		// The goroutine outputs the final frame and calls OnComplete. The
+		// cleanup handing it over must not stop it; Stop, Abort and
+		// ForceComplete after it must, or the late frame and OnComplete
+		// land on whatever the switcher did since.
+		e.finalRender, e.render = e.render, nil
+		e.keepFinal = true
 		e.cleanup()
 	}
 	e.mu.Unlock()
+}
+
+// takeFinal stops a render still finishing the transition and reports
+// whether its OnComplete is now the caller's to call. Caller holds e.mu.
+func (e *Engine) takeFinal() bool {
+	r := e.finalRender
+	e.finalRender = nil
+	return r != nil && r.shutdown()
 }
 
 // timedRender calls config.Render and logs the first call of the engine
@@ -1049,7 +1063,13 @@ func (e *Engine) WarmupDecode(sourceKey string, wireData []byte) {
 func (e *Engine) ForceComplete() {
 	e.mu.Lock()
 	if e.state != StateActive {
+		// A final frame still drawing is dropped and the transition
+		// completes now.
+		took := e.takeFinal()
 		e.mu.Unlock()
+		if took && e.config.OnComplete != nil {
+			e.config.OnComplete(false)
+		}
 		return
 	}
 	e.log.Info("force-complete (GPU)", "type", e.transitionType)
@@ -1186,11 +1206,18 @@ func (e *Engine) blend10bit(yuvA, yuvB []byte, pos float64) []byte {
 }
 
 // Abort cancels the active transition and invokes OnComplete(aborted=true).
-// Safe to call from any goroutine. Idempotent — calling on an idle engine is a no-op.
+// Safe to call from any goroutine. Idempotent: on an idle engine it is a
+// no-op, unless the final frame of a Render transition is still drawing.
 func (e *Engine) Abort() {
 	e.mu.Lock()
 	if e.state != StateActive {
+		// A final frame still drawing is dropped and the transition ends
+		// aborted rather than completed.
+		took := e.takeFinal()
 		e.mu.Unlock()
+		if took && e.config.OnComplete != nil {
+			e.config.OnComplete(true)
+		}
 		return
 	}
 	e.log.Warn("aborted", "type", e.transitionType, "from", e.fromSource, "to", e.toSource)
@@ -1202,7 +1229,8 @@ func (e *Engine) Abort() {
 	}
 }
 
-// Stop tears down decoders and resets state.
+// Stop tears down decoders and resets state. It never calls OnComplete,
+// also not for a final frame still drawing, which it drops.
 func (e *Engine) Stop() {
 	e.mu.Lock()
 	e.cleanup()
@@ -1603,11 +1631,16 @@ func growCoords(buf []int64, n int) []int64 {
 
 // cleanup releases codec resources and resets state. Caller must hold e.mu.
 func (e *Engine) cleanup() {
-	// Stop the render goroutine, dropping any frame still waiting.
+	// Stop the render goroutines, dropping any frame still waiting. Only
+	// the cleanup submitRender runs to hand over the final frame spares it.
 	if e.render != nil {
 		e.render.shutdown()
 		e.render = nil
 	}
+	if !e.keepFinal {
+		e.takeFinal()
+	}
+	e.keepFinal = false
 
 	// Stop watchdog goroutine (idempotent via sync.Once)
 	if e.watchdogStop != nil {
