@@ -443,9 +443,12 @@ func (m *Manager) LoadURL(browserID int, url string) error {
 
 	prevURL := m.browsers[browserID].URL
 	prevStatus := m.browsers[browserID].Status
+	prevFormat := m.browsers[browserID].Format
 
+	// A new page reports its format afresh, and its data is replayed then.
 	m.browsers[browserID].URL = url
 	m.browsers[browserID].Status = "loading"
+	m.browsers[browserID].Format = ""
 
 	m.notifyStateChange()
 
@@ -457,6 +460,7 @@ func (m *Manager) LoadURL(browserID int, url string) error {
 		// Roll back state on send failure.
 		m.browsers[browserID].URL = prevURL
 		m.browsers[browserID].Status = prevStatus
+		m.browsers[browserID].Format = prevFormat
 		m.notifyStateChange()
 		return err
 	}
@@ -777,12 +781,16 @@ func (m *Manager) controlReadLoop(gen int64) {
 			bs := m.browsers[resp.ID]
 			switch resp.Event {
 			case "format_detected":
-				bs.Format = resp.Format
-				bs.Status = "ready"
 				// Data sent with or right after a load reaches the page
 				// before its adapter exists and is dropped there, so the
-				// last data is sent again once the adapter reports in.
-				if bs.LastData != "" {
+				// last data is sent again once the adapter reports a
+				// format. The sidecar reports "unknown" until a graphic
+				// that loads slowly is ready, and may report the same
+				// format again: neither is a page that can take data.
+				replay := resp.Format != bs.Format && resp.Format != "" && resp.Format != "unknown"
+				bs.Format = resp.Format
+				bs.Status = "ready"
+				if replay && bs.LastData != "" {
 					if err := m.sendCommand(ControlCommand{
 						Cmd:  "update",
 						ID:   intPtrHelper(resp.ID),

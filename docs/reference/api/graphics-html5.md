@@ -30,7 +30,7 @@
 
 The `url` must be `https`, or a `file` URL below the templates directory (`--cef-templates-dir`) after symlinks are resolved; anything else, plain `http` included, is refused with 400 before a browser is allocated. The sidecar is an unsandboxed Chromium whose pixels go to program, so a `file` URL elsewhere would put a mounted secret on air and an `http` URL reaches cluster-internal services. The sidecar holds every navigation and resource load of its browsers to the same rule, redirects and frames included, so a template's own script cannot reach past it either; it also lets through `wss`, and `data`, `blob`, `about:blank` and `about:srcdoc`, which carry content the page already holds.
 
-The `data` field is forwarded to the sidecar which passes it to the template via the OGraf adapter, and sent again once the sidecar reports the page's format: data sent with a load reaches the page before its adapter exists. See [html5-graphics.md](../../integration/cef-protocol.md).
+The `data` field is forwarded to the sidecar which passes it to the template via the OGraf adapter, and sent again once the sidecar first reports a format other than `unknown` for the page: data sent with a load reaches the page before its adapter exists. See [html5-graphics.md](../../integration/cef-protocol.md).
 
 An OGraf graphic published as a manifest and a module, with no page of its own, is loaded through the `ograf-host` template: its URL with `?manifest=<https manifest URL>` appended. The host page fetches the manifest, imports its `main` module relative to it, both over `https` only, and loads the graphic in real-time mode.
 

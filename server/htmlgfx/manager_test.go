@@ -844,6 +844,58 @@ func TestManagerReplaysLastDataOnFormatDetected(t *testing.T) {
 	}
 }
 
+// Events are handled in order, so waiting for the status the last one sets
+// waits for every event before it.
+func sendEvents(t *testing.T, mock *mockSidecar, id int, events ...ControlResponse) {
+	t.Helper()
+	for _, e := range events {
+		e.ID = id
+		if err := mock.sendResponse(e); err != nil {
+			t.Fatalf("sendResponse: %v", err)
+		}
+	}
+}
+
+func countUpdates(cmds []ControlCommand) int {
+	n := 0
+	for _, c := range cmds {
+		if c.Cmd == "update" {
+			n++
+		}
+	}
+	return n
+}
+
+// The sidecar reports "unknown" while a slow graphic loads, once per check,
+// and can report the same format twice. Only the change to a format a page
+// takes data in is the adapter reporting in; an update per report would send
+// the operator's data to a page that drops it, then again to one that has
+// it already.
+func TestManagerReplaysDataOnceWhenFormatBecomesKnown(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mock.close()
+	defer func() { _ = mgr.Close() }()
+
+	id, err := mgr.AllocateBrowser(0)
+	require.NoError(t, err)
+	require.NoError(t, mgr.LoadURL(id, "https://templates.test/ograf-host.html"))
+	require.NoError(t, mgr.Update(id, `{"name":"Alice"}`))
+	require.Len(t, mock.waitForCommands(3, 2*time.Second), 3)
+
+	unknown := ControlResponse{Event: "format_detected", Format: "unknown"}
+	ograf := ControlResponse{Event: "format_detected", Format: "ograf"}
+	sendEvents(t, mock, id, unknown, unknown, unknown, ograf, ograf, ControlResponse{Event: "stopped"})
+	waitForStatus(t, mgr, id, "stopped", 2*time.Second)
+
+	require.Equal(t, 2, countUpdates(mock.getCommands()), "the operator's update and one replay")
+
+	// A new page in the slot reports its format afresh and gets the data.
+	require.NoError(t, mgr.LoadURL(id, "https://templates.test/other.html"))
+	sendEvents(t, mock, id, ograf, ControlResponse{Event: "stopped"})
+	waitForStatus(t, mgr, id, "stopped", 2*time.Second)
+	require.Equal(t, 3, countUpdates(mock.getCommands()))
+}
+
 // A page with no data yet gets no empty update.
 func TestManagerFormatDetectedWithoutDataSendsNothing(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
