@@ -23,9 +23,12 @@
   "programSource": "cam-1",
   "lastCommandSeq": 1729,
   "engineLabel": "a",
-  "epoch": 17
+  "epoch": 17,
+  "sending": ["0a1b2c3d"]
 }
 ```
+
+`sending` lists the output destinations this engine sends, of those one engine of a pair sends; the other engine reads it for [failover](../../subsystems/output.md#dual-engine-failover).
 
 **Errors:** none. Defensive nil guards keep this endpoint from DoSing on refactor breakage.
 

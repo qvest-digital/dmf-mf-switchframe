@@ -64,7 +64,7 @@ The muxer also maintains a small `pendingIDRSCTE35` queue. Calls to `WriteSCTE35
 
 Each destination has a config (`DestinationConfig` — type, address/port or URL, latency, encryption, per-destination `MaxBW`, `SCTE35Enabled`, optional `Engine` label for multi-engine redundancy) and a runtime `Destination` struct with its own lock, its own adapter, an optional `AsyncAdapter` wrapper, and a `status()` method that reports live bytes-written, state, dropped packets, and overflow count. See [`destination.go`](../../server/output/destination.go).
 
-`AddDestination()` validates and creates the Destination but does not start it — the operator explicitly calls `StartDestination()`. This mirrors the UI: you configure a bunch of destinations in advance, then arm them one at a time. `ReassignDestinationEngine()` lets you move a destination between engines A and B at runtime without deleting the config. The `Engine` field gates whether a given engine actually opens the connection — when a destination is pinned to engine B, engine A refuses to start it with `ErrDestinationWrongEngine`.
+`AddDestination()` validates and creates a Destination but does not start it; the operator calls `StartDestination()` to arm it. In a pair of engines both store one destination under one ID (the UI sends the ID, `AddDestinationWithID()`), and the `Engine` field names the one that sends it: engine A unless the create says otherwise. The other engine holds it armed on standby and reports state `standby`. `ReassignDestinationEngine()`, sent to both engines, moves the sender: the old one stops its adapter and stands by, the new one starts it. An `srt-listener` has no standby: each engine listens on its own address and a receiver picks one. See [Dual-engine failover](#dual-engine-failover).
 
 ### CBR pacing
 
@@ -103,6 +103,16 @@ Before the direct-write hot path, the manager used a [`Viewer`](../../server/out
 ### SCTE-35 packet filtering
 
 [`scte35Filter`](../../server/output/scte35_filter.go) wraps an `Adapter` and strips TS packets matching the configured SCTE-35 PID before forwarding. It's used when a destination has `SCTE35Enabled: false` — for example, a YouTube RTMP relay doesn't want splice cues. The filter has a fast path that scans for a PID match without allocating (SCTE-35 packets are rare) and only copies when it has to strip. See [scte35.md](./scte35.md) for how cues get into the TS in the first place.
+
+### Dual-engine failover
+
+`ReconcileDestinations()` runs every second on an engine with an engine label and a peer, from the peer's last health poll (`/api/peer/health` lists in `sending` the destinations the peer sends):
+
+- The standby takes over an armed RTMP, RTMPS or SRT caller destination once the peer has failed the peer-health failure threshold of polls (3 polls 5s apart by default, so 10-15s after the peer stops answering), or when the peer answers but has not sent it for that long, as after a restart that lost its state. It then names itself the sender.
+- An engine that comes back takes the destinations over from the peer's state snapshot at startup, under the same IDs and with the peer's sender, so it stays on standby. A destination it names itself the sender of, as one `--outputs-config` declares, waits for the first peer poll and goes to the peer if the peer sends it.
+- Engines that cannot reach each other while both run both send: each sees the other down. When they reach each other again the leader keeps sending and the other stands by.
+
+Destinations live in memory only; an engine restarted while its peer is down comes back without the destinations created over the API.
 
 ### Engine lifecycle and lip-sync
 
