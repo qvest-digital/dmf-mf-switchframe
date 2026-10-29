@@ -1779,7 +1779,7 @@ func (a *App) initAPI() error {
 		apiOpts = append(apiOpts, control.WithRecordingDir(a.startupRecordingDir))
 	}
 	if dir := a.outputMgr.RecordingArchiveDir(); dir != "" {
-		apiOpts = append(apiOpts, control.WithRecordingArchiveDir(dir))
+		apiOpts = append(apiOpts, control.WithRecordingArchiveDir(a.cfg.RecordingArchiveDir, dir))
 	}
 	if a.scte35Injector != nil {
 		apiOpts = append(apiOpts, control.WithSCTE35(a.scte35Injector, a.scte35Rules))
