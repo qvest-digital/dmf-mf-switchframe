@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/zsiec/switchframe/server/internal/video"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // A program counts as stalled once no frame has entered the pipeline for
@@ -53,6 +54,7 @@ type programStall struct {
 	// so holding a reference costs that copy and keeps these pixels intact.
 	held      *ProcessingFrame
 	heldEpoch uint64
+	heldAt    time.Time
 	stalled   bool
 	// blackAfter is how long a stall shows the held frame before black;
 	// sourceLossTimeout when zero.
@@ -77,6 +79,7 @@ func (st *programStall) noteFrame(pf *ProcessingFrame, sourceKey string, epoch u
 		keep.Ref()
 		st.held = &keep
 		st.heldEpoch = epoch
+		st.heldAt = now
 	}
 	resumed = st.stalled
 	st.stalled = false
@@ -159,8 +162,14 @@ func (s *Switcher) programStallLoop(stop <-chan struct{}) {
 // long to sleep until the next decision.
 func (s *Switcher) fillStep(now time.Time, period time.Duration, seenEpoch *uint64, epochSince *time.Time) time.Duration {
 	hs := s.hotState.Load()
-	if s.useRefClock.Load() || !hs.wallClockVideoEnabled || s.pipeline.Load() == nil ||
-		hs.state.isInTransition() || (hs.programSource == "" && hs.state != StateFTB) {
+	if s.useRefClock.Load() || !hs.wallClockVideoEnabled || s.pipeline.Load() == nil {
+		return period
+	}
+	if hs.state.isInTransition() {
+		s.feedStalledTransition(hs, now, period)
+		return period
+	}
+	if hs.programSource == "" && hs.state != StateFTB {
 		return period
 	}
 
@@ -235,6 +244,71 @@ func (s *Switcher) fillStep(now time.Time, period time.Duration, seenEpoch *uint
 	// Next frame on the grid of the last real one.
 	next := since.Add((elapsed/period + 1) * period)
 	return next.Sub(now)
+}
+
+// feedStalledTransition keeps a CPU transition running when one of its
+// sides has delivered no video to the engine for stallAfter. The engine
+// blends only once it has a frame of the side it leaves, and a mix, dip or
+// wipe only on a frame of the side it goes to, so a stalled side otherwise
+// stops its output and it never completes. A side that has delivered a
+// frame in this transition is blended again with that frame, so a live
+// source slower than stallAfter keeps its picture. A side that has
+// delivered nothing gets a fill once per period: the one it leaves the held
+// program frame (black once blackAfter has passed since the program's last
+// frame), the one it goes to black. The engine's own output then reaches
+// the pipeline as usual. The GPU transition path blends from its own source
+// cache and is left alone.
+func (s *Switcher) feedStalledTransition(hs *hotState, now time.Time, period time.Duration) {
+	engine := hs.transEngine
+	if engine == nil || engine.State() != transition.StateActive {
+		return
+	}
+	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
+		return
+	}
+	// A monotonic 90 kHz clock: the engine orders its output by PTS, and the
+	// processing loop renumbers that output like any program frame.
+	pts := now.UnixNano() * 9 / 100000
+	from, to := engine.FromSource(), engine.ToSource()
+	for _, side := range []string{from, to} {
+		reblended, needFill := engine.ReblendStalled(side, stallAfter(period), pts)
+		switch {
+		case reblended:
+			s.stallTransitionFeeds.Add(1)
+		case needFill:
+			s.feedTransitionSide(engine, side, side == from && side == hs.programSource, now, pts)
+		}
+	}
+}
+
+// feedTransitionSide hands the engine one fill for side: the held program
+// frame when useHeld, one is held for the current epoch and it is younger
+// than blackAfter, else black.
+func (s *Switcher) feedTransitionSide(engine *transition.Engine, side string, useHeld bool, now time.Time, pts int64) {
+	st := &s.stall
+	var frame *ProcessingFrame
+	st.mu.Lock()
+	if useHeld && st.held != nil && st.heldEpoch == s.programEpoch.Load() &&
+		now.Sub(st.heldAt) < st.blackAfterOr(sourceLossTimeout) {
+		keep := *st.held
+		keep.Ref()
+		frame = &keep
+	}
+	st.mu.Unlock()
+	if frame == nil {
+		frame = s.pipelineBlack()
+	}
+	defer frame.ReleaseYUV()
+	s.stallTransitionFeeds.Add(1)
+	engine.IngestFillFrame(side, frame.Data, frame.Width, frame.Height, pts)
+}
+
+// blackAfterOr returns blackAfter, or def when it is not set.
+func (st *programStall) blackAfterOr(def time.Duration) time.Duration {
+	if st.blackAfter == 0 {
+		return def
+	}
+	return st.blackAfter
 }
 
 // pipelineBlack returns a black frame in the pipeline's format and size.
