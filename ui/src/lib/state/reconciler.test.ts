@@ -321,6 +321,31 @@ describe('createReconciler', () => {
 		expect(r.health.divergences.map((d) => d.field)).toEqual(['scte35']);
 	});
 
+	// Both engines run a macro sent to them; each stamps a wait step's start
+	// from its own clock, and the finished run stays in state until
+	// dismissed, so the stamps held the pair out of sync until then.
+	it('does not report macro wait step start times as a divergence', () => {
+		vi.useFakeTimers();
+		const run = (waitStartMs: number) => ({ running: false, macroName: 'm', currentStep: 1, steps: [
+			{ action: 'wait', summary: 'Wait 1.5s', status: 'done', waitMs: 1500, waitStartMs },
+			{ action: 'cut', summary: 'Cut', status: 'done' },
+		] });
+		const r = createReconciler();
+		r.ingest('A', makeState({ macro: run(1_000) as never }));
+		r.ingest('B', makeState({ macro: run(1_020) as never }));
+		vi.advanceTimersByTime(SETTLE_MS);
+		r.tick();
+		expect(r.health.divergences).toEqual([]);
+
+		// A step that fared differently is still a divergence.
+		const failed = run(1_020);
+		failed.steps[1] = { ...failed.steps[1], status: 'failed' };
+		r.ingest('B', makeState({ macro: failed as never }));
+		vi.advanceTimersByTime(SETTLE_MAX_MS);
+		r.tick();
+		expect(r.health.divergences.map((d) => d.field)).toEqual(['macro']);
+	});
+
 	it('reports a difference that outlasts the settle time', () => {
 		vi.useFakeTimers();
 		const r = createReconciler();

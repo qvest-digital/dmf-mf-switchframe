@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State, ClipUploadProgress, ClipUploadStage, ClipPlayerState } from '$lib/api/types';
+import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State, ClipUploadProgress, ClipUploadStage, ClipPlayerState, MacroExecutionState } from '$lib/api/types';
 
 /** Minimum RTT delta (ms) required to switch authority based on RTT alone. Prevents jitter flapping. */
 export const RTT_HYSTERESIS_MS = 100;
@@ -167,9 +167,9 @@ function audioChannelsSettingsEqual(
 /** A divergence field without its live measurements, local timestamps and
  * local history: the limiter's meters, the elapsed and remaining time of
  * active SCTE-35 events and the CBR muxer's running totals change on every
- * state update, SCTE-35 start times come from each engine's own clock, and
- * the SCTE-35 event log is each engine's own; they differ between engines
- * without either being out of step. */
+ * state update, SCTE-35 event and macro wait step start times come from
+ * each engine's own clock, and the SCTE-35 event log is each engine's own;
+ * they differ between engines without either being out of step. */
 function comparableField(field: keyof ControlRoomState, value: unknown): unknown {
 	if (value == null || typeof value !== 'object') return value;
 	if (field === 'limiter') {
@@ -193,6 +193,11 @@ function comparableField(field: keyof ControlRoomState, value: unknown): unknown
 		// good. The events on air are compared instead.
 		const { eventLog: _l, ...rest } = st;
 		return { ...rest, activeEvents };
+	}
+	if (field === 'macro') {
+		// Each engine stamps the start of a wait step from its own clock.
+		const st = value as MacroExecutionState;
+		return { ...st, steps: (st.steps ?? []).map(({ waitStartMs: _w, ...step }) => step) };
 	}
 	return value;
 }
