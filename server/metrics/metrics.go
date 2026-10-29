@@ -20,6 +20,7 @@ func init() {
 	registry.MustRegister(
 		HTTPRequestsTotal,
 		HTTPRequestDuration,
+		HTTPRequestsInFlight,
 	)
 }
 
@@ -34,15 +35,16 @@ func Handler() http.Handler {
 	return promhttp.HandlerFor(registry, promhttp.HandlerOpts{EnableOpenMetrics: true})
 }
 
-// HTTPRequestsTotal counts HTTP requests by method, path pattern, and status code.
+// HTTPRequestsTotal counts HTTP requests by method, path pattern, status
+// code, and caller class.
 var HTTPRequestsTotal = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Namespace: "switchframe",
 		Subsystem: "http",
 		Name:      "requests_total",
-		Help:      "Total HTTP requests by method, path pattern, and status code.",
+		Help:      "Total HTTP requests by method, path pattern, status code, and caller class (token, operator, ticket, invalid, none, exempt, unchecked).",
 	},
-	[]string{"method", "pattern", "status"},
+	[]string{"method", "pattern", "status", "caller"},
 )
 
 // HTTPRequestDuration measures HTTP request latency distribution.
@@ -52,9 +54,20 @@ var HTTPRequestDuration = prometheus.NewHistogramVec(
 		Subsystem: "http",
 		Name:      "request_duration_seconds",
 		Help:      "HTTP request latency distribution.",
-		Buckets:   []float64{.0005, .001, .005, .01, .025, .05, .1, .25, .5},
+		// Up to 30s: uploads, imports and exports run for seconds.
+		Buckets: []float64{.0005, .001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30},
 	},
 	[]string{"method", "pattern"},
+)
+
+// HTTPRequestsInFlight is the number of HTTP requests being served.
+var HTTPRequestsInFlight = prometheus.NewGauge(
+	prometheus.GaugeOpts{
+		Namespace: "switchframe",
+		Subsystem: "http",
+		Name:      "requests_in_flight",
+		Help:      "HTTP requests currently being served.",
+	},
 )
 
 // Metrics holds all Switchframe subsystem Prometheus metrics.
