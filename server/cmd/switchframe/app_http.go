@@ -57,7 +57,7 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	apiHandler = a.authMW(apiHandler)
 	apiHandler = a.api.DownloadTicketMiddleware(apiHandler, unauthenticated)
 	apiHandler = control.RouteMetricsMiddleware(apiMux)(apiHandler)
-	apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
+	apiHandler = control.RouteLoggerMiddleware(slog.Default(), apiMux)(apiHandler)
 	apiHandler = control.CORSMiddleware(a.cfg.AllowedOrigins)(apiHandler)
 
 	// Top-level mux: cert-hash (public) + API routes (authenticated) +

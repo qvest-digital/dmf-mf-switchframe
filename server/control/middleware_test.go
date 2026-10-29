@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -441,48 +442,107 @@ func TestSuccessfulMutationsAllLogged(t *testing.T) {
 	require.Equal(t, 5, bytes.Count(buf.Bytes(), []byte("http request")), "every mutation is an operator action and is logged")
 }
 
+// limiterTestServer wires the logger in front of an API mux the way the app
+// does, with every request refused as an unauthenticated one would be.
+func limiterTestServer(buf *bytes.Buffer, now *time.Time) http.Handler {
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	limiter := newErrorLogLimiter(10*time.Second, func() time.Time { return *now })
+	api := http.NewServeMux()
+	api.HandleFunc("GET /api/playout/clips", func(w http.ResponseWriter, r *http.Request) {})
+	api.HandleFunc("GET /api/clips/{id}", func(w http.ResponseWriter, r *http.Request) {})
+	refuse := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	return loggerMiddleware(logger, api, limiter)(refuse)
+}
+
 func TestRepeatedFailureLoggedOncePerWindow(t *testing.T) {
 	// One stale browser tab retrying a refused token sent 67 requests a
 	// second to each engine; each one was a log line.
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	now := time.Unix(1000, 0)
-	limiter := newErrorLogLimiter(10*time.Second, func() time.Time { return now })
-	handler := loggerMiddleware(logger, limiter)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/missing" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	lines := func() int { return bytes.Count(buf.Bytes(), []byte("http request")) }
+	handler := limiterTestServer(&buf, &now)
+	lines := func() int { return bytes.Count(buf.Bytes(), []byte("msg=\"http request\"")) }
 
 	for range 100 {
 		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/playout/clips", nil))
 		now = now.Add(50 * time.Millisecond) // 5 s in all, inside one window
 	}
 	require.Equal(t, 1, lines(), "identical failures inside one window share one line")
+	require.Contains(t, buf.String(), `route="GET /api/playout/clips"`)
 
 	// A different failure is not hidden behind the first.
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/missing", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/elsewhere", nil))
 	require.Equal(t, 2, lines())
+	require.Contains(t, buf.String(), "route=unknown")
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/api/playout/clips", nil))
 	require.Equal(t, 3, lines(), "the method is part of the key")
 
-	now = now.Add(10 * time.Second)
+	now = now.Add(5 * time.Second)
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/playout/clips", nil))
 	require.Equal(t, 4, lines(), "the next window logs again")
 	require.Contains(t, buf.String(), "suppressed=99", "the line says how many were left out")
 }
 
-func TestErrorLogLimiterBoundsKeys(t *testing.T) {
+// A client walking made-up paths gets one line per window, and the paths
+// are not kept: an unauthenticated client controls them.
+func TestFailuresGroupedByRoute(t *testing.T) {
+	var buf bytes.Buffer
+	now := time.Unix(1000, 0)
+	handler := limiterTestServer(&buf, &now)
+	lines := func() int { return bytes.Count(buf.Bytes(), []byte("msg=\"http request\"")) }
+
+	for i := range 3000 {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/clips/"+strings.Repeat("x", 1000)+strconv.Itoa(i), nil))
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/nothing/"+strconv.Itoa(i), nil))
+	}
+	require.Equal(t, 2, lines(), "one line for the route walked, one for paths matching none")
+	require.Contains(t, buf.String(), `route="GET /api/clips/{id}"`)
+}
+
+// The count of a storm's last window is logged once the window ends, even
+// when the storm has stopped and no request of its own comes after.
+func TestSuppressedCountLoggedAfterStormStops(t *testing.T) {
+	var buf bytes.Buffer
+	now := time.Unix(1000, 0)
+	handler := limiterTestServer(&buf, &now)
+
+	for range 50 {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/playout/clips", nil))
+	}
+	require.NotContains(t, buf.String(), "not logged")
+
+	now = now.Add(11 * time.Second)
+	// Any later request ends the window, here one on another route.
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/elsewhere", nil))
+	require.Contains(t, buf.String(), `msg="http requests not logged" method=GET route="GET /api/playout/clips" status=401 suppressed=49`)
+
+	// Reported once.
+	now = now.Add(11 * time.Second)
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/elsewhere", nil))
+	require.Equal(t, 1, strings.Count(buf.String(), "not logged"))
+}
+
+func TestErrorLogLimiterCapLosesNoCount(t *testing.T) {
 	now := time.Unix(1000, 0)
 	l := newErrorLogLimiter(time.Minute, func() time.Time { return now })
-	for i := range errorLogLimiterMaxKeys * 3 {
-		ok, _ := l.allow(strconv.Itoa(i))
+	storm := errorLogKey{"GET", "GET /api/playout/clips", 401}
+	l.allow(storm)
+	for range 500 {
+		l.allow(storm)
+	}
+	for i := range errorLogLimiterMaxKeys {
+		ok, _ := l.allow(errorLogKey{"GET", strconv.Itoa(i), 404})
 		require.True(t, ok, "a key not seen in this window is logged")
 	}
 	require.LessOrEqual(t, len(l.keys), errorLogLimiterMaxKeys)
+	require.Equal(t, []suppressedRequests{{storm, 500}}, l.expired(), "the cleared storm's count is still reported")
+}
+
+func TestOptionsIsNotARead(t *testing.T) {
+	require.True(t, isRead("GET"))
+	require.True(t, isRead("HEAD"))
+	require.False(t, isRead("OPTIONS"))
 }
 
 // requestsCount reads switchframe_http_requests_total for one label set.
