@@ -2,6 +2,7 @@ package clip
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/internal/metricstest"
@@ -24,4 +25,25 @@ func TestMetricsCollector_Players(t *testing.T) {
 	require.Contains(t, f["switchframe_clip_player_position_ratio"], "1")
 	require.NotContains(t, f["switchframe_clip_player_position_ratio"], "2")
 	require.NotContains(t, f, "switchframe_clip_player_speed", "nothing plays")
+}
+
+// A playing clip reports its speed; one that stops playing drops it.
+func TestMetricsCollector_PlayingSpeed(t *testing.T) {
+	mgr, store, dir := newTestManager(t)
+	defer mgr.Close()
+	c := addTestClip(t, store, dir)
+	require.NoError(t, mgr.Load(1, c.ID))
+	require.NoError(t, mgr.Play(1, 0.25, true)) // slow + loop: stays playing
+
+	col := NewMetricsCollector(mgr)
+	require.Eventually(t, func() bool {
+		return metricstest.Series(t, col)["switchframe_clip_player_state"]["1/playing"] == 1
+	}, 2*time.Second, 10*time.Millisecond)
+	require.Equal(t, map[string]float64{"1": 0.25}, metricstest.Series(t, col)["switchframe_clip_player_speed"])
+
+	require.NoError(t, mgr.Pause(1))
+	require.Eventually(t, func() bool {
+		_, ok := metricstest.Series(t, col)["switchframe_clip_player_speed"]
+		return !ok
+	}, 2*time.Second, 10*time.Millisecond)
 }
