@@ -107,7 +107,7 @@ func TestHandleClipRecordingsIncludesArchive(t *testing.T) {
 	// Archived but not yet removed locally: listed once.
 	require.NoError(t, os.WriteFile(filepath.Join(archive, "program_b_001.ts"), uploadTestTS(t), 0o644))
 
-	api, store := setupLibraryAPI(t, t.TempDir(), WithRecordingDir(recDir), WithRecordingArchiveDir(archive))
+	api, store := setupLibraryAPI(t, t.TempDir(), WithRecordingDir(recDir), WithRecordingArchiveDir(archive, archive))
 
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/api/clips/recordings", nil))
@@ -152,4 +152,39 @@ func TestRecordingDirsCompareAbsolutePaths(t *testing.T) {
 	rec = httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/api/clips/recordings/download?path="+filepath.Join(root, "elsewhere.ts"), nil))
 	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// A booking finds the recordings any engine archived into the library in
+// an earlier run, each under its own label, also when it runs another
+// engine or none: same-second files of two engines are both offered.
+func TestHandleClipRecordingsListsEveryEnginesArchive(t *testing.T) {
+	recDir, root := t.TempDir(), t.TempDir()
+	for _, p := range []string{"a/program_x_001.ts", "b/program_x_001.ts", "program_y_001.ts"} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(root, p)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(root, p), uploadTestTS(t), 0o644))
+	}
+	// This engine's own file, still on its way out of the recording dir.
+	require.NoError(t, os.WriteFile(filepath.Join(recDir, "program_x_001.ts"), uploadTestTS(t), 0o644))
+
+	api, store := setupLibraryAPI(t, t.TempDir(), WithRecordingDir(recDir), WithRecordingArchiveDir(root, filepath.Join(root, "a")))
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/api/clips/recordings", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var list []RecordingFileInfo
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&list))
+	var paths []string
+	for _, f := range list {
+		paths = append(paths, f.Path)
+	}
+	require.ElementsMatch(t, []string{
+		filepath.Join(recDir, "program_x_001.ts"),
+		filepath.Join(root, "b", "program_x_001.ts"),
+		filepath.Join(root, "program_y_001.ts"),
+	}, paths, "the other engine's file and an unlabelled run's file are listed; this engine's archived copy of its local file once")
+
+	body, _ := json.Marshal(map[string]string{"path": filepath.Join(root, "b", "program_x_001.ts")})
+	rec = httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, httptest.NewRequest("POST", "/api/clips/from-recording", bytes.NewReader(body)))
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	require.Len(t, store.List(), 1)
 }

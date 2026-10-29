@@ -68,7 +68,11 @@ func (a *App) initClips() error {
 	previewW, previewH := parsePreviewResolution(a.cfg.PreviewResolution)
 	mgr := clip.NewManager(store, clip.ManagerConfig{
 		DecoderFactoryForCodec: clipDecoderFactory(is10bitPipeline),
-		EncoderFactory:         clipRelayEncoderFactory(previewW, previewH, a.cfg.PreviewBitrate),
+		OutputRate: func() (int, int) {
+			pf := a.sw.PipelineFormat()
+			return pf.FPSNum, pf.FPSDen
+		},
+		EncoderFactory: clipRelayEncoderFactory(previewW, previewH, a.cfg.PreviewBitrate),
 	})
 
 	// PTS anchoring (same pattern as replay).
