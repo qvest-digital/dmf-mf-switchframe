@@ -48,9 +48,22 @@ jobs:
           docker run --rm switchframe-build:test \
             go test -tags mxl -race -count=1 ./mxl/... ./output/...
 
+  # The sidecar's own tests build without CEF; nothing upstream runs them.
+  test-cef-sidecar:
+    if: github.repository == 'qvest-digital/dmf-mf-switchframe'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # ThreadSanitizer, which one of the tests runs under, cannot map its
+      # shadow memory at the runner kernel's default ASLR entropy.
+      - name: Lower mmap randomisation for ThreadSanitizer
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Test the CEF sidecar
+        run: make -C cef-sidecar test
+
   image:
     if: github.repository == 'qvest-digital/dmf-mf-switchframe'
-    needs: test-mxl
+    needs: [test-mxl, test-cef-sidecar]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -77,16 +90,58 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/mxl-v* ]]; then
             echo "version=${GITHUB_REF_NAME#mxl-v}" >> "$GITHUB_OUTPUT"
           fi
-      - name: Build and push
+      # The CPU image is loaded to be smoke tested before anything is pushed;
+      # the CUDA image cannot start without a driver, and the sidecar in it is
+      # the same stage.
+      - name: Build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.mxl
           target: ${{ matrix.target }}
           platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ matrix.target == 'cpu' }}
+          tags: switchframe-mxl:smoke
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,scope=${{ matrix.target }},mode=max
+      # The sidecar has to start, connect and render a template in the image
+      # as shipped: with no display, no extra capabilities and the default
+      # seccomp profile.
+      - name: Smoke test HTML5 graphics
+        if: matrix.target == 'cpu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker image inspect switchframe-mxl:smoke --format 'image size: {{.Size}} bytes'
+          docker run -d --name sf-smoke -p 8081:8081 switchframe-mxl:smoke \
+            --http-fallback --api-token smoke
+          trap 'docker logs sf-smoke 2>&1 | grep -E "htmlgfx|sidecar" || true; docker rm -f sf-smoke >/dev/null' EXIT
+          api() { curl -fsS -H 'Authorization: Bearer smoke' "$@"; }
+          wait_log() {
+            for _ in $(seq 60); do
+              if docker logs sf-smoke 2>&1 | grep -qF "$1"; then return 0; fi
+              sleep 1
+            done
+            echo "not logged within 60s: $1"; docker logs sf-smoke 2>&1 | tail -50; return 1
+          }
+          wait_log 'htmlgfx: sidecar connected'
+          templates=$(api http://localhost:8081/api/graphics/html5/templates)
+          echo "$templates" | jq -e 'length > 0' >/dev/null
+          url=$(echo "$templates" | jq -er '.[] | select(.id == "ograf-lower-third") | .url')
+          layer=$(api -X POST http://localhost:8081/api/graphics | jq -er .id)
+          api -X POST -H 'Content-Type: application/json' -d "{\"url\":\"$url\"}" \
+            "http://localhost:8081/api/graphics/$layer/html5" >/dev/null
+          wait_log 'Format detected: slot=0 format=ograf'
+      - name: Push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.mxl
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: true
           tags: |
             ${{ env.IMAGE }}:${{ steps.tags.outputs.sha }}${{ matrix.suffix }}
             ${{ steps.tags.outputs.version && format('{0}:{1}{2}', env.IMAGE, steps.tags.outputs.version, matrix.suffix) || '' }}
           cache-from: type=gha,scope=${{ matrix.target }}
-          cache-to: type=gha,scope=${{ matrix.target }},mode=max

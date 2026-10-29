@@ -19,6 +19,17 @@ ARG CUDA_VERSION=13.2
 # list leaves out JIT-compiles at first start.
 ARG CUDA_GENCODE="-gencode arch=compute_75,code=sm_75 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120 -gencode arch=compute_75,code=compute_75"
 
+# The HTML5 graphics renderer: CEF's minimal Linux distribution, with the
+# SHA-1 cef-builds publishes beside the archive.
+ARG CEF_VERSION=138.0.60+gd8bc8bd+chromium-138.0.7204.307
+ARG CEF_SHA1=e53fa12159d4aa55ce7053b0d9270f5be94746a9
+# What libcef.so links against. Linking switchframe-cef needs them as much as
+# running it does.
+ARG CEF_LIBS="libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
+      libdrm2 libgbm1 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+      libxrandr2 libxext6 libx11-6 libxcb1 libasound2t64 libpango-1.0-0 \
+      libcairo2 libdbus-1-3 libexpat1 libatspi2.0-0t64 libglib2.0-0t64"
+
 # ---------- UI ----------
 FROM node:22-bookworm-slim AS ui
 WORKDIR /app/ui
@@ -26,6 +37,36 @@ COPY ui/package.json ui/package-lock.json ./
 RUN npm ci
 COPY ui/ ./
 RUN npm run build
+
+# ---------- HTML5 graphics sidecar ----------
+FROM debian:trixie-slim AS cef
+ARG CEF_VERSION
+ARG CEF_SHA1
+ARG CEF_LIBS
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bzip2 ca-certificates cmake curl g++ make ${CEF_LIBS} \
+ && rm -rf /var/lib/apt/lists/*
+# Pruned in the layer that downloads it, so neither the image nor the build
+# cache carries the 1.4 GB unstripped libcef.so. Only en-US is kept: Chromium
+# falls back to it for any locale without a pack. chrome-sandbox goes too:
+# the sidecar runs with no_sandbox.
+RUN curl -fsSLo /tmp/cef.tar.bz2 \
+      "https://cef-builds.spotifycdn.com/cef_binary_${CEF_VERSION}_linux64_minimal.tar.bz2" \
+ && echo "${CEF_SHA1}  /tmp/cef.tar.bz2" | sha1sum -c - \
+ && mkdir /opt/cef && tar -xjf /tmp/cef.tar.bz2 -C /opt/cef --strip-components=1 \
+ && rm /tmp/cef.tar.bz2 \
+ && rm -f /opt/cef/Release/chrome-sandbox \
+ && find /opt/cef/Resources/locales -type f ! -name en-US.pak -delete \
+ && strip --strip-unneeded /opt/cef/Release/*.so*
+COPY cef-sidecar/ /src/cef-sidecar/
+# The install rpath ($ORIGIN) instead of the build tree's, so the binary
+# finds libcef.so beside it once copied out.
+RUN cmake -S /src/cef-sidecar -B /build -DCEF_ROOT=/opt/cef \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+ && make -C /build -j"$(nproc)" switchframe-cef \
+ && strip /build/switchframe-cef \
+ && install -D /build/switchframe-cef /out/switchframe-cef \
+ && rm -rf /build
 
 # ---------- build environment ----------
 # Toolchains come before the source, so a source change rebuilds neither.
@@ -77,12 +118,20 @@ RUN CGO_CFLAGS="-I/usr/local/cuda/targets/x86_64-linux/include" \
 
 # ---------- runtime ----------
 FROM ghcr.io/qvest-digital/go-mxl-runtime:${GO_MXL_TAG} AS runtime-base
+ARG CEF_LIBS
 RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
  && apt-get update && apt-get install -y --no-install-recommends \
       libavcodec61 libavformat61 libavutil59 libswscale8 libswresample5 \
       libx264-164 libfdk-aac2 libopus0 libopusfile0 curl ca-certificates \
+      ${CEF_LIBS} fonts-dejavu-core fonts-liberation \
  && rm -rf /var/lib/apt/lists/*
 COPY LICENSE /usr/share/doc/switchframe/LICENSE
+# The engine looks for switchframe-cef beside its own binary; the sidecar
+# finds libcef.so and its resources beside the link's target.
+COPY --from=cef /opt/cef/Release/ /opt/cef/Resources/ /opt/switchframe-cef/bin/
+COPY --from=cef /out/switchframe-cef /opt/switchframe-cef/bin/
+COPY cef-sidecar/demo-templates/ /opt/switchframe-cef/demo-templates/
+RUN ln -s /opt/switchframe-cef/bin/switchframe-cef /usr/local/bin/switchframe-cef
 EXPOSE 8080/udp 8080/tcp 9090/tcp
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:9090/health || exit 1
