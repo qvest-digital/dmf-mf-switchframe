@@ -56,15 +56,19 @@
 		});
 	});
 
-	// Lazy-load preview images for visible category
+	// Lazy-load preview images for visible category. Each image that
+	// arrives re-runs this effect; one already requested is not requested
+	// again.
+	const previewRequested = new Set<string>();
 	$effect(() => {
 		const pats = filteredPatterns;
 		for (const p of pats) {
-			if (!previewCache[p.id]) {
+			if (!previewCache[p.id] && !previewRequested.has(p.id)) {
+				previewRequested.add(p.id);
 				wipeGetPreview(p.id).then(blob => {
 					const url = URL.createObjectURL(blob);
 					previewCache = { ...previewCache, [p.id]: url };
-				}).catch(() => {});
+				}).catch(() => { previewRequested.delete(p.id); });
 			}
 		}
 	});

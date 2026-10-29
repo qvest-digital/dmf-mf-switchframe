@@ -350,9 +350,12 @@
 		return { mode: 'dual' as const };
 	});
 
-	// Audio drift between engines (compares configuration, not transient peaks)
+	// Audio drift between engines (compares configuration, not transient
+	// peaks). A difference while the engines are still applying the
+	// operator's own commands, as through a fader drag, is not drift.
 	const audioDrift = $derived.by(() => {
 		if (!isDualEngine) return null;
+		if (connectionManager.settling) return null;
 		const rawA = connectionManager.rawStates?.A;
 		const rawB = connectionManager.rawStates?.B;
 		if (!rawA?.audioChannels || !rawB?.audioChannels) return null;

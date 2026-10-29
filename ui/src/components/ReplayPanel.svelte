@@ -8,6 +8,7 @@
 	} from '$lib/api/switch-api';
 	import { formatTimecode, formatClipDuration } from '$lib/util/timecode';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
+	import { coalesce } from '$lib/util/coalesce';
 	import {
 		ICON_PLAY, ICON_PAUSE, ICON_STOP, ICON_FRAME_BACK, ICON_FRAME_FORWARD,
 		ICON_JUMP_START, ICON_JUMP_END, ICON_CLOCK, renderIcon,
@@ -145,10 +146,17 @@
 	}
 	function handleProgressPointerUp() { isDragging = false; }
 
+	// A drag seeks to its latest position only, not once per pointer move.
+	const seek = coalesce((position: number) => {
+		const p = replaySeek(position);
+		apiCall(p, 'Seek');
+		return p;
+	}, 50);
+
 	function seekToPointerPosition(e: PointerEvent) {
 		if (!progressBarEl) return;
 		const rect = progressBarEl.getBoundingClientRect();
-		apiCall(replaySeek(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))), 'Seek');
+		seek(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)));
 	}
 
 	function getSourceLabel(key: string): string {

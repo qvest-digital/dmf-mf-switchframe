@@ -190,6 +190,11 @@ export class DualConnectionManager {
 		return this.reconciler.health;
 	}
 
+	/** True while the engines' compared fields are still changing. */
+	get settling(): boolean {
+		return this.reconciler.settling;
+	}
+
 	/** Raw per-engine states for components that need individual engine data. */
 	get rawStates(): { A: ControlRoomState | null; B: ControlRoomState | null } {
 		return this.reconciler.rawStates;

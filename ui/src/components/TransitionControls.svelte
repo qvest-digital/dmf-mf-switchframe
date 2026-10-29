@@ -4,6 +4,7 @@
 	import { cut, startTransition, setTransitionPosition, fadeToBlack, setFTBDuration, setTransitionAbortThreshold, listStingers, uploadStinger, deleteStinger, wipeGetPreview, apiCall } from '$lib/api/switch-api';
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
+	import { coalesce } from '$lib/util/coalesce';
 	import { scrubberPosition, applyKeyStep } from '$lib/util/tbar';
 	import type { EasingPreset } from '$lib/util/easing';
 	import { getEasingFunction } from '$lib/util/easing';
@@ -301,11 +302,15 @@
 		if (fastControl) {
 			fastControl.sendTransitionPosition(value);
 		} else {
-			setTransitionPosition(value).catch(() => {
-				// Trailing-edge throttle fire after transition completed -- benign, ignore.
-			});
+			setPositionREST(value);
 		}
 	}, 16);
+
+	/** Without datagrams the position goes over REST, one request in flight,
+	 * so a slow engine is not sent 60 overlapping requests a second. */
+	const setPositionREST = coalesce((value: number) => setTransitionPosition(value).catch(() => {
+		// A position arriving after the transition completed -- benign, ignore.
+	}), 16);
 
 	function handleScrubberPointerDown(e: PointerEvent) {
 		const target = e.currentTarget as HTMLElement;
@@ -535,7 +540,7 @@
 					<!-- svelte-ignore a11y_click_events_have_key_events -->
 					<div class="wipe-popover-backdrop" role="none" onclick={() => wipePopoverOpen = false}></div>
 					<div class="wipe-popover">
-						<WipePatternBrowser config={wipeConfig} onConfigChange={(c) => { wipeConfig = c; loadWipePreview(c.pattern); }} />
+						<WipePatternBrowser config={wipeConfig} onConfigChange={(c) => { const patternChanged = c.pattern !== wipeConfig.pattern; wipeConfig = c; if (patternChanged) loadWipePreview(c.pattern); }} />
 					</div>
 				{/if}
 			{/if}

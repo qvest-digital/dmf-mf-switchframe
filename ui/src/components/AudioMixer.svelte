@@ -15,7 +15,7 @@
 		setSourceDelay,
 		setAudioDelay as apiSetAudioDelay,
 	} from '$lib/api/switch-api';
-	import { throttle } from '$lib/util/throttle';
+	import { coalesce } from '$lib/util/coalesce';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
 	import { updatePeakHold as _updatePeakHold, isClipActive, CLIP_THRESHOLD_DB } from '$lib/audio/peak-hold';
 	import type { PFLMode } from '$lib/audio/pfl';
@@ -41,14 +41,18 @@
 	let ui = $state({ collapsed: false });
 
 	/** Fire API call and apply the returned state for immediate UI feedback. */
-	function applyResult(promise: Promise<ControlRoomState>) {
-		promise.then(s => onStateUpdate?.(s)).catch(err => console.warn('API call failed:', err));
+	function applyResult(promise: Promise<ControlRoomState>): Promise<void> {
+		return promise.then(s => onStateUpdate?.(s)).catch(err => console.warn('API call failed:', err));
 	}
 
-	/** Throttled level API call -- max 20 calls/sec (50ms). Visual fader updates instantly. */
-	const setLevelThrottled = throttle((source: string, level: number) => {
-		applyResult(apiSetLevel(source, level));
-	}, 50);
+	/** Controls dragged continuously send their latest value per channel, one
+	 * request in flight and at most one every SEND_INTERVAL_MS, the final
+	 * value last. The fader itself moves on every input event. */
+	const SEND_INTERVAL_MS = 50;
+	const byChannel = (source: string) => source;
+
+	const setLevelThrottled = coalesce((source: string, level: number) =>
+		applyResult(apiSetLevel(source, level)), SEND_INTERVAL_MS, byChannel);
 
 	function setLevel(source: string, level: number) {
 		setLevelThrottled(source, level);
@@ -68,10 +72,8 @@
 		}
 	});
 
-	/** Throttled trim API call -- max 20 calls/sec (50ms). */
-	const setTrimThrottled = throttle((source: string, level: number) => {
-		applyResult(apiSetTrim(source, level));
-	}, 50);
+	const setTrimThrottled = coalesce((source: string, level: number) =>
+		applyResult(apiSetTrim(source, level)), SEND_INTERVAL_MS, byChannel);
 
 	function setMute(source: string, muted: boolean) {
 		applyResult(apiSetMute(source, muted));
@@ -85,49 +87,33 @@
 		applyResult(apiSetPhaseInvert(source, invert));
 	}
 
-	/** Throttled balance API call -- max 20 calls/sec (50ms). */
-	const setBalanceThrottled = throttle((source: string, balance: number) => {
-		applyResult(apiSetBalance(source, balance));
-	}, 50);
+	const setBalanceThrottled = coalesce((source: string, balance: number) =>
+		applyResult(apiSetBalance(source, balance)), SEND_INTERVAL_MS, byChannel);
 
-	/** Throttled master level API call -- max 20 calls/sec (50ms). */
-	const setMasterLevelThrottled = throttle((level: number) => {
-		applyResult(apiSetMasterLevel(level));
-	}, 50);
+	const setMasterLevelThrottled = coalesce((level: number) =>
+		applyResult(apiSetMasterLevel(level)), SEND_INTERVAL_MS, () => 'master');
 
 	function setMasterLevel(level: number) {
 		setMasterLevelThrottled(level);
 	}
 
-	/** Throttled HPF API call -- max 20 calls/sec (50ms). */
-	const setHPFThrottled = throttle((source: string, frequency: number, enabled: boolean) => {
-		applyResult(apiSetHPF(source, frequency, enabled));
-	}, 50);
+	const setHPFThrottled = coalesce((source: string, frequency: number, enabled: boolean) =>
+		applyResult(apiSetHPF(source, frequency, enabled)), SEND_INTERVAL_MS, byChannel);
 
-	/** Throttled EQ API call -- max 20 calls/sec (50ms). */
-	const setEQThrottled = throttle((source: string, band: number, frequency: number, gain: number, q: number, enabled: boolean) => {
-		applyResult(apiSetEQ(source, band, frequency, gain, q, enabled));
-	}, 50);
+	const setEQThrottled = coalesce((source: string, band: number, frequency: number, gain: number, q: number, enabled: boolean) =>
+		applyResult(apiSetEQ(source, band, frequency, gain, q, enabled)), SEND_INTERVAL_MS, (source: string, band: number) => `${source}/${band}`);
 
-	/** Throttled compressor API call -- max 20 calls/sec (50ms). */
-	const setCompressorThrottled = throttle((source: string, threshold: number, ratio: number, attack: number, release: number, makeupGain: number) => {
-		applyResult(apiSetCompressor(source, threshold, ratio, attack, release, makeupGain));
-	}, 50);
+	const setCompressorThrottled = coalesce((source: string, threshold: number, ratio: number, attack: number, release: number, makeupGain: number) =>
+		applyResult(apiSetCompressor(source, threshold, ratio, attack, release, makeupGain)), SEND_INTERVAL_MS, byChannel);
 
-	/** Throttled gate API call -- max 20 calls/sec (50ms). */
-	const setGateThrottled = throttle((source: string, threshold: number, range: number, attack: number, release: number, hold: number, enabled: boolean) => {
-		applyResult(apiSetGate(source, threshold, range, attack, release, hold, enabled));
-	}, 50);
+	const setGateThrottled = coalesce((source: string, threshold: number, range: number, attack: number, release: number, hold: number, enabled: boolean) =>
+		applyResult(apiSetGate(source, threshold, range, attack, release, hold, enabled)), SEND_INTERVAL_MS, byChannel);
 
-	/** Throttled source delay API call -- max 20 calls/sec (50ms). */
-	const setDelayThrottled = throttle((source: string, delayMs: number) => {
-		applyResult(setSourceDelay(source, delayMs));
-	}, 50);
+	const setDelayThrottled = coalesce((source: string, delayMs: number) =>
+		applyResult(setSourceDelay(source, delayMs)), SEND_INTERVAL_MS, byChannel);
 
-	/** Throttled audio delay API call -- max 20 calls/sec (50ms). */
-	const setAudioDelayThrottled = throttle((source: string, delayMs: number) => {
-		applyResult(apiSetAudioDelay(source, delayMs));
-	}, 50);
+	const setAudioDelayThrottled = coalesce((source: string, delayMs: number) =>
+		applyResult(apiSetAudioDelay(source, delayMs)), SEND_INTERVAL_MS, byChannel);
 
 	/** Convert linear amplitude (0..1) to dBFS, clamped to -60. */
 	function linearToDb(linear: number): number {
