@@ -865,7 +865,7 @@ func NewFFmpegDecoder(hwDeviceCtx unsafe.Pointer) (*FFmpegDecoder, error) {
 }
 
 // NewFFmpegDecoderWithThreads creates an FFmpeg H.264 decoder with explicit thread count.
-// threadCount=0 means auto (ncpu, 2-8). threadCount=1 disables frame-level multithreading,
+// threadCount=0 means auto (ncpu, 2..4). threadCount=1 disables frame-level multithreading,
 // which eliminates buffering delay (important for clip decoders that need immediate output).
 func NewFFmpegDecoderWithThreads(hwDeviceCtx unsafe.Pointer, threadCount int) (*FFmpegDecoder, error) {
 	initFFmpegLogLevel()
@@ -916,7 +916,7 @@ func NewFFmpegHEVCDecoder(hwDeviceCtx unsafe.Pointer) (*FFmpegDecoder, error) {
 }
 
 // NewFFmpegHEVCDecoderWithThreads creates an FFmpeg HEVC decoder with explicit thread count.
-// threadCount=0 means auto (ncpu, 2-8). threadCount=1 disables frame-level multithreading.
+// threadCount=0 means auto (ncpu, 2..4). threadCount=1 disables frame-level multithreading.
 func NewFFmpegHEVCDecoderWithThreads(hwDeviceCtx unsafe.Pointer, threadCount int) (*FFmpegDecoder, error) {
 	initFFmpegLogLevel()
 	initRangeTablesOnce.Do(func() {
