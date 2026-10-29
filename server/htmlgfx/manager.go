@@ -777,7 +777,10 @@ func (m *Manager) controlReadLoop(gen int64) {
 		}
 
 		m.mu.Lock()
-		if resp.ID >= 0 && resp.ID < len(m.browsers) {
+		// An event can arrive for a slot freed since: applying it would
+		// give the empty slot a status, and AllocateBrowser would never
+		// hand it out again.
+		if resp.ID >= 0 && resp.ID < len(m.browsers) && m.browsers[resp.ID].Status != "empty" {
 			bs := m.browsers[resp.ID]
 			switch resp.Event {
 			case "format_detected":

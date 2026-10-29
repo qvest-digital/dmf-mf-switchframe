@@ -896,6 +896,38 @@ func TestManagerReplaysDataOnceWhenFormatBecomesKnown(t *testing.T) {
 	require.Equal(t, 3, countUpdates(mock.getCommands()))
 }
 
+// An event can arrive after its slot was freed. Applied, it gives the empty
+// slot a status, and AllocateBrowser never hands that slot out again.
+func TestManagerIgnoresEventsForFreedSlot(t *testing.T) {
+	for _, event := range []ControlResponse{
+		{Event: "format_detected", Format: "ograf"},
+		{Event: "load_error", Error: "aborted"},
+		{Event: "stopped"},
+	} {
+		t.Run(event.Event, func(t *testing.T) {
+			mgr, mock, _ := setupManagerWithMock(t)
+			defer mock.close()
+			defer func() { _ = mgr.Close() }()
+
+			freed, err := mgr.AllocateBrowser(0)
+			require.NoError(t, err)
+			other, err := mgr.AllocateBrowser(1)
+			require.NoError(t, err)
+			require.NoError(t, mgr.LoadURL(freed, "https://templates.test/a.html"))
+			mgr.FreeBrowser(freed)
+
+			sendEvents(t, mock, freed, event)
+			sendEvents(t, mock, other, ControlResponse{Event: "stopped"})
+			waitForStatus(t, mgr, other, "stopped", 2*time.Second)
+
+			require.Equal(t, "empty", mgr.BrowserStates()[freed].Status)
+			again, err := mgr.AllocateBrowser(2)
+			require.NoError(t, err)
+			require.Equal(t, freed, again, "the freed slot is handed out again")
+		})
+	}
+}
+
 // A page with no data yet gets no empty update.
 func TestManagerFormatDetectedWithoutDataSendsNothing(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
