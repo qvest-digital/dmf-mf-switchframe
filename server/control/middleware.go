@@ -152,8 +152,10 @@ func metricsHandler(routes *http.ServeMux, next http.Handler) http.Handler {
 
 		// Without routes, r.Pattern is what the mux that served the request
 		// set: a pattern like "GET /api/sources" rather than the actual path,
-		// which could have unbounded cardinality.
-		if pattern == "" {
+		// which could have unbounded cardinality. With routes it is not read:
+		// a request authentication turned away still carries the pattern of
+		// an outer mux, which names no route.
+		if pattern == "" && routes == nil {
 			pattern = r.Pattern
 		}
 		if pattern == "" {

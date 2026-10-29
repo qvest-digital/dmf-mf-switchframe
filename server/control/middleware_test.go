@@ -453,6 +453,7 @@ func TestRouteMetricsMiddleware_CallerClass(t *testing.T) {
 		{"no token", "/api/metricstest/clips/4", "", route, http.StatusUnauthorized, CallerNone},
 		{"exempt path", "/api/peer/health", "", "GET /api/peer/health", http.StatusOK, CallerExempt},
 		{"no route", "/api/metricstest/nothing", "Bearer api-token", "unknown", http.StatusNotFound, CallerToken},
+		{"no route, no token", "/api/metricstest/nothing", "", "unknown", http.StatusUnauthorized, CallerNone},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
