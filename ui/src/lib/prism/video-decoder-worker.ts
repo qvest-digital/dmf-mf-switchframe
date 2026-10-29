@@ -221,6 +221,13 @@ self.onmessage = async (e: MessageEvent) => {
 			self.postMessage({ type: "warning", message: `Discarded ${discardedDelta} delta frames before key` });
 			discardedDelta = 0;
 		}
+		// Decoding resumes at this keyframe, and the last frame put out
+		// precedes every chunk dropped while waiting for it. Lag counts from
+		// the keyframe's own output: against that older frame the next delta
+		// reads as more than a second behind while the keyframe is still
+		// decoding, and is dropped with the rest of its GOP, again at every
+		// keyframe.
+		if (waitForKeyframe) lastOutputTs = -1;
 		waitForKeyframe = false;
 		if (isKeyframe) {
 			diagKeyframeCount++;

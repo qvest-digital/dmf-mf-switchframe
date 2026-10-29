@@ -74,6 +74,33 @@ describe('video decoder worker backlog', () => {
 		expect(decoded).toHaveLength(51);
 	});
 
+	// Once a backlog is dropped, the last frame out is older than the
+	// keyframe decoding resumes at. Measured against it, every delta queued
+	// behind the still-decoding keyframe read as more than a second behind:
+	// the decoder put out the keyframe alone, one picture a GOP, for as
+	// long as the source ran.
+	it('decodes the GOP after a dropped backlog, not only its keyframe', () => {
+		for (let i = 1; i <= 60; i++) {
+			send({ type: 'decode', data: new ArrayBuffer(1), isKeyframe: false, timestamp: i * FRAME_US, isDisco: false });
+		}
+		emit!({ timestamp: 50 * FRAME_US });
+		queued = 0;
+		for (let i = 61; i < 150; i++) {
+			send({ type: 'decode', data: new ArrayBuffer(1), isKeyframe: false, timestamp: i * FRAME_US, isDisco: false });
+		}
+		decoded.length = 0;
+		// A 2 s GOP at 50 fps: the keyframe is still in the decode queue
+		// when the ten deltas after it arrive, then the decoder keeps up.
+		for (let i = 150; i < 250; i++) {
+			send({ type: 'decode', data: new ArrayBuffer(1), isKeyframe: i === 150, timestamp: i * FRAME_US, isDisco: false });
+			if (i >= 160) {
+				for (let j = i === 160 ? 150 : i; j <= i; j++) emit!({ timestamp: j * FRAME_US });
+				queued = 0;
+			}
+		}
+		expect(decoded).toHaveLength(100);
+	});
+
 	// Whatever the timestamps, a backlog stops at 120 chunks.
 	it('drops past 120 queued chunks', () => {
 		for (let i = 1; i <= 130; i++) {
