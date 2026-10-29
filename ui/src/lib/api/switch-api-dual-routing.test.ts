@@ -18,7 +18,7 @@ import {
 	setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, authHeaders,
 	resetPreferredEngine, resetCircuitBreakers, uploadStinger,
 	startRecording, stopRecording, addDestination, clipPlayerLoadByName,
-	commandLatency, resetCommandLatency,
+	commandLatency, resetCommandLatency, graphicsSetLayerSettings,
 } from './switch-api';
 import { tokenReplaced } from './auth-gate';
 
@@ -1784,6 +1784,56 @@ describe('switch-api dual-engine routing', () => {
 
 			await cut('cam1');
 			expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('B'));
+		});
+
+		// A CORS preflight that refuses the method rejects fetch on that engine
+		// alone, with nothing but the fetch error's message to go on.
+		it('names the action, the engine and the error of a refused request', async () => {
+			const notifySpy = vi.fn();
+			setPartialFailureNotify(notifySpy);
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.reject(new TypeError('Failed to fetch'));
+				}
+				return Promise.resolve(defaultOkResponse({ layers: [] }));
+			});
+
+			await graphicsSetLayerSettings(0, { config: { template: 'bug' } });
+			expect(notifySpy).toHaveBeenCalledWith('PATCH /api/graphics/0 failed on Engine B (Failed to fetch) - retrying');
+		});
+
+		it('names the HTTP status of a failed engine', async () => {
+			const notifySpy = vi.fn();
+			setPartialFailureNotify(notifySpy);
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.resolve(errorResponse(500, 'engine B crashed'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+			expect(notifySpy).toHaveBeenCalledWith('POST /api/switch/cut failed on Engine B (HTTP 500) - retrying');
+		});
+
+		it('says why even when the rejection carries no message', async () => {
+			const notifySpy = vi.fn();
+			setPartialFailureNotify(notifySpy);
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.reject(new Error(''));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+			expect(notifySpy).toHaveBeenCalledWith('POST /api/switch/cut failed on Engine B (network error) - retrying');
 		});
 
 		it('does NOT call notify when both engines succeed', async () => {

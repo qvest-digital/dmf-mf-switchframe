@@ -464,6 +464,27 @@ async function fanOutMutation(
 	return accountFanOut(await all, availableEngines, url, opts, bodies, startedAt, settledAt);
 }
 
+/** Names each engine a fan-out failed on and why, such as
+ * "Engine B (HTTP 500)". A request the browser refuses to send, such as one
+ * a CORS preflight rejects, surfaces only as the fetch error's message. */
+function describeEngineFailures(results: PromiseSettledResult<Response>[], engines: EngineEndpoint[]): string {
+	return results
+		.map((r, i) => {
+			if (r.status === 'fulfilled' && r.value.ok) return null;
+			let why: string;
+			if (r.status === 'fulfilled') {
+				why = `HTTP ${r.value.status}`;
+			} else if ((r.reason as Error | undefined)?.name === 'AbortError') {
+				why = 'timed out';
+			} else {
+				why = (r.reason as Error | undefined)?.message || 'network error';
+			}
+			return `Engine ${engines[i]?.id ?? 'unknown'} (${why})`;
+		})
+		.filter((s): s is string => s !== null)
+		.join(', ');
+}
+
 /** Records circuit breaker outcomes and handles a partial failure for a
  * completed fan-out. */
 function accountFanOut(
@@ -515,8 +536,9 @@ function accountFanOut(
 				return ok ? null : availableEngines[i]?.id ?? 'unknown';
 			})
 			.filter((id): id is string => id !== null);
+		const failure = `${method} ${url} failed on ${describeEngineFailures(results, availableEngines)}`;
 		if (!isNonIdempotent(url)) {
-			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
+			partialFailureNotify?.(`${failure} - retrying`);
 			// A slow command that failed only after a long wait, such as a timed
 			// out clip load, is not sent again with another long budget.
 			const retryable = isSlowPath(url)
@@ -527,7 +549,7 @@ function accountFanOut(
 			retryFailedEngines(retryable, availableEngines, url, opts, bodies);
 		} else {
 			// Non-idempotent: skip retry, rely on snapshot push for state reconciliation
-			partialFailureNotify?.(`${failedEngineIds.join(', ')}: non-idempotent operation diverged — check Redundancy panel`);
+			partialFailureNotify?.(`${failure}: non-idempotent operation diverged - check Redundancy panel`);
 			console.warn(`[dual-api] Skipping retry for non-idempotent path: ${url}`);
 			nonIdempotentFailureCallback?.(url, failedEngineIds);
 		}
