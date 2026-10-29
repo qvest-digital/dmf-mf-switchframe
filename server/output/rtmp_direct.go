@@ -500,6 +500,10 @@ type RTMPDirect struct {
 
 	initialized atomic.Bool
 	ptsBase     int64
+	// lastVideoTS is the last video timestamp written on this connection,
+	// -1 before the first. FFmpeg's FLV muxer refuses a timestamp that goes
+	// backwards and the write error drops the connection.
+	lastVideoTS int64
 	lastSPS     []byte // cached for reconnect (written only from writeLoop)
 	lastPPS     []byte // cached for reconnect (written only from writeLoop)
 
@@ -789,6 +793,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 			return
 		}
 		r.ptsBase = framePTS
+		r.lastVideoTS = -1
 	}
 
 	// Cache SPS/PPS from keyframes for eager reconnect.
@@ -806,6 +811,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		}
 		r.pendingIDR.Store(false)
 		r.ptsBase = framePTS // rebase for new connection
+		r.lastVideoTS = -1
 	}
 
 	// In test mode, skip the C write call.
@@ -822,6 +828,12 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 	if pts < 0 {
 		pts = 0
 	}
+	// A step back, as when the lip-sync offset shrinks, is written 1 ms
+	// after the last frame instead: the FLV timestamp unit.
+	if r.lastVideoTS >= 0 && pts <= r.lastVideoTS {
+		pts = r.lastVideoTS + 90
+	}
+	r.lastVideoTS = pts
 
 	isKey := C.int(0)
 	if frame.IsKeyframe {

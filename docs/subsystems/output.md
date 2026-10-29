@@ -106,7 +106,7 @@ Before the direct-write hot path, the manager used a [`Viewer`](../../server/out
 
 ### Engine lifecycle and lip-sync
 
-`ensureMuxerLocked()` creates the muxer on the first active output, `stopMuxerIfNoAdaptersLocked()` tears it down when the last goes away. `onMuxStart` fires to request an IDR keyframe so the muxer can initialize immediately rather than waiting up to a GOP for the next natural keyframe. `LatchLipSync()` permanently fixes the video-PTS delay once the ref-clock measurement has stabilized (see [frame-sync-and-timing.md](../concepts/frame-sync-and-timing.md)); `lipSyncSource` is otherwise polled per frame with 450-tick hysteresis and an EMA to smooth drift.
+`ensureMuxerLocked()` creates the muxer on the first active output, `stopMuxerIfNoAdaptersLocked()` tears it down when the last goes away. `onMuxStart` fires to request an IDR keyframe so the muxer can initialize immediately rather than waiting up to a GOP for the next natural keyframe. `LatchLipSync()` permanently fixes the video-PTS delay once the ref-clock measurement has stabilized (see [frame-sync-and-timing.md](../concepts/frame-sync-and-timing.md)); `lipSyncSource` is otherwise polled per frame with 450-tick hysteresis and an EMA to smooth drift. The offset falls by at most half a frame interval per frame, so the delayed video timestamps keep rising; RTMP outputs get the same delay, and an RTMP video timestamp that would still step back is written 1 ms after the previous one, since FFmpeg's FLV muxer refuses it and the failed write drops the connection.
 
 ## Key types and entry points
 
