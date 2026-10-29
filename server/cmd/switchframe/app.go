@@ -1654,6 +1654,8 @@ func (a *App) initSCTE104() error {
 
 // initAPI creates the REST API and wires state callbacks.
 func (a *App) initAPI() error {
+	a.registerSubsystemCollectors()
+
 	// Create and start the performance sampler.
 	a.perfSampler = perf.NewSampler(
 		&perf.SwitcherAdapter{SW: a.sw},
