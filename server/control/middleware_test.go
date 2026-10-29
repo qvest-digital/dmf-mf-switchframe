@@ -492,3 +492,13 @@ func TestMetricsMiddleware_InFlight(t *testing.T) {
 	require.Equal(t, before+1, during, "a request is in flight while served")
 	require.Equal(t, before, testutil.ToFloat64(metrics.HTTPRequestsInFlight), "and no longer once answered")
 }
+
+// A made-up method is counted as "other": an unauthenticated client must
+// not be able to mint a series per method it invents.
+func TestRouteMetricsMiddleware_UnknownMethodIsOther(t *testing.T) {
+	h := metricsTestServer()
+	before := requestsCount("other", "unknown", "401", CallerNone)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("FOO", "/api/metricstest/clips/1", nil))
+	require.Equal(t, before+1, requestsCount("other", "unknown", "401", CallerNone))
+}

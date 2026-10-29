@@ -162,15 +162,16 @@ func metricsHandler(routes *http.ServeMux, next http.Handler) http.Handler {
 			pattern = "unknown"
 		}
 
+		method := metrics.MethodLabel(r.Method)
 		metrics.HTTPRequestsTotal.WithLabelValues(
-			r.Method,
+			method,
 			pattern,
 			strconv.Itoa(status),
 			caller,
 		).Inc()
 
 		metrics.HTTPRequestDuration.WithLabelValues(
-			r.Method,
+			method,
 			pattern,
 		).Observe(time.Since(start).Seconds())
 	})

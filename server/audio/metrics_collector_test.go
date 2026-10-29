@@ -8,6 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 func collectorValues(t *testing.T, c prometheus.Collector, name string) map[string]float64 {
@@ -93,4 +94,11 @@ func keys(m map[string]float64) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func TestMetricsCollector_HidesSRTStreamIDs(t *testing.T) {
+	m, _ := newTickTestMixer(t)
+	m.AddChannel("srt:secret-stream-key")
+	levels := collectorValues(t, NewMetricsCollector(m), "switchframe_audio_source_level_db")
+	require.Equal(t, map[string]float64{metrics.SourceLabel("srt:secret-stream-key"): 0}, levels)
 }

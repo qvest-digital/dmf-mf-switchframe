@@ -40,6 +40,7 @@ type healthMonitor struct {
 	consecutiveCount map[string]int                // consecutive checks at pending status
 	running          bool
 	onChange         func(source string, from, to SourceHealthStatus) // called outside mu for each committed transition
+	onRemove         func(source string)                              // called outside mu when a source is removed
 	stopCh           chan struct{}
 	stopOnce         sync.Once
 	done             chan struct{} // closed when the monitor goroutine exits; nil if never started
@@ -61,11 +62,13 @@ func (hm *healthMonitor) registerSource(sourceKey string) {
 	hm.mu.Unlock()
 }
 
-// setOnChange sets the function told of every committed status
-// transition. A source's first status is not a transition. nil removes it.
-func (hm *healthMonitor) setOnChange(fn func(source string, from, to SourceHealthStatus)) {
+// setHooks sets the functions told of every committed status transition
+// and of every source removed. A source's first status is not a
+// transition. nil removes a hook.
+func (hm *healthMonitor) setHooks(onChange func(source string, from, to SourceHealthStatus), onRemove func(source string)) {
 	hm.mu.Lock()
-	hm.onChange = fn
+	hm.onChange = onChange
+	hm.onRemove = onRemove
 	hm.mu.Unlock()
 }
 
@@ -246,8 +249,12 @@ func (hm *healthMonitor) removeSource(sourceKey string) {
 	delete(hm.lastStatus, sourceKey)
 	delete(hm.pendingStatus, sourceKey)
 	delete(hm.consecutiveCount, sourceKey)
+	onRemove := hm.onRemove
 	hm.mu.Unlock()
 	hm.lastFrame.Delete(sourceKey)
+	if onRemove != nil {
+		onRemove(sourceKey)
+	}
 }
 
 func (hm *healthMonitor) stop() {
