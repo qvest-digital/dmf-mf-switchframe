@@ -64,6 +64,9 @@ func (a *App) registerSubsystemCollectors() {
 	if a.compositor != nil {
 		cs = append(cs, graphics.NewMetricsCollector(a.compositor))
 	}
+	// Reads the peer poller, which initAPI creates after this, at scrape
+	// time.
+	cs = append(cs, &redundancyCollector{a: a})
 	registerCollectors(metrics.GetRegistry(), cs...)
 }
 
