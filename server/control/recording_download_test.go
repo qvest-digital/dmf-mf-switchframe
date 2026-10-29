@@ -84,8 +84,8 @@ func TestRecordingDownloadTicketScope(t *testing.T) {
 	id, err = api.downloadTickets.issue(path)
 	require.NoError(t, err)
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/clips/recordings?ticket="+id, nil))
-	require.Equal(t, http.StatusUnauthorized, rec.Code, "another route still needs the bearer token")
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/clips/recordings?path="+path+"&ticket="+id, nil))
+	require.Equal(t, http.StatusUnauthorized, rec.Code, "another route still needs the bearer token, ticket and path or not")
 
 	now := time.Now()
 	api.downloadTickets.now = func() time.Time { return now }
