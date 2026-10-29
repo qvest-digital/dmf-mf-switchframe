@@ -44,6 +44,10 @@ type Config struct {
 	Relay         Relay  // MoQ relay for broadcast
 	FrameInterval int    // Encode every Nth frame (1=all, 2=half rate, etc). 0 treated as 1.
 	Preset        string // x264 preset (default "ultrafast"). "veryfast" for better compression.
+	// ScaleDown scales a source larger than Width x Height down to that
+	// size on the encode goroutine before encoding. Without it a source is
+	// encoded at its own size, Width and Height only naming the intent.
+	ScaleDown bool
 }
 
 // Stats tracks preview encoder performance counters using atomic operations.
@@ -229,8 +233,9 @@ func (e *Encoder) loop() {
 		infoSent       bool
 		encYUV         []byte // persistent encoder input buffer (reused)
 		downconvertBuf []byte // reusable buffer for 10-bit to 8-bit downconversion
-		lastSrcW       int
-		lastSrcH       int
+		boxBuf         []byte // ScaleYUV420Preview's pre-shrink scratch
+		lastEncW       int
+		lastEncH       int
 	)
 
 	var frameCount int64
@@ -247,23 +252,26 @@ func (e *Encoder) loop() {
 			continue
 		}
 
-		// Source resolution changed -- recreate encoder.
-		if encoder != nil && (w != lastSrcW || h != lastSrcH) {
+		// Encode at source resolution unless ScaleDown asks for the preview
+		// size: NVENC handles any resolution (~1us regardless of size), and
+		// the browser's <canvas>/<video> scales to fit the tile.
+		srcW := w &^ 1 // even dimensions (H.264 requirement)
+		srcH := h &^ 1
+		encW, encH := srcW, srcH
+		if e.cfg.ScaleDown && e.cfg.Width > 0 && e.cfg.Height > 0 && (srcW > e.cfg.Width || srcH > e.cfg.Height) {
+			encW, encH = e.cfg.Width&^1, e.cfg.Height&^1
+		}
+
+		// Encoded size changed -- recreate encoder.
+		if encoder != nil && (encW != lastEncW || encH != lastEncH) {
 			encoder.Close()
 			encoder = nil
 			infoSent = false
 		}
-		lastSrcW = w
-		lastSrcH = h
+		lastEncW = encW
+		lastEncH = encH
 
-		// Encode at source resolution — no CPU scaling. NVENC handles
-		// any resolution (~1µs regardless of size), and the browser's
-		// <canvas>/<video> scales to fit the tile. This eliminates
-		// scaleBilinearRow from the hot path entirely.
-		encW := w &^ 1 // even dimensions (H.264 requirement)
-		encH := h &^ 1
-
-		// Lazy encoder creation at source resolution.
+		// Lazy encoder creation.
 		if encoder == nil {
 			enc, err := codec.NewPreviewEncoder(encW, encH, e.cfg.Bitrate, e.cfg.FPSNum, e.cfg.FPSDen, e.cfg.Preset)
 			if err != nil {
@@ -279,8 +287,8 @@ func (e *Encoder) loop() {
 
 		// origYUV is the caller-owned source buffer that must be returned via
 		// job.release. job.yuv may be rebased onto an encoder-internal buffer
-		// (downconvertBuf) below, but the release callback must always receive
-		// the original owned buffer — never an encoder-internal buffer.
+		// (downconvertBuf, scaleBuf) below, but the release callback must always
+		// receive the original owned buffer — never an encoder-internal buffer.
 		origYUV := job.yuv
 
 		// Detect 10-bit YUV422P10LE input by buffer size.
@@ -293,16 +301,16 @@ func (e *Encoder) loop() {
 		// 10-bit and run through Downconvert422_10to420, which would reinterpret 8-bit
 		// YUV420 bytes as 10-bit YUV422 and emit garbage. An exact match keeps valid
 		// 10-bit frames working while letting over-length 8-bit buffers fall through to
-		// the 8-bit path below (which slices job.yuv to encSize).
-		expected10bitSize := encW * encH * 4
-		encSize := video.YUV420FrameSize(encW, encH)
-		if len(job.yuv) == expected10bitSize && expected10bitSize > encSize {
+		// the 8-bit path below (which slices job.yuv to srcSize).
+		expected10bitSize := srcW * srcH * 4
+		srcSize := video.YUV420FrameSize(srcW, srcH)
+		if len(job.yuv) == expected10bitSize && expected10bitSize > srcSize {
 			// 10-bit input: downconvert to 8-bit YUV420P.
-			if cap(downconvertBuf) < encSize {
-				downconvertBuf = make([]byte, encSize)
+			if cap(downconvertBuf) < srcSize {
+				downconvertBuf = make([]byte, srcSize)
 			}
-			downconvertBuf = downconvertBuf[:encSize]
-			if err := video.Downconvert422_10to420(job.yuv, downconvertBuf, encW, encH); err != nil {
+			downconvertBuf = downconvertBuf[:srcSize]
+			if err := video.Downconvert422_10to420(job.yuv, downconvertBuf, srcW, srcH); err != nil {
 				slog.Warn("preview: 10-bit downconversion failed",
 					"key", e.cfg.SourceKey, "error", err)
 				if job.release != nil {
@@ -313,12 +321,24 @@ func (e *Encoder) loop() {
 			job.yuv = downconvertBuf
 		}
 
-		// Copy into encoder buffer (encoder may hold a reference to previous frame).
+		// Copy, or scale, into the encoder buffer (the encoder may hold a
+		// reference to the previous frame).
+		encSize := video.YUV420FrameSize(encW, encH)
 		if cap(encYUV) < encSize {
 			encYUV = make([]byte, encSize)
 		}
 		encYUV = encYUV[:encSize]
-		copy(encYUV, job.yuv[:encSize])
+		if encW != srcW || encH != srcH {
+			if len(job.yuv) < srcSize {
+				if job.release != nil {
+					job.release(origYUV)
+				}
+				continue
+			}
+			transition.ScaleYUV420Preview(job.yuv[:srcSize], srcW, srcH, encYUV, encW, encH, &boxBuf)
+		} else {
+			copy(encYUV, job.yuv[:encSize])
+		}
 
 		// Release the original source buffer now that it's been copied/scaled.
 		// Always release origYUV (the caller-owned buffer), not job.yuv, which

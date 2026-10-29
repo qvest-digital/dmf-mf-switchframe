@@ -9,7 +9,6 @@ import (
 
 	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/preview"
-	"github.com/zsiec/switchframe/server/transition"
 )
 
 // playoutRelayFeed encodes a playout channel's pictures for its browser
@@ -20,24 +19,21 @@ import (
 type playoutRelayFeed struct {
 	w, h          int
 	bitrate       int
-	fpsNum        int
-	fpsDen        int
 	frameInterval int
 
 	encs [playout.MaxChannels]atomic.Pointer[preview.Encoder]
+	// Copies of pictures on their way to an encoder, reused once encoded.
 	bufs sync.Pool
 }
 
-func newPlayoutRelayFeed(w, h, bitrate, fpsNum, fpsDen, frameInterval int) *playoutRelayFeed {
-	f := &playoutRelayFeed{w: w, h: h, bitrate: bitrate, fpsNum: fpsNum, fpsDen: fpsDen, frameInterval: frameInterval}
-	size := w * h * 3 / 2
-	f.bufs.New = func() any { b := make([]byte, size); return &b }
-	return f
+func newPlayoutRelayFeed(w, h, bitrate, frameInterval int) *playoutRelayFeed {
+	return &playoutRelayFeed{w: w, h: h, bitrate: bitrate, frameInterval: frameInterval}
 }
 
-// start begins encoding channel idx's pictures onto relay, replacing an
-// encoder a previous run of the channel left behind.
-func (f *playoutRelayFeed) start(idx int, key string, relay preview.Relay) {
+// start begins encoding channel idx's pictures onto relay at the pipeline
+// rate the channel starts with, replacing an encoder a previous run of the
+// channel left behind.
+func (f *playoutRelayFeed) start(idx int, key string, relay preview.Relay, fpsNum, fpsDen int) {
 	if idx < 0 || idx >= len(f.encs) {
 		return
 	}
@@ -46,10 +42,11 @@ func (f *playoutRelayFeed) start(idx int, key string, relay preview.Relay) {
 		Width:         f.w,
 		Height:        f.h,
 		Bitrate:       f.bitrate,
-		FPSNum:        f.fpsNum,
-		FPSDen:        f.fpsDen,
+		FPSNum:        fpsNum,
+		FPSDen:        fpsDen,
 		Relay:         relay,
 		FrameInterval: f.frameInterval,
+		ScaleDown:     true,
 	})
 	if err != nil {
 		slog.Error("playout: relay encoder failed", "key", key, "error", err)
@@ -71,20 +68,29 @@ func (f *playoutRelayFeed) stop(idx int) {
 	}
 }
 
-// frame hands one 8-bit 4:2:0 picture of channel idx to its encoder,
-// scaled to the preview size. The encoder drops the oldest queued picture
-// when it falls behind, so the channel's output goroutine never waits.
+// frame hands one picture of channel idx to its encoder: 8-bit 4:2:0, or
+// 10-bit 4:2:2 as a 10-bit pipeline's idle black is. The channel's output
+// goroutine only copies it, into a reused buffer; the encoder converts and
+// scales it on its own goroutine and drops the oldest queued picture when
+// it falls behind.
 func (f *playoutRelayFeed) frame(idx int, yuv []byte, w, h int, pts int64) {
 	if idx < 0 || idx >= len(f.encs) {
 		return
 	}
 	enc := f.encs[idx].Load()
-	if enc == nil || len(yuv) != w*h*3/2 {
+	if enc == nil || (len(yuv) != w*h*3/2 && len(yuv) != w*h*4) {
 		return
 	}
-	bp := f.bufs.Get().(*[]byte)
-	transition.ScaleYUV420(yuv, w, h, *bp, f.w, f.h)
-	enc.SendOwned(*bp, f.w, f.h, pts, func([]byte) { f.bufs.Put(bp) })
+	bp, _ := f.bufs.Get().(*[]byte)
+	if bp == nil {
+		bp = new([]byte)
+	}
+	if cap(*bp) < len(yuv) {
+		*bp = make([]byte, len(yuv))
+	}
+	*bp = (*bp)[:len(yuv)]
+	copy(*bp, yuv)
+	enc.SendOwned(*bp, w, h, pts, func([]byte) { f.bufs.Put(bp) })
 }
 
 // playoutChannelIDFromKey returns N for "playout:N", 0 for anything else.

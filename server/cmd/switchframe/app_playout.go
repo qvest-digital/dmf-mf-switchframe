@@ -112,7 +112,7 @@ func (a *App) initPlayout() error {
 
 	// CPU encoders for the relays no GPU preview encoder feeds.
 	relayW, relayH := parsePreviewResolution(a.cfg.PreviewResolution)
-	relayFeed := newPlayoutRelayFeed(relayW, relayH, a.cfg.PreviewBitrate, pf.FPSNum, pf.FPSDen, a.cfg.PreviewFrameInterval)
+	relayFeed := newPlayoutRelayFeed(relayW, relayH, a.cfg.PreviewBitrate, a.cfg.PreviewFrameInterval)
 
 	// Channel lifecycle: register/unregister as switcher sources.
 	mgr.OnChannelLifecycle(
@@ -171,7 +171,8 @@ func (a *App) initPlayout() error {
 				})
 				slog.Info("playout: GPU preview encoder registered", "key", key)
 			} else if idx >= 0 && idx < playout.MaxChannels {
-				relayFeed.start(idx, key, a.playoutRelays[idx])
+				curPF := a.sw.PipelineFormat()
+				relayFeed.start(idx, key, a.playoutRelays[idx], curPF.FPSNum, curPF.FPSDen)
 			}
 		},
 		// onStop: unregister playout channel source.
