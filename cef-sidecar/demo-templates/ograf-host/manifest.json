@@ -1,0 +1,4 @@
+{
+  "name": "OGraf host",
+  "description": "Loads the OGraf graphic whose https manifest URL is appended to this template's URL as ?manifest=<url>."
+}

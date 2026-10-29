@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>OGraf host</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+</head>
+<body>
+<script type="module">
+// Hosts the OGraf graphic whose manifest ?manifest= names: a graphic
+// published as a manifest and a module is not a page the sidecar can load.
+// Only https manifests and modules are loaded; the engine checks this page's
+// URL, not the URLs in its query.
+//
+// adapter.js takes a page carrying an ograf-manifest link for OGraf and
+// drives the first custom element with playAction in it, so the link goes in
+// only once the graphic has loaded and can play. The adapter is then asked to
+// detect again and the result is reported through the title, as the sidecar
+// reads it, which is also what makes the engine send the graphic its data.
+
+const FORMAT_TITLE = 'switchframe-format:';
+
+function httpsURL(raw, base) {
+  const u = new URL(raw, base);
+  if (u.protocol !== 'https:') {
+    throw new Error('not an https URL: ' + u.href);
+  }
+  return u;
+}
+
+function adapterReady() {
+  return new Promise((resolve) => {
+    const poll = () => (window.__switchframe ? resolve(window.__switchframe) : setTimeout(poll, 50));
+    poll();
+  });
+}
+
+async function host() {
+  const param = new URLSearchParams(location.search).get('manifest');
+  if (!param) {
+    throw new Error('no ?manifest= given');
+  }
+  const manifestURL = httpsURL(param);
+  const res = await fetch(manifestURL);
+  if (!res.ok) {
+    throw new Error('manifest ' + manifestURL.href + ': HTTP ' + res.status);
+  }
+  const manifest = await res.json();
+  if (typeof manifest.main !== 'string') {
+    throw new Error('manifest ' + manifestURL.href + ' names no main module');
+  }
+  const mod = await import(httpsURL(manifest.main, manifestURL).href);
+
+  customElements.define('ograf-host-graphic', mod.default);
+  const el = document.createElement('ograf-host-graphic');
+  document.body.appendChild(el);
+  await el.load({
+    data: {},
+    renderType: 'realtime',
+    renderCharacteristics: {
+      resolution: { width: window.innerWidth, height: window.innerHeight },
+    },
+  });
+
+  const link = document.createElement('link');
+  link.rel = 'ograf-manifest';
+  link.href = manifestURL.href;
+  document.head.appendChild(link);
+
+  const adapter = await adapterReady();
+  adapter.detect();
+  document.title = FORMAT_TITLE + adapter.format;
+}
+
+host().catch((err) => console.error('ograf-host:', err.message));
+</script>
+</body>
+</html>
