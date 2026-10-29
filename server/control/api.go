@@ -580,6 +580,9 @@ type API struct {
 	colorGradeMgr      ColorGradeManager
 	sourceCorrectorMgr SourceCorrectorManager
 	htmlGfxMgr         HTMLGfxManager
+	// layerBindMu orders binding an HTML5 browser to a layer against a
+	// layer import, which would orphan the browser.
+	layerBindMu        sync.Mutex
 	inviteTokens       map[string]string // token -> role; nil = no invite gating
 	sessionAPIToken    string            // used to bypass invite token requirement for session owner
 	demoMode           bool              // relaxes operator-register auth gate; must match NoopAuthMiddleware at transport

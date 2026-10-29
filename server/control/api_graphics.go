@@ -274,6 +274,8 @@ func (a *API) handleGraphicsImport(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	a.layerBindMu.Lock()
+	defer a.layerBindMu.Unlock()
 	if a.htmlGfxMgr != nil {
 		for _, l := range a.compositor.Status().Layers {
 			if a.htmlGfxMgr.BrowserForLayer(l.ID) >= 0 {

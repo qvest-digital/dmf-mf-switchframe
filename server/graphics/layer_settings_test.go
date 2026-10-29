@@ -2,8 +2,11 @@ package graphics
 
 import (
 	"bytes"
+	"compress/zlib"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
@@ -177,4 +180,63 @@ func TestImport_Validation(t *testing.T) {
 			require.Equal(t, before, c.ExportLayers(), "a refused import changes nothing")
 		})
 	}
+}
+
+// hugePNG returns a valid PNG of a few hundred bytes whose header declares
+// w x h pixels: decoding it would allocate w*h*4 bytes.
+func hugePNG(t *testing.T, w, h uint32) []byte {
+	t.Helper()
+	chunk := func(typ string, data []byte) []byte {
+		var b bytes.Buffer
+		_ = binary.Write(&b, binary.BigEndian, uint32(len(data)))
+		b.WriteString(typ)
+		b.Write(data)
+		_ = binary.Write(&b, binary.BigEndian, crc32.ChecksumIEEE(append([]byte(typ), data...)))
+		return b.Bytes()
+	}
+	var ihdr bytes.Buffer
+	_ = binary.Write(&ihdr, binary.BigEndian, w)
+	_ = binary.Write(&ihdr, binary.BigEndian, h)
+	ihdr.Write([]byte{8, 6, 0, 0, 0})
+	var z bytes.Buffer
+	zw := zlib.NewWriter(&z)
+	_, _ = zw.Write(make([]byte, 64))
+	_ = zw.Close()
+	var out bytes.Buffer
+	out.WriteString("\x89PNG\r\n\x1a\n")
+	out.Write(chunk("IHDR", ihdr.Bytes()))
+	out.Write(chunk("IDAT", z.Bytes()))
+	out.Write(chunk("IEND", nil))
+	return out.Bytes()
+}
+
+func TestSetImage_RefusesOversizedPNG(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	id := addLayers(t, c, 1)[0]
+	for _, dims := range [][2]uint32{{100000, 1}, {1, MaxImageDimension + 1}, {30000, 30000}} {
+		data := hugePNG(t, dims[0], dims[1])
+		require.Less(t, len(data), 1024)
+		require.ErrorIs(t, c.SetImage(id, "bomb.png", data), ErrImageTooLarge, "%v", dims)
+	}
+	_, _, err := c.GetImage(id)
+	require.ErrorIs(t, err, ErrNoImage)
+	require.False(t, layerByID(t, c, id).Active)
+
+	// The largest allowed size still goes through the header check.
+	require.NotErrorIs(t, c.SetImage(id, "edge.png", hugePNG(t, MaxImageDimension, 1)), ErrImageTooLarge)
+}
+
+func TestImport_RefusesOversizedPNG(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	addLayers(t, c, 1)
+	before := c.ExportLayers()
+	doc := LayerExport{Format: ExportFormat, Version: ExportVersion, Layers: []LayerRecord{
+		{ID: 1, Image: &LayerImage{Name: "bomb.png", PNG: base64.StdEncoding.EncodeToString(hugePNG(t, 100000, 1))}},
+	}}
+	err := c.ImportLayers(doc)
+	require.ErrorIs(t, err, ErrInvalidLayerExport)
+	require.Contains(t, err.Error(), "larger than")
+	require.Equal(t, before, c.ExportLayers())
 }

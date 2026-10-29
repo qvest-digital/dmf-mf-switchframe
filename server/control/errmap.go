@@ -103,6 +103,7 @@ var errorMappings = []errorMapping{
 	{graphics.ErrInvalidLayerOrder, http.StatusBadRequest},
 	{graphics.ErrInvalidLayerExport, http.StatusBadRequest},
 	{graphics.ErrLayersOnAir, http.StatusConflict},
+	{graphics.ErrImageTooLarge, http.StatusBadRequest},
 	{audio.ErrInvalidTrim, http.StatusBadRequest},
 	{audio.ErrInvalidBand, http.StatusBadRequest},
 	{audio.ErrInvalidFrequency, http.StatusBadRequest},

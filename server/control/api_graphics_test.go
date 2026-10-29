@@ -981,3 +981,18 @@ func TestGraphicsExportImport(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, doGraphicsReq(t, api, "POST", "/api/graphics/import", `{"format":"x","version":1,"layers":[]}`).Code)
 	require.Equal(t, http.StatusBadRequest, doGraphicsReq(t, api, "POST", "/api/graphics/import", `not json`).Code)
 }
+
+// An import would leave an HTML5 browser driving a layer that no longer
+// exists, so it is refused while one is bound.
+func TestGraphicsImport_RefusedWhileHTML5Bound(t *testing.T) {
+	mgr := newMockHTMLGfxManager(4)
+	api, comp := setupHTML5GfxTestAPI(t, mgr)
+	id := addLayerViaAPI(t, api)
+	_, err := mgr.AllocateBrowser(id)
+	require.NoError(t, err)
+
+	doc := `{"format":"switchframe-graphics","version":1,"layers":[{"id":7}]}`
+	rec := doGraphicsReq(t, api, "POST", "/api/graphics/import", doc)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	require.Equal(t, id, comp.Status().Layers[0].ID)
+}

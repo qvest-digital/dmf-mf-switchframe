@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"image/draw"
-	"image/png"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -203,12 +201,10 @@ func (c *Compositor) ImportLayers(doc LayerExport) error {
 			if err != nil {
 				return fmt.Errorf("%w: layer %d: image: %v", ErrInvalidLayerExport, rec.ID, err)
 			}
-			img, err := png.Decode(bytes.NewReader(data))
+			rgba, err := decodePNG(data)
 			if err != nil {
 				return fmt.Errorf("%w: layer %d: image: %v", ErrInvalidLayerExport, rec.ID, err)
 			}
-			rgba := image.NewRGBA(image.Rect(0, 0, img.Bounds().Dx(), img.Bounds().Dy()))
-			draw.Draw(rgba, rgba.Bounds(), img, img.Bounds().Min, draw.Src)
 			p.png, p.rgba = data, rgba
 		}
 		layers = append(layers, p)
