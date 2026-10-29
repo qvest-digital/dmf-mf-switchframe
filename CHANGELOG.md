@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.0.0-rc.33](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.32...mxl-v1.0.0-rc.33) (2026-10-29)
+
+
+### Features
+
+* **metrics:** expose outputs, the recorder and SRT connections ([270f298](https://github.com/qvest-digital/dmf-mf-switchframe/commit/270f2986ba3e6c9fc24089c491d3e1fe62497323))
+* **metrics:** expose playout, clip players, replay and graphics ([cadf047](https://github.com/qvest-digital/dmf-mf-switchframe/commit/cadf047bfc3b47f7893b20cab6ff601f35231abc))
+* **metrics:** expose the engine pair and the NMOS registration ([ff0fe2f](https://github.com/qvest-digital/dmf-mf-switchframe/commit/ff0fe2f39b4ddb6180cf89219f42a0de6d9a0430))
+* **metrics:** expose the program, its sources and the audio mix ([627299e](https://github.com/qvest-digital/dmf-mf-switchframe/commit/627299e97f0ad0060770c437b2004c75fa1b0257))
+* **mxl:** count what an MXL input's readers lose ([cad2779](https://github.com/qvest-digital/dmf-mf-switchframe/commit/cad27792a7c2771fb767078bdaebb8198e13ef1b))
+* **output:** count the media time an RTMP output sends and its drops ([cad2779](https://github.com/qvest-digital/dmf-mf-switchframe/commit/cad27792a7c2771fb767078bdaebb8198e13ef1b))
+* **output:** send each destination from one engine of a pair, fail over ([#148](https://github.com/qvest-digital/dmf-mf-switchframe/issues/148)) ([c20cae7](https://github.com/qvest-digital/dmf-mf-switchframe/commit/c20cae74b13240cba737761d82162d219ff7f0bd))
+
+
+### Bug Fixes
+
+* **control:** log successful reads at debug, collapse repeated failures ([#144](https://github.com/qvest-digital/dmf-mf-switchframe/issues/144)) ([cd3f45f](https://github.com/qvest-digital/dmf-mf-switchframe/commit/cd3f45f4bf4f2f8584b07f5032e1365cbb2d0368))
+* **output:** delay RTMP video by the lip-sync offset like TS ([#155](https://github.com/qvest-digital/dmf-mf-switchframe/issues/155)) ([e562cc1](https://github.com/qvest-digital/dmf-mf-switchframe/commit/e562cc18499d7a327bdaf1608759c1e7414ae4c3))
+* **playout:** report an item an engine cannot open as a pair mismatch ([#153](https://github.com/qvest-digital/dmf-mf-switchframe/issues/153)) ([b8c7ed0](https://github.com/qvest-digital/dmf-mf-switchframe/commit/b8c7ed0e1ca433a41b56d785cc2a29ed616cea4c))
+* **prism:** cancel the context each stream is opened on ([#163](https://github.com/qvest-digital/dmf-mf-switchframe/issues/163)) ([31c16b4](https://github.com/qvest-digital/dmf-mf-switchframe/commit/31c16b41ab095f83d51b16362cf1a41166d0190f))
+* **switcher:** use typed atomics for 64-bit counters ([#160](https://github.com/qvest-digital/dmf-mf-switchframe/issues/160)) ([af60f6a](https://github.com/qvest-digital/dmf-mf-switchframe/commit/af60f6a7822139710a11c80a98014c05964934ea))
+* **ui:** hold the reload while preset, label and IO forms hold input ([#161](https://github.com/qvest-digital/dmf-mf-switchframe/issues/161)) ([93fcf64](https://github.com/qvest-digital/dmf-mf-switchframe/commit/93fcf64392c77e1cde9e7e0b1d130b2e093eb3e5))
+* **ui:** reload a tab left on a build the engine no longer serves ([#145](https://github.com/qvest-digital/dmf-mf-switchframe/issues/145)) ([256590d](https://github.com/qvest-digital/dmf-mf-switchframe/commit/256590d921f0c910d431f5f18932aac83bde12d6))
+
 ## [1.0.0-rc.32](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.31...mxl-v1.0.0-rc.32) (2026-10-29)
 
 
