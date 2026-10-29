@@ -1,5 +1,6 @@
 <script lang="ts">
-	import type { SecondaryEvent, SCTE35EventData, SCTE35SegDescriptor } from '$lib/api/types';
+	import type { SecondaryEvent, SCTE35EventData, SCTE35SegDescriptor, GraphicsLayerState } from '$lib/api/types';
+	import { layerLabel, layerRef } from '$lib/graphics/layer-config';
 
 	// ── SCTE-35 Preset definitions ──
 	interface SCTE35Preset {
@@ -59,9 +60,16 @@
 		events: SecondaryEvent[];
 		onUpdate: (events: SecondaryEvent[]) => void;
 		itemDurationMs?: number;
+		/** The engine's graphics layers, which graphics events address by id. */
+		graphicsLayers?: GraphicsLayerState[];
 	}
 
-	let { events, onUpdate, itemDurationMs }: Props = $props();
+	let { events, onUpdate, itemDurationMs, graphicsLayers = [] }: Props = $props();
+
+	function eventLayerLabel(id: number): string {
+		const layer = graphicsLayers.find((l) => l.id === id);
+		return layer ? `${layerRef(id)} ${layerLabel(layer)}` : `${layerRef(id)} (no such layer)`;
+	}
 
 	let expanded = $state(false);
 	let editingIndex = $state<number | null>(null);
@@ -188,6 +196,9 @@
 				<div class="sec-row">
 					<span class="sec-type-dot" style="background: {eventTypeColors[evt.type] ?? 'var(--text-tertiary)'}"></span>
 					<span class="sec-type-label">{eventTypeLabels[evt.type] ?? evt.type}</span>
+					{#if isGraphicsType(evt.type)}
+						<span class="sec-layer" title="Graphics layer">{eventLayerLabel(evt.layer ?? 0)}</span>
+					{/if}
 					<span class="sec-offset">{formatOffset(evt)}</span>
 					<button class="sec-btn sec-edit-btn" onclick={() => (editingIndex = editingIndex === idx ? null : idx)}>
 						{editingIndex === idx ? 'Done' : 'Edit'}
@@ -235,13 +246,18 @@
 						{#if isGraphicsType(evt.type)}
 							<label class="sec-field">
 								<span class="sec-field-label">Layer</span>
-								<input
-									class="sec-input"
-									type="number"
-									min="0"
+								<select
+									class="sec-select"
 									value={evt.layer ?? 0}
-									onchange={(e) => updateEvent(idx, { layer: parseInt((e.target as HTMLInputElement).value) || 0 })}
-								/>
+									onchange={(e) => updateEvent(idx, { layer: parseInt((e.target as HTMLSelectElement).value) || 0 })}
+								>
+									{#each graphicsLayers as gl (gl.id)}
+										<option value={gl.id}>{layerRef(gl.id)} {layerLabel(gl)}</option>
+									{/each}
+									{#if !graphicsLayers.some((gl) => gl.id === (evt.layer ?? 0))}
+										<option value={evt.layer ?? 0}>{layerRef(evt.layer ?? 0)} (no such layer)</option>
+									{/if}
+								</select>
 							</label>
 							{#if evt.type === 'graphics_on' || evt.type === 'graphics_update'}
 								<label class="sec-field">
@@ -652,6 +668,15 @@
 		font-size: 9px;
 		color: var(--text-secondary);
 		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.sec-layer {
+		font-size: 8px;
+		color: var(--text-secondary);
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;

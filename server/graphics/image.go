@@ -12,22 +12,44 @@ import (
 // ErrNoImage is returned when no image is stored on a layer.
 var ErrNoImage = errors.New("graphics: no image on this layer")
 
+// ErrImageTooLarge is returned for a PNG wider or taller than
+// MaxImageDimension.
+var ErrImageTooLarge = fmt.Errorf("graphics: image larger than %dx%d", MaxImageDimension, MaxImageDimension)
+
+// MaxImageDimension bounds a layer image's width and height.
+const MaxImageDimension = 8192
+
+// decodePNG decodes a PNG to RGBA. The dimensions are read from the header
+// first: png.Decode allocates the full image from them, so a few hundred
+// compressed bytes could otherwise ask for gigabytes.
+func decodePNG(data []byte) (*image.RGBA, error) {
+	cfg, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("decode png: %w", err)
+	}
+	if cfg.Width > MaxImageDimension || cfg.Height > MaxImageDimension {
+		return nil, ErrImageTooLarge
+	}
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("decode png: %w", err)
+	}
+	b := img.Bounds()
+	rgba := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	draw.Draw(rgba, rgba.Bounds(), img, b.Min, draw.Src)
+	return rgba, nil
+}
+
 // SetImage stores a PNG image on a layer. The PNG is decoded to RGBA for
 // compositing, and the original PNG bytes are kept for retrieval via GetImage.
 func (c *Compositor) SetImage(id int, name string, pngData []byte) error {
 	// Decode PNG outside the lock
-	img, err := png.Decode(bytes.NewReader(pngData))
+	rgba, err := decodePNG(pngData)
 	if err != nil {
-		return fmt.Errorf("decode png: %w", err)
+		return err
 	}
-
-	bounds := img.Bounds()
-	w := bounds.Dx()
-	h := bounds.Dy()
-
-	// Convert to RGBA
-	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
-	draw.Draw(rgba, rgba.Bounds(), img, bounds.Min, draw.Src)
+	w := rgba.Bounds().Dx()
+	h := rgba.Bounds().Dy()
 
 	c.mu.Lock()
 	if c.closed {

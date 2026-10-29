@@ -87,7 +87,9 @@ func (a *API) handleHTML5Load(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.layerBindMu.Lock()
 	browserID, err := a.htmlGfxMgr.AllocateBrowser(layerID)
+	a.layerBindMu.Unlock()
 	if err != nil {
 		if strings.Contains(err.Error(), "pool exhausted") {
 			httperr.Write(w, http.StatusConflict, err.Error())

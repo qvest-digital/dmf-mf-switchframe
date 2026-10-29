@@ -917,3 +917,82 @@ func TestHandleImageDelete(t *testing.T) {
 
 	require.Equal(t, http.StatusNoContent, rec.Code)
 }
+
+func doGraphicsReq(t *testing.T, api *API, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestGraphicsLayerSettings_SharedThroughState(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+
+	rec := doGraphicsReq(t, api, "PATCH", fmt.Sprintf("/api/graphics/%d", id),
+		`{"name":"Score","config":{"template":"score-bug","fields":{"home":"FCB"}}}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	l := comp.Status().Layers[0]
+	require.Equal(t, "Score", l.Name)
+	require.JSONEq(t, `{"template":"score-bug","fields":{"home":"FCB"}}`, string(l.Config))
+
+	require.Equal(t, http.StatusBadRequest, doGraphicsReq(t, api, "PATCH", fmt.Sprintf("/api/graphics/%d", id), `{"config":[1]}`).Code)
+	require.Equal(t, http.StatusNotFound, doGraphicsReq(t, api, "PATCH", "/api/graphics/42", `{"name":"x"}`).Code)
+}
+
+func TestGraphicsLayerOrder(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	a, b, c := addLayerViaAPI(t, api), addLayerViaAPI(t, api), addLayerViaAPI(t, api)
+
+	rec := doGraphicsReq(t, api, "PUT", "/api/graphics/order", fmt.Sprintf(`{"ids":[%d,%d,%d]}`, c, a, b))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var got []int
+	for _, l := range comp.Status().Layers {
+		got = append(got, l.ID)
+	}
+	require.Equal(t, []int{c, a, b}, got)
+
+	require.Equal(t, http.StatusBadRequest, doGraphicsReq(t, api, "PUT", "/api/graphics/order", fmt.Sprintf(`{"ids":[%d]}`, a)).Code)
+}
+
+func TestGraphicsExportImport(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	a, b := addLayerViaAPI(t, api), addLayerViaAPI(t, api)
+	require.Equal(t, http.StatusOK, doGraphicsReq(t, api, "PATCH", fmt.Sprintf("/api/graphics/%d", a), `{"name":"Bug","config":{"template":"network-bug"}}`).Code)
+	require.Equal(t, http.StatusOK, doGraphicsReq(t, api, "PUT", "/api/graphics/order", fmt.Sprintf(`{"ids":[%d,%d]}`, b, a)).Code)
+
+	rec := doGraphicsReq(t, api, "GET", "/api/graphics/export", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	exported := rec.Body.String()
+
+	// Wipe the layers, then import the export back.
+	require.Equal(t, http.StatusNoContent, doGraphicsReq(t, api, "DELETE", fmt.Sprintf("/api/graphics/%d", a), "").Code)
+	require.Equal(t, http.StatusNoContent, doGraphicsReq(t, api, "DELETE", fmt.Sprintf("/api/graphics/%d", b), "").Code)
+	addLayerViaAPI(t, api)
+
+	rec = doGraphicsReq(t, api, "POST", "/api/graphics/import", exported)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.JSONEq(t, exported, doGraphicsReq(t, api, "GET", "/api/graphics/export", "").Body.String())
+	require.Len(t, comp.Status().Layers, 2)
+
+	require.Equal(t, http.StatusBadRequest, doGraphicsReq(t, api, "POST", "/api/graphics/import", `{"format":"x","version":1,"layers":[]}`).Code)
+	require.Equal(t, http.StatusBadRequest, doGraphicsReq(t, api, "POST", "/api/graphics/import", `not json`).Code)
+}
+
+// An import would leave an HTML5 browser driving a layer that no longer
+// exists, so it is refused while one is bound.
+func TestGraphicsImport_RefusedWhileHTML5Bound(t *testing.T) {
+	mgr := newMockHTMLGfxManager(4)
+	api, comp := setupHTML5GfxTestAPI(t, mgr)
+	id := addLayerViaAPI(t, api)
+	_, err := mgr.AllocateBrowser(id)
+	require.NoError(t, err)
+
+	doc := `{"format":"switchframe-graphics","version":1,"layers":[{"id":7}]}`
+	rec := doGraphicsReq(t, api, "POST", "/api/graphics/import", doc)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	require.Equal(t, id, comp.Status().Layers[0].ID)
+}

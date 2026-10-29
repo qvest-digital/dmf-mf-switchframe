@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -1621,5 +1622,34 @@ func TestApplyFullSnapshot_SourceDelayErrorWarns(t *testing.T) {
 	}
 	if !mock.wasCalled("SetSourcePosition") {
 		t.Error("SetSourcePosition not called (best-effort violated)")
+	}
+}
+
+type mockSettingsApplyTarget struct {
+	*mockApplyTarget
+	names   map[int]string
+	configs map[int]string
+}
+
+func (m *mockSettingsApplyTarget) SetGraphicsLayerSettings(id int, name string, config json.RawMessage) error {
+	m.names[id] = name
+	m.configs[id] = string(config)
+	return nil
+}
+
+// A peer engine's snapshot carries what an operator set up on each layer.
+func TestApplyFullSnapshot_GraphicsLayerSettings(t *testing.T) {
+	target := &mockSettingsApplyTarget{mockApplyTarget: newMockApplyTarget(), names: map[int]string{}, configs: map[int]string{}}
+	snap := FullStateSnapshot{
+		Version: "1",
+		Graphics: []GraphicsLayerSnapshot{
+			{ID: 3, Name: "Bug", Config: json.RawMessage(`{"template":"network-bug"}`)},
+		},
+	}
+	if w := ApplyFullSnapshot(context.Background(), snap, target); len(w) > 0 {
+		t.Fatalf("warnings: %v", w)
+	}
+	if target.names[3] != "Bug" || target.configs[3] != `{"template":"network-bug"}` {
+		t.Fatalf("settings not applied: %v %v", target.names, target.configs)
 	}
 }

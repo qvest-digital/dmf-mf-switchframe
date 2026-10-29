@@ -5,6 +5,9 @@
 	import { graphicsListHTML5Templates, type HTML5TemplateInfo } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 	import {
+		type AnimConfig, type FlyConfig, type TickerConfig, type SourceMode, DEFAULT_TICKER,
+	} from '$lib/graphics/layer-config';
+	import {
 		ICON_LAYERS, ICON_TEXT, ICON_IMAGE, ICON_TICKER, ICON_CODE, ICON_FILM,
 		ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_UPLOAD, ICON_TRASH,
 		renderIcon,
@@ -47,29 +50,7 @@
 		return [];
 	}
 
-	interface AnimConfig {
-		mode: string;
-		minAlpha: number;
-		maxAlpha: number;
-		speedHz: number;
-		toAlpha: number;
-		durationMs: number;
-	}
-
-	interface FlyConfig {
-		direction: string;
-		durationMs: number;
-	}
-
-	interface TickerStartConfig {
-		text: string;
-		fontSize: number;
-		speed: number;
-		bold: boolean;
-		loop: boolean;
-	}
-
-	type SourceMode = 'template' | 'image' | 'ticker' | 'html5' | 'sequence';
+	type TickerStartConfig = TickerConfig;
 
 	interface Props {
 		layer: GraphicsLayerState;
@@ -78,6 +59,8 @@
 		fields: Record<string, string>;
 		animConfig: AnimConfig;
 		flyConfig: FlyConfig;
+		tickerConfig?: TickerConfig;
+		onTickerConfigChange?: (key: keyof TickerConfig, value: string | number | boolean) => void;
 		publisher: GraphicsPublisher;
 		onModeChange: (mode: SourceMode) => void;
 		onTemplateChange: (tplId: string) => void;
@@ -112,7 +95,8 @@
 	}
 
 	let {
-		layer, sourceMode, templateId, fields, animConfig, flyConfig, publisher,
+		layer, sourceMode, templateId, fields, animConfig, flyConfig,
+		tickerConfig = DEFAULT_TICKER, onTickerConfigChange = () => {}, publisher,
 		onModeChange, onTemplateChange, onFieldChange, onAnimConfigChange, onFlyConfigChange,
 		onCutOn, onAutoOn, onCutOff, onAutoOff,
 		onFlyIn, onFlyOut, onAnimate, onAnimateStop,
@@ -127,11 +111,7 @@
 	let flyOpen = $state(false);
 	let animOpen = $state(false);
 
-	let tickerText = $state('Breaking News: Welcome to Switchframe');
-	let tickerFontSize = $state(32);
-	let tickerSpeed = $state(100);
-	let tickerBold = $state(false);
-	let tickerLoop = $state(true);
+	const tickerText = $derived(tickerConfig.text);
 
 	let fileInput = $state<HTMLInputElement | null>(null);
 	let seqFileInput = $state<HTMLInputElement | null>(null);
@@ -481,31 +461,32 @@
 						class="field-inp"
 						type="text"
 						placeholder="Ticker text..."
-						bind:value={tickerText}
+						value={tickerConfig.text}
+						oninput={(e) => onTickerConfigChange('text', (e.target as HTMLInputElement).value)}
 						aria-label="Ticker text"
 					/>
 					<div class="ticker-params">
 						<label class="ctl-param" title="Speed (px/s)">
 							<span>spd</span>
-							<input type="number" min="20" max="500" step="10" bind:value={tickerSpeed} />
+							<input type="number" min="20" max="500" step="10" value={tickerConfig.speed} onchange={(e) => onTickerConfigChange('speed', Number((e.target as HTMLInputElement).value) || DEFAULT_TICKER.speed)} />
 						</label>
 						<label class="ctl-param" title="Font size">
 							<span>sz</span>
-							<input type="number" min="16" max="72" step="2" bind:value={tickerFontSize} />
+							<input type="number" min="16" max="72" step="2" value={tickerConfig.fontSize} onchange={(e) => onTickerConfigChange('fontSize', Number((e.target as HTMLInputElement).value) || DEFAULT_TICKER.fontSize)} />
 						</label>
 						<label class="ctl-check" title="Bold">
-							<input type="checkbox" bind:checked={tickerBold} />
+							<input type="checkbox" checked={tickerConfig.bold} onchange={(e) => onTickerConfigChange('bold', (e.target as HTMLInputElement).checked)} />
 							<span>B</span>
 						</label>
 						<label class="ctl-check" title="Loop">
-							<input type="checkbox" bind:checked={tickerLoop} />
+							<input type="checkbox" checked={tickerConfig.loop} onchange={(e) => onTickerConfigChange('loop', (e.target as HTMLInputElement).checked)} />
 							<span>Loop</span>
 						</label>
 						{#if tickerActive}
 							<button class="act-btn anim-stop" onclick={onTickerStop}>STOP</button>
 							<button class="act-btn fly" onclick={() => onTickerUpdateText(tickerText)}>UPDATE</button>
 						{:else}
-							<button class="act-btn anim-start" onclick={() => onTickerStart({ text: tickerText, fontSize: tickerFontSize, speed: tickerSpeed, bold: tickerBold, loop: tickerLoop })}>START</button>
+							<button class="act-btn anim-start" onclick={() => onTickerStart({ ...tickerConfig })}>START</button>
 						{/if}
 					</div>
 				</div>
