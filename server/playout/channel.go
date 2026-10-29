@@ -1649,16 +1649,26 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 // keeping its demuxed frames and decoder. It reports false when iter is no
 // longer current or cannot rewind.
 func (c *Channel) rewindClip(iter FrameIterator) bool {
+	l, ok := iter.(LoopingIterator)
+	if !ok {
+		return false
+	}
+	c.mu.Lock()
+	current := c.clipIter == iter
+	c.mu.Unlock()
+	if !current {
+		return false
+	}
+	// Rewind runs outside c.mu, as Next does: a pass that cannot continue
+	// on its decoder waits for a fresh one to open. A concurrent SeekToItem
+	// may close iter meanwhile, which the iterator guards against itself.
+	err := l.Rewind()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.clipIter != iter {
 		return false
 	}
-	l, ok := iter.(LoopingIterator)
-	if !ok {
-		return false
-	}
-	if err := l.Rewind(); err != nil {
+	if err != nil {
 		slog.Warn("playout: loop rewind failed, reopening", "item", c.clipItemID, "error", err)
 		return false
 	}

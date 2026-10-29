@@ -3586,6 +3586,49 @@ func TestChannel_LoopClip_WrapsWithoutGapOrReopen(t *testing.T) {
 	require.Equal(t, passes, prov.passCount(loop.AssetURI))
 }
 
+// rewindIterHook is a looping slice iterator that runs a hook on Rewind.
+type rewindIterHook struct {
+	*SliceIterator
+	hook func()
+}
+
+func (r *rewindIterHook) Rewind() error {
+	r.hook()
+	return r.SliceIterator.Rewind()
+}
+
+// A clip that cannot continue on its decoder rewinds onto a fresh one,
+// which takes as long as a decoder takes to open. That runs outside c.mu,
+// so Status and API calls are not held up behind it, and the rewind is
+// dropped when a SeekToItem replaced the iterator meanwhile.
+func TestChannel_RewindClip_RunsOutsideLock(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{})
+	iter := &rewindIterHook{SliceIterator: NewSliceIterator(taggedFrames(3))}
+	held := false
+	iter.hook = func() {
+		if held = !ch.mu.TryLock(); !held {
+			ch.mu.Unlock()
+		}
+	}
+	ch.mu.Lock()
+	ch.clipIter, ch.clipFrame, ch.clipOutputFrame = iter, 3, 3
+	ch.mu.Unlock()
+	require.True(t, ch.rewindClip(iter))
+	require.False(t, held, "c.mu held during Rewind")
+	require.Zero(t, ch.clipFrame)
+	require.Zero(t, ch.clipOutputFrame)
+
+	seeked := NewSliceIterator(taggedFrames(3))
+	iter.hook = func() {
+		if ch.mu.TryLock() {
+			ch.clipIter, ch.clipFrame = seeked, 2
+			ch.mu.Unlock()
+		}
+	}
+	require.False(t, ch.rewindClip(iter), "rewound an iterator a seek replaced")
+	require.Equal(t, 2, ch.clipFrame, "the seek's position was reset")
+}
+
 // time.Ticker drops the ticks a slow receiver misses. The run loop makes
 // them up, one extra per period, so a tick that blocks for several frame
 // periods does not cost the output frames.
