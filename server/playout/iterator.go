@@ -19,6 +19,19 @@ type FrameIterator interface {
 	Close()
 }
 
+// LoopingIterator is a FrameIterator that plays its asset again without
+// reopening it. Reopening a file demuxes it again and starts a fresh decoder,
+// which returns nothing until its pipeline has filled; on the channel's tick
+// goroutine that stalls the output at every pass.
+type LoopingIterator interface {
+	FrameIterator
+	// SetLoop says whether another pass follows the current one.
+	SetLoop(loop bool)
+	// Rewind starts the next pass at the first frame. It is called once Next
+	// has reported the end of the current pass.
+	Rewind() error
+}
+
 // AssetProvider opens asset URIs and returns frame iterators.
 type AssetProvider interface {
 	Open(assetURI string) (FrameIterator, error)
@@ -62,6 +75,15 @@ func (s *SliceIterator) TotalFrames() int {
 
 // Close is a no-op for SliceIterator.
 func (s *SliceIterator) Close() {}
+
+// SetLoop is a no-op: a slice needs nothing to play it again.
+func (s *SliceIterator) SetLoop(bool) {}
+
+// Rewind starts the slice over.
+func (s *SliceIterator) Rewind() error {
+	s.pos = 0
+	return nil
+}
 
 // ---------------------------------------------------------------------------
 // TrimIterator — applies in/out point trimming to another iterator.
@@ -163,6 +185,23 @@ func (t *TrimIterator) Seek(targetFrame int) error {
 	}
 	inFrames := int(float64(t.inMs) * fps / 1000.0)
 	return seeker.Seek(targetFrame + inFrames)
+}
+
+// SetLoop passes loop on to the inner iterator.
+func (t *TrimIterator) SetLoop(loop bool) {
+	if l, ok := t.inner.(LoopingIterator); ok {
+		l.SetLoop(loop)
+	}
+}
+
+// Rewind starts the inner iterator over. The base PTS stays: every pass
+// carries the same source PTS.
+func (t *TrimIterator) Rewind() error {
+	l, ok := t.inner.(LoopingIterator)
+	if !ok {
+		return fmt.Errorf("playout: trim rewind: inner iterator cannot rewind")
+	}
+	return l.Rewind()
 }
 
 // EstimateFPS delegates to the inner iterator.

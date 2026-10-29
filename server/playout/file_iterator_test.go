@@ -1341,3 +1341,210 @@ func TestFileFrameIterator_Seek_NoDecoderFactory(t *testing.T) {
 		t.Fatal("Seek() without decoder factory should return error")
 	}
 }
+
+// delayDecoder outputs each frame depth Decode calls after it was fed, as a
+// frame-threaded decoder does once its pipeline has filled. A picture is the
+// last byte of the frame's wire data.
+type delayDecoder struct {
+	depth   int
+	queue   [][]byte
+	decodes int
+	eosSent bool
+}
+
+func (d *delayDecoder) Decode(h264 []byte) ([]byte, int, int, error) {
+	d.decodes++
+	d.queue = append(d.queue, []byte{h264[len(h264)-1]})
+	if len(d.queue) <= d.depth {
+		return nil, 0, 0, fmt.Errorf("no output frame yet (buffering)")
+	}
+	pic := d.queue[0]
+	d.queue = d.queue[1:]
+	return pic, 1, 1, nil
+}
+
+func (d *delayDecoder) SendEOS() error {
+	d.eosSent = true
+	return nil
+}
+
+func (d *delayDecoder) ReceiveFrame() ([]byte, int, int, error) {
+	if len(d.queue) == 0 {
+		return nil, 0, 0, fmt.Errorf("drained")
+	}
+	pic := d.queue[0]
+	d.queue = d.queue[1:]
+	return pic, 1, 1, nil
+}
+
+func (d *delayDecoder) Close() {}
+
+// A looping iterator keeps its decoder across the wrap and feeds it the next
+// pass's first frames to get the last pictures out, as the clip player does.
+// Draining it instead would need a fresh decoder for the next pass, which
+// returns nothing until its pipeline has filled again: the tick that starts
+// the pass would decode depth+1 frames rather than one.
+func TestFileFrameIterator_LoopKeepsDecoderAcrossWrap(t *testing.T) {
+	const n, depth, passes = 10, 3, 4
+	encoded := make([]encodedFrame, n)
+	audio := make([]audioFrameInfo, n)
+	for i := range encoded {
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, 0x41, byte(i)}, pts: int64(i) * 3000, isKeyframe: i == 0}
+		audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: int64(i) * 3000}
+	}
+	dec := &delayDecoder{depth: depth}
+	created := 0
+	iter := &FileFrameIterator{
+		encodedFrames: encoded,
+		audioFrames:   audio,
+		decoder:       dec,
+		decoderFactory: func() (VideoDecoder, error) {
+			created++
+			return &delayDecoder{depth: depth}, nil
+		},
+		fps:         30,
+		totalFrames: n,
+	}
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	for pass := 0; pass < passes; pass++ {
+		if pass > 0 {
+			if err := iter.Rewind(); err != nil {
+				t.Fatalf("pass %d: Rewind: %v", pass, err)
+			}
+		}
+		var pics, sound []byte
+		for {
+			cur := iter.decoder.(*delayDecoder)
+			before := cur.decodes
+			f, err := iter.Next()
+			if err != nil {
+				t.Fatalf("pass %d: Next: %v", pass, err)
+			}
+			if f == nil {
+				break
+			}
+			if pass > 0 && cur.decodes-before != 1 {
+				t.Fatalf("pass %d picture %d took %d decodes, want 1", pass, len(pics), cur.decodes-before)
+			}
+			pics = append(pics, f.YUV[0])
+			for _, a := range f.AudioFrames {
+				sound = append(sound, a.Data[0])
+			}
+		}
+		want := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+		if string(pics) != string(want) {
+			t.Fatalf("pass %d pictures = %v, want %v", pass, pics, want)
+		}
+		if string(sound) != string(want) {
+			t.Fatalf("pass %d audio = %v, want %v", pass, sound, want)
+		}
+	}
+	if created != 0 {
+		t.Fatalf("%d decoders created after the first, want 0", created)
+	}
+	if dec.eosSent {
+		t.Fatal("the decoder was drained at a wrap")
+	}
+}
+
+// Rewinding a pass that was not played out (a trim out-point stops it early)
+// starts over on a fresh decoder: the old one still holds pictures from past
+// the out-point.
+func TestFileFrameIterator_RewindMidPassRestartsDecoder(t *testing.T) {
+	encoded := make([]encodedFrame, 10)
+	for i := range encoded {
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, 0x41, byte(i)}, pts: int64(i) * 3000, isKeyframe: i == 0}
+	}
+	created := 0
+	iter := &FileFrameIterator{
+		encodedFrames: encoded,
+		decoder:       &delayDecoder{depth: 2},
+		decoderFactory: func() (VideoDecoder, error) {
+			created++
+			return &delayDecoder{depth: 2}, nil
+		},
+		fps:         30,
+		totalFrames: 10,
+	}
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	for i := 0; i < 4; i++ {
+		if _, err := iter.Next(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := iter.Rewind(); err != nil {
+		t.Fatal(err)
+	}
+	f, err := iter.Next()
+	if err != nil || f == nil {
+		t.Fatalf("Next after Rewind = %v, %v", f, err)
+	}
+	if f.YUV[0] != 0 || created != 1 {
+		t.Fatalf("after rewind: picture %d on %d new decoders, want picture 0 on 1", f.YUV[0], created)
+	}
+}
+
+// With a real frame-threaded decoder, every pass of a looping iterator puts
+// out the same pictures as the first, on the one decoder.
+func TestFileFrameIterator_Integration_LoopPasses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	created := 0
+	factory := func() (VideoDecoder, error) {
+		created++
+		return codec.NewFFmpegDecoderWithThreads(nil, 4)
+	}
+	dec, err := factory()
+	if err != nil {
+		t.Skipf("FFmpeg decoder not available (non-cgo build?): %v", err)
+	}
+	dec.Close()
+	created = 0
+
+	iter, err := NewFileFrameIteratorWithDecoder(generateTestTSFile(t), factory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	var first [][]byte
+	for pass := 0; pass < 3; pass++ {
+		if pass > 0 {
+			if err := iter.Rewind(); err != nil {
+				t.Fatalf("pass %d: Rewind: %v", pass, err)
+			}
+		}
+		var pics [][]byte
+		for {
+			f, err := iter.Next()
+			if err != nil {
+				t.Fatalf("pass %d: Next: %v", pass, err)
+			}
+			if f == nil {
+				break
+			}
+			pics = append(pics, f.YUV)
+		}
+		if len(pics) != iter.TotalFrames() {
+			t.Fatalf("pass %d: %d pictures, want %d", pass, len(pics), iter.TotalFrames())
+		}
+		if pass == 0 {
+			first = pics
+			continue
+		}
+		for i := range pics {
+			if string(pics[i]) != string(first[i]) {
+				t.Fatalf("pass %d picture %d differs from the first pass", pass, i)
+			}
+		}
+	}
+	if created != 1 {
+		t.Fatalf("%d decoders created for 3 passes, want 1", created)
+	}
+}

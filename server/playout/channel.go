@@ -619,11 +619,7 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 	if item.Type == ItemClip && c.config.AssetProvider != nil {
 		iter, err := c.config.AssetProvider.Open(item.AssetURI)
 		if err == nil {
-			// Wrap with trim if in/out points set.
-			frameSource := iter
-			if item.InPointMs > 0 || item.OutPointMs > 0 {
-				frameSource = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
-			}
+			frameSource := clipFrameSource(iter, &item)
 
 			c.clipIter = frameSource
 			c.clipItemID = item.ID
@@ -1216,7 +1212,7 @@ func (c *Channel) emitFinalItemEnd(secScheduler *SecondaryEventScheduler, asRunF
 func (c *Channel) frameForItem(item *PlaylistItem) *DecodedFrame {
 	switch item.Type {
 	case ItemClip:
-		return c.nextClipFrame(item)
+		return c.nextClipFrame(item, false)
 	case ItemLive:
 		return c.tapLiveSource(item.Source)
 	case ItemSlate:
@@ -1225,8 +1221,23 @@ func (c *Channel) frameForItem(item *PlaylistItem) *DecodedFrame {
 	return nil
 }
 
+// clipFrameSource wraps the iterator opened for item: trimmed to the item's in
+// and out points, and told to loop when the item loops.
+func clipFrameSource(iter FrameIterator, item *PlaylistItem) FrameIterator {
+	src := iter
+	if item.InPointMs > 0 || item.OutPointMs > 0 {
+		src = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
+	}
+	if l, ok := src.(LoopingIterator); ok && item.Loop {
+		l.SetLoop(true)
+	}
+	return src
+}
+
 // nextClipFrame opens or continues a clip iterator and returns the next frame.
-func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
+// rewound is set on the call that follows a loop item's rewind in the same
+// tick.
+func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame {
 	var reanchorSched *SecondaryEventScheduler
 	var reanchorMs int64
 
@@ -1277,11 +1288,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 			return nil
 		}
 
-		// Wrap with trim if in/out points set.
-		frameSource := iter
-		if item.InPointMs > 0 || item.OutPointMs > 0 {
-			frameSource = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
-		}
+		frameSource := clipFrameSource(iter, item)
 
 		c.clipIter = frameSource
 		c.itemError.Store(nil)
@@ -1507,12 +1514,18 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 			}
 		}
 
-		// If loop mode, rewind — close the iterator so it re-opens on the
-		// next tick with the same item ID forced to mismatch. Guarded on
-		// iterator identity so a concurrent SeekToItem's fresh iterator is
-		// not torn down by the old clip's end-of-loop. After EndLoop the pass
-		// that just finished was the last one.
+		// If loop mode, start the next pass. After EndLoop the pass that just
+		// finished was the last one.
 		if item.Loop && !c.scheduler.LoopExitPending() {
+			// The iterator rewinds in place and this tick shows the next
+			// pass's first frame: no repeated frame, no reopen.
+			if !rewound && c.rewindClip(iter) {
+				return c.nextClipFrame(item, true)
+			}
+			// An iterator that cannot rewind is closed so it re-opens on the
+			// next tick with the same item ID forced to mismatch. Guarded on
+			// iterator identity so a concurrent SeekToItem's fresh iterator
+			// is not torn down by the old clip's end-of-loop.
 			c.mu.Lock()
 			if c.clipIter == iter {
 				if c.clipIter != nil {
@@ -1576,6 +1589,28 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 	return resultFrame
 }
 
+// rewindClip starts the next pass of the loop item's iterator in place,
+// keeping its demuxed frames and decoder. It reports false when iter is no
+// longer current or cannot rewind.
+func (c *Channel) rewindClip(iter FrameIterator) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.clipIter != iter {
+		return false
+	}
+	l, ok := iter.(LoopingIterator)
+	if !ok {
+		return false
+	}
+	if err := l.Rewind(); err != nil {
+		slog.Warn("playout: loop rewind failed, reopening", "item", c.clipItemID, "error", err)
+		return false
+	}
+	c.clipFrame = 0
+	c.clipOutputFrame = 0
+	return true
+}
+
 // incomingFrameForItem returns the next frame for the incoming side of a
 // transition. Clip items get their own pre-roll iterator (the inClip* slot) so
 // the outgoing clip's iterator is not torn down every tick; non-clip items
@@ -1625,10 +1660,7 @@ func (c *Channel) nextIncomingClipFrame(item *PlaylistItem) *DecodedFrame {
 			return nil
 		}
 
-		frameSource := iter
-		if item.InPointMs > 0 || item.OutPointMs > 0 {
-			frameSource = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
-		}
+		frameSource := clipFrameSource(iter, item)
 
 		c.inClipIter = frameSource
 		c.inClipFPS = frameSource.EstimateFPS()

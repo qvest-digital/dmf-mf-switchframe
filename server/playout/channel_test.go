@@ -3314,29 +3314,58 @@ func TestChannel_StartDuringStopWaitsForStop(t *testing.T) {
 	require.Equal(t, []string{"start", "stop", "start"}, events)
 }
 
-// countingProvider counts opens per asset; a looping clip reopens its asset
-// on every pass.
-type countingProvider struct {
-	inner AssetProvider
-	mu    sync.Mutex
-	opens map[string]int
+// passCountingProvider counts the opens of each asset and its passes: every
+// open and every rewind starts one.
+type passCountingProvider struct {
+	inner  AssetProvider
+	mu     sync.Mutex
+	opens  map[string]int
+	passes map[string]int
 }
 
-func (p *countingProvider) Open(uri string) (FrameIterator, error) {
+func newPassCountingProvider(inner AssetProvider) *passCountingProvider {
+	return &passCountingProvider{inner: inner, opens: map[string]int{}, passes: map[string]int{}}
+}
+
+func (p *passCountingProvider) Open(uri string) (FrameIterator, error) {
+	it, err := p.inner.Open(uri)
+	if err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	p.opens[uri]++
+	p.passes[uri]++
 	p.mu.Unlock()
-	return p.inner.Open(uri)
+	return &passCountingIterator{LoopingIterator: it.(LoopingIterator), uri: uri, p: p}, nil
 }
 
-func (p *countingProvider) count(uri string) int {
+func (p *passCountingProvider) openCount(uri string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.opens[uri]
 }
 
+func (p *passCountingProvider) passCount(uri string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.passes[uri]
+}
+
+type passCountingIterator struct {
+	LoopingIterator
+	uri string
+	p   *passCountingProvider
+}
+
+func (it *passCountingIterator) Rewind() error {
+	it.p.mu.Lock()
+	it.p.passes[it.uri]++
+	it.p.mu.Unlock()
+	return it.LoopingIterator.Rewind()
+}
+
 func TestChannel_EndLoop_FinishesPassThenAdvances(t *testing.T) {
-	prov := &countingProvider{inner: fakeProvider(10), opens: map[string]int{}}
+	prov := newPassCountingProvider(fakeProvider(10))
 	ch := NewChannel(1, ChannelConfig{AssetProvider: prov, AllowedLocalPrefixes: []string{"/"}})
 	loop := clipItem("a")
 	loop.Loop = true
@@ -3345,20 +3374,20 @@ func TestChannel_EndLoop_FinishesPassThenAdvances(t *testing.T) {
 	defer ch.Stop()
 
 	// Two passes in, it is still looping.
-	waitFor(t, 5*time.Second, func() bool { return prov.count(loop.AssetURI) >= 3 })
+	waitFor(t, 5*time.Second, func() bool { return prov.passCount(loop.AssetURI) >= 3 })
 	st := ch.Status()
 	require.Equal(t, "a", st.CurrentItemID)
 	require.True(t, st.Looping)
 	require.False(t, st.LoopExit)
 
 	require.NoError(t, ch.EndLoop())
-	opensAtEnd := prov.count(loop.AssetURI)
+	passesAtEnd := prov.passCount(loop.AssetURI)
 	st = ch.Status()
 	require.Equal(t, "a", st.CurrentItemID, "EndLoop must not cut away mid-pass")
 	require.True(t, st.LoopExit)
 
 	waitFor(t, 2*time.Second, func() bool { return ch.Status().CurrentItemID == "b" })
-	require.Equal(t, opensAtEnd, prov.count(loop.AssetURI), "the clip must not start another pass")
+	require.Equal(t, passesAtEnd, prov.passCount(loop.AssetURI), "the clip must not start another pass")
 	require.False(t, ch.Status().Looping)
 }
 
@@ -3492,4 +3521,67 @@ func TestChannel_SeekToItem_LoopingClipLandsInCurrentPass(t *testing.T) {
 	prov.seeks = nil
 	require.NoError(t, ch.SeekToItem(1, 500))
 	require.Equal(t, []int{15}, prov.seeks)
+}
+
+// taggedFrames returns n 30 fps frames whose first luma byte is the frame
+// index, so the output shows which frame went out on each tick.
+func taggedFrames(n int) []DecodedFrame {
+	frames := make([]DecodedFrame, n)
+	for i := range frames {
+		yuv := make([]byte, video.YUV420FrameSize(64, 48))
+		yuv[0] = byte(i)
+		frames[i] = DecodedFrame{YUV: yuv, PTS: int64(i) * 3000, IsKeyframe: i == 0, Width: 64, Height: 48}
+	}
+	return frames
+}
+
+// A looping clip item starts each pass on the tick after the previous pass's
+// last frame, without reopening its asset: a reopen demuxes the file again
+// and starts a fresh decoder on the tick goroutine, which stalled the
+// program at every wrap. The item's remaining time runs down without a jump
+// across the wrap, so the end time it implies moves by exactly one pass.
+func TestChannel_LoopClip_WrapsWithoutGapOrReopen(t *testing.T) {
+	const n, passes = 10, 4
+	const fps = 30.0
+	prov := newPassCountingProvider(NewFakeAssetProvider(taggedFrames(n)))
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider:        prov,
+		AllowedLocalPrefixes: []string{"/"},
+		Width:                64,
+		Height:               48,
+		FPS:                  fps,
+	})
+	var out []byte
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		out = append(out, yuv[0])
+	})
+	loop := clipItem("a")
+	loop.Loop = true
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(loop)))
+
+	ch.mu.Lock()
+	ch.state = StateOnAir
+	ch.scheduler.Start()
+	ch.mu.Unlock()
+
+	now := time.Now()
+	for i := 0; i < passes*n; i++ {
+		ch.tick(now)
+		k := i % n // frame of the pass on air
+		require.Equal(t, byte(k), out[len(out)-1], "tick %d", i)
+		st := ch.Status()
+		require.InDelta(t, float64(k+1)/n, st.ItemProgress, 1e-9, "progress at tick %d", i)
+		require.Equal(t, int64(float64(n-k-1)*1000/fps), st.ItemRemainMs, "remaining time at tick %d", i)
+		now = now.Add(time.Second / fps)
+	}
+
+	want := make([]byte, 0, passes*n)
+	for p := 0; p < passes; p++ {
+		for k := 0; k < n; k++ {
+			want = append(want, byte(k))
+		}
+	}
+	require.Equal(t, want, out, "one frame per tick, none repeated or skipped")
+	require.Equal(t, 1, prov.openCount(loop.AssetURI), "the asset opens once for every pass")
+	require.Equal(t, passes, prov.passCount(loop.AssetURI))
 }

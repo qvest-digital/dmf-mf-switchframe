@@ -81,6 +81,14 @@ type FileFrameIterator struct {
 	draining       bool           // true after all encoded frames have been fed
 	frameIndex     int            // next encoded frame to feed
 	audioIndex     int            // next audio frame to consider
+	held           int            // frames fed this pass that the decoder has not output
+
+	// Looping: the frames of the next pass fed to get this pass's last
+	// pictures out of the decoder, and how many of them it holds.
+	loop     bool
+	nextFed  int
+	nextHeld int
+	passDone bool // every picture of the pass is out; the decoder holds only the next pass
 
 	// Output tracking for PTS estimation during drain.
 	outputCount int   // number of decoded frames returned so far
@@ -218,7 +226,7 @@ func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.closed {
+	if f.closed || f.passDone {
 		return nil, nil
 	}
 
@@ -229,13 +237,13 @@ func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
 
 		yuv, w, h, decErr := f.decoder.Decode(ef.wireData)
 		if decErr != nil {
-			errMsg := decErr.Error()
-			// "buffering" is expected for B-frame reordering -- the decoder
-			// needs reference frames before it can output.
-			if strings.Contains(errMsg, "buffering") {
-				continue
+			// "buffering" is expected for B-frame reordering and frame
+			// threading: the decoder keeps the frame and outputs it later.
+			// Frames with other decode errors (corrupted data, etc.) are
+			// skipped.
+			if isBuffering(decErr) {
+				f.held++
 			}
-			// Skip frames with decode errors (corrupted data, etc.).
 			continue
 		}
 
@@ -245,6 +253,35 @@ func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
 
 		// Got a decoded frame. Deep-copy: decoder may reuse its output buffer.
 		return f.makeDecodedFrame(yuv, w, h, ef.pts, ef.isKeyframe), nil
+	}
+
+	// Looping: the pass's last pictures are still in the decoder. Feed it
+	// the next pass's first frames until they come out instead of draining
+	// it: a drained decoder has to be replaced, and a fresh frame-threaded
+	// decoder returns nothing until its pipeline has filled. Rewind starts
+	// the next pass after the frames fed here.
+	if f.loop && !f.draining && len(f.encodedFrames) > 2*f.held {
+		for f.held > 0 && f.nextFed < len(f.encodedFrames) {
+			ef := f.encodedFrames[f.nextFed]
+			f.nextFed++
+			yuv, w, h, decErr := f.decoder.Decode(ef.wireData)
+			if decErr != nil {
+				if isBuffering(decErr) {
+					f.nextHeld++
+				}
+				continue
+			}
+			if len(yuv) == 0 {
+				continue
+			}
+			f.held--
+			f.nextHeld++
+			return f.makeDecodedFrame(yuv, w, h, f.estimateDrainPTS(), false), nil
+		}
+		if f.held == 0 {
+			f.passDone = true
+			return nil, nil
+		}
 	}
 
 	// Phase 2: Drain decoder (B-frame reorder buffer).
@@ -364,13 +401,50 @@ func (f *FileFrameIterator) FrameIndex() int {
 	return f.frameIndex
 }
 
+// SetLoop says whether another pass follows the current one. While set, the
+// end of a pass keeps the decoder running into the next pass, so Rewind can
+// continue without a fresh decoder.
+func (f *FileFrameIterator) SetLoop(loop bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.loop = loop
+}
+
+// Rewind starts the next pass at the first frame, keeping the demuxed frames.
+// When the pass ended with the decoder already fed the next pass's first
+// frames, decoding continues after them on the same decoder. Otherwise (the
+// decoder was drained, or the pass was cut short) it restarts like Seek(0).
+func (f *FileFrameIterator) Rewind() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.closed {
+		return fmt.Errorf("iterator closed")
+	}
+	if !f.passDone {
+		return f.seekLocked(0)
+	}
+	f.frameIndex = f.nextFed
+	f.held = f.nextHeld
+	f.nextFed, f.nextHeld = 0, 0
+	f.passDone = false
+	f.outputCount = 0
+	f.audioIndex = 0
+	f.lastPTS, f.prevPTS = 0, 0
+	return nil
+}
+
 // Seek repositions the iterator to the nearest keyframe at or before targetFrame.
 // The old decoder is closed and a fresh one is created so decoding restarts
 // cleanly from the keyframe's SPS/PPS headers.
 func (f *FileFrameIterator) Seek(targetFrame int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.seekLocked(targetFrame)
+}
 
+// seekLocked is Seek with f.mu held.
+func (f *FileFrameIterator) seekLocked(targetFrame int) error {
 	if f.closed {
 		return fmt.Errorf("iterator closed")
 	}
@@ -401,6 +475,9 @@ func (f *FileFrameIterator) Seek(targetFrame int) error {
 	f.frameIndex = seekIdx
 	f.outputCount = seekIdx
 	f.draining = false
+	f.held = 0
+	f.nextFed, f.nextHeld = 0, 0
+	f.passDone = false
 	f.lastPTS = 0
 	f.prevPTS = 0
 
@@ -429,6 +506,12 @@ func (f *FileFrameIterator) Close() {
 	if f.decoder != nil {
 		f.decoder.Close()
 	}
+}
+
+// isBuffering reports whether a Decode error means the decoder kept the frame
+// and has no picture to output yet.
+func isBuffering(err error) bool {
+	return strings.Contains(err.Error(), "buffering")
 }
 
 // estimateFPSFromEncodedFrames estimates FPS from encoded frame PTS values.
