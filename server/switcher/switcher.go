@@ -779,12 +779,16 @@ func (s *Switcher) SetMetrics(m *metrics.Metrics) {
 
 	if m == nil {
 		s.frameInterval.Store(nil)
-		s.health.setOnChange(nil)
+		s.health.setHooks(nil, nil)
 		return
 	}
 	s.frameInterval.Store(&m.ProgramFrameInterval)
-	s.health.setOnChange(func(source string, from, to SourceHealthStatus) {
-		m.SourceStatusChangesTotal.WithLabelValues(source, string(from), string(to)).Inc()
+	// A removed source's series go with it: SRT listener inputs come and go
+	// with every stream id a publisher sends, and would otherwise pile up.
+	s.health.setHooks(func(source string, from, to SourceHealthStatus) {
+		m.SourceStatusChangesTotal.WithLabelValues(metrics.SourceLabel(source), string(from), string(to)).Inc()
+	}, func(source string) {
+		m.SourceStatusChangesTotal.DeletePartialMatch(prometheus.Labels{"source": metrics.SourceLabel(source)})
 	})
 }
 
