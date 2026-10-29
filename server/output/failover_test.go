@@ -424,6 +424,27 @@ func TestDestinationPair_TakeoverTimerIgnoresPollFromBefore(t *testing.T) {
 	require.Empty(t, b.SendingDestinationIDs())
 }
 
+// A destination taken over from the peer's snapshot is listed armed from the
+// moment it exists: listed unarmed in between, a standby peer read it as an
+// operator's stop and disarmed it.
+func TestDestinationPair_PeerDestinationAddedArmed(t *testing.T) {
+	a := pairEngine(t, "a")
+	cfg := callerConfig
+	cfg.Engine = "b"
+	require.NoError(t, a.AddPeerDestination(pairID, cfg, true))
+
+	all, armed := a.PairDestinationIDs()
+	require.Equal(t, []string{pairID}, all)
+	require.Equal(t, []string{pairID}, armed)
+	requireState(t, a, "standby", "b")
+
+	// One this engine sends starts at once.
+	c := pairEngine(t, "a")
+	require.NoError(t, c.AddPeerDestination(pairID, callerConfig, true))
+	requireState(t, c, string(StateActive), "a")
+	require.ErrorIs(t, c.AddPeerDestination(pairID, callerConfig, true), ErrDestinationExists)
+}
+
 // A delete the standby missed deletes it on the standby too.
 func TestDestinationPair_DeleteMissedByStandby(t *testing.T) {
 	a, b := pairEngine(t, "a"), pairEngine(t, "b")

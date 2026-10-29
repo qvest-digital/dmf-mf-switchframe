@@ -632,6 +632,31 @@ func (m *Manager) AddDestination(config DestinationConfig) (string, error) {
 // ID when id is empty. Both engines of a pair store one destination under
 // one ID, so a start, stop, delete or failover addresses it alike on each.
 func (m *Manager) AddDestinationWithID(id string, config DestinationConfig) (string, error) {
+	return m.addDestination(id, config, false)
+}
+
+// AddPeerDestination creates a destination the peer holds under id, armed
+// as the peer holds it, and starts its adapter if this engine sends it.
+// Created armed in one step, it is never listed unarmed to the peer, which
+// a standby reads as an operator's stop.
+func (m *Manager) AddPeerDestination(id string, config DestinationConfig, armed bool) error {
+	if id == "" {
+		return ErrInvalidDestinationID
+	}
+	if _, err := m.addDestination(id, config, armed); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	fn := m.onState
+	m.mu.Unlock()
+	m.settle(id, true)
+	if fn != nil {
+		fn()
+	}
+	return nil
+}
+
+func (m *Manager) addDestination(id string, config DestinationConfig, armed bool) (string, error) {
 	if id != "" && !ValidDestinationID(id) {
 		return "", ErrInvalidDestinationID
 	}
@@ -678,10 +703,15 @@ func (m *Manager) AddDestinationWithID(id string, config DestinationConfig) (str
 	if _, ok := m.destinations[id]; ok {
 		return "", ErrDestinationExists
 	}
+	now := time.Now()
 	m.destinations[id] = &Destination{
 		id:        id,
 		config:    config,
-		createdAt: time.Now(),
+		armed:     armed,
+		createdAt: now,
+	}
+	if armed {
+		m.destinations[id].changedAt = now
 	}
 
 	m.log.Info("destination added", "id", id, "type", config.Type, "name", config.Name)

@@ -415,36 +415,36 @@ func (a *App) ApplyOutputDestinations(dests []internal.DestinationSnapshot) erro
 		have[d.ID] = true
 	}
 	for _, d := range dests {
-		if !have[d.ID] {
-			c := d.Config
-			_, err := a.outputMgr.AddDestinationWithID(d.ID, output.DestinationConfig{
-				Type:          c.Type,
-				Address:       c.Address,
-				Port:          c.Port,
-				URL:           c.URL,
-				Latency:       c.Latency,
-				StreamID:      c.StreamID,
-				Encryption:    c.Encryption,
-				Passphrase:    c.Passphrase,
-				MaxBW:         c.MaxBW,
-				MaxConns:      c.MaxConns,
-				Name:          c.Name,
-				SCTE35Enabled: c.SCTE35Enabled,
-				Engine:        c.Engine,
-
-				AllowUntrustedCert: c.AllowUntrustedCert,
-			})
-			if err != nil {
-				slog.Warn("snapshot apply: add destination failed", "id", d.ID, "error", err)
-				continue
-			}
-		}
 		armed := d.Active
 		if d.Armed != nil {
 			armed = *d.Armed
 		}
-		if err := a.outputMgr.ApplyDestinationState(d.ID, d.Config.Engine, armed); err != nil {
-			slog.Warn("snapshot apply: destination state failed", "id", d.ID, "error", err)
+		if have[d.ID] {
+			if err := a.outputMgr.ApplyDestinationState(d.ID, d.Config.Engine, armed); err != nil {
+				slog.Warn("snapshot apply: destination state failed", "id", d.ID, "error", err)
+			}
+			continue
+		}
+		c := d.Config
+		err := a.outputMgr.AddPeerDestination(d.ID, output.DestinationConfig{
+			Type:          c.Type,
+			Address:       c.Address,
+			Port:          c.Port,
+			URL:           c.URL,
+			Latency:       c.Latency,
+			StreamID:      c.StreamID,
+			Encryption:    c.Encryption,
+			Passphrase:    c.Passphrase,
+			MaxBW:         c.MaxBW,
+			MaxConns:      c.MaxConns,
+			Name:          c.Name,
+			SCTE35Enabled: c.SCTE35Enabled,
+			Engine:        c.Engine,
+
+			AllowUntrustedCert: c.AllowUntrustedCert,
+		}, armed)
+		if err != nil {
+			slog.Warn("snapshot apply: add destination failed", "id", d.ID, "error", err)
 		}
 	}
 	return nil
