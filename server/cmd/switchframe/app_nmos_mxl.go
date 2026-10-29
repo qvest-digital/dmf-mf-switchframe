@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/switchframe/server/nmos"
@@ -105,6 +106,13 @@ type mxlNMOS struct {
 	// latest one's label lookup sets the label. labelMu orders the setting.
 	labelSeq map[string]uint64
 	labelMu  sync.Mutex
+
+	// Outcomes of the registry calls and of IS-05 activations, for
+	// /metrics.
+	registrations, registrationErrors atomic.Int64
+	heartbeats, heartbeatErrors       atomic.Int64
+	activations, activationErrors     atomic.Int64
+	lastHeartbeat                     atomic.Int64 // UnixNano of the last successful heartbeat
 }
 
 // readMXLDomainID returns the id in the domain's domain_def.json, which
@@ -592,8 +600,15 @@ const connectTimeout = 8 * time.Second
 // it, and publishes the new subscription. A flow that cannot be opened in
 // time or has another shape fails the activation, which leaves the active
 // state as it was.
-func (a *App) activateMXLReceiver(ctx context.Context, id string, active nmos.MXLEndpoint) error {
+func (a *App) activateMXLReceiver(ctx context.Context, id string, active nmos.MXLEndpoint) (err error) {
 	n := a.mxlNMOS
+	defer func() {
+		if err != nil {
+			n.activationErrors.Add(1)
+		} else {
+			n.activations.Add(1)
+		}
+	}()
 	ref, ok := n.receivers[id]
 	if !ok {
 		return fmt.Errorf("unknown receiver %s", id)
@@ -950,19 +965,25 @@ func (a *App) runMXLNMOSRegistration(ctx context.Context) {
 			n.setRegistered(false)
 		case !registered:
 			if err := a.registerMXLNMOS(ctx); err != nil {
+				n.registrationErrors.Add(1)
 				slog.Warn("mxl nmos: registration failed", "registry", n.cfg.RegistryURL, "error", err)
 			} else {
+				n.registrations.Add(1)
+				n.lastHeartbeat.Store(time.Now().UnixNano())
 				n.setRegistered(true)
 				slog.Info("mxl nmos: registered", "registry", n.cfg.RegistryURL)
 			}
 		default:
 			if err := n.reg.Heartbeat(ctx); err != nil {
+				n.heartbeatErrors.Add(1)
 				slog.Warn("mxl nmos: heartbeat failed", "error", err)
 				if errors.Is(err, nmos.ErrNodeNotFound) {
 					n.setRegistered(false)
 				}
 				break
 			}
+			n.heartbeats.Add(1)
+			n.lastHeartbeat.Store(time.Now().UnixNano())
 			if !a.readsMXLNMOSBack() {
 				break
 			}
