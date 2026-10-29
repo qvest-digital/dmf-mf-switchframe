@@ -1,6 +1,7 @@
 package playout
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -3673,4 +3674,74 @@ func TestTickClock_SkipsAheadPastMaxBacklog(t *testing.T) {
 	// 51 ticks were due, from p to p+1s; one ran.
 	require.Equal(t, uint64(50), stats.skipped.Load())
 	require.Zero(t, stats.madeUp.Load())
+}
+
+// armedLiveSources stands in for a source tap that keeps a source's
+// pictures only once something has asked for them, the way the switcher
+// does on an engine without a GPU.
+type armedLiveSources struct {
+	mu    sync.Mutex
+	armed map[string]bool
+	pics  map[string]*DecodedFrame
+}
+
+func (s *armedLiveSources) arm(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.armed[key] = true
+}
+
+func (s *armedLiveSources) read(key string) *DecodedFrame {
+	s.arm(key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pics[key]
+}
+
+// deliver hands every armed source a picture filled with its fill byte.
+func (s *armedLiveSources) deliver(fill map[string]byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key := range s.armed {
+		yuv := bytes.Repeat([]byte{fill[key]}, video.YUV420FrameSize(320, 240))
+		s.pics[key] = &DecodedFrame{YUV: yuv, Width: 320, Height: 240, IsKeyframe: true}
+	}
+}
+
+// A live item airs the idle picture on its first tick when its source is
+// first asked for on that tick: the next live item is prepared while the
+// one before it airs.
+func TestChannel_NextLiveItemAirsItsInputOnTheFirstTick(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, Width: 320, Height: 240, FPS: 30.0})
+	src := &armedLiveSources{armed: map[string]bool{}, pics: map[string]*DecodedFrame{}}
+	fill := map[string]byte{"cam-a": 0xAA, "cam-b": 0xBB}
+	ch.SetGPUSourceTap(src.read)
+	ch.SetLiveSourcePrepare(src.arm)
+	var mu sync.Mutex
+	var aired []byte
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		aired = append(aired, yuv[0])
+	})
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(liveItem("a", "cam-a"), liveItem("b", "cam-b"))))
+
+	ch.mu.Lock()
+	ch.state = StateOnAir
+	ch.scheduler.Start()
+	ch.mu.Unlock()
+
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		ch.tick(now)
+		src.deliver(fill)
+		now = now.Add(33 * time.Millisecond)
+	}
+	require.NoError(t, ch.Next())
+	ch.tick(now)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, byte(0xAA), aired[len(aired)-2], "item a is on air before Next")
+	require.Equal(t, byte(0xBB), aired[len(aired)-1], "item b's first tick must air its input, not the idle picture")
 }

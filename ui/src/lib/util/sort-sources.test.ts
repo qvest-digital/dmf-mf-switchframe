@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sortedSourceKeys } from './sort-sources';
+import { liveSourceOptions, sortedSourceKeys } from './sort-sources';
 import type { SourceInfo } from '$lib/api/types';
 
 const src = (key: string, position: number, unconnected?: boolean): SourceInfo => ({
@@ -24,5 +24,71 @@ describe('sortedSourceKeys', () => {
 			'mxl:cam3': src('mxl:cam3', 3),
 		};
 		expect(sortedSourceKeys(sources)).toEqual(['mxl:cam1', 'mxl:cam3']);
+	});
+});
+
+describe('liveSourceOptions', () => {
+	// An NMOS input shows the connected sender's name in the switcher; the
+	// playlist editor listed only the input key, so an operator could not
+	// tell which input carried which sender.
+	it('offers each source under the label the switcher shows, keyed by input', () => {
+		const sources = {
+			'mxl:mxl-1': { ...src('mxl:mxl-1', 2), label: 'srt-ingest-2' },
+			'mxl:mxl-2': { ...src('mxl:mxl-2', 1), label: 'srt-ingest-1' },
+			'source:bars': src('source:bars', 3),
+		};
+		expect(liveSourceOptions(sources)).toEqual([
+			{ key: 'mxl:mxl-2', label: 'srt-ingest-1' },
+			{ key: 'mxl:mxl-1', label: 'srt-ingest-2' },
+			{ key: 'source:bars', label: 'source:bars' },
+		]);
+	});
+
+	// Otherwise the select would show the first source as the item's.
+	it('keeps offering the key an item names when it is not listed', () => {
+		const sources = { 'mxl:mxl-1': { ...src('mxl:mxl-1', 1), label: 'srt-ingest-2' } };
+		expect(liveSourceOptions(sources, 'mxl:gone')).toEqual([
+			{ key: 'mxl:mxl-1', label: 'srt-ingest-2' },
+			{ key: 'mxl:gone', label: 'mxl:gone' },
+		]);
+	});
+
+	// The item cuts to the input at air time, so an operator plans it for an
+	// input a controller connects later; hiding those inputs made that
+	// impossible.
+	it('offers inputs connected to nothing after the others, marked', () => {
+		const sources = {
+			'mxl:mxl-4': src('mxl:mxl-4', 4, true),
+			'mxl:mxl-1': { ...src('mxl:mxl-1', 1), label: 'srt-ingest-2' },
+			'mxl:mxl-3': src('mxl:mxl-3', 2, true),
+			'source:bars': src('source:bars', 3),
+		};
+		expect(liveSourceOptions(sources)).toEqual([
+			{ key: 'mxl:mxl-1', label: 'srt-ingest-2' },
+			{ key: 'source:bars', label: 'source:bars' },
+			{ key: 'mxl:mxl-3', label: 'mxl:mxl-3 (unconnected)' },
+			{ key: 'mxl:mxl-4', label: 'mxl:mxl-4 (unconnected)' },
+		]);
+		expect(liveSourceOptions(sources, 'mxl:mxl-3').map((o) => o.key)).toEqual([
+			'mxl:mxl-1',
+			'source:bars',
+			'mxl:mxl-3',
+			'mxl:mxl-4',
+		]);
+	});
+
+	// One sender connected to two inputs gives both its name; the two
+	// options were indistinguishable.
+	it('tells sources that share a label apart by key', () => {
+		const sources = {
+			'mxl:mxl-1': { ...src('mxl:mxl-1', 1), label: 'srt-ingest-2' },
+			'mxl:mxl-2': { ...src('mxl:mxl-2', 2), label: 'srt-ingest-2' },
+			'mxl:mxl-3': { ...src('mxl:mxl-3', 3), label: 'srt-ingest-1' },
+		};
+		expect(liveSourceOptions(sources)).toEqual([
+			{ key: 'mxl:mxl-1', label: 'srt-ingest-2 (mxl:mxl-1)' },
+			{ key: 'mxl:mxl-2', label: 'srt-ingest-2 (mxl:mxl-2)' },
+			{ key: 'mxl:mxl-3', label: 'srt-ingest-1' },
+		]);
 	});
 });

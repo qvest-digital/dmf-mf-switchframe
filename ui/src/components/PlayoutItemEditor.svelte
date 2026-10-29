@@ -1,17 +1,20 @@
 <script lang="ts">
-	import type { PlaylistItem, PlayoutClip, SecondaryEvent, WipeConfig, GraphicsLayerState } from '$lib/api/types';
+	import type { PlaylistItem, PlayoutClip, SecondaryEvent, WipeConfig, GraphicsLayerState, SourceInfo } from '$lib/api/types';
+	import { liveSourceOptions } from '$lib/util/sort-sources';
 	import SecondaryEventEditor from './SecondaryEventEditor.svelte';
 	import WipePatternBrowser from './WipePatternBrowser.svelte';
 
 	interface Props {
 		item: PlaylistItem;
 		onChange: (updated: PlaylistItem) => void;
-		sources?: string[];
+		sources?: Record<string, SourceInfo>;
 		clips?: PlayoutClip[];
 		graphicsLayers?: GraphicsLayerState[];
 	}
 
-	let { item, onChange, sources = [], clips = [], graphicsLayers = [] }: Props = $props();
+	let { item, onChange, sources = {}, clips = [], graphicsLayers = [] }: Props = $props();
+
+	let sourceOptions = $derived(liveSourceOptions(sources, item.source));
 
 	const transitionTypes = ['cut', 'dissolve', 'dip_black', 'dip_white', 'wipe'] as const;
 
@@ -229,8 +232,9 @@
 					value={item.source ?? ''}
 					onchange={(e) => emit({ source: (e.target as HTMLSelectElement).value || undefined })}
 				>
-					{#each sources as src}
-						<option value={src}>{src}</option>
+					<option value="" disabled>Select a source</option>
+					{#each sourceOptions as src (src.key)}
+						<option value={src.key} title={src.key}>{src.label}</option>
 					{/each}
 				</select>
 			</label>

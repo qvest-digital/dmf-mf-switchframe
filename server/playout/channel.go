@@ -120,6 +120,7 @@ type Channel struct {
 
 	// CPU fallback: returns latest decoded frame for a source key.
 	gpuSourceTap     func(sourceKey string) *DecodedFrame
+	liveSourcePrep   func(sourceKey string)
 	lastLiveTapMiss  string // for once-per-item logging of tap failures
 	activeLiveSource string // current live source key (for audio routing)
 
@@ -468,6 +469,7 @@ func (c *Channel) Start() error {
 		stateChangeFn(StateOnAir)
 	}
 
+	c.prepareLiveSources()
 	go c.run(ctx)
 	return nil
 }
@@ -870,6 +872,34 @@ func (c *Channel) SetGPUSourceTap(fn func(sourceKey string) *DecodedFrame) {
 	c.gpuSourceTap = fn
 }
 
+// SetLiveSourcePrepare registers a function told, every tick and on Start,
+// the sources of the live items at and right after the cursor, so a tap
+// that needs to see a source before reading it has a picture on the item's
+// first tick.
+func (c *Channel) SetLiveSourcePrepare(fn func(sourceKey string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.liveSourcePrep = fn
+}
+
+// prepareLiveSources hands the live sources at and after the cursor to the
+// prepare function.
+func (c *Channel) prepareLiveSources() {
+	c.mu.Lock()
+	prep := c.liveSourcePrep
+	c.mu.Unlock()
+	if prep == nil {
+		return
+	}
+	cur, next := c.scheduler.LiveSourcesAhead()
+	if cur != "" {
+		prep(cur)
+	}
+	if next != "" && next != cur {
+		prep(next)
+	}
+}
+
 // SetCursor overrides the scheduler's cursor position. Used by the Manager
 // during state recovery to restore the exact playlist position. Start still
 // begins at the first item; CueAt makes the position the one Start plays.
@@ -1022,6 +1052,8 @@ func (c *Channel) tick(now time.Time) bool {
 	asRunFn := c.asRunLog
 	channelID := c.id
 	c.mu.Unlock()
+
+	c.prepareLiveSources()
 
 	if decision.Completed {
 		// Emit item_end for the last item if one was active.

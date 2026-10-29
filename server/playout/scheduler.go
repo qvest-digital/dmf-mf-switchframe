@@ -477,6 +477,24 @@ func (s *Scheduler) CurrentItem() *PlaylistItem {
 	return &item
 }
 
+// LiveSourcesAhead returns the sources of the live items at the cursor and
+// right after it: the item on air or about to start, and the one Next or
+// the schedule starts after it. An empty string means no live item there.
+func (s *Scheduler) LiveSourcesAhead() (cur, next string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.playlist == nil {
+		return "", ""
+	}
+	liveSource := func(i int) string {
+		if i < 0 || i >= len(s.playlist.Items) || s.playlist.Items[i].Type != ItemLive {
+			return ""
+		}
+		return s.playlist.Items[i].Source
+	}
+	return liveSource(s.cursor), liveSource(s.cursor + 1)
+}
+
 // --- internal helpers (must be called with s.mu held) ---
 
 // resetItemState clears per-item tracking fields.
