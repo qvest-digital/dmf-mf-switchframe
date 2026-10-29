@@ -242,15 +242,17 @@ func (m *Manager) Load(playerID int, clipID string) error {
 //
 // A frame demuxed without a PTS carries 0 and is never a leading
 // picture. Across a PTS wrap presentation order cannot be read from the
-// PTS, so leading pictures and audio are kept and only the frames before
-// the keyframe go. A clip with no keyframe is returned as it is.
+// PTS: the pictures after the wrap compare below the keyframe, and so
+// does the audio after it, which the demuxer sorts to the front. Leading
+// pictures and audio are then kept and only the frames before the
+// keyframe go. A clip with no keyframe is returned as it is.
 func fromFirstKeyframe(frames []BufferedFrame, audio []BufferedAudioFrame) ([]BufferedFrame, []BufferedAudioFrame) {
 	first := slices.IndexFunc(frames, func(f BufferedFrame) bool { return f.isKeyframe })
 	if first < 0 {
 		return frames, audio
 	}
 	key := frames[first].pts
-	wrapped := ptsWraps(frames, audio)
+	wrapped := ptsWraps(frames)
 	// Capacity 1 makes the first append copy, leaving the demuxed slice as
 	// it was.
 	kept := frames[first : first+1 : first+1]
@@ -276,20 +278,21 @@ func fromFirstKeyframe(frames []BufferedFrame, audio []BufferedAudioFrame) ([]Bu
 	return kept, audio
 }
 
-// ptsWraps reports whether the video or the audio PTS steps back by more
-// than half the 33-bit PTS range, which reordering never does and a
-// wrap always does.
-func ptsWraps(frames []BufferedFrame, audio []BufferedAudioFrame) bool {
-	const half = 1 << 32
-	for i := 1; i < len(frames); i++ {
-		if frames[i-1].pts-frames[i].pts > half {
+// ptsWraps reports whether the video PTS steps back by more than half the
+// 33-bit PTS range, which reordering never does and a wrap always does. A
+// frame without a PTS carries 0 and is skipped, or a PTS above 2^32
+// before it would read as a wrap. The audio is not checked: the demuxer
+// sorts it by PTS, so a wrap never shows in it as a step back.
+func ptsWraps(frames []BufferedFrame) bool {
+	var last int64
+	for _, f := range frames {
+		if f.pts == 0 {
+			continue
+		}
+		if last-f.pts > 1<<32 {
 			return true
 		}
-	}
-	for i := 1; i < len(audio); i++ {
-		if audio[i-1].pts-audio[i].pts > half {
-			return true
-		}
+		last = f.pts
 	}
 	return false
 }

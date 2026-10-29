@@ -2,8 +2,10 @@ package clip
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -493,8 +495,9 @@ func TestFromFirstKeyframeKeepsFramesWithoutPTS(t *testing.T) {
 }
 
 // Across a PTS wrap every picture after the wrap reads as before the
-// keyframe and so does the audio, which emptied most of the first GOP and
-// the sound with it. Across a wrap only the frames before the keyframe go.
+// keyframe and so does the audio after it, which emptied most of the first
+// GOP and cut the sound at the wrap. Across a wrap only the frames before
+// the keyframe go.
 func TestFromFirstKeyframeAcrossPTSWrap(t *testing.T) {
 	const wrap = 1 << 33
 	pts := func(i int) int64 { return (wrap - 3*1800 + int64(i)*1800 + 900) % wrap }
@@ -505,6 +508,9 @@ func TestFromFirstKeyframeAcrossPTSWrap(t *testing.T) {
 			frames[i] = BufferedFrame{pts: pts(i), isKeyframe: i%50 == 0}
 			audio[i] = BufferedAudioFrame{pts: pts(i) - 900, sampleRate: 48000}
 		}
+		// DemuxFile sorts the audio by PTS, so the wrap shows only in the
+		// video.
+		slices.SortFunc(audio, func(a, b BufferedAudioFrame) int { return cmp.Compare(a.pts, b.pts) })
 		return frames, audio
 	}
 
@@ -521,6 +527,33 @@ func TestFromFirstKeyframeAcrossPTSWrap(t *testing.T) {
 		assert.Equal(t, frames[1:], gotFrames)
 		assert.Equal(t, audio, gotAudio)
 	})
+}
+
+// A frame demuxed without a PTS carries 0. Its neighbours' PTS can be
+// anything, and one above 2^32 stepping down to that 0 is no wrap: read as
+// one, it would keep the leading picture and the audio before the
+// keyframe.
+func TestFromFirstKeyframePTSZeroIsNotAWrap(t *testing.T) {
+	for _, base := range []int64{126000, 5_000_000_000} {
+		t.Run(fmt.Sprint(base), func(t *testing.T) {
+			// Two frames before the keyframe, then a frame without a PTS.
+			frames := []BufferedFrame{
+				{pts: base},
+				{pts: base + 1800},
+				{pts: base + 3600, isKeyframe: true},
+				{pts: 0},
+				{pts: base + 7200},
+			}
+			audio := make([]BufferedAudioFrame, 10)
+			for i := range audio {
+				audio[i] = BufferedAudioFrame{pts: base + int64(i)*1920, sampleRate: 48000}
+			}
+			gotFrames, gotAudio := fromFirstKeyframe(frames, audio)
+			assert.Equal(t, frames[2:], gotFrames)
+			// The keyframe is at base+3600; audio frame 1 spans it.
+			assert.Equal(t, audio[1:], gotAudio)
+		})
+	}
 }
 
 func TestFromFirstKeyframeKeepsKeyframeStartIntegration(t *testing.T) {
