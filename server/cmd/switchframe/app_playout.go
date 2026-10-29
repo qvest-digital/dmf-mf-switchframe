@@ -205,10 +205,17 @@ func (a *App) initPlayout() error {
 
 	// CPU fallback tap for live playlist items. Used when GPU aliasing is
 	// unavailable (non-GPU builds or when the source has no GPU frame yet).
+	// Without a GPU source manager the switcher keeps the picture.
 	mgr.SetGPUSourceTap(func(channelKey, sourceKey string) *playout.DecodedFrame {
 		gs := a.gpu()
 		if gs == nil || gs.sourceManager == nil {
-			return nil
+			f := a.sw.ReadLiveTap(sourceKey)
+			if f == nil {
+				return nil
+			}
+			return &playout.DecodedFrame{
+				YUV: f.Data, Width: f.Width, Height: f.Height, PTS: f.PTS, IsKeyframe: true,
+			}
 		}
 		yuv, w, h, pts := gs.sourceManager.ReadCachedFrame(sourceKey)
 		if yuv == nil {

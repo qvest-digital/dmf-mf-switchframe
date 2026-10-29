@@ -407,6 +407,10 @@ type Switcher struct {
 	// GPU upload + ST map + cache instead of CPU fill paths.
 	gpuSourceMgr atomic.Pointer[gpuSourceMgrHolder]
 
+	// liveTaps keeps the latest picture of sources playout airs as live
+	// items when no GPU source manager is set.
+	liveTaps liveTaps
+
 	// gpuSourceActive — when true, sourceDecoder skips CPU ST map correction
 	// (the GPU source manager handles it on GPU instead).
 	gpuSourceActive atomic.Bool
@@ -3459,6 +3463,7 @@ func (s *Switcher) makeDecoderCallback(key string) func(string, *ProcessingFrame
 			h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 		} else {
 			pf = s.gradeSourceFrame(sourceKey, pf)
+			s.recordLiveTap(sourceKey, pf)
 		}
 		if fs := ss.viewer.frameSync.Load(); fs != nil {
 			fs.IngestRawVideo(sourceKey, pf)
@@ -3621,6 +3626,7 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 		h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 	} else {
 		pf = s.gradeSourceFrame(sourceKey, pf)
+		s.recordLiveTap(sourceKey, pf)
 	}
 
 	if fs := s.frameSyncBundle.Load().sync; fs != nil {
@@ -3662,6 +3668,7 @@ func (s *Switcher) UnregisterSource(key string) {
 	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil {
 		h.mgr.RemoveSource(key)
 	}
+	s.liveTaps.entries.Delete(key)
 	if s.programSource == key {
 		s.programSource = ""
 		s.programEpoch.Add(1)
