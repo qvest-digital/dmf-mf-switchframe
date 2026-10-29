@@ -6,7 +6,7 @@
  * would actually occur during dual-engine operation.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createReconciler, RTT_HYSTERESIS_MS, AUTHORITY_HOLD_MS, SETTLE_MS } from './reconciler.svelte';
+import { createReconciler, RTT_HYSTERESIS_MS, AUTHORITY_HOLD_MS, SETTLE_MS, PLAYOUT_MISMATCH_HOLD_MS } from './reconciler.svelte';
 import type { ControlRoomState, PlayoutChannelState, AudioChannel } from '$lib/api/types';
 
 /** Let both engines' states sit unchanged for SETTLE_MS, after which a
@@ -570,6 +570,12 @@ describe('reconciler behavioral tests', () => {
 			r.ingest('A', makeState({ playout: playoutA, lastCommandSeq: 10 }));
 			r.ingest('B', makeState({ playout: playoutB, lastCommandSeq: 10 }));
 			settle(r);
+			// A playout difference counts once it has lasted; the transports
+			// keep both engines fresh meanwhile.
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+			vi.advanceTimersByTime(PLAYOUT_MISMATCH_HOLD_MS);
+			r.tick();
 
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -611,6 +617,12 @@ describe('reconciler behavioral tests', () => {
 			r.ingest('A', makeState({ playout: playoutA, lastCommandSeq: 10 }));
 			r.ingest('B', makeState({ playout: playoutB, lastCommandSeq: 10 }));
 			settle(r);
+			// A playout difference counts once it has lasted; the transports
+			// keep both engines fresh meanwhile.
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+			vi.advanceTimersByTime(PLAYOUT_MISMATCH_HOLD_MS);
+			r.tick();
 
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -665,6 +677,12 @@ describe('reconciler behavioral tests', () => {
 			r.ingest('A', makeState({ playout: playoutA, lastCommandSeq: 10 }));
 			r.ingest('B', makeState({ playout: playoutB, lastCommandSeq: 10 }));
 			settle(r);
+			// A playout difference counts once it has lasted; the transports
+			// keep both engines fresh meanwhile.
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+			vi.advanceTimersByTime(PLAYOUT_MISMATCH_HOLD_MS);
+			r.tick();
 
 			expect(r.health.status).toBe('mismatch');
 		});

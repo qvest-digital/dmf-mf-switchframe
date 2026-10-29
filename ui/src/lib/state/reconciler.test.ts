@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createAutoReconcile } from './auto-reconcile';
-import { createReconciler, clipSlotCatchingUp, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, AUTHORITY_HOLD_MS, sortedStringify, SETTLE_MS, SETTLE_MAX_MS, leastAdvancedUpload } from './reconciler.svelte';
+import { createReconciler, clipSlotCatchingUp, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, AUTHORITY_HOLD_MS, sortedStringify, SETTLE_MS, SETTLE_MAX_MS, leastAdvancedUpload, PLAYOUT_MISMATCH_HOLD_MS } from './reconciler.svelte';
 import type { ControlRoomState, ClipPlayerState } from '$lib/api/types';
 
 /** Let both engines' states sit unchanged for SETTLE_MS, after which a
@@ -545,6 +545,12 @@ describe('createReconciler', () => {
 				playout: { channels: [{ id: 0, state: 'on_air', currentTitle: 'Bumper', itemIndex: 0, itemCount: 1 }] },
 			}));
 			settle(r);
+			// A playout difference counts once it has lasted; the transports
+			// keep both engines fresh meanwhile.
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+			vi.advanceTimersByTime(PLAYOUT_MISMATCH_HOLD_MS);
+			r.tick();
 			r.tick();
 			expect(r.health.status).toBe('mismatch');
 		});
@@ -573,6 +579,12 @@ describe('createReconciler', () => {
 				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 5, itemCount: 15 }] },
 			}));
 			settle(r);
+			// A playout difference counts once it has lasted; the transports
+			// keep both engines fresh meanwhile.
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+			vi.advanceTimersByTime(PLAYOUT_MISMATCH_HOLD_MS);
+			r.tick();
 			expect(r.health.status).toBe('mismatch');
 		});
 
@@ -611,7 +623,52 @@ describe('createReconciler', () => {
 				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 2, itemCount: 15, currentTitle: 'Interview', itemRemainMs: 19000 }] },
 			}));
 			settle(r);
+			// A playout difference counts once it has lasted; the transports
+			// keep both engines fresh meanwhile.
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+			vi.advanceTimersByTime(PLAYOUT_MISMATCH_HOLD_MS);
 			r.tick();
+			r.tick();
+			expect(r.health.status).toBe('mismatch');
+		});
+
+		// Engines a second apart on a looping clip: at each loop point one
+		// reports the clip's start, the other its end, for that second. That
+		// read as a critical mismatch and pushed a snapshot every loop.
+		it('does not report a mismatch at the loop point of engines a little apart', () => {
+			vi.useFakeTimers();
+			const r = createReconciler();
+			const at = (remain: number) => makeState({
+				lastCommandSeq: 10,
+				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 0, itemCount: 1, currentTitle: 'Clip', itemRemainMs: remain }] },
+			});
+			const seen = new Set<string>();
+			// A 20 s loop, engine B 1.2 s behind engine A, for three loops.
+			for (let t = 0; t < 60_000; t += 200) {
+				r.ingest('A', at(20_000 - (t % 20_000)));
+				r.ingest('B', at(20_000 - ((t + 18_800) % 20_000)));
+				vi.advanceTimersByTime(200);
+				r.tick();
+				seen.add(r.health.status);
+			}
+			expect([...seen]).toEqual(['synced']);
+		});
+
+		it('reports a playout difference that lasts', () => {
+			vi.useFakeTimers();
+			const r = createReconciler();
+			const at = (remain: number) => makeState({
+				lastCommandSeq: 10,
+				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 0, itemCount: 1, currentTitle: 'Clip', itemRemainMs: remain }] },
+			});
+			for (let t = 0; t < PLAYOUT_MISMATCH_HOLD_MS + 1000; t += 200) {
+				r.ingest('A', at(30_000 - t));
+				r.ingest('B', at(20_000 - t));
+				vi.advanceTimersByTime(200);
+				r.tick();
+				if (t < PLAYOUT_MISMATCH_HOLD_MS - 200) expect(r.health.status).not.toBe('mismatch');
+			}
 			expect(r.health.status).toBe('mismatch');
 		});
 

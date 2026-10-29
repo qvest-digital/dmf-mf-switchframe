@@ -246,6 +246,13 @@ export const TRANSITION_LOCK_STALE_THRESHOLD_MS = 5_000;
 /** Hard upper bound on how long the transition lock may be held. Prevents a
  * stuck lock if the locked engine keeps reporting inTransition=true forever. */
 export const TRANSITION_LOCK_MAX_HOLD_MS = 10_000;
+/** How long the engines' playout channels must differ before that counts
+ * as a mismatch. Engines whose channels run up to PLAYOUT_ELAPSED_TOLERANCE_MS
+ * apart reach every item boundary and loop point that far apart too: one
+ * engine then reports the next item, or a looping clip's start, while the
+ * other still reports the end of the last. */
+export const PLAYOUT_ELAPSED_TOLERANCE_MS = 5000;
+export const PLAYOUT_MISMATCH_HOLD_MS = PLAYOUT_ELAPSED_TOLERANCE_MS;
 
 /** Union of the engines' refused transition types, keeping the first
  * engine's reason where both refuse one. Returns `current` itself when it
@@ -328,6 +335,8 @@ export function createReconciler() {
 	let previousComparableB = '';
 	// When the engines' compared fields last started to differ; 0 while equal.
 	let comparedDifferSince = 0;
+	// When the engines' playout channels last started to differ; 0 while not.
+	let playoutDifferSince = 0;
 
 	// Tick-updated status (time-based)
 	let tickedStatus = $state<SyncStatus>('disconnected');
@@ -731,8 +740,41 @@ export function createReconciler() {
 		return false;
 	}
 
+	/** Whether the engines' on-air playout channels differ: more than one
+	 * item apart, or on the same item more than PLAYOUT_ELAPSED_TOLERANCE_MS
+	 * apart or with different titles. */
+	function playoutDiffers(): boolean {
+		if (!stateA || !stateB || !connectedA || !connectedB) return false;
+		const playoutA = stateA?.playout;
+		const playoutB = stateB?.playout;
+		if (playoutA?.channels?.length && playoutB?.channels?.length) {
+			const channelsA = playoutA.channels;
+			const channelsB = playoutB.channels;
+			const maxLen = Math.max(channelsA.length, channelsB.length);
+			for (let i = 0; i < maxLen; i++) {
+				const chA = channelsA[i];
+				const chB = channelsB[i];
+				if (!chA || !chB) continue;
+				// Skip channels not on-air
+				if (chA.state !== 'on_air' && chB.state !== 'on_air') continue;
+				// Tolerate <=1 item index difference (natural scheduler drift)
+				const indexDelta = Math.abs((chA.itemIndex ?? 0) - (chB.itemIndex ?? 0));
+				if (indexDelta > 1) return true;
+				// Elapsed time on the same item
+				if (indexDelta === 0 && chA.itemRemainMs !== undefined && chB.itemRemainMs !== undefined) {
+					const elapsedDelta = Math.abs(chA.itemRemainMs - chB.itemRemainMs);
+					if (elapsedDelta > PLAYOUT_ELAPSED_TOLERANCE_MS) return true;
+				}
+				// Only flag title mismatch if index delta is 0 (same item, different title = real mismatch)
+				if (indexDelta === 0 && chA.currentTitle !== undefined && chB.currentTitle !== undefined && chA.currentTitle !== chB.currentTitle) return true;
+			}
+		}
+
+		return false;
+	}
+
 	/** Check if critical fields mismatch at same lastCommandSeq. */
-	function hasCriticalMismatch(): boolean {
+	function hasCriticalMismatch(now: number): boolean {
 		if (!stateA || !stateB || !connectedA || !connectedB) return false;
 		const seqA = stateA.lastCommandSeq ?? 0;
 		const seqB = stateB.lastCommandSeq ?? 0;
@@ -749,31 +791,9 @@ export function createReconciler() {
 		// Recording mismatch is critical — one engine recording while other isn't
 		if (stateA.recording?.active !== stateB.recording?.active) return true;
 
-		// Check playout channel divergence (itemIndex with drift tolerance, elapsed time, currentTitle)
-		const playoutA = stateA?.playout;
-		const playoutB = stateB?.playout;
-		if (playoutA?.channels?.length && playoutB?.channels?.length) {
-			const channelsA = playoutA.channels;
-			const channelsB = playoutB.channels;
-			const maxLen = Math.max(channelsA.length, channelsB.length);
-			for (let i = 0; i < maxLen; i++) {
-				const chA = channelsA[i];
-				const chB = channelsB[i];
-				if (!chA || !chB) continue;
-				// Skip channels not on-air
-				if (chA.state !== 'on_air' && chB.state !== 'on_air') continue;
-				// Tolerate <=1 item index difference (natural scheduler drift)
-				const indexDelta = Math.abs((chA.itemIndex ?? 0) - (chB.itemIndex ?? 0));
-				if (indexDelta > 1) return true;
-				// Check elapsed time divergence (>5s on same item = diverged)
-				if (indexDelta === 0 && chA.itemRemainMs !== undefined && chB.itemRemainMs !== undefined) {
-					const elapsedDelta = Math.abs(chA.itemRemainMs - chB.itemRemainMs);
-					if (elapsedDelta > 5000) return true;
-				}
-				// Only flag title mismatch if index delta is 0 (same item, different title = real mismatch)
-				if (indexDelta === 0 && chA.currentTitle !== undefined && chB.currentTitle !== undefined && chA.currentTitle !== chB.currentTitle) return true;
-			}
-		}
+		// A playout difference counts once it has lasted, see
+		// PLAYOUT_MISMATCH_HOLD_MS.
+		if (playoutDifferSince > 0 && now - playoutDifferSince >= PLAYOUT_MISMATCH_HOLD_MS) return true;
 
 		return false;
 	}
@@ -837,7 +857,9 @@ export function createReconciler() {
 		// propagating, not a divergence.
 		const settling = isSettling(now);
 
-		if (!settling && hasCriticalMismatch()) return 'mismatch';
+		if (!playoutDiffers()) playoutDifferSince = 0;
+		else if (playoutDifferSince === 0) playoutDifferSince = now;
+		if (!settling && hasCriticalMismatch(now)) return 'mismatch';
 		if (recovering) return 'recovering';
 
 		const seqA = stateA!.lastCommandSeq ?? 0;
