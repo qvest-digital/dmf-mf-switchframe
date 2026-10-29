@@ -110,7 +110,7 @@ type Queue struct {
 	metricsCB        *MetricsCallbacks
 	replaySeqTracker func(seq uint64) // optional; invoked per WAL-replayed command in New
 	lateCommands     atomic.Int64
-	lastDrainClock   int64 // last clock value seen by Drain, for backward jump detection
+	lastDrainClock   atomic.Int64 // last clock value seen by Drain, for backward jump detection
 	clockJumps       atomic.Int64
 }
 
@@ -313,7 +313,7 @@ func (q *Queue) Drain() []Command {
 	// Detect backward clock jump (NTP/PTP correction).
 	// Only warn — don't drop commands. They'll drain naturally when the clock
 	// catches back up, and MaxDrainPerCall prevents burst-executing a backlog.
-	prev := atomic.LoadInt64(&q.lastDrainClock)
+	prev := q.lastDrainClock.Load()
 	if prev > 0 && now < prev {
 		jump := prev - now
 		q.clockJumps.Add(1)
@@ -323,7 +323,7 @@ func (q *Queue) Drain() []Command {
 		slog.Warn("cmdqueue: backward clock jump detected",
 			"jump_us", jump, "prev_us", prev, "now_us", now)
 	}
-	atomic.StoreInt64(&q.lastDrainClock, now)
+	q.lastDrainClock.Store(now)
 
 	q.mu.Lock()
 

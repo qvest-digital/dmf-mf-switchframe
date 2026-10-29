@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import IOPanel from './IOPanel.svelte';
 import { reloadHolds } from '$lib/util/activity';
-import { addDestination } from '$lib/api/switch-api';
+import { addDestination, stopDestination, reassignDestinationEngine } from '$lib/api/switch-api';
 import type { ControlRoomState, SourceHealthStatus } from '$lib/api/types';
 
 vi.mock('$lib/api/switch-api', () => ({
@@ -37,6 +37,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	removeDestination: vi.fn().mockResolvedValue(undefined),
 	startDestination: vi.fn().mockResolvedValue({}),
 	stopDestination: vi.fn().mockResolvedValue({}),
+	reassignDestinationEngine: vi.fn().mockResolvedValue({}),
 	startSRTOutput: vi.fn().mockResolvedValue({}),
 	stopSRTOutput: vi.fn().mockResolvedValue({}),
 	apiCall: vi.fn(),
@@ -621,5 +622,30 @@ describe('IOPanel dual-engine features', () => {
 		});
 		const engineStatus = container.querySelectorAll('.dest-engine-status');
 		expect(engineStatus.length).toBe(0);
+	});
+
+	// The engine that does not send a started destination shows it on
+	// standby; its button stops it rather than starting it a second time.
+	it('stops a destination on standby and moves its sender', async () => {
+		const { container } = render(IOPanel, {
+			props: {
+				state: makeState({
+					destinations: [{ id: '0a1b2c3d', name: 'Ingest', type: 'rtmp', url: 'rtmp://example.com/live/k', engine: 'a', state: 'standby' }],
+				}),
+				visible: true,
+				isDualEngine: true,
+			},
+		});
+		const row = Array.from(container.querySelectorAll('.dest-row')).find((r) => r.textContent?.includes('Ingest'))!;
+		const button = row.querySelector('.action-btn') as HTMLButtonElement;
+		expect(button.title).toBe('Stop');
+		await fireEvent.click(button);
+		expect(stopDestination).toHaveBeenCalledWith('0a1b2c3d');
+
+		await fireEvent.click(row.querySelector('.row-header')!);
+		const move = Array.from(row.querySelectorAll('button')).find((b) => b.textContent?.includes('Move to B'));
+		expect(move).toBeTruthy();
+		await fireEvent.click(move!);
+		expect(reassignDestinationEngine).toHaveBeenCalledWith('0a1b2c3d', 'b');
 	});
 });

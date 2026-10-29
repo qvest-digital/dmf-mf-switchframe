@@ -229,7 +229,8 @@ type DestinationInfo struct {
 	Type    string `json:"type"`
 	Address string `json:"address,omitempty"`
 	Port    int    `json:"port,omitempty"`
-	URL     string `json:"url,omitempty"` // RTMP destinations
+	URL     string `json:"url,omitempty"`    // RTMP destinations
+	Engine  string `json:"engine,omitempty"` // engine of a pair that sends it
 	// AllowUntrustedCert is set on an rtmps:// destination that does not
 	// verify the server certificate.
 	AllowUntrustedCert bool   `json:"allowUntrustedCert,omitempty"`
@@ -309,18 +310,20 @@ type PodStatusInfo struct {
 
 // PlayoutChannelInfo is the broadcast state for a playout channel.
 type PlayoutChannelInfo struct {
-	ID            int             `json:"id"`
-	State         string          `json:"state"`
-	Mode          string          `json:"mode,omitempty"`
-	PlaylistName  string          `json:"playlistName,omitempty"`
-	CurrentItemID string          `json:"currentItemId,omitempty"`
-	CurrentTitle  string          `json:"currentTitle,omitempty"`
-	NextItemID    string          `json:"nextItemId,omitempty"`
-	NextTitle     string          `json:"nextTitle,omitempty"`
-	ItemIndex     int             `json:"itemIndex"`
-	ItemCount     int             `json:"itemCount"`
-	ItemProgress  float64         `json:"itemProgress,omitempty"`
-	ItemRemainMs  int64           `json:"itemRemainMs,omitempty"`
+	ID            int     `json:"id"`
+	State         string  `json:"state"`
+	Mode          string  `json:"mode,omitempty"`
+	PlaylistName  string  `json:"playlistName,omitempty"`
+	CurrentItemID string  `json:"currentItemId,omitempty"`
+	CurrentTitle  string  `json:"currentTitle,omitempty"`
+	NextItemID    string  `json:"nextItemId,omitempty"`
+	NextTitle     string  `json:"nextTitle,omitempty"`
+	ItemIndex     int     `json:"itemIndex"`
+	ItemCount     int     `json:"itemCount"`
+	ItemProgress  float64 `json:"itemProgress,omitempty"`
+	ItemRemainMs  int64   `json:"itemRemainMs,omitempty"`
+	// ItemError says why the item on air could not be opened.
+	ItemError     string          `json:"itemError,omitempty"`
 	ActivePod     *PodStatusInfo  `json:"activePod,omitempty"`
 	Pods          []PodStatusInfo `json:"pods,omitempty"`
 	PodsArmed     int             `json:"podsArmed,omitempty"`

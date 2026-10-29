@@ -21,6 +21,7 @@
 		removeDestination,
 		startDestination,
 		stopDestination,
+		reassignDestinationEngine,
 		stopSRTOutput,
 		apiCall,
 	} from '$lib/api/switch-api';
@@ -160,9 +161,17 @@
 				return '#f59e0b';
 			case 'error':
 				return '#ef4444';
+			case 'standby':
+				return '#3b82f6';
 			default:
 				return '#6b7280';
 		}
+	}
+
+	/** Started: sending here, or armed on standby while the other engine of
+	 * a pair sends. */
+	function destStarted(destState: string): boolean {
+		return destState !== 'stopped' && destState !== 'error';
 	}
 
 	// --- Dual-engine source presence helpers ---
@@ -406,6 +415,10 @@
 
 	function handleStopDest(id: string) {
 		apiCall(stopDestination(id), 'Stop destination');
+	}
+
+	function handleMoveDest(id: string, engine: string) {
+		apiCall(reassignDestinationEngine(id, engine), 'Move destination');
 	}
 
 	function handleStopLegacySRT() {
@@ -801,17 +814,17 @@
 							</button>
 								<button
 									class="action-btn"
-									class:stop={dest.state === 'connected' || dest.state === 'active' || dest.state === 'listening' || dest.state === 'reconnecting'}
+									class:stop={destStarted(dest.state)}
 									onclick={() => {
-										if (dest.state === 'connected' || dest.state === 'active' || dest.state === 'listening' || dest.state === 'reconnecting') {
+										if (destStarted(dest.state)) {
 											handleStopDest(dest.id);
 										} else {
 											handleStartDest(dest.id);
 										}
 									}}
-									title={dest.state === 'connected' || dest.state === 'active' || dest.state === 'listening' ? 'Stop' : 'Start'}
+									title={destStarted(dest.state) ? 'Stop' : 'Start'}
 								>
-									{#if dest.state === 'connected' || dest.state === 'active' || dest.state === 'listening' || dest.state === 'reconnecting'}
+									{#if destStarted(dest.state)}
 										&#x23F9;
 									{:else}
 										&#x25B6;
@@ -829,6 +842,16 @@
 									<span class="detail-label">State</span>
 									<span class="detail-value {destStateClass(dest.state)}">{dest.state}</span>
 								</div>
+								{#if isDualEngine && dest.engine && dest.type !== 'srt-listener'}
+									{@const other = dest.engine === 'a' ? 'b' : 'a'}
+									<div class="detail-row">
+										<span class="detail-label">Sender</span>
+										<span class="detail-value">Engine {dest.engine.toUpperCase()}</span>
+										<button class="reveal-btn" onclick={() => handleMoveDest(dest.id, other)} title="Send from Engine {other.toUpperCase()}, Engine {dest.engine.toUpperCase()} stands by">
+											Move to {other.toUpperCase()}
+										</button>
+									</div>
+								{/if}
 								{#if dest.type === 'rtmp' && dest.url?.startsWith('rtmps://')}
 									<div class="detail-row">
 										<span class="detail-label">Certificate</span>

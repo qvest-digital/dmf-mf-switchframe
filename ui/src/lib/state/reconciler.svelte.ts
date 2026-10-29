@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State, ClipUploadProgress, ClipUploadStage, ClipPlayerState, MacroExecutionState } from '$lib/api/types';
+import type { ControlRoomState, SourceHealthStatus, EngineId, LimiterSettings, CBRStatus, SCTE35State, ClipUploadProgress, ClipUploadStage, ClipPlayerState, MacroExecutionState, DestinationInfo } from '$lib/api/types';
 
 /** Minimum RTT delta (ms) required to switch authority based on RTT alone. Prevents jitter flapping. */
 export const RTT_HYSTERESIS_MS = 100;
@@ -666,16 +666,18 @@ export function createReconciler() {
 				}
 			}
 		}
-		// Destination divergence: compare count of active (non-error, non-empty state) destinations
-		const destsA = stateA.destinations ?? [];
-		const destsB = stateB.destinations ?? [];
-		const activeDestsA = destsA.filter((d) => d.state === 'running' || d.state === 'connected').length;
-		const activeDestsB = destsB.filter((d) => d.state === 'running' || d.state === 'connected').length;
-		if (activeDestsA !== activeDestsB) {
+		// Destination divergence: compare the started destinations. One engine
+		// of a pair sends a destination and the other holds it on standby, so
+		// a sending one and a standby one agree.
+		const startedDests = (dests: DestinationInfo[] | undefined) =>
+			(dests ?? []).filter((d) => d.state !== 'stopped').map((d) => d.id).sort().join(',');
+		const startedA = startedDests(stateA.destinations);
+		const startedB = startedDests(stateB.destinations);
+		if (startedA !== startedB) {
 			result.push({
 				field: 'destinations',
-				engineA: `${activeDestsA} active`,
-				engineB: `${activeDestsB} active`,
+				engineA: startedA || 'none started',
+				engineB: startedB || 'none started',
 			});
 		}
 		// SRT output divergence: compare active state
@@ -748,8 +750,9 @@ export function createReconciler() {
 		return false;
 	}
 
-	/** Whether the engines' on-air playout channels differ: more than one
-	 * item apart, or on the same item more than PLAYOUT_ELAPSED_TOLERANCE_MS
+	/** Whether the engines' on-air playout channels differ: one unable to
+	 * open the item on air while the other is not, more than one item
+	 * apart, or on the same item more than PLAYOUT_ELAPSED_TOLERANCE_MS
 	 * apart or with different titles. */
 	function playoutDiffers(): boolean {
 		if (!stateA || !stateB || !connectedA || !connectedB) return false;
@@ -765,6 +768,9 @@ export function createReconciler() {
 				if (!chA || !chB) continue;
 				// Skip channels not on-air
 				if (chA.state !== 'on_air' && chB.state !== 'on_air') continue;
+				// An engine on air with an item it cannot open plays nothing
+				// while the other plays it.
+				if (!!chA.itemError !== !!chB.itemError) return true;
 				// Tolerate <=1 item index difference (natural scheduler drift)
 				const indexDelta = Math.abs((chA.itemIndex ?? 0) - (chB.itemIndex ?? 0));
 				if (indexDelta > 1) return true;

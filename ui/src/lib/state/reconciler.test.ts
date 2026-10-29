@@ -610,6 +610,39 @@ describe('createReconciler', () => {
 			expect(r.health.status).toBe('mismatch');
 		});
 
+		// One engine on air with an item it cannot open plays nothing; the
+		// other plays it, so the two outputs differ.
+		it('reports mismatch when one engine cannot open the item on air', () => {
+			const r = createReconciler();
+			const ch = { id: 0, state: 'on_air' as const, currentTitle: 'Replay', itemIndex: 0, itemCount: 1 };
+			r.ingest('A', makeState({ lastCommandSeq: 5, playout: { channels: [{ ...ch, itemRemainMs: 3300 }] } }));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				playout: { channels: [{ ...ch, itemError: 'asset open failed: playout: asset not yet cached' }] },
+			}));
+			settle(r);
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+			r.tick();
+			expect(r.health.status).toBe('synced');
+			vi.advanceTimersByTime(PLAYOUT_MISMATCH_HOLD_MS);
+			r.tick();
+			expect(r.health.status).toBe('mismatch');
+		});
+
+		it('does not report a mismatch when both engines fail to open the item', () => {
+			const r = createReconciler();
+			const ch = { id: 0, state: 'on_air' as const, currentTitle: 'Replay', itemIndex: 0, itemCount: 1, itemError: 'asset open failed' };
+			r.ingest('A', makeState({ lastCommandSeq: 5, playout: { channels: [ch] } }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, playout: { channels: [ch] } }));
+			settle(r);
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+			vi.advanceTimersByTime(PLAYOUT_MISMATCH_HOLD_MS);
+			r.tick();
+			expect(r.health.status).toBe('synced');
+		});
+
 		it('tolerates <=1 item index drift in playout (natural scheduler drift)', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({
@@ -1281,7 +1314,7 @@ describe('createReconciler', () => {
 	});
 
 	describe('destination divergence', () => {
-		it('detects divergence when active destination count differs', () => {
+		it('detects divergence when the started destinations differ', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({
 				lastCommandSeq: 5,
@@ -1300,8 +1333,22 @@ describe('createReconciler', () => {
 			const divs = r.health.divergences;
 			const destDiv = divs.find(d => d.field === 'destinations');
 			expect(destDiv).toBeDefined();
-			expect(destDiv?.engineA).toBe('2 active');
-			expect(destDiv?.engineB).toBe('1 active');
+			expect(destDiv?.engineA).toBe('d1,d2');
+			expect(destDiv?.engineB).toBe('d1');
+		});
+
+		// One engine of a pair sends, the other stands by: both started.
+		it('no destination divergence between a sender and its standby', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				destinations: [{ id: 'd1', type: 'rtmp', state: 'active' }],
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				destinations: [{ id: 'd1', type: 'rtmp', state: 'standby' }],
+			}));
+			expect(r.health.divergences.find(d => d.field === 'destinations')).toBeUndefined();
 		});
 
 		it('no destination divergence when active counts match', () => {
@@ -1344,8 +1391,8 @@ describe('createReconciler', () => {
 			const divs = r.health.divergences;
 			const destDiv = divs.find(d => d.field === 'destinations');
 			expect(destDiv).toBeDefined();
-			expect(destDiv?.engineA).toBe('1 active');
-			expect(destDiv?.engineB).toBe('0 active');
+			expect(destDiv?.engineA).toBe('d1');
+			expect(destDiv?.engineB).toBe('none started');
 		});
 	});
 

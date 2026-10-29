@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zsiec/switchframe/server/metrics"
@@ -23,7 +24,26 @@ type ctxKeyLogger struct{}
 // LoggerMiddleware returns middleware that adds structured logging to each request.
 // It generates or preserves a request ID, creates a child logger with request
 // attributes, and logs the completed request with status, latency, and bytes written.
+//
+// A successful read is logged at DEBUG: the UI polls, so at INFO the reads
+// bury everything else. Mutations and every failed request stay at INFO. A
+// failure that repeats, one client retrying a refused token for instance,
+// is logged once per errorLogWindow per route and status; the count left
+// out is logged when the window ends.
 func LoggerMiddleware(base *slog.Logger) func(http.Handler) http.Handler {
+	return RouteLoggerMiddleware(base, nil)
+}
+
+// RouteLoggerMiddleware is LoggerMiddleware for a chain that ends in
+// routes. Repeated failures are grouped by the route they resolve to there,
+// before authentication can turn the request away, so a client walking
+// paths under one route shares one line per window and the paths it makes
+// up are not held.
+func RouteLoggerMiddleware(base *slog.Logger, routes *http.ServeMux) func(http.Handler) http.Handler {
+	return loggerMiddleware(base, routes, newErrorLogLimiter(errorLogWindow, time.Now))
+}
+
+func loggerMiddleware(base *slog.Logger, routes *http.ServeMux, limiter *errorLogLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -46,6 +66,11 @@ func LoggerMiddleware(base *slog.Logger) func(http.Handler) http.Handler {
 			ctx := context.WithValue(r.Context(), ctxKeyLogger{}, child)
 			r = r.WithContext(ctx)
 
+			var pattern string
+			if routes != nil {
+				_, pattern = routes.Handler(r)
+			}
+
 			// Set response header.
 			w.Header().Set("X-Request-ID", reqID)
 
@@ -60,21 +85,159 @@ func LoggerMiddleware(base *slog.Logger) func(http.Handler) http.Handler {
 				status = http.StatusOK
 			}
 
-			latency := time.Since(start)
-
-			// Log at DEBUG for noisy paths, INFO for everything else.
-			level := slog.LevelInfo
-			if isNoisyPath(r.URL.Path) {
-				level = slog.LevelDebug
+			for _, k := range limiter.expired() {
+				base.Info("http requests not logged",
+					"method", k.method, "route", k.route, "status", k.status, "suppressed", k.suppressed)
 			}
 
-			child.Log(r.Context(), level, "http request",
+			latency := time.Since(start)
+			attrs := []any{
 				"status", status,
 				"latency", latency,
 				"bytes", sr.written,
-			)
+			}
+
+			level := slog.LevelInfo
+			switch {
+			case isNoisyPath(r.URL.Path), isRead(r.Method) && status < http.StatusBadRequest:
+				level = slog.LevelDebug
+			case status >= http.StatusBadRequest:
+				if pattern == "" && routes == nil {
+					pattern = r.Pattern
+				}
+				if pattern == "" {
+					pattern = "unknown"
+				}
+				log, suppressed := limiter.allow(errorLogKey{metrics.MethodLabel(r.Method), pattern, status})
+				if !log {
+					return
+				}
+				// Behind an ingress every request comes from the ingress, so
+				// only these name the client that keeps failing, and the UI
+				// build says whether it runs code the engine still serves.
+				// They name the client of the logged request only; others
+				// failing the same way within the window are counted, not
+				// named. forwarded_for is what the client or a proxy sent.
+				attrs = append(attrs,
+					"route", pattern,
+					"user_agent", r.UserAgent(),
+					"forwarded_for", r.Header.Get("X-Forwarded-For"),
+					"ui_build", r.Header.Get(UIBuildHeader),
+				)
+				if suppressed > 0 {
+					attrs = append(attrs, "suppressed", suppressed)
+				}
+			}
+			child.Log(r.Context(), level, "http request", attrs...)
 		})
 	}
+}
+
+// UIBuildHeader carries the build of the UI that sent a request. The UI
+// sends it to the engine that served the page only: a custom header on a
+// request to the other engine would need that engine's preflight to allow
+// it, which an engine on an older build does not.
+const UIBuildHeader = "X-Switchframe-UI-Build"
+
+// isRead reports whether a request method only reads.
+func isRead(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead
+}
+
+// errorLogWindow is how long identical failed requests share one log line.
+const errorLogWindow = 10 * time.Second
+
+// errorLogLimiterMaxKeys bounds the keys held. A key is a method, route and
+// status, so only an unbounded set of routes would reach it.
+const errorLogLimiterMaxKeys = 1024
+
+// errorLogKey is what failed requests are grouped by.
+type errorLogKey struct {
+	method string
+	route  string
+	status int
+}
+
+// suppressedRequests is a key whose window ended with requests not logged.
+type suppressedRequests struct {
+	errorLogKey
+	suppressed int
+}
+
+// errorLogLimiter lets one log line per key through each window and counts
+// the rest, so that count can be logged once the window ends.
+type errorLogLimiter struct {
+	mu        sync.Mutex
+	window    time.Duration
+	now       func() time.Time
+	keys      map[errorLogKey]*errorLogWindowState
+	pending   []suppressedRequests
+	nextSweep time.Time
+}
+
+type errorLogWindowState struct {
+	logged     time.Time
+	suppressed int
+}
+
+func newErrorLogLimiter(window time.Duration, now func() time.Time) *errorLogLimiter {
+	return &errorLogLimiter{window: window, now: now, keys: make(map[errorLogKey]*errorLogWindowState)}
+}
+
+// allow reports whether a request under key is logged, and how many under
+// the same key were not since the last one that was.
+func (l *errorLogLimiter) allow(key errorLogKey) (bool, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	k, ok := l.keys[key]
+	if !ok {
+		if len(l.keys) >= errorLogLimiterMaxKeys {
+			// Clearing must not lose what the cleared keys counted.
+			for key, k := range l.keys {
+				if k.suppressed > 0 {
+					l.pending = append(l.pending, suppressedRequests{key, k.suppressed})
+				}
+			}
+			clear(l.keys)
+		}
+		l.keys[key] = &errorLogWindowState{logged: now}
+		return true, 0
+	}
+	if now.Sub(k.logged) < l.window {
+		k.suppressed++
+		return false, 0
+	}
+	suppressed := k.suppressed
+	k.logged, k.suppressed = now, 0
+	return true, suppressed
+}
+
+// expired drops the keys whose window has ended and returns those that
+// left requests unlogged, so a storm that stops still reports its last
+// window. Any request calls it; it looks at the keys at most once a second.
+func (l *errorLogLimiter) expired() []suppressedRequests {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	if now.Before(l.nextSweep) && len(l.pending) == 0 {
+		return nil
+	}
+	if !now.Before(l.nextSweep) {
+		l.nextSweep = now.Add(time.Second)
+		for key, k := range l.keys {
+			if now.Sub(k.logged) < l.window {
+				continue
+			}
+			if k.suppressed > 0 {
+				l.pending = append(l.pending, suppressedRequests{key, k.suppressed})
+			}
+			delete(l.keys, key)
+		}
+	}
+	out := l.pending
+	l.pending = nil
+	return out
 }
 
 // LogFromCtx retrieves the request-scoped logger from the context.

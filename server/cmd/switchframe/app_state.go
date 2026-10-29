@@ -13,7 +13,9 @@ import (
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/peer"
+	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/stmap"
 )
@@ -36,6 +38,53 @@ func sourceType(key string) string {
 	default:
 		return "demo"
 	}
+}
+
+// playoutChannelInfo is a playout channel's status as the control room
+// state carries it.
+func playoutChannelInfo(s playout.ChannelStatus) internal.PlayoutChannelInfo {
+	ch := internal.PlayoutChannelInfo{
+		ID:            s.ID,
+		State:         s.State,
+		Mode:          s.Mode,
+		PlaylistName:  s.PlaylistName,
+		CurrentItemID: s.CurrentItemID,
+		CurrentTitle:  s.CurrentTitle,
+		NextItemID:    s.NextItemID,
+		NextTitle:     s.NextTitle,
+		ItemIndex:     s.ItemIndex,
+		ItemCount:     s.ItemCount,
+		ItemProgress:  s.ItemProgress,
+		ItemRemainMs:  s.ItemRemainMs,
+		ItemError:     s.ItemError,
+	}
+	if s.Pods != nil {
+		ch.PodsArmed = s.Pods.PodsArmed
+		ch.PodsCompleted = s.Pods.PodsCompleted
+		if s.Pods.ActivePod != nil {
+			ch.ActivePod = &internal.PodStatusInfo{
+				ID:          s.Pods.ActivePod.ID,
+				Type:        s.Pods.ActivePod.Type,
+				State:       s.Pods.ActivePod.State,
+				ElapsedMs:   s.Pods.ActivePod.ElapsedMs,
+				RemainingMs: s.Pods.ActivePod.RemainingMs,
+				DurationMs:  s.Pods.ActivePod.DurationMs,
+				Armed:       s.Pods.ActivePod.Armed,
+			}
+		}
+		for _, ps := range s.Pods.Pods {
+			ch.Pods = append(ch.Pods, internal.PodStatusInfo{
+				ID:          ps.ID,
+				Type:        ps.Type,
+				State:       ps.State,
+				ElapsedMs:   ps.ElapsedMs,
+				RemainingMs: ps.RemainingMs,
+				DurationMs:  ps.DurationMs,
+				Armed:       ps.Armed,
+			})
+		}
+	}
+	return ch
 }
 
 // enrichState patches a ControlRoomState snapshot with output, graphics,
@@ -366,47 +415,7 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		states := a.playoutMgr.ChannelStates()
 		channels := make([]internal.PlayoutChannelInfo, len(states))
 		for i, s := range states {
-			ch := internal.PlayoutChannelInfo{
-				ID:            s.ID,
-				State:         s.State,
-				Mode:          s.Mode,
-				PlaylistName:  s.PlaylistName,
-				CurrentItemID: s.CurrentItemID,
-				CurrentTitle:  s.CurrentTitle,
-				NextItemID:    s.NextItemID,
-				NextTitle:     s.NextTitle,
-				ItemIndex:     s.ItemIndex,
-				ItemCount:     s.ItemCount,
-				ItemProgress:  s.ItemProgress,
-				ItemRemainMs:  s.ItemRemainMs,
-			}
-			if s.Pods != nil {
-				ch.PodsArmed = s.Pods.PodsArmed
-				ch.PodsCompleted = s.Pods.PodsCompleted
-				if s.Pods.ActivePod != nil {
-					ch.ActivePod = &internal.PodStatusInfo{
-						ID:          s.Pods.ActivePod.ID,
-						Type:        s.Pods.ActivePod.Type,
-						State:       s.Pods.ActivePod.State,
-						ElapsedMs:   s.Pods.ActivePod.ElapsedMs,
-						RemainingMs: s.Pods.ActivePod.RemainingMs,
-						DurationMs:  s.Pods.ActivePod.DurationMs,
-						Armed:       s.Pods.ActivePod.Armed,
-					}
-				}
-				for _, ps := range s.Pods.Pods {
-					ch.Pods = append(ch.Pods, internal.PodStatusInfo{
-						ID:          ps.ID,
-						Type:        ps.Type,
-						State:       ps.State,
-						ElapsedMs:   ps.ElapsedMs,
-						RemainingMs: ps.RemainingMs,
-						DurationMs:  ps.DurationMs,
-						Armed:       ps.Armed,
-					})
-				}
-			}
-			channels[i] = ch
+			channels[i] = playoutChannelInfo(s)
 		}
 		state.Playout = &internal.PlayoutState{Channels: channels}
 	}
@@ -986,25 +995,7 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 	}
 
 	// --- Output destinations ---
-	if dests := a.outputMgr.ListDestinations(); len(dests) > 0 {
-		snap.OutputDestinations = make([]internal.DestinationSnapshot, 0, len(dests))
-		for _, d := range dests {
-			snap.OutputDestinations = append(snap.OutputDestinations, internal.DestinationSnapshot{
-				ID: d.ID,
-				Config: internal.DestinationSnapshotConfig{
-					Type:     d.Config.Type,
-					Address:  d.Config.Address,
-					Port:     d.Config.Port,
-					URL:      d.Config.URL,
-					Latency:  d.Config.Latency,
-					StreamID: d.Config.StreamID,
-					Name:     d.Config.Name,
-					Engine:   d.Config.Engine,
-				},
-				Active: d.State == "connected" || d.State == "starting",
-			})
-		}
-	}
+	snap.OutputDestinations = destinationSnapshots(a.outputMgr.ListDestinations())
 
 	// --- Replay marks & player ---
 	if a.replayMgr != nil {
@@ -1249,4 +1240,40 @@ func clipPlayerInfos(states []clip.ClipPlayerState) []internal.ClipPlayerInfo {
 		}
 	}
 	return infos
+}
+
+// destinationSnapshots captures the output destinations for the peer's
+// snapshot. Active is set while an adapter runs, reconnecting included.
+func destinationSnapshots(dests []output.DestinationStatus) []internal.DestinationSnapshot {
+	if len(dests) == 0 {
+		return nil
+	}
+	out := make([]internal.DestinationSnapshot, 0, len(dests))
+	for _, d := range dests {
+		armed := d.Armed
+		out = append(out, internal.DestinationSnapshot{
+			ID: d.ID,
+			Config: internal.DestinationSnapshotConfig{
+				Type:     d.Config.Type,
+				Address:  d.Config.Address,
+				Port:     d.Config.Port,
+				URL:      d.Config.URL,
+				Latency:  d.Config.Latency,
+				StreamID: d.Config.StreamID,
+				Name:     d.Config.Name,
+				Engine:   d.Config.Engine,
+
+				Encryption:    d.Config.Encryption,
+				Passphrase:    d.Config.Passphrase,
+				MaxBW:         d.Config.MaxBW,
+				MaxConns:      d.Config.MaxConns,
+				SCTE35Enabled: d.Config.SCTE35Enabled,
+
+				AllowUntrustedCert: d.Config.AllowUntrustedCert,
+			},
+			Active: d.State == string(output.StateActive) || d.State == string(output.StateReconnecting) || d.State == string(output.StateStarting),
+			Armed:  &armed,
+		})
+	}
+	return out
 }

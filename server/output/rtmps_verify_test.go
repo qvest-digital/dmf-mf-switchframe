@@ -118,6 +118,41 @@ func TestRTMPDirect_RTMPSRefusesUntrustedCert(t *testing.T) {
 	requireProbe(t, sent, false, "sent RTMP to a server with a self-signed certificate")
 }
 
+// The status names the refused certificate and the way around it rather
+// than a step code of the open.
+func TestRTMPDirect_RTMPSRefusedCertReportsCause(t *testing.T) {
+	_, _, cert := testCert(t, "localhost", false, nil, nil)
+	port, _ := rtmpsProbe(t, cert)
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmps://localhost:" + port + "/live/key"})
+	require.NoError(t, err)
+	r.bo.Initial = time.Hour
+	require.NoError(t, r.Start(context.Background()))
+	t.Cleanup(func() { _ = r.Close() })
+	require.NoError(t, r.WriteVideo(rtmpTestKeyframe(90000)))
+	require.Eventually(t, func() bool { return r.Status().Error != "" }, 6*time.Second, 10*time.Millisecond)
+	msg := r.Status().Error
+	require.Contains(t, msg, "Input/output error")
+	require.Contains(t, msg, "TLS handshake or certificate verification failed; allowUntrustedCert skips verification")
+}
+
+// A refused TCP connection reports FFmpeg's error, with no TLS hint.
+func TestRTMPDirect_OpenErrorCarriesFFmpegError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	require.NoError(t, ln.Close())
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://127.0.0.1:" + port + "/live/key"})
+	require.NoError(t, err)
+	r.bo.Initial = time.Hour
+	require.NoError(t, r.Start(context.Background()))
+	t.Cleanup(func() { _ = r.Close() })
+	require.NoError(t, r.WriteVideo(rtmpTestKeyframe(90000)))
+	require.Eventually(t, func() bool { return r.Status().Error != "" }, 6*time.Second, 10*time.Millisecond)
+	msg := r.Status().Error
+	require.Contains(t, msg, "Connection refused")
+	require.NotContains(t, msg, "TLS")
+}
+
 func TestRTMPDirect_RTMPSAllowUntrustedCert(t *testing.T) {
 	_, _, cert := testCert(t, "localhost", false, nil, nil)
 	port, sent := rtmpsProbe(t, cert)

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { SyncHealth, SyncStatus, EngineHealthDetail } from '$lib/state/reconciler.svelte';
 	import type { DivergenceLogEntry } from '$lib/state/divergence-log.svelte';
+	import type { PlayoutComparison } from '$lib/state/playout-comparison';
 	import { authHeaders, engineFetch } from '$lib/api/switch-api';
 	import { poll } from '$lib/util/poll';
 	import type { AudioChannelComparison } from '$lib/util/audio-drift';
@@ -15,14 +16,6 @@
 		}[];
 	}
 
-	interface PlayoutComparison {
-		itemA: string;
-		itemB: string;
-		inSync: boolean;
-		ptsFrameDelta?: number;
-		cacheA?: string;
-		cacheB?: string;
-	}
 
 	interface Props {
 		health: SyncHealth;
@@ -482,6 +475,18 @@
 								<span class="playout-label">Item B:</span>
 								<span class="playout-value mono">{playoutComparison.itemB}</span>
 							</div>
+							{#if playoutComparison.errorA}
+								<div class="playout-row">
+									<span class="playout-label">Engine A:</span>
+									<span class="playout-value mono out-of-tolerance">{playoutComparison.errorA}</span>
+								</div>
+							{/if}
+							{#if playoutComparison.errorB}
+								<div class="playout-row">
+									<span class="playout-label">Engine B:</span>
+									<span class="playout-value mono out-of-tolerance">{playoutComparison.errorB}</span>
+								</div>
+							{/if}
 							{#if playoutComparison.ptsFrameDelta != null}
 								<div class="playout-row">
 									<span class="playout-label">PTS delta:</span>

@@ -582,7 +582,7 @@ func TestPipelineCodecs_EncodeAfterCloseWithoutPriorEncode(t *testing.T) {
 type slowMockEncoder struct {
 	encodeStarted chan struct{} // closed when Encode() begins
 	encodeFinish  chan struct{} // Encode() blocks until this is closed
-	closedAt      int64         // unix nano when Close() was called (atomic)
+	closedAt      atomic.Int64  // unix nano when Close() was called
 }
 
 func (e *slowMockEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
@@ -594,7 +594,7 @@ func (e *slowMockEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, 
 }
 
 func (e *slowMockEncoder) Close() {
-	atomic.StoreInt64(&e.closedAt, time.Now().UnixNano())
+	e.closedAt.Store(time.Now().UnixNano())
 }
 
 func TestPipelineCodecs_InvalidateEncoderRace(t *testing.T) {
@@ -648,7 +648,7 @@ func TestPipelineCodecs_InvalidateEncoderRace(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// The encoder should NOT have been closed yet — encode() still holds the lock
-	if atomic.LoadInt64(&slowEnc.closedAt) != 0 {
+	if slowEnc.closedAt.Load() != 0 {
 		t.Fatal("encoder was closed while Encode() was still in progress — race condition!")
 	}
 
@@ -661,7 +661,7 @@ func TestPipelineCodecs_InvalidateEncoderRace(t *testing.T) {
 	<-invalidateDone
 
 	// After both complete, the encoder should have been closed by invalidateEncoder
-	require.NotZero(t, atomic.LoadInt64(&slowEnc.closedAt),
+	require.NotZero(t, slowEnc.closedAt.Load(),
 		"invalidateEncoder should have closed the encoder after encode() finished")
 }
 
