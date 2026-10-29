@@ -315,6 +315,29 @@ func TestParseConfig_STMapPrewarm(t *testing.T) {
 	}
 }
 
+func TestParseConfig_HTML5Graphics(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"default", nil, true},
+		{"false", []string{"--html5-graphics=false"}, false},
+		{"true", []string{"--html5-graphics=true"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args, cmdLine := os.Args, flag.CommandLine
+			t.Cleanup(func() { os.Args, flag.CommandLine = args, cmdLine })
+			os.Args = append([]string{"switchframe"}, tc.args...)
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+			cfg, err := parseConfig()
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.HTML5Graphics)
+		})
+	}
+}
+
 func TestParseConfig_MXLGCInterval(t *testing.T) {
 	for _, tc := range []struct {
 		name string

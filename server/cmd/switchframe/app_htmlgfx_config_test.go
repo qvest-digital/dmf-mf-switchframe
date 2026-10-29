@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuildHTMLGfxConfig_DefaultsWhenFlagsEmpty(t *testing.T) {
-	got := buildHTMLGfxConfig(AppConfig{}, 1920, 1080, 30)
+	got := buildHTMLGfxConfig(AppConfig{HTML5Graphics: true}, 1920, 1080, 30)
 	want := htmlgfx.Config{
 		BinaryPath:   "switchframe-cef",
 		TemplatesDir: "/opt/switchframe-cef/demo-templates",
@@ -23,6 +23,7 @@ func TestBuildHTMLGfxConfig_DefaultsWhenFlagsEmpty(t *testing.T) {
 
 func TestBuildHTMLGfxConfig_OverridesWhenFlagsSet(t *testing.T) {
 	cfg := AppConfig{
+		HTML5Graphics:   true,
 		CEFBinary:       "bin/switchframe-cef.app/Contents/MacOS/switchframe-cef",
 		CEFTemplatesDir: "cef-sidecar/demo-templates",
 	}
@@ -39,11 +40,27 @@ func TestBuildHTMLGfxConfig_OverridesWhenFlagsSet(t *testing.T) {
 }
 
 func TestBuildHTMLGfxConfig_PartialOverride_BinaryOnly(t *testing.T) {
-	got := buildHTMLGfxConfig(AppConfig{CEFBinary: "/opt/custom/sf-cef"}, 1280, 720, 60)
+	got := buildHTMLGfxConfig(AppConfig{HTML5Graphics: true, CEFBinary: "/opt/custom/sf-cef"}, 1280, 720, 60)
 	if got.BinaryPath != "/opt/custom/sf-cef" {
 		t.Errorf("BinaryPath: got %q", got.BinaryPath)
 	}
 	if got.TemplatesDir != "/opt/switchframe-cef/demo-templates" {
 		t.Errorf("TemplatesDir should keep default, got %q", got.TemplatesDir)
+	}
+}
+
+// With HTML5 graphics off, the sidecar must not be spawned even where its
+// binary exists, so a deployment that does not use HTML5 graphics carries no
+// Chromium process. An empty BinaryPath is what makes Manager.Start skip the
+// spawn.
+func TestBuildHTMLGfxConfig_DisabledLeavesNoBinary(t *testing.T) {
+	for _, cfg := range []AppConfig{
+		{},
+		{CEFBinary: "/opt/custom/sf-cef"},
+	} {
+		got := buildHTMLGfxConfig(cfg, 1920, 1080, 30)
+		if got.BinaryPath != "" {
+			t.Errorf("CEFBinary %q: BinaryPath = %q, want empty", cfg.CEFBinary, got.BinaryPath)
+		}
 	}
 }
