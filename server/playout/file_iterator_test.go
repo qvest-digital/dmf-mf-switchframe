@@ -1634,7 +1634,7 @@ func TestFileFrameIterator_LoopSkipsFramesBeforeFirstKeyframe(t *testing.T) {
 // does not and TotalFrames counts them.
 func TestFileFrameIterator_LoopDropsLeadingPictures(t *testing.T) {
 	const passes = 3
-	pts := []int64{2, 0, 1, 3, 4, 5, 6, 7, 8, 9}
+	pts := []int64{3, 1, 2, 4, 5, 6, 7, 8, 9, 10}
 	encoded := make([]encodedFrame, len(pts))
 	for i := range encoded {
 		nal := byte(0x41)
@@ -1672,6 +1672,44 @@ func TestFileFrameIterator_LoopDropsLeadingPictures(t *testing.T) {
 	}
 	if iter.TotalFrames() != len(want) {
 		t.Fatalf("TotalFrames = %d, want %d", iter.TotalFrames(), len(want))
+	}
+}
+
+// A PES without a PTS is demuxed with PTS 0. Such a frame after the
+// keyframe is not known to be shown before it, so it is not dropped as a
+// leading picture, and with no frame dropped the audio stays as demuxed.
+func TestFileFrameIterator_MissingPTSIsNotLeading(t *testing.T) {
+	pts := []int64{2, 3, 0, 5, 6}
+	encoded := make([]encodedFrame, len(pts))
+	audio := make([]audioFrameInfo, len(pts))
+	for i := range encoded {
+		nal := byte(0x41)
+		if i == 0 {
+			nal = 0x65
+		}
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: pts[i] * 1800, isKeyframe: i == 0}
+		audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: int64(i) * 1800}
+	}
+	iter := newFileFrameIterator(encoded, audio, &delayDecoder{depth: 0},
+		func() (VideoDecoder, error) { return &delayDecoder{depth: 0}, nil })
+	defer iter.Close()
+
+	var pics, sound []byte
+	for {
+		f, err := iter.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f == nil {
+			break
+		}
+		pics = append(pics, f.YUV[0])
+		for _, a := range f.AudioFrames {
+			sound = append(sound, a.Data[0])
+		}
+	}
+	if want := []byte{0, 1, 2, 3, 4}; string(pics) != string(want) || string(sound) != string(want) {
+		t.Fatalf("pictures %v, audio %v, want both %v", pics, sound, want)
 	}
 }
 

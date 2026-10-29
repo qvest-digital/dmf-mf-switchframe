@@ -213,11 +213,12 @@ func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decode
 			continue
 		}
 		// Leading pictures come before the next keyframe in decode order
-		// and below the keyframe in presentation order.
+		// and below the keyframe in presentation order. A PES without a
+		// PTS is demuxed with PTS 0, which says nothing about its order.
 		kept := []encodedFrame{ef}
 		j := i + 1
 		for ; j < len(encoded) && !encoded[j].isKeyframe; j++ {
-			if wrapped || encoded[j].pts >= ef.pts {
+			if wrapped || encoded[j].pts >= ef.pts || encoded[j].pts == 0 {
 				kept = append(kept, encoded[j])
 			}
 		}
