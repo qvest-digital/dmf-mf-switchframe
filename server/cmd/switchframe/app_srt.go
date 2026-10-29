@@ -420,18 +420,8 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		slog.Info("srt: GPU preview encoder registered", "key", key)
 	} else if a.cfg.PreviewProxy {
 		// CPU preview encoder fallback.
-		pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
 		var err error
-		previewEnc, err = preview.NewEncoder(preview.Config{
-			SourceKey:     key,
-			Width:         pw,
-			Height:        ph,
-			Bitrate:       a.cfg.PreviewBitrate,
-			FPSNum:        pf.FPSNum,
-			FPSDen:        pf.FPSDen,
-			Relay:         relay,
-			FrameInterval: a.cfg.PreviewFrameInterval,
-		})
+		previewEnc, err = preview.NewEncoder(a.sourcePreviewConfig(key, relay, pf.FPSNum, pf.FPSDen))
 		if err != nil {
 			slog.Error("srt: preview encoder failed, falling back to full quality", "key", key, "error", err)
 		} else {
