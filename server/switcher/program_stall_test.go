@@ -102,7 +102,7 @@ func TestProgramStall_FreezeThenBlack(t *testing.T) {
 	out := r.since(stallStart)
 	period := r.sw.framePeriod()
 	// About one frame per period after the stall threshold.
-	want := int((time.Second - stallFrames*period) / period)
+	want := int((time.Second - stallAfter(period)) / period)
 	require.InDelta(t, want, len(out), 4, "filled frames in 1 s at %v", period)
 
 	var frozen, black int
@@ -123,14 +123,32 @@ func TestProgramStall_FreezeThenBlack(t *testing.T) {
 }
 
 // While frames flow the filler feeds nothing, so it cannot add frames
-// between the source's own.
+// between the source's own; that includes a source with gaps of 2.5
+// periods, past two periods but under the 100 ms floor.
 func TestProgramStall_NothingFilledWhileFramesFlow(t *testing.T) {
 	r := newStallRig(t, time.Second)
 	r.sw.RegisterSource("cam1", newTestRelay())
 	require.NoError(t, r.sw.Cut(context.Background(), "cam1"))
-	r.feed("cam1", 100, 30, 90000)
+	period := r.sw.framePeriod()
+	pts := int64(90000)
+	for i := 0; i < 30; i++ {
+		r.send("cam1", 100, pts)
+		pts += r.sw.framePTSTicks()
+		gap := period
+		if i%5 == 4 {
+			gap = 5 * period / 2 // 83 ms at 29.97: over 2 periods, under 100 ms
+		}
+		time.Sleep(gap - time.Millisecond)
+	}
 	require.Zero(t, r.sw.stallFillFrames.Load())
 	require.Len(t, r.all(), 30)
+}
+
+// The stall threshold is two periods, and never less than 100 ms.
+func TestProgramStall_Threshold(t *testing.T) {
+	require.Equal(t, 100*time.Millisecond, stallAfter(20*time.Millisecond), "50p")
+	require.Equal(t, 100*time.Millisecond, stallAfter(time.Second/60), "60p")
+	require.Equal(t, 80*time.Millisecond*2, stallAfter(80*time.Millisecond), "12.5p")
 }
 
 // A source resuming after a stall continues the program's PTS, even when

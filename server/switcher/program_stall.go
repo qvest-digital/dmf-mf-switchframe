@@ -7,10 +7,20 @@ import (
 	"github.com/zsiec/switchframe/server/internal/video"
 )
 
-// stallFrames is how many frame periods the pipeline may go without a
-// frame before the program counts as stalled. One late frame is jitter;
-// two missing ones are not.
-const stallFrames = 2
+// A program counts as stalled once no frame has entered the pipeline for
+// stallFrames periods, and at least stallMinGap: the gap the switcher
+// already logs as a program broadcast gap. A source that merely jitters
+// stays below it, so frames it delivers late are never doubled by a fill.
+const (
+	stallFrames = 2
+	stallMinGap = 100 * time.Millisecond
+)
+
+// stallAfter is how long the pipeline may go without a frame before the
+// program counts as stalled.
+func stallAfter(period time.Duration) time.Duration {
+	return max(stallFrames*period, stallMinGap)
+}
 
 // programStall keeps program output running while the program source
 // delivers no frames. The pipeline runs once per program frame, so a stalled
@@ -19,7 +29,7 @@ const stallFrames = 2
 // MXL, SRT, recording and the browser preview. A recording started then
 // wrote nothing.
 //
-// When no frame has entered the pipeline for stallFrames periods, the filler
+// When no frame has entered the pipeline for stallAfter, the filler
 // feeds the last program frame through the pipeline again, once per period
 // on the grid of the last frame, and after sourceLossTimeout broadcast black
 // in the pipeline's format, as the reference clock's sync loop does. During
@@ -123,7 +133,7 @@ func (s *Switcher) framePTSTicks() int64 {
 	return 3000
 }
 
-// programStallLoop sleeps until stallFrames periods after the last frame
+// programStallLoop sleeps until stallAfter past the last frame
 // and, if none arrived meanwhile, feeds one frame per period. While frames
 // flow it only wakes to find the deadline moved and goes back to sleep: it
 // feeds nothing then, so it cannot beat against the source.
@@ -155,7 +165,7 @@ func (s *Switcher) fillStep(now time.Time, period time.Duration, seenEpoch *uint
 	}
 
 	// A new program epoch (a cut, a completed transition) gives the new
-	// source stallFrames periods of its own before anything is filled, so
+	// source stallAfter of its own before anything is filled, so
 	// no filled frame can land before its first frame.
 	epoch := s.programEpoch.Load()
 	if epoch != *seenEpoch {
@@ -169,7 +179,7 @@ func (s *Switcher) fillStep(now time.Time, period time.Duration, seenEpoch *uint
 	if st.epoch != epoch || since.Before(*epochSince) {
 		since = *epochSince
 	}
-	stallAt := since.Add(stallFrames * period)
+	stallAt := since.Add(stallAfter(period))
 	if now.Before(stallAt) {
 		st.mu.Unlock()
 		return stallAt.Sub(now)
