@@ -64,6 +64,12 @@ func TestMXLNMOS_RestartRestoresControllerConnection(t *testing.T) {
 	if strVal(got.Activation.ActivationTime) != strVal(before.Activation.ActivationTime) {
 		t.Errorf("activation time %s, want the original %s", strVal(got.Activation.ActivationTime), strVal(before.Activation.ActivationTime))
 	}
+	// A flow mirrored from another node can take longer to open than a
+	// controller's activation waits; given up on, it would be replaced by
+	// the booking on both engines.
+	if b := re.cam1V.budget; b <= connectTimeout {
+		t.Errorf("restore waited at most %v for the flow, want longer than an activation's %v", b, connectTimeout)
+	}
 	if r := re.n.store.GetReceiver(rxID("cam1", "video")); r.Subscription.SenderID == nil || *r.Subscription.SenderID != nmosSender {
 		t.Errorf("IS-04 subscription %+v, want the restored sender", r.Subscription)
 	}

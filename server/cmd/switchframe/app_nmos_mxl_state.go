@@ -185,9 +185,7 @@ func (a *App) restoreMXLReceiver(ctx context.Context, id string, saved savedActi
 		a.activateMXLBooking(id)
 		return
 	}
-	rctx, cancel := context.WithTimeout(ctx, mxlRestoreTimeout)
-	defer cancel()
-	if err := a.applyMXLReceiver(rctx, ref, saved.Active); err != nil {
+	if err := a.applyMXLReceiver(ctx, ref, saved.Active, mxlRestoreTimeout); err != nil {
 		log.Warn("mxl nmos: saved connection not restored, reading the booked flow", "error", err)
 		// The attempt took the reader off the booked flow's retarget.
 		flow := booking.flow(ref.essence)

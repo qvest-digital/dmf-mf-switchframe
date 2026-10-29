@@ -599,7 +599,7 @@ func (a *App) activateMXLReceiver(ctx context.Context, id string, active nmos.MX
 		return fmt.Errorf("unknown receiver %s", id)
 	}
 	prev, _ := n.conn.ReceiverActive(id)
-	if err := a.applyMXLReceiver(ctx, ref, active); err != nil {
+	if err := a.applyMXLReceiver(ctx, ref, active, connectTimeout); err != nil {
 		return err
 	}
 	n.store.UpdateReceiverSubscription(id, active.SenderID, active.MasterEnable)
@@ -613,14 +613,15 @@ func (a *App) activateMXLReceiver(ctx context.Context, id string, active nmos.MX
 	return nil
 }
 
-// applyMXLReceiver connects the input's reader and, for video, sets the
-// input's label to what the connection carries.
-func (a *App) applyMXLReceiver(ctx context.Context, ref mxlReceiverRef, active nmos.MXLEndpoint) error {
+// applyMXLReceiver connects the input's reader, waiting at most timeout for
+// the flow to open, and, for video, sets the input's label to what the
+// connection carries.
+func (a *App) applyMXLReceiver(ctx context.Context, ref mxlReceiverRef, active nmos.MXLEndpoint, timeout time.Duration) error {
 	flow := ""
 	if active.MasterEnable {
 		flow = active.FlowID()
 	}
-	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), connectTimeout)
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
 	if err := a.connectMXLInput(cctx, ref.input, ref.essence, flow); err != nil {
 		return fmt.Errorf("input %s %s: %w", ref.input, ref.essence, err)
@@ -839,7 +840,7 @@ func (a *App) reconcileMXLNMOS(ctx context.Context) (done bool, err error) {
 		if !peerActive.MasterEnable {
 			peerActive.TransportParams[0].DomainID = nil
 		}
-		if err := a.applyMXLReceiver(ctx, n.receivers[id], peerActive); err != nil {
+		if err := a.applyMXLReceiver(ctx, n.receivers[id], peerActive, connectTimeout); err != nil {
 			slog.Warn("mxl nmos: peer connection not adopted", "receiver", id, "error", err)
 			continue
 		}
