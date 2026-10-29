@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -93,6 +94,31 @@ type Reader struct {
 	audioCh chan AudioGrain
 	dataCh  chan DataGrain
 	wg      sync.WaitGroup
+
+	// What a reader lost and how far behind it reads, for /metrics. Each
+	// is one atomic operation on a path that already reads the head.
+	skipped atomic.Uint64 // grains skipped because the consumer was behind
+	resyncs atomic.Uint64 // jumps to the head after the ring overwrote the position
+	lag     atomic.Uint64 // grains between the head and the read position, video only
+}
+
+// ReaderStats is what a Reader has lost, and how far behind the head of
+// its flow it reads.
+type ReaderStats struct {
+	// SkippedGrains are grains skipped because the consumer was behind;
+	// only a video reader skips.
+	SkippedGrains uint64
+	// Resyncs counts jumps to the head after the ring overwrote the read
+	// position, each losing what lay between.
+	Resyncs uint64
+	// LagGrains is how many grains the read position trails the head, as
+	// of the last read; video only.
+	LagGrains uint64
+}
+
+// Stats returns what the reader has lost so far.
+func (r *Reader) Stats() ReaderStats {
+	return ReaderStats{SkippedGrains: r.skipped.Load(), Resyncs: r.resyncs.Load(), LagGrains: r.lag.Load()}
 }
 
 // NewVideoReader creates a Reader for a discrete (video) MXL flow.
@@ -206,9 +232,18 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 		}
 
 		// Skip only what the consumer cannot take.
-		if headIdx, hErr := flow.HeadIndex(); waited && hErr == nil && headIdx > index+videoMaxLag {
+		headIdx, hErr := flow.HeadIndex()
+		if hErr == nil {
+			var lag uint64
+			if headIdx > index {
+				lag = headIdx - index
+			}
+			r.lag.Store(lag)
+		}
+		if waited && hErr == nil && headIdx > index+videoMaxLag {
 			n := headIdx - videoMaxLag - index
 			index = headIdx - videoMaxLag
+			r.skipped.Add(n)
 			if skipped += n; skipped == n || skipped/500 != (skipped-n)/500 {
 				log.Warn("mxl video reader: consumer behind, skipping grains",
 					"skipped_total", skipped)
@@ -227,6 +262,7 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 					} else {
 						index = headIdx
 					}
+					r.resyncs.Add(1)
 					log.Warn("mxl video reader: ring buffer wrapped, re-syncing",
 						"gap", headIdx-oldIndex, "old_index", oldIndex, "new_index", index)
 					consecutiveErrors = 0
@@ -339,6 +375,7 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 			if errors.Is(err, ErrTooLate) {
 				if head, hErr := flow.HeadIndex(); hErr == nil {
 					index = head
+					r.resyncs.Add(1)
 					fatalErrors = 0
 					continue
 				}
@@ -425,6 +462,7 @@ func (r *Reader) dataLoop(ctx context.Context, flow DiscreteReader) {
 					} else {
 						index = headIdx
 					}
+					r.resyncs.Add(1)
 					log.Warn("mxl data reader: ring buffer wrapped, re-syncing",
 						"gap", headIdx-oldIndex, "old_index", oldIndex, "new_index", index)
 					consecutiveErrors = 0

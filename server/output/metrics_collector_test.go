@@ -1,6 +1,7 @@
 package output
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/prism/media"
 )
 
 func gatherOutput(t *testing.T, c prometheus.Collector) map[string]map[string]float64 {
@@ -58,6 +60,8 @@ func TestMetricsCollector_Destinations(t *testing.T) {
 	}, f["switchframe_output_state"])
 	require.Equal(t, map[string]float64{id: 0}, f["switchframe_output_bytes_total"])
 	require.NotContains(t, f, "switchframe_output_clients", "an RTMP output has no clients")
+	require.Equal(t, map[string]float64{id: 0}, f["switchframe_output_media_seconds_total"])
+	require.Equal(t, map[string]float64{"video/" + id: 0, "audio/" + id: 0}, f["switchframe_output_dropped_frames_total"])
 
 	for name, series := range f {
 		for labels := range series {
@@ -65,6 +69,37 @@ func TestMetricsCollector_Destinations(t *testing.T) {
 			require.NotContains(t, labels, "ingest.example.com", "%s exports the address", name)
 		}
 	}
+}
+
+// statusFrameAdapter is a FrameAdapter that only reports a status.
+type statusFrameAdapter struct{ st AdapterStatus }
+
+func (a statusFrameAdapter) ID() string                         { return "status" }
+func (a statusFrameAdapter) WriteVideo(*media.VideoFrame) error { return nil }
+func (a statusFrameAdapter) WriteAudio(*media.AudioFrame) error { return nil }
+func (a statusFrameAdapter) Start(context.Context) error        { return nil }
+func (a statusFrameAdapter) Close() error                       { return nil }
+func (a statusFrameAdapter) Status() AdapterStatus              { return a.st }
+
+// An RTMP output's media time and dropped frames come from its adapter,
+// video and audio drops apart.
+func TestMetricsCollector_RTMPMediaAndDrops(t *testing.T) {
+	m := NewManager()
+	defer func() { _ = m.Close() }()
+	id, err := m.AddDestination(DestinationConfig{Type: "rtmp", URL: "rtmp://example.com/live/key", Name: "stream"})
+	require.NoError(t, err)
+	m.mu.Lock()
+	d := m.destinations[id]
+	d.mu.Lock()
+	d.frameAdapter = statusFrameAdapter{st: AdapterStatus{
+		State: StateActive, MediaTicks: 3 * 90000, VideoDropped: 7, AudioDropped: 2,
+	}}
+	d.mu.Unlock()
+	m.mu.Unlock()
+
+	f := gatherOutput(t, NewMetricsCollector(m))
+	require.Equal(t, map[string]float64{id: 3}, f["switchframe_output_media_seconds_total"])
+	require.Equal(t, map[string]float64{"video/" + id: 7, "audio/" + id: 2}, f["switchframe_output_dropped_frames_total"])
 }
 
 // The recorder's series follow it: active and growing while it runs, its

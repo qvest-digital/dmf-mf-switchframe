@@ -528,6 +528,18 @@ type RTMPDirect struct {
 	reconnecting atomic.Bool
 	pendingIDR   atomic.Bool
 	bytesWritten atomic.Int64
+	// mediaTicks is the media time sent on the connections, in 90 kHz
+	// ticks: one program frame interval per video frame written. The
+	// interval is measured where frames are offered (WriteVideo), before
+	// any is dropped, so a destination that takes every other frame sends
+	// half a second of it per second. offeredPTS is the previous offered
+	// frame's PTS, offeredSteps the last two steps; frameTicks is the
+	// interval.
+	mediaTicks   atomic.Int64
+	offered      atomic.Bool
+	offeredPTS   atomic.Int64
+	offeredSteps [2]atomic.Int64
+	frameTicks   atomic.Int64
 	videoDropped atomic.Int64
 	audioDropped atomic.Int64
 	startedAt    time.Time
@@ -691,6 +703,8 @@ func (r *RTMPDirect) WriteVideo(frame *media.VideoFrame) error {
 		return fmt.Errorf("RTMP direct not active (state: %s)", state)
 	}
 
+	r.measureFrameInterval(frame.PTS)
+
 	// Silently drop during reconnect or starting.
 	select {
 	case r.videoCh <- frame:
@@ -723,6 +737,9 @@ func (r *RTMPDirect) Status() AdapterStatus {
 	return AdapterStatus{
 		State:        state,
 		BytesWritten: r.bytesWritten.Load(),
+		MediaTicks:   r.mediaTicks.Load(),
+		VideoDropped: r.videoDropped.Load(),
+		AudioDropped: r.audioDropped.Load(),
 		StartedAt:    r.startedAt,
 		Error:        errStr,
 	}
@@ -828,6 +845,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 	// In test mode, skip the C write call.
 	if r.connectFn != nil {
 		r.bytesWritten.Add(int64(len(frame.WireData)))
+		r.mediaTicks.Add(r.frameTicks.Load())
 		return
 	}
 
@@ -868,6 +886,36 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 	}
 
 	r.bytesWritten.Add(int64(len(frame.WireData)))
+	r.mediaTicks.Add(r.frameTicks.Load())
+}
+
+// maxFrameTicks bounds a PTS step that can be a frame interval: one
+// second at 90 kHz. A longer step, or one backwards, is a discontinuity,
+// as across a source change, not an interval.
+const maxFrameTicks = 90000
+
+// measureFrameInterval takes the program frame interval from the PTS steps
+// of the frames offered: the median of the last three. One forward PTS jump
+// is never taken for an interval, and steps that jitter around the
+// interval average out to it rather than to their low side.
+func (r *RTMPDirect) measureFrameInterval(pts int64) {
+	prevPTS := r.offeredPTS.Swap(pts)
+	if !r.offered.Swap(true) {
+		return
+	}
+	step := pts - prevPTS
+	if step <= 0 || step > maxFrameTicks {
+		return
+	}
+	a := r.offeredSteps[1].Swap(r.offeredSteps[0].Swap(step))
+	b := r.offeredSteps[1].Load()
+	if a > 0 && b > 0 {
+		r.frameTicks.Store(median3(a, b, step))
+	}
+}
+
+func median3(a, b, c int64) int64 {
+	return max(min(a, b), min(max(a, b), c))
 }
 
 // handleAudio processes a single audio frame.

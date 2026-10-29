@@ -556,6 +556,9 @@ func TestAudioReaderTooLateRecovery(t *testing.T) {
 	if received[0].Channels != 2 {
 		t.Fatalf("expected 2 channels, got %d", received[0].Channels)
 	}
+	if st := reader.Stats(); st.Resyncs != 1 {
+		t.Fatalf("resyncs = %d, want 1", st.Resyncs)
+	}
 }
 
 // tooLateContinuousReader returns a "too late" error on the Nth ReadSamples call,
@@ -1000,5 +1003,101 @@ func TestReader_FastConsumerKeepsEveryGrainOfABurst(t *testing.T) {
 					ring.skips, ring.tooLate, ring.read)
 			}
 		})
+	}
+}
+
+// A re-sync after the ring overwrote the position is counted, so the loss
+// shows where it happened rather than only in the log.
+func TestReader_CountsResyncs(t *testing.T) {
+	flow := &tooLateDiscreteReader{
+		headIdx: 200,
+		grains: []mockGrain{
+			{data: []byte{1}, info: GrainInfo{Index: 100, GrainSize: 1, TotalSlices: 1, ValidSlices: 1}},
+			{data: []byte{2}, info: GrainInfo{Index: 198, GrainSize: 1, TotalSlices: 1, ValidSlices: 1}},
+		},
+		tooLateAt: 1,
+	}
+	r := NewVideoReader(ReaderConfig{BufSize: 8, TimeoutMs: 10})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r.StartVideo(ctx, flow)
+	got := 0
+	for range r.Video() {
+		if got++; got == 2 {
+			cancel()
+		}
+	}
+	r.Wait()
+	if st := r.Stats(); st.Resyncs != 1 {
+		t.Fatalf("resyncs = %d, want 1", st.Resyncs)
+	}
+}
+
+// A data reader's re-sync after the ring overwrote its position is counted
+// like a video reader's.
+func TestReader_CountsDataResyncs(t *testing.T) {
+	flow := &tooLateDiscreteReader{
+		headIdx: 200,
+		grains: []mockGrain{
+			{data: []byte{1}, info: GrainInfo{Index: 100, GrainSize: 1, TotalSlices: 1, ValidSlices: 1}},
+			{data: []byte{2}, info: GrainInfo{Index: 198, GrainSize: 1, TotalSlices: 1, ValidSlices: 1}},
+		},
+		tooLateAt: 1,
+	}
+	r := NewDataReader(ReaderConfig{BufSize: 8, TimeoutMs: 10})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r.StartData(ctx, flow)
+	go func() {
+		for range r.Data() {
+		}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for r.Stats().Resyncs == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	r.Wait()
+	if st := r.Stats(); st.Resyncs != 1 {
+		t.Fatalf("resyncs = %d, want 1", st.Resyncs)
+	}
+}
+
+// A consumer slower than the flow loses grains as skips, counted, and its
+// lag behind the head stays within the skip bound; a fast one loses none.
+func TestReader_CountsSkipsAndLag(t *testing.T) {
+	slow := &liveRing{start: time.Now(), period: 4 * time.Millisecond, size: 20}
+	r := NewVideoReader(ReaderConfig{TimeoutMs: 100})
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	r.StartVideo(ctx, slow)
+	for range r.Video() {
+		time.Sleep(6 * time.Millisecond)
+	}
+	r.Wait()
+	st := r.Stats()
+	slow.mu.Lock()
+	skips := uint64(slow.skips)
+	slow.mu.Unlock()
+	if st.SkippedGrains == 0 {
+		t.Fatal("a slow consumer skipped grains, none counted")
+	}
+	if skips > 0 && st.SkippedGrains < skips {
+		t.Fatalf("counted %d skipped grains, the ring saw %d skips", st.SkippedGrains, skips)
+	}
+	if st.LagGrains > videoMaxLag+2 {
+		t.Fatalf("lag %d grains, bound %d", st.LagGrains, videoMaxLag)
+	}
+
+	fast := &liveRing{start: time.Now(), period: 4 * time.Millisecond, size: 40}
+	r = NewVideoReader(ReaderConfig{TimeoutMs: 100})
+	ctx, cancel = context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	r.StartVideo(ctx, fast)
+	for range r.Video() {
+	}
+	r.Wait()
+	if st := r.Stats(); st.SkippedGrains != 0 || st.Resyncs != 0 {
+		t.Fatalf("a consumer that keeps up lost grains: %+v", st)
 	}
 }
