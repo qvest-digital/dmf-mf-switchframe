@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.0.0-rc.30](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.29...mxl-v1.0.0-rc.30) (2026-10-29)
+
+
+### Features
+
+* **graphics:** keep layer settings on the engine, fix reorder, export layers ([#119](https://github.com/qvest-digital/dmf-mf-switchframe/issues/119)) ([75a331a](https://github.com/qvest-digital/dmf-mf-switchframe/commit/75a331ad45c3e07db3d5bd89000cb35db9719e63))
+* **playout:** end a looping clip after its current pass ([#118](https://github.com/qvest-digital/dmf-mf-switchframe/issues/118)) ([900682c](https://github.com/qvest-digital/dmf-mf-switchframe/commit/900682c23249e9256f4924c0571ca861e6634b6a))
+
+
+### Bug Fixes
+
+* **clip:** encode a clip player's browser relay at the preview size ([#115](https://github.com/qvest-digital/dmf-mf-switchframe/issues/115)) ([961c6c1](https://github.com/qvest-digital/dmf-mf-switchframe/commit/961c6c12f1a4bafbfc90146290955c492768db19))
+* **clip:** keep a looping clip's cadence across the wrap ([#111](https://github.com/qvest-digital/dmf-mf-switchframe/issues/111)) ([4717077](https://github.com/qvest-digital/dmf-mf-switchframe/commit/4717077fa1eca554a5506e351853f3fb86895628))
+* **clip:** output clips at the pipeline rate with a fixed cadence ([#110](https://github.com/qvest-digital/dmf-mf-switchframe/issues/110)) ([9305936](https://github.com/qvest-digital/dmf-mf-switchframe/commit/9305936638a3161477cead2e95234b27e9a661a9))
+* **control:** list every engine's archived recordings for import ([#117](https://github.com/qvest-digital/dmf-mf-switchframe/issues/117)) ([aa047ac](https://github.com/qvest-digital/dmf-mf-switchframe/commit/aa047ac911c79591af3bc4c98235dab3d12d61aa))
+* **dve:** refuse the DVE transitions the CPU cannot hold at 1080p50 ([#105](https://github.com/qvest-digital/dmf-mf-switchframe/issues/105)) ([78af18a](https://github.com/qvest-digital/dmf-mf-switchframe/commit/78af18a0e0624339f2c7d565808afac07c1f7b1f))
+* **mxl:** write each program frame on arrival, one grain per frame ([#109](https://github.com/qvest-digital/dmf-mf-switchframe/issues/109)) ([1ff0b54](https://github.com/qvest-digital/dmf-mf-switchframe/commit/1ff0b5470063b8d968afa2a44c40bd28b4f00621))
+* playout sync and recovery, graphics save follow-ups ([#122](https://github.com/qvest-digital/dmf-mf-switchframe/issues/122)) ([5511fd9](https://github.com/qvest-digital/dmf-mf-switchframe/commit/5511fd98c7a960fe7058597a4bfcd73b881fc0ef))
+* **playout:** cue an item on a channel that is not on air ([#116](https://github.com/qvest-digital/dmf-mf-switchframe/issues/116)) ([52615a4](https://github.com/qvest-digital/dmf-mf-switchframe/commit/52615a4969d224fe883d7ab745ba13349e7947ef))
+* **playout:** encode a playout channel's relay when no GPU does ([#114](https://github.com/qvest-digital/dmf-mf-switchframe/issues/114)) ([56ffded](https://github.com/qvest-digital/dmf-mf-switchframe/commit/56ffdedff0c3038398813d3b86bd97a1979cec14))
+* **playout:** scale a playout relay's pictures off the channel goroutine ([#125](https://github.com/qvest-digital/dmf-mf-switchframe/issues/125)) ([5c48c76](https://github.com/qvest-digital/dmf-mf-switchframe/commit/5c48c76b18cc1c65b84c9c391541488b53ff1496))
+* show recording states, report empty recordings, authenticate recording media ([#120](https://github.com/qvest-digital/dmf-mf-switchframe/issues/120)) ([d80cacb](https://github.com/qvest-digital/dmf-mf-switchframe/commit/d80cacb49ee66f7371bc0a44b9731ee683ce3b37))
+* **switcher:** keep program output running while its source stalls ([#126](https://github.com/qvest-digital/dmf-mf-switchframe/issues/126)) ([9903b8c](https://github.com/qvest-digital/dmf-mf-switchframe/commit/9903b8c5b25be6679afa0ecdab70e723f46899e8))
+* **switcher:** run a transition whose source has stalled ([#128](https://github.com/qvest-digital/dmf-mf-switchframe/issues/128)) ([eff7d16](https://github.com/qvest-digital/dmf-mf-switchframe/commit/eff7d16823d450393480b3bb3ae787727d5f127a))
+* **transition:** draw CPU transition frames off the source goroutine ([#113](https://github.com/qvest-digital/dmf-mf-switchframe/issues/113)) ([817df36](https://github.com/qvest-digital/dmf-mf-switchframe/commit/817df36bcf00de663afd37cbab64ee8ad1b52646))
+* **ui:** make PFL/AFL route a channel to the monitor, add monitor control ([#121](https://github.com/qvest-digital/dmf-mf-switchframe/issues/121)) ([75e7d9f](https://github.com/qvest-digital/dmf-mf-switchframe/commit/75e7d9fba0696620c2e3d33baea59e95c0393a18))
+* **ui:** reconnect a source's MoQ transport after a network drop ([#124](https://github.com/qvest-digital/dmf-mf-switchframe/issues/124)) ([e47969b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/e47969be951ec966aa9d11bfedc8ff64ece8bebb))
+* **ui:** resend a control's newest value after an overtaken request ([#127](https://github.com/qvest-digital/dmf-mf-switchframe/issues/127)) ([e420a80](https://github.com/qvest-digital/dmf-mf-switchframe/commit/e420a80ab3dcf09fa287b4031d4fb1c729c1c59d))
+* **ui:** stop dragged controls and engine lag from raising the sync banners ([#123](https://github.com/qvest-digital/dmf-mf-switchframe/issues/123)) ([f5fda83](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f5fda83605d4fc54b4534ad94d83b5c1de23bbc5))
+
 ## [1.0.0-rc.29](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.28...mxl-v1.0.0-rc.29) (2026-10-28)
 
 
