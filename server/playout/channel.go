@@ -599,6 +599,9 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 
 	// Update scheduler cursor with elapsed time.
 	c.scheduler.SetCursor(itemIndex, mode, elapsed)
+	// An open error belongs to the item that was on air. A clip item that
+	// fails to open again sets it on the next tick.
+	c.itemError.Store(nil)
 
 	// Close existing clip iterator since we're changing position.
 	if c.clipIter != nil {
@@ -624,7 +627,6 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 
 			c.clipIter = frameSource
 			c.clipItemID = item.ID
-			c.itemError.Store(nil)
 			c.clipFPS = frameSource.EstimateFPS()
 			c.clipTotal = frameSource.TotalFrames()
 
@@ -1103,6 +1105,7 @@ func (c *Channel) handleItemChange(item *PlaylistItem, secScheduler *SecondaryEv
 	c.itemStartTime = now.UTC()
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(item.DurationMs)
+	c.itemError.Store(nil)
 
 	// Update live audio routing.
 	liveAudioFn := c.onLiveAudio
@@ -1194,6 +1197,7 @@ func (c *Channel) emitFinalItemEnd(secScheduler *SecondaryEventScheduler, asRunF
 	}
 	startTime := c.itemStartTime
 	c.secondaryItemID = ""
+	c.itemError.Store(nil)
 	c.mu.Unlock()
 
 	if prevItemID != "" && asRunFn != nil && !startTime.IsZero() {
