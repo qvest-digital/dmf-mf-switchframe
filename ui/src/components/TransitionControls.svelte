@@ -94,6 +94,22 @@
 	// it becomes the active transType. The dropdown shows "DVE" when a
 	// non-DVE type is active.
 	let dveSelectValue = $derived(transType.startsWith('dve-') ? transType : '');
+
+	// Transition types the engines refuse, such as 3D DVE on an engine
+	// without a GPU. A refused type that stays picked falls back to mix
+	// rather than failing at AUTO time. A refusal shorter than
+	// REFUSAL_SETTLE_MS, such as while an engine rebuilds its GPU pipeline,
+	// leaves the operator's pick alone.
+	let unavailable = $derived<Record<string, string>>(crState.unavailableTransitions ?? {});
+	const REFUSAL_SETTLE_MS = 3000;
+	$effect(() => {
+		if (!unavailable[transType]) return;
+		const refused = transType;
+		const timer = setTimeout(() => {
+			if (transType === refused && unavailable[refused]) transType = 'mix';
+		}, REFUSAL_SETTLE_MS);
+		return () => clearTimeout(timer);
+	});
 	function handleDVESelect(e: Event) {
 		const val = (e.target as HTMLSelectElement).value as TransType;
 		if (val) transType = val;
@@ -470,12 +486,12 @@
 				<option value="" disabled>DVE</option>
 				<optgroup label="2D">
 					{#each DVE_TYPES.filter(t => t.group === '2D') as dt}
-						<option value={dt.value}>{dt.label}</option>
+						<option value={dt.value} disabled={!!unavailable[dt.value]} title={unavailable[dt.value]}>{dt.label}{unavailable[dt.value] ? ' (GPU)' : ''}</option>
 					{/each}
 				</optgroup>
 				<optgroup label="3D">
 					{#each DVE_TYPES.filter(t => t.group === '3D') as dt}
-						<option value={dt.value}>{dt.label}</option>
+						<option value={dt.value} disabled={!!unavailable[dt.value]} title={unavailable[dt.value]}>{dt.label}{unavailable[dt.value] ? ' (GPU)' : ''}</option>
 					{/each}
 				</optgroup>
 			</select>

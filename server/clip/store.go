@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,6 +25,17 @@ type Store struct {
 	dir      string
 	filePath string
 	maxBytes int64
+
+	// libDir is the attached clip library, empty for none, and libOwner the
+	// label this store's pending markers carry there. See library.go.
+	libDir   string
+	libOwner string
+	probe    func(path string) (*ProbeResult, error)
+
+	// publishing holds one channel per clip ID being published, closed
+	// when that Publish ends.
+	publishing map[string]chan struct{}
+	retryWait  func() time.Duration
 }
 
 // NewStore creates a Store backed by the given directory with a storage limit in bytes.
@@ -39,7 +51,10 @@ func NewStore(dir string, maxBytes int64) (*Store, error) {
 		dir:      dir,
 		filePath: filepath.Join(dir, "clips.json"),
 		maxBytes: maxBytes,
+		probe:    Validate,
 	}
+	s.publishing = map[string]chan struct{}{}
+	s.retryWait = defaultRetryWait
 
 	data, err := os.ReadFile(s.filePath)
 	if err != nil {
@@ -58,6 +73,37 @@ func NewStore(dir string, maxBytes int64) (*Store, error) {
 	}
 
 	return s, nil
+}
+
+// AttachLibrary makes dir the store's clip library, creating it if needed.
+// owner names this store among those sharing the library, the engine label:
+// lowercase letters, digits and '-', empty for a store that shares it with
+// no other engine. Call it before the store is shared; ScanLibrary then
+// lists what is there and Publish copies local clips in.
+func (s *Store) AttachLibrary(dir, owner string) error {
+	if !validOwner(owner) {
+		return fmt.Errorf("clip library owner %q: only lowercase letters, digits and '-'", owner)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create clip library dir: %w", err)
+	}
+	s.libDir = dir
+	s.libOwner = owner
+	return nil
+}
+
+// LibraryDir returns the attached clip library, or "" for none.
+func (s *Store) LibraryDir() string {
+	return s.libDir
+}
+
+// MediaPath returns the path of a clip's media file: in the library for a
+// library clip, in the store directory otherwise.
+func (s *Store) MediaPath(c *Clip) string {
+	if c.LibraryPath != "" && s.libDir != "" {
+		return filepath.Join(s.libDir, c.LibraryPath)
+	}
+	return filepath.Join(s.dir, c.Filename)
 }
 
 // Add inserts a new clip into the store. The clip's ID and CreatedAt fields
@@ -186,18 +232,44 @@ func (s *Store) Update(id string, fn func(*Clip)) error {
 		*c = backup // rollback
 		return fmt.Errorf("save clips: %w", err)
 	}
+	s.syncSidecarLocked(c)
 	return nil
 }
 
+// syncSidecarLocked rewrites a library clip's sidecar after its metadata
+// changed, so the next store to scan the library sees the change. The
+// change is already saved here, so a failure is logged, not returned.
+// Must be called with s.mu held.
+func (s *Store) syncSidecarLocked(c *Clip) {
+	if c.LibraryPath == "" || s.libDir == "" {
+		return
+	}
+	if err := writeLibrarySidecar(s.MediaPath(c), c); err != nil {
+		slog.Warn("clip: library sidecar not updated", "clip", c.ID, "error", err)
+	}
+}
+
 // Delete removes a clip by ID, deletes the associated media file, and persists.
-// Returns ErrNotFound if the clip does not exist.
+// A library clip's media is deleted from the library, for every store that
+// shares it; if that fails the clip is kept. A Publish of the clip that is
+// running finishes first, so what it copied into the library is deleted
+// too rather than listed again by the next scan. Returns ErrNotFound if the
+// clip does not exist.
 func (s *Store) Delete(id string) error {
+	if s.libDir != "" {
+		defer s.beginPublish(id)()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	c, ok := s.clips[id]
 	if !ok {
 		return ErrNotFound
+	}
+	if c.LibraryPath != "" && s.libDir != "" {
+		if err := removeLibraryMedia(s.MediaPath(c)); err != nil {
+			return fmt.Errorf("delete from clip library: %w", err)
+		}
 	}
 
 	filename := c.Filename
@@ -239,10 +311,11 @@ func (s *Store) Pin(id string) error {
 		c.Ephemeral = true // rollback
 		return fmt.Errorf("save clips: %w", err)
 	}
+	s.syncSidecarLocked(c)
 	return nil
 }
 
-// CleanEphemeral removes ephemeral clips older than maxAge.
+// CleanEphemeral removes ephemeral local clips older than maxAge.
 // Clips whose IDs appear in loadedIDs are skipped (they are in active use).
 // Returns the number of clips removed.
 func (s *Store) CleanEphemeral(maxAge time.Duration, loadedIDs map[string]bool) int {
@@ -253,7 +326,9 @@ func (s *Store) CleanEphemeral(maxAge time.Duration, loadedIDs map[string]bool) 
 	var toDelete []string
 
 	for id, c := range s.clips {
-		if !c.Ephemeral {
+		// A library clip stays until deleted: the library is what keeps
+		// clips for later bookings.
+		if !c.Ephemeral || c.LibraryPath != "" {
 			continue
 		}
 		if loadedIDs != nil && loadedIDs[id] {
@@ -285,19 +360,20 @@ func (s *Store) Dir() string {
 	return s.dir
 }
 
-// TotalBytes returns the sum of ByteSize for all non-ephemeral clips.
+// TotalBytes returns the sum of ByteSize for the non-ephemeral clips stored
+// locally; library clips take no local space.
 func (s *Store) TotalBytes() int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.totalBytesLocked()
 }
 
-// totalBytesLocked returns the sum of ByteSize for non-ephemeral clips.
+// totalBytesLocked returns the sum of ByteSize for non-ephemeral local clips.
 // Must be called with s.mu held.
 func (s *Store) totalBytesLocked() int64 {
 	var total int64
 	for _, c := range s.clips {
-		if !c.Ephemeral {
+		if !c.Ephemeral && c.LibraryPath == "" {
 			total += c.ByteSize
 		}
 	}

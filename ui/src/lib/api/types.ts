@@ -575,6 +575,9 @@ export interface ClipInfo {
 	loop: boolean;
 	createdAt: string;
 	ephemeral: boolean;
+	/** Where the clip lives in the shared clip library; absent for a clip
+	 * stored only in this switcher. Deleting a library clip deletes it there. */
+	libraryPath?: string;
 }
 
 export interface RecordingFileInfo {
@@ -731,6 +734,8 @@ export interface ControlRoomState {
 	ftbActive: boolean;
 	ftbDurationMs?: number;
 	transitionAbortThreshold?: number;
+	/** Transition types this engine refuses, each with the reason. */
+	unavailableTransitions?: Record<string, string>;
 	dskFadeDurationMs?: number;
 	audioChannels?: Record<string, AudioChannel>;
 	masterLevel: number;

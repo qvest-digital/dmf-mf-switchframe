@@ -91,6 +91,11 @@ type AppConfig struct {
 	// Clip storage.
 	ClipStorageMax   int64         // --clip-storage-max (bytes, default 10GB)
 	ClipEphemeralTTL time.Duration // --clip-ephemeral-ttl (default 24h)
+	ClipLibraryDir   string        // --clip-library-dir (empty = clips stay in the state dir)
+
+	// RecordingArchiveDir is --recording-archive-dir (empty = recordings
+	// stay where they are written).
+	RecordingArchiveDir string
 
 	// Playout.
 	PlayoutEnabled      bool // --playout (enable playout subsystem)
@@ -380,6 +385,8 @@ func parseConfig() (AppConfig, error) {
 	// Clip storage flags.
 	clipStorageMaxFlag := flag.Int64("clip-storage-max", 10<<30, "Maximum clip storage in bytes (default 10GB)")
 	clipEphemeralTTLFlag := flag.Duration("clip-ephemeral-ttl", 24*time.Hour, "TTL for ephemeral clips (default 24h)")
+	recordingArchiveDirFlag := flag.String("recording-archive-dir", "", "Directory every finished recording file is copied into, then removed from where it was recorded, e.g. an object-store mount; files left by an earlier run are copied when recording starts (empty = recordings stay where they are written)")
+	clipLibraryDirFlag := flag.String("clip-library-dir", "", "Directory of clips shared across runs and engines, e.g. an object-store mount: listed at start, new clips copied in, deletes remove them there; only creates and deletes files in it (empty = clips stay in the state dir)")
 
 	// Playout flags.
 	playoutFlag := flag.Bool("playout", false, "Enable playout subsystem")
@@ -623,6 +630,8 @@ func parseConfig() (AppConfig, error) {
 		Captions:             *captionsFlag,
 		ClipStorageMax:       *clipStorageMaxFlag,
 		ClipEphemeralTTL:     *clipEphemeralTTLFlag,
+		ClipLibraryDir:       *clipLibraryDirFlag,
+		RecordingArchiveDir:  *recordingArchiveDirFlag,
 		PlayoutEnabled:       *playoutFlag,
 		PlayoutCacheMaxGB:    *playoutCacheMaxFlag,
 		PlayoutAsRunRetDays:  *playoutAsRunRetFlag,

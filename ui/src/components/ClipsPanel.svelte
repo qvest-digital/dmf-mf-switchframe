@@ -7,6 +7,8 @@
 		apiCall,
 	} from '$lib/api/switch-api';
 	import { resolveApiUrl } from '$lib/api/base-url';
+	import { deleteConfirmation } from '$lib/clips/delete-confirm';
+	import ConfirmDialog from './ConfirmDialog.svelte';
 	import { notify } from '$lib/state/notifications.svelte';
 	import {
 		ICON_PLAY, ICON_PAUSE, ICON_STOP, ICON_EJECT, ICON_UPLOAD, ICON_TRASH, ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT,
@@ -237,6 +239,21 @@
 		uploadZoneDragDepth = 0;
 	}
 
+	// A library clip waiting for the operator to confirm its deletion.
+	let pendingDelete = $state<ClipInfo | null>(null);
+	const pendingConfirm = $derived(pendingDelete ? deleteConfirmation(pendingDelete) : null);
+
+	function requestDelete(clip: ClipInfo) {
+		if (deleteConfirmation(clip)) pendingDelete = clip;
+		else handleDelete(clip.id);
+	}
+
+	function confirmDelete() {
+		const clip = pendingDelete;
+		pendingDelete = null;
+		if (clip) handleDelete(clip.id);
+	}
+
 	async function handleDelete(clipId: string) {
 		try {
 			await deleteClip(clipId);
@@ -394,7 +411,7 @@
 													onclick={() => handleLoadClip(clip.name, pid)}
 												>{pid}</button>
 											{/each}
-											<button type="button" class="icon-btn danger" draggable="false" title="Delete" ondragstart={(e) => e.stopPropagation()} onclick={() => handleDelete(clip.id)}>
+											<button type="button" class="icon-btn danger" draggable="false" title="Delete" ondragstart={(e) => e.stopPropagation()} onclick={() => requestDelete(clip)}>
 												{@html renderIcon(ICON_TRASH, 12)}
 											</button>
 										</div>
@@ -449,7 +466,7 @@
 													{@html renderIcon(ICON_PIN, 12)}
 												</button>
 											{/if}
-											<button type="button" class="icon-btn danger" draggable="false" title="Delete" ondragstart={(e) => e.stopPropagation()} onclick={() => handleDelete(clip.id)}>
+											<button type="button" class="icon-btn danger" draggable="false" title="Delete" ondragstart={(e) => e.stopPropagation()} onclick={() => requestDelete(clip)}>
 												{@html renderIcon(ICON_TRASH, 12)}
 											</button>
 										</div>
@@ -608,6 +625,15 @@
 		</div>
 	</div>
 </div>
+
+<ConfirmDialog
+	open={pendingConfirm !== null}
+	title={pendingConfirm?.title ?? ''}
+	message={pendingConfirm?.message ?? ''}
+	confirmLabel="Delete"
+	onconfirm={confirmDelete}
+	oncancel={() => { pendingDelete = null; }}
+/>
 
 <style>
 	.clips-panel {

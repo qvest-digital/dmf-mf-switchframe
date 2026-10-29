@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -33,6 +34,7 @@ func (a *API) registerClipRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/clips/recordings/download", a.handleRecordingDownload)
 	mux.HandleFunc("POST /api/clips/upload", a.handleClipUpload)
 	mux.HandleFunc("POST /api/clips/from-recording", a.handleClipFromRecording)
+	mux.HandleFunc("POST /api/clips/rescan", a.handleClipRescan)
 	mux.HandleFunc("GET /api/clips", a.handleClipsList)
 	mux.HandleFunc("GET /api/clips/{id}", a.handleClipGet)
 	mux.HandleFunc("PUT /api/clips/{id}", a.handleClipUpdate)
@@ -46,6 +48,39 @@ func (a *API) registerClipRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/clips/players/{n}/seek", a.handleClipPlayerSeek)
 	mux.HandleFunc("POST /api/clips/players/{n}/speed", a.handleClipPlayerSpeed)
 	mux.HandleFunc("POST /api/clips/players/{n}/loop", a.handleClipPlayerLoop)
+}
+
+// publishClip copies a newly stored clip into the clip library, when one is
+// attached. A failure leaves the clip stored locally and playable here, and
+// is logged: it is missing from the library for later bookings.
+func (a *API) publishClip(id string) {
+	if err := a.clipStore.PublishSoon(id); errors.Is(err, clip.ErrPublishPending) {
+		slog.Info("clip: copied into the clip library once the other engine's copy ends", "clip", id)
+	} else if err != nil {
+		slog.Warn("clip: not copied into the clip library", "clip", id, "error", err)
+	}
+}
+
+// handleClipRescan lists clips added to the clip library since the last
+// scan and drops clips whose library file is gone.
+func (a *API) handleClipRescan(w http.ResponseWriter, _ *http.Request) {
+	if a.clipStore.LibraryDir() == "" {
+		httperr.Write(w, http.StatusConflict, "no clip library attached")
+		return
+	}
+	res, err := a.clipStore.ScanLibrary()
+	if err != nil {
+		httperr.Write(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if res.Added > 0 || res.Removed > 0 {
+		a.broadcast()
+	}
+	if res.Skipped == nil {
+		res.Skipped = []string{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
 }
 
 // handleClipsList returns all clips from the store sorted by creation time.
@@ -348,6 +383,7 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 			cl.Filename = finalName
 		})
 	}
+	a.publishClip(c.ID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -429,24 +465,48 @@ type RecordingFileInfo struct {
 	ModTime  time.Time `json:"modTime"`
 }
 
+// recordingDirs returns the directories recordings are listed and imported
+// from, as absolute paths: where they are written, then where finished ones
+// are archived.
+func (a *API) recordingDirs() []string {
+	var dirs []string
+	for _, d := range []string{a.loadRecordingDir(), a.recArchiveDir} {
+		if d == "" {
+			continue
+		}
+		if abs, err := filepath.Abs(d); err == nil {
+			dirs = append(dirs, abs)
+		}
+	}
+	return dirs
+}
+
+func (a *API) loadRecordingDir() string {
+	if p := a.recordingDir.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// inRecordingDirs reports whether path lies within one of recordingDirs.
+func (a *API) inRecordingDirs(path string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	for _, d := range a.recordingDirs() {
+		if strings.HasPrefix(abs, d+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
 // handleClipRecordings lists available recording files for clip import.
-// Returns .ts files in the recording directory, excluding the currently
-// active recording file (if any).
+// Returns .ts files in the recording directory and the recording archive,
+// excluding the currently active recording file (if any).
 func (a *API) handleClipRecordings(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	recDirPtr := a.recordingDir.Load()
-	if recDirPtr == nil || *recDirPtr == "" {
-		_ = json.NewEncoder(w).Encode([]RecordingFileInfo{})
-		return
-	}
-	recDir := *recDirPtr
-
-	entries, err := os.ReadDir(recDir)
-	if err != nil {
-		_ = json.NewEncoder(w).Encode([]RecordingFileInfo{})
-		return
-	}
 
 	// Determine the active recording filename to exclude.
 	var activeFilename string
@@ -458,27 +518,43 @@ func (a *API) handleClipRecordings(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	var result []RecordingFileInfo
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasSuffix(strings.ToLower(name), ".ts") {
-			continue
-		}
-		if name == activeFilename {
-			continue
-		}
-		info, err := entry.Info()
+	listed := map[string]bool{}
+	archive := filepath.Clean(a.recArchiveDir)
+	for _, recDir := range a.recordingDirs() {
+		entries, err := os.ReadDir(recDir)
 		if err != nil {
 			continue
 		}
-		result = append(result, RecordingFileInfo{
-			Filename: name,
-			Path:     filepath.Join(recDir, name),
-			ByteSize: info.Size(),
-			ModTime:  info.ModTime(),
-		})
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			if !strings.HasSuffix(strings.ToLower(name), ".ts") {
+				continue
+			}
+			// The active file is only ever in the recording directory;
+			// an archived file of the same name is a finished one.
+			if name == activeFilename && recDir != archive {
+				continue
+			}
+			// A file both written and already archived, on its way out of
+			// the recording directory, is listed once.
+			if listed[name] {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			listed[name] = true
+			result = append(result, RecordingFileInfo{
+				Filename: name,
+				Path:     filepath.Join(recDir, name),
+				ByteSize: info.Size(),
+				ModTime:  info.ModTime(),
+			})
+		}
 	}
 
 	if result == nil {
@@ -497,25 +573,19 @@ func (a *API) handleRecordingDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recDirPtr := a.recordingDir.Load()
-	if recDirPtr == nil || *recDirPtr == "" {
+	if len(a.recordingDirs()) == 0 {
 		httperr.Write(w, http.StatusNotFound, "no recording directory configured")
 		return
 	}
-	recDir := *recDirPtr
 
-	// Path traversal prevention: resolve to absolute and verify it's within recDir.
+	// Path traversal prevention: resolve to absolute and verify it's within
+	// a recording directory.
 	absPath, err := filepath.Abs(filePath)
 	if err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid path")
 		return
 	}
-	absDir, err := filepath.Abs(recDir)
-	if err != nil {
-		httperr.Write(w, http.StatusInternalServerError, "recording directory error")
-		return
-	}
-	if !strings.HasPrefix(absPath, absDir+string(filepath.Separator)) && absPath != absDir {
+	if !a.inRecordingDirs(absPath) {
 		httperr.Write(w, http.StatusForbidden, "path outside recording directory")
 		return
 	}
@@ -550,16 +620,14 @@ func (a *API) handleClipFromRecording(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recDirPtr := a.recordingDir.Load()
-	if recDirPtr == nil || *recDirPtr == "" {
+	if len(a.recordingDirs()) == 0 {
 		httperr.Write(w, http.StatusBadRequest, "recording directory not configured")
 		return
 	}
 
-	// Validate path is within the recording dir (prevent path traversal).
+	// Validate path is within a recording dir (prevent path traversal).
 	cleanPath := filepath.Clean(req.Path)
-	cleanRecDir := filepath.Clean(*recDirPtr)
-	if !filepath.IsAbs(cleanPath) || !strings.HasPrefix(cleanPath, cleanRecDir+string(os.PathSeparator)) {
+	if !filepath.IsAbs(cleanPath) || !a.inRecordingDirs(cleanPath) {
 		httperr.Write(w, http.StatusBadRequest, "path must be within the recording directory")
 		return
 	}
@@ -639,6 +707,7 @@ func (a *API) handleClipFromRecording(w http.ResponseWriter, r *http.Request) {
 			cl.Filename = finalName
 		})
 	}
+	a.publishClip(c.ID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

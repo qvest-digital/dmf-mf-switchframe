@@ -735,6 +735,7 @@ func (a *App) initOutput() error {
 	// label, and destinations added before the label is set are stamped
 	// with an empty Engine field.
 	a.outputMgr.SetEngineLabel(a.cfg.EngineLabel)
+	a.outputMgr.SetRecordingArchiveDir(a.cfg.RecordingArchiveDir)
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
 	if pf := a.sw.PipelineFormat(); pf.Width > 0 && pf.Height > 0 {
@@ -1776,6 +1777,9 @@ func (a *App) initAPI() error {
 	}
 	if a.startupRecordingDir != "" {
 		apiOpts = append(apiOpts, control.WithRecordingDir(a.startupRecordingDir))
+	}
+	if dir := a.outputMgr.RecordingArchiveDir(); dir != "" {
+		apiOpts = append(apiOpts, control.WithRecordingArchiveDir(dir))
 	}
 	if a.scte35Injector != nil {
 		apiOpts = append(apiOpts, control.WithSCTE35(a.scte35Injector, a.scte35Rules))

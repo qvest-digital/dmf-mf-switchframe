@@ -50,6 +50,36 @@ describe('OAClipsSection', () => {
 		expect(fn).toHaveBeenCalledWith('clip-1');
 	});
 
+	it('asks before deleting a library clip, naming the shared library', async () => {
+		const fn = vi.fn();
+		render(OAClipsSection, {
+			props: defaultProps({
+				clips: [{ id: 'lib-1', name: 'Opener', libraryPath: 'Opener.mp4' }],
+				onDeleteClip: fn,
+			}),
+		});
+		await fireEvent.click(screen.getByTitle('Delete clip'));
+		expect(fn).not.toHaveBeenCalled();
+		expect(screen.getByRole('alertdialog').textContent).toContain('every future booking');
+
+		await fireEvent.click(screen.getByText('Delete'));
+		expect(fn).toHaveBeenCalledWith('lib-1');
+		expect(screen.queryByRole('alertdialog')).toBeNull();
+	});
+
+	it('keeps a library clip when the delete is cancelled', async () => {
+		const fn = vi.fn();
+		render(OAClipsSection, {
+			props: defaultProps({
+				clips: [{ id: 'lib-1', name: 'Opener', libraryPath: 'Opener.mp4' }],
+				onDeleteClip: fn,
+			}),
+		});
+		await fireEvent.click(screen.getByTitle('Delete clip'));
+		await fireEvent.click(screen.getByText('Cancel'));
+		expect(fn).not.toHaveBeenCalled();
+	});
+
 	it('upload zone renders', () => {
 		const { container } = render(OAClipsSection, { props: defaultProps() });
 		const dropZone = container.querySelector('.upload-zone');

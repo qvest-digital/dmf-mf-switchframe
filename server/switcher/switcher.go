@@ -61,6 +61,11 @@ var (
 	errStingerDataRequired             = errors.New("stinger transition requires stinger data")
 )
 
+// ErrTransitionNeedsGPU refuses a DVE transition the CPU does not draw, on
+// an engine with no GPU pipeline; see dve.CPURefusedTransitions. The
+// returned error carries the reason.
+var ErrTransitionNeedsGPU = errors.New("switcher: transition needs a GPU engine")
+
 // State represents the global state of the switching engine.
 // It replaces the implicit (inTransition, ftbActive) boolean pair with an
 // explicit enum that makes every valid state and transition auditable.
@@ -1154,6 +1159,16 @@ func (s *Switcher) SetWipeMapStore(store *wipemap.WipeMapStore) {
 	s.configMu.Lock()
 	s.wipeMapStore = store
 	s.configMu.Unlock()
+}
+
+// unavailableTransitions lists the transition types this engine refuses,
+// with the reasons: the ones the CPU does not draw while no GPU pipeline
+// is active, none otherwise.
+func (s *Switcher) unavailableTransitions() map[string]string {
+	if s.gpuRunner.Load() != nil {
+		return nil
+	}
+	return dve.CPURefusedTransitions()
 }
 
 // gpuRunnerHolder wraps a GPUPipelineRunner for atomic pointer storage.
@@ -2492,6 +2507,10 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		s.configMu.Unlock()
 		return fmt.Errorf("unsupported transition type: %q", transType)
 	}
+	if reason, refused := dve.CPURefusal(transType); refused && s.gpuRunner.Load() == nil {
+		s.configMu.Unlock()
+		return fmt.Errorf("%w: %s", ErrTransitionNeedsGPU, reason)
+	}
 	// DVE transitions use mix as the underlying engine type — the DVE compositor
 	// handles the visual effect based on position from the engine.
 	engineType := tt
@@ -2564,6 +2583,17 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		}
 	}
 
+	// A DVE transition runs on a mix engine. The GPU pipeline draws it
+	// when there is one; otherwise the engine draws it on the CPU.
+	var render transition.RenderFunc
+	var framePeriod time.Duration
+	if isDVE && !gpuActive {
+		render = dve.CPUTransitionForType(transType)
+		if pf.FPSNum > 0 && pf.FPSDen > 0 {
+			framePeriod = time.Second * time.Duration(pf.FPSDen) / time.Duration(pf.FPSNum)
+		}
+	}
+
 	engine := transition.NewEngine(transition.EngineConfig{
 		DecoderFactory: decoderFactory,
 		WipeDirection:  wipeDir,
@@ -2574,6 +2604,8 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		HintWidth:      hintW,
 		HintHeight:     hintH,
 		SkipBlend:      gpuActive,
+		Render:         render,
+		FramePeriod:    framePeriod,
 		Output:         outputCb,
 		OnComplete: func(aborted bool) {
 			s.handleTransitionComplete(aborted)
@@ -4217,6 +4249,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		FTBDurationMs:            s.ftbDurationMs,
 		TransitionAbortThreshold: s.transitionAbortThreshold,
 		TallyState:               tally,
+		UnavailableTransitions:   s.unavailableTransitions(),
 		Sources:                  sources,
 		Seq:                      atomic.LoadUint64(&s.seq),
 		Timestamp:                stamp,

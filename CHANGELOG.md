@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.0-rc.29](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.28...mxl-v1.0.0-rc.29) (2026-10-28)
+
+
+### Features
+
+* **clip:** attach a shared clip library directory ([844ed22](https://github.com/qvest-digital/dmf-mf-switchframe/commit/844ed226ce10e3bbf8b75d7c4c7f3fb709ab59c9))
+* **output:** archive finished recordings into a create-only directory ([844ed22](https://github.com/qvest-digital/dmf-mf-switchframe/commit/844ed226ce10e3bbf8b75d7c4c7f3fb709ab59c9))
+* **ui:** confirm deleting a clip from the shared clip library ([844ed22](https://github.com/qvest-digital/dmf-mf-switchframe/commit/844ed226ce10e3bbf8b75d7c4c7f3fb709ab59c9))
+
+
+### Bug Fixes
+
+* **colorgrade:** grade on the CPU when no GPU pipeline does ([#100](https://github.com/qvest-digital/dmf-mf-switchframe/issues/100)) ([44f4dec](https://github.com/qvest-digital/dmf-mf-switchframe/commit/44f4dec89590be34427b75604634ac52aae5ed9d))
+* **dve:** draw 2D DVE transitions on the CPU when no GPU does ([#103](https://github.com/qvest-digital/dmf-mf-switchframe/issues/103)) ([1a7cf64](https://github.com/qvest-digital/dmf-mf-switchframe/commit/1a7cf642834d4f3112652870cf3384698c060d3f))
+
 ## [1.0.0-rc.28](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.27...mxl-v1.0.0-rc.28) (2026-10-28)
 
 

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, waitFor } from '@testing-library/svelte';
+import { render, waitFor, fireEvent, screen } from '@testing-library/svelte';
 import ClipsPanel from './ClipsPanel.svelte';
 import type { ControlRoomState, ClipInfo } from '$lib/api/types';
-import { listClipsOnEveryEngine } from '$lib/api/switch-api';
+import { listClipsOnEveryEngine, deleteClip } from '$lib/api/switch-api';
 
 vi.mock('$lib/api/switch-api', () => ({
 	listClipsOnEveryEngine: vi.fn().mockResolvedValue([]),
@@ -133,5 +133,39 @@ describe('ClipsPanel', () => {
 		await rerender({ state: makeState({ clipCount: 1 }) });
 		await waitFor(() => expect(container.querySelector('.clip-name')?.textContent).toBe('bunny'));
 		expect(listClipsOnEveryEngine).toHaveBeenCalledTimes(2);
+	});
+
+	function libraryClip(id: string, libraryPath?: string): ClipInfo {
+		return {
+			id, name: `clip ${id}`, filename: '', source: 'upload', codec: 'h264',
+			width: 1920, height: 1080, fpsNum: 50, fpsDen: 1, durationMs: 10000,
+			byteSize: 1, loop: false, createdAt: '2026-01-01T00:00:00Z', ephemeral: false,
+			libraryPath,
+		};
+	}
+
+	it('deletes a library clip only after a confirmation naming the shared library', async () => {
+		vi.mocked(listClipsOnEveryEngine).mockResolvedValue([libraryClip('a', 'a.ts')]);
+		vi.mocked(deleteClip).mockResolvedValue(undefined);
+		const { container } = render(ClipsPanel, { props: { state: makeState({ clipCount: 1 }) } });
+		await waitFor(() => expect(container.querySelector('.clip-name')?.textContent).toBe('clip a'));
+
+		await fireEvent.click(screen.getByTitle('Delete'));
+		expect(deleteClip).not.toHaveBeenCalled();
+		expect(screen.getByRole('alertdialog').textContent).toContain('every future booking');
+
+		await fireEvent.click(screen.getByRole('alertdialog').querySelector('.confirm-btn')!);
+		expect(deleteClip).toHaveBeenCalledWith('a');
+	});
+
+	it('deletes a clip stored only here without asking', async () => {
+		vi.mocked(listClipsOnEveryEngine).mockResolvedValue([libraryClip('b')]);
+		vi.mocked(deleteClip).mockResolvedValue(undefined);
+		const { container } = render(ClipsPanel, { props: { state: makeState({ clipCount: 1 }) } });
+		await waitFor(() => expect(container.querySelector('.clip-name')?.textContent).toBe('clip b'));
+
+		await fireEvent.click(screen.getByTitle('Delete'));
+		expect(deleteClip).toHaveBeenCalledWith('b');
+		expect(screen.queryByRole('alertdialog')).toBeNull();
 	});
 });

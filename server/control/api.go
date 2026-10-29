@@ -514,6 +514,12 @@ func WithAllowedOutputPorts(ports []int) APIOption {
 	}
 }
 
+// WithRecordingArchiveDir sets the directory finished recordings are
+// archived to, listed for import beside the recording directory.
+func WithRecordingArchiveDir(dir string) APIOption {
+	return func(a *API) { a.recArchiveDir = dir }
+}
+
 // WithRecordingDir sets the directory where recordings are stored.
 // Used by handleClipRecordings to list available recordings for import.
 func WithRecordingDir(dir string) APIOption {
@@ -550,6 +556,7 @@ type API struct {
 	playoutPrefetcher  *playout.Prefetcher
 	playoutSamples     []playout.SampleClip
 	recordingDir       atomic.Pointer[string]
+	recArchiveDir      string // finished recordings, listed beside recordingDir
 	operatorStore      *operator.Store
 	sessionMgr         *operator.SessionManager
 	scte35             SCTE35API
