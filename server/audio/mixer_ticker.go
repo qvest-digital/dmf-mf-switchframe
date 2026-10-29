@@ -127,10 +127,16 @@ func (m *Mixer) tick() *media.AudioFrame {
 	aacData, err := m.encoder.Encode(mixed)
 	if err != nil {
 		m.encodeErrors.Add(1)
+		if m.promMetrics != nil {
+			m.promMetrics.EncodeErrorsTotal.Inc()
+		}
 		m.mu.Unlock()
 		return nil
 	}
 	m.framesMixed.Add(1)
+	if m.promMetrics != nil {
+		m.promMetrics.FramesMixedTotal.Inc()
+	}
 
 	m.mu.Unlock()
 

@@ -765,11 +765,20 @@ func (s *Switcher) ThumbnailCache() *ThumbnailCache {
 
 // SetMetrics attaches Prometheus metrics to the switcher for production
 // observability. When set, the switcher increments counters for cuts,
-// transitions, and IDR gate events alongside the existing atomic debug counters.
+// transitions, and source health transitions alongside the existing atomic
+// debug counters.
 func (s *Switcher) SetMetrics(m *metrics.Metrics) {
 	s.configMu.Lock()
-	defer s.configMu.Unlock()
 	s.promMetrics = m
+	s.configMu.Unlock()
+
+	if m == nil {
+		s.health.setOnChange(nil)
+		return
+	}
+	s.health.setOnChange(func(source string, from, to SourceHealthStatus) {
+		m.SourceStatusChangesTotal.WithLabelValues(source, string(from), string(to)).Inc()
+	})
 }
 
 // SetCodecInfo records which encoder/decoder were selected at startup and

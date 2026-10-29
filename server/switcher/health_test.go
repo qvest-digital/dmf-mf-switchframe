@@ -7,9 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 func TestHealthStatusFromAge(t *testing.T) {
@@ -316,4 +319,47 @@ func TestHealthHysteresis_FirstSourceAppliesImmediately(t *testing.T) {
 	hm.mu.RUnlock()
 
 	hm.stop()
+}
+
+// Each committed transition reaches the change hook once, after hysteresis;
+// a source's first status is not a transition.
+func TestHealthMonitor_OnChange(t *testing.T) {
+	hm := newHealthMonitor()
+	type change struct{ source, from, to string }
+	var got []change
+	hm.setOnChange(func(source string, from, to SourceHealthStatus) {
+		got = append(got, change{source, string(from), string(to)})
+	})
+	hm.registerSource("cam1")
+	hm.recordFrame("cam1", time.Now().Add(-1500*time.Millisecond))
+
+	hm.checkForChanges() // first status: stale
+	require.Empty(t, got)
+
+	hm.recordFrame("cam1", time.Now())
+	hm.checkForChanges() // recovery is immediate
+	require.Equal(t, []change{{"cam1", "stale", "healthy"}}, got)
+
+	hm.recordFrame("cam1", time.Now().Add(-1500*time.Millisecond))
+	for range degradationThreshold - 1 {
+		hm.checkForChanges()
+	}
+	require.Len(t, got, 1, "degradation waits for the hysteresis threshold")
+	hm.checkForChanges()
+	require.Equal(t, change{"cam1", "healthy", "stale"}, got[1])
+}
+
+// SetMetrics counts source health transitions by source and status pair.
+func TestSwitcher_SetMetricsCountsHealthChanges(t *testing.T) {
+	pm := metrics.NewMetrics(prometheus.NewRegistry())
+	s := &Switcher{health: newHealthMonitor()}
+	s.SetMetrics(pm)
+
+	s.health.registerSource("cam1")
+	s.health.recordFrame("cam1", time.Now().Add(-1500*time.Millisecond))
+	s.health.checkForChanges()
+	s.health.recordFrame("cam1", time.Now())
+	s.health.checkForChanges()
+
+	require.Equal(t, float64(1), testutil.ToFloat64(pm.SourceStatusChangesTotal.WithLabelValues("cam1", "stale", "healthy")))
 }

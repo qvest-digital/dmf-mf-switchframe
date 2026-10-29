@@ -8,8 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 // makeKeyframe builds a minimal H.264 keyframe with SPS/PPS in AVC1 wire format.
@@ -315,4 +318,31 @@ func TestIntegration_HEVCRecordingProducesValidTS(t *testing.T) {
 	for i := 0; i < len(data); i += 188 {
 		require.Equal(t, byte(0x47), data[i], "TS packet at offset %d must start with sync byte 0x47", i)
 	}
+}
+
+// switchframe_output_recording_bytes_total counts what the recorder put in
+// its files, matching the files on disk.
+func TestIntegration_RecordingBytesMetric(t *testing.T) {
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+	pm := metrics.NewMetrics(prometheus.NewRegistry())
+	mgr.SetMetrics(pm)
+
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+	mgr.DirectWriteVideo(makeKeyframe(90000))
+	mgr.DirectWriteAudio(makeAudioFrame(90000))
+	mgr.DirectWriteVideo(makePFrame(93000))
+	require.NoError(t, mgr.StopRecording())
+
+	var onDisk int64
+	files, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, f := range files {
+		info, err := f.Info()
+		require.NoError(t, err)
+		onDisk += info.Size()
+	}
+	require.Positive(t, onDisk)
+	require.Equal(t, float64(onDisk), testutil.ToFloat64(pm.RecordingBytesTotal))
 }

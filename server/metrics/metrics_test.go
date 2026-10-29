@@ -22,20 +22,14 @@ func TestNewMetrics_AllMetricsGatherable(t *testing.T) {
 	families, err := reg.Gather()
 	require.NoError(t, err, "Gather failed")
 
-	// We expect at least the number of distinct metric names we registered.
-	// CutsTotal, TransitionsTotal, IDRGateEventsTotal, IDRGateDuration,
-	// FramesMixedTotal, EncodeErrorsTotal, PassthroughBypassTotal,
-	// RingbufOverflowsTotal, SRTReconnectsTotal, RecordingBytesTotal,
-	// SRTBytesTotal, SourceStatusChangesTotal = 12 metrics.
-	// Note: CounterVec metrics only appear once they have been observed,
-	// so we check for at least the scalar counters + histogram.
+	// CounterVec metrics only appear once they have been observed, so this
+	// checks the scalar counters and histograms.
 	wantNames := map[string]bool{
 		"switchframe_cuts_total":                     false,
 		"switchframe_idr_gate_events_total":          false,
 		"switchframe_idr_gate_duration_seconds":      false,
 		"switchframe_mixer_frames_mixed_total":       false,
 		"switchframe_mixer_encode_errors_total":      false,
-		"switchframe_mixer_passthrough_bypass_total": false,
 		"switchframe_output_ringbuf_overflows_total": false,
 		"switchframe_output_srt_reconnects_total":    false,
 		"switchframe_output_recording_bytes_total":   false,
@@ -50,6 +44,23 @@ func TestNewMetrics_AllMetricsGatherable(t *testing.T) {
 
 	for name, found := range wantNames {
 		require.True(t, found, "expected metric %q not found in gathered families", name)
+	}
+}
+
+// Families nothing writes are not registered: one that always reads 0 is
+// indistinguishable from a healthy counter.
+func TestNewMetrics_NoUnwrittenFamilies(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	_ = NewMetrics(reg)
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	for _, fam := range families {
+		require.NotContains(t, []string{
+			"switchframe_mixer_passthrough_bypass_total",
+			"switchframe_pipeline_decode_errors_total",
+			"switchframe_pipeline_decode_duration_seconds",
+			"switchframe_pipeline_blend_duration_seconds",
+		}, fam.GetName())
 	}
 }
 

@@ -9,8 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/internal/mpegts"
+	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/srt"
 )
 
@@ -1308,4 +1312,51 @@ func startReconnect(c *SRTCaller) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.startReconnectLoopLocked()
+}
+
+// A caller wired by the manager counts the bytes it puts on the connection,
+// not those the IDR gate drops, and records each gate it holds after a
+// reconnect.
+func TestSRTCaller_Metrics(t *testing.T) {
+	pm := metrics.NewMetrics(prometheus.NewRegistry())
+	mgr := NewManager()
+	mgr.SetMetrics(pm)
+
+	mock := &mockSRTConn{}
+	c := NewSRTCaller(SRTCallerConfig{Address: "srt.example.com", Port: 9998})
+	mgr.mu.Lock()
+	mgr.instrumentSRTCallerLocked(c)
+	mgr.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.ctx = ctx
+	c.cancel = cancel
+	c.state.Store(ptrTo(StateReconnecting))
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		return mock, nil
+	}
+	startReconnect(c)
+	require.Eventually(t, func() bool {
+		return c.Status().State == StateActive
+	}, 5*time.Second, 50*time.Millisecond)
+	require.True(t, c.pendingIDR.Load())
+
+	delta := makeTSPacket(0x100, false)
+	key := makeTSPacket(0x100, true)
+	_, _ = c.Write(delta) // held back by the gate
+	_, _ = c.Write(key)   // opens it
+	_, _ = c.Write(delta)
+
+	require.Equal(t, float64(len(key)+len(delta)), testutil.ToFloat64(pm.SRTBytesTotal))
+	require.Equal(t, float64(1), testutil.ToFloat64(pm.IDRGateEventsTotal))
+	require.Equal(t, uint64(1), histogramCount(t, pm.IDRGateDuration))
+
+	_ = c.Close()
+}
+
+func histogramCount(t *testing.T, h prometheus.Histogram) uint64 {
+	t.Helper()
+	var m dto.Metric
+	require.NoError(t, h.Write(&m))
+	return m.GetHistogram().GetSampleCount()
 }

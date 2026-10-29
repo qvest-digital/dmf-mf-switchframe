@@ -39,6 +39,7 @@ type healthMonitor struct {
 	pendingStatus    map[string]SourceHealthStatus // status awaiting hysteresis threshold
 	consecutiveCount map[string]int                // consecutive checks at pending status
 	running          bool
+	onChange         func(source string, from, to SourceHealthStatus) // called outside mu for each committed transition
 	stopCh           chan struct{}
 	stopOnce         sync.Once
 	done             chan struct{} // closed when the monitor goroutine exits; nil if never started
@@ -57,6 +58,14 @@ func newHealthMonitor() *healthMonitor {
 func (hm *healthMonitor) registerSource(sourceKey string) {
 	hm.mu.Lock()
 	hm.sources[sourceKey] = true
+	hm.mu.Unlock()
+}
+
+// setOnChange sets the function told of every committed status
+// transition. A source's first status is not a transition. nil removes it.
+func (hm *healthMonitor) setOnChange(fn func(source string, from, to SourceHealthStatus)) {
+	hm.mu.Lock()
+	hm.onChange = fn
 	hm.mu.Unlock()
 }
 
@@ -214,10 +223,14 @@ func (hm *healthMonitor) checkForChanges() bool {
 			delete(hm.consecutiveCount, key)
 		}
 	}
+	onChange := hm.onChange
 	hm.mu.Unlock()
 
 	// Log outside the lock
 	for _, c := range changes {
+		if onChange != nil {
+			onChange(c.source, c.fromStatus, c.toStatus)
+		}
 		slog.Warn("switcher: source health changed",
 			"source", c.source,
 			"from_status", string(c.fromStatus),
