@@ -490,6 +490,11 @@ export class PipelineManager {
 		return this._activeEngine;
 	}
 
+	/** The pipeline of the active engine: the one whose audio plays. */
+	get activePipeline(): MediaPipeline {
+		return this._activeEngine === 'B' && this.pipelineB ? this.pipelineB : this.pipeline;
+	}
+
 	/**
 	 * Move the program canvas from Engine A to Engine B.
 	 * Requires an active Engine B pipeline and a program canvas element.
@@ -728,9 +733,7 @@ export class PipelineManager {
 	/** Resume audio on whichever pipeline is currently active.
 	 *  Used after automatic failover when a user gesture is available. */
 	resumeActiveAudio(): void {
-		const activePipeline = this._activeEngine === 'B' && this.pipelineB
-			? this.pipelineB : this.pipeline;
-		activePipeline.resumeAllAudio().catch(() => {});
+		this.activePipeline.resumeAllAudio().catch(() => {});
 	}
 
 	/** Clean up all state. */

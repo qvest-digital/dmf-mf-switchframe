@@ -87,6 +87,26 @@ describe('AudioMixer', () => {
 		expect(afvButtons.length).toBe(2);
 	});
 
+	it('offers a local monitor strip beside master', () => {
+		const { container } = render(AudioMixer, { props: { state } });
+		expect(container.querySelector('.monitor-strip')).toBeTruthy();
+		expect(container.querySelector('input[aria-label="Monitor volume"]')).toBeTruthy();
+	});
+
+	// AFL plays the channel at its fader level, so a muted channel is silent.
+	it('sets the AFL gain from the fader and silences a muted channel', () => {
+		const setAFLGain = vi.fn();
+		const key = 'cam1' as const;
+		const muted = { ...state, audioChannels: { ...state.audioChannels, [key]: { ...state.audioChannels![key], level: -6, muted: true } } };
+		render(AudioMixer, { props: { state: muted, pflActiveSource: key, pflMode: 'afl', aflMonitor: { setAFLGain } } });
+		expect(setAFLGain).toHaveBeenLastCalledWith(key, 0);
+
+		setAFLGain.mockClear();
+		const open = { ...state, audioChannels: { ...state.audioChannels, [key]: { ...state.audioChannels![key], level: -6, muted: false } } };
+		render(AudioMixer, { props: { state: open, pflActiveSource: key, pflMode: 'afl', aflMonitor: { setAFLGain } } });
+		expect(setAFLGain).toHaveBeenLastCalledWith(key, Math.pow(10, -6 / 20));
+	});
+
 	it('should render master fader', () => {
 		const { container } = render(AudioMixer, { props: { state } });
 		const master = container.querySelector('.master-strip');

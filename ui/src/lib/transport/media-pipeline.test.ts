@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { monitorSubscriberCount, setMonitorDimmed, setMonitorMuted, setMonitorSolo, setMonitorVolume } from '$lib/audio/monitor.svelte';
 import { createMediaPipeline, RECONNECT_BASE_MS, RECONNECT_MAX_MS, CONNECT_TIMEOUT_MS, RECONNECT_STABLE_MS, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
 import { isSourceStalled, clearAllStalls, clearSourceStall } from './source-errors.svelte';
 
@@ -76,7 +77,7 @@ function fakeFrame(): VideoFrame & { close: ReturnType<typeof vi.fn>; clones: Vi
 
 /** Set to keep every audio decoder configuring for good. */
 let audioConfigurePending = false;
-const mockAudioDecoderInstances: Array<{ configure: ReturnType<typeof vi.fn>; reset: ReturnType<typeof vi.fn>; resumeContext: ReturnType<typeof vi.fn> }> = [];
+const mockAudioDecoderInstances: Array<{ configure: ReturnType<typeof vi.fn>; reset: ReturnType<typeof vi.fn>; resumeContext: ReturnType<typeof vi.fn>; setGain: ReturnType<typeof vi.fn> }> = [];
 
 vi.mock('$lib/prism/audio-decoder', () => {
 	return {
@@ -87,6 +88,7 @@ vi.mock('$lib/prism/audio-decoder', () => {
 			configure = vi.fn(() => (audioConfigurePending ? new Promise<void>(() => {}) : Promise.resolve()));
 			decode = vi.fn();
 			setMuted = vi.fn();
+			setGain = vi.fn();
 			isMuted = vi.fn().mockReturnValue(true);
 			enableMetering = vi.fn();
 			disableMetering = vi.fn();
@@ -838,6 +840,21 @@ describe('MediaPipeline stall detection', () => {
 	});
 });
 
+/** A GainNode stand-in: records what the gain is set or ramped to. */
+interface FakeGain { gain: { value: number; cancelScheduledValues: ReturnType<typeof vi.fn>; setTargetAtTime: ReturnType<typeof vi.fn> }; connect: ReturnType<typeof vi.fn>; target(): number }
+function makeFakeGain(): FakeGain {
+	const g: FakeGain = {
+		gain: {
+			value: 1,
+			cancelScheduledValues: vi.fn(),
+			setTargetAtTime: vi.fn((v: number) => { g.gain.value = v; }),
+		},
+		connect: vi.fn(),
+		target: () => g.gain.value,
+	};
+	return g;
+}
+
 describe('MediaPipeline audio', () => {
 	// A context per source made one tab open an audio output stream and an
 	// audio thread per source and engine.
@@ -847,6 +864,9 @@ describe('MediaPipeline audio', () => {
 			state = 'running';
 			suspend = vi.fn().mockResolvedValue(undefined);
 			close = vi.fn().mockResolvedValue(undefined);
+			destination = {};
+			currentTime = 0;
+			createGain = makeFakeGain;
 			constructor() { contexts.push(this); }
 		}
 		vi.stubGlobal('AudioContext', FakeAudioContext);
@@ -871,6 +891,92 @@ describe('MediaPipeline audio', () => {
 		}
 	});
 
+	// The local monitor: program plays through a bus that PFL/AFL silence,
+	// every source through the monitor bus after it, which carries the
+	// monitor volume and mute. Nothing else the pipeline does changes.
+	it('routes program and sources through the monitor buses', () => {
+		const gains: FakeGain[] = [];
+		class FakeAudioContext {
+			state = 'running';
+			suspend = vi.fn().mockResolvedValue(undefined);
+			close = vi.fn().mockResolvedValue(undefined);
+			destination = { name: 'speakers' };
+			currentTime = 0;
+			createGain = () => { const g = makeFakeGain(); gains.push(g); return g; };
+		}
+		vi.stubGlobal('AudioContext', FakeAudioContext);
+		try {
+			mockTransports.length = 0;
+			mockAudioDecoderInstances.length = 0;
+			const pipeline = createMediaPipeline();
+			for (const key of ['program-preview', 'cam1']) {
+				pipeline.addSource(key);
+				pipeline.connectSource(key);
+			}
+			const audio = [{ type: 'audio', codec: 'mp4a.40.2', sampleRate: 48000, channels: 2 }];
+			for (const t of mockTransports) t.callbacks.onTrackInfo(audio);
+
+			const [monitorBus, programBus] = gains;
+			expect(monitorBus.connect).toHaveBeenCalledWith({ name: 'speakers' });
+			expect(programBus.connect).toHaveBeenCalledWith(monitorBus);
+			const dest = mockAudioDecoderInstances.map((d) => d.configure.mock.calls[0][4]);
+			expect(dest).toEqual([programBus, monitorBus]);
+
+			setMonitorSolo(true);
+			expect(programBus.target()).toBe(0);
+			expect(monitorBus.target()).toBe(1);
+			setMonitorSolo(false);
+			expect(programBus.target()).toBe(1);
+
+			setMonitorVolume(0.5);
+			expect(monitorBus.target()).toBe(0.5);
+			setMonitorMuted(true);
+			expect(monitorBus.target()).toBe(0);
+			setMonitorMuted(false);
+			setMonitorDimmed(true);
+			expect(monitorBus.target()).toBeCloseTo(0.05);
+			setMonitorDimmed(false);
+
+			const subscribers = monitorSubscriberCount();
+			pipeline.destroy();
+			expect(monitorSubscriberCount()).toBe(subscribers - 1);
+			const calls = programBus.gain.setTargetAtTime.mock.calls.length;
+			setMonitorSolo(true);
+			expect(programBus.gain.setTargetAtTime.mock.calls.length).toBe(calls);
+		} finally {
+			setMonitorSolo(false);
+			setMonitorVolume(1);
+			setMonitorMuted(false);
+			setMonitorDimmed(false);
+			vi.unstubAllGlobals();
+		}
+	});
+
+	// AFL plays a channel at its fader level: a gain set before the decoder
+	// exists is applied when it is configured.
+	it('applies a source gain set before its decoder is configured', async () => {
+		vi.stubGlobal('AudioContext', class { state = 'running'; suspend = vi.fn(); close = vi.fn(); destination = {}; currentTime = 0; createGain = makeFakeGain; });
+		try {
+			mockTransports.length = 0;
+			mockAudioDecoderInstances.length = 0;
+			const pipeline = createMediaPipeline();
+			pipeline.addSource('cam1');
+			pipeline.connectSource('cam1');
+			pipeline.setSourceGain('cam1', 0.25);
+			mockTransports[0].callbacks.onTrackInfo([{ type: 'audio', codec: 'mp4a.40.2', sampleRate: 48000, channels: 2 }]);
+			const [decoder] = mockAudioDecoderInstances;
+			await decoder.configure.mock.results[0].value;
+			await Promise.resolve();
+			expect(decoder.setGain).toHaveBeenCalledWith(0.25);
+
+			pipeline.setSourceGain('cam1', 0.5);
+			expect(decoder.setGain).toHaveBeenLastCalledWith(0.5);
+			pipeline.destroy();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
 	// A decoder that finishes configuring after its source is gone, or the
 	// pipeline destroyed, was attached to nothing and never reset: its
 	// worklet and nodes stayed on the shared context.
@@ -879,6 +985,9 @@ describe('MediaPipeline audio', () => {
 			state = 'suspended';
 			suspend = vi.fn().mockResolvedValue(undefined);
 			close = vi.fn().mockResolvedValue(undefined);
+			destination = {};
+			currentTime = 0;
+			createGain = makeFakeGain;
 		}
 		vi.stubGlobal('AudioContext', FakeAudioContext);
 		try {
@@ -904,7 +1013,7 @@ describe('MediaPipeline audio', () => {
 
 	it('creates no AudioContext once destroyed', () => {
 		const created = vi.fn();
-		vi.stubGlobal('AudioContext', class { state = 'suspended'; suspend = vi.fn(); close = vi.fn(); constructor() { created(); } });
+		vi.stubGlobal('AudioContext', class { state = 'suspended'; suspend = vi.fn(); close = vi.fn(); destination = {}; currentTime = 0; createGain = makeFakeGain; constructor() { created(); } });
 		try {
 			mockTransports.length = 0;
 			const pipeline = createMediaPipeline();
@@ -933,6 +1042,9 @@ describe('MediaPipeline audio', () => {
 			suspend = vi.fn(async () => { this.state = 'suspended'; });
 			resume = vi.fn(async () => { this.state = 'running'; });
 			close = vi.fn().mockResolvedValue(undefined);
+			destination = {};
+			currentTime = 0;
+			createGain = makeFakeGain;
 			constructor() {
 				// A browser starts a context running only after a gesture.
 				this.state = gestured ? 'running' : 'suspended';
