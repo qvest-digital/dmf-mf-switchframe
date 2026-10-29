@@ -62,6 +62,11 @@ type ChannelConfig struct {
 	// will accept. Paths must resolve inside one of these prefixes; nil/empty
 	// rejects every local-scheme URI (deny by default).
 	AllowedLocalPrefixes []string
+
+	// ticks counts the ticks the run loop makes up and skips. The manager
+	// owns it, so the count survives the channel being recreated. Nil
+	// counts nothing.
+	ticks *tickStats
 }
 
 // Channel is a tick-driven frame router that registers as a switcher source
@@ -619,11 +624,7 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 	if item.Type == ItemClip && c.config.AssetProvider != nil {
 		iter, err := c.config.AssetProvider.Open(item.AssetURI)
 		if err == nil {
-			// Wrap with trim if in/out points set.
-			frameSource := iter
-			if item.InPointMs > 0 || item.OutPointMs > 0 {
-				frameSource = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
-			}
+			frameSource := clipFrameSource(iter, &item)
 
 			c.clipIter = frameSource
 			c.clipItemID = item.ID
@@ -937,6 +938,7 @@ func (c *Channel) configDimensions() (int, int) {
 func (c *Channel) run(ctx context.Context) {
 	defer close(c.done)
 
+	clock := tickClock{period: c.frameDuration, next: time.Now().Add(c.frameDuration), stats: c.config.ticks}
 	ticker := time.NewTicker(c.frameDuration)
 	defer ticker.Stop()
 
@@ -949,12 +951,62 @@ func (c *Channel) run(ctx context.Context) {
 			// Always tick at pipeline rate. Frame rate conversion for
 			// clips with a different native FPS is handled by timestamp-
 			// based frame selection in nextClipFrame().
-			if c.tick(time.Now()) {
-				c.cleanup()
-				return // playlist completed
+			for n := clock.due(time.Now()); n > 0; n-- {
+				if c.tick(time.Now()) {
+					c.cleanup()
+					return // playlist completed
+				}
 			}
 		}
 	}
+}
+
+// maxTickBacklog bounds how far behind the run loop makes up ticks. A loop
+// further behind than this skips ahead rather than catch up for longer.
+const maxTickBacklog = time.Second
+
+// tickClock counts the run loop's ticks on the frame grid. A time.Ticker
+// drops the ticks a slow receiver misses, so a tick that blocks for several
+// frame periods would cost the output those frames for good. tickClock makes
+// them up instead, one extra tick per period so they do not go out as a burst.
+type tickClock struct {
+	period time.Duration
+	next   time.Time  // when the next tick is due
+	stats  *tickStats // may be nil
+}
+
+// tickStats counts the frame periods the run loop fell behind on: ticks it
+// made up late, which keep the frame count whole but not the frame timing,
+// and ticks it dropped to skip ahead, which are frames the output lost.
+type tickStats struct {
+	madeUp  atomic.Uint64
+	skipped atomic.Uint64
+}
+
+// due returns how many ticks to run at now: none before the next tick is
+// due, one when on time, two while making up a backlog.
+func (k *tickClock) due(now time.Time) int {
+	if now.Before(k.next) {
+		return 0
+	}
+	behind := now.Sub(k.next)
+	if behind >= maxTickBacklog {
+		slog.Warn("playout: tick loop fell behind, skipping ahead", "behind", behind)
+		if k.stats != nil {
+			k.stats.skipped.Add(uint64(behind / k.period))
+		}
+		k.next = now.Add(k.period)
+		return 1
+	}
+	n := 1
+	if behind >= k.period {
+		n = 2
+		if k.stats != nil {
+			k.stats.madeUp.Add(1)
+		}
+	}
+	k.next = k.next.Add(time.Duration(n) * k.period)
+	return n
 }
 
 // tick processes one frame period. Returns true when the playlist is done.
@@ -1216,7 +1268,7 @@ func (c *Channel) emitFinalItemEnd(secScheduler *SecondaryEventScheduler, asRunF
 func (c *Channel) frameForItem(item *PlaylistItem) *DecodedFrame {
 	switch item.Type {
 	case ItemClip:
-		return c.nextClipFrame(item)
+		return c.nextClipFrame(item, false)
 	case ItemLive:
 		return c.tapLiveSource(item.Source)
 	case ItemSlate:
@@ -1225,8 +1277,23 @@ func (c *Channel) frameForItem(item *PlaylistItem) *DecodedFrame {
 	return nil
 }
 
+// clipFrameSource wraps the iterator opened for item: trimmed to the item's in
+// and out points, and told to loop when the item loops.
+func clipFrameSource(iter FrameIterator, item *PlaylistItem) FrameIterator {
+	src := iter
+	if item.InPointMs > 0 || item.OutPointMs > 0 {
+		src = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
+	}
+	if l, ok := src.(LoopingIterator); ok && item.Loop {
+		l.SetLoop(true)
+	}
+	return src
+}
+
 // nextClipFrame opens or continues a clip iterator and returns the next frame.
-func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
+// rewound is set on the call that follows a loop item's rewind in the same
+// tick.
+func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame {
 	var reanchorSched *SecondaryEventScheduler
 	var reanchorMs int64
 
@@ -1277,11 +1344,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 			return nil
 		}
 
-		// Wrap with trim if in/out points set.
-		frameSource := iter
-		if item.InPointMs > 0 || item.OutPointMs > 0 {
-			frameSource = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
-		}
+		frameSource := clipFrameSource(iter, item)
 
 		c.clipIter = frameSource
 		c.itemError.Store(nil)
@@ -1507,12 +1570,18 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 			}
 		}
 
-		// If loop mode, rewind — close the iterator so it re-opens on the
-		// next tick with the same item ID forced to mismatch. Guarded on
-		// iterator identity so a concurrent SeekToItem's fresh iterator is
-		// not torn down by the old clip's end-of-loop. After EndLoop the pass
-		// that just finished was the last one.
+		// If loop mode, start the next pass. After EndLoop the pass that just
+		// finished was the last one.
 		if item.Loop && !c.scheduler.LoopExitPending() {
+			// The iterator rewinds in place and this tick shows the next
+			// pass's first frame: no repeated frame, no reopen.
+			if !rewound && c.rewindClip(iter) {
+				return c.nextClipFrame(item, true)
+			}
+			// An iterator that cannot rewind is closed so it re-opens on the
+			// next tick with the same item ID forced to mismatch. Guarded on
+			// iterator identity so a concurrent SeekToItem's fresh iterator
+			// is not torn down by the old clip's end-of-loop.
 			c.mu.Lock()
 			if c.clipIter == iter {
 				if c.clipIter != nil {
@@ -1576,6 +1645,38 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 	return resultFrame
 }
 
+// rewindClip starts the next pass of the loop item's iterator in place,
+// keeping its demuxed frames and decoder. It reports false when iter is no
+// longer current or cannot rewind.
+func (c *Channel) rewindClip(iter FrameIterator) bool {
+	l, ok := iter.(LoopingIterator)
+	if !ok {
+		return false
+	}
+	c.mu.Lock()
+	current := c.clipIter == iter
+	c.mu.Unlock()
+	if !current {
+		return false
+	}
+	// Rewind runs outside c.mu, as Next does: a pass that cannot continue
+	// on its decoder waits for a fresh one to open. A concurrent SeekToItem
+	// may close iter meanwhile, which the iterator guards against itself.
+	err := l.Rewind()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.clipIter != iter {
+		return false
+	}
+	if err != nil {
+		slog.Warn("playout: loop rewind failed, reopening", "item", c.clipItemID, "error", err)
+		return false
+	}
+	c.clipFrame = 0
+	c.clipOutputFrame = 0
+	return true
+}
+
 // incomingFrameForItem returns the next frame for the incoming side of a
 // transition. Clip items get their own pre-roll iterator (the inClip* slot) so
 // the outgoing clip's iterator is not torn down every tick; non-clip items
@@ -1625,10 +1726,7 @@ func (c *Channel) nextIncomingClipFrame(item *PlaylistItem) *DecodedFrame {
 			return nil
 		}
 
-		frameSource := iter
-		if item.InPointMs > 0 || item.OutPointMs > 0 {
-			frameSource = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
-		}
+		frameSource := clipFrameSource(iter, item)
 
 		c.inClipIter = frameSource
 		c.inClipFPS = frameSource.EstimateFPS()

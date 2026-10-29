@@ -81,6 +81,19 @@ type FileFrameIterator struct {
 	draining       bool           // true after all encoded frames have been fed
 	frameIndex     int            // next encoded frame to feed
 	audioIndex     int            // next audio frame to consider
+	held           int            // frames fed this pass that the decoder has not output
+
+	// Looping: the frames of the next pass fed to get this pass's last
+	// pictures out of the decoder, and how many of them it holds.
+	loop     bool
+	nextFed  int
+	nextHeld int
+	passDone bool // every picture of the pass is out; the decoder holds only the next pass
+	// The first frame is not an IDR. An IDR resets the decoder's reference
+	// and picture order state; without one that state runs on from the end
+	// of the pass into the next, which comes out reordered and with
+	// pictures missing. Each pass then starts on a fresh decoder.
+	noCarry bool
 
 	// Output tracking for PTS estimation during drain.
 	outputCount int   // number of decoded frames returned so far
@@ -170,39 +183,73 @@ func NewFileFrameIteratorWithDecoder(path string, factory DecoderFactory) (*File
 		})
 	}
 
-	// Step 5: Estimate FPS from encoded frame PTS values.
-	fps := estimateFPSFromEncodedFrames(encoded)
+	return newFileFrameIterator(encoded, audio, decoder, factory), nil
+}
 
-	// Step 6: Estimate total frames. We know the encoded count, but some may
-	// be consumed by decoder buffering without output, and drain may add extras.
-	// Use encoded count as the best estimate (it matches old behavior closely
-	// since the old code decoded all and counted results).
-	// We'll update this after iteration in a real scenario, but for the API
-	// contract we set it to -1 (unknown) since exact count depends on decoder.
-	// Actually, to maintain backward compat with tests, we decode all frames
-	// upfront just to count... NO. Let's count encoded frames and accept minor
-	// differences. The old code returned len(decoded) which was close to
-	// len(encoded) minus a few buffered frames plus drained frames.
-	// For correctness: set totalFrames = -1 (unknown) and track during iteration.
-	// But existing tests expect TotalFrames() == iterated count. Let's use a
-	// reasonable estimate: len(encoded) is close enough (within 1-2 frames).
-	// The integration test checks count == TotalFrames(), so we need accuracy.
-	// Solution: feed all frames through a counting pass? No, that defeats the purpose.
-	// Better: track output count and make TotalFrames() return outputCount after
-	// iteration, or return len(encoded) as best estimate.
-	// Looking at the test: it checks count == totalFrames AFTER iterating.
-	// If we return -1, that test breaks. Let's return len(encoded) as estimate.
-	// The real decoder may produce slightly different counts, but the test
-	// generates 1s@30fps with zerolatency tune (no B-frames), so encoded==decoded.
+// newFileFrameIterator builds an iterator over demuxed frames. A stream cut
+// mid-GOP starts with frames that reference pictures it does not carry, and
+// a stream cut at an open-GOP keyframe follows it with leading pictures,
+// shown before it, that reference the GOP before. A fresh decoder drops
+// both, but one that keeps running into the next pass of a loop holds the
+// previous pass's references and puts out wrong pictures for them, so
+// every pass would differ from the first. They are dropped here, with the
+// audio that ends before the first keyframe, so every pass starts at the
+// keyframe with its audio and frame indices count shown pictures.
+//
+// A stream that drops no frame keeps all of its audio. Audio before its
+// first picture is then how the container aligns the two: an MP4 with
+// B-frames, read without its edit list, starts its video at the reorder
+// delay and its audio at the AAC priming frame, and dropping the audio
+// before the first picture would play the rest early by that delay.
+//
+// A 33-bit MPEG-TS PTS that wraps makes the pictures after the wrap
+// compare below the keyframe, and the audio after it too, which the
+// demuxer sorts to the front, so neither leading pictures nor audio are
+// dropped by PTS then.
+func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decoder VideoDecoder, factory DecoderFactory) *FileFrameIterator {
+	wrapped := ptsWraps(encoded)
+	for i, ef := range encoded {
+		if !ef.isKeyframe {
+			continue
+		}
+		// Leading pictures come before the next keyframe in decode order
+		// and below the keyframe in presentation order. A PES without a
+		// PTS is demuxed with PTS 0, which says nothing about its order.
+		kept := []encodedFrame{ef}
+		j := i + 1
+		for ; j < len(encoded) && !encoded[j].isKeyframe; j++ {
+			if wrapped || encoded[j].pts >= ef.pts || encoded[j].pts == 0 {
+				kept = append(kept, encoded[j])
+			}
+		}
+		kept = append(kept, encoded[j:]...)
+		if len(kept) < len(encoded) && !wrapped {
+			audio = audio[sort.Search(len(audio), func(k int) bool {
+				return audio[k].pts >= ef.pts || audio[k].pts+audioFrameTicks(audio[k]) > ef.pts
+			}):]
+		}
+		encoded = kept
+		break
+	}
+	noCarry := true
+	for _, nalu := range codec.ExtractNALUs(codec.AnnexBToAVC1(encoded[0].wireData)) {
+		if len(nalu) > 0 && nalu[0]&0x1f == 5 {
+			noCarry = false
+		}
+	}
 
+	// totalFrames is the encoded count: a decoder that drops nothing puts
+	// out one picture per frame, held-back ones in later Next calls and the
+	// drain.
 	return &FileFrameIterator{
 		encodedFrames:  encoded,
 		audioFrames:    audio,
 		decoder:        decoder,
 		decoderFactory: factory,
-		fps:            fps,
+		fps:            estimateFPSFromEncodedFrames(encoded),
 		totalFrames:    len(encoded),
-	}, nil
+		noCarry:        noCarry,
+	}
 }
 
 // Next returns the next decoded frame, or (nil, nil) at end of stream.
@@ -218,7 +265,7 @@ func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.closed {
+	if f.closed || f.passDone {
 		return nil, nil
 	}
 
@@ -229,13 +276,13 @@ func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
 
 		yuv, w, h, decErr := f.decoder.Decode(ef.wireData)
 		if decErr != nil {
-			errMsg := decErr.Error()
-			// "buffering" is expected for B-frame reordering -- the decoder
-			// needs reference frames before it can output.
-			if strings.Contains(errMsg, "buffering") {
-				continue
+			// "buffering" is expected for B-frame reordering and frame
+			// threading: the decoder keeps the frame and outputs it later.
+			// Frames with other decode errors (corrupted data, etc.) are
+			// skipped.
+			if isBuffering(decErr) {
+				f.held++
 			}
-			// Skip frames with decode errors (corrupted data, etc.).
 			continue
 		}
 
@@ -245,6 +292,35 @@ func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
 
 		// Got a decoded frame. Deep-copy: decoder may reuse its output buffer.
 		return f.makeDecodedFrame(yuv, w, h, ef.pts, ef.isKeyframe), nil
+	}
+
+	// Looping: the pass's last pictures are still in the decoder. Feed it
+	// the next pass's first frames until they come out instead of draining
+	// it: a drained decoder has to be replaced, and a fresh frame-threaded
+	// decoder returns nothing until its pipeline has filled. Rewind starts
+	// the next pass after the frames fed here.
+	if f.loop && !f.noCarry && !f.draining && len(f.encodedFrames) > 2*f.held {
+		for f.held > 0 && f.nextFed < len(f.encodedFrames) {
+			ef := f.encodedFrames[f.nextFed]
+			f.nextFed++
+			yuv, w, h, decErr := f.decoder.Decode(ef.wireData)
+			if decErr != nil {
+				if isBuffering(decErr) {
+					f.nextHeld++
+				}
+				continue
+			}
+			if len(yuv) == 0 {
+				continue
+			}
+			f.held--
+			f.nextHeld++
+			return f.makeDecodedFrame(yuv, w, h, f.estimateDrainPTS(), false), nil
+		}
+		if f.held == 0 {
+			f.passDone = true
+			return nil, nil
+		}
 	}
 
 	// Phase 2: Drain decoder (B-frame reorder buffer).
@@ -364,13 +440,51 @@ func (f *FileFrameIterator) FrameIndex() int {
 	return f.frameIndex
 }
 
+// SetLoop says whether another pass follows the current one. While set, the
+// end of a pass keeps the decoder running into the next pass, so Rewind can
+// continue without a fresh decoder. A stream that does not start at an IDR
+// gets a fresh decoder each pass regardless.
+func (f *FileFrameIterator) SetLoop(loop bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.loop = loop
+}
+
+// Rewind starts the next pass at the first frame, keeping the demuxed frames.
+// When the pass ended with the decoder already fed the next pass's first
+// frames, decoding continues after them on the same decoder. Otherwise (the
+// decoder was drained, or the pass was cut short) it restarts like Seek(0).
+func (f *FileFrameIterator) Rewind() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.closed {
+		return fmt.Errorf("iterator closed")
+	}
+	if !f.passDone {
+		return f.seekLocked(0)
+	}
+	f.frameIndex = f.nextFed
+	f.held = f.nextHeld
+	f.nextFed, f.nextHeld = 0, 0
+	f.passDone = false
+	f.outputCount = 0
+	f.audioIndex = 0
+	f.lastPTS, f.prevPTS = 0, 0
+	return nil
+}
+
 // Seek repositions the iterator to the nearest keyframe at or before targetFrame.
 // The old decoder is closed and a fresh one is created so decoding restarts
 // cleanly from the keyframe's SPS/PPS headers.
 func (f *FileFrameIterator) Seek(targetFrame int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.seekLocked(targetFrame)
+}
 
+// seekLocked is Seek with f.mu held.
+func (f *FileFrameIterator) seekLocked(targetFrame int) error {
 	if f.closed {
 		return fmt.Errorf("iterator closed")
 	}
@@ -401,11 +515,18 @@ func (f *FileFrameIterator) Seek(targetFrame int) error {
 	f.frameIndex = seekIdx
 	f.outputCount = seekIdx
 	f.draining = false
+	f.held = 0
+	f.nextFed, f.nextHeld = 0, 0
+	f.passDone = false
 	f.lastPTS = 0
 	f.prevPTS = 0
 
-	// Reset audio index to match video position by PTS.
-	if seekIdx < len(f.encodedFrames) {
+	// Reset audio index to match video position by PTS. The audio list
+	// starts at the first picture, so a seek to it starts at the first
+	// audio frame.
+	if seekIdx == 0 {
+		f.audioIndex = 0
+	} else if seekIdx < len(f.encodedFrames) {
 		targetPTS := f.encodedFrames[seekIdx].pts
 		f.audioIndex = sort.Search(len(f.audioFrames), func(i int) bool {
 			return f.audioFrames[i].pts >= targetPTS
@@ -429,6 +550,39 @@ func (f *FileFrameIterator) Close() {
 	if f.decoder != nil {
 		f.decoder.Close()
 	}
+}
+
+// audioFrameTicks is the duration of an AAC frame in 90 kHz ticks.
+func audioFrameTicks(af audioFrameInfo) int64 {
+	if af.sampleRate <= 0 {
+		return 0
+	}
+	return 1024 * 90000 / int64(af.sampleRate)
+}
+
+// ptsWraps reports whether the video PTS steps back by more than 2^32
+// ticks, which reordering never does and a wrap of the 33-bit MPEG-TS PTS
+// always does. A frame without a PTS carries 0 and is skipped, or a PTS
+// above 2^32 before it would read as a wrap. The audio is not checked:
+// the demuxer sorts it by PTS, so a wrap never shows in it as a step back.
+func ptsWraps(encoded []encodedFrame) bool {
+	var last int64
+	for _, ef := range encoded {
+		if ef.pts == 0 {
+			continue
+		}
+		if last-ef.pts > 1<<32 {
+			return true
+		}
+		last = ef.pts
+	}
+	return false
+}
+
+// isBuffering reports whether a Decode error means the decoder kept the frame
+// and has no picture to output yet.
+func isBuffering(err error) bool {
+	return strings.Contains(err.Error(), "buffering")
 }
 
 // estimateFPSFromEncodedFrames estimates FPS from encoded frame PTS values.

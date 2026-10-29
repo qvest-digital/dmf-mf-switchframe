@@ -8,7 +8,7 @@ import (
 )
 
 // IdleLoop wraps an AssetProvider with auto-rewind capability. When it reaches
-// the end of the clip, it re-opens and starts from the beginning. If no asset
+// the end of the clip, it starts from the beginning again. If no asset
 // is configured or the asset fails to open, it returns a pre-allocated black
 // frame (BT.709: Y=16, UV=128).
 //
@@ -62,7 +62,7 @@ func (l *IdleLoop) NextFrame() *DecodedFrame {
 
 	// Open iterator on first call or after rewind.
 	if l.iter == nil {
-		iter, err := l.provider.Open(l.assetURI)
+		iter, err := openLooping(l.provider, l.assetURI)
 		if err != nil {
 			slog.Debug("playout: idle loop asset open failed, returning black", "uri", l.assetURI, "error", err)
 			return l.blackFrame()
@@ -87,12 +87,10 @@ func (l *IdleLoop) NextFrame() *DecodedFrame {
 		return frame
 	}
 
-	// EOF — auto-rewind: close current iterator and re-open.
-	l.iter.Close()
-	l.iter = nil
-
-	iter, err := l.provider.Open(l.assetURI)
+	// EOF -- auto-rewind, in place when the iterator can.
+	iter, err := restartLoop(l.iter, l.provider, l.assetURI)
 	if err != nil {
+		l.iter = nil
 		slog.Debug("playout: idle loop rewind failed, returning black", "uri", l.assetURI, "error", err)
 		return l.blackFrame()
 	}
@@ -110,6 +108,28 @@ func (l *IdleLoop) NextFrame() *DecodedFrame {
 	frame.PTS = l.pts
 	l.pts += int64(90000.0 / l.fps)
 	return frame
+}
+
+// openLooping opens uri to play over and over.
+func openLooping(provider AssetProvider, uri string) (FrameIterator, error) {
+	iter, err := provider.Open(uri)
+	if err != nil {
+		return nil, err
+	}
+	if l, ok := iter.(LoopingIterator); ok {
+		l.SetLoop(true)
+	}
+	return iter, nil
+}
+
+// restartLoop starts the next pass of iter, which has reported its end: in
+// place when it can rewind, else by closing it and reopening uri.
+func restartLoop(iter FrameIterator, provider AssetProvider, uri string) (FrameIterator, error) {
+	if l, ok := iter.(LoopingIterator); ok && l.Rewind() == nil {
+		return iter, nil
+	}
+	iter.Close()
+	return openLooping(provider, uri)
 }
 
 // Close releases the current iterator.

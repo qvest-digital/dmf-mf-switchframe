@@ -57,6 +57,30 @@ func TestMetricsCollector_PodsCompletedIsAGauge(t *testing.T) {
 	require.Equal(t, dto.MetricType_GAUGE, familyType(t, c, "switchframe_playout_pods_completed"))
 }
 
+// The run loop's made-up and skipped ticks are counters per channel, and a
+// channel recreated for a new pipeline format keeps counting into them.
+func TestMetricsCollector_Ticks(t *testing.T) {
+	m := NewManager(ManagerConfig{AllowedLocalPrefixes: []string{"/"}})
+	defer m.Close()
+	c := NewMetricsCollector(m, nil)
+	f := metricstest.Series(t, c)
+	require.Equal(t, map[string]float64{"1": 0, "2": 0}, f["switchframe_playout_ticks_made_up_total"])
+	require.Equal(t, map[string]float64{"1": 0, "2": 0}, f["switchframe_playout_ticks_skipped_total"])
+
+	m.SetPipelineFormat(1280, 720, 50)
+	const p = 20 * time.Millisecond
+	start := time.Now()
+	k := tickClock{period: p, next: start.Add(p), stats: m.channels[1].config.ticks}
+	k.due(start.Add(3 * p))                // runs the ticks due at p and 2p, one of them made up
+	k.due(start.Add(3*p + maxTickBacklog)) // 1s behind the tick due at 3p
+
+	f = metricstest.Series(t, c)
+	require.Equal(t, map[string]float64{"1": 0, "2": 1}, f["switchframe_playout_ticks_made_up_total"])
+	require.Equal(t, map[string]float64{"1": 0, "2": 50}, f["switchframe_playout_ticks_skipped_total"])
+	require.Equal(t, dto.MetricType_COUNTER, familyType(t, c, "switchframe_playout_ticks_made_up_total"))
+	require.Equal(t, dto.MetricType_COUNTER, familyType(t, c, "switchframe_playout_ticks_skipped_total"))
+}
+
 // familyType is the type of the collector's family name.
 func familyType(t *testing.T, c prometheus.Collector, name string) dto.MetricType {
 	t.Helper()
