@@ -237,6 +237,7 @@ jobs:
           # show the probe's green page and nothing a probe received.
           [[ "$(docker exec sf-smoke sh -c 'echo $HOME')" == /root ]]
           : > "$probe/hits"
+          : > "$probe/server.log"
           sudo nsenter -t "$(docker inspect -f '{{.State.Pid}}' sf-smoke)" -n \
             python3 cef-sidecar/scripts/refusal-probe-server.py \
             cef-sidecar/test-templates "$probe/leaf.pem" "$probe/leaf.key" "$probe/hits" \
@@ -268,6 +269,12 @@ jobs:
             id=$(api -X POST http://localhost:8081/api/graphics | jq -er .id)
             api -X POST -H 'Content-Type: application/json' -d "{\"url\":\"$url\"}" \
               "http://localhost:8081/api/graphics/$id/html5" >/dev/null
+            # A layer takes "on" only once the sidecar's first frame for it
+            # has arrived.
+            for _ in $(seq 30); do
+              api -X POST "http://localhost:8081/api/graphics/$id/on" >/dev/null 2>&1 && break
+              sleep 1
+            done
             api -X POST "http://localhost:8081/api/graphics/$id/on" >/dev/null
             wait_log "probe-result:{\"page\":\"$page\""
             result=$(docker logs sf-smoke 2>&1 | grep -o "probe-result:{\"page\":\"$page\".*" | tail -1)
