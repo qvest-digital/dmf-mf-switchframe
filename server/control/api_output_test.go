@@ -39,6 +39,8 @@ type mockOutputManager struct {
 	lastDestID     string
 	lastAddID      string
 	sendingIDs     []string
+	pairIDs        []string
+	armedIDs       []string
 
 	// CBR status.
 	cbrStatus *output.CBRPacerStatus
@@ -131,6 +133,10 @@ func (m *mockOutputManager) AddDestinationWithID(id string, config output.Destin
 
 func (m *mockOutputManager) SendingDestinationIDs() []string {
 	return m.sendingIDs
+}
+
+func (m *mockOutputManager) PairDestinationIDs() (all, armed []string) {
+	return m.pairIDs, m.armedIDs
 }
 
 func (m *mockOutputManager) RemoveDestination(id string) error {

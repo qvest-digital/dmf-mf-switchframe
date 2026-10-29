@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -172,7 +173,10 @@ func TestHealthPoller_SendingAndDown(t *testing.T) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(HealthResponse{Status: "ok", EngineLabel: "a", Sending: []string{"0a1b2c3d"}})
+		_ = json.NewEncoder(w).Encode(HealthResponse{
+			Status: "ok", EngineLabel: "a", Sending: []string{"0a1b2c3d"},
+			Destinations: []string{"0a1b2c3d", "4e5f6a7b"}, Armed: []string{"0a1b2c3d"},
+		})
 	}))
 	defer srv.Close()
 
@@ -185,9 +189,18 @@ func TestHealthPoller_SendingAndDown(t *testing.T) {
 	require.Eventually(t, func() bool { return p.PeerReachable() }, 2*time.Second, 5*time.Millisecond)
 	st := p.Status()
 	assert.Equal(t, []string{"0a1b2c3d"}, st.PeerSending)
+	assert.Equal(t, []string{"0a1b2c3d", "4e5f6a7b"}, st.PeerDestinations)
+	assert.Equal(t, []string{"0a1b2c3d"}, st.PeerArmed)
 	assert.False(t, st.Down)
+
+	// A fetch reads the peer once and leaves the poll's record alone.
+	h, err := p.Fetch(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"0a1b2c3d"}, h.Sending)
 
 	fail.Store(true)
 	require.Eventually(t, func() bool { return p.Status().Down }, 2*time.Second, 5*time.Millisecond)
 	assert.False(t, p.Status().Reachable)
+	_, err = p.Fetch(context.Background())
+	require.Error(t, err)
 }

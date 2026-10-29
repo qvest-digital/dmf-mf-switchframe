@@ -36,6 +36,7 @@ func (a *API) handlePeerHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.outputMgr != nil {
 		resp.Sending = a.outputMgr.SendingDestinationIDs()
+		resp.Destinations, resp.Armed = a.outputMgr.PairDestinationIDs()
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

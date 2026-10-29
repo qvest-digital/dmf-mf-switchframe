@@ -24,14 +24,19 @@ func pairEngine(t *testing.T, label string) *Manager {
 	return m
 }
 
-// viewOf is what an engine sees of peer through its health polls.
+// viewOf is what an engine sees of peer through a health poll sent now.
 func viewOf(peer *Manager, leads bool) PeerView {
+	all, armed := peer.PairDestinationIDs()
 	return PeerView{
-		Known:      true,
-		Label:      peer.EngineLabel(),
-		Sending:    peer.SendingDestinationIDs(),
-		LocalLeads: leads,
-		Grace:      time.Hour,
+		Known:        true,
+		Label:        peer.EngineLabel(),
+		Sending:      peer.SendingDestinationIDs(),
+		Armed:        armed,
+		Destinations: all,
+		SeenPolledAt: time.Now(),
+		Uptime:       time.Hour,
+		LocalLeads:   leads,
+		Grace:        time.Hour,
 	}
 }
 
@@ -204,15 +209,17 @@ func TestDestinationPair_TakeoverFromPeerNotSending(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, b.StartDestination(pairID))
 
-	v := PeerView{Known: true, Label: "a", Grace: 50 * time.Millisecond}
+	v := PeerView{Known: true, Label: "a", Grace: 50 * time.Millisecond, SeenPolledAt: time.Now()}
 	b.ReconcileDestinations(v)
 	requireState(t, b, "standby", "a")
 	time.Sleep(60 * time.Millisecond)
+	v.SeenPolledAt = time.Now()
 	b.ReconcileDestinations(v)
 	requireState(t, b, string(StateActive), "b")
 }
 
-// PUT /engine sent to both engines moves the sender.
+// PUT /engine sent to both engines moves the sender, and it stays moved
+// through the failover ticks that follow.
 func TestDestinationPair_ManualSwitchOver(t *testing.T) {
 	a, b := pairEngine(t, "a"), pairEngine(t, "b")
 	addBoth(t, a, b, true)
@@ -221,6 +228,158 @@ func TestDestinationPair_ManualSwitchOver(t *testing.T) {
 		require.NoError(t, m.ReassignDestinationEngine(pairID, "b"))
 	}
 	requireState(t, a, "standby", "b")
+	requireState(t, b, string(StateActive), "b")
+
+	a.ReconcileDestinations(viewOf(b, true))
+	b.ReconcileDestinations(viewOf(a, false))
+	requireState(t, a, "standby", "b")
+	requireState(t, b, string(StateActive), "b")
+
+	// And back to the leader.
+	for _, m := range []*Manager{a, b} {
+		require.NoError(t, m.ReassignDestinationEngine(pairID, "a"))
+	}
+	a.ReconcileDestinations(viewOf(b, true))
+	b.ReconcileDestinations(viewOf(a, false))
+	requireState(t, a, string(StateActive), "a")
+	requireState(t, b, "standby", "a")
+}
+
+// The failover tick runs every second, the peer poll every five: the first
+// tick after a switch-over to the engine that does not lead still sees the
+// old sender in its last poll. Yielding to it left both engines on standby,
+// each naming the other, and both took over after the grace period.
+func TestDestinationPair_SwitchOverIgnoresPollFromBefore(t *testing.T) {
+	a, b := pairEngine(t, "a"), pairEngine(t, "b")
+	addBoth(t, a, b, true)
+	staleOfA := viewOf(a, false) // B's last poll: A sends
+	staleOfB := viewOf(b, true)  // A's last poll: B does not send
+	for _, m := range []*Manager{a, b} {
+		require.NoError(t, m.ReassignDestinationEngine(pairID, "b"))
+	}
+
+	b.ReconcileDestinations(staleOfA)
+	a.ReconcileDestinations(staleOfB)
+	requireState(t, b, string(StateActive), "b")
+	requireState(t, a, "standby", "b")
+
+	// Fresh polls past the grace period: still one sender.
+	va, vb := viewOf(a, false), viewOf(b, true)
+	va.Grace, vb.Grace = 20*time.Millisecond, 20*time.Millisecond
+	for range 2 {
+		a.ReconcileDestinations(vb)
+		b.ReconcileDestinations(va)
+		time.Sleep(30 * time.Millisecond)
+		va.SeenPolledAt, vb.SeenPolledAt = time.Now(), time.Now()
+	}
+	requireState(t, b, string(StateActive), "b")
+	requireState(t, a, "standby", "b")
+	require.Empty(t, a.SendingDestinationIDs())
+}
+
+// A stop the standby missed: the peer process had the destination armed
+// and no longer does, so the standby disarms it instead of taking it over
+// as an owner that lost its state.
+func TestDestinationPair_StopMissedByStandby(t *testing.T) {
+	a, b := pairEngine(t, "a"), pairEngine(t, "b")
+	addBoth(t, a, b, true)
+	b.ReconcileDestinations(viewOf(a, false))
+
+	require.NoError(t, a.StopDestination(pairID)) // B misses it
+	v := viewOf(a, false)
+	v.Grace = 20 * time.Millisecond
+	b.ReconcileDestinations(v)
+	time.Sleep(30 * time.Millisecond)
+	v.SeenPolledAt = time.Now()
+	b.ReconcileDestinations(v)
+
+	requireState(t, b, "stopped", "a")
+	require.Empty(t, b.SendingDestinationIDs())
+}
+
+// A delete the standby missed deletes it on the standby too.
+func TestDestinationPair_DeleteMissedByStandby(t *testing.T) {
+	a, b := pairEngine(t, "a"), pairEngine(t, "b")
+	addBoth(t, a, b, true)
+	b.ReconcileDestinations(viewOf(a, false))
+
+	require.NoError(t, a.RemoveDestination(pairID)) // B misses it
+	b.ReconcileDestinations(viewOf(a, false))
+
+	_, err := b.GetDestination(pairID)
+	require.ErrorIs(t, err, ErrDestinationNotFound)
+}
+
+// A poll taken before a stop and a new start on both engines shows the peer
+// disarmed, but answers the stop, not the start: the standby stays armed.
+func TestDestinationPair_RestartNotUndoneByPollFromBefore(t *testing.T) {
+	a, b := pairEngine(t, "a"), pairEngine(t, "b")
+	addBoth(t, a, b, true)
+	b.ReconcileDestinations(viewOf(a, false))
+	for _, m := range []*Manager{a, b} {
+		require.NoError(t, m.StopDestination(pairID))
+	}
+	between := viewOf(a, false)
+	for _, m := range []*Manager{a, b} {
+		require.NoError(t, m.StartDestination(pairID))
+	}
+
+	b.ReconcileDestinations(between)
+	requireState(t, b, "standby", "a")
+	requireState(t, a, string(StateActive), "a")
+}
+
+// A peer that restarted without its state never had the destination armed
+// in this process: the standby takes it over after the grace period.
+func TestDestinationPair_TakeoverFromRestartedPeer(t *testing.T) {
+	a, b := pairEngine(t, "a"), pairEngine(t, "b")
+	addBoth(t, a, b, true)
+	b.ReconcileDestinations(viewOf(a, false))
+
+	fresh := pairEngine(t, "a") // A restarted, empty
+	v := viewOf(fresh, false)
+	v.Uptime = time.Second
+	v.Grace = 20 * time.Millisecond
+	b.ReconcileDestinations(v)
+	requireState(t, b, "standby", "a")
+	time.Sleep(30 * time.Millisecond)
+	v.SeenPolledAt = time.Now()
+	b.ReconcileDestinations(v)
+	requireState(t, b, string(StateActive), "b")
+}
+
+// An engine back within a poll of its peer's takeover applies a snapshot the
+// peer took before it: it names itself the sender, and its last poll does
+// not show the peer sending yet. A fresh read of the peer right before the
+// start does, and keeps it on standby.
+func TestDestinationPair_ReturningEngineReadsPeerBeforeStart(t *testing.T) {
+	b := pairEngine(t, "b")
+	_, err := b.AddDestinationWithID(pairID, callerConfig)
+	require.NoError(t, err)
+	require.NoError(t, b.ApplyDestinationState(pairID, "a", true))
+	staleOfB := viewOf(b, false) // before B's takeover
+	b.ReconcileDestinations(downPeer)
+	requireState(t, b, string(StateActive), "b")
+
+	a := pairEngine(t, "a")
+	a.EnablePeerFailover()
+	a.SetPeerProbe(func() (PeerView, bool) { return viewOf(b, false), true })
+	_, err = a.AddDestinationWithID(pairID, callerConfig)
+	require.NoError(t, err)
+	require.NoError(t, a.ApplyDestinationState(pairID, "a", true)) // pre-takeover snapshot
+	a.ReconcileDestinations(staleOfB)
+
+	requireState(t, a, "standby", "b")
+	require.Empty(t, a.SendingDestinationIDs())
+}
+
+// An operator's switch-over starts at once, without a read of the peer: the
+// peer may not have stopped yet.
+func TestDestinationPair_SwitchOverDoesNotReadPeer(t *testing.T) {
+	a, b := pairEngine(t, "a"), pairEngine(t, "b")
+	addBoth(t, a, b, true)
+	b.SetPeerProbe(func() (PeerView, bool) { return viewOf(a, false), true })
+	require.NoError(t, b.ReassignDestinationEngine(pairID, "b"))
 	requireState(t, b, string(StateActive), "b")
 }
 

@@ -2112,6 +2112,7 @@ func (a *App) Run(ctx context.Context) error {
 			"peerURL", a.cfg.PeerEngineURL,
 			"engineLabel", a.cfg.EngineLabel)
 		if a.cfg.EngineLabel != "" {
+			a.outputMgr.SetPeerProbe(peerProbe(a.bgCtx, a.peerPoller))
 			a.bgWG.Add(1)
 			go func() {
 				defer a.bgWG.Done()

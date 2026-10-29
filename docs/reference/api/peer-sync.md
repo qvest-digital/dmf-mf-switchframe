@@ -24,11 +24,13 @@
   "lastCommandSeq": 1729,
   "engineLabel": "a",
   "epoch": 17,
-  "sending": ["0a1b2c3d"]
+  "sending": ["0a1b2c3d"],
+  "armed": ["0a1b2c3d"],
+  "destinations": ["0a1b2c3d", "4e5f6a7b"]
 }
 ```
 
-`sending` lists the output destinations this engine sends, of those one engine of a pair sends; the other engine reads it for [failover](../../subsystems/output.md#dual-engine-failover).
+Of the output destinations one engine of a pair sends, `sending` lists those this engine sends, `armed` those started on it and `destinations` all it holds; the other engine reads them for [failover](../../subsystems/output.md#dual-engine-failover).
 
 **Errors:** none. Defensive nil guards keep this endpoint from DoSing on refactor breakage.
 

@@ -81,6 +81,7 @@ type OutputManagerAPI interface {
 	ConfidenceThumbnail() []byte
 	AddDestinationWithID(id string, config output.DestinationConfig) (string, error)
 	SendingDestinationIDs() []string
+	PairDestinationIDs() (all, armed []string)
 	RemoveDestination(id string) error
 	StartDestination(id string) error
 	StopDestination(id string) error

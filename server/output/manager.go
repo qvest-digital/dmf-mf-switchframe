@@ -124,6 +124,7 @@ type Manager struct {
 	// given; peerFailover is set while there is one to be given.
 	peer         PeerView
 	peerFailover bool
+	peerProbe    func() (PeerView, bool)
 
 	// recordingArchiveDir is where a recording started without an
 	// ArchiveDir of its own archives, before the engine label is added.
@@ -323,13 +324,13 @@ func (m *Manager) ReassignDestinationEngine(id, engine string) error {
 		return ErrDestinationNotFound
 	}
 	dest.mu.Lock()
-	dest.config.Engine = engine
+	dest.setEngineLocked(engine, time.Now())
 	dest.mu.Unlock()
 
 	fn := m.onState
 	m.mu.Unlock()
 
-	m.settle(id)
+	m.settle(id, false)
 	if fn != nil {
 		fn()
 	}
@@ -738,7 +739,7 @@ func (m *Manager) StartDestination(id string) error {
 	sends := m.sendsLocked(dest)
 	wasArmed := dest.armed
 	if !sends {
-		dest.armed = true
+		dest.setArmedLocked(true, time.Now())
 	}
 	dest.mu.Unlock()
 	fn := m.onState
@@ -892,7 +893,8 @@ func (m *Manager) startAdapter(id string) error {
 		now := time.Now()
 		dest.frameAdapter = rtmpDirect
 		dest.active = true
-		dest.armed = true
+		dest.setArmedLocked(true, now)
+		dest.changedAt = now
 		dest.startedAt = &now
 		dest.mu.Unlock()
 
@@ -916,7 +918,8 @@ func (m *Manager) startAdapter(id string) error {
 	now := time.Now()
 	dest.adapter = adapter
 	dest.active = true
-	dest.armed = true
+	dest.setArmedLocked(true, now)
+	dest.changedAt = now
 	dest.startedAt = &now
 	dest.mu.Unlock()
 	m.mu.Unlock()
@@ -929,7 +932,7 @@ func (m *Manager) startAdapter(id string) error {
 		if dest.adapter == adapter {
 			dest.adapter = nil
 			dest.active = false
-			dest.armed = false
+			dest.setArmedLocked(false, time.Now())
 			dest.startedAt = nil
 			// Only remove the stats entry while this adapter still owns the
 			// slot. Adapter IDs are type constants, so a concurrently
@@ -1003,7 +1006,7 @@ func (m *Manager) stopDestination(id string, disarm bool) error {
 	dest.mu.Lock()
 	wasArmed := dest.armed
 	if disarm {
-		dest.armed = false
+		dest.setArmedLocked(false, time.Now())
 	}
 	if !dest.active {
 		dest.mu.Unlock()

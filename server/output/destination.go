@@ -68,6 +68,40 @@ type Destination struct {
 	unsentSince  time.Time // armed here, owned by a reachable peer not sending it
 	createdAt    time.Time
 	startedAt    *time.Time
+
+	// changedAt is when this engine last changed the sending engine, the
+	// armed state or started the adapter. A peer poll sent before it shows
+	// the peer as it was before the change and is not acted on.
+	changedAt time.Time
+	// peerListed and peerArmed are set once a poll of the current peer
+	// process, sent after changedAt, listed the destination, and listed it
+	// armed. Losing either later means an operator deleted or stopped it
+	// on the peer.
+	peerListed bool
+	peerArmed  bool
+}
+
+// setEngineLocked sets the sending engine. Holds d.mu.
+func (d *Destination) setEngineLocked(engine string, now time.Time) bool {
+	if d.config.Engine == engine {
+		return false
+	}
+	d.config.Engine = engine
+	d.changedAt = now
+	d.unsentSince = time.Time{}
+	return true
+}
+
+// setArmedLocked sets the armed state. Holds d.mu.
+func (d *Destination) setArmedLocked(armed bool, now time.Time) bool {
+	if d.armed == armed {
+		return false
+	}
+	d.armed = armed
+	d.changedAt = now
+	d.unsentSince = time.Time{}
+	d.peerArmed = false
+	return true
 }
 
 // generateDestinationID creates a random 8-character hex ID.

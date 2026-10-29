@@ -42,6 +42,13 @@ type HealthResponse struct {
 	// one engine of a pair sends. The other engine reads it to tell whether
 	// a destination it owns was taken over while it was away.
 	Sending []string `json:"sending,omitempty"`
+
+	// Destinations lists every output destination of those one engine of
+	// a pair sends, and Armed the ones an operator started. The other
+	// engine reads them to tell a stop or delete it missed from a peer
+	// that lost its state.
+	Destinations []string `json:"destinations,omitempty"`
+	Armed        []string `json:"armed,omitempty"`
 }
 
 // PeerStatus holds the current peer health state, safe to read from any
@@ -57,6 +64,9 @@ type PeerStatus struct {
 	PeerEpoch      uint64
 	PeerInstanceID string
 	PeerSending    []string
+	// PeerDestinations and PeerArmed are the peer's lists of the same name.
+	PeerDestinations []string
+	PeerArmed        []string
 
 	// Down is set once the peer has failed the failure threshold of
 	// consecutive polls, whether or not it was ever reached.
@@ -170,6 +180,8 @@ type HealthPoller struct {
 	peerEpoch      uint64
 	peerInstanceID string
 	peerSending    []string
+	peerDests      []string
+	peerArmed      []string
 	polledAt       time.Time
 	seenPolledAt   time.Time
 
@@ -236,19 +248,21 @@ func (p *HealthPoller) Status() PeerStatus {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return PeerStatus{
-		Reachable:      p.reachable,
-		LastSeen:       p.lastSeen,
-		ConsecFailures: p.consecFailures,
-		ProgramSource:  p.programSource,
-		LastCommandSeq: p.lastCommandSeq,
-		UptimeMs:       p.uptimeMs,
-		PeerLabel:      p.peerLabel,
-		PeerEpoch:      p.peerEpoch,
-		PeerInstanceID: p.peerInstanceID,
-		PeerSending:    p.peerSending,
-		Down:           !p.reachable && p.consecFailures >= p.failureThreshold,
-		PolledAt:       p.polledAt,
-		SeenPolledAt:   p.seenPolledAt,
+		Reachable:        p.reachable,
+		LastSeen:         p.lastSeen,
+		ConsecFailures:   p.consecFailures,
+		ProgramSource:    p.programSource,
+		LastCommandSeq:   p.lastCommandSeq,
+		UptimeMs:         p.uptimeMs,
+		PeerLabel:        p.peerLabel,
+		PeerEpoch:        p.peerEpoch,
+		PeerInstanceID:   p.peerInstanceID,
+		PeerSending:      p.peerSending,
+		PeerDestinations: p.peerDests,
+		PeerArmed:        p.peerArmed,
+		Down:             !p.reachable && p.consecFailures >= p.failureThreshold,
+		PolledAt:         p.polledAt,
+		SeenPolledAt:     p.seenPolledAt,
 	}
 }
 
@@ -430,32 +444,38 @@ func (p *HealthPoller) loop(ctx context.Context) {
 
 func (p *HealthPoller) poll(ctx context.Context) {
 	sent := time.Now()
-	url := p.peerURL + "/api/peer/health"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	health, err := p.Fetch(ctx)
 	if err != nil {
-		p.recordFailureAt(sent, fmt.Sprintf("create request: %v", err))
+		p.recordFailureAt(sent, err.Error())
 		return
 	}
+	p.recordSuccessAt(sent, health)
+}
 
+// Fetch reads the peer's health once, outside the polling loop and without
+// recording the result: a read made right before acting on the peer's
+// state, which a poll may report seconds late.
+func (p *HealthPoller) Fetch(ctx context.Context) (HealthResponse, error) {
+	var health HealthResponse
+	if p == nil || p.peerURL == "" {
+		return health, fmt.Errorf("no peer configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.peerURL+"/api/peer/health", nil)
+	if err != nil {
+		return health, fmt.Errorf("create request: %v", err)
+	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.recordFailureAt(sent, fmt.Sprintf("request failed: %v", err))
-		return
+		return health, fmt.Errorf("request failed: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-
 	if resp.StatusCode != http.StatusOK {
-		p.recordFailureAt(sent, fmt.Sprintf("status %d", resp.StatusCode))
-		return
+		return health, fmt.Errorf("status %d", resp.StatusCode)
 	}
-
-	var health HealthResponse
 	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
-		p.recordFailureAt(sent, fmt.Sprintf("decode: %v", err))
-		return
+		return health, fmt.Errorf("decode: %v", err)
 	}
-
-	p.recordSuccessAt(sent, health)
+	return health, nil
 }
 
 func (p *HealthPoller) recordSuccess(health HealthResponse) {
@@ -479,6 +499,8 @@ func (p *HealthPoller) recordSuccessAt(sent time.Time, health HealthResponse) {
 	p.peerEpoch = health.Epoch
 	p.peerInstanceID = health.InstanceID
 	p.peerSending = health.Sending
+	p.peerDests = health.Destinations
+	p.peerArmed = health.Armed
 
 	if wasUnreachable {
 		slog.Info("peer engine recovered",

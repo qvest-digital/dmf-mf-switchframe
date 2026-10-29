@@ -219,7 +219,11 @@ func TestPeerHealth_SeqSurvivesRestart(t *testing.T) {
 func TestHandlePeerHealth_ListsSendingDestinations(t *testing.T) {
 	programRelay := distribution.NewRelay()
 	sw := switcher.NewTestSwitcher(t, programRelay)
-	mock := &mockOutputManager{sendingIDs: []string{"0a1b2c3d"}}
+	mock := &mockOutputManager{
+		sendingIDs: []string{"0a1b2c3d"},
+		pairIDs:    []string{"0a1b2c3d", "4e5f6a7b"},
+		armedIDs:   []string{"0a1b2c3d"},
+	}
 	api := NewAPI(sw, WithOutputManager(mock))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/peer/health", nil)
@@ -230,4 +234,6 @@ func TestHandlePeerHealth_ListsSendingDestinations(t *testing.T) {
 	var resp peer.HealthResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, []string{"0a1b2c3d"}, resp.Sending)
+	assert.Equal(t, []string{"0a1b2c3d", "4e5f6a7b"}, resp.Destinations)
+	assert.Equal(t, []string{"0a1b2c3d"}, resp.Armed)
 }
