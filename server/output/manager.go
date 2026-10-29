@@ -102,6 +102,10 @@ type Manager struct {
 	lipSyncSource   atomic.Pointer[lipSyncProvider]
 	smoothedLipSync atomic.Int64
 	lipSyncLatched  atomic.Bool
+	// lipSyncLastDTS is the DTS of the last video frame the offset was
+	// updated on, valid once lipSyncHaveDTS is set.
+	lipSyncLastDTS atomic.Int64
+	lipSyncHaveDTS atomic.Bool
 
 	// Video resolution for SDT service_type in TS output.
 	videoWidth  int
@@ -1676,7 +1680,7 @@ func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 	fas := m.frameAdapters.Load()
 	hasFrameAdapters := fas != nil && len(*fas) > 0
 	if muxer != nil || hasFrameAdapters {
-		m.updateLipSync(muxer)
+		m.updateLipSync(muxer, frame.DTS)
 	}
 	// TS-based outputs (SRT, recording).
 	if muxer != nil {
@@ -1719,13 +1723,17 @@ func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 	}
 }
 
-// updateLipSync refreshes the smoothed lip-sync offset from its source and
-// hands it to muxer when there is one. Runs on the encode goroutine.
-func (m *Manager) updateLipSync(muxer *TSMuxer) {
+// updateLipSync refreshes the smoothed lip-sync offset from its source on
+// the video frame with dts and hands it to muxer when there is one. Runs on
+// the encode goroutine.
+func (m *Manager) updateLipSync(muxer *TSMuxer, dts int64) {
 	p := m.lipSyncSource.Load()
 	if p == nil || m.lipSyncLatched.Load() {
 		return
 	}
+	prevDTS, havePrev := m.lipSyncLastDTS.Load(), m.lipSyncHaveDTS.Load()
+	m.lipSyncLastDTS.Store(dts)
+	m.lipSyncHaveDTS.Store(true)
 	raw := p.fn()
 	cur := m.smoothedLipSync.Load()
 	next := cur
@@ -1737,6 +1745,17 @@ func (m *Manager) updateLipSync(muxer *TSMuxer) {
 		// short-circuits this function on the next frame. A plain Store
 		// is safe.
 		next = (cur*15 + raw) / 16
+	}
+	if next < cur {
+		// The offset delays video, so a fall of a frame interval or more
+		// in one frame moves the shifted video timestamps backwards, which
+		// an RTMP output cannot write. Falling by at most half the frame
+		// interval plays video at most twice as fast while it comes down.
+		var maxFall int64
+		if havePrev && dts > prevDTS {
+			maxFall = (dts - prevDTS) / 2
+		}
+		next = max(next, cur-maxFall)
 	}
 	if next == cur {
 		return

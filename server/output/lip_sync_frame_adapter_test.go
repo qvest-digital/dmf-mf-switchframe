@@ -109,3 +109,28 @@ func TestManager_LipSyncFollowsSourceWithoutTSMuxer(t *testing.T) {
 	require.NoError(t, m.StartRecording(RecorderConfig{Dir: t.TempDir()}))
 	require.Equal(t, int64(4500), m.directMuxer.Load().LipSyncOffset90k())
 }
+
+// A source offset that falls by more than 16 frame intervals made one EMA
+// step larger than a frame interval, and the shifted video DTS stepped
+// backwards, which an RTMP output cannot write. The shifted timestamps keep
+// rising by at least half a frame interval while the offset comes down.
+func TestManager_LipSyncFallKeepsShiftedVideoRising(t *testing.T) {
+	m := NewManager()
+	defer func() { _ = m.Close() }()
+	raw := int64(36000) // 400 ms
+	m.SetLipSyncSource(func() int64 { return raw })
+	fa := withFrameAdapter(m)
+
+	const step = int64(1800) // 50 fps
+	for i := int64(0); i < 200; i++ {
+		if i == 20 {
+			raw = 0
+		}
+		m.DirectWriteVideo(makeKeyframe(900000 + i*step))
+	}
+	require.Len(t, fa.video, 200)
+	for i := 1; i < len(fa.video); i++ {
+		require.GreaterOrEqual(t, fa.video[i]-fa.video[i-1], step/2, "frame %d", i)
+	}
+	require.Less(t, m.LipSyncOffset(), int64(4500), "the offset still comes down")
+}
