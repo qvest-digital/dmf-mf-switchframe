@@ -236,7 +236,9 @@ func (m *Manager) Load(playerID int, clipID string) error {
 // keeps into the next pass holds the previous pass's references and puts
 // out wrong pictures for them. Starting at the keyframe gives every pass
 // the same pictures, and the audio, spread over the pictures, stays with
-// them. A clip with no keyframe is returned as it is.
+// them. A clip with no keyframe, or one that starts on a keyframe
+// without leading pictures, is returned as it is, with any audio
+// before its first picture.
 func fromFirstKeyframe(frames []BufferedFrame, audio []BufferedAudioFrame) ([]BufferedFrame, []BufferedAudioFrame) {
 	first := slices.IndexFunc(frames, func(f BufferedFrame) bool { return f.isKeyframe })
 	if first < 0 {
@@ -255,6 +257,9 @@ func fromFirstKeyframe(frames []BufferedFrame, audio []BufferedAudioFrame) ([]Bu
 			continue
 		}
 		kept = append(kept, f)
+	}
+	if len(kept) == len(frames) {
+		return frames, audio
 	}
 	audio = audio[sort.Search(len(audio), func(j int) bool {
 		return audio[j].pts >= key

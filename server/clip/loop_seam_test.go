@@ -430,6 +430,45 @@ func TestManagerLoopCutBeforeKeyframeIntegration(t *testing.T) {
 	}
 }
 
+// A clip that starts on a keyframe without leading pictures plays as it
+// did before frames were trimmed: AAC from FFmpeg starts a frame before
+// the first picture, and that frame stays.
+func TestFromFirstKeyframeKeepsKeyframeStart(t *testing.T) {
+	// IDR, then P and two B frames in decode order, all showing after it.
+	frames := []BufferedFrame{
+		{pts: 2 * 1800, isKeyframe: true},
+		{pts: 5 * 1800},
+		{pts: 3 * 1800},
+		{pts: 4 * 1800},
+	}
+	audio := []BufferedAudioFrame{{pts: 1800}, {pts: 2 * 1800}, {pts: 3 * 1800}}
+	gotFrames, gotAudio := fromFirstKeyframe(frames, audio)
+	assert.Equal(t, frames, gotFrames)
+	assert.Equal(t, audio, gotAudio)
+}
+
+func TestFromFirstKeyframeKeepsKeyframeStartIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	for name, args := range map[string][]string{
+		"no B-frames": {"-g", "50", "-bf", "0"},
+		"B-frames":    {"-g", "50", "-bf", "2"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "clean.ts")
+			writeCutTS(t, path, args)
+			frames, audio, err := DemuxFile(path)
+			require.NoError(t, err)
+			require.True(t, frames[0].isKeyframe)
+			require.Less(t, audio[0].pts, frames[0].pts, "the clip has to have audio before its first picture")
+			gotFrames, gotAudio := fromFirstKeyframe(frames, audio)
+			assert.Len(t, gotFrames, len(frames))
+			assert.Len(t, gotAudio, len(audio))
+		})
+	}
+}
+
 // cutClips are 4 s of 320x240 50 fps H.264 with AAC, cut by dropping the
 // first video packets so they start before a keyframe. shown is the number
 // of pictures from the keyframe on.
