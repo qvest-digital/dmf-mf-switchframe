@@ -354,6 +354,34 @@ func TestDestinationPair_SwitchOverLegsLandApart(t *testing.T) {
 	requireState(t, b, "standby", "a")
 }
 
+// A switch-over whose second leg the UI retries lands up to 6.5 s after
+// the first (a 3 s request timeout, then a retry 500 ms later with another
+// 3 s). A poll the new sender takes in between still shows the old sender:
+// yielding to it left both engines on standby, each naming the other, and
+// nothing sent until the grace period ran out.
+func TestDestinationPair_SwitchOverLegLandsLate(t *testing.T) {
+	a, b := pairEngine(t, "a"), pairEngine(t, "b")
+	addBoth(t, a, b, true)
+
+	t0 := time.Now()
+	require.NoError(t, b.ReassignDestinationEngine(pairID, "b"))
+	between := viewOf(a, false) // A's leg is still being retried
+	between.SeenPolledAt, between.Skew = t0.Add(4500*time.Millisecond), PairChangeSkew
+	b.ReconcileDestinations(between)
+
+	require.NoError(t, a.ReassignDestinationEngine(pairID, "b")) // lands at t0+5s
+	vb := viewOf(b, true)
+	vb.Skew = PairChangeSkew
+	a.ReconcileDestinations(vb)
+	after := viewOf(a, false)
+	after.SeenPolledAt, after.Skew = t0.Add(7500*time.Millisecond), PairChangeSkew
+	b.ReconcileDestinations(after)
+
+	requireState(t, b, string(StateActive), "b")
+	requireState(t, a, "standby", "b")
+	require.Equal(t, []string{pairID}, b.SendingDestinationIDs())
+}
+
 // A takeover is this engine's own change and has no second leg: once the
 // leader is back and sends too, the follower stands by on the first poll
 // that shows it, not only once the skew of an operator's change has passed.

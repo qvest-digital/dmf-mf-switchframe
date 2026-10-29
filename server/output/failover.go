@@ -37,11 +37,21 @@ type PeerView struct {
 	// peer that owns it before this engine takes it over.
 	Grace time.Duration
 	// Skew is how far apart the two legs of an operator's change sent to
-	// both engines may land. A poll sent within it after this engine's
-	// change may show the peer before its own leg: it is not read as the
-	// peer keeping a destination sending, or having stopped it.
+	// both engines may land, PairChangeSkew outside tests. A poll sent
+	// within it after an operator's change here may show the peer before
+	// its own leg: it is not read as the peer keeping a destination
+	// sending, or having stopped it.
 	Skew time.Duration
 }
+
+// PairChangeSkew is how far apart the UI's two legs of an operator's
+// change may land. fanOutMutation in ui/src/lib/api/switch-api.ts waits
+// for both legs, each aborted after ENGINE_FETCH_TIMEOUT_MS (3 s), and
+// retryFailedEngines sends a failed leg again 500 ms later with another
+// 3 s: a retried leg lands up to 6.5 s after the first. A leg landing
+// later than PairChangeSkew, such as an aborted request the server still
+// handles afterwards, is not covered.
+const PairChangeSkew = 7 * time.Second
 
 func (v PeerView) sends(id string) bool {
 	return v.Known && !v.Down && slices.Contains(v.Sending, id)
