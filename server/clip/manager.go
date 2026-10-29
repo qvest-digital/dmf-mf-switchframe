@@ -231,9 +231,9 @@ func (m *Manager) Load(playerID int, clipID string) error {
 // pictures it does not carry. A fresh decoder fails them, so the first
 // pass spends their slots without a picture, and the decoder a looping
 // player keeps into the next pass holds the previous pass's references
-// and puts out wrong pictures for them. Starting at the keyframe gives every pass the same pictures,
-// and the audio, spread over the pictures, stays with them. A clip with no
-// keyframe is returned as it is.
+// and puts out wrong pictures for them. Starting at the keyframe gives
+// every pass the same pictures, and the audio, spread over the pictures,
+// stays with them. A clip with no keyframe is returned as it is.
 func fromFirstKeyframe(frames []BufferedFrame, audio []BufferedAudioFrame) ([]BufferedFrame, []BufferedAudioFrame) {
 	for i, f := range frames {
 		if !f.isKeyframe {
