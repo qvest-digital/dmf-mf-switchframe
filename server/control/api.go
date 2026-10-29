@@ -138,6 +138,7 @@ type HTMLGfxManager interface {
 	AllocateBrowser(layerID int) (int, error)
 	FreeBrowser(browserID int)
 	BrowserForLayer(layerID int) int
+	CheckURL(url string) error
 	LoadURL(browserID int, url string) error
 	Play(browserID int) error
 	Stop(browserID int) error

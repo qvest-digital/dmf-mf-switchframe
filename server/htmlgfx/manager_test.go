@@ -3,6 +3,7 @@ package htmlgfx
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -500,7 +501,7 @@ func TestManagerLoadAndPlay(t *testing.T) {
 	mock.waitForCommands(1, 2*time.Second)
 
 	// Load URL.
-	if err := mgr.LoadURL(id, "file:///test.html"); err != nil {
+	if err := mgr.LoadURL(id, "https://templates.test/test.html"); err != nil {
 		t.Fatalf("LoadURL: %v", err)
 	}
 
@@ -518,8 +519,8 @@ func TestManagerLoadAndPlay(t *testing.T) {
 	if cmds[1].Cmd != "load" {
 		t.Errorf("command 1: got %q, want %q", cmds[1].Cmd, "load")
 	}
-	if cmds[1].URL != "file:///test.html" {
-		t.Errorf("command 1 url: got %q, want %q", cmds[1].URL, "file:///test.html")
+	if cmds[1].URL != "https://templates.test/test.html" {
+		t.Errorf("command 1 url: got %q, want %q", cmds[1].URL, "https://templates.test/test.html")
 	}
 	if cmds[1].ID == nil || *cmds[1].ID != id {
 		t.Errorf("command 1 id: got %v, want %d", cmds[1].ID, id)
@@ -534,8 +535,8 @@ func TestManagerLoadAndPlay(t *testing.T) {
 
 	// Check state.
 	states := mgr.BrowserStates()
-	if states[id].URL != "file:///test.html" {
-		t.Errorf("browser URL: got %q, want %q", states[id].URL, "file:///test.html")
+	if states[id].URL != "https://templates.test/test.html" {
+		t.Errorf("browser URL: got %q, want %q", states[id].URL, "https://templates.test/test.html")
 	}
 	if states[id].Status != "playing" {
 		t.Errorf("browser status: got %q, want %q", states[id].Status, "playing")
@@ -802,6 +803,31 @@ func TestManagerUpdateCommand(t *testing.T) {
 	states := mgr.BrowserStates()
 	if states[id].LastData != `{"name":"Alice"}` {
 		t.Errorf("LastData: got %q, want %q", states[id].LastData, `{"name":"Alice"}`)
+	}
+}
+
+// LoadURL is the one way a URL reaches the sidecar, so it refuses what
+// CheckURL refuses even when a caller skipped the check.
+func TestManagerLoadURLRefusesDisallowedURL(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mock.close()
+	defer func() { _ = mgr.Close() }()
+
+	id, err := mgr.AllocateBrowser(0)
+	if err != nil {
+		t.Fatalf("AllocateBrowser: %v", err)
+	}
+	mock.waitForCommands(1, 2*time.Second)
+
+	if err := mgr.LoadURL(id, "file:///etc/passwd"); !errors.Is(err, ErrURLNotAllowed) {
+		t.Fatalf("LoadURL: got %v, want ErrURLNotAllowed", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if cmds := mock.getCommands(); len(cmds) != 1 {
+		t.Errorf("expected only the create command, got %+v", cmds)
+	}
+	if st := mgr.BrowserStates()[id]; st.URL != "" || st.Status != "allocated" {
+		t.Errorf("state after refused load: URL=%q status=%q", st.URL, st.Status)
 	}
 }
 

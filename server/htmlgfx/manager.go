@@ -417,8 +417,13 @@ func (m *Manager) FreeBrowser(browserID int) {
 	m.notifyStateChange()
 }
 
-// LoadURL sets the URL on a browser and sends a "load" command.
+// LoadURL sets the URL on a browser and sends a "load" command. A URL
+// CheckURL refuses is not sent.
 func (m *Manager) LoadURL(browserID int, url string) error {
+	if err := m.CheckURL(url); err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

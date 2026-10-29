@@ -88,7 +88,7 @@ func TestIntegration_FullLifecycle(t *testing.T) {
 	mock.waitForCommands(1, 2*time.Second) // create
 
 	// 3. Load URL -> status becomes "loading".
-	if err := mgr.LoadURL(id, "file:///lower-third.html"); err != nil {
+	if err := mgr.LoadURL(id, "https://templates.test/lower-third.html"); err != nil {
 		t.Fatalf("LoadURL: %v", err)
 	}
 	if s := mgr.BrowserStates()[id].Status; s != "loading" {
@@ -181,10 +181,10 @@ func TestIntegration_MultipleTemplates(t *testing.T) {
 	mock.waitForCommands(2, 2*time.Second) // two creates
 
 	// Load different URLs on each.
-	if err := mgr.LoadURL(id0, "file:///lower-third.html"); err != nil {
+	if err := mgr.LoadURL(id0, "https://templates.test/lower-third.html"); err != nil {
 		t.Fatalf("LoadURL(0): %v", err)
 	}
-	if err := mgr.LoadURL(id1, "file:///scorebug.html"); err != nil {
+	if err := mgr.LoadURL(id1, "https://templates.test/scorebug.html"); err != nil {
 		t.Fatalf("LoadURL(1): %v", err)
 	}
 	mock.waitForCommands(4, 2*time.Second) // 2 creates + 2 loads
@@ -251,7 +251,7 @@ func TestIntegration_CasparCGFormat(t *testing.T) {
 	}
 
 	// Load a CasparCG template URL.
-	if err := mgr.LoadURL(id, "file:///casparcg-template.html"); err != nil {
+	if err := mgr.LoadURL(id, "https://templates.test/casparcg-template.html"); err != nil {
 		t.Fatalf("LoadURL: %v", err)
 	}
 
@@ -312,7 +312,7 @@ func TestIntegration_OGrafFormat(t *testing.T) {
 		t.Fatalf("AllocateBrowser: %v", err)
 	}
 
-	if err := mgr.LoadURL(id, "file:///ograf-template.html"); err != nil {
+	if err := mgr.LoadURL(id, "https://templates.test/ograf-template.html"); err != nil {
 		t.Fatalf("LoadURL: %v", err)
 	}
 
@@ -363,7 +363,7 @@ func TestIntegration_LoadError(t *testing.T) {
 		t.Fatalf("AllocateBrowser: %v", err)
 	}
 
-	if err := mgr.LoadURL(id, "file:///nonexistent.html"); err != nil {
+	if err := mgr.LoadURL(id, "https://templates.test/nonexistent.html"); err != nil {
 		t.Fatalf("LoadURL: %v", err)
 	}
 
@@ -502,7 +502,7 @@ func TestIntegration_StateCallbacks(t *testing.T) {
 	mock.waitForCommands(1, 2*time.Second)
 
 	// 2. LoadURL fires state change.
-	if err := mgr.LoadURL(id, "file:///test.html"); err != nil {
+	if err := mgr.LoadURL(id, "https://templates.test/test.html"); err != nil {
 		t.Fatalf("LoadURL: %v", err)
 	}
 	mock.waitForCommands(2, 2*time.Second)
@@ -759,7 +759,7 @@ func TestIntegration_MultipleFormatDetections(t *testing.T) {
 	}
 
 	// Load first URL.
-	if err := mgr.LoadURL(id, "file:///first.html"); err != nil {
+	if err := mgr.LoadURL(id, "https://templates.test/first.html"); err != nil {
 		t.Fatalf("LoadURL: %v", err)
 	}
 
@@ -777,7 +777,7 @@ func TestIntegration_MultipleFormatDetections(t *testing.T) {
 	}
 
 	// Load a different URL (simulating template switch).
-	if err := mgr.LoadURL(id, "file:///second.html"); err != nil {
+	if err := mgr.LoadURL(id, "https://templates.test/second.html"); err != nil {
 		t.Fatalf("LoadURL(2): %v", err)
 	}
 
