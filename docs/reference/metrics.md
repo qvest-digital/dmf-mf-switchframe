@@ -55,6 +55,7 @@ Registered per-instance via `NewMetrics` and attached to the switcher with `Swit
 | `switchframe_transitions_completed_total` | counter | `type` (mix, dip, ftb, wipe, stinger, dve-*) | Every completed transition, labeled by the transition type string the engine used. |
 | `switchframe_idr_gate_events_total` | counter | — | Every time an SRT caller output, after a reconnect, held its output until a keyframe (or the 2 s gate timeout). |
 | `switchframe_idr_gate_duration_seconds` | histogram | — | How long that output was held. Buckets: 5 ms, 10 ms, 25 ms, 50 ms, 100 ms, 250 ms, 500 ms, 1 s. |
+| `switchframe_program_frame_interval_seconds` | histogram | - | Time between consecutive program frames sent. At a steady program it sits at one frame period; the buckets above two periods count stalls. Buckets: 12.5 ms, 17 ms, 21 ms, 25 ms, 34 ms, 42 ms, 50 ms, 67 ms, 84 ms, 100 ms, 200 ms, 500 ms, 1 s, 2 s. |
 
 ## Mixer metrics
 
@@ -122,6 +123,17 @@ Populated when the standby engine applies a state snapshot from the leader.
 | `switchframe_snapshot_apply_total` | counter | `result` (success, partial, error, stale) | Each snapshot apply attempt, labeled by outcome. |
 | `switchframe_snapshot_apply_duration_seconds` | histogram | — | Duration of apply. Buckets: 1 ms, 5 ms, 10 ms, 25 ms, 50 ms, 100 ms, 250 ms, 500 ms, 1 s. |
 | `switchframe_snapshot_size_bytes` | histogram | — | Size of applied snapshots. Buckets: 1 KiB, 4 KiB, 16 KiB, 64 KiB, 256 KiB, 1 MiB. |
+
+## Clock sync and leadership metrics
+
+Registered with `NewMetrics` in [`metrics.go`](../../server/metrics/metrics.go).
+
+| Metric | Type | Labels | Fires on |
+|---|---|---|---|
+| `switchframe_clock_sync_synchronized` | gauge | - | 1 while the local clock is synchronized according to the active detector, 0 otherwise. |
+| `switchframe_clock_sync_source` | gauge | `source` (systemclock-initializing, systemclock-monitored, ptp) | 1 on the active clock-sync detection source, 0 on the others. |
+| `switchframe_clock_sync_window_drift_ns` | gauge | - | Signed wall-clock against monotonic drift accumulated over the sampler window, in nanoseconds; negative when the wall clock ran slower. An integral over the window, not an instantaneous offset. |
+| `switchframe_force_leader_total` | counter | `operator`, `reason_class` (partition, recovery, maintenance, test, drill, unspecified, other) | Each operator-triggered force-leader epoch bump. `operator` is the attributed caller, or `control-plane` for a direct call; free-text reasons go to the log, not to a label. |
 
 ## Scrape-time collectors
 
