@@ -4,7 +4,6 @@
 		graphicsAddLayer, graphicsRemoveLayer,
 		graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff,
 		graphicsAnimate, graphicsAnimateStop,
-		graphicsSetZOrder,
 		graphicsFlyIn, graphicsFlyOut, graphicsFlyOn,
 		graphicsImageUpload, graphicsImageDelete, graphicsSetRect,
 		graphicsTickerStart, graphicsTickerStop, graphicsTickerUpdateText,
@@ -13,8 +12,15 @@
 		graphicsUnloadHTML5, graphicsHTML5Custom,
 		graphicsSequenceUpload, graphicsSequenceDelete, graphicsSequenceSetSpeed,
 		setDSKFadeDuration,
+		graphicsSetLayerSettings, graphicsSetLayerOrder,
+		graphicsExportLayers, graphicsImportLayers,
 		apiCall,
 	} from '$lib/api/switch-api';
+	import { onDestroy } from 'svelte';
+	import {
+		type SourceMode, type LayerConfig, type AnimConfig, type FlyConfig, type TickerConfig,
+		DEFAULT_ANIM, DEFAULT_FLY, DEFAULT_TICKER, storedConfig, parseLayerExport,
+	} from '$lib/graphics/layer-config';
 	import { GraphicsPublisher } from '$lib/graphics/publisher';
 	import { notify } from '$lib/state/notifications.svelte';
 	import { builtinTemplates } from '$lib/graphics/templates';
@@ -28,21 +34,17 @@
 	}
 	let { state: crState, externalSelectedLayerId = null }: Props = $props();
 
-	type SourceMode = 'template' | 'image' | 'ticker' | 'html5' | 'sequence';
-
-	// ── Per-layer state maps ──
-	let layerModes = $state<Record<number, SourceMode>>({});
-	let layerTemplates = $state<Record<number, string>>({});
-	let layerFields = $state<Record<number, Record<string, string>>>({});
-	let layerAnimConfigs = $state<Record<number, {
-		mode: string;
-		minAlpha: number;
-		maxAlpha: number;
-		speedHz: number;
-		toAlpha: number;
-		durationMs: number;
-	}>>({});
-	let layerFlyConfigs = $state<Record<number, { direction: string; durationMs: number }>>({});
+	// Per-layer settings
+	// The engine stores each layer's config and broadcasts it, so it outlives
+	// this panel and is shared by every session. pendingConfigs holds edits
+	// until the broadcast state carries them, so typing never flickers back.
+	let pendingConfigs = $state<Record<number, LayerConfig>>({});
+	const saveTimers = new Map<number, ReturnType<typeof setTimeout>>();
+	const SAVE_DELAY_MS = 300;
+	const SAVE_RETRY_MS = 3000;
+	// Layers whose last save failed: flagged in the header and retried.
+	let unsavedLayers = $state<Record<number, boolean>>({});
+	let destroyed = false;
 
 	// ── Selection state ──
 	let selectedLayerId = $state<number | null>(null);
@@ -60,7 +62,7 @@
 	const selectedLayer = $derived(layers.find((l) => l.id === selectedLayerId) ?? null);
 
 	// Auto-select first layer if none selected, or fall back when selected layer is removed.
-	// We check layerTemplates to avoid resetting selection for layers just added via
+	// We check pendingConfigs to avoid resetting selection for layers just added via
 	// handleAddLayer whose broadcast hasn't arrived yet.
 	$effect(() => {
 		if (layers.length === 0) {
@@ -71,7 +73,7 @@
 			selectedLayerId = layers[0].id;
 			return;
 		}
-		if (!layers.some(l => l.id === selectedLayerId) && !(selectedLayerId in layerTemplates)) {
+		if (!layers.some(l => l.id === selectedLayerId) && !(selectedLayerId in pendingConfigs)) {
 			selectedLayerId = layers[0].id;
 		}
 	});
@@ -94,23 +96,79 @@
 		return values;
 	}
 
+	function layerConfig(id: number): LayerConfig {
+		return pendingConfigs[id] ?? storedConfig(layers.find(l => l.id === id));
+	}
+
+	function saveConfig(id: number) {
+		saveTimers.delete(id);
+		const cfg = pendingConfigs[id];
+		if (!cfg) return;
+		graphicsSetLayerSettings(id, { config: cfg as Record<string, unknown> }).then(() => {
+			if (unsavedLayers[id]) {
+				const { [id]: _, ...rest } = unsavedLayers;
+				unsavedLayers = rest;
+			}
+		}).catch((err) => {
+			if (!unsavedLayers[id]) {
+				notify('error', `Layer settings not saved: ${(err as Error)?.message ?? 'request failed'}`);
+				unsavedLayers = { ...unsavedLayers, [id]: true };
+			}
+			// Keep the edit and retry, unless a newer edit already queued a save.
+			if (!destroyed && !saveTimers.has(id) && pendingConfigs[id]) {
+				saveTimers.set(id, setTimeout(() => saveConfig(id), SAVE_RETRY_MS));
+			}
+		});
+	}
+
+	function updateConfig(id: number, patch: LayerConfig) {
+		pendingConfigs = { ...pendingConfigs, [id]: { ...layerConfig(id), ...patch } };
+		const t = saveTimers.get(id);
+		if (t) clearTimeout(t);
+		saveTimers.set(id, setTimeout(() => saveConfig(id), SAVE_DELAY_MS));
+	}
+
+	// Drop an edit once the engine's broadcast carries it.
+	$effect(() => {
+		for (const key of Object.keys(pendingConfigs)) {
+			const id = Number(key);
+			if (saveTimers.has(id)) continue;
+			const layer = layers.find(l => l.id === id);
+			if (layer && JSON.stringify(storedConfig(layer)) === JSON.stringify(pendingConfigs[id])) {
+				const { [id]: _, ...rest } = pendingConfigs;
+				pendingConfigs = rest;
+			}
+		}
+	});
+
+	// Leaving the tab must not lose the last keystrokes.
+	onDestroy(() => {
+		destroyed = true;
+		for (const [id, t] of saveTimers) {
+			clearTimeout(t);
+			saveConfig(id);
+		}
+	});
+
 	function getLayerTemplate(id: number): string {
-		if (id in layerTemplates) return layerTemplates[id];
+		const tpl = layerConfig(id).template;
+		if (tpl && tpl in builtinTemplates) return tpl;
 		const layer = layers.find(l => l.id === id);
 		if (layer?.template && layer.template in builtinTemplates) return layer.template;
 		return 'lower-third';
 	}
 
 	function getLayerFields(id: number): Record<string, string> {
-		return layerFields[id] ?? getDefaultValues(getLayerTemplate(id));
+		return layerConfig(id).fields ?? getDefaultValues(getLayerTemplate(id));
 	}
 
-	function getLayerAnimConfig(id: number) {
-		return layerAnimConfigs[id] ?? { mode: 'pulse', minAlpha: 0.3, maxAlpha: 1.0, speedHz: 1.0, toAlpha: 0.5, durationMs: 500 };
+	function getLayerAnimConfig(id: number): AnimConfig {
+		return { ...DEFAULT_ANIM, ...layerConfig(id).anim };
 	}
 
 	function getLayerMode(id: number): SourceMode {
-		if (id in layerModes) return layerModes[id];
+		const mode = layerConfig(id).mode;
+		if (mode) return mode;
 		const layer = layers.find(l => l.id === id);
 		if (layer?.sequenceLoaded || layer?.sequenceProcessing) return 'sequence';
 		if (layer?.html5Url) return 'html5';
@@ -118,21 +176,35 @@
 		return 'template';
 	}
 
-	function getLayerFlyConfig(id: number) {
-		return layerFlyConfigs[id] ?? { direction: 'left', durationMs: 500 };
+	function getLayerFlyConfig(id: number): FlyConfig {
+		return { ...DEFAULT_FLY, ...layerConfig(id).fly };
 	}
+
+	function getLayerTickerConfig(id: number): TickerConfig {
+		return { ...DEFAULT_TICKER, ...layerConfig(id).ticker };
+	}
+
+	function layerTypeLabel(id: number): string {
+		const layer = layers.find(l => l.id === id);
+		if (layer?.html5Status) return 'HTML5';
+		switch (getLayerMode(id)) {
+			case 'image': return 'Image';
+			case 'ticker': return 'Ticker';
+			case 'html5': return 'HTML5';
+			case 'sequence': return 'Sequence';
+			default: return builtinTemplates[getLayerTemplate(id)]?.name ?? 'Template';
+		}
+	}
+	const layerTypeLabels = $derived(Object.fromEntries(layers.map(l => [l.id, layerTypeLabel(l.id)])));
 
 	let prevLayerIdSet: Set<number> | null = null;
 	$effect(() => {
 		const currentIds = new Set(layers.map(l => l.id));
 		if (prevLayerIdSet) {
 			for (const id of prevLayerIdSet) {
-				if (!currentIds.has(id)) {
-					delete layerModes[id];
-					delete layerTemplates[id];
-					delete layerFields[id];
-					delete layerAnimConfigs[id];
-					delete layerFlyConfigs[id];
+				if (!currentIds.has(id) && id in pendingConfigs) {
+					const { [id]: _, ...rest } = pendingConfigs;
+					pendingConfigs = rest;
 				}
 			}
 		}
@@ -143,9 +215,8 @@
 	async function handleAddLayer() {
 		try {
 			const result = await graphicsAddLayer();
-			layerModes[result.id] = 'template';
-			layerTemplates[result.id] = 'lower-third';
-			layerFields[result.id] = getDefaultValues('lower-third');
+			// Keeps the selection on the new layer until its broadcast arrives.
+			pendingConfigs = { ...pendingConfigs, [result.id]: {} };
 			selectedLayerId = result.id;
 		} catch {
 			notify('error', 'Failed to add graphics layer');
@@ -154,11 +225,9 @@
 
 	function handleRemoveLayer(id: number) {
 		apiCall(graphicsRemoveLayer(id), 'Remove layer failed');
-		delete layerModes[id];
-		delete layerTemplates[id];
-		delete layerFields[id];
-		delete layerAnimConfigs[id];
-		delete layerFlyConfigs[id];
+		const t = saveTimers.get(id);
+		if (t) clearTimeout(t);
+		saveTimers.delete(id);
 	}
 
 	async function handleCutOn(id: number) {
@@ -253,45 +322,87 @@
 		apiCall(graphicsFlyOut(id, cfg.direction, cfg.durationMs), 'Fly out failed');
 	}
 
-	function handleZOrderChange(id: number, newZ: number) {
-		apiCall(graphicsSetZOrder(id, newZ), 'Z-order failed');
+	function handleReorder(bottomToTop: number[]) {
+		apiCall(graphicsSetLayerOrder(bottomToTop), 'Reorder failed');
+	}
+
+	function handleRename(id: number, name: string) {
+		apiCall(graphicsSetLayerSettings(id, { name }), 'Rename failed');
 	}
 
 	function handleModeChange(id: number, mode: SourceMode) {
-		layerModes = { ...layerModes, [id]: mode };
+		updateConfig(id, { mode });
 	}
 
 	function handleTemplateChange(id: number, tplId: string) {
-		layerTemplates[id] = tplId;
-		layerFields[id] = getDefaultValues(tplId);
+		updateConfig(id, { template: tplId, fields: getDefaultValues(tplId) });
 	}
 
 	function handleFieldChange(id: number, key: string, value: string) {
-		layerFields = {
-			...layerFields,
-			[id]: { ...getLayerFields(id), [key]: value },
-		};
+		updateConfig(id, { fields: { ...getLayerFields(id), [key]: value } });
 	}
 
 	function handleAnimConfigChange(id: number, key: string, value: string | number) {
-		layerAnimConfigs = {
-			...layerAnimConfigs,
-			[id]: { ...getLayerAnimConfig(id), [key]: value },
-		};
+		updateConfig(id, { anim: { ...getLayerAnimConfig(id), [key]: value } });
 	}
 
 	function handleFlyConfigChange(id: number, key: string, value: string | number) {
-		layerFlyConfigs = {
-			...layerFlyConfigs,
-			[id]: { ...getLayerFlyConfig(id), [key]: value },
+		updateConfig(id, { fly: { ...getLayerFlyConfig(id), [key]: value } });
+	}
+
+	function handleTickerConfigChange(id: number, key: keyof TickerConfig, value: string | number | boolean) {
+		updateConfig(id, { ticker: { ...getLayerTickerConfig(id), [key]: value } });
+	}
+
+	// Export / import
+	async function handleExport() {
+		try {
+			const doc = await graphicsExportLayers();
+			const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+			const a = document.createElement('a');
+			a.href = URL.createObjectURL(blob);
+			a.download = 'graphics-layers.json';
+			a.click();
+			URL.revokeObjectURL(a.href);
+		} catch {
+			notify('error', 'Graphics export failed');
+		}
+	}
+
+	function handleImport() {
+		const input = document.createElement('input');
+		input.type = 'file';
+		input.accept = '.json,application/json';
+		input.onchange = async () => {
+			const file = input.files?.[0];
+			if (!file) return;
+			await importLayersFrom(await file.text());
 		};
+		input.click();
+	}
+
+	async function importLayersFrom(text: string) {
+		let doc;
+		try {
+			doc = parseLayerExport(text);
+		} catch (err) {
+			notify('error', `Graphics import: ${(err as Error).message}`);
+			return;
+		}
+		try {
+			await graphicsImportLayers(doc);
+			pendingConfigs = {};
+			notify('info', `Imported ${doc.layers.length} graphics layer${doc.layers.length === 1 ? '' : 's'}`);
+		} catch (err) {
+			notify('error', `Graphics import refused: ${(err as Error).message}`);
+		}
 	}
 
 	// ── Image handlers ──
 	async function handleImageUpload(id: number, file: File) {
 		try {
 			await graphicsImageUpload(id, file);
-			layerModes = { ...layerModes, [id]: 'image' };
+			updateConfig(id, { mode: 'image' });
 			notify('info', `Image "${file.name}" uploaded`);
 		} catch {
 			notify('error', 'Image upload failed');
@@ -300,7 +411,7 @@
 
 	function handleImageDelete(id: number) {
 		apiCall(graphicsImageDelete(id), 'Image delete failed');
-		layerModes = { ...layerModes, [id]: 'template' };
+		updateConfig(id, { mode: 'template' });
 	}
 
 	function handleRectChange(id: number, rect: { x: number; y: number; width: number; height: number }) {
@@ -340,7 +451,7 @@
 	async function handleHTML5Load(id: number, url: string) {
 		try {
 			await graphicsLoadHTML5(id, url);
-			layerModes = { ...layerModes, [id]: 'html5' };
+			updateConfig(id, { mode: 'html5' });
 		} catch {
 			notify('error', 'HTML5 template load failed');
 		}
@@ -369,7 +480,7 @@
 	async function handleHTML5Unload(id: number) {
 		try {
 			await graphicsUnloadHTML5(id);
-			layerModes = { ...layerModes, [id]: 'template' };
+			updateConfig(id, { mode: 'template' });
 		} catch {
 			notify('error', 'HTML5 unload failed');
 		}
@@ -387,7 +498,7 @@
 	async function handleSequenceUpload(id: number, file: File, fps: number) {
 		try {
 			await graphicsSequenceUpload(id, file, fps);
-			layerModes = { ...layerModes, [id]: 'sequence' };
+			updateConfig(id, { mode: 'sequence' });
 			notify('info', 'Sequence uploading...');
 		} catch {
 			notify('error', 'Sequence upload failed');
@@ -451,6 +562,11 @@
 			/>
 			<span class="dsk-fade-unit">ms</span>
 		</label>
+		{#if Object.keys(unsavedLayers).length > 0}
+			<span class="gfx-unsaved" title="The engine did not accept the last change; retrying">NOT SAVED</span>
+		{/if}
+		<button class="gfx-io" onclick={handleExport} disabled={layers.length === 0} title="Export every layer to a JSON file">EXPORT</button>
+		<button class="gfx-io" onclick={handleImport} disabled={anyActive} title={anyActive ? 'Take every layer off air to import' : 'Replace every layer with a JSON export'}>IMPORT</button>
 		<span class="gfx-status" class:on-air={anyActive}>
 			{anyActive ? 'ON AIR' : 'OFF'}
 		</span>
@@ -460,11 +576,12 @@
 		<GraphicsLayerRail
 			{layers}
 			selectedId={selectedLayerId}
-			layerTemplateNames={layerTemplates}
+			typeLabels={layerTypeLabels}
 			onSelect={(id) => selectedLayerId = id}
 			onAdd={handleAddLayer}
 			onRemove={handleRemoveLayer}
-			onZOrderChange={handleZOrderChange}
+			onReorder={handleReorder}
+			onRename={handleRename}
 		/>
 
 		{#if selectedLayer}
@@ -476,6 +593,8 @@
 					fields={getLayerFields(selectedLayer.id)}
 					animConfig={getLayerAnimConfig(selectedLayer.id)}
 					flyConfig={getLayerFlyConfig(selectedLayer.id)}
+					tickerConfig={getLayerTickerConfig(selectedLayer.id)}
+					onTickerConfigChange={(key, val) => handleTickerConfigChange(selectedLayer.id, key, val)}
 					{publisher}
 					onModeChange={(mode) => handleModeChange(selectedLayer.id, mode)}
 					onTemplateChange={(tplId) => handleTemplateChange(selectedLayer.id, tplId)}
@@ -544,6 +663,29 @@
 		flex-shrink: 0;
 		background: var(--bg-base);
 	}
+
+	.gfx-unsaved {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		color: var(--accent-orange);
+	}
+
+	.gfx-io {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		color: var(--text-secondary);
+		background: transparent;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		padding: 1px 6px;
+		cursor: pointer;
+	}
+	.gfx-io:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+	.gfx-io:disabled { opacity: 0.35; cursor: default; }
 
 	.gfx-title {
 		display: flex;

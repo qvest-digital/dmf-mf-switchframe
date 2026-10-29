@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { PlaylistItem, PlayoutClip, SecondaryEvent, WipeConfig } from '$lib/api/types';
+	import type { PlaylistItem, PlayoutClip, SecondaryEvent, WipeConfig, GraphicsLayerState } from '$lib/api/types';
 	import SecondaryEventEditor from './SecondaryEventEditor.svelte';
 	import WipePatternBrowser from './WipePatternBrowser.svelte';
 
@@ -8,9 +8,10 @@
 		onChange: (updated: PlaylistItem) => void;
 		sources?: string[];
 		clips?: PlayoutClip[];
+		graphicsLayers?: GraphicsLayerState[];
 	}
 
-	let { item, onChange, sources = [], clips = [] }: Props = $props();
+	let { item, onChange, sources = [], clips = [], graphicsLayers = [] }: Props = $props();
 
 	const transitionTypes = ['cut', 'dissolve', 'dip_black', 'dip_white', 'wipe'] as const;
 
@@ -304,6 +305,7 @@
 			events={item.secondary_events ?? []}
 			onUpdate={handleSecondaryEventsUpdate}
 			itemDurationMs={item.duration_ms}
+			{graphicsLayers}
 		/>
 	</div>
 </div>

@@ -1223,6 +1223,32 @@ export function graphicsSetRect(layerId: number, rect: { x: number; y: number; w
 	});
 }
 
+/** Stores a layer's name and/or panel settings on the engine. */
+export function graphicsSetLayerSettings(
+	layerId: number,
+	settings: { name?: string; config?: Record<string, unknown> | null },
+): Promise<GraphicsState> {
+	return patch(`/api/graphics/${layerId}`, settings);
+}
+
+/** Restacks every layer; ids are listed bottom to top. */
+export function graphicsSetLayerOrder(ids: number[]): Promise<GraphicsState> {
+	return request('/api/graphics/order', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ ids }),
+	});
+}
+
+export function graphicsExportLayers(): Promise<unknown> {
+	return request('/api/graphics/export');
+}
+
+/** Replaces every layer with an export's, keeping their ids. */
+export function graphicsImportLayers(doc: unknown): Promise<GraphicsState> {
+	return post('/api/graphics/import', doc);
+}
+
 export function graphicsSetZOrder(layerId: number, zOrder: number): Promise<GraphicsState> {
 	return request(`/api/graphics/${layerId}/zorder`, {
 		method: 'PUT',
