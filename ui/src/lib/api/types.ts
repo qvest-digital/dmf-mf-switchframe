@@ -170,6 +170,7 @@ export interface DestinationConfig {
 	name?: string;
 	scte35Enabled?: boolean;
 	engine?: string; // "a", "b", or "" (default = local engine)
+	allowUntrustedCert?: boolean; // rtmps:// only: skip verifying the server certificate
 }
 
 export interface DestinationInfo {
@@ -179,6 +180,7 @@ export interface DestinationInfo {
 	address?: string;
 	port?: number;
 	url?: string;
+	allowUntrustedCert?: boolean;
 	state: string;
 	bytesWritten?: number;
 	droppedPackets?: number;
@@ -678,6 +680,7 @@ export interface SCTE35CueRequest {
 
 export interface SCTE35DescriptorRequest {
 	segmentationType: number;
+	segEventId?: number;
 	durationMs?: number;
 	upidType: number;
 	upid: string;

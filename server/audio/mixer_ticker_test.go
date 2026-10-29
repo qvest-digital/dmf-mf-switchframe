@@ -1,13 +1,17 @@
 package audio
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 // mockTickEncoder is a simple encoder for tick tests that captures calls.
@@ -698,4 +702,40 @@ func TestClockDrivenMixer_CutDoesNotSetCutFramesForTransitions(t *testing.T) {
 	assert.Equal(t, 0, m.cutFramesRemaining, "transitions should not set cutFramesRemaining")
 	assert.Equal(t, 0, m.cutTotalFrames, "transitions should not set cutTotalFrames")
 	m.mu.RUnlock()
+}
+
+type failingTickEncoder struct{}
+
+func (failingTickEncoder) Encode([]float32) ([]byte, error) { return nil, errors.New("encode failed") }
+func (failingTickEncoder) Close() error                     { return nil }
+
+// The mixer's Prometheus counters follow its own: a frame mixed and encoded
+// counts as mixed, one the encoder refuses as an encode error.
+func TestTick_PrometheusCounters(t *testing.T) {
+	pm := metrics.NewMetrics(prometheus.NewRegistry())
+
+	m, _ := newTickTestMixer(t)
+	m.SetMetrics(pm)
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+	require.NotNil(t, m.tick())
+	require.NotNil(t, m.tick())
+	require.Equal(t, float64(2), testutil.ToFloat64(pm.FramesMixedTotal))
+	require.Zero(t, testutil.ToFloat64(pm.EncodeErrorsTotal))
+
+	failing := NewMixer(MixerConfig{
+		SampleRate:  48000,
+		Channels:    2,
+		ClockDriven: true,
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return failingTickEncoder{}, nil
+		},
+	})
+	t.Cleanup(func() { _ = failing.Close() })
+	failing.SetMetrics(pm)
+	failing.AddChannel("cam1")
+	failing.SetActive("cam1", true)
+	require.Nil(t, failing.tick())
+	require.Equal(t, float64(1), testutil.ToFloat64(pm.EncodeErrorsTotal))
+	require.Equal(t, float64(2), testutil.ToFloat64(pm.FramesMixedTotal))
 }

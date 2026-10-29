@@ -556,11 +556,9 @@ describe('SCTE-35 API', () => {
 			autoReturn: true,
 		};
 		await scte35Cue(req);
-		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/cue', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(req),
-		});
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/cue', expect.objectContaining({ method: 'POST', headers: { 'Content-Type': 'application/json' } }));
+		const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(body).toEqual({ ...req, eventId: expect.any(Number) });
 	});
 
 	it('scte35Cue sends time_signal with descriptors', async () => {
@@ -577,11 +575,9 @@ describe('SCTE-35 API', () => {
 			descriptors: [{ segmentationType: 48, upidType: 9, upid: 'ABCD0001', durationMs: 60000 }],
 		};
 		await scte35Cue(req);
-		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/cue', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(req),
-		});
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/cue', expect.objectContaining({ method: 'POST', headers: { 'Content-Type': 'application/json' } }));
+		const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(body).toEqual({ ...req, descriptors: [{ ...req.descriptors![0], segEventId: expect.any(Number) }] });
 	});
 
 	it('scte35Return sends POST without eventId', async () => {

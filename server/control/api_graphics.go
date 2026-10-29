@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"io"
@@ -86,7 +87,23 @@ func parseLayerID(r *http.Request) (int, error) {
 // handleGraphicsAddLayer creates a new graphics layer.
 func (a *API) handleGraphicsAddLayer(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
-	id, err := a.compositor.AddLayer()
+	// An id names the layer on every engine of a pair: each numbers its
+	// layers itself, and the numbers part once one has missed a create.
+	var req struct {
+		ID *int `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	var id int
+	var err error
+	if req.ID != nil {
+		id = *req.ID
+		err = a.compositor.AddLayerWithID(id)
+	} else {
+		id, err = a.compositor.AddLayer()
+	}
 	if err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return

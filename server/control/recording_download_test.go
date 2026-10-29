@@ -116,3 +116,21 @@ func TestRecordingDownloadURLRequiresAuthAndRecordingDir(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusForbidden, rec.Code)
 }
+
+// A ticketed download is counted as such: it carries no bearer token, and a
+// refused one is not an anonymous client.
+func TestRecordingDownloadTicketCaller(t *testing.T) {
+	api, h, path := downloadTestServer(t)
+	h = RouteMetricsMiddleware(api.Mux())(h)
+	route := "GET " + recordingDownloadPath
+	ok := func() float64 { return requestsCount("GET", route, "200", CallerTicket) }
+	refused := func() float64 { return requestsCount("GET", route, "401", CallerTicket) }
+	okBefore, refusedBefore := ok(), refused()
+
+	url := issueDownloadURL(t, h, path)
+	for range 2 {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", url, nil))
+	}
+	require.Equal(t, okBefore+1, ok())
+	require.Equal(t, refusedBefore+1, refused(), "the second use of a ticket is refused")
+}

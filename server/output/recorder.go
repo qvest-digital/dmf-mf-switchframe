@@ -67,6 +67,19 @@ type FileRecorder struct {
 	// Copies into ArchiveDir in flight, and the files they copy.
 	archiving sync.WaitGroup
 	inArchive map[string]bool
+
+	// onWrite is told the bytes each write put in the file. Set before
+	// Start and never changed after.
+	onWrite func(n int)
+}
+
+// addBytesLocked accounts n bytes written to the current file.
+func (r *FileRecorder) addBytesLocked(n int) {
+	r.fileBytes += int64(n)
+	r.bytes.Add(int64(n))
+	if r.onWrite != nil {
+		r.onWrite(n)
+	}
 }
 
 // NewFileRecorder creates a FileRecorder with the given configuration.
@@ -343,8 +356,7 @@ func (r *FileRecorder) Write(tsData []byte) (int, error) {
 		if len(r.cachedPATMPT) > 0 {
 			mpegts.SetDiscontinuityIndicator(r.cachedPATMPT)
 			patN, err := r.file.Write(r.cachedPATMPT)
-			r.fileBytes += int64(patN)
-			r.bytes.Add(int64(patN))
+			r.addBytesLocked(patN)
 			if err != nil {
 				r.state = StateError
 				r.errMsg = err.Error()
@@ -359,8 +371,7 @@ func (r *FileRecorder) Write(tsData []byte) (int, error) {
 	}
 
 	n, err := r.file.Write(tsData)
-	r.fileBytes += int64(n)
-	r.bytes.Add(int64(n))
+	r.addBytesLocked(n)
 	if err != nil {
 		r.state = StateError
 		r.errMsg = err.Error()

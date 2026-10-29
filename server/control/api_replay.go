@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/replay"
 )
@@ -94,7 +95,11 @@ func (a *API) handleReplayPlay(w http.ResponseWriter, r *http.Request) {
 	if req.Speed == 0 {
 		req.Speed = 1.0
 	}
-	if err := a.replayMgr.Play(req.Source, req.Speed, req.Loop); err != nil {
+	if req.ClipID != "" && !clip.ValidID(req.ClipID) {
+		httperr.Write(w, http.StatusBadRequest, "clipId must be 32 lowercase hex characters")
+		return
+	}
+	if err := a.replayMgr.PlayAs(req.Source, req.Speed, req.Loop, req.ClipID); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
@@ -180,7 +185,11 @@ func (a *API) handleReplayQuick(w http.ResponseWriter, r *http.Request) {
 	if source == "" {
 		source = a.enrichedState().ProgramSource
 	}
-	if err := a.replayMgr.QuickReplay(source, req.Seconds, req.Speed); err != nil {
+	if req.ClipID != "" && !clip.ValidID(req.ClipID) {
+		httperr.Write(w, http.StatusBadRequest, "clipId must be 32 lowercase hex characters")
+		return
+	}
+	if err := a.replayMgr.QuickReplayAs(source, req.Seconds, req.Speed, req.ClipID); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
