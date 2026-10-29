@@ -550,7 +550,7 @@ func (m *MoQSession) writeVideoLoop(ctx context.Context, sub *moqTrackSub) {
 				currentGroupID = frame.GroupID
 
 				t0 := time.Now()
-				stream, err := m.session.OpenUniStreamSync(ctx)
+				stream, err := openUniStream(ctx, m.session)
 				if openDur := time.Since(t0); openDur > 50*time.Millisecond {
 					m.log.Warn("video stream open slow",
 						"duration_ms", openDur.Milliseconds(),
@@ -613,7 +613,7 @@ func (m *MoQSession) writeAudioLoop(ctx context.Context, sub *moqTrackSub) {
 
 			if stream == nil {
 				var err error
-				stream, err = m.session.OpenUniStreamSync(ctx)
+				stream, err = openUniStream(ctx, m.session)
 				if err != nil {
 					m.log.Debug("audio stream open failed", "error", err)
 					return
@@ -653,7 +653,7 @@ func (m *MoQSession) writeCaptionLoop(ctx context.Context, sub *moqTrackSub) {
 				return
 			}
 
-			stream, err := m.session.OpenUniStreamSync(ctx)
+			stream, err := openUniStream(ctx, m.session)
 			if err != nil {
 				m.log.Debug("caption stream open failed", "error", err)
 				return
@@ -741,7 +741,7 @@ func (m *MoQSession) writeStatsLoop(ctx context.Context, sub *moqTrackSub) {
 				continue
 			}
 
-			stream, err := m.session.OpenUniStreamSync(ctx)
+			stream, err := openUniStream(ctx, m.session)
 			if err != nil {
 				m.log.Debug("stats stream open failed", "error", err)
 				return
@@ -825,7 +825,7 @@ func (m *MoQSession) writeControlLoop(ctx context.Context, sub *moqTrackSub, ch 
 				return
 			}
 
-			stream, err := m.session.OpenUniStreamSync(ctx)
+			stream, err := openUniStream(ctx, m.session)
 			if err != nil {
 				m.log.Debug("control stream open failed", "error", err)
 				return
@@ -850,4 +850,16 @@ func (m *MoQSession) writeControlLoop(ctx context.Context, sub *moqTrackSub, ch 
 			stream.Close()
 		}
 	}
+}
+
+// openUniStream opens a unidirectional stream on session. OpenUniStreamSync
+// derives a cancellable context from the one it is given for each stream
+// and never cancels it, so every stream opened on a long-lived ctx would
+// stay attached to it until ctx ends. The context handed over here is
+// cancelled once the open returns, which drops that child; the stream does
+// not use the context after it is open.
+func openUniStream(ctx context.Context, session *webtransport.Session) (*webtransport.SendStream, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	return session.OpenUniStreamSync(ctx)
 }
