@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -429,15 +430,13 @@ func (a *App) handleReplayClipExported(source, tempFile, clipID string, store *c
 	filename := replayClipFilename(source, clipID, time.Now())
 	destPath := filepath.Join(store.Dir(), filename)
 
-	// Move the temp file into the clip store directory.
-	if err := os.Rename(tempFile, destPath); err != nil {
-		// Rename may fail across filesystem boundaries; fall back to copy.
-		if copyErr := copyFile(tempFile, destPath); copyErr != nil {
-			slog.Warn("clips: failed to move replay clip", "source", source, "error", copyErr)
-			_ = os.Remove(tempFile)
-			return
-		}
-		_ = os.Remove(tempFile)
+	// Everything below removes destPath only because this call put it there.
+	if placed, err := placeReplayFile(store, tempFile, destPath, clipID); err != nil {
+		slog.Warn("clips: failed to move replay clip", "source", source, "error", err)
+		return
+	} else if !placed {
+		slog.Info("clips: replay clip already stored, export dropped", "source", source, "clipID", clipID)
+		return
 	}
 
 	// Get the file size.
@@ -491,6 +490,48 @@ func (a *App) handleReplayClipExported(source, tempFile, clipID string, store *c
 
 // copyFile copies src to dst. Used as fallback when os.Rename fails
 // (e.g., across filesystem boundaries).
+// placeReplayFile moves an exported replay from tempFile to destPath in
+// store's directory without replacing a file there: a replay named after
+// its clip ID collides with the clip a request with the same ID stored
+// before, such as one the UI retried after a partial failure. It reports
+// false, and drops tempFile, when store already holds clipID. A file at
+// destPath that no clip owns, left by an export that did not finish, is
+// replaced. tempFile is gone afterwards in every case.
+func placeReplayFile(store *clip.Store, tempFile, destPath, clipID string) (bool, error) {
+	err := moveNoReplace(tempFile, destPath)
+	if errors.Is(err, fs.ErrExist) {
+		if _, getErr := store.Get(clipID); getErr == nil {
+			_ = os.Remove(tempFile)
+			return false, nil
+		}
+		_ = os.Remove(destPath)
+		err = moveNoReplace(tempFile, destPath)
+	}
+	if err != nil {
+		_ = os.Remove(tempFile)
+		return false, err
+	}
+	return true, nil
+}
+
+// moveNoReplace moves src to dst, failing with an fs.ErrExist error when
+// dst exists. A hard link refuses an existing dst; across filesystems,
+// where src cannot be linked, src is copied into a dst created exclusively.
+func moveNoReplace(src, dst string) error {
+	err := os.Link(src, dst)
+	if errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	if err != nil {
+		if err := copyFile(src, dst); err != nil {
+			return err
+		}
+	}
+	_ = os.Remove(src)
+	return nil
+}
+
+// copyFile copies src to dst, which it creates and refuses to replace.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -498,7 +539,7 @@ func copyFile(src, dst string) error {
 	}
 	defer func() { _ = in.Close() }()
 
-	out, err := os.Create(dst)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return err
 	}
