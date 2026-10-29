@@ -3,6 +3,7 @@ package transition
 import (
 	"bytes"
 	"math"
+	"runtime"
 	"testing"
 
 	"github.com/zsiec/switchframe/server/internal/video"
@@ -64,7 +65,8 @@ func TestScaleYUV420Preview_KeepsDetailAboveHalfSize(t *testing.T) {
 
 // From at least twice the target, as 1080p to the 480p tiles, the box
 // pre-shrink still halves the source first: the half size covers the
-// target, so it loses nothing the target could show.
+// target, so it loses nothing the target could show, and detail finer
+// than the target averages out instead of aliasing.
 func TestScaleYUV420Preview_PreShrinksFromTwiceTheTarget(t *testing.T) {
 	const srcW, srcH, dstW, dstH = 1920, 1080, 852, 480
 	src := stripes420(srcW, srcH, 6)
@@ -72,14 +74,17 @@ func TestScaleYUV420Preview_PreShrinksFromTwiceTheTarget(t *testing.T) {
 	var box []byte
 	ScaleYUV420Preview(src, srcW, srcH, got, dstW, dstH, &box)
 
-	if len(box) == 0 {
-		// Architectures without the box path scale directly.
+	if runtime.GOARCH != "amd64" {
+		// Only the amd64 build has the box path; the others scale directly.
 		want := make([]byte, len(got))
 		ScaleYUV420(src, srcW, srcH, want, dstW, dstH)
 		if !bytes.Equal(got, want) {
 			t.Fatal("preview scale differs from the direct scale")
 		}
 		return
+	}
+	if len(box) != video.YUV420FrameSize(srcW/2, srcH/2) {
+		t.Fatalf("1080p -> 480p no longer goes through the box pre-shrink: box buffer %d bytes", len(box))
 	}
 	half := make([]byte, video.YUV420FrameSize(srcW/2, srcH/2))
 	BoxShrink2xYUV420(src, srcW, srcH, half, srcW/2, srcH/2)
