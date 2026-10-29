@@ -37,9 +37,9 @@ All replay endpoints return 501 when the replay manager isn't configured.
 **Purpose:** start playback of the marked region.
 **Handler:** `(*API).handleReplayPlay`.
 
-**Request body** (`replay.PlayRequest`): `{ "source": "cam1", "speed": 0.5, "loop": true }`. Speed defaults to 1.0 if zero.
+**Request body** (`replay.PlayRequest`): `{ "source": "cam1", "speed": 0.5, "loop": true, "clipId": "<32 hex>" }`. Speed defaults to 1.0 if zero. The clip exported from the replay takes `clipId` in the clip store, so engines sent the same request store it under one ID; without `clipId` the store picks one.
 
-**Errors:** 400 (`replay.ErrInvalidSpeed`, `replay.ErrNoMarkOut`, `replay.ErrEmptyClip`), 409 (`replay.ErrPlayerActive`, `replay.ErrMaxSources`), 501.
+**Errors:** 400 (`replay.ErrInvalidSpeed`, `replay.ErrNoMarkOut`, `replay.ErrEmptyClip`, malformed `clipId`), 409 (`replay.ErrPlayerActive`, `replay.ErrMaxSources`), 501.
 
 ---
 
@@ -73,9 +73,9 @@ All replay endpoints return 501 when the replay manager isn't configured.
 **Purpose:** play the last N seconds of a source (or the current program source if omitted).
 **Handler:** `(*API).handleReplayQuick`.
 
-**Request body** (`replay.QuickReplayRequest`): `{ "source": "cam1", "seconds": 10, "speed": 0.5 }`.
+**Request body** (`replay.QuickReplayRequest`): `{ "source": "cam1", "seconds": 10, "speed": 0.5, "clipId": "<32 hex>" }`. `clipId` as for `/api/replay/play`.
 
-**Errors:** 400 (seconds ≤ 0, invalid speed).
+**Errors:** 400 (seconds <= 0, invalid speed, malformed `clipId`).
 
 ---
 

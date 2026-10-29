@@ -1589,8 +1589,10 @@ export function deleteMacro(name: string): Promise<void> {
 	});
 }
 
+/** Runs a macro under one run ID on every engine, from which each engine
+ * derives the IDs of the replay clips the run exports, alike on all. */
 export function runMacro(name: string): Promise<{ status: string }> {
-	return post(`/api/macros/${encodeURIComponent(name)}/run`, {});
+	return post(`/api/macros/${encodeURIComponent(name)}/run`, { runId: newClipId() });
 }
 
 export function cancelMacro(): Promise<void> {
@@ -1631,8 +1633,10 @@ export function replayMarkOut(source: string): Promise<ControlRoomState> {
 	return post('/api/replay/mark-out', { source });
 }
 
+/** Each engine stores the replay it plays as a clip; one clip ID sent to all
+ * lets a later delete or pin by that ID find it on every engine. */
 export function replayPlay(source: string, speed: number, loop: boolean): Promise<ControlRoomState> {
-	return post('/api/replay/play', { source, speed, loop });
+	return post('/api/replay/play', { source, speed, loop, clipId: newClipId() });
 }
 
 export function replayStop(): Promise<ControlRoomState> {
@@ -1647,8 +1651,9 @@ export function replaySources(): Promise<ReplayBufferInfo[]> {
 	return request('/api/replay/sources');
 }
 
+/** As replayPlay, one clip ID for the replay on every engine. */
 export function replayQuick(seconds: number, speed: number = 0.5, source: string = ''): Promise<ControlRoomState> {
-	return post('/api/replay/quick', { seconds, speed, source });
+	return post('/api/replay/quick', { seconds, speed, source, clipId: newClipId() });
 }
 
 export function replayPause(): Promise<ControlRoomState> {
