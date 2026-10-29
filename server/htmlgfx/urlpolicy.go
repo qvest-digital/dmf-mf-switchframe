@@ -31,7 +31,7 @@ func CheckURL(rawURL, templatesDir string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrURLNotAllowed, err)
 	}
-	switch strings.ToLower(u.Scheme) {
+	switch u.Scheme {
 	case "https":
 		if u.Host == "" {
 			return fmt.Errorf("%w: https URL has no host", ErrURLNotAllowed)
