@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
+
+	"github.com/zsiec/switchframe/server/playout"
 )
 
 type recordingRelay struct {
@@ -57,9 +59,9 @@ func grey420(w, h int) []byte {
 // on an engine without a GPU preview encoder, and the channel's tile and
 // the preview monitor stay black.
 func TestPlayoutRelayFeed_EncodesChannelPicturesAtPreviewSize(t *testing.T) {
-	feed := newPlayoutRelayFeed(640, 360, 500000, 50, 1, 1)
+	feed := newPlayoutRelayFeed(640, 360, 500000, 1)
 	relay := &recordingRelay{}
-	feed.start(0, "playout:1", relay)
+	feed.start(0, "playout:1", relay, 50, 1)
 
 	pic := grey420(1920, 1080)
 	deadline := time.Now().Add(10 * time.Second)
@@ -96,13 +98,13 @@ func TestPlayoutRelayFeed_EncodesChannelPicturesAtPreviewSize(t *testing.T) {
 // Pictures of a channel without an encoder, out of range, or not 8-bit
 // 4:2:0 at their stated size are dropped, never scaled as if they were.
 func TestPlayoutRelayFeed_DropsWhatItCannotEncode(t *testing.T) {
-	feed := newPlayoutRelayFeed(640, 360, 500000, 50, 1, 1)
+	feed := newPlayoutRelayFeed(640, 360, 500000, 1)
 	relay := &recordingRelay{}
 	feed.frame(0, grey420(1920, 1080), 1920, 1080, 0)
 	feed.frame(-1, grey420(1920, 1080), 1920, 1080, 0)
 	feed.frame(99, grey420(1920, 1080), 1920, 1080, 0)
 
-	feed.start(1, "playout:2", relay)
+	feed.start(1, "playout:2", relay, 50, 1)
 	defer feed.stop(1)
 	for n := 0; n < 10; n++ {
 		feed.frame(1, make([]byte, 1920*1080*2), 1920, 1080, 0)
@@ -118,4 +120,41 @@ func TestPlayoutChannelIDFromKey(t *testing.T) {
 	require.Equal(t, 0, playoutChannelIDFromKey("clip:1"))
 	require.Equal(t, 0, playoutChannelIDFromKey("1"))
 	require.Equal(t, 0, playoutChannelIDFromKey("playout:x"))
+}
+
+// On a 10-bit pipeline an idling channel puts out 10-bit 4:2:2 black. It
+// reaches the relay as black at the preview size, rather than being
+// dropped and leaving the tile frozen on the last picture.
+func TestPlayoutRelayFeed_EncodesTenBitIdleBlack(t *testing.T) {
+	feed := newPlayoutRelayFeed(640, 360, 500000, 1)
+	relay := &recordingRelay{}
+	feed.start(0, "playout:1", relay, 50, 1)
+	defer feed.stop(0)
+
+	black := playout.NewIdleFrame10(1920, 1080)
+	deadline := time.Now().Add(10 * time.Second)
+	for n := 0; ; n++ {
+		feed.frame(0, black, 1920, 1080, int64(n)*1800)
+		if got, _ := relay.counts(); got >= 3 {
+			break
+		}
+		require.True(t, time.Now().Before(deadline), "10-bit pictures never reached the relay")
+		time.Sleep(20 * time.Millisecond)
+	}
+	_, info := relay.counts()
+	require.NotEmpty(t, info)
+	require.Equal(t, 640, info[0].Width)
+	require.Equal(t, 360, info[0].Height)
+}
+
+// The channel's output goroutine hands a picture over without scaling it.
+func BenchmarkPlayoutRelayFeed_Frame1080p(b *testing.B) {
+	feed := newPlayoutRelayFeed(852, 480, 500000, 1)
+	feed.start(0, "playout:1", &recordingRelay{}, 50, 1)
+	defer feed.stop(0)
+	pic := grey420(1920, 1080)
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		feed.frame(0, pic, 1920, 1080, int64(n))
+	}
 }
