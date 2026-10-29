@@ -746,6 +746,9 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetRecordingArchiveDir(a.cfg.RecordingArchiveDir)
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
+	if a.appMetrics != nil {
+		registerCollectors(metrics.GetRegistry(), output.NewMetricsCollector(a.outputMgr))
+	}
 	if pf := a.sw.PipelineFormat(); pf.Width > 0 && pf.Height > 0 {
 		a.outputMgr.SetResolution(pf.Width, pf.Height)
 	}
