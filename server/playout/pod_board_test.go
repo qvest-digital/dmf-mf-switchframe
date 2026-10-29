@@ -83,6 +83,38 @@ func TestPodBoard_CreateFromTemplate(t *testing.T) {
 	}
 }
 
+// Engines of a pair create one pod under the ID the request names, from a
+// template or a config, and refuse an ID taken or malformed.
+func TestPodBoard_CreateWithID(t *testing.T) {
+	const id = "pod-0a1b2c3d"
+	for name, create := range map[string]func(pb *PodBoard, id string) (*Pod, error){
+		"config":   func(pb *PodBoard, id string) (*Pod, error) { return pb.CreatePodWithID(id, PodConfig{Type: "quarter"}) },
+		"template": func(pb *PodBoard, id string) (*Pod, error) { return pb.CreateFromTemplateWithID(id, "standard") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			pb := NewPodBoard(1)
+			pb.SetTemplateStore(NewPodTemplateStore())
+			pod, err := create(pb, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pod.ID != id {
+				t.Fatalf("pod ID = %q, want %q", pod.ID, id)
+			}
+			if _, err := create(pb, id); err != ErrPodExists {
+				t.Fatalf("second create = %v, want ErrPodExists", err)
+			}
+			if _, err := create(pb, "pod-XYZ"); err != ErrInvalidPodID {
+				t.Fatalf("malformed ID = %v, want ErrInvalidPodID", err)
+			}
+			fresh, err := create(pb, "")
+			if err != nil || !ValidPodID(fresh.ID) || fresh.ID == id {
+				t.Fatalf("fresh pod ID = %q, %v", fresh.ID, err)
+			}
+		})
+	}
+}
+
 func TestPodBoard_CreateFromTemplate_NotFound(t *testing.T) {
 	store := NewPodTemplateStore()
 	pb := NewPodBoard(1)
