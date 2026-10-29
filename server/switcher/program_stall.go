@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/zsiec/switchframe/server/internal/video"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // A program counts as stalled once no frame has entered the pipeline for
@@ -159,8 +160,14 @@ func (s *Switcher) programStallLoop(stop <-chan struct{}) {
 // long to sleep until the next decision.
 func (s *Switcher) fillStep(now time.Time, period time.Duration, seenEpoch *uint64, epochSince *time.Time) time.Duration {
 	hs := s.hotState.Load()
-	if s.useRefClock.Load() || !hs.wallClockVideoEnabled || s.pipeline.Load() == nil ||
-		hs.state.isInTransition() || (hs.programSource == "" && hs.state != StateFTB) {
+	if s.useRefClock.Load() || !hs.wallClockVideoEnabled || s.pipeline.Load() == nil {
+		return period
+	}
+	if hs.state.isInTransition() {
+		s.feedStalledTransition(hs, now, period)
+		return period
+	}
+	if hs.programSource == "" && hs.state != StateFTB {
 		return period
 	}
 
@@ -235,6 +242,74 @@ func (s *Switcher) fillStep(now time.Time, period time.Duration, seenEpoch *uint
 	// Next frame on the grid of the last real one.
 	next := since.Add((elapsed/period + 1) * period)
 	return next.Sub(now)
+}
+
+// feedStalledTransition keeps a CPU transition running when one of its
+// sources has delivered nothing for stallAfter. The engine blends only once
+// it has a frame from the source it leaves, and a mix, dip or wipe only on a
+// frame of the source it goes to, so a stalled side otherwise stops its
+// output and it never completes. The side it leaves gets the held program
+// frame (black once sourceLossTimeout has passed), the side it goes to gets
+// black, once per period; the engine's own output then reaches the pipeline
+// as usual. The GPU transition path blends from its own source cache and is
+// left alone.
+func (s *Switcher) feedStalledTransition(hs *hotState, now time.Time, period time.Duration) {
+	engine := hs.transEngine
+	if engine == nil || engine.State() != transition.StateActive {
+		return
+	}
+	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
+		return
+	}
+	stalled := func(key string) (bool, time.Duration) {
+		ago := s.health.lastFrameAgoMs(key)
+		if ago < 0 {
+			return true, sourceLossTimeout
+		}
+		d := time.Duration(ago) * time.Millisecond
+		return d >= stallAfter(period), d
+	}
+	from, to := engine.FromSource(), engine.ToSource()
+	if from != "" {
+		if ok, since := stalled(from); ok {
+			s.feedTransitionSide(engine, from, from == hs.programSource && since < s.stall.blackAfterOr(sourceLossTimeout), now)
+		}
+	}
+	if to != "" {
+		if ok, _ := stalled(to); ok {
+			s.feedTransitionSide(engine, to, false, now)
+		}
+	}
+}
+
+// feedTransitionSide hands the engine one frame for side: the held program
+// frame when useHeld and one is held for the current epoch, else black.
+func (s *Switcher) feedTransitionSide(engine *transition.Engine, side string, useHeld bool, now time.Time) {
+	st := &s.stall
+	var frame *ProcessingFrame
+	st.mu.Lock()
+	if useHeld && st.held != nil && st.heldEpoch == s.programEpoch.Load() {
+		keep := *st.held
+		keep.Ref()
+		frame = &keep
+	}
+	st.mu.Unlock()
+	if frame == nil {
+		frame = s.pipelineBlack()
+	}
+	defer frame.ReleaseYUV()
+	s.stallTransitionFeeds.Add(1)
+	// A monotonic 90 kHz clock: the engine orders its output by PTS, and the
+	// processing loop renumbers that output like any program frame.
+	engine.IngestRawFrame(side, frame.Data, frame.Width, frame.Height, now.UnixNano()*9/100000)
+}
+
+// blackAfterOr returns blackAfter, or def when it is not set.
+func (st *programStall) blackAfterOr(def time.Duration) time.Duration {
+	if st.blackAfter == 0 {
+		return def
+	}
+	return st.blackAfter
 }
 
 // pipelineBlack returns a black frame in the pipeline's format and size.

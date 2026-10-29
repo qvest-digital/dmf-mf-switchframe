@@ -410,3 +410,100 @@ func TestProgramStall_NoFillQueuedBehindASlowPipeline(t *testing.T) {
 	reached := int64(len(r.since(stallStart)))
 	require.LessOrEqual(t, fills-reached, int64(1), "%d fills queued, %d reached the pipeline", fills, reached)
 }
+
+// feedLive delivers frames of luma y from key at the pipeline rate until
+// the returned stop is called.
+func (r *stallRig) feedLive(key string, y byte) (stop func()) {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		pts := int64(5_000_000)
+		tick := time.NewTicker(r.sw.framePeriod())
+		defer tick.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-tick.C:
+				r.send(key, y, pts)
+				pts += r.sw.framePTSTicks()
+			}
+		}
+	}()
+	return func() { close(done); <-finished }
+}
+
+func newTransitionRig(t *testing.T) *stallRig {
+	r := newStallRig(t, 10*time.Second)
+	r.sw.SetTransitionConfig(TransitionConfig{})
+	r.sw.RegisterSource("cam1", newTestRelay())
+	r.sw.RegisterSource("cam2", newTestRelay())
+	require.NoError(t, r.sw.Cut(context.Background(), "cam1"))
+	return r
+}
+
+func (r *stallRig) waitProgram(t *testing.T, key string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return r.sw.ProgramSource() == key && !r.sw.hotState.Load().state.isInTransition()
+	}, 3*time.Second, 10*time.Millisecond, "transition to %s did not complete", key)
+}
+
+// An operator leaving a stalled source with a mix: the mix runs from the
+// held picture to the new source and completes.
+func TestTransitionStall_MixAwayFromAStalledSource(t *testing.T) {
+	r := newTransitionRig(t)
+	r.feed("cam1", 200, 5, 90000)
+	stop := r.feedLive("cam2", 50)
+	defer stop()
+	time.Sleep(300 * time.Millisecond) // cam1 stalled, held
+
+	start := time.Now()
+	require.NoError(t, r.sw.StartTransition(context.Background(), "cam2", "mix", 500, ""))
+	r.waitProgram(t, "cam2")
+	require.Greater(t, r.sw.stallTransitionFeeds.Load(), int64(0))
+
+	out := r.since(start)
+	var blended int
+	for _, o := range out {
+		if o.y > 50 && o.y < 200 {
+			blended++
+		}
+	}
+	require.Greater(t, blended, 5, "the mix shows pictures between the held one and cam2's")
+	time.Sleep(200 * time.Millisecond)
+	last := r.all()
+	require.Equal(t, byte(50), last[len(last)-1].y, "cam2 on program afterwards")
+	requireMonotonicPTS(t, r.all())
+}
+
+// A mix to a source that never delivers runs to black and completes; the
+// program is then that source, filled with black.
+func TestTransitionStall_MixToAStalledSource(t *testing.T) {
+	r := newTransitionRig(t)
+	stop := r.feedLive("cam1", 200)
+	defer stop()
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, r.sw.StartTransition(context.Background(), "cam2", "mix", 500, ""))
+	r.waitProgram(t, "cam2")
+	time.Sleep(300 * time.Millisecond)
+	last := r.all()
+	require.Equal(t, byte(16), last[len(last)-1].y, "black for the stalled new source")
+	requireMonotonicPTS(t, r.all())
+}
+
+// Between two live sources nothing is fed: the engine has real frames.
+func TestTransitionStall_NothingFedBetweenLiveSources(t *testing.T) {
+	r := newTransitionRig(t)
+	stop1 := r.feedLive("cam1", 200)
+	defer stop1()
+	stop2 := r.feedLive("cam2", 50)
+	defer stop2()
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, r.sw.StartTransition(context.Background(), "cam2", "mix", 500, ""))
+	r.waitProgram(t, "cam2")
+	require.Zero(t, r.sw.stallTransitionFeeds.Load())
+}
