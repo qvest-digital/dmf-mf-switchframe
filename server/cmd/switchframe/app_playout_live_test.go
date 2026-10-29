@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -50,15 +51,31 @@ func TestInitPlayout_LiveItemAirsInputWithoutGPU(t *testing.T) {
 
 	const w, h = 64, 36
 	picture := bytes.Repeat([]byte{0x51}, switcher.ColorYUV420_8bit.FrameSize(w, h))
+	nextPicture := bytes.Repeat([]byte{0x62}, switcher.ColorYUV420_8bit.FrameSize(w, h))
+	// What the channel airs, in order: 'a' for the first item's input, 'b'
+	// for the second's, '-' for anything else, such as the idle picture.
 	var mu sync.Mutex
-	aired := false
+	var aired []byte
 	a.playoutMgr.SetRawVideoOutput(func(key string, yuv []byte, fw, fh int, pts int64, isKeyframe bool) {
-		if key == "playout:1" && fw == w && fh == h && bytes.Equal(yuv, picture) {
-			mu.Lock()
-			aired = true
-			mu.Unlock()
+		if key != "playout:1" {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case fw == w && fh == h && bytes.Equal(yuv, picture):
+			aired = append(aired, 'a')
+		case fw == w && fh == h && bytes.Equal(yuv, nextPicture):
+			aired = append(aired, 'b')
+		default:
+			aired = append(aired, '-')
 		}
 	})
+	airedSoFar := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return string(aired)
+	}
 
 	a.sw.RegisterMXLSourceLabeled("mxl:mxl-1", "sender-a")
 	a.sw.RegisterMXLSourceLabeled("mxl:mxl-2", "sender-b")
@@ -73,14 +90,12 @@ func TestInitPlayout_LiveItemAirsInputWithoutGPU(t *testing.T) {
 				return
 			case <-tick.C:
 			}
-			// The next item's input first, so that any picture of the
-			// input on air that came after both were armed implies one of it.
-			a.sw.IngestRawVideo("mxl:mxl-2", &switcher.ProcessingFrame{
+			a.sw.IngestRawVideo("mxl:mxl-1", &switcher.ProcessingFrame{
 				Data: append([]byte(nil), picture...), Format: switcher.ColorYUV420_8bit,
 				Width: w, Height: h, PTS: pts, DTS: pts, Codec: "h264",
 			})
-			a.sw.IngestRawVideo("mxl:mxl-1", &switcher.ProcessingFrame{
-				Data: append([]byte(nil), picture...), Format: switcher.ColorYUV420_8bit,
+			a.sw.IngestRawVideo("mxl:mxl-2", &switcher.ProcessingFrame{
+				Data: append([]byte(nil), nextPicture...), Format: switcher.ColorYUV420_8bit,
 				Width: w, Height: h, PTS: pts, DTS: pts, Codec: "h264",
 			})
 		}
@@ -94,21 +109,16 @@ func TestInitPlayout_LiveItemAirsInputWithoutGPU(t *testing.T) {
 	defer func() { _ = a.playoutMgr.Stop(1) }()
 
 	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return aired
+		return strings.Contains(airedSoFar(), "aaa")
 	}, 10*time.Second, 20*time.Millisecond, "the channel must air the input's picture, not its idle picture")
 
-	// Airing the next item's input on its first tick needs its picture
-	// before anything reads it: the first read of an unarmed source is nil.
-	mu.Lock()
-	aired = false
-	mu.Unlock()
+	// The second item's source is armed while the first airs, so its first
+	// tick airs its input: the first read of an unarmed source is nil.
+	require.NoError(t, a.playoutMgr.Next(1))
 	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return aired
-	}, 10*time.Second, 20*time.Millisecond)
-	_, armed := a.sw.ReadLiveTap("mxl:mxl-2", nil)
-	require.True(t, armed, "the item after the one on air must be armed")
+		return strings.Contains(airedSoFar(), "b")
+	}, 10*time.Second, 20*time.Millisecond, "the channel must air the next item's input")
+	got := airedSoFar()
+	fromFirst := got[strings.Index(got, "a"):]
+	require.Regexp(t, `^a+b+$`, fromFirst, "nothing else airs between the two inputs")
 }

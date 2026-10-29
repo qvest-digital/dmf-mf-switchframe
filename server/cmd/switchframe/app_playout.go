@@ -224,7 +224,8 @@ func (a *App) initPlayout() error {
 
 	// The switcher copies a source's pictures only once something asks for
 	// them, so the item after the one on air is asked for ahead of time.
-	// The GPU source manager caches every source anyway.
+	// An engine with a GPU source manager airs a live item through the
+	// VRAM alias instead, which needs no arming.
 	mgr.SetLiveSourcePrepare(func(sourceKey string) {
 		if gs := a.gpu(); gs == nil || gs.sourceManager == nil {
 			a.sw.ArmLiveTap(sourceKey)
