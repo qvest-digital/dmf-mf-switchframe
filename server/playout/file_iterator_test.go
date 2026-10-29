@@ -1737,18 +1737,18 @@ func TestFileFrameIterator_LoopWithoutIDRStartsEachPassOnFreshDecoder(t *testing
 	}
 }
 
-// Audio that ends before the first picture is dropped even when the stream
-// starts at its keyframe: a clip whose video was cut and audio was not
-// would otherwise play the cut-off audio over its first pictures.
+// A stream cut before its keyframe drops the audio that ends before the
+// first picture, and keeps the frame that carries its start. A seek to the
+// first picture starts with that frame too.
 func TestFileFrameIterator_AudioStartsAtFirstPicture(t *testing.T) {
-	const n = 4
+	const n = 5
 	encoded := make([]encodedFrame, n)
 	for i := range encoded {
 		nal := byte(0x41)
-		if i == 0 {
+		if i == 1 {
 			nal = 0x65
 		}
-		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: 9700 + int64(i)*1800, isKeyframe: i == 0}
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: 7900 + int64(i)*1800, isKeyframe: i == 1}
 	}
 	audio := make([]audioFrameInfo, 10)
 	for i := range audio {
@@ -1758,8 +1758,7 @@ func TestFileFrameIterator_AudioStartsAtFirstPicture(t *testing.T) {
 		func() (VideoDecoder, error) { return &delayDecoder{depth: 0}, nil })
 	defer iter.Close()
 
-	// Frame 5 spans 9600-11520 and carries the start of the first picture.
-	// A seek to the first picture starts with it too.
+	// The first picture is at 9700; frame 5 spans 9600-11520.
 	for _, seek := range []bool{false, true} {
 		if seek {
 			if err := iter.Seek(0); err != nil {
@@ -1774,6 +1773,67 @@ func TestFileFrameIterator_AudioStartsAtFirstPicture(t *testing.T) {
 			t.Fatalf("seek %v: first audio frames %v, want frame 5 first", seek, f.AudioFrames)
 		}
 	}
+}
+
+// A stream that starts at its keyframe drops no frame and keeps all of its
+// audio. Audio before its first picture is how the container aligns the
+// two: an MP4 with B-frames starts its video at the reorder delay and its
+// audio at 0, and dropping that audio would play the rest early.
+func TestFileFrameIterator_KeepsAudioWhenNoFrameIsDropped(t *testing.T) {
+	const n = 4
+	encoded := make([]encodedFrame, n)
+	for i := range encoded {
+		nal := byte(0x41)
+		if i == 0 {
+			nal = 0x65
+		}
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: 7200 + int64(i)*3600, isKeyframe: i == 0}
+	}
+	audio := make([]audioFrameInfo, 10)
+	for i := range audio {
+		audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: int64(i) * 1920, sampleRate: 48000}
+	}
+	iter := newFileFrameIterator(encoded, audio, &delayDecoder{depth: 0},
+		func() (VideoDecoder, error) { return &delayDecoder{depth: 0}, nil })
+	defer iter.Close()
+
+	for _, seek := range []bool{false, true} {
+		if seek {
+			if err := iter.Seek(0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f, err := iter.Next()
+		if err != nil || f == nil {
+			t.Fatalf("seek %v: Next = %v, %v", seek, f, err)
+		}
+		if len(f.AudioFrames) == 0 || f.AudioFrames[0].Data[0] != 0 {
+			t.Fatalf("seek %v: first audio frames %v, want frame 0 first", seek, f.AudioFrames)
+		}
+	}
+}
+
+// mp4Clip writes a 2 s 320x240 25 fps MP4 with AAC audio, encoded with
+// libx264's defaults, which use B-frames.
+func mp4Clip(t *testing.T) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg CLI not available, skipping integration test")
+	}
+	path := filepath.Join(t.TempDir(), "clip.mp4")
+	out, err := exec.Command(ffmpegPath, "-y",
+		"-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=25",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=48000",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p",
+		"-c:a", "aac", "-b:a", "64k", "-ac", "2", path).CombinedOutput()
+	if err != nil {
+		t.Skipf("ffmpeg failed to generate test MP4: %v\n%s", err, out)
+	}
+	return path
 }
 
 // cutClipTS writes a 4 s 320x240 50 fps clip with AAC audio, its video
@@ -1932,5 +1992,33 @@ func TestFileFrameIterator_Integration_LoopOpenGOPCut(t *testing.T) {
 	}
 	if iter.TotalFrames() != len(want) {
 		t.Fatalf("TotalFrames = %d, a fresh decode puts out %d", iter.TotalFrames(), len(want))
+	}
+}
+
+// An MP4 with B-frames, read without its edit list, starts its video at the
+// reorder delay and its audio at 0. Nothing is cut, so its audio is kept as
+// demuxed and the first picture plays with the audio from 0.
+func TestFileFrameIterator_Integration_MP4BFramesKeepsAudio(t *testing.T) {
+	path := mp4Clip(t)
+	iter, err := NewFileFrameIteratorWithDecoder(path, threadedFFmpegFactory(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer iter.Close()
+	if iter.encodedFrames[0].pts == 0 || len(iter.audioFrames) == 0 {
+		t.Fatalf("first picture at %d with %d audio frames; the clip has no reorder delay to test",
+			iter.encodedFrames[0].pts, len(iter.audioFrames))
+	}
+
+	f, err := iter.Next()
+	if err != nil || f == nil {
+		t.Fatalf("Next = %v, %v", f, err)
+	}
+	if len(f.AudioFrames) == 0 || f.AudioFrames[0].PTS != 0 {
+		var got []int64
+		for _, a := range f.AudioFrames {
+			got = append(got, a.PTS)
+		}
+		t.Fatalf("first picture (PTS %d) audio PTS %v, want the audio from 0", iter.encodedFrames[0].pts, got)
 	}
 }

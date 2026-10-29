@@ -194,18 +194,18 @@ func NewFileFrameIteratorWithDecoder(path string, factory DecoderFactory) (*File
 // previous pass's references and puts out wrong pictures for them, so
 // every pass would differ from the first. They are dropped here, with the
 // audio that ends before the first keyframe, so every pass starts at the
-// keyframe with its audio and frame indices count shown pictures. The
-// audio is dropped even when the stream starts at the keyframe: a clip
-// whose video was cut and audio was not would otherwise play the cut-off
-// audio over its first pictures.
+// keyframe with its audio and frame indices count shown pictures.
+//
+// A stream that drops no frame keeps all of its audio. Audio before its
+// first picture is then how the container aligns the two: an MP4 with
+// B-frames, read without its edit list, starts its video at the reorder
+// delay and its audio at the AAC priming frame, and dropping the audio
+// before the first picture would play the rest early by that delay.
 func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decoder VideoDecoder, factory DecoderFactory) *FileFrameIterator {
 	for i, ef := range encoded {
 		if !ef.isKeyframe {
 			continue
 		}
-		audio = audio[sort.Search(len(audio), func(j int) bool {
-			return audio[j].pts >= ef.pts || audio[j].pts+audioFrameTicks(audio[j]) > ef.pts
-		}):]
 		// Leading pictures come before the next keyframe in decode order
 		// and below the keyframe in presentation order.
 		kept := []encodedFrame{ef}
@@ -215,7 +215,13 @@ func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decode
 				kept = append(kept, encoded[j])
 			}
 		}
-		encoded = append(kept, encoded[j:]...)
+		kept = append(kept, encoded[j:]...)
+		if len(kept) < len(encoded) {
+			audio = audio[sort.Search(len(audio), func(k int) bool {
+				return audio[k].pts >= ef.pts || audio[k].pts+audioFrameTicks(audio[k]) > ef.pts
+			}):]
+		}
+		encoded = kept
 		break
 	}
 	noCarry := true
