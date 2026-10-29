@@ -25,7 +25,7 @@ type ReferenceClock struct {
 	fpsDen       int
 	sampleRate   int
 	accum        *AudioAccumulator
-	tickCount    int64
+	tickCount    atomic.Int64
 	ticks        chan Tick
 	request      chan struct{} // non-realtime: consumer signals readiness
 	stop         chan struct{}
@@ -129,7 +129,7 @@ func (c *ReferenceClock) Rate() (fpsNum, fpsDen int) {
 
 // TickCount returns ticks produced so far.
 func (c *ReferenceClock) TickCount() int64 {
-	return atomic.LoadInt64(&c.tickCount)
+	return c.tickCount.Load()
 }
 
 // DroppedTicks returns the number of ticks dropped because the consumer
@@ -151,7 +151,7 @@ func (c *ReferenceClock) produceTick() Tick {
 	c.mu.Lock()
 	dur := frameDuration(c.fpsNum, c.fpsDen)
 	samples := c.accum.SamplesForTick()
-	count := c.tickCount
+	count := c.tickCount.Load()
 
 	// The PTS for this tick is currentPTS (already computed).
 	pts := c.currentPTS & ptsMask33
@@ -164,7 +164,7 @@ func (c *ReferenceClock) produceTick() Tick {
 	c.ptsRemainder %= int64(c.fpsNum)
 	c.currentPTS += delta
 
-	c.tickCount++
+	c.tickCount.Add(1)
 	c.mu.Unlock()
 
 	return Tick{
