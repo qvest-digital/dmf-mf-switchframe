@@ -799,6 +799,12 @@ func TestSource_DualEncode_PreviewAndReplay(t *testing.T) {
 		ReplayViewer:   replay,
 		OnRawVideo:     func(string, []byte, int, int, int64) {},
 		OnRawAudio:     func(string, []float32, int64, int) {},
+		OnVideoInfo: func([]byte, []byte, int, int) {
+			// The relay keeps the first VideoInfo it gets; the full-quality
+			// encode's would describe the replay stream, not the preview
+			// stream the relay carries.
+			t.Error("OnVideoInfo called in dual-encode: the preview encoder owns the relay's VideoInfo")
+		},
 	})
 
 	now := time.Now()
