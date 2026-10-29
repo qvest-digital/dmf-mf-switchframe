@@ -132,7 +132,7 @@ Handlers that mutate state trigger a broadcast of the fresh `ControlRoomState` v
 
 ### Logging and request IDs
 
-`control.LoggerMiddleware` generates (or preserves from `X-Request-ID`) a request ID per request, creates a child slog logger with attributes, echoes the ID in the `X-Request-ID` response header, and logs the completed request at `INFO` (or `DEBUG` for noisy polled paths: `/api/switch/state`, `/metrics`). Handlers pull the child logger via `control.LogFromCtx(r.Context())`.
+`control.RouteLoggerMiddleware` generates (or preserves from `X-Request-ID`) a request ID per request, creates a child slog logger with attributes, echoes the ID in the `X-Request-ID` response header, and logs the completed request as `http request`. Successful `GET` and `HEAD` requests and the noisy polled paths (`/api/switch/state`, `/metrics`) log at `DEBUG`, other successful requests at `INFO`. Failed requests (status 400 or above) log at `INFO` with `route`, `user_agent`, `forwarded_for` (the `X-Forwarded-For` header) and `ui_build` (the `X-Switchframe-UI-Build` header). Failures are grouped by method, route pattern and status: per 10 s window one line per group is logged and the rest are counted. Once the window has ended the count is logged, as `suppressed`, on whichever comes first: the group's next `http request` line, or an `http requests not logged` line carrying `method`, `route`, `status` and `suppressed`. Ended windows are looked for when a request is served, at most once a second. Handlers pull the child logger via `control.LogFromCtx(r.Context())`.
 
 ### Who triggered what
 
