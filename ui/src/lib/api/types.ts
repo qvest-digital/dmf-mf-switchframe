@@ -209,6 +209,10 @@ export interface EasingConfig {
 
 export interface GraphicsLayerState {
 	id: number;
+	/** Operator label. Playlist events address the id, never the name or stacking. */
+	name?: string;
+	/** Graphics panel settings, stored on the engine as is. */
+	config?: Record<string, unknown>;
 	template?: string;
 	active: boolean;
 	fadePosition?: number;
