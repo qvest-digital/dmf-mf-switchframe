@@ -63,6 +63,8 @@ export class PrismAudioDecoder {
 	private sampleRate = 0;
 	private gainNode: GainNode | null = null;
 	private muted = false;
+	/** Output gain while unmuted; kept across mute so unmuting restores it. */
+	private gain = 1;
 	private numChannels = 0;
 	private _suspended = false;
 
@@ -126,7 +128,7 @@ export class PrismAudioDecoder {
 		}
 
 		this.gainNode = this.context.createGain();
-		this.gainNode.gain.value = this.muted ? 0 : 1;
+		this.gainNode.gain.value = this.muted ? 0 : this.gain;
 		this.gainNode.connect(destinationNode ?? this.context.destination);
 
 		// Use the AudioContext's actual sample rate for the ring buffer, not the source rate.
@@ -242,7 +244,7 @@ export class PrismAudioDecoder {
 		if (this.muted === muted) return;
 		this.muted = muted;
 		if (this.gainNode) {
-			this.gainNode.gain.value = muted ? 0 : 1;
+			this.gainNode.gain.value = muted ? 0 : this.gain;
 		}
 	}
 
@@ -252,12 +254,12 @@ export class PrismAudioDecoder {
 
 	/**
 	 * Set the output gain (linear amplitude). Used by AFL monitoring to apply
-	 * the channel fader level to the monitoring output. Only effective when
-	 * not muted (mute overrides gain to 0).
+	 * the channel fader level to the monitoring output. While muted the gain
+	 * is kept and applied on unmute.
 	 */
 	setGain(linearGain: number): void {
-		if (this.muted) return;
-		if (this.gainNode) {
+		this.gain = linearGain;
+		if (!this.muted && this.gainNode) {
 			this.gainNode.gain.value = linearGain;
 		}
 	}

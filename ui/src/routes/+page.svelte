@@ -45,7 +45,7 @@
 	import { DualApiClient } from '$lib/api/dual-api-client';
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
 	import { PipelineManager } from '$lib/pipeline/manager';
-	import { createPFLManager } from '$lib/audio/pfl';
+	import { setMonitorCommsActive, setMonitorDimmed, setMonitorSolo } from '$lib/audio/monitor.svelte';
 	import { createPFLToggle } from '$lib/audio/pfl-toggle';
 	import { createDivergenceLog } from '$lib/state/divergence-log.svelte';
 	import { createAutoReconcile } from '$lib/state/auto-reconcile';
@@ -904,11 +904,19 @@
 		programLevels = pgm;
 	});
 
-	// PFL/AFL (Pre/After-Fade Listen) manager for client-side per-source audio monitoring
-	const pflManager = createPFLManager();
+	// PFL/AFL (Pre/After-Fade Listen): one channel on this browser's monitor
+	// in place of program. The program mix is not touched.
 	let pflActiveSource = $state<string | null>(null);
-	let pflActiveMode = $state<import('$lib/audio/pfl').PFLMode>('off');
-	const pflToggle = createPFLToggle({ pflManager, pipeline });
+	let pflActiveMode = $state<import('$lib/audio/pfl-toggle').PFLMode>('off');
+	const pflToggle = createPFLToggle({
+		pipeline,
+		aflGain: (key) => {
+			const ch = store.effectiveState.audioChannels?.[key];
+			return !ch || ch.muted ? 0 : Math.pow(10, ch.level / 20);
+		},
+		setSolo: setMonitorSolo,
+	});
+	const aflMonitor = { setAFLGain: (key: string, gain: number) => pipeline.setSourceGain(key, gain) };
 
 	// Macro list for keyboard trigger (Ctrl+1-9)
 	let macroList = $state<Macro[]>([]);
@@ -1083,17 +1091,6 @@
 			});
 		}
 		prevLayoutMode = mode;
-	});
-
-	// Sync PFL manager sources with pipeline sources
-	$effect(() => {
-		const keys = store.sourceKeys;
-		for (const key of keys) {
-			const decoder = pipeline.getAudioDecoder(key);
-			if (decoder && !pflManager.getDecoder(key)) {
-				pflManager.addSource(key, 'mp4a.40.2', 48000, 2);
-			}
-		}
 	});
 
 	// Track previous values for state change announcements
@@ -1306,7 +1303,6 @@
 	function requestAudioResumeAfterFailover() {
 		const handler = () => {
 			pipelineManager.resumeActiveAudio();
-			pflManager.resumeContext();
 			document.removeEventListener('click', handler);
 			document.removeEventListener('keydown', handler);
 		};
@@ -1575,7 +1571,6 @@
 		// Resume AudioContexts on first user gesture (browser autoplay policy).
 		const resumeAudio = () => {
 			pipeline.resumeAllAudio();
-			pflManager.resumeContext();
 			document.removeEventListener('click', resumeAudio);
 			document.removeEventListener('keydown', resumeAudio);
 		};
@@ -1638,7 +1633,6 @@
 		fastControlB?.close();
 		captionRenderer?.destroy();
 		captionRenderer = null;
-		pflManager.destroy();
 		pipelineManager.destroy();
 		connectionManager.stop();
 		pipeline.destroy();
@@ -1818,8 +1812,8 @@
 				getTransport={() => pipeline.getSourceTransport('program-preview')}
 				getTransportForEngine={isDualEngine ? (engineId) => connectionManager.getTransport(engineId) : undefined}
 				authoritativeEngine={syncHealth?.authoritative}
-				onCommsActive={(active) => pflManager.setCommsActive(active)}
-				onDimToggle={() => { commsDimmed = !commsDimmed; pflManager.setDim(commsDimmed); }}
+				onCommsActive={(active) => setMonitorCommsActive(active)}
+				onDimToggle={() => { commsDimmed = !commsDimmed; setMonitorDimmed(commsDimmed); }}
 				dimmed={commsDimmed}
 			/>
 
@@ -1876,7 +1870,7 @@
 					{#snippet children(activeTab)}
 						{#if activeTab === 'Audio'}
 							<div class="tab-panel audio-tab">
-								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} pflMode={pflActiveMode} {pflManager} selectedChannel={selectedAudioChannel} {audioDrift} {isDualEngine} engineBAudioChannels={engineBState?.audioChannels ?? null} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
+								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} pflMode={pflActiveMode} {aflMonitor} selectedChannel={selectedAudioChannel} {audioDrift} {isDualEngine} engineBAudioChannels={engineBState?.audioChannels ?? null} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
 							</div>
 						{:else if activeTab === 'Compose'}
 							<div class="tab-panel">

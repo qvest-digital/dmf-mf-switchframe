@@ -26,6 +26,7 @@ function createMockPipeline() {
 		feedVideoFrame: vi.fn(),
 		feedAudioFrame: vi.fn(),
 		setSourceMuted: vi.fn(),
+		setSourceGain: vi.fn(),
 		resumeAllAudio: vi.fn().mockResolvedValue(undefined),
 		getAllDiagnostics: vi.fn().mockResolvedValue({}),
 		resetRendererSync: vi.fn(),

@@ -272,6 +272,29 @@ describe('PrismAudioDecoder', () => {
 		expect(diag.inputPtsWraps).toBe(1);
 	});
 
+	// AFL sets a channel's fader gain before or while it is muted; unmuting
+	// used to reset it to unity, so AFL played pre-fader.
+	it('keeps the gain set while muted and applies it on unmute', async () => {
+		const decoder = new PrismAudioDecoder();
+		await decoder.configure('mp4a.40.2', 48000, 2, mockContext);
+		const node = mockContext.createGain.mock.results[0].value;
+
+		decoder.setMuted(true);
+		decoder.setGain(0.25);
+		expect(node.gain.value).toBe(0);
+		decoder.setMuted(false);
+		expect(node.gain.value).toBe(0.25);
+		decoder.setGain(0.5);
+		expect(node.gain.value).toBe(0.5);
+	});
+
+	it('starts at a gain set before it is configured', async () => {
+		const decoder = new PrismAudioDecoder();
+		decoder.setGain(0.25);
+		await decoder.configure('mp4a.40.2', 48000, 2, mockContext);
+		expect(mockContext.createGain.mock.results[0].value.gain.value).toBe(0.25);
+	});
+
 	describe('resumeContext A/V sync fix', () => {
 		it('should clear ring buffer on resume to discard stale audio', async () => {
 			const decoder = new PrismAudioDecoder();

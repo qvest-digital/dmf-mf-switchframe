@@ -18,7 +18,8 @@
 	import { throttle } from '$lib/util/throttle';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
 	import { updatePeakHold as _updatePeakHold, isClipActive, CLIP_THRESHOLD_DB } from '$lib/audio/peak-hold';
-	import type { PFLMode } from '$lib/audio/pfl';
+	import type { PFLMode } from '$lib/audio/pfl-toggle';
+	import MonitorStrip from './MonitorStrip.svelte';
 
 	interface Props {
 		state: ControlRoomState;
@@ -26,7 +27,8 @@
 		programLevels?: { peakL: number; peakR: number };
 		pflActiveSource?: string | null;
 		pflMode?: PFLMode;
-		pflManager?: { setAFLGain(sourceKey: string, linearGain: number): void } | null;
+		/** Plays the channel in AFL at a linear gain on the local monitor. */
+		aflMonitor?: { setAFLGain(sourceKey: string, linearGain: number): void } | null;
 		selectedChannel?: string | null;
 		audioDrift?: { channel: string; reason: string } | null;
 		isDualEngine?: boolean;
@@ -36,7 +38,7 @@
 		onChannelSelect?: (sourceKey: string | null) => void;
 	}
 
-	let { state: crState, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, pflMode = 'off' as PFLMode, pflManager = null, selectedChannel = null, audioDrift = null, isDualEngine = false, engineBAudioChannels = null, onPFLToggle, onStateUpdate, onChannelSelect }: Props = $props();
+	let { state: crState, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, pflMode = 'off' as PFLMode, aflMonitor = null, selectedChannel = null, audioDrift = null, isDualEngine = false, engineBAudioChannels = null, onPFLToggle, onStateUpdate, onChannelSelect }: Props = $props();
 
 	let ui = $state({ collapsed: false });
 
@@ -53,17 +55,18 @@
 	function setLevel(source: string, level: number) {
 		setLevelThrottled(source, level);
 		// Update AFL gain in real time as fader moves
-		if (pflActiveSource === source && pflMode === 'afl' && pflManager) {
-			pflManager.setAFLGain(source, Math.pow(10, level / 20));
+		if (pflActiveSource === source && pflMode === 'afl' && aflMonitor) {
+			const muted = crState.audioChannels?.[source]?.muted ?? false;
+			aflMonitor.setAFLGain(source, muted ? 0 : Math.pow(10, level / 20));
 		}
 	}
 
-	// Keep AFL gain in sync with server-side fader level updates
+	// Keep AFL gain in sync with server-side fader level and mute updates
 	$effect(() => {
-		if (pflActiveSource && pflMode === 'afl' && pflManager) {
+		if (pflActiveSource && pflMode === 'afl' && aflMonitor) {
 			const channel = crState.audioChannels?.[pflActiveSource];
 			if (channel) {
-				pflManager.setAFLGain(pflActiveSource, Math.pow(10, channel.level / 20));
+				aflMonitor.setAFLGain(pflActiveSource, channel.muted ? 0 : Math.pow(10, channel.level / 20));
 			}
 		}
 	});
@@ -360,7 +363,7 @@
 					class:pfl-active={isPfl}
 					class:afl-active={isAfl}
 					onclick={() => onPFLToggle?.(key)}
-					title={isPfl ? 'After-Fader Listen' : isAfl ? 'Monitor off' : 'Pre-Fader Listen'}
+					title={isPfl ? 'PFL: this channel alone on your monitor, before the fader. Click for AFL.' : isAfl ? 'AFL: this channel alone on your monitor, at its fader. Click to hear program again.' : 'PFL: hear this channel alone on your monitor. The program mix is not affected.'}
 				>
 					{isAfl ? 'AFL' : 'PFL'}
 				</button>
@@ -494,6 +497,8 @@
 			</div>
 		{/if}
 	</div>
+
+	<MonitorStrip soloSource={pflActiveSource ? (crState.sources[pflActiveSource]?.label || pflActiveSource) : null} soloMode={pflMode} />
 	</div>
 
 	{#if selectedChannel && crState.audioChannels?.[selectedChannel]}

@@ -6,6 +6,7 @@ import { PrismRenderer } from '$lib/prism/renderer';
 import type { TrackInfo } from '$lib/prism/transport';
 import type { CaptionData } from '$lib/prism/protocol';
 import { setSourceStalled, clearSourceStall, clearAllStalls, isSourceStalled } from '$lib/transport/source-errors.svelte';
+import { monitorGain, programGain, subscribeMonitor } from '$lib/audio/monitor.svelte';
 /** Configuration for the media pipeline. */
 export interface MediaPipelineConfig {
 	/** Called when MoQ control track delivers state data. */
@@ -105,6 +106,8 @@ export interface MediaPipeline {
 	): void;
 	/** Set muted state for a source's audio decoder. */
 	setSourceMuted(sourceKey: string, muted: boolean): void;
+	/** Set the linear gain a source's audio plays at while unmuted (AFL). */
+	setSourceGain(sourceKey: string, gain: number): void;
 	/** Resume all AudioContexts. Must be called from a user gesture handler. */
 	resumeAllAudio(): Promise<void>;
 	/** Reset A/V sync tracking on all renderers for a source (e.g. after program source change). */
@@ -233,8 +236,42 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		if (!audioContext) {
 			audioContext = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
 			if (audioContext.state === 'running' && !audioMayStart()) void audioContext.suspend();
+			monitorBus = audioContext.createGain();
+			monitorBus.connect(audioContext.destination);
+			programBus = audioContext.createGain();
+			programBus.connect(monitorBus);
+			applyMonitor(true);
+			unsubscribeMonitor = subscribeMonitor(() => applyMonitor(false));
 		}
 		return audioContext;
+	}
+
+	/**
+	 * The local monitor (see $lib/audio/monitor.svelte): program audio plays
+	 * through programBus, every other source straight into monitorBus, and
+	 * monitorBus into the speakers. Only this browser's output changes.
+	 */
+	let monitorBus: GainNode | null = null;
+	let programBus: GainNode | null = null;
+	let unsubscribeMonitor: (() => void) | null = null;
+	/** Time constant of a monitor gain change: quick, but without a click. */
+	const MONITOR_RAMP_S = 0.015;
+
+	function applyMonitor(immediate: boolean): void {
+		if (!audioContext || !monitorBus || !programBus) return;
+		const now = audioContext.currentTime;
+		for (const [bus, gain] of [[monitorBus, monitorGain()], [programBus, programGain()]] as const) {
+			if (immediate) {
+				bus.gain.value = gain;
+			} else {
+				bus.gain.cancelScheduledValues(now);
+				bus.gain.setTargetAtTime(gain, now, MONITOR_RAMP_S);
+			}
+		}
+	}
+
+	function isProgramKey(key: string): boolean {
+		return key === 'program' || key === 'program-preview';
 	}
 
 	function makeCallbacks(key: string): MoQTransportCallbacks {
@@ -267,7 +304,9 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 						const sampleRate = track.sampleRate || 48000;
 						const channels = track.channels || 2;
 						const audioDecoder = new PrismAudioDecoder();
-						audioDecoder.configure(codec, sampleRate, channels, sharedAudioContext()).then(() => {
+						const ctx = sharedAudioContext();
+						const bus = isProgramKey(key) ? programBus : monitorBus;
+						audioDecoder.configure(codec, sampleRate, channels, ctx, bus ?? undefined).then(() => {
 							// The source was removed, or the pipeline destroyed,
 							// while the decoder was configuring: nothing would
 							// ever reset it.
@@ -275,6 +314,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 								audioDecoder.reset();
 								return;
 							}
+							audioDecoder.setGain(sourceGains.get(key) ?? 1);
 							audioDecoder.setMuted(!unmutedSources.has(key));
 							audioDecoder.enableMetering();
 							source.audioDecoder = audioDecoder;
@@ -656,6 +696,10 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		for (const key of Array.from(sources.keys())) {
 			removeSource(key);
 		}
+		unsubscribeMonitor?.();
+		unsubscribeMonitor = null;
+		monitorBus = null;
+		programBus = null;
 		void audioContext?.close();
 		audioContext = null;
 		lastFrameTime.clear();
@@ -726,6 +770,14 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		if (source?.audioDecoder) {
 			source.audioDecoder.setMuted(muted);
 		}
+	}
+
+	/** Gain per source while unmuted, set before or after its decoder exists. */
+	const sourceGains = new Map<string, number>();
+
+	function setSourceGain(sourceKey: string, gain: number): void {
+		sourceGains.set(sourceKey, gain);
+		sources.get(sourceKey)?.audioDecoder?.setGain(gain);
 	}
 
 	/**
@@ -802,6 +854,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		getAudioDecoder,
 		getSourceTransport,
 		setSourceMuted,
+		setSourceGain,
 		resumeAllAudio,
 		attachCanvas,
 		detachCanvas,
