@@ -34,13 +34,17 @@
 	}
 	let { state: crState, externalSelectedLayerId = null }: Props = $props();
 
-	// ── Per-layer settings ──
+	// Per-layer settings
 	// The engine stores each layer's config and broadcasts it, so it outlives
 	// this panel and is shared by every session. pendingConfigs holds edits
 	// until the broadcast state carries them, so typing never flickers back.
 	let pendingConfigs = $state<Record<number, LayerConfig>>({});
 	const saveTimers = new Map<number, ReturnType<typeof setTimeout>>();
 	const SAVE_DELAY_MS = 300;
+	const SAVE_RETRY_MS = 3000;
+	// Layers whose last save failed: flagged in the header and retried.
+	let unsavedLayers = $state<Record<number, boolean>>({});
+	let destroyed = false;
 
 	// ── Selection state ──
 	let selectedLayerId = $state<number | null>(null);
@@ -100,8 +104,20 @@
 		saveTimers.delete(id);
 		const cfg = pendingConfigs[id];
 		if (!cfg) return;
-		graphicsSetLayerSettings(id, { config: cfg as Record<string, unknown> }).catch(() => {
-			notify('error', 'Saving layer settings failed');
+		graphicsSetLayerSettings(id, { config: cfg as Record<string, unknown> }).then(() => {
+			if (unsavedLayers[id]) {
+				const { [id]: _, ...rest } = unsavedLayers;
+				unsavedLayers = rest;
+			}
+		}).catch((err) => {
+			if (!unsavedLayers[id]) {
+				notify('error', `Layer settings not saved: ${(err as Error)?.message ?? 'request failed'}`);
+				unsavedLayers = { ...unsavedLayers, [id]: true };
+			}
+			// Keep the edit and retry, unless a newer edit already queued a save.
+			if (!destroyed && !saveTimers.has(id) && pendingConfigs[id]) {
+				saveTimers.set(id, setTimeout(() => saveConfig(id), SAVE_RETRY_MS));
+			}
 		});
 	}
 
@@ -127,6 +143,7 @@
 
 	// Leaving the tab must not lose the last keystrokes.
 	onDestroy(() => {
+		destroyed = true;
 		for (const [id, t] of saveTimers) {
 			clearTimeout(t);
 			saveConfig(id);
@@ -337,7 +354,7 @@
 		updateConfig(id, { ticker: { ...getLayerTickerConfig(id), [key]: value } });
 	}
 
-	// ── Export / import ──
+	// Export / import
 	async function handleExport() {
 		try {
 			const doc = await graphicsExportLayers();
@@ -545,6 +562,9 @@
 			/>
 			<span class="dsk-fade-unit">ms</span>
 		</label>
+		{#if Object.keys(unsavedLayers).length > 0}
+			<span class="gfx-unsaved" title="The engine did not accept the last change; retrying">NOT SAVED</span>
+		{/if}
 		<button class="gfx-io" onclick={handleExport} disabled={layers.length === 0} title="Export every layer to a JSON file">EXPORT</button>
 		<button class="gfx-io" onclick={handleImport} disabled={anyActive} title={anyActive ? 'Take every layer off air to import' : 'Replace every layer with a JSON export'}>IMPORT</button>
 		<span class="gfx-status" class:on-air={anyActive}>
@@ -642,6 +662,14 @@
 		border-bottom: 1px solid var(--border-subtle);
 		flex-shrink: 0;
 		background: var(--bg-base);
+	}
+
+	.gfx-unsaved {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		color: var(--accent-orange);
 	}
 
 	.gfx-io {

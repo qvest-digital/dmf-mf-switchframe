@@ -3,6 +3,9 @@ import { render, fireEvent, createEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import GraphicsPanel from './GraphicsPanel.svelte';
 import * as api from '$lib/api/switch-api';
+import { notify } from '$lib/state/notifications.svelte';
+
+vi.mock('$lib/state/notifications.svelte', () => ({ notify: vi.fn() }));
 
 vi.mock('$lib/api/switch-api', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$lib/api/switch-api')>()),
@@ -56,6 +59,24 @@ describe('GraphicsPanel settings on the engine', () => {
 		await fireEvent.input(container.querySelector('.field-inp') as HTMLInputElement, { target: { value: 'Grace' } });
 		unmount();
 		expect(api.graphicsSetLayerSettings).toHaveBeenCalledTimes(1);
+	});
+
+	it('flags a save the engine refused, keeps the value and retries', async () => {
+		vi.mocked(api.graphicsSetLayerSettings)
+			.mockRejectedValueOnce(new Error('engine unreachable'))
+			.mockResolvedValueOnce({});
+		const { container } = render(GraphicsPanel, { props: { state: stateWith(layer(0, 0)) } });
+		const input = container.querySelector('.field-inp') as HTMLInputElement;
+		await fireEvent.input(input, { target: { value: 'Ada' } });
+		await vi.advanceTimersByTimeAsync(350);
+		expect(notify).toHaveBeenCalledWith('error', expect.stringContaining('engine unreachable'));
+		expect(container.querySelector('.gfx-unsaved')?.textContent).toBe('NOT SAVED');
+		expect((container.querySelector('.field-inp') as HTMLInputElement).value).toBe('Ada');
+
+		await vi.advanceTimersByTimeAsync(3100);
+		expect(api.graphicsSetLayerSettings).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(api.graphicsSetLayerSettings).mock.calls[1][1].config).toMatchObject({ fields: { name: 'Ada' } });
+		expect(container.querySelector('.gfx-unsaved')).toBeNull();
 	});
 
 	it('shows the values the engine holds when it opens', () => {

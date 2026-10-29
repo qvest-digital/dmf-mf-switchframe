@@ -74,7 +74,7 @@
 		dropTarget = null;
 	}
 
-	// ── Rename ──
+	// Rename
 	let renamingId = $state<number | null>(null);
 	let renameValue = $state('');
 
