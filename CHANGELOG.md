@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.0.0-rc.35](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.34...mxl-v1.0.0-rc.35) (2026-10-29)
+
+
+### Features
+
+* **htmlgfx:** add an ograf-host template for manifest-only graphics ([74a7598](https://github.com/qvest-digital/dmf-mf-switchframe/commit/74a7598ab566a4a20ef332ffc9f4d99596ab5521))
+* **htmlgfx:** build the CEF sidecar into the MXL images ([f221e2e](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f221e2e0479371e8ba9a32cfc159f6cb6b708dd6))
+* **htmlgfx:** count sidecar frames that reach the compositor ([f221e2e](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f221e2e0479371e8ba9a32cfc159f6cb6b708dd6))
+* **htmlgfx:** report template failures as load errors ([74a7598](https://github.com/qvest-digital/dmf-mf-switchframe/commit/74a7598ab566a4a20ef332ffc9f4d99596ab5521))
+* **htmlgfx:** spawn the CEF sidecar only with --html5-graphics=true ([f221e2e](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f221e2e0479371e8ba9a32cfc159f6cb6b708dd6))
+
+
+### Bug Fixes
+
+* **cef:** hold every navigation and load to the URL policy ([74a7598](https://github.com/qvest-digital/dmf-mf-switchframe/commit/74a7598ab566a4a20ef332ffc9f4d99596ab5521))
+* **cef:** select headless Ozone and stop background networking ([f221e2e](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f221e2e0479371e8ba9a32cfc159f6cb6b708dd6))
+* **htmlgfx:** ignore sidecar events for a freed slot ([74a7598](https://github.com/qvest-digital/dmf-mf-switchframe/commit/74a7598ab566a4a20ef332ffc9f4d99596ab5521))
+* **htmlgfx:** refuse graphic URLs other than https and templates ([74a7598](https://github.com/qvest-digital/dmf-mf-switchframe/commit/74a7598ab566a4a20ef332ffc9f4d99596ab5521))
+* **htmlgfx:** send a graphic's data again once its format is known ([74a7598](https://github.com/qvest-digital/dmf-mf-switchframe/commit/74a7598ab566a4a20ef332ffc9f4d99596ab5521))
+* **playout:** air a live item's input on an engine without a GPU ([374f0be](https://github.com/qvest-digital/dmf-mf-switchframe/commit/374f0be1fb067893366057f7893dbf014336e054))
+* **playout:** arm a live item's source before it airs ([374f0be](https://github.com/qvest-digital/dmf-mf-switchframe/commit/374f0be1fb067893366057f7893dbf014336e054))
+* **switcher:** warn when a live item's source is not 8-bit ([374f0be](https://github.com/qvest-digital/dmf-mf-switchframe/commit/374f0be1fb067893366057f7893dbf014336e054))
+* **ui:** list live playlist sources under their switcher label ([374f0be](https://github.com/qvest-digital/dmf-mf-switchframe/commit/374f0be1fb067893366057f7893dbf014336e054))
+* **ui:** offer unconnected inputs and tell shared labels apart ([374f0be](https://github.com/qvest-digital/dmf-mf-switchframe/commit/374f0be1fb067893366057f7893dbf014336e054))
+
+
+### Continuous Integration
+
+* **mxl:** publish only the image digests the HTML5 smoke test ran ([f221e2e](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f221e2e0479371e8ba9a32cfc159f6cb6b708dd6))
+
 ## [1.0.0-rc.34](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.33...mxl-v1.0.0-rc.34) (2026-10-29)
 
 
