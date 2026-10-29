@@ -622,7 +622,7 @@ func TestWriter_GrainRateProducerGetsOneGrainPerFrame(t *testing.T) {
 	}
 	time.Sleep(period / 2)
 	cancel()
-	w.Close()
+	_ = w.Close()
 
 	// Each frame's grains, in index order, between the first frame and
 	// the last.
@@ -672,7 +672,7 @@ func TestWriter_StalledProducerRepeatsOnSchedule(t *testing.T) {
 	end := CurrentIndex(rate)
 	head := mock.getGrains()
 	cancel()
-	w.Close()
+	_ = w.Close()
 	if got := head[len(head)-1].index; got != end {
 		t.Fatalf("head %d mid-period of grain %d during a stall", got, end)
 	}
