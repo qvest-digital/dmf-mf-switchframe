@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.0-rc.34](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.33...mxl-v1.0.0-rc.34) (2026-10-29)
+
+
+### Features
+
+* **playout:** count the ticks the run loop makes up and skips ([d32bcce](https://github.com/qvest-digital/dmf-mf-switchframe/commit/d32bcce8c77c56bb84739c61955756182e1dd775))
+
+
+### Bug Fixes
+
+* **clip:** start every loop pass at the first keyframe ([#167](https://github.com/qvest-digital/dmf-mf-switchframe/issues/167)) ([c62afc0](https://github.com/qvest-digital/dmf-mf-switchframe/commit/c62afc0e3a369c5f02ea1463aa24c78e385fc3ae))
+* **playout:** drop audio that ends before the first picture ([d32bcce](https://github.com/qvest-digital/dmf-mf-switchframe/commit/d32bcce8c77c56bb84739c61955756182e1dd775))
+* **playout:** drop the leading pictures of the first keyframe ([d32bcce](https://github.com/qvest-digital/dmf-mf-switchframe/commit/d32bcce8c77c56bb84739c61955756182e1dd775))
+* **playout:** give each pass of a clip without an IDR a fresh decoder ([d32bcce](https://github.com/qvest-digital/dmf-mf-switchframe/commit/d32bcce8c77c56bb84739c61955756182e1dd775))
+* **playout:** make up ticks the run loop misses ([d32bcce](https://github.com/qvest-digital/dmf-mf-switchframe/commit/d32bcce8c77c56bb84739c61955756182e1dd775))
+* **playout:** rewind a loop clip outside the channel lock ([d32bcce](https://github.com/qvest-digital/dmf-mf-switchframe/commit/d32bcce8c77c56bb84739c61955756182e1dd775))
+* **playout:** rewind looping clip items in place ([d32bcce](https://github.com/qvest-digital/dmf-mf-switchframe/commit/d32bcce8c77c56bb84739c61955756182e1dd775))
+* **playout:** rewind the idle loop in place ([d32bcce](https://github.com/qvest-digital/dmf-mf-switchframe/commit/d32bcce8c77c56bb84739c61955756182e1dd775))
+* **playout:** start every loop pass at the first keyframe ([d32bcce](https://github.com/qvest-digital/dmf-mf-switchframe/commit/d32bcce8c77c56bb84739c61955756182e1dd775))
+
 ## [1.0.0-rc.33](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.32...mxl-v1.0.0-rc.33) (2026-10-29)
 
 
