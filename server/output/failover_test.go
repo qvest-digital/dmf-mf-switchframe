@@ -382,6 +382,66 @@ func TestDestinationPair_SwitchOverLegLandsLate(t *testing.T) {
 	require.Equal(t, []string{pairID}, b.SendingDestinationIDs())
 }
 
+// operatorChangeTestSkew stands in for PairChangeSkew where a test waits
+// it out.
+const operatorChangeTestSkew = 20 * time.Millisecond
+
+// pastStartSkew adds the destination on both engines, starts it, and waits
+// until a poll is no longer within the skew of that start, so only a later
+// operator change can hold a poll back.
+func pastStartSkew(t *testing.T) (a, b *Manager) {
+	t.Helper()
+	a, b = pairEngine(t, "a"), pairEngine(t, "b")
+	addBoth(t, a, b, true)
+	time.Sleep(2 * operatorChangeTestSkew)
+	return a, b
+}
+
+// sendingView is a poll of peer, sent now, that shows it sending the
+// destination: its own leg of the change has not landed yet.
+func sendingView(peer *Manager, leads bool) PeerView {
+	v := viewOf(peer, leads)
+	v.Sending, v.Skew = []string{pairID}, operatorChangeTestSkew
+	return v
+}
+
+// A switch-over long after the start: B's leg lands first and B's next
+// poll still shows A sending. Only the switch-over itself holds that poll
+// back; without it B yields to A and both engines stand by.
+func TestDestinationPair_SwitchOverHeldBackByItsOwnSkew(t *testing.T) {
+	a, b := pastStartSkew(t)
+
+	require.NoError(t, b.ReassignDestinationEngine(pairID, "b"))
+	b.ReconcileDestinations(sendingView(a, false))
+	requireState(t, b, string(StateActive), "b")
+}
+
+// A start on the sender that does not lead, long after the destination was
+// added: a poll within the skew of the start may show the peer before its
+// own leg, sending it still. The sender keeps it.
+func TestDestinationPair_StartOnSenderHeldBackByItsOwnSkew(t *testing.T) {
+	a, b := pastStartSkew(t)
+	for _, m := range []*Manager{a, b} {
+		require.NoError(t, m.StopDestination(pairID))
+	}
+	time.Sleep(2 * operatorChangeTestSkew)
+
+	require.NoError(t, a.StartDestination(pairID))
+	a.ReconcileDestinations(sendingView(b, false))
+	requireState(t, a, string(StateActive), "a")
+}
+
+// A stop on the sender, long after the start: a poll within the skew of the
+// stop may show the peer sending before its own leg stops it. The stopped
+// sender does not hand the destination to the peer.
+func TestDestinationPair_StopOnSenderHeldBackByItsOwnSkew(t *testing.T) {
+	a, b := pastStartSkew(t)
+
+	require.NoError(t, a.StopDestination(pairID))
+	a.ReconcileDestinations(sendingView(b, false))
+	requireState(t, a, "stopped", "a")
+}
+
 // A takeover is this engine's own change and has no second leg: once the
 // leader is back and sends too, the follower stands by on the first poll
 // that shows it, not only once the skew of an operator's change has passed.
