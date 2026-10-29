@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/zsiec/switchframe/server/htmlgfx"
@@ -62,5 +63,21 @@ func TestBuildHTMLGfxConfig_DisabledLeavesNoBinary(t *testing.T) {
 		if got.BinaryPath != "" {
 			t.Errorf("CEFBinary %q: BinaryPath = %q, want empty", cfg.CEFBinary, got.BinaryPath)
 		}
+	}
+}
+
+// An operator whose HTML5 graphics are off has to see that the flag turned
+// them off, not a missing binary, which sends them looking for a file.
+func TestBuildHTMLGfxConfig_LogsWhyTheSidecarIsNotSpawned(t *testing.T) {
+	logged := captureSlog(t)
+	buildHTMLGfxConfig(AppConfig{}, 1920, 1080, 30)
+	if !strings.Contains(logged.String(), "--html5-graphics is false") {
+		t.Errorf("disabled config logged %q, want the flag named", logged.String())
+	}
+
+	logged.Reset()
+	buildHTMLGfxConfig(AppConfig{HTML5Graphics: true}, 1920, 1080, 30)
+	if strings.Contains(logged.String(), "--html5-graphics") {
+		t.Errorf("enabled config logged %q", logged.String())
 	}
 }

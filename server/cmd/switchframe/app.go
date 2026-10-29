@@ -835,8 +835,10 @@ func buildHTMLGfxConfig(cfg AppConfig, width, height, fps int) htmlgfx.Config {
 		out.TemplatesDir = cfg.CEFTemplatesDir
 	}
 	// An empty binary path is how htmlgfx.Manager.Start leaves the sidecar
-	// unspawned.
+	// unspawned. Start cannot tell why the path is empty, so the reason is
+	// logged here.
 	if !cfg.HTML5Graphics {
+		slog.Info("htmlgfx: sidecar not spawned, --html5-graphics is false")
 		out.BinaryPath = ""
 	}
 	return out

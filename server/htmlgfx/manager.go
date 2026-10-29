@@ -80,7 +80,8 @@ func NewManager(compositor compositorSetter, cfg Config) *Manager {
 func (m *Manager) Start() error {
 	binPath := m.config.BinaryPath
 	if binPath == "" {
-		slog.Info("htmlgfx: no sidecar binary path configured, HTML5 graphics disabled")
+		// The caller logs why, if it chose to leave the path empty.
+		slog.Debug("htmlgfx: no sidecar binary path, sidecar not spawned")
 		return nil
 	}
 

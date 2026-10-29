@@ -136,7 +136,7 @@ demo-cef: build-server cef-sidecar node_modules_check
 	@echo ""
 	@trap 'kill 0' EXIT; \
 		CERT_FLAGS="--http-fallback"; \
-		CEF_FLAGS="--cef-binary $(CEF_BIN_REL) --cef-templates-dir cef-sidecar/demo-templates"; \
+		CEF_FLAGS="--html5-graphics=true --cef-binary $(CEF_BIN_REL) --cef-templates-dir cef-sidecar/demo-templates"; \
 		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
 		echo ""; \
 		if [ -d test/clips ]; then \
@@ -209,7 +209,7 @@ demo-advanced: build-server build-asr-sidecar-whisper cef-sidecar node_modules_c
 	@trap 'kill 0' EXIT; \
 		CERT_FLAGS="--http-fallback"; \
 		ASR_FLAGS="--asr-sidecar ./bin/switchframe-asr --asr-whisper-models-dir $(WHISPER_MODELS_DIR) --asr-default-backend whisper"; \
-		CEF_FLAGS="--cef-binary $(CEF_BIN_REL) --cef-templates-dir cef-sidecar/demo-templates"; \
+		CEF_FLAGS="--html5-graphics=true --cef-binary $(CEF_BIN_REL) --cef-templates-dir cef-sidecar/demo-templates"; \
 		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
 		echo ""; \
 		if [ -d test/clips ]; then \
