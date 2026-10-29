@@ -896,6 +896,37 @@ func TestManagerReplaysDataOnceWhenFormatBecomesKnown(t *testing.T) {
 	require.Equal(t, 3, countUpdates(mock.getCommands()))
 }
 
+// A template reports a failure as a load error early, and the sidecar's
+// format check after the load reports "unknown" for it later. The layer has
+// to stay in error rather than read as a graphic ready to play.
+func TestManagerLoadErrorOutlastsLaterFormatCheck(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mock.close()
+	defer func() { _ = mgr.Close() }()
+
+	id, err := mgr.AllocateBrowser(0)
+	require.NoError(t, err)
+	other, err := mgr.AllocateBrowser(1)
+	require.NoError(t, err)
+	require.NoError(t, mgr.LoadURL(id, "https://templates.test/ograf-host.html"))
+	require.NoError(t, mgr.Update(id, `{"name":"Alice"}`))
+
+	sendEvents(t, mock, id,
+		ControlResponse{Event: "load_error", Error: "no ?manifest= given"},
+		ControlResponse{Event: "format_detected", Format: "unknown"},
+		ControlResponse{Event: "format_detected", Format: "ograf"})
+	sendEvents(t, mock, other, ControlResponse{Event: "stopped"})
+	waitForStatus(t, mgr, other, "stopped", 2*time.Second)
+
+	require.Equal(t, "error", mgr.BrowserStates()[id].Status)
+	require.Equal(t, 1, countUpdates(mock.getCommands()), "no replay into a failed page")
+
+	// The next load starts afresh.
+	require.NoError(t, mgr.LoadURL(id, "https://templates.test/other.html"))
+	sendEvents(t, mock, id, ControlResponse{Event: "format_detected", Format: "ograf"})
+	waitForStatus(t, mgr, id, "ready", 2*time.Second)
+}
+
 // An event can arrive after its slot was freed. Applied, it gives the empty
 // slot a status, and AllocateBrowser never hands that slot out again.
 func TestManagerIgnoresEventsForFreedSlot(t *testing.T) {

@@ -32,7 +32,7 @@ The `url` must be `https`, or a `file` URL below the templates directory (`--cef
 
 The `data` field is forwarded to the sidecar which passes it to the template via the OGraf adapter, and sent again once the sidecar first reports a format other than `unknown` for the page: data sent with a load reaches the page before its adapter exists. See [html5-graphics.md](../../integration/cef-protocol.md).
 
-An OGraf graphic published as a manifest and a module, with no page of its own, is loaded through the `ograf-host` template: its URL with `?manifest=<https manifest URL>` appended. The host page fetches the manifest, imports its `main` module relative to it, both over `https` only, and loads the graphic in real-time mode.
+An OGraf graphic published as a manifest and a module, with no page of its own, is loaded through the `ograf-host` template: its URL with `?manifest=<https manifest URL>` appended. The host page fetches the manifest, imports its `main` module relative to it, both over `https` only, and loads the graphic in real-time mode. A missing or refused manifest, a module that does not load, or a `load()` that does not answer 2xx sets the layer's `html5Status` to `error`, and the engine logs the reason.
 
 **Errors:** 400 (bad id, invalid JSON, URL refused), 503 (sidecar not running), 409 (browser pool exhausted), plus any CEF allocation failure.
 

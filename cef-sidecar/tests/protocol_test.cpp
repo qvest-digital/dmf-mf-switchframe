@@ -447,6 +447,24 @@ TEST(EscapeForJSON_MakeEventResponseEscapesControlByteValue) {
                                 "\"format\":\"og\\u0001raf\"}\n"));
 }
 
+TEST(TitleEvent_Format) {
+    ASSERT_EQ(protocol::MakeTitleEventResponse(1, "switchframe-format:ograf"),
+              std::string("{\"id\":1,\"event\":\"format_detected\",\"format\":\"ograf\"}\n"));
+}
+
+// A template that cannot show its graphic says so, rather than leaving the
+// engine to read an "unknown" format as a page that is ready.
+TEST(TitleEvent_Error) {
+    ASSERT_EQ(protocol::MakeTitleEventResponse(3, "switchframe-error:manifest: HTTP 404"),
+              std::string("{\"id\":3,\"event\":\"load_error\",\"error\":\"manifest: HTTP 404\"}\n"));
+}
+
+TEST(TitleEvent_OtherTitlesIgnored) {
+    ASSERT_EQ(protocol::MakeTitleEventResponse(0, "Lower third"), std::string(""));
+    ASSERT_EQ(protocol::MakeTitleEventResponse(0, ""), std::string(""));
+    ASSERT_EQ(protocol::MakeTitleEventResponse(0, "switchframe-form"), std::string(""));
+}
+
 // ---------------------------------------------------------------------------
 // Entry Point
 // ---------------------------------------------------------------------------

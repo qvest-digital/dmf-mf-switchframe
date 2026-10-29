@@ -26,8 +26,12 @@
 // only once the graphic has loaded and can play. The adapter is then asked to
 // detect again and the result is reported through the title, as the sidecar
 // reads it, which is also what makes the engine send the graphic its data.
+// A failure is reported through the title as well, which the sidecar turns
+// into a load error on the layer.
 
 const FORMAT_TITLE = 'switchframe-format:';
+const ERROR_TITLE = 'switchframe-error:';
+const TAG = 'ograf-host-graphic';
 
 function httpsURL(raw, base) {
   const u = new URL(raw, base);
@@ -44,10 +48,19 @@ function adapterReady() {
   });
 }
 
+// An OGraf method resolves to { statusCode }; anything but 2xx is a refusal.
+function checkStatus(what, result) {
+  const code = result && result.statusCode;
+  if (typeof code === 'number' && (code < 200 || code > 299)) {
+    throw new Error(what + ' returned status ' + code +
+      (result.statusMessage ? ': ' + result.statusMessage : ''));
+  }
+}
+
 async function host() {
   const param = new URLSearchParams(location.search).get('manifest');
   if (!param) {
-    throw new Error('no ?manifest= given');
+    throw new Error('no ?manifest=<https URL of an OGraf manifest> given');
   }
   const manifestURL = httpsURL(param);
   const res = await fetch(manifestURL);
@@ -59,17 +72,24 @@ async function host() {
     throw new Error('manifest ' + manifestURL.href + ' names no main module');
   }
   const mod = await import(httpsURL(manifest.main, manifestURL).href);
+  if (typeof mod.default !== 'function') {
+    throw new Error('module ' + manifest.main + ' exports no default class');
+  }
 
-  customElements.define('ograf-host-graphic', mod.default);
-  const el = document.createElement('ograf-host-graphic');
+  // A subclass, because a module may register its own class under its own
+  // tag, and one constructor cannot be defined twice.
+  if (!customElements.get(TAG)) {
+    customElements.define(TAG, class extends mod.default {});
+  }
+  const el = document.createElement(TAG);
   document.body.appendChild(el);
-  await el.load({
+  checkStatus('load', await el.load({
     data: {},
     renderType: 'realtime',
     renderCharacteristics: {
       resolution: { width: window.innerWidth, height: window.innerHeight },
     },
-  });
+  }));
 
   const link = document.createElement('link');
   link.rel = 'ograf-manifest';
@@ -81,7 +101,10 @@ async function host() {
   document.title = FORMAT_TITLE + adapter.format;
 }
 
-host().catch((err) => console.error('ograf-host:', err.message));
+host().catch((err) => {
+  console.error('ograf-host:', err.message);
+  document.title = ERROR_TITLE + 'ograf-host: ' + err.message;
+});
 </script>
 </body>
 </html>

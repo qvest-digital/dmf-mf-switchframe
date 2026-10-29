@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 // The OGraf host template and the adapter the CEF sidecar injects into every
 // page, driven the way the sidecar drives them: the adapter goes in after the
-// page's load event, and the sidecar reads the detected format from the title.
+// page's load event, and the sidecar reads the detected format, or a
+// failure, from the title.
 
 const hostURL = new URL('../../cef-sidecar/demo-templates/ograf-host/index.html', import.meta.url).href;
 const adapterJS = readFileSync(
@@ -12,6 +13,7 @@ const adapterJS = readFileSync(
 	'utf8',
 );
 const FORMAT = 'switchframe-format:';
+const ERROR = 'switchframe-error:ograf-host: ';
 
 const manifest = 'https://graphics.test/headline/headline.ograf.json';
 
@@ -26,7 +28,7 @@ export default class Graphic extends HTMLElement {
 	async customAction(p) { window.__calls.push('custom:' + p.id); return { statusCode: 200 }; }
 }`;
 
-async function serveGraphic(page: Page, delayMs = 0): Promise<string[]> {
+async function serveGraphic(page: Page, delayMs = 0, module = graphicModule): Promise<string[]> {
 	const requested: string[] = [];
 	await page.route(/^https?:\/\/graphics\.test\//, async (route) => {
 		const url = route.request().url();
@@ -36,12 +38,29 @@ async function serveGraphic(page: Page, delayMs = 0): Promise<string[]> {
 		if (url.endsWith('.ograf.json')) {
 			await route.fulfill({ headers, contentType: 'application/json', body: JSON.stringify({ name: 'Headline', main: 'graphic.mjs' }) });
 		} else if (url.endsWith('/graphic.mjs')) {
-			await route.fulfill({ headers, contentType: 'text/javascript', body: graphicModule });
+			await route.fulfill({ headers, contentType: 'text/javascript', body: module });
 		} else {
 			await route.fulfill({ status: 404 });
 		}
 	});
 	return requested;
+}
+
+// Every title the page sets, in order: the sidecar reports each one, so an
+// error title is seen even when the format check overwrites it later.
+async function recordTitles(page: Page) {
+	await page.addInitScript(() => {
+		const desc = Object.getOwnPropertyDescriptor(Document.prototype, 'title')!;
+		(window as any).__titles = [];
+		Object.defineProperty(Document.prototype, 'title', {
+			get() { return desc.get!.call(this); },
+			set(v: string) { (window as any).__titles.push(v); desc.set!.call(this, v); },
+		});
+	});
+}
+
+async function titles(page: Page): Promise<string[]> {
+	return page.evaluate(() => (window as any).__titles);
 }
 
 // What the sidecar runs at OnLoadEnd.
@@ -87,18 +106,55 @@ test.describe('OGraf host template', () => {
 		await expect.poll(() => page.evaluate(() => (window as any).__calls)).toEqual(['load:realtime', 'play']);
 	});
 
+	// The reason in the reported error tells the module's own refusal apart
+	// from Chromium refusing the fetch.
 	for (const [name, url] of [
 		['an http manifest', 'http://graphics.test/headline/headline.ograf.json'],
 		['a file manifest', 'file:///etc/passwd'],
 	]) {
 		test(`refuses ${name}`, async ({ page }) => {
+			await recordTitles(page);
 			const requested = await serveGraphic(page);
 			await page.goto(`${hostURL}?manifest=${encodeURIComponent(url)}`);
 			await injectAdapter(page);
 
-			await expect(page).toHaveTitle(FORMAT + 'unknown');
+			await expect.poll(() => titles(page)).toContain(ERROR + 'not an https URL: ' + url);
 			expect(requested).toEqual([]);
 			expect(await page.locator('ograf-host-graphic').count()).toBe(0);
 		});
 	}
+
+	test('reports a missing manifest', async ({ page }) => {
+		await recordTitles(page);
+		await page.goto(hostURL);
+		await injectAdapter(page);
+
+		await expect.poll(() => titles(page)).toContain(ERROR + 'no ?manifest=<https URL of an OGraf manifest> given');
+	});
+
+	test('reports a graphic whose load fails', async ({ page }) => {
+		await recordTitles(page);
+		await serveGraphic(page, 0, `
+export default class Graphic extends HTMLElement {
+	async load() { return { statusCode: 500, statusMessage: 'no data source' }; }
+}`);
+		await page.goto(`${hostURL}?manifest=${encodeURIComponent(manifest)}`);
+		await injectAdapter(page);
+
+		await expect.poll(() => titles(page)).toContain(ERROR + 'load returned status 500: no data source');
+		expect(await titles(page)).not.toContain(FORMAT + 'ograf');
+	});
+
+	// A module that registers its own class still loads: the host defines a
+	// subclass, since one constructor cannot be defined under two tags.
+	test('hosts a graphic that defines its own element', async ({ page }) => {
+		await serveGraphic(page, 0, graphicModule + `
+customElements.define('headline-graphic', Graphic);`);
+		await page.goto(`${hostURL}?manifest=${encodeURIComponent(manifest)}`);
+		await injectAdapter(page);
+
+		await expect(page).toHaveTitle(FORMAT + 'ograf');
+		await page.evaluate(() => (window as any).__switchframe.play());
+		await expect.poll(() => page.evaluate(() => (window as any).__calls)).toEqual(['load:realtime', 'play']);
+	});
 });

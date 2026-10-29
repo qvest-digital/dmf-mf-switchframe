@@ -784,6 +784,13 @@ func (m *Manager) controlReadLoop(gen int64) {
 			bs := m.browsers[resp.ID]
 			switch resp.Event {
 			case "format_detected":
+				// The sidecar's own format check runs after the page has
+				// loaded, so it can report "unknown" for a page that has
+				// already reported an error; the error stands until the
+				// next load.
+				if bs.Status == "error" {
+					break
+				}
 				// Data sent with or right after a load reaches the page
 				// before its adapter exists and is dropped there, so the
 				// last data is sent again once the adapter reports a
@@ -804,6 +811,7 @@ func (m *Manager) controlReadLoop(gen int64) {
 				}
 			case "load_error":
 				bs.Status = "error"
+				slog.Warn("htmlgfx: page failed", "browser", resp.ID, "url", bs.URL, "error", resp.Error)
 			case "stopped":
 				bs.Status = "stopped"
 			}

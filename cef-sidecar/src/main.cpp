@@ -214,16 +214,15 @@ int main(int argc, char* argv[]) {
                     // adapter.js sets document.title = "switchframe-format:<fmt>"
                     browser_pool->SetTitleChangeCallback(cmd.id,
                         [ctrl_for_cb, slot_id](int /*cef_browser_id*/, const std::string& title) {
-                            const std::string prefix = "switchframe-format:";
-                            if (title.substr(0, prefix.size()) == prefix) {
-                                std::string fmt = title.substr(prefix.size());
+                            const std::string fmt_prefix = "switchframe-format:";
+                            if (title.compare(0, fmt_prefix.size(), fmt_prefix) == 0) {
                                 std::cerr << "[main] Format detected: slot="
-                                          << slot_id << " format=" << fmt << std::endl;
-                                if (ctrl_for_cb) {
-                                    ctrl_for_cb->SendResponse(
-                                        protocol::MakeEventResponse(
-                                            slot_id, "format_detected", "format", fmt));
-                                }
+                                          << slot_id << " format="
+                                          << title.substr(fmt_prefix.size()) << std::endl;
+                            }
+                            std::string event = protocol::MakeTitleEventResponse(slot_id, title);
+                            if (!event.empty() && ctrl_for_cb) {
+                                ctrl_for_cb->SendResponse(event);
                             }
                         });
                     browser_pool->SetLoadErrorCallback(cmd.id,
