@@ -3,6 +3,7 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import CommsBar from './CommsBar.svelte';
 import { CommsAudioManager } from '$lib/audio/comms';
 import type { CommsState } from '$lib/api/types';
+import { reloadHolds } from '$lib/util/activity';
 
 const mocks = vi.hoisted(() => {
 	const instances: Array<{
@@ -178,6 +179,18 @@ describe('CommsBar', () => {
 		// as a participant, recovery must not re-join audio.
 		await new Promise((r) => setTimeout(r, 10));
 		expect(mocks.instances.length).toBe(1);
+	});
+
+	// A hidden tab carrying talkback would drop the operator out of comms
+	// on a stale-build reload.
+	it('holds a reload while this operator is in comms', async () => {
+		const joined = { active: true, participants: [{ operatorId: 'op-1', name: 'Operator One', muted: false, speaking: false }] } as unknown as CommsState;
+		const { rerender } = render(CommsBar, { props: makeProps() });
+		expect(reloadHolds()).not.toContain('comms');
+		await rerender(makeProps({ commsState: joined }));
+		expect(reloadHolds()).toContain('comms');
+		await rerender(makeProps({ commsState: { active: false, participants: [] } }));
+		expect(reloadHolds()).not.toContain('comms');
 	});
 
 	it('uses the mocked CommsAudioManager', () => {

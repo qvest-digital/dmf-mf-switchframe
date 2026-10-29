@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { reloadHolds } from '$lib/util/activity';
 import PlayoutPanel from './PlayoutPanel.svelte';
 import type { ControlRoomState, PlayoutChannelState } from '$lib/api/types';
 import * as api from '$lib/api/switch-api';
@@ -568,6 +569,21 @@ describe('PlayoutPanel', () => {
 		const btn = container.querySelector('[data-testid="new-playlist-btn"]');
 		expect(btn).toBeTruthy();
 		expect(btn!.textContent).toContain('New');
+	});
+
+	// The working playlist lives only in this panel until it is saved, so a
+	// stale-build reload of a hidden, untouched tab would lose the edits.
+	it('holds a reload while the playlist has unsaved edits', async () => {
+		const { container } = render(PlayoutPanel, { props: { state: makeState() } });
+		expect(reloadHolds()).not.toContain('unsaved playlist');
+		await fireEvent.click(container.querySelector('[data-testid="new-playlist-btn"]') as HTMLButtonElement);
+		expect(reloadHolds()).toContain('unsaved playlist');
+		const name = container.querySelector('.playlist-name-input') as HTMLInputElement;
+		await fireEvent.input(name, { target: { value: 'Evening' } });
+		await fireEvent.keyDown(name, { key: 'Enter' });
+		await fireEvent.click(container.querySelector('[data-testid="save-btn"]') as HTMLButtonElement);
+		await waitFor(() => expect(api.playoutSave).toHaveBeenCalled());
+		await waitFor(() => expect(reloadHolds()).not.toContain('unsaved playlist'));
 	});
 
 	it('shows Import and Export buttons', () => {
