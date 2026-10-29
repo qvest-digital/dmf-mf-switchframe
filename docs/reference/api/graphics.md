@@ -17,9 +17,11 @@ Most mutating endpoints respond with the compositor's current `Status()` (which 
 **Purpose:** create a new graphics layer.
 **Handler:** [`control/api_graphics.go`](../../../server/control/api_graphics.go) → `(*API).handleGraphicsAddLayer`.
 
+**Request body** (optional): `{ "id": 3 }`, the layer ID to take, so engines sent the same request can address the layer by one ID. Without it the engine picks the next ID it has not handed out.
+
 **Response 201:** `{ "id": 3 }`.
 
-**Errors:** 409 (`graphics.ErrTooManyLayers`).
+**Errors:** 400 (invalid JSON, `graphics.ErrInvalidLayerID`), 409 (`graphics.ErrTooManyLayers`, `graphics.ErrLayerExists`).
 
 ---
 

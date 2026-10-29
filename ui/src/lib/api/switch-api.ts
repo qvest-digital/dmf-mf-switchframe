@@ -1252,8 +1252,33 @@ export function getGate(source: string): Promise<GateResponse> {
 
 // --- Graphics Layer API ---
 
-export function graphicsAddLayer(): Promise<{ id: number }> {
-	return request('/api/graphics', { method: 'POST' });
+/**
+ * Adds a graphics layer on every engine under one ID. Each engine numbers
+ * its layers itself, and the numbers part once one has missed a create or
+ * restarted, so the first engine reachable picks the number and the others
+ * are asked for that one. A request by layer ID then reaches one layer on
+ * every engine.
+ */
+export async function graphicsAddLayer(): Promise<{ id: number }> {
+	const engines = getEngineUrls();
+	if (!engines || engines.length <= 1) return request('/api/graphics', { method: 'POST' });
+	const reachable = engines.filter((e) => !isCircuitOpen(e.url));
+	const [first, ...rest] = reachable.length > 0 ? reachable : engines;
+	const layer = await targetEngine<{ id: number }>('/api/graphics', { method: 'POST' }, engines, first.id);
+	if (rest.length > 0) {
+		const { results, availableEngines } = await fanOutMutation('/api/graphics', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', ...authHeaders() },
+			body: JSON.stringify({ id: layer.id }),
+		}, rest);
+		const failures = describeEngineFailures(results, availableEngines);
+		if (failures) {
+			console.warn(`[dual-api] Graphics layer ${layer.id} not added on ${failures}`);
+			partialFailureCallback?.();
+			partialFailureNotify?.(`POST /api/graphics failed on ${failures}`);
+		}
+	}
+	return layer;
 }
 
 export function graphicsRemoveLayer(layerId: number): Promise<void> {
@@ -1735,8 +1760,19 @@ export function setFormat(arg: string | { width: number; height: number; fpsNum:
 
 // SCTE-35 operations
 
+/**
+ * Each engine numbers the events it cues itself, from 1 at every start, so
+ * a cue sent to both carries its IDs: return, cancel, hold and extend name
+ * the event by ID, and both engines' outputs signal the break alike.
+ */
 export function scte35Cue(req: SCTE35CueRequest): Promise<{ eventId: number; state: ControlRoomState }> {
-	return post('/api/scte35/cue', req);
+	const ids = new Uint32Array(1 + (req.descriptors?.length ?? 0));
+	crypto.getRandomValues(ids);
+	return post('/api/scte35/cue', {
+		...req,
+		eventId: req.eventId ?? (req.commandType === 'splice_insert' ? ids[0] || 1 : undefined),
+		descriptors: req.descriptors?.map((d, i) => ({ ...d, segEventId: d.segEventId ?? (ids[i + 1] || 1) })),
+	});
 }
 
 export function scte35Return(eventId?: number): Promise<ControlRoomState> {
@@ -1936,11 +1972,16 @@ async function engineClip(baseUrl: string, id: string, name: string): Promise<Cl
 	}
 }
 
-/** Returns a random clip ID in the form the engines generate. */
-export function newClipId(): string {
-	const b = new Uint8Array(16);
+/** Returns n random bytes as lowercase hex. */
+function randomHex(n: number): string {
+	const b = new Uint8Array(n);
 	crypto.getRandomValues(b);
 	return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+/** Returns a random clip ID in the form the engines generate. */
+export function newClipId(): string {
+	return randomHex(16);
 }
 
 /**
@@ -2571,8 +2612,10 @@ export function podList(channelId: number): Promise<PodInfo[]> {
 	return request<PodInfo[]>(`/api/playout/channels/${channelId}/pods`);
 }
 
+/** Creates a pod under one ID on every engine, so that arming, firing or
+ * deleting it by that ID reaches it on each. */
 export function podCreate(channelId: number, body: { template?: string; config?: PodConfig }): Promise<PodInfo> {
-	return post(`/api/playout/channels/${channelId}/pods`, body);
+	return post(`/api/playout/channels/${channelId}/pods`, { id: `pod-${randomHex(4)}`, ...body });
 }
 
 export function podArm(channelId: number, podId: string): Promise<void> {

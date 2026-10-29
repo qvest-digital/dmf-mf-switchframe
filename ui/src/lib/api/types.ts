@@ -678,6 +678,7 @@ export interface SCTE35CueRequest {
 
 export interface SCTE35DescriptorRequest {
 	segmentationType: number;
+	segEventId?: number;
 	durationMs?: number;
 	upidType: number;
 	upid: string;
