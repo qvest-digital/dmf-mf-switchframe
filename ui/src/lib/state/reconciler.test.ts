@@ -291,6 +291,36 @@ describe('createReconciler', () => {
 		expect(r.health.divergences).toEqual([]);
 	});
 
+	// An engine that restarted has an empty SCTE-35 event log while the
+	// other keeps its history, and a snapshot push does not carry the log:
+	// counting it held the pair out of sync until the other engine restarted.
+	it('does not report SCTE-35 event log history as a divergence', () => {
+		vi.useFakeTimers();
+		const logged = { eventId: 7, commandType: 'splice_insert', isOut: true, autoReturn: false, timestamp: 1000, status: 'injected' };
+		const st = (eventLog: unknown[]) => ({ enabled: true, activeEvents: {}, eventLog, heartbeatOk: true, config: {} as never });
+		const r = createReconciler();
+		r.ingest('A', makeState({ scte35: st([logged, { ...logged, isOut: false, status: 'returned' }]) as never }));
+		r.ingest('B', makeState({ scte35: st([]) as never }));
+		vi.advanceTimersByTime(SETTLE_MS);
+		r.tick();
+		expect(r.health.divergences).toEqual([]);
+		expect(r.health.status).toBe('synced');
+	});
+
+	// The events on air are compared: one engine in a break the other is not
+	// in signals a different break downstream.
+	it('reports an SCTE-35 event on air on one engine only', () => {
+		vi.useFakeTimers();
+		const ev = { eventId: 7, commandType: 'splice_insert', isOut: true, elapsedMs: 0, autoReturn: false, held: false, spliceTimePts: 0, startedAt: 1000 };
+		const st = (activeEvents: Record<string, unknown>) => ({ enabled: true, activeEvents, eventLog: [], heartbeatOk: true, config: {} as never });
+		const r = createReconciler();
+		r.ingest('A', makeState({ scte35: st({ '7': ev }) as never }));
+		r.ingest('B', makeState({ scte35: st({}) as never }));
+		vi.advanceTimersByTime(SETTLE_MAX_MS);
+		r.tick();
+		expect(r.health.divergences.map((d) => d.field)).toEqual(['scte35']);
+	});
+
 	it('reports a difference that outlasts the settle time', () => {
 		vi.useFakeTimers();
 		const r = createReconciler();
