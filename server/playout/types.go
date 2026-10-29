@@ -291,6 +291,7 @@ type CacheStatus struct {
 	MaxBytes      int64  `json:"maxBytes"`
 	UsedBytes     int64  `json:"usedBytes"`
 	ItemCount     int    `json:"itemCount"`
+	PendingCount  int    `json:"pendingCount"`
 	FetchingCount int    `json:"fetchingCount"`
 	ErrorCount    int    `json:"errorCount"`
 }
