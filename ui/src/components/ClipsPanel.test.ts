@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, waitFor, fireEvent, screen } from '@testing-library/svelte';
 import ClipsPanel from './ClipsPanel.svelte';
 import type { ControlRoomState, ClipInfo } from '$lib/api/types';
-import { listClipsOnEveryEngine, deleteClip } from '$lib/api/switch-api';
+import { listClipsOnEveryEngine, deleteClip, listRecordingsDualEngine, recordingDownloadUrl } from '$lib/api/switch-api';
 
 vi.mock('$lib/api/switch-api', () => ({
 	listClipsOnEveryEngine: vi.fn().mockResolvedValue([]),
@@ -11,6 +11,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	pinClip: vi.fn(),
 	listRecordingsDualEngine: vi.fn().mockResolvedValue([{ engineId: 'A', engineUrl: '', recordings: [] }]),
 	importRecordingFromEngine: vi.fn(),
+	recordingDownloadUrl: vi.fn().mockResolvedValue('https://engine-a/api/clips/recordings/download?path=x&ticket=t'),
 	clipPlayerLoadByName: vi.fn(),
 	clipPlayerEject: vi.fn(),
 	clipPlayerPlay: vi.fn(),
@@ -167,5 +168,94 @@ describe('ClipsPanel', () => {
 		await fireEvent.click(screen.getByTitle('Delete'));
 		expect(deleteClip).toHaveBeenCalledWith('b');
 		expect(screen.queryByRole('alertdialog')).toBeNull();
+	});
+
+	describe('recordings', () => {
+		const recordings = [
+			{ filename: 'rec_live_001.ts', path: '/r/rec_live_001.ts', byteSize: 2_000_000, modTime: '', state: 'recording' },
+			{ filename: 'rec_copy_001.ts', path: '/r/rec_copy_001.ts', byteSize: 3_000_000, modTime: '', state: 'finalizing' },
+			{ filename: 'rec_done_001.ts', path: '/r/rec_done_001.ts', byteSize: 4_000_000, modTime: '', state: 'ready' },
+			{ filename: 'rec_empty_001.ts', path: '/r/rec_empty_001.ts', byteSize: 0, modTime: '', state: 'failed',
+				error: 'recording is empty: no program video reached the recorder' },
+		];
+
+		function item(container: HTMLElement, name: string): HTMLElement {
+			const el = Array.from(container.querySelectorAll<HTMLElement>('.recording-item'))
+				.find((e) => e.textContent?.includes(name));
+			if (!el) throw new Error(`no recording item ${name}`);
+			return el;
+		}
+
+		it('shows each file state, and offers download and import only when ready', async () => {
+			vi.mocked(listRecordingsDualEngine).mockResolvedValue([
+				{ engineId: 'A', engineUrl: 'https://engine-a', recordings },
+			] as never);
+			const { container } = render(ClipsPanel, { props: { state: makeState() } });
+			await waitFor(() => expect(container.querySelectorAll('.recording-item')).toHaveLength(4));
+
+			expect(item(container, 'rec_live').textContent).toContain('Recording');
+			expect(item(container, 'rec_copy').textContent).toContain('Finalizing');
+			expect(item(container, 'rec_done').textContent).toContain('Ready');
+			expect(item(container, 'rec_empty').textContent).toContain('Failed');
+			expect(item(container, 'rec_empty').textContent).toContain('no program video');
+
+			for (const name of ['rec_live', 'rec_copy', 'rec_empty']) {
+				expect(item(container, name).querySelector('.download-btn')).toBeNull();
+				expect(item(container, name).querySelector('.import-btn')).toBeNull();
+			}
+			expect(item(container, 'rec_done').querySelector('.import-btn')).not.toBeNull();
+			// No bare link to the download route: a navigation cannot carry the token.
+			expect(container.querySelector('a[href*="/api/clips/recordings/download"]')).toBeNull();
+		});
+
+		it('downloads through a ticketed URL from the engine that holds the file', async () => {
+			vi.mocked(listRecordingsDualEngine).mockResolvedValue([
+				{ engineId: 'A', engineUrl: 'https://engine-a', recordings },
+			] as never);
+			const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+			const { container } = render(ClipsPanel, { props: { state: makeState() } });
+			await waitFor(() => expect(container.querySelectorAll('.recording-item')).toHaveLength(4));
+
+			await fireEvent.click(item(container, 'rec_done').querySelector('.download-btn')!);
+			await waitFor(() => expect(click).toHaveBeenCalled());
+			expect(recordingDownloadUrl).toHaveBeenCalledWith('https://engine-a', '/r/rec_done_001.ts');
+			click.mockRestore();
+		});
+
+		it('reads the list again when a recording starts or stops', async () => {
+			vi.mocked(listRecordingsDualEngine).mockResolvedValue([{ engineId: 'A', engineUrl: '', recordings: [] }] as never);
+			const { rerender } = render(ClipsPanel, { props: { state: makeState() } });
+			await waitFor(() => expect(listRecordingsDualEngine).toHaveBeenCalledTimes(1));
+
+			await rerender({ state: makeState({ recording: { active: true, filename: 'rec_a_001.ts' } } as never) });
+			await waitFor(() => expect(listRecordingsDualEngine).toHaveBeenCalledTimes(2));
+
+			await rerender({ state: makeState({ recording: { active: false } } as never) });
+			await waitFor(() => expect(listRecordingsDualEngine).toHaveBeenCalledTimes(3));
+		});
+
+		it('polls while a file is recording or finalizing, and stops when none is', async () => {
+			vi.useFakeTimers();
+			try {
+				vi.mocked(listRecordingsDualEngine).mockResolvedValue([
+					{ engineId: 'A', engineUrl: '', recordings: [recordings[0]] },
+				] as never);
+				render(ClipsPanel, { props: { state: makeState() } });
+				await vi.advanceTimersByTimeAsync(0);
+				const afterLoad = vi.mocked(listRecordingsDualEngine).mock.calls.length;
+				await vi.advanceTimersByTimeAsync(4100);
+				expect(vi.mocked(listRecordingsDualEngine).mock.calls.length).toBe(afterLoad + 2);
+
+				vi.mocked(listRecordingsDualEngine).mockResolvedValue([
+					{ engineId: 'A', engineUrl: '', recordings: [recordings[2]] },
+				] as never);
+				await vi.advanceTimersByTimeAsync(2000);
+				const settled = vi.mocked(listRecordingsDualEngine).mock.calls.length;
+				await vi.advanceTimersByTimeAsync(10000);
+				expect(vi.mocked(listRecordingsDualEngine).mock.calls.length).toBe(settled);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
 	});
 });

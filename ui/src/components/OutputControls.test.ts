@@ -375,3 +375,41 @@ describe('OutputControls', () => {
 		expect(badge?.classList.contains('synced')).toBe(true);
 	});
 });
+
+describe('OutputControls confidence thumbnail', () => {
+	// An <img src> request carries no Authorization header and was refused
+	// with 401 once sign-in was on; the thumbnail is fetched with the token.
+	it('fetches the thumbnail with the bearer token and shows it as a blob URL', async () => {
+		localStorage.setItem('switchframe_operator_token', 'tok');
+		const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, blob: async () => new Blob(['jpg']) });
+		vi.stubGlobal('fetch', fetchMock);
+		const createObjectURL = vi.fn().mockReturnValue('blob:thumb-1');
+		vi.stubGlobal('URL', Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() }));
+		try {
+			const state = { ...baseState, recording: { active: true, filename: 'r.ts' } };
+			const { container } = render(OutputControls, { props: { state } as never });
+			await vi.waitFor(() => expect(container.querySelector('img.confidence-thumb')).not.toBeNull());
+			const img = container.querySelector('img.confidence-thumb') as HTMLImageElement;
+			expect(img.getAttribute('src')).toBe('blob:thumb-1');
+			const [url, init] = fetchMock.mock.calls[0];
+			expect(String(url)).toMatch(/\/api\/output\/confidence$/);
+			expect((init as RequestInit).headers).toMatchObject({ Authorization: 'Bearer tok' });
+		} finally {
+			vi.unstubAllGlobals();
+			localStorage.removeItem('switchframe_operator_token');
+		}
+	});
+
+	it('does not poll while nothing is recorded or streamed', async () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal('fetch', fetchMock);
+		try {
+			const { container } = render(OutputControls, { props: { state: baseState } as never });
+			await new Promise((r) => setTimeout(r, 20));
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(container.querySelector('img.confidence-thumb')).toBeNull();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+});

@@ -1975,6 +1975,41 @@ export async function listRecordingsDualEngine(): Promise<EngineRecordingGroup[]
 		.map(r => r.value);
 }
 
+/**
+ * A download URL for one recording file on one engine. A browser download
+ * cannot send the Authorization header, so the engine hands out a
+ * single-use link that stands in for it for a minute.
+ */
+export async function recordingDownloadUrl(engineUrl: string, path: string): Promise<string> {
+	const res = await fetch(`${engineUrl}/api/clips/recordings/download-url`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', ...authHeaders() },
+		body: JSON.stringify({ path }),
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	const { url } = await res.json();
+	return `${engineUrl}${url}`;
+}
+
+/**
+ * The program confidence thumbnail of the engine at baseUrl ('' for this
+ * origin), or null while the engine has none yet. Fetched rather than set as
+ * an <img src> because an image request cannot carry the bearer token.
+ */
+export async function fetchConfidenceThumbnail(baseUrl: string, signal?: AbortSignal): Promise<Blob | null> {
+	const res = await fetch(`${baseUrl}/api/output/confidence`, {
+		headers: authHeaders(),
+		cache: 'no-store',
+		signal,
+	});
+	if (res.status === 204) return null;
+	if (!res.ok) throw new SwitchApiError(res.status, `HTTP ${res.status}`);
+	return res.blob();
+}
+
 /** Import a recording from a specific engine. The file path is local to that engine. */
 export async function importRecordingFromEngine(engineUrl: string, path: string): Promise<ClipInfo> {
 	const res = await fetch(`${engineUrl}/api/clips/from-recording`, {

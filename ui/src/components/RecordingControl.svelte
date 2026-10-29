@@ -16,6 +16,12 @@
 	const statesDiffer = $derived(isDualEngine && isActive !== engineBActive);
 	const hasError = $derived(!isActive && !!crState.recording?.error);
 	const droppedPackets = $derived(crState.recording?.droppedPackets ?? 0);
+	// The recorder writes from the first program keyframe on. Nothing written
+	// after a couple of seconds means the program source delivers no video.
+	const NO_VIDEO_AFTER_SECS = 2;
+	const waitingForVideo = $derived(
+		isActive && !crState.recording?.bytesWritten && (crState.recording?.durationSecs ?? 0) >= NO_VIDEO_AFTER_SECS,
+	);
 	let confirmingStop = $state(false);
 
 	const duration = $derived.by(() => {
@@ -48,6 +54,9 @@
 		<span class="rec-dot"></span>
 		<span class="rec-label">REC</span>
 		<span class="rec-duration">{duration}</span>
+		{#if waitingForVideo}
+			<span class="rec-waiting" title="Nothing recorded yet: the program source delivers no video">NO VIDEO</span>
+		{/if}
 		{#if droppedPackets > 0}
 			<span class="drop-warn" title="{droppedPackets} packets dropped">DROP</span>
 		{/if}
@@ -96,6 +105,12 @@
 />
 
 <style>
+	.rec-waiting {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--accent-orange);
+	}
+
 	.recording-control {
 		display: flex;
 		align-items: center;

@@ -12,6 +12,7 @@
 	import FormatPicker from './FormatPicker.svelte';
 	import type { SyncHealth } from '$lib/state/reconciler.svelte';
 	import { getEngineUrls } from '$lib/api/base-url';
+	import { fetchConfidenceThumbnail } from '$lib/api/switch-api';
 
 	type ConnectionIndicatorState = 'webtransport' | 'polling' | 'disconnected';
 
@@ -31,8 +32,10 @@
 	}
 	let { state: crState, connectionState = 'disconnected', switchLayout, onToggleIOPanel, ioPanelVisible = false, onToggleComms, commsActive = false, syncHealth = null, onToggleRedundancyPanel, isDualEngine = false, engineBState = null, activeEngineId }: Props = $props();
 
-	let thumbKey = $state(0);
-	let thumbInterval: ReturnType<typeof setInterval> | undefined;
+	// Object URL of the latest program thumbnail; fetched, because an
+	// <img src> request cannot carry the bearer token the API requires.
+	let thumbUrl = $state<string | null>(null);
+	const THUMB_POLL_MS = 1000;
 
 	const srtActive = $derived(crState.srtOutput?.active ?? false);
 	const recActive = $derived(crState.recording?.active ?? false);
@@ -73,13 +76,39 @@
 	})());
 
 	$effect(() => {
-		if (showConfidence) {
-			thumbInterval = setInterval(() => { thumbKey++; }, 1000);
-		} else {
-			if (thumbInterval) clearInterval(thumbInterval);
-			thumbInterval = undefined;
+		if (!showConfidence) return;
+		const baseUrl = confidenceBaseUrl;
+		const abort = new AbortController();
+		let inFlight = false;
+		let current: string | null = null;
+
+		async function poll() {
+			// One request at a time, and none while the tab is hidden.
+			if (inFlight || document.hidden) return;
+			inFlight = true;
+			try {
+				const blob = await fetchConfidenceThumbnail(baseUrl, abort.signal);
+				if (blob && !abort.signal.aborted) {
+					const next = URL.createObjectURL(blob);
+					if (current) URL.revokeObjectURL(current);
+					current = next;
+					thumbUrl = next;
+				}
+			} catch {
+				// Keep the last thumbnail; the next poll retries.
+			} finally {
+				inFlight = false;
+			}
 		}
-		return () => { if (thumbInterval) clearInterval(thumbInterval); };
+
+		poll();
+		const id = setInterval(poll, THUMB_POLL_MS);
+		return () => {
+			clearInterval(id);
+			abort.abort();
+			if (current) URL.revokeObjectURL(current);
+			thumbUrl = null;
+		};
 	});
 </script>
 
@@ -112,10 +141,10 @@
 	{#if badgeText}
 		<FormatPicker {badgeText} {isDualEngine} />
 	{/if}
-	{#if showConfidence}
+	{#if showConfidence && thumbUrl}
 		<img
 			class="confidence-thumb"
-			src="{confidenceBaseUrl}/api/output/confidence?t={thumbKey}"
+			src={thumbUrl}
 			alt="Program output"
 			width="80"
 			height="45"

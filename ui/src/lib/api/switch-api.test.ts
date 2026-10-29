@@ -1677,3 +1677,39 @@ describe('dual-engine interceptor edge cases', () => {
 		});
 	});
 });
+
+describe('recording download and confidence thumbnail', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+		localStorage.clear();
+		setAuthToken('tok');
+	});
+
+	it('recordingDownloadUrl asks the engine holding the file for a ticketed URL', async () => {
+		const { recordingDownloadUrl } = await import('./switch-api');
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ url: '/api/clips/recordings/download?path=%2Fr%2Fa.ts&ticket=abc' }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const url = await recordingDownloadUrl('https://engine-b', '/r/a.ts');
+		expect(url).toBe('https://engine-b/api/clips/recordings/download?path=%2Fr%2Fa.ts&ticket=abc');
+		const [reqUrl, init] = mockFetch.mock.calls[0];
+		expect(reqUrl).toBe('https://engine-b/api/clips/recordings/download-url');
+		expect(init.method).toBe('POST');
+		expect(init.headers).toMatchObject({ Authorization: 'Bearer tok' });
+		expect(JSON.parse(init.body)).toEqual({ path: '/r/a.ts' });
+	});
+
+	it('fetchConfidenceThumbnail sends the token and treats 204 as no thumbnail yet', async () => {
+		const { fetchConfidenceThumbnail } = await import('./switch-api');
+		const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+		vi.stubGlobal('fetch', mockFetch);
+
+		expect(await fetchConfidenceThumbnail('https://engine-a')).toBeNull();
+		const [reqUrl, init] = mockFetch.mock.calls[0];
+		expect(reqUrl).toBe('https://engine-a/api/output/confidence');
+		expect(init.headers).toMatchObject({ Authorization: 'Bearer tok' });
+	});
+});

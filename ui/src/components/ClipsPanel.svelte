@@ -2,7 +2,7 @@
 	import type { ControlRoomState, ClipInfo, ClipPlayerState, RecordingFileInfo, EngineRecordingGroup, ClipUploadProgress } from '$lib/api/types';
 	import {
 		listClipsOnEveryEngine, uploadClip, deleteClip, pinClip,
-		listRecordingsDualEngine, importRecordingFromEngine,
+		listRecordingsDualEngine, importRecordingFromEngine, recordingDownloadUrl,
 		clipPlayerLoadByName, clipPlayerEject, clipPlayerPlay, clipPlayerPause, clipPlayerStop, clipPlayerSeek,
 		apiCall,
 	} from '$lib/api/switch-api';
@@ -90,12 +90,24 @@
 		}
 	});
 
-	let recordingsLoaded = false;
+	// The list is read again whenever a recording starts or stops, and every
+	// RECORDING_POLL_MS while a file is being written or finalized, so sizes
+	// and states follow the recording rather than the moment the panel opened.
+	const RECORDING_POLL_MS = 2000;
+	const recordingKey = $derived(
+		`${crState.recording?.active ?? false}|${crState.recording?.filename ?? ''}|${crState.recording?.error ?? ''}`,
+	);
 	$effect(() => {
-		if (!recordingsLoaded) {
-			recordingsLoaded = true;
-			refreshRecordings();
-		}
+		void recordingKey;
+		refreshRecordings();
+	});
+	const recordingsInProgress = $derived(
+		recordingGroups.some((g) => g.recordings.some((r) => r.state === 'recording' || r.state === 'finalizing')),
+	);
+	$effect(() => {
+		if (!recordingsInProgress) return;
+		const id = setInterval(refreshRecordings, RECORDING_POLL_MS);
+		return () => clearInterval(id);
 	});
 
 	$effect(() => {
@@ -304,6 +316,24 @@
 		apiCall(clipPlayerSeek(playerID, pos), 'Seek');
 	}
 
+	const recordingStateLabel: Record<string, string> = {
+		recording: 'Recording',
+		finalizing: 'Finalizing',
+		ready: 'Ready',
+		failed: 'Failed',
+	};
+
+	async function handleDownload(engineUrl: string, rec: RecordingFileInfo) {
+		try {
+			const a = document.createElement('a');
+			a.href = await recordingDownloadUrl(engineUrl, rec.path);
+			a.download = rec.filename;
+			a.click();
+		} catch (err) {
+			notify('error', `Download failed: ${err instanceof Error ? err.message : 'unknown'}`);
+		}
+	}
+
 	async function handleImport(engineUrl: string, path: string) {
 		try {
 			await importRecordingFromEngine(engineUrl, path);
@@ -500,15 +530,23 @@
 										<div class="empty-hint">No recordings</div>
 									{/if}
 									{#each group.recordings as rec (rec.path)}
-										<div class="clip-item recording-item">
+										<div class="clip-item recording-item" data-state={rec.state}>
 											<div class="clip-info">
 												<span class="clip-name">{rec.filename}</span>
-												<span class="clip-meta">{formatBytes(rec.byteSize)}</span>
+												<span class="clip-meta">
+													<span class="rec-state rec-state-{rec.state}" title={rec.error ?? ''}>{recordingStateLabel[rec.state] ?? rec.state}</span>
+													{formatBytes(rec.byteSize)}
+												</span>
+												{#if rec.state === 'failed' && rec.error}
+													<span class="rec-error">{rec.error}</span>
+												{/if}
 											</div>
-											<div class="clip-actions">
-												<a href={`${group.engineUrl}/api/clips/recordings/download?path=${encodeURIComponent(rec.path)}`} download={rec.filename} class="download-btn" title="Download recording">DL</a>
-												<button type="button" class="import-btn" onclick={() => handleImport(group.engineUrl, rec.path)}>Import</button>
-											</div>
+											{#if rec.state === 'ready'}
+												<div class="clip-actions">
+													<button type="button" class="download-btn" title="Download recording" onclick={() => handleDownload(group.engineUrl, rec)}>DL</button>
+													<button type="button" class="import-btn" onclick={() => handleImport(group.engineUrl, rec.path)}>Import</button>
+												</div>
+											{/if}
 										</div>
 									{/each}
 								{/each}
@@ -1011,6 +1049,32 @@
 	.icon-btn.pin:hover {
 		border-color: var(--accent-yellow);
 		color: var(--accent-yellow);
+	}
+
+	.rec-state {
+		margin-right: 6px;
+		font-family: var(--font-mono);
+		text-transform: uppercase;
+		color: var(--text-secondary);
+	}
+
+	.rec-state-recording {
+		color: var(--tally-program);
+	}
+
+	.rec-state-finalizing {
+		color: var(--accent-orange);
+	}
+
+	.rec-state-failed {
+		color: var(--tally-program);
+	}
+
+	.rec-error {
+		display: block;
+		font-size: var(--text-2xs);
+		color: var(--text-secondary);
+		white-space: normal;
 	}
 
 	.import-btn {
