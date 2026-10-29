@@ -3,6 +3,8 @@ package playout
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // --- helpers ---
@@ -1107,4 +1109,50 @@ func TestScheduler_PreviousDuringIdleWait_ClearsIdleWait(t *testing.T) {
 	if iw {
 		t.Error("idleWaiting should be false after Previous")
 	}
+}
+
+func TestScheduler_CueOffAir_StartsAtCuedItem(t *testing.T) {
+	s := NewScheduler()
+	pl := schedPlaylist(
+		schedClipItem("a", 5000),
+		schedClipItem("b", 5000),
+		schedClipItem("c", 5000),
+	)
+	require.NoError(t, s.LoadPlaylist(pl))
+
+	require.NoError(t, s.Cue("b"))
+	require.Equal(t, 1, s.Cursor(), "a cue moves the off-air cursor")
+
+	s.Start()
+	d := s.Tick(time.Now())
+	require.NotNil(t, d.Item)
+	require.Equal(t, "b", d.Item.ID, "Start puts the cued item on air")
+
+	// The cue is consumed: the next run starts from the top again.
+	s.Stop()
+	s.Start()
+	d = s.Tick(time.Now())
+	require.NotNil(t, d.Item)
+	require.Equal(t, "a", d.Item.ID)
+}
+
+func TestScheduler_CueNeedsPlaylistAndKnownItem(t *testing.T) {
+	s := NewScheduler()
+	require.ErrorIs(t, s.Cue("a"), ErrNoPlaylist)
+
+	require.NoError(t, s.LoadPlaylist(schedPlaylist(schedClipItem("a", 5000))))
+	require.ErrorIs(t, s.Cue("nope"), ErrItemNotFound)
+}
+
+func TestScheduler_LoadPlaylistDropsCue(t *testing.T) {
+	s := NewScheduler()
+	pl := schedPlaylist(schedClipItem("a", 5000), schedClipItem("b", 5000))
+	require.NoError(t, s.LoadPlaylist(pl))
+	require.NoError(t, s.Cue("b"))
+	require.NoError(t, s.LoadPlaylist(pl))
+
+	s.Start()
+	d := s.Tick(time.Now())
+	require.NotNil(t, d.Item)
+	require.Equal(t, "a", d.Item.ID)
 }

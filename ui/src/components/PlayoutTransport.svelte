@@ -168,8 +168,13 @@
 		<button class="t-btn t-next" onclick={handleNext} disabled={isStopped} title="Next item">
 			{@html renderIcon(ICON_FRAME_FORWARD, 15)}
 		</button>
-		{#if (isStopped || channel.state === 'completed') && onCueTop}
-			<button class="t-btn t-cue-top" onclick={onCueTop} title="Cue to first item">
+		{#if !isOnAir && onCueTop}
+			<button
+				class="t-btn t-cue-top"
+				onclick={onCueTop}
+				disabled={isCued && channel.itemIndex === 0}
+				title={isCued && channel.itemIndex === 0 ? 'Cued at the first item' : 'Cue to first item'}
+			>
 				CUE TOP
 			</button>
 		{/if}

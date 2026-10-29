@@ -380,9 +380,10 @@ func (c *Channel) LoadPlaylist(pl *Playlist) error {
 	return nil
 }
 
-// Start puts the loaded playlist on air from its first item and launches
-// the run goroutine. A stopped or completed channel keeps its playlist, so
-// it starts again the same way a cued one does.
+// Start puts the loaded playlist on air from its cued item, the first one
+// unless JumpTo cued another, and launches the run goroutine. A stopped or
+// completed channel keeps its playlist, so it starts again the same way a
+// cued one does.
 func (c *Channel) Start() error {
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
@@ -521,15 +522,29 @@ func (c *Channel) Previous() error {
 	return c.scheduler.Previous()
 }
 
-// JumpTo finds the item with the given ID and moves the cursor to it.
+// JumpTo finds the item with the given ID and moves the cursor to it. On
+// air the item plays at once. Off air the channel is cued to it, and Start
+// then begins there instead of at the first item.
 func (c *Channel) JumpTo(itemID string) error {
 	c.mu.Lock()
-	if c.state != StateOnAir {
+	if c.state == StateOnAir {
 		c.mu.Unlock()
-		return ErrNotOnAir
+		return c.scheduler.JumpTo(itemID)
 	}
+	if err := c.scheduler.Cue(itemID); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	c.state = StateCued
+	c.itemProgress.Store(0)
+	c.itemRemainMs.Store(0)
+	fn := c.onStateChange
 	c.mu.Unlock()
-	return c.scheduler.JumpTo(itemID)
+
+	if fn != nil {
+		fn(StateCued)
+	}
+	return nil
 }
 
 // SeekToItem repositions the channel to a specific playlist item at a given
