@@ -3,10 +3,12 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -275,6 +277,57 @@ func TestMXLNMOS_ActivationDuringAdoptionWins(t *testing.T) {
 	if reader != nmosFlow || active != nmosFlow || file != nmosFlow {
 		t.Errorf("reader %s, /active %s, saved %s; want the controller's %s, activated last", reader, active, file, nmosFlow)
 	}
+}
+
+// The node starts serving only once the saved connections are restored, so
+// no controller PATCH, peer forward or read of /active meets an input still
+// on its booked flow.
+func TestMXLNMOS_RestoreRunsBeforeTheNodeListens(t *testing.T) {
+	dir := t.TempDir()
+	tt := newEngine(t, dir)
+	if code := tt.patch(t, rxID("cam1", "video"), activationBody(nmosFlow), false); code != 200 {
+		t.Fatalf("PATCH: %d", code)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+
+	re := newNMOSTestApp(t, nil, func(a *App) {
+		a.cfg.StateDir = dir
+		a.cfg.MXLNMOS.Port = port
+	})
+	listening := make(chan bool, 1)
+	re.cam1V.onConnect = func(id string) {
+		if id != nmosFlow {
+			return
+		}
+		c, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			_ = c.Close()
+		}
+		listening <- err == nil
+	}
+	if err := re.app.initMXLNMOS(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(re.app.closeMXLNMOS)
+	select {
+	case l := <-listening:
+		if l {
+			t.Error("the node accepted connections before the saved connection was restored")
+		}
+	default:
+		t.Fatal("startup did not restore the saved connection")
+	}
+	c, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatalf("node not listening after startup: %v", err)
+	}
+	_ = c.Close()
 }
 
 // pair wires two engines to each other, as the peer base of each.
