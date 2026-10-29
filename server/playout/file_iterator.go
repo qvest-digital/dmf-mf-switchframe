@@ -201,7 +201,13 @@ func NewFileFrameIteratorWithDecoder(path string, factory DecoderFactory) (*File
 // B-frames, read without its edit list, starts its video at the reorder
 // delay and its audio at the AAC priming frame, and dropping the audio
 // before the first picture would play the rest early by that delay.
+//
+// A 33-bit MPEG-TS PTS that wraps makes the pictures after the wrap
+// compare below the keyframe and the audio list unsorted, so neither
+// leading pictures nor audio are dropped by PTS then.
 func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decoder VideoDecoder, factory DecoderFactory) *FileFrameIterator {
+	wrapped := ptsWraps(encoded, func(ef encodedFrame) int64 { return ef.pts }) ||
+		ptsWraps(audio, func(af audioFrameInfo) int64 { return af.pts })
 	for i, ef := range encoded {
 		if !ef.isKeyframe {
 			continue
@@ -211,12 +217,12 @@ func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decode
 		kept := []encodedFrame{ef}
 		j := i + 1
 		for ; j < len(encoded) && !encoded[j].isKeyframe; j++ {
-			if encoded[j].pts >= ef.pts {
+			if wrapped || encoded[j].pts >= ef.pts {
 				kept = append(kept, encoded[j])
 			}
 		}
 		kept = append(kept, encoded[j:]...)
-		if len(kept) < len(encoded) {
+		if len(kept) < len(encoded) && !wrapped {
 			audio = audio[sort.Search(len(audio), func(k int) bool {
 				return audio[k].pts >= ef.pts || audio[k].pts+audioFrameTicks(audio[k]) > ef.pts
 			}):]
@@ -551,6 +557,18 @@ func audioFrameTicks(af audioFrameInfo) int64 {
 		return 0
 	}
 	return 1024 * 90000 / int64(af.sampleRate)
+}
+
+// ptsWraps reports whether a PTS steps back by more than 2^32 ticks from
+// one element to the next, which reordering never does and a wrap of the
+// 33-bit MPEG-TS PTS always does.
+func ptsWraps[T any](s []T, pts func(T) int64) bool {
+	for i := 1; i < len(s); i++ {
+		if pts(s[i-1])-pts(s[i]) > 1<<32 {
+			return true
+		}
+	}
+	return false
 }
 
 // isBuffering reports whether a Decode error means the decoder kept the frame

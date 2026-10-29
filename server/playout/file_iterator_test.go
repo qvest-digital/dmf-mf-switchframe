@@ -1813,6 +1813,64 @@ func TestFileFrameIterator_KeepsAudioWhenNoFrameIsDropped(t *testing.T) {
 	}
 }
 
+// A 33-bit MPEG-TS PTS wraps every 26.5 hours. After a wrap, pictures
+// compare below the keyframe and the audio list is no longer sorted, so a
+// drop by PTS would take pictures that are not leading and cut the audio
+// at the wrap. Neither is dropped by PTS when the stream wraps.
+func TestFileFrameIterator_PTSWrapDropsNothingByPTS(t *testing.T) {
+	const n, wrap = 100, int64(1) << 33
+	for _, tc := range []struct {
+		name      string
+		key       int // index of the first keyframe; frames before it are dropped
+		wrapVideo int // first video frame after the wrap
+	}{
+		{name: "wrap in the first GOP", key: 0, wrapVideo: 10},
+		{name: "wrap after frames cut before the keyframe", key: 2, wrapVideo: 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A keyframe every 25 frames from key.
+			encoded := make([]encodedFrame, n)
+			for i := range encoded {
+				key := i >= tc.key && (i-tc.key)%25 == 0
+				nal := byte(0x41)
+				if key {
+					nal = 0x65
+				}
+				pts := (wrap + int64(i-tc.wrapVideo)*1800) % wrap
+				encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: pts, isKeyframe: key}
+			}
+			// The audio wraps with the video; a 48 kHz AAC frame is 1920 ticks.
+			audio := make([]audioFrameInfo, n*1800/1920)
+			first := encoded[0].pts
+			for i := range audio {
+				audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: (first + int64(i)*1920) % wrap, sampleRate: 48000}
+			}
+			iter := newFileFrameIterator(encoded, audio, &delayDecoder{depth: 2},
+				func() (VideoDecoder, error) { return &delayDecoder{depth: 2}, nil })
+			defer iter.Close()
+
+			pics, sounds := 0, 0
+			for {
+				f, err := iter.Next()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if f == nil {
+					break
+				}
+				pics++
+				sounds += len(f.AudioFrames)
+			}
+			if want := n - tc.key; pics != want || iter.TotalFrames() != want {
+				t.Fatalf("%d pictures, TotalFrames %d, want %d", pics, iter.TotalFrames(), want)
+			}
+			if sounds != len(audio) {
+				t.Fatalf("%d audio frames put out, want all %d", sounds, len(audio))
+			}
+		})
+	}
+}
+
 // mp4Clip writes a 2 s 320x240 25 fps MP4 with AAC audio, encoded with
 // libx264's defaults, which use B-frames.
 func mp4Clip(t *testing.T) string {
