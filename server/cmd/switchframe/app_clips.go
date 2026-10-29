@@ -403,6 +403,17 @@ func addReplayClip(store *clip.Store, c *clip.Clip, clipID string) error {
 	return store.AddWithID(clipID, c)
 }
 
+// replayClipFilename names a replay's file in the clip store. A replay
+// with a requested clip ID is named after it, as an upload is, so that the
+// engines storing one replay under one ID hold it at one path: playlists
+// name a clip by its path, and the UI sends one playlist to every engine.
+func replayClipFilename(source, clipID string, now time.Time) string {
+	if clipID != "" {
+		return clipID + ".ts"
+	}
+	return fmt.Sprintf("replay_%s_%s.ts", source, now.Format("20060102_150405.000"))
+}
+
 // handleReplayClipExported processes a temp TS file exported from replay,
 // validates it, creates an ephemeral clip entry under clipID ("" for a
 // fresh ID), and moves it to the store.
@@ -415,8 +426,7 @@ func (a *App) handleReplayClipExported(source, tempFile, clipID string, store *c
 		return
 	}
 
-	// Generate a filename for the clip in the store directory.
-	filename := fmt.Sprintf("replay_%s_%s.ts", source, time.Now().Format("20060102_150405.000"))
+	filename := replayClipFilename(source, clipID, time.Now())
 	destPath := filepath.Join(store.Dir(), filename)
 
 	// Move the temp file into the clip store directory.
