@@ -73,6 +73,11 @@ type Destination struct {
 	// armed state or started the adapter. A peer poll sent before it shows
 	// the peer as it was before the change and is not acted on.
 	changedAt time.Time
+	// operatorChangedAt is when an operator's start, stop or switch-over
+	// last changed the destination here. The UI sends those to both engines,
+	// so the peer's leg may land up to PeerView.Skew later; this engine's
+	// own decisions have no second leg.
+	operatorChangedAt time.Time
 	// peerListed and peerArmed are set once a poll of the current peer
 	// process, sent after changedAt, listed the destination, and listed it
 	// armed. Losing either later means an operator deleted or stopped it

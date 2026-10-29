@@ -54,11 +54,13 @@ func (v PeerView) freshFor(d *Destination) bool {
 	return v.Known && !v.Down && v.SeenPolledAt.After(d.changedAt)
 }
 
-// settledFor reports whether the peer's lists were taken more than v.Skew
-// after this engine last changed d, so the peer's own leg of an operator's
-// change has landed too. Holds d.mu.
+// settledFor reports whether the peer's lists answer this engine's last
+// change of d and were taken more than v.Skew after an operator last
+// changed it here, so the peer's own leg of that change has landed too.
+// A change this engine made on its own has no second leg to wait for.
+// Holds d.mu.
 func (v PeerView) settledFor(d *Destination) bool {
-	return v.Known && !v.Down && v.SeenPolledAt.After(d.changedAt.Add(v.Skew))
+	return v.freshFor(d) && v.SeenPolledAt.After(d.operatorChangedAt.Add(v.Skew))
 }
 
 // SetPeerProbe installs a fresh read of the peer that the manager makes
@@ -147,9 +149,10 @@ func (m *Manager) PairDestinationIDs() (all, armed []string) {
 // A view taken before this engine's last change of a destination is not
 // acted on, other than a peer that is down: it shows the peer as it was
 // before the change, as when a switch-over moved the destination here.
-// Nor is one taken within v.Skew of the change read as the peer keeping
-// the destination or having stopped it, unless an earlier view showed the
-// peer arm it: the peer's leg of the change may not have landed yet.
+// Nor is one taken within v.Skew of an operator's change read as the peer
+// keeping the destination or having stopped it, unless an earlier view
+// showed the peer arm it: the peer's leg of the change may not have landed
+// yet.
 func (m *Manager) ReconcileDestinations(v PeerView) {
 	now := time.Now()
 	m.mu.Lock()

@@ -354,6 +354,24 @@ func TestDestinationPair_SwitchOverLegsLandApart(t *testing.T) {
 	requireState(t, b, "standby", "a")
 }
 
+// A takeover is this engine's own change and has no second leg: once the
+// leader is back and sends too, the follower stands by on the first poll
+// that shows it, not only once the skew of an operator's change has passed.
+func TestDestinationPair_FollowerYieldsWithinOnePollOfTakeover(t *testing.T) {
+	a, b := pairEngine(t, "a"), pairEngine(t, "b")
+	addBoth(t, a, b, true)
+	time.Sleep(30 * time.Millisecond) // past the skew of the operator's start
+
+	b.ReconcileDestinations(downPeer)
+	requireState(t, b, string(StateActive), "b")
+
+	back := viewOf(a, false) // A is back and sends
+	back.Skew = 20 * time.Millisecond
+	b.ReconcileDestinations(back)
+	requireState(t, b, "standby", "a")
+	require.Empty(t, b.SendingDestinationIDs())
+}
+
 // A delete the standby missed deletes it on the standby too.
 func TestDestinationPair_DeleteMissedByStandby(t *testing.T) {
 	a, b := pairEngine(t, "a"), pairEngine(t, "b")

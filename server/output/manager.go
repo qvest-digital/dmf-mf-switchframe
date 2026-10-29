@@ -348,7 +348,9 @@ func (m *Manager) ReassignDestinationEngine(id, engine string) error {
 		return ErrDestinationNotFound
 	}
 	dest.mu.Lock()
-	dest.setEngineLocked(engine, time.Now())
+	if now := time.Now(); dest.setEngineLocked(engine, now) {
+		dest.operatorChangedAt = now
+	}
 	dest.mu.Unlock()
 
 	fn := m.onState
@@ -767,8 +769,12 @@ func (m *Manager) StartDestination(id string) error {
 	dest.mu.Lock()
 	sends := m.sendsLocked(dest)
 	wasArmed := dest.armed
-	if !sends {
-		dest.setArmedLocked(true, time.Now())
+	now := time.Now()
+	switch {
+	case sends && !dest.active:
+		dest.operatorChangedAt = now
+	case !sends && dest.setArmedLocked(true, now):
+		dest.operatorChangedAt = now
 	}
 	dest.mu.Unlock()
 	fn := m.onState
@@ -1036,8 +1042,8 @@ func (m *Manager) stopDestination(id string, disarm bool) error {
 
 	dest.mu.Lock()
 	wasArmed := dest.armed
-	if disarm {
-		dest.setArmedLocked(false, time.Now())
+	if now := time.Now(); disarm && dest.setArmedLocked(false, now) {
+		dest.operatorChangedAt = now
 	}
 	if !dest.active {
 		dest.mu.Unlock()
