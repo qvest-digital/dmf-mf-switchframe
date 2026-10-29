@@ -186,20 +186,20 @@ func NewFileFrameIteratorWithDecoder(path string, factory DecoderFactory) (*File
 // fresh decoder drops them, but one that keeps running into the next pass
 // of a loop holds the previous pass's references and puts out wrong
 // pictures for them, so every pass would be longer than the first. They
-// are dropped here, with the audio before the first keyframe, so every
-// pass starts at the keyframe and frame indices count shown pictures.
+// are dropped here, with the audio that ends before the first keyframe, so
+// every pass starts at the keyframe with its audio and frame indices count
+// shown pictures. The audio is dropped even when the stream starts at the
+// keyframe: a clip whose video was cut and audio was not would otherwise
+// play the cut-off audio over its first pictures.
 func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decoder VideoDecoder, factory DecoderFactory) *FileFrameIterator {
 	for i, ef := range encoded {
 		if !ef.isKeyframe {
 			continue
 		}
-		if i > 0 {
-			encoded = encoded[i:]
-			start := sort.Search(len(audio), func(j int) bool {
-				return audio[j].pts >= ef.pts
-			})
-			audio = audio[start:]
-		}
+		audio = audio[sort.Search(len(audio), func(j int) bool {
+			return audio[j].pts >= ef.pts || audio[j].pts+audioFrameTicks(audio[j]) > ef.pts
+		}):]
+		encoded = encoded[i:]
 		break
 	}
 
@@ -484,8 +484,12 @@ func (f *FileFrameIterator) seekLocked(targetFrame int) error {
 	f.lastPTS = 0
 	f.prevPTS = 0
 
-	// Reset audio index to match video position by PTS.
-	if seekIdx < len(f.encodedFrames) {
+	// Reset audio index to match video position by PTS. The audio list
+	// starts at the first picture, so a seek to it starts at the first
+	// audio frame.
+	if seekIdx == 0 {
+		f.audioIndex = 0
+	} else if seekIdx < len(f.encodedFrames) {
 		targetPTS := f.encodedFrames[seekIdx].pts
 		f.audioIndex = sort.Search(len(f.audioFrames), func(i int) bool {
 			return f.audioFrames[i].pts >= targetPTS
@@ -509,6 +513,14 @@ func (f *FileFrameIterator) Close() {
 	if f.decoder != nil {
 		f.decoder.Close()
 	}
+}
+
+// audioFrameTicks is the duration of an AAC frame in 90 kHz ticks.
+func audioFrameTicks(af audioFrameInfo) int64 {
+	if af.sampleRate <= 0 {
+		return 0
+	}
+	return 1024 * 90000 / int64(af.sampleRate)
 }
 
 // isBuffering reports whether a Decode error means the decoder kept the frame

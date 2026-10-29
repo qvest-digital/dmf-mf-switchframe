@@ -1628,10 +1628,49 @@ func TestFileFrameIterator_LoopSkipsFramesBeforeFirstKeyframe(t *testing.T) {
 	}
 }
 
-// The same with a real decoder: a 50 fps clip whose first 30 frames are
-// cut, so 70 frames precede its first keyframe. Every pass puts out the
-// pictures and audio of the first.
-func TestFileFrameIterator_Integration_LoopCutBeforeKeyframe(t *testing.T) {
+// Audio that ends before the first picture is dropped even when the stream
+// starts at its keyframe: a clip whose video was cut and audio was not
+// would otherwise play the cut-off audio over its first pictures.
+func TestFileFrameIterator_AudioStartsAtFirstPicture(t *testing.T) {
+	const n = 4
+	encoded := make([]encodedFrame, n)
+	for i := range encoded {
+		nal := byte(0x41)
+		if i == 0 {
+			nal = 0x65
+		}
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: 9700 + int64(i)*1800, isKeyframe: i == 0}
+	}
+	audio := make([]audioFrameInfo, 10)
+	for i := range audio {
+		audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: int64(i) * 1920, sampleRate: 48000}
+	}
+	iter := newFileFrameIterator(encoded, audio, &delayDecoder{depth: 0},
+		func() (VideoDecoder, error) { return &delayDecoder{depth: 0}, nil })
+	defer iter.Close()
+
+	// Frame 5 spans 9600-11520 and carries the start of the first picture.
+	// A seek to the first picture starts with it too.
+	for _, seek := range []bool{false, true} {
+		if seek {
+			if err := iter.Seek(0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f, err := iter.Next()
+		if err != nil || f == nil {
+			t.Fatalf("seek %v: Next = %v, %v", seek, f, err)
+		}
+		if len(f.AudioFrames) == 0 || f.AudioFrames[0].Data[0] != 5 {
+			t.Fatalf("seek %v: first audio frames %v, want frame 5 first", seek, f.AudioFrames)
+		}
+	}
+}
+
+// cutClipTS writes a 4 s 320x240 50 fps clip with AAC audio, its video
+// encoded with the given arguments.
+func cutClipTS(t *testing.T, video ...string) string {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -1639,6 +1678,21 @@ func TestFileFrameIterator_Integration_LoopCutBeforeKeyframe(t *testing.T) {
 	if err != nil {
 		t.Skip("ffmpeg CLI not available, skipping integration test")
 	}
+	path := filepath.Join(t.TempDir(), "cut.ts")
+	args := []string{"-y",
+		"-f", "lavfi", "-i", "testsrc=duration=4:size=320x240:rate=50",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=4:sample_rate=48000",
+		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"}
+	args = append(args, video...)
+	args = append(args, "-c:a", "aac", "-b:a", "64k", "-ac", "2", "-f", "mpegts", path)
+	if out, err := exec.Command(ffmpegPath, args...).CombinedOutput(); err != nil {
+		t.Skipf("ffmpeg failed to generate test TS: %v\n%s", err, out)
+	}
+	return path
+}
+
+func threadedFFmpegFactory(t *testing.T) DecoderFactory {
+	t.Helper()
 	factory := func() (VideoDecoder, error) {
 		return codec.NewFFmpegDecoderWithThreads(nil, 4)
 	}
@@ -1647,37 +1701,27 @@ func TestFileFrameIterator_Integration_LoopCutBeforeKeyframe(t *testing.T) {
 		t.Skipf("FFmpeg decoder not available (non-cgo build?): %v", err)
 	}
 	dec.Close()
+	return factory
+}
 
-	path := filepath.Join(t.TempDir(), "cut.ts")
-	out, err := exec.Command(ffmpegPath, "-y",
-		"-f", "lavfi", "-i", "testsrc=duration=4:size=320x240:rate=50",
-		"-f", "lavfi", "-i", "sine=frequency=440:duration=4:sample_rate=48000",
-		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-		"-g", "100", "-bf", "0", "-bsf:v", `noise=drop=lt(n\,30)`,
-		"-c:a", "aac", "-b:a", "64k", "-ac", "2",
-		"-f", "mpegts", path,
-	).CombinedOutput()
-	if err != nil {
-		t.Skipf("ffmpeg failed to generate test TS: %v\n%s", err, out)
-	}
+// clipPass is what one pass over an iterator put out.
+type clipPass struct {
+	pics       [][]byte
+	audio      int
+	firstAudio int64
+}
 
-	iter, err := NewFileFrameIteratorWithDecoder(path, factory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer iter.Close()
-	iter.SetLoop(true)
-
-	var first [][]byte
-	var firstAudio int
-	for pass := 0; pass < 3; pass++ {
+// playPasses plays passes passes over iter, rewinding between them.
+func playPasses(t *testing.T, iter *FileFrameIterator, passes int) []clipPass {
+	t.Helper()
+	out := make([]clipPass, passes)
+	for pass := range out {
 		if pass > 0 {
 			if err := iter.Rewind(); err != nil {
 				t.Fatalf("pass %d: Rewind: %v", pass, err)
 			}
 		}
-		var pics [][]byte
-		sound := 0
+		p := &out[pass]
 		for {
 			f, err := iter.Next()
 			if err != nil {
@@ -1686,21 +1730,50 @@ func TestFileFrameIterator_Integration_LoopCutBeforeKeyframe(t *testing.T) {
 			if f == nil {
 				break
 			}
-			pics = append(pics, f.YUV)
-			sound += len(f.AudioFrames)
+			p.pics = append(p.pics, f.YUV)
+			if p.audio == 0 && len(f.AudioFrames) > 0 {
+				p.firstAudio = f.AudioFrames[0].PTS
+			}
+			p.audio += len(f.AudioFrames)
 		}
-		if len(pics) != 100 {
-			t.Fatalf("pass %d: %d pictures, want 100", pass, len(pics))
+	}
+	return out
+}
+
+// checkAudioAligned fails unless the pass's audio starts with the frame
+// that carries the first picture and lasts as long as its pictures, to
+// within an AAC frame at each end. 50 fps pictures are 1800 ticks, 48 kHz
+// AAC frames 1920.
+func checkAudioAligned(t *testing.T, pass int, p clipPass, firstPicture int64) {
+	t.Helper()
+	if p.firstAudio > firstPicture || p.firstAudio+1920 <= firstPicture {
+		t.Fatalf("pass %d: first audio PTS %d, first picture %d", pass, p.firstAudio, firstPicture)
+	}
+	if d := p.audio*1920 - len(p.pics)*1800; d < -2*1920 || d > 2*1920 {
+		t.Fatalf("pass %d: %d audio frames for %d pictures", pass, p.audio, len(p.pics))
+	}
+}
+
+// The same with a real decoder: a 50 fps clip whose first 30 frames are
+// cut, so 70 frames precede its first keyframe. Every pass puts out the
+// pictures of the first, with the audio of its pictures.
+func TestFileFrameIterator_Integration_LoopCutBeforeKeyframe(t *testing.T) {
+	path := cutClipTS(t, "-g", "100", "-bf", "0", "-bsf:v", `noise=drop=lt(n\,30)`)
+	iter, err := NewFileFrameIteratorWithDecoder(path, threadedFFmpegFactory(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	passes := playPasses(t, iter, 3)
+	for pass, p := range passes {
+		if len(p.pics) != 100 {
+			t.Fatalf("pass %d: %d pictures, want 100", pass, len(p.pics))
 		}
-		if pass == 0 {
-			first, firstAudio = pics, sound
-			continue
-		}
-		if sound != firstAudio {
-			t.Fatalf("pass %d: %d audio frames, first pass %d", pass, sound, firstAudio)
-		}
-		for i := range pics {
-			if string(pics[i]) != string(first[i]) {
+		checkAudioAligned(t, pass, p, iter.encodedFrames[0].pts)
+		for i := range p.pics {
+			if string(p.pics[i]) != string(passes[0].pics[i]) {
 				t.Fatalf("pass %d picture %d differs from the first pass", pass, i)
 			}
 		}
