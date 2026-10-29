@@ -1675,6 +1675,68 @@ func TestFileFrameIterator_LoopDropsLeadingPictures(t *testing.T) {
 	}
 }
 
+// A stream that does not start at an IDR leaves the decoder's reference
+// and picture order state running from the end of a pass into the next,
+// so each pass starts on a fresh decoder, with the audio of the first.
+func TestFileFrameIterator_LoopWithoutIDRStartsEachPassOnFreshDecoder(t *testing.T) {
+	const n, depth, passes = 10, 2, 3
+	encoded := make([]encodedFrame, n)
+	for i := range encoded {
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, 0x41, byte(i)}, pts: 1000 + int64(i)*1800, isKeyframe: i == 0}
+	}
+	// 48 kHz AAC frames are 1920 ticks; the first one starts before the
+	// first picture and ends after it.
+	audio := make([]audioFrameInfo, n)
+	for i := range audio {
+		audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: int64(i) * 1920, sampleRate: 48000}
+	}
+	created := 0
+	iter := newFileFrameIterator(encoded, audio, &delayDecoder{depth: depth},
+		func() (VideoDecoder, error) {
+			created++
+			return &delayDecoder{depth: depth}, nil
+		})
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	var firstSound []byte
+	for pass := 0; pass < passes; pass++ {
+		if pass > 0 {
+			if err := iter.Rewind(); err != nil {
+				t.Fatalf("pass %d: Rewind: %v", pass, err)
+			}
+		}
+		var pics, sound []byte
+		for {
+			f, err := iter.Next()
+			if err != nil {
+				t.Fatalf("pass %d: Next: %v", pass, err)
+			}
+			if f == nil {
+				break
+			}
+			pics = append(pics, f.YUV[0])
+			for _, a := range f.AudioFrames {
+				sound = append(sound, a.Data[0])
+			}
+		}
+		if want := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}; string(pics) != string(want) {
+			t.Fatalf("pass %d pictures = %v, want %v", pass, pics, want)
+		}
+		if len(sound) == 0 || sound[0] != 0 {
+			t.Fatalf("pass %d audio = %v, want it to start with frame 0", pass, sound)
+		}
+		if pass == 0 {
+			firstSound = sound
+		} else if string(sound) != string(firstSound) {
+			t.Fatalf("pass %d audio = %v, first pass %v", pass, sound, firstSound)
+		}
+	}
+	if created != passes-1 {
+		t.Fatalf("%d decoders created after the first, want %d", created, passes-1)
+	}
+}
+
 // Audio that ends before the first picture is dropped even when the stream
 // starts at its keyframe: a clip whose video was cut and audio was not
 // would otherwise play the cut-off audio over its first pictures.
@@ -1827,5 +1889,48 @@ func TestFileFrameIterator_Integration_LoopCutBeforeKeyframe(t *testing.T) {
 	}
 	if iter.TotalFrames() != 100 {
 		t.Fatalf("TotalFrames = %d, want 100", iter.TotalFrames())
+	}
+}
+
+// An open-GOP clip cut at a keyframe: the keyframe is not an IDR and is
+// followed by a leading picture. Every pass of a loop puts out the
+// pictures of a fresh non-looping decode, with the audio of its pictures,
+// and TotalFrames counts them.
+func TestFileFrameIterator_Integration_LoopOpenGOPCut(t *testing.T) {
+	path := cutClipTS(t, "-bf", "2",
+		"-x264-params", "open-gop=1:keyint=50:min-keyint=50:scenecut=0",
+		"-bsf:v", `noise=drop=lt(n\,50)`)
+	factory := threadedFFmpegFactory(t)
+
+	fresh, err := NewFileFrameIteratorWithDecoder(path, factory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := playPasses(t, fresh, 1)[0].pics
+	fresh.Close()
+	if len(want) == 0 {
+		t.Fatal("a fresh decode put out no pictures")
+	}
+
+	iter, err := NewFileFrameIteratorWithDecoder(path, factory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	for pass, p := range playPasses(t, iter, 4) {
+		if len(p.pics) != len(want) {
+			t.Fatalf("pass %d: %d pictures, a fresh decode %d", pass, len(p.pics), len(want))
+		}
+		checkAudioAligned(t, pass, p, iter.encodedFrames[0].pts)
+		for i := range p.pics {
+			if string(p.pics[i]) != string(want[i]) {
+				t.Fatalf("pass %d picture %d differs from a fresh decode", pass, i)
+			}
+		}
+	}
+	if iter.TotalFrames() != len(want) {
+		t.Fatalf("TotalFrames = %d, a fresh decode puts out %d", iter.TotalFrames(), len(want))
 	}
 }

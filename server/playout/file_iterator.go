@@ -89,6 +89,11 @@ type FileFrameIterator struct {
 	nextFed  int
 	nextHeld int
 	passDone bool // every picture of the pass is out; the decoder holds only the next pass
+	// The first frame is not an IDR. An IDR resets the decoder's reference
+	// and picture order state; without one that state runs on from the end
+	// of the pass into the next, which comes out reordered and with
+	// pictures missing. Each pass then starts on a fresh decoder.
+	noCarry bool
 
 	// Output tracking for PTS estimation during drain.
 	outputCount int   // number of decoded frames returned so far
@@ -213,6 +218,12 @@ func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decode
 		encoded = append(kept, encoded[j:]...)
 		break
 	}
+	noCarry := true
+	for _, nalu := range codec.ExtractNALUs(codec.AnnexBToAVC1(encoded[0].wireData)) {
+		if len(nalu) > 0 && nalu[0]&0x1f == 5 {
+			noCarry = false
+		}
+	}
 
 	// totalFrames is the encoded count: a decoder that drops nothing puts
 	// out one picture per frame, held-back ones in later Next calls and the
@@ -224,6 +235,7 @@ func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decode
 		decoderFactory: factory,
 		fps:            estimateFPSFromEncodedFrames(encoded),
 		totalFrames:    len(encoded),
+		noCarry:        noCarry,
 	}
 }
 
@@ -274,7 +286,7 @@ func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
 	// it: a drained decoder has to be replaced, and a fresh frame-threaded
 	// decoder returns nothing until its pipeline has filled. Rewind starts
 	// the next pass after the frames fed here.
-	if f.loop && !f.draining && len(f.encodedFrames) > 2*f.held {
+	if f.loop && !f.noCarry && !f.draining && len(f.encodedFrames) > 2*f.held {
 		for f.held > 0 && f.nextFed < len(f.encodedFrames) {
 			ef := f.encodedFrames[f.nextFed]
 			f.nextFed++
@@ -417,7 +429,8 @@ func (f *FileFrameIterator) FrameIndex() int {
 
 // SetLoop says whether another pass follows the current one. While set, the
 // end of a pass keeps the decoder running into the next pass, so Rewind can
-// continue without a fresh decoder.
+// continue without a fresh decoder. A stream that does not start at an IDR
+// gets a fresh decoder each pass regardless.
 func (f *FileFrameIterator) SetLoop(loop bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
