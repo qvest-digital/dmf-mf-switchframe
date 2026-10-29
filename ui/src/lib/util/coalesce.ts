@@ -55,8 +55,10 @@ export function coalesce<A extends unknown[]>(
 			.catch(() => {})
 			.finally(() => {
 				clearTimeout(stall);
-				if (slot.gen !== gen && !slot.pending && slot.newest) {
-					// Overtaken: put the newest value back on top.
+				if (slot.gen !== gen && !slot.pending && slot.newest && slot.newest !== args) {
+					// Overtaken by a newer value: put that back on top. An
+					// overtaken resend of the newest value itself needs none,
+					// or an engine slower than STALL_MS is sent it forever.
 					slot.pending = slot.newest;
 					pump(slot);
 					return;

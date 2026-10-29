@@ -145,4 +145,16 @@ describe('coalesce', () => {
 		await vi.advanceTimersByTimeAsync(1000);
 		expect(send).toHaveBeenCalledTimes(1);
 	});
+
+	// An engine slower than STALL_MS on every request: each resend of the
+	// newest value stalls and is itself overtaken by the next resend.
+	it('stops resending against an engine always slower than STALL_MS', async () => {
+		const LATENCY = STALL_MS + 500;
+		const send = vi.fn((_v: number) => new Promise<void>((r) => setTimeout(r, LATENCY)));
+		const set = coalesce(send, 50);
+		set(1);
+		set(2);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(send.mock.calls.map((c) => c[0])).toEqual([1, 2, 2]);
+	});
 });
