@@ -1004,7 +1004,7 @@ func (r *RTMPDirect) reconnectLoop() {
 
 		r.mu.Unlock()
 
-		// No cached SPS/PPS — reset and wait for next keyframe. The
+		// No cached SPS/PPS -- reset and wait for next keyframe. The
 		// backoff stays where it is: nothing has connected yet, and
 		// initConnection resets it once something does.
 		r.initialized.Store(false)
