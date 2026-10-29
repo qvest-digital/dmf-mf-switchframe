@@ -785,10 +785,10 @@ export function createReconciler() {
 			if (!fieldEquals(stateA[field], stateB[field])) return true;
 		}
 
-		// Audio mute/afv mismatch is critical — one engine muted while other isn't
+		// Audio mute/afv mismatch is critical: one engine muted while other isn't
 		if (hasAudioMismatch()) return true;
 
-		// Recording mismatch is critical — one engine recording while other isn't
+		// Recording mismatch is critical: one engine recording while other isn't
 		if (stateA.recording?.active !== stateB.recording?.active) return true;
 
 		// A playout difference counts once it has lasted, see

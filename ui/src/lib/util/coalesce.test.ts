@@ -114,4 +114,35 @@ describe('coalesce', () => {
 		await vi.advanceTimersByTimeAsync(100);
 		expect(send).toHaveBeenCalledTimes(2);
 	});
+
+	// A stalled request can reach the engine after the one that overtook
+	// it; the engine then holds the older value.
+	it('sends the newest value again when an overtaken request settles last', async () => {
+		const { send, calls } = deferredSend();
+		const set = coalesce(send, 50);
+		set(1);
+		set(2);
+		await vi.advanceTimersByTimeAsync(STALL_MS);
+		expect(send).toHaveBeenLastCalledWith(2);
+		calls[1].resolve();
+		await vi.advanceTimersByTimeAsync(100);
+		expect(send).toHaveBeenCalledTimes(2);
+		calls[0].resolve();
+		await vi.advanceTimersByTimeAsync(100);
+		expect(send).toHaveBeenCalledTimes(3);
+		expect(send).toHaveBeenLastCalledWith(2);
+		calls[2].resolve();
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(send).toHaveBeenCalledTimes(3);
+	});
+
+	it('does not repeat a value no request overtook', async () => {
+		const { send, calls } = deferredSend();
+		const set = coalesce(send, 50);
+		set(1);
+		await vi.advanceTimersByTimeAsync(STALL_MS * 2);
+		calls[0].resolve();
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(send).toHaveBeenCalledTimes(1);
+	});
 });
