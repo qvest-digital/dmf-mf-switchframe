@@ -122,6 +122,9 @@ type Player struct {
 	paceStart time.Time
 	paceIdx   int
 
+	// pts advances the output PTS by one output period per slot.
+	pts ptsStep
+
 	// Reusable scratch buffers for decode/re-encode hot path.
 	// annexBBuf and prependBuf must be separate allocations because
 	// PrependSPSPPS reads from annexBBuf while writing to prependBuf.
@@ -377,7 +380,8 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 	if outNum <= 0 || outDen <= 0 {
 		outNum, outDen = srcNum, srcDen
 	}
-	ptsPerFrame := int64(90000) * int64(outDen) / int64(outNum)
+	ptsStep := &p.pts
+	ptsStep.num, ptsStep.den = int64(outNum), int64(outDen)
 	frameDuration := time.Second * time.Duration(outDen) / time.Duration(outNum)
 
 	speed := p.speed.Load().(float64)
@@ -422,7 +426,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 			if p.paceIdx == 0 {
 				p.paceStart = time.Now()
 			}
-			if p.outputFrame(ctx, frameData, fw, fh, srcKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, outputPTS, ptsPerFrame, frameDuration, timer, p.paceStart, &p.paceIdx) {
+			if p.outputFrame(ctx, frameData, fw, fh, srcKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, outputPTS, ptsStep, frameDuration, timer, p.paceStart, &p.paceIdx) {
 				return true
 			}
 
@@ -593,7 +597,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 			if p.config.VideoOutput != nil {
 				p.config.VideoOutput(browserWireData, *outputPTS, browserKeyframe, browserSPS, browserPPS)
 			}
-			*outputPTS += ptsPerFrame
+			*outputPTS += ptsStep.next()
 			frameIdx++
 			continue
 		}
@@ -753,7 +757,7 @@ func (p *Player) outputFrame(
 	frameData []byte, fw, fh int, srcKeyframe bool,
 	wireData []byte, isKeyframe bool, sps, pps []byte,
 	outputPTS *int64,
-	ptsPerFrame int64,
+	pts *ptsStep,
 	frameDuration time.Duration,
 	timer *time.Timer,
 	playbackStart time.Time,
@@ -800,7 +804,7 @@ func (p *Player) outputFrame(
 		}
 	}
 
-	*outputPTS += ptsPerFrame
+	*outputPTS += pts.next()
 	*pacingIdx++
 
 	return false
@@ -958,6 +962,18 @@ func estimateFPSFromClipFrames(clip []BufferedFrame) float64 {
 		fps = 120
 	}
 	return fps
+}
+
+// ptsStep advances a 90 kHz PTS by one output period of den/num seconds,
+// carrying the remainder, so a period that is not a whole number of ticks
+// (1501.5 at 59.94 fps) does not drift against the audio.
+type ptsStep struct{ num, den, rem int64 }
+
+func (s *ptsStep) next() int64 {
+	s.rem += 90000 * s.den
+	d := s.rem / s.num
+	s.rem -= d * s.num
+	return d
 }
 
 // cadence maps a pass's pictures onto output slots: a slot shows the

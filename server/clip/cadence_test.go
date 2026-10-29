@@ -143,3 +143,49 @@ func TestPlayer_OutputsClipAtOutputRate(t *testing.T) {
 	}
 	assert.Equal(t, pictures, audioOut, "audio frames emitted")
 }
+
+// One output period is 1501.5 ticks at 59.94 fps. A whole-tick step loses
+// half a tick a slot, about 20 ms a minute against the audio, which runs on
+// its own exact 90 kHz count; over an hour the PTS stays within a tick.
+func TestPtsStep_NoDriftOverAnHour(t *testing.T) {
+	for _, r := range [][2]int64{{60000, 1001}, {30000, 1001}, {24000, 1001}, {50, 1}, {60, 1}} {
+		s := ptsStep{num: r[0], den: r[1]}
+		slots := 3600 * r[0] / r[1]
+		var pts int64
+		for k := int64(0); k < slots; k++ {
+			pts += s.next()
+		}
+		want := slots * 90000 * r[1] / r[0]
+		assert.InDelta(t, want, pts, 1, "%d/%d fps after %d slots", r[0], r[1], slots)
+	}
+}
+
+// The player stamps slot k of a 59.94 fps output k*1501.5 ticks after the
+// first, to the tick.
+func TestPlayer_OutputPTSFollowsOutputRateExactly(t *testing.T) {
+	const pictures = 30
+	clip := make([]BufferedFrame, pictures)
+	for i := range clip {
+		clip[i] = BufferedFrame{wireData: []byte{byte(i)}, pts: int64(i) * 1501, isKeyframe: i == 0}
+	}
+	var mu sync.Mutex
+	var pts []int64
+	done := make(chan struct{})
+	p := NewPlayer(PlayerConfig{
+		Clip: clip, Speed: 1, OutputFPSNum: 60000, OutputFPSDen: 1001, InitialPTS: 1000,
+		RawVideoOutput: func(_ []byte, _, _ int, v int64, _ bool) { mu.Lock(); pts = append(pts, v); mu.Unlock() },
+		OnDone:         func() { close(done) },
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.Start(ctx)
+	<-done
+	cancel()
+	p.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	require.GreaterOrEqual(t, len(pts), pictures)
+	for k := 1; k < pictures; k++ {
+		assert.Equal(t, int64(k)*90000*1001/60000, pts[k]-pts[0], "slot %d", k)
+	}
+}
