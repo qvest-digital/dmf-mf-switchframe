@@ -21,9 +21,9 @@ import (
 // ctxKeyLogger is the unexported context key for the request-scoped logger.
 type ctxKeyLogger struct{}
 
-// LoggerMiddleware returns middleware that adds structured logging each request.
-// It generates or preserves request ID, creates child logger with request
-// attributes, and logs completed request with status, latency, and bytes written.
+// LoggerMiddleware returns middleware that adds structured logging to each request.
+// It generates or preserves a request ID, creates a child logger with request
+// attributes, and logs the completed request with status, latency, and bytes written.
 //
 // A successful read is logged at DEBUG: the UI polls, so at INFO the reads
 // bury everything else. Mutations and every failed request stay at INFO. A
@@ -48,13 +48,13 @@ func loggerMiddleware(base *slog.Logger, routes *http.ServeMux, limiter *errorLo
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 
-			// Use incoming X-Request-ID or generate new one.
+			// Use incoming X-Request-ID or generate a new one.
 			reqID := r.Header.Get("X-Request-ID")
 			if reqID == "" {
 				reqID = newRequestID()
 			}
 
-			// Create child logger request attributes.
+			// Create child logger with request attributes.
 			child := base.With(
 				"request_id", reqID,
 				"method", r.Method,
@@ -74,11 +74,12 @@ func loggerMiddleware(base *slog.Logger, routes *http.ServeMux, limiter *errorLo
 			// Set response header.
 			w.Header().Set("X-Request-ID", reqID)
 
-			// Wrap ResponseWriter capture status and bytes.
+			// Wrap ResponseWriter to capture status and bytes.
 			sr := &statusRecorder{ResponseWriter: w, status: 0}
+
 			next.ServeHTTP(sr, r)
 
-			// Default to 200 if WriteHeader never called.
+			// Default to 200 if WriteHeader was never called.
 			status := sr.status
 			if status == 0 {
 				status = http.StatusOK

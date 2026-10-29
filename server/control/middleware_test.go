@@ -471,17 +471,22 @@ func TestRepeatedFailureLoggedOncePerWindow(t *testing.T) {
 	require.Equal(t, 1, lines(), "identical failures inside one window share one line")
 	require.Contains(t, buf.String(), `route="GET /api/playout/clips"`)
 
-	// A different failure is not hidden behind the first.
+	// A different failure is not hidden behind the first. Sent half a
+	// second before the window ends, these also run the once-a-second
+	// sweep, so the next one cannot run before the request below.
+	now = now.Add(4500 * time.Millisecond)
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/elsewhere", nil))
 	require.Equal(t, 2, lines())
 	require.Contains(t, buf.String(), "route=unknown")
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/api/playout/clips", nil))
 	require.Equal(t, 3, lines(), "the method is part of the key")
 
-	now = now.Add(5 * time.Second)
+	now = now.Add(700 * time.Millisecond)
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/playout/clips", nil))
 	require.Equal(t, 4, lines(), "the next window logs again")
-	require.Contains(t, buf.String(), "suppressed=99", "the line says how many were left out")
+	last := buf.String()[strings.LastIndex(buf.String(), `msg="http request"`):]
+	require.Contains(t, last, "suppressed=99", "the request line says how many were left out")
+	require.NotContains(t, buf.String(), "not logged", "the count is reported on the request line only")
 }
 
 // A client walking made-up paths gets one line per window, and the paths
