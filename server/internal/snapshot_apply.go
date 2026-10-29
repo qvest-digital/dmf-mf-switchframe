@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -133,6 +134,12 @@ type SnapshotClipApplier interface {
 	SyncClipPlayer(playerID int, clipID, clipName, state string, speed float64, loop bool) error
 }
 
+// SnapshotGraphicsSettingsApplier is optionally implemented to carry a
+// layer's name and control-surface config.
+type SnapshotGraphicsSettingsApplier interface {
+	SetGraphicsLayerSettings(id int, name string, config json.RawMessage) error
+}
+
 // SnapshotGraphicsHTML5Applier is optionally implemented for HTML5 graphics overlay reload.
 type SnapshotGraphicsHTML5Applier interface {
 	LoadGraphicsHTML5(layerID int, url string) error
@@ -250,6 +257,12 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 		if err := target.SetGraphicsLayerRect(layer.ID, layer.X, layer.Y, layer.Width, layer.Height); err != nil {
 			slog.Warn("snapshot apply: graphics layer rect failed", "id", layer.ID, "error", err)
 			warnings = append(warnings, fmt.Sprintf("graphics layer %d rect: %v", layer.ID, err))
+		}
+		if applier, ok := target.(SnapshotGraphicsSettingsApplier); ok {
+			if err := applier.SetGraphicsLayerSettings(layer.ID, layer.Name, layer.Config); err != nil {
+				slog.Warn("snapshot apply: graphics layer settings failed", "id", layer.ID, "error", err)
+				warnings = append(warnings, fmt.Sprintf("graphics layer %d settings: %v", layer.ID, err))
+			}
 		}
 		if layer.HTML5URL != "" {
 			if applier, ok := target.(SnapshotGraphicsHTML5Applier); ok {

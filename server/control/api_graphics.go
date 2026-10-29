@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"image"
 	"io"
 	"mime"
@@ -38,6 +39,10 @@ func (a *API) registerGraphicsRoutes(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("POST /api/graphics", a.handleGraphicsAddLayer)
 	mux.HandleFunc("GET /api/graphics", a.handleGraphicsStatus)
+	mux.HandleFunc("PUT /api/graphics/order", a.handleGraphicsLayerOrder)
+	mux.HandleFunc("GET /api/graphics/export", a.handleGraphicsExport)
+	mux.HandleFunc("POST /api/graphics/import", a.handleGraphicsImport)
+	mux.HandleFunc("PATCH /api/graphics/{id}", a.handleGraphicsLayerSettings)
 	mux.HandleFunc("DELETE /api/graphics/{id}", a.handleGraphicsRemoveLayer)
 	mux.HandleFunc("POST /api/graphics/{id}/frame", a.handleGraphicsFrame)
 	mux.HandleFunc("POST /api/graphics/{id}/on", timedHandlerWithPath(a.cmdQueue, "graphics_on", a.seqTracker, []string{"id"}, a.handleGraphicsOnInner))
@@ -201,6 +206,87 @@ func (a *API) handleSetDSKFadeDurationInner(w http.ResponseWriter, r *http.Reque
 
 // handleGraphicsStatus returns the current graphics compositor state.
 func (a *API) handleGraphicsStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// layerSettingsRequest is the JSON body for PATCH /api/graphics/{id}. An
+// absent field is left as it is.
+type layerSettingsRequest struct {
+	Name   *string         `json:"name"`
+	Config json.RawMessage `json:"config"`
+}
+
+// handleGraphicsLayerSettings stores a layer's name and control-surface
+// config.
+func (a *API) handleGraphicsLayerSettings(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	var req layerSettingsRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10)).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := a.compositor.SetLayerSettings(id, req.Name, req.Config); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsLayerOrder restacks every layer, bottom to top.
+func (a *API) handleGraphicsLayerOrder(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	var req struct {
+		IDs []int `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := a.compositor.SetLayerOrder(req.IDs); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsExport returns every layer as an export document.
+func (a *API) handleGraphicsExport(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="graphics-layers.json"`)
+	_ = json.NewEncoder(w).Encode(a.compositor.ExportLayers())
+}
+
+// handleGraphicsImport replaces every layer with an export document's. It is
+// refused while a layer is on air or holds an HTML5 template, which the
+// import would orphan.
+func (a *API) handleGraphicsImport(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	var doc graphics.LayerExport
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<20)).Decode(&doc); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if a.htmlGfxMgr != nil {
+		for _, l := range a.compositor.Status().Layers {
+			if a.htmlGfxMgr.BrowserForLayer(l.ID) >= 0 {
+				httperr.WriteErr(w, http.StatusConflict,
+					fmt.Errorf("%w: layer %d holds an HTML5 template", graphics.ErrLayersOnAir, l.ID))
+				return
+			}
+		}
+	}
+	if err := a.compositor.ImportLayers(doc); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }

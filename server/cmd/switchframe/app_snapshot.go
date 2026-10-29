@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
 	"log/slog"
@@ -163,6 +164,18 @@ func (a *App) SetGraphicsLayerZOrder(id int, zOrder int) error {
 		return nil
 	}
 	return a.compositor.SetLayerZOrder(id, zOrder)
+}
+
+// SetGraphicsLayerSettings carries a layer's name and config from the peer
+// engine. An empty config clears it.
+func (a *App) SetGraphicsLayerSettings(id int, name string, config json.RawMessage) error {
+	if a.compositor == nil {
+		return nil
+	}
+	if config == nil {
+		config = json.RawMessage("null")
+	}
+	return a.compositor.SetLayerSettings(id, &name, config)
 }
 
 func (a *App) SetGraphicsLayerRect(id int, x, y, width, height int) error {

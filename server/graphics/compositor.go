@@ -1,6 +1,7 @@
 package graphics
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -57,22 +58,24 @@ type AnimationConfig struct {
 
 // LayerState describes the state of a single graphics layer for serialization.
 type LayerState struct {
-	ID                 int       `json:"id"`
-	Template           string    `json:"template,omitempty"`
-	Active             bool      `json:"active"`
-	FadePosition       float64   `json:"fadePosition,omitempty"`
-	AnimationMode      string    `json:"animationMode,omitempty"`
-	AnimationHz        float64   `json:"animationHz,omitempty"`
-	ZOrder             int       `json:"zOrder"`
-	Rect               RectState `json:"rect"`
-	ImageName          string    `json:"imageName,omitempty"`
-	ImageWidth         int       `json:"imageWidth,omitempty"`
-	ImageHeight        int       `json:"imageHeight,omitempty"`
-	SequenceLoaded     bool      `json:"sequenceLoaded,omitempty"`
-	SequencePhase      string    `json:"sequencePhase,omitempty"`
-	SequenceProcessing bool      `json:"sequenceProcessing,omitempty"`
-	SequenceProgress   float64   `json:"sequenceProgress,omitempty"`
-	SequenceSpeed      float64   `json:"sequenceSpeed,omitempty"`
+	ID                 int             `json:"id"`
+	Name               string          `json:"name,omitempty"`
+	Config             json.RawMessage `json:"config,omitempty"`
+	Template           string          `json:"template,omitempty"`
+	Active             bool            `json:"active"`
+	FadePosition       float64         `json:"fadePosition,omitempty"`
+	AnimationMode      string          `json:"animationMode,omitempty"`
+	AnimationHz        float64         `json:"animationHz,omitempty"`
+	ZOrder             int             `json:"zOrder"`
+	Rect               RectState       `json:"rect"`
+	ImageName          string          `json:"imageName,omitempty"`
+	ImageWidth         int             `json:"imageWidth,omitempty"`
+	ImageHeight        int             `json:"imageHeight,omitempty"`
+	SequenceLoaded     bool            `json:"sequenceLoaded,omitempty"`
+	SequencePhase      string          `json:"sequencePhase,omitempty"`
+	SequenceProcessing bool            `json:"sequenceProcessing,omitempty"`
+	SequenceProgress   float64         `json:"sequenceProgress,omitempty"`
+	SequenceSpeed      float64         `json:"sequenceSpeed,omitempty"`
 }
 
 // RectState describes a layer's position and size for serialization.
@@ -94,6 +97,8 @@ type State struct {
 // graphicsLayer holds per-layer overlay state.
 type graphicsLayer struct {
 	id            int
+	name          string          // operator label; playlists still address the id
+	config        json.RawMessage // control-surface settings, opaque here
 	overlay       []byte
 	overlayWidth  int
 	overlayHeight int
@@ -1765,6 +1770,8 @@ func (c *Compositor) buildStateLocked() State {
 		layer := c.layers[id]
 		ls := LayerState{
 			ID:           layer.id,
+			Name:         layer.name,
+			Config:       layer.config,
 			Template:     layer.template,
 			Active:       layer.active,
 			FadePosition: layer.fadePosition,
