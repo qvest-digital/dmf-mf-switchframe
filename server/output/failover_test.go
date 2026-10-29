@@ -398,6 +398,35 @@ func TestDestinationPair_ListenerOnBoth(t *testing.T) {
 	require.Empty(t, b.SendingDestinationIDs())
 }
 
+// Engines whose files list the destinations in another order, as during a
+// rolling update, still store each target under one ID.
+func TestApplyStartup_IDFollowsTargetNotPosition(t *testing.T) {
+	x := StartupDestination{DestinationConfig: callerConfig}
+	y := StartupDestination{DestinationConfig: DestinationConfig{Type: "rtmp", URL: "rtmp://192.0.2.2/live/key"}}
+	a, b := pairEngine(t, "a"), pairEngine(t, "b")
+	require.NoError(t, a.ApplyStartup(StartupConfig{Destinations: []StartupDestination{x, y}}))
+	require.NoError(t, b.ApplyStartup(StartupConfig{Destinations: []StartupDestination{y, x}}))
+
+	byTarget := func(m *Manager) map[string]string {
+		out := map[string]string{}
+		for _, d := range m.ListDestinations() {
+			out[d.Config.Type+d.Config.URL+d.Config.Address] = d.ID
+		}
+		return out
+	}
+	require.Equal(t, byTarget(a), byTarget(b))
+	require.Len(t, byTarget(a), 2)
+
+	// One target twice is refused by name, not as a clash of IDs.
+	err := pairEngine(t, "a").ApplyStartup(StartupConfig{Destinations: []StartupDestination{x, x}})
+	require.ErrorContains(t, err, "same type, target and stream ID")
+
+	// Another stream ID on one target is another destination.
+	z := x
+	z.StreamID = "other"
+	require.NoError(t, pairEngine(t, "a").ApplyStartup(StartupConfig{Destinations: []StartupDestination{x, z}}))
+}
+
 // Both engines reading one startup file store its destinations under one ID.
 func TestApplyStartup_SharedIDsAndDeferredStart(t *testing.T) {
 	cfg := StartupConfig{Destinations: []StartupDestination{{DestinationConfig: callerConfig}}}

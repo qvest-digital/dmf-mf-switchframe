@@ -113,6 +113,7 @@ Before the direct-write hot path, the manager used a [`Viewer`](../../server/out
 - An engine that comes back takes the destinations over from the peer's state snapshot at startup, under the same IDs and with the peer's sender, so it stays on standby. A destination it names itself the sender of, as one `--outputs-config` declares, waits for the first peer poll and goes to the peer if the peer sends it.
 - Before an engine starts a destination on its own, on a takeover or from the peer's snapshot, it reads the peer's health once more and stands by if the peer sends it: a snapshot or a poll taken before the peer's takeover still names this engine. An operator's start or switch-over starts at once.
 - Engines that cannot reach each other while both run both send: each sees the other down. When they reach each other again the leader keeps sending and the other stands by.
+- A destination from `--outputs-config` takes its ID from its type, URL or address and port, and stream ID, so both engines store it under one ID whatever order their files list it in. Two entries with all of these equal are refused.
 
 Destinations live in memory only; an engine restarted while its peer is down comes back without the destinations created over the API.
 
