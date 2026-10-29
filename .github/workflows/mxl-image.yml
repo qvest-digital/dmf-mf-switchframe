@@ -2,7 +2,7 @@ name: MXL image
 
 # Builds the MXL images from Dockerfile.mxl and runs the tests that need
 # libmxl, which the upstream workflows skip. Pull requests build and test
-# without publishing; main and mxl-v* tags publish.
+# without publishing; main, mxl-v* tags and manual runs publish.
 
 on:
   push:
@@ -17,7 +17,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   IMAGE: ghcr.io/qvest-digital/dmf-mf-switchframe
@@ -61,28 +60,56 @@ jobs:
       - name: Test the CEF sidecar
         run: make -C cef-sidecar test
 
-  # Builds both images into the GHA cache. Nothing is pushed here: the push
-  # job waits for the smoke test, so neither image is published unless the
-  # CPU image ran an HTML5 graphic.
+  # Builds both images. Outside pull requests each is pushed by digest
+  # alone, with no tag: the smoke test runs that digest and the push job tags
+  # it, so a tag names exactly the image that was tested. A pull request
+  # pushes nothing, and the smoke test rebuilds its image from the cache.
   image:
     if: github.repository == 'qvest-digital/dmf-mf-switchframe'
     needs: [test-mxl, test-cef-sidecar]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         target: [cpu, cuda]
     steps:
       - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v3
       - name: Build
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.mxl
           target: ${{ matrix.target }}
           platforms: linux/amd64
+          outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) || '' }}
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,scope=${{ matrix.target }},mode=max
+      - name: Record the digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest pushed: '$DIGEST'"; exit 1; }
+          echo "$DIGEST" > "digest-$TARGET"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: digest-${{ matrix.target }}
+          path: digest-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 1
 
   # The sidecar has to start, connect, render a template and deliver frames to
   # the compositor in the image as shipped: with no display, no extra
@@ -92,10 +119,15 @@ jobs:
     if: github.repository == 'qvest-digital/dmf-mf-switchframe'
     needs: image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+        if: github.event_name == 'pull_request'
       - name: Load the CPU image
+        if: github.event_name == 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -105,6 +137,23 @@ jobs:
           load: true
           tags: switchframe-mxl:smoke
           cache-from: type=gha,scope=cpu
+      - uses: actions/download-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: digest-cpu
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull the pushed CPU image
+        if: github.event_name != 'pull_request'
+        run: |
+          ref="$IMAGE@$(cat digest-cpu)"
+          docker pull "$ref"
+          docker tag "$ref" switchframe-mxl:smoke
       - name: Smoke test HTML5 graphics
         timeout-minutes: 5
         shell: bash
@@ -149,10 +198,14 @@ jobs:
           played=$(wait_frames "$loaded")
           echo "frames delivered after play: $played"
 
+  # Tags the digests the image job pushed; nothing is built here.
   push:
     if: github.repository == 'qvest-digital/dmf-mf-switchframe' && github.event_name != 'pull_request'
     needs: smoke
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         include:
@@ -161,7 +214,9 @@ jobs:
           - target: cuda
             suffix: "-cuda"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: digest-${{ matrix.target }}
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -169,23 +224,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v3
-      - name: Derive image tags
-        id: tags
+      - name: Tag the tested image
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          SUFFIX: ${{ matrix.suffix }}
         run: |
-          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          digest=$(cat "digest-$TARGET")
+          tags=("$IMAGE:${GITHUB_SHA::7}$SUFFIX")
           if [[ "$GITHUB_REF" == refs/tags/mxl-v* ]]; then
-            echo "version=${GITHUB_REF_NAME#mxl-v}" >> "$GITHUB_OUTPUT"
+            tags+=("$IMAGE:${GITHUB_REF_NAME#mxl-v}$SUFFIX")
           fi
-      - name: Push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.mxl
-          target: ${{ matrix.target }}
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.tags.outputs.sha }}${{ matrix.suffix }}
-            ${{ steps.tags.outputs.version && format('{0}:{1}{2}', env.IMAGE, steps.tags.outputs.version, matrix.suffix) || '' }}
-          cache-from: type=gha,scope=${{ matrix.target }}
+          args=()
+          for tag in "${tags[@]}"; do args+=(-t "$tag"); done
+          docker buildx imagetools create "${args[@]}" "$IMAGE@$digest"
+          for tag in "${tags[@]}"; do
+            got=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)
+            if [[ "$got" != "$digest" ]]; then
+              echo "$tag is $got, want the tested $digest"; exit 1
+            fi
+            echo "$tag -> $digest"
+          done
