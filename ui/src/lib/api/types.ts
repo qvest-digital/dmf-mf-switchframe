@@ -1006,6 +1006,8 @@ export interface PlayoutChannelState {
 	itemCount: number;
 	itemProgress?: number;
 	itemRemainMs?: number;
+	/** Why the item on air could not be opened; absent while it plays. */
+	itemError?: string;
 	/** A looping clip is on air. */
 	looping?: boolean;
 	/** The looping clip ends after its current pass. */
