@@ -628,6 +628,10 @@ func (a *App) initSwitcherCommon() error {
 	// Create switcher with Prism's relay so frames reach MoQ viewers.
 	a.sw = switcher.New(a.programRelay)
 	a.sw.SetMetrics(a.appMetrics)
+	if a.appMetrics != nil {
+		registerCollectors(metrics.GetRegistry(),
+			switcher.NewMetricsCollector(a.sw), audio.NewMetricsCollector(a.mixer))
+	}
 
 	// Persist + seed lastCommandSeq so /api/peer/health survives a restart
 	// without the peer interpreting seq=0 as divergence. Wire

@@ -105,6 +105,9 @@ type Metrics struct {
 	// Health
 	SourceStatusChangesTotal *prometheus.CounterVec // labels: source, from_status, to_status
 
+	// Program output cadence
+	ProgramFrameInterval prometheus.Histogram
+
 	// Command Queue (active-active)
 	CmdQueueDepth           prometheus.Gauge
 	CmdQueueDrainedTotal    prometheus.Counter
@@ -256,6 +259,14 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help:      "Total source health status transitions.",
 		}, []string{"source", "from_status", "to_status"}),
 
+		ProgramFrameInterval: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "switchframe",
+			Name:      "program_frame_interval_seconds",
+			Help:      "Time between consecutive program frames sent. At a steady program it sits at one frame period; the buckets above two periods count stalls.",
+			// Frame periods from 60 to 24 fps, then the stalls.
+			Buckets: []float64{0.0125, 0.017, 0.021, 0.025, 0.034, 0.042, 0.05, 0.067, 0.084, 0.1, 0.2, 0.5, 1, 2},
+		}),
+
 		// Command Queue (active-active)
 		CmdQueueDepth: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "switchframe",
@@ -355,6 +366,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.PipelineEncodeDuration,
 		m.NodeProcessDuration,
 		m.SourceStatusChangesTotal,
+		m.ProgramFrameInterval,
 		m.CBRNullPacketsTotal,
 		m.CBRRealBytesTotal,
 		m.CBRPadBytesTotal,
