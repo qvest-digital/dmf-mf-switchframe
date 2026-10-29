@@ -72,9 +72,6 @@
 	// The working playlist lives only here until it is saved.
 	$effect(() => { if (dirty) return holdReload('unsaved playlist'); });
 
-	// ── Source names for the item editor ──
-	const sourceNames = $derived(Object.keys(crState.sources ?? {}));
-
 	// ── Derived items for sub-components ──
 	const currentItem = $derived<PlaylistItem | undefined>(
 		channel.itemIndex >= 0 && channel.itemIndex < workingPlaylist.items.length
@@ -634,7 +631,7 @@
 							<PlayoutItemEditor
 								item={workingPlaylist.items[selectedIndex]}
 								onChange={updateItem}
-								sources={sourceNames}
+								sources={crState.sources ?? {}}
 								clips={availableClips}
 								graphicsLayers={crState.graphics?.layers ?? []}
 							/>

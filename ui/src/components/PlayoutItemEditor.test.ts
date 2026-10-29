@@ -1,7 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import PlayoutItemEditor from './PlayoutItemEditor.svelte';
-import type { PlaylistItem } from '$lib/api/types';
+import type { PlaylistItem, SourceInfo } from '$lib/api/types';
+
+function liveSource(key: string, position: number): SourceInfo {
+	return { key, type: 'mxl', status: 'healthy', position };
+}
 
 function makeItem(overrides: Partial<PlaylistItem> = {}): PlaylistItem {
 	return {
@@ -41,15 +45,60 @@ describe('PlayoutItemEditor', () => {
 			props: {
 				item: makeItem({ type: 'live', source: 'cam1' }),
 				onChange: vi.fn(),
-				sources: ['cam1', 'cam2', 'cam3'],
+				sources: {
+					cam1: liveSource('cam1', 1),
+					cam2: liveSource('cam2', 2),
+					cam3: liveSource('cam3', 3),
+				},
 			},
 		});
 		const sourceSelect = container.querySelector('.field-source-select') as HTMLSelectElement;
 		expect(sourceSelect).toBeTruthy();
 		expect(sourceSelect.value).toBe('cam1');
-		// Should have 3 options
-		const options = sourceSelect.querySelectorAll('option');
+		const options = [...sourceSelect.querySelectorAll('option')].filter((o) => !o.disabled);
 		expect(options).toHaveLength(3);
+	});
+
+	// An NMOS input is shown under the connected sender's name in the
+	// switcher, and only under its key here, so the sender an operator
+	// meant could not be found.
+	it('lists live sources under their switcher label and stores the input key', async () => {
+		const onChange = vi.fn();
+		const { container } = render(PlayoutItemEditor, {
+			props: {
+				item: makeItem({ type: 'live' }),
+				onChange,
+				sources: {
+					'mxl:mxl-1': { ...liveSource('mxl:mxl-1', 1), label: 'srt-ingest-2 p-demo' },
+					'mxl:mxl-2': { ...liveSource('mxl:mxl-2', 2), label: 'srt-ingest-1 p-demo' },
+				},
+			},
+		});
+		const sourceSelect = container.querySelector('.field-source-select') as HTMLSelectElement;
+		const options = [...sourceSelect.querySelectorAll('option')].filter((o) => !o.disabled);
+		expect(options.map((o) => [o.value, o.textContent])).toEqual([
+			['mxl:mxl-1', 'srt-ingest-2 p-demo'],
+			['mxl:mxl-2', 'srt-ingest-1 p-demo'],
+		]);
+		// No source chosen yet: the first source must not look chosen.
+		expect(sourceSelect.value).toBe('');
+
+		sourceSelect.value = 'mxl:mxl-2';
+		await fireEvent.change(sourceSelect);
+		expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ source: 'mxl:mxl-2' }));
+	});
+
+	it('follows a label change on the selected input', async () => {
+		const sources = (label: string) => ({ 'mxl:mxl-1': { ...liveSource('mxl:mxl-1', 1), label } });
+		const { container, rerender } = render(PlayoutItemEditor, {
+			props: { item: makeItem({ type: 'live', source: 'mxl:mxl-1' }), onChange: vi.fn(), sources: sources('sender-a') },
+		});
+		const sourceSelect = () => container.querySelector('.field-source-select') as HTMLSelectElement;
+		expect(sourceSelect().selectedOptions[0].textContent).toBe('sender-a');
+
+		await rerender({ sources: sources('sender-b') });
+		expect(sourceSelect().value).toBe('mxl:mxl-1');
+		expect(sourceSelect().selectedOptions[0].textContent).toBe('sender-b');
 	});
 
 	it('shows duration for slate type', () => {

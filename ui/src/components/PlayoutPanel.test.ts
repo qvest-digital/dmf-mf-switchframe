@@ -374,6 +374,37 @@ describe('PlayoutPanel', () => {
 		});
 	});
 
+	// The live-source picker read the source keys only, while the switcher
+	// shows an NMOS input under the connected sender's name.
+	it('item editor lists live sources under the label the switcher shows', async () => {
+		vi.mocked(api.playoutPlaylist).mockResolvedValue([
+			{ id: 'b', type: 'live', title: 'Camera 1', source: 'mxl:mxl-2' },
+		]);
+		const sources = (second: string) => ({
+			'mxl:mxl-1': { key: 'mxl:mxl-1', label: 'srt-ingest-2 p-demo', type: 'mxl', status: 'healthy', position: 1 },
+			'mxl:mxl-2': { key: 'mxl:mxl-2', label: second, type: 'mxl', status: 'healthy', position: 2 },
+		});
+		const channels = [makeChannel({ itemIndex: 0, itemCount: 1 })];
+		const { container, rerender } = render(PlayoutPanel, {
+			props: { state: makeState({ sources: sources('srt-ingest-1 p-demo'), playout: { channels } } as Partial<ControlRoomState>) },
+		});
+		const block = await vi.waitFor(() => {
+			const el = container.querySelector('[aria-label="live Camera 1"]');
+			expect(el).toBeTruthy();
+			return el as HTMLElement;
+		});
+		await fireEvent.click(block);
+		const select = container.querySelector('.field-source-select') as HTMLSelectElement;
+		expect(select.value).toBe('mxl:mxl-2');
+		expect(select.selectedOptions[0].textContent).toBe('srt-ingest-1 p-demo');
+		expect([...select.options].map((o) => o.textContent)).toContain('srt-ingest-2 p-demo');
+
+		// A controller connects another sender to the same input.
+		await rerender({ state: makeState({ sources: sources('srt-ingest-3 p-demo'), playout: { channels } } as Partial<ControlRoomState>) });
+		expect(select.value).toBe('mxl:mxl-2');
+		expect(select.selectedOptions[0].textContent).toBe('srt-ingest-3 p-demo');
+	});
+
 	// ── Monitor mode ──
 
 	it('auto-switches to monitor mode when on-air', async () => {

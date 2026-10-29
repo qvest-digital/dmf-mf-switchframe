@@ -15,3 +15,22 @@ export function sortedSourceKeys(sources: Record<string, SourceInfo>): string[] 
 			return a.localeCompare(b);
 		});
 }
+
+export interface SourceOption {
+	key: string;
+	label: string;
+}
+
+/**
+ * The sources a live playlist item can name, in switcher order and under
+ * the label the switcher shows: the connected sender's name for an NMOS
+ * input, else the source's own name. The item stores the key, so it cuts
+ * to that input whatever is connected to it at air time. A key the item
+ * already names stays offered when it is not listed, so the editor never
+ * shows another source in its place.
+ */
+export function liveSourceOptions(sources: Record<string, SourceInfo>, current?: string): SourceOption[] {
+	const keys = sortedSourceKeys(sources);
+	if (current && !keys.includes(current)) keys.push(current);
+	return keys.map((key) => ({ key, label: sources[key]?.label || key }));
+}
