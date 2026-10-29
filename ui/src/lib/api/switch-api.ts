@@ -1969,10 +1969,10 @@ export async function listRecordingsDualEngine(): Promise<EngineRecordingGroup[]
 	}
 
 	const results = await Promise.allSettled(
-		engines.map(async (eng) => {
+		engines.map(async (eng): Promise<EngineRecordingGroup> => {
 			const recordings = await fetchEngineRecordings(eng.url);
 			return {
-				engineId: eng.id,
+				engineId: eng.id as EngineRecordingGroup['engineId'],
 				engineUrl: eng.url,
 				recordings: recordings ?? [],
 				unreachable: recordings === null,
