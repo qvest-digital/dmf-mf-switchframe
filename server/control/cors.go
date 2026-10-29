@@ -2,6 +2,15 @@ package control
 
 import "net/http"
 
+// corsAllowMethods lists every method the API registers a route for: a
+// browser on one engine's origin preflights each non-simple call it makes to
+// the other engine, and a method missing here fails there before the request
+// is sent.
+const corsAllowMethods = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+
+// corsAllowHeaders lists every request header the UI sets on an API call.
+const corsAllowHeaders = "Content-Type, Authorization"
+
 // CORSMiddleware sets cross-origin resource sharing headers on every response.
 // When allowedOrigins is non-empty, only requests whose Origin header matches
 // one of the listed origins receive a permissive Access-Control-Allow-Origin.
@@ -25,8 +34,8 @@ func CORSMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 				}
 			}
 
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Methods", corsAllowMethods)
+			w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
 			w.Header().Set("Access-Control-Max-Age", "86400")
 
 			if r.Method == http.MethodOptions {
