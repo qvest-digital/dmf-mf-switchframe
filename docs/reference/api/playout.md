@@ -236,7 +236,9 @@ Pods are timed secondary events (cut-ins, squeezebacks, overlays) associated wit
 ### `POST /api/playout/channels/{n}/pods`
 
 **Purpose:** create a pod on a channel.
-**Handler:** `(*API).handlePodCreate`. **Request body:** `playout.PodConfig`.
+**Handler:** `(*API).handlePodCreate`. **Request body:** `{ "id": "pod-<8 hex>", "template": "<name>" }` or `{ "id": ..., "config": playout.PodConfig }`. `id` is optional; engines sent the same request create the pod under it, so a request by pod ID reaches it on each.
+
+**Errors:** 400 (`playout.ErrInvalidPodID`), 409 (`playout.ErrPodExists`).
 
 ---
 

@@ -176,6 +176,30 @@ func (m *Manager) SetMetrics(pm *metrics.Metrics) {
 	m.promMetrics = pm
 }
 
+// instrumentSRTCallerLocked has caller count what it sends and how long
+// each reconnect held its output in the Prometheus metrics, if any.
+// Must be called with m.mu held, before the caller starts.
+func (m *Manager) instrumentSRTCallerLocked(caller *SRTCaller) {
+	pm := m.promMetrics
+	if pm == nil {
+		return
+	}
+	caller.onSent = func(n int) { pm.SRTBytesTotal.Add(float64(n)) }
+	caller.onIDRGate = func(held time.Duration) {
+		pm.IDRGateEventsTotal.Inc()
+		pm.IDRGateDuration.Observe(held.Seconds())
+	}
+}
+
+// instrumentSRTListenerLocked has listener count what it sends in the
+// Prometheus metrics, if any. Must be called with m.mu held, before the
+// listener starts.
+func (m *Manager) instrumentSRTListenerLocked(listener *SRTListener) {
+	if pm := m.promMetrics; pm != nil {
+		listener.onSent = func(n int) { pm.SRTBytesTotal.Add(float64(n)) }
+	}
+}
+
 // SetResolution sets the video resolution for SDT service_type metadata.
 func (m *Manager) SetResolution(width, height int) {
 	m.mu.Lock()
@@ -343,6 +367,9 @@ func (m *Manager) StartRecording(config RecorderConfig) error {
 		config.ArchiveDir = m.recordingArchiveDirLocked()
 	}
 	rec := NewFileRecorder(config)
+	if pm := m.promMetrics; pm != nil {
+		rec.onWrite = func(n int) { pm.RecordingBytesTotal.Add(float64(n)) }
+	}
 	if err := rec.Start(m.ctx); err != nil {
 		m.mu.Unlock()
 		return fmt.Errorf("start recorder: %w", err)
@@ -454,6 +481,7 @@ func (m *Manager) StartSRTOutput(config SRTConfig) error {
 				fn()
 			}
 		}
+		m.instrumentSRTCallerLocked(caller)
 		if cs := m.createSRTStats(caller.ID(), "", config.Mode, config.Latency); cs != nil {
 			caller.SetStats(cs)
 		}
@@ -481,6 +509,7 @@ func (m *Manager) StartSRTOutput(config SRTConfig) error {
 		if m.onMuxStart != nil {
 			listener.OnConnect(m.onMuxStart)
 		}
+		m.instrumentSRTListenerLocked(listener)
 		if cs := m.createSRTStats(listener.ID(), "", config.Mode, config.Latency); cs != nil {
 			listener.SetStats(cs)
 		}
@@ -789,6 +818,7 @@ func (m *Manager) StartDestination(id string) error {
 				fn()
 			}
 		}
+		m.instrumentSRTCallerLocked(caller)
 		if cs := m.createSRTStats(caller.ID(), id, dest.config.Type, dest.config.Latency); cs != nil {
 			caller.SetStats(cs)
 		}
@@ -819,6 +849,7 @@ func (m *Manager) StartDestination(id string) error {
 		if m.onMuxStart != nil {
 			listener.OnConnect(m.onMuxStart)
 		}
+		m.instrumentSRTListenerLocked(listener)
 		if cs := m.createSRTStats(listener.ID(), id, dest.config.Type, dest.config.Latency); cs != nil {
 			listener.SetStats(cs)
 		}
@@ -826,7 +857,8 @@ func (m *Manager) StartDestination(id string) error {
 
 	case "rtmp":
 		rtmpDirect, err := NewRTMPDirect(RTMPCallerConfig{
-			URL: dest.config.URL,
+			URL:                dest.config.URL,
+			AllowUntrustedCert: dest.config.AllowUntrustedCert,
 		})
 		if err != nil {
 			dest.mu.Unlock()

@@ -222,7 +222,8 @@ static void sps_get_dimensions(const uint8_t* sps, int sps_len,
 static int rtmp_flv_open(rtmp_flv_ctx_t* ctx, const char* url,
 	const unsigned char* sps, int sps_len,
 	const unsigned char* pps, int pps_len,
-	int sample_rate, int channels, rtmp_intr_t* intr) {
+	int sample_rate, int channels, rtmp_intr_t* intr,
+	int tls_verify, const char* ca_file) {
 
 	int rc = avformat_alloc_output_context2(&ctx->out_ctx, NULL, "flv", url);
 	if (rc < 0 || !ctx->out_ctx) return -1;
@@ -329,8 +330,17 @@ static int rtmp_flv_open(rtmp_flv_ctx_t* ctx, const char* url,
 	ast->codecpar->extradata_size = 2;
 
 	// Open RTMP connection.
+	// libavformat's TLS protocol does not verify the server certificate
+	// unless told to. The RTMP protocol hands these options on to the TLS
+	// connection beneath it.
+	AVDictionary* opts = NULL;
+	if (strncmp(url, "rtmps://", 8) == 0) {
+		av_dict_set(&opts, "tls_verify", tls_verify ? "1" : "0", 0);
+		if (tls_verify && ca_file && ca_file[0]) av_dict_set(&opts, "ca_file", ca_file, 0);
+	}
 	rc = avio_open2(&ctx->out_ctx->pb, url, AVIO_FLAG_WRITE,
-		&ctx->out_ctx->interrupt_callback, NULL);
+		&ctx->out_ctx->interrupt_callback, &opts);
+	av_dict_free(&opts);
 	if (rc < 0) {
 		avformat_free_context(ctx->out_ctx);
 		ctx->out_ctx = NULL;
@@ -432,6 +442,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -470,6 +481,10 @@ type RTMPDirect struct {
 	stopCh chan struct{}
 	doneCh chan struct{}
 
+	// caFile is the CA bundle an rtmps:// server certificate is verified
+	// against.
+	caFile string
+
 	// intr is the interrupt state every blocking libavformat call polls:
 	// Close aborts through it without taking mu, which a blocked call
 	// holds. Allocated by Start, freed by Close.
@@ -487,6 +502,11 @@ type RTMPDirect struct {
 	ptsBase     int64
 	lastSPS     []byte // cached for reconnect (written only from writeLoop)
 	lastPPS     []byte // cached for reconnect (written only from writeLoop)
+
+	// ptsRef is the last frame PTS on the 64-bit timeline unwrapPTS puts
+	// both streams on; set once ptsRefSet. Touched only by the write loop.
+	ptsRef    int64
+	ptsRefSet bool
 
 	state        atomic.Pointer[AdapterState]
 	lastError    atomic.Pointer[string]
@@ -529,10 +549,39 @@ func NewRTMPDirect(config RTMPCallerConfig) (*RTMPDirect, error) {
 		config:    config,
 		bo:        backoff.Backoff{JitterPct: 0.20},
 		ioTimeout: rtmpIOTimeout,
+		caFile:    systemCABundle(),
 	}
 	r.state.Store(ptrTo(StateStopped))
 	r.lastError.Store(ptrTo(""))
 	return r, nil
+}
+
+// systemCABundles are where distributions keep the bundle of trusted CA
+// certificates.
+var systemCABundles = []string{
+	"/etc/ssl/certs/ca-certificates.crt", // Debian, Ubuntu, Arch, Alpine
+	"/etc/pki/tls/certs/ca-bundle.crt",   // Fedora, RHEL
+	"/etc/ssl/cert.pem",                  // macOS, BSD
+}
+
+// systemCABundle returns the first CA bundle present, or "" to leave the
+// choice to the TLS library.
+func systemCABundle() string {
+	for _, p := range systemCABundles {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// tlsVerify reports, as a C flag, whether an rtmps:// connection verifies
+// the server certificate.
+func (r *RTMPDirect) tlsVerify() C.int {
+	if r.config.AllowUntrustedCert {
+		return 0
+	}
+	return 1
 }
 
 // ID returns the adapter identifier.
@@ -719,6 +768,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		}
 	}
 
+	framePTS := r.extendPTS(frame.PTS)
 	if !r.initialized.Load() {
 		if !frame.IsKeyframe {
 			return // drop non-keyframes before init
@@ -727,7 +777,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		// Test mode: just mark initialized without calling C.
 		if r.connectFn != nil {
 			r.initialized.Store(true)
-			r.ptsBase = frame.PTS
+			r.ptsBase = framePTS
 
 			return
 		}
@@ -738,6 +788,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 			r.enterReconnect(err.Error())
 			return
 		}
+		r.ptsBase = framePTS
 	}
 
 	// Cache SPS/PPS from keyframes for eager reconnect.
@@ -754,7 +805,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 			return
 		}
 		r.pendingIDR.Store(false)
-		r.ptsBase = frame.PTS // rebase for new connection
+		r.ptsBase = framePTS // rebase for new connection
 	}
 
 	// In test mode, skip the C write call.
@@ -767,7 +818,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		return
 	}
 
-	pts := frame.PTS - r.ptsBase
+	pts := framePTS - r.ptsBase
 	if pts < 0 {
 		pts = 0
 	}
@@ -810,7 +861,7 @@ func (r *RTMPDirect) handleAudio(frame *media.AudioFrame) {
 	// Audio from before the first video frame has no place on this
 	// connection's timeline; clamping it to zero would stack frames on
 	// one timestamp.
-	pts := frame.PTS - r.ptsBase
+	pts := r.extendPTS(frame.PTS) - r.ptsBase
 	if pts < 0 {
 		return
 	}
@@ -864,6 +915,8 @@ func (r *RTMPDirect) initConnection(frame *media.VideoFrame) error {
 
 	cURL := C.CString(r.config.URL)
 	defer C.free(unsafe.Pointer(cURL))
+	cCA := C.CString(r.caFile)
+	defer C.free(unsafe.Pointer(cCA))
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -874,15 +927,23 @@ func (r *RTMPDirect) initConnection(frame *media.VideoFrame) error {
 		(*C.uchar)(unsafe.Pointer(&frame.PPS[0])), C.int(len(frame.PPS)),
 		C.int(r.config.SampleRate),
 		C.int(r.config.Channels),
-		r.intr)
+		r.intr, r.tlsVerify(), cCA)
 	if rc < 0 {
 		return fmt.Errorf("rtmp_flv_open failed (code %d)", int(rc))
 	}
 
-	r.ptsBase = frame.PTS
 	r.initialized.Store(true)
 	r.bo.Reset()
 	return nil
+}
+
+// extendPTS puts a frame PTS on the write loop's 64-bit timeline.
+func (r *RTMPDirect) extendPTS(pts int64) int64 {
+	if r.ptsRefSet {
+		pts = unwrapPTS(pts, r.ptsRef)
+	}
+	r.ptsRef, r.ptsRefSet = pts, true
+	return pts
 }
 
 // enterReconnect transitions to reconnect state and spawns the reconnect loop.
@@ -970,14 +1031,16 @@ func (r *RTMPDirect) reconnectLoop() {
 		// Try eager reconnect if we have cached SPS/PPS.
 		if len(r.lastSPS) > 0 && len(r.lastPPS) > 0 {
 			cURL := C.CString(r.config.URL)
+			cCA := C.CString(r.caFile)
 			r.armLocked()
 			rc := C.rtmp_flv_open(&r.ctx, cURL,
 				(*C.uchar)(unsafe.Pointer(&r.lastSPS[0])), C.int(len(r.lastSPS)),
 				(*C.uchar)(unsafe.Pointer(&r.lastPPS[0])), C.int(len(r.lastPPS)),
 				C.int(r.config.SampleRate),
 				C.int(r.config.Channels),
-				r.intr)
+				r.intr, r.tlsVerify(), cCA)
 			C.free(unsafe.Pointer(cURL))
+			C.free(unsafe.Pointer(cCA))
 
 			if rc == 0 {
 				r.bo.Reset()

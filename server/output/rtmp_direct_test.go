@@ -655,3 +655,54 @@ func TestRTMPDirect_CloseClearsWriteError(t *testing.T) {
 	require.Equal(t, string(StateStopped), st.State)
 	require.Empty(t, r.Status().Error)
 }
+
+// Video PTS wraps at 33 bits after about 26.5 hours; audio PTS counts on.
+// FLV timestamps carry on across the wrap for both, instead of video
+// dropping to 0 behind audio.
+func TestRTMPDirect_TimestampsContinueAcrossPTSWrap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "out.flv")
+	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "file:" + path})
+	require.NoError(t, err)
+	require.NoError(t, r.Start(context.Background()))
+
+	keyData := []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x84, 0x00}
+	pData := []byte{0x00, 0x00, 0x00, 0x04, 0x41, 0x9a, 0x02, 0x00}
+	audioData := []byte{0x21, 0x10, 0x04}
+	var want int64
+	wrapFrames(t,
+		func(pts int64, key bool) error {
+			f := &media.VideoFrame{PTS: pts, DTS: pts, WireData: pData}
+			if key {
+				f = &media.VideoFrame{PTS: pts, DTS: pts, IsKeyframe: true,
+					SPS: []byte{0x67, 0x42, 0xc0, 0x1e}, PPS: []byte{0x68, 0xce, 0x38, 0x80}, WireData: keyData}
+			}
+			want += int64(len(f.WireData))
+			if err := r.WriteVideo(f); err != nil {
+				return err
+			}
+			if key {
+				require.Eventually(t, r.initialized.Load, 2*time.Second, 5*time.Millisecond)
+			}
+			time.Sleep(time.Millisecond)
+			return nil
+		},
+		func(pts int64) error {
+			want += int64(len(audioData))
+			return r.WriteAudio(&media.AudioFrame{PTS: pts, Data: audioData})
+		})
+	require.Eventually(t, func() bool { return r.bytesWritten.Load() == want }, 2*time.Second, 5*time.Millisecond,
+		"not every frame was written; state %s, error %q", *r.state.Load(), *r.lastError.Load())
+	require.NoError(t, r.Close())
+
+	tags := readFLVTags(t, path)
+	video := mediaTimestamps(tags, 9)
+	audio := mediaTimestamps(tags, 8)
+	require.Len(t, video, 50)
+	for i, ms := range video {
+		require.Equal(t, uint32(i*20), ms, "video tag %d", i)
+	}
+	require.Len(t, audio, 40)
+	for i, ms := range audio {
+		require.InDelta(t, float64(i)*1920/90, float64(ms), 1, "audio tag %d", i)
+	}
+}

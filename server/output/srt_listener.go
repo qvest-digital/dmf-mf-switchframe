@@ -54,6 +54,10 @@ type SRTListener struct {
 	lastError    atomic.Pointer[string]
 	startedAt    time.Time
 
+	// onSent is told the bytes each client write put on its connection.
+	// Set before Start and never changed after.
+	onSent func(n int)
+
 	// stats tracks SRT connection statistics. When non-nil, each connection's
 	// writer goroutine polls for stats every second and calls stats.UpdateSend().
 	// A single ConnStats is shared across all connections since they serve the
@@ -286,11 +290,15 @@ func (l *SRTListener) connWriter(ctx context.Context, lc *listenerConn) {
 			if !ok {
 				return
 			}
-			if _, err := lc.conn.Write(data); err != nil {
+			n, err := lc.conn.Write(data)
+			if err != nil {
 				slog.Warn("SRT listener write failed, removing client",
 					"id", lc.id, "error", err)
 				l.RemoveConnection(lc.id)
 				return
+			}
+			if l.onSent != nil {
+				l.onSent(n)
 			}
 		}
 	}
