@@ -108,7 +108,7 @@ The scheduler owns `itemStartTime` for each item and resolves duration from the 
 
 ### Idle loop: auto-rewinding asset iterator
 
-`IdleLoop.NextFrame` ensures the output is *never* nil. If there's no asset URI or no provider, it returns a fresh copy of a pre-allocated BT.709 black frame (Y=16, UV=128). If an asset is configured, it opens a `FrameIterator` lazily on first call and returns frames. At EOF it closes the iterator and re-opens — auto-rewind. If reopen fails (asset missing, network hiccup) it falls back to black and tries again next tick. The PTS counter advances continuously so the switcher's frame sync sees a stable timeline.
+`IdleLoop.NextFrame` ensures the output is *never* nil. If there's no asset URI or no provider, it returns a fresh copy of a pre-allocated BT.709 black frame (Y=16, UV=128). If an asset is configured, it opens a `FrameIterator` lazily on first call and returns frames. At EOF it rewinds the iterator in place when it is a `LoopingIterator`, and otherwise closes and re-opens it — auto-rewind. If reopen fails (asset missing, network hiccup) it falls back to black and tries again next tick. The PTS counter advances continuously so the switcher's frame sync sees a stable timeline.
 
 `SetAsset` swaps the asset URI for the next tick (the current iterator is closed on the next `NextFrame` via a `dirty` flag so mutation is thread-safe).
 

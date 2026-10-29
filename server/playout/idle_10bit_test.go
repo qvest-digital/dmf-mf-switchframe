@@ -201,3 +201,16 @@ func TestNewIdleLoop10_IndependentBuffers(t *testing.T) {
 	f1.YUV[0] = 0xFF
 	require.NotEqual(t, f2.YUV[0], byte(0xFF), "frames should have independent buffers")
 }
+
+// The 10-bit idle loop plays its asset again in place, like IdleLoop.
+func TestIdleLoop10_RewindsWithoutReopen(t *testing.T) {
+	provider := newPassCountingProvider(NewFakeAssetProvider(makeTestFrames(3)))
+	loop := NewIdleLoop10("test://idle.ts", provider, 4, 4)
+	defer loop.Close()
+
+	for i := 0; i < 12; i++ {
+		require.Equal(t, byte(i%3+1), loop.NextFrame().YUV[0], "frame %d", i)
+	}
+	require.Equal(t, 1, provider.openCount("test://idle.ts"))
+	require.Equal(t, 4, provider.passCount("test://idle.ts"))
+}
