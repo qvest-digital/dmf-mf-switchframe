@@ -127,6 +127,26 @@ func TestIdleLoop_AutoRewindsOnEOF(t *testing.T) {
 	}
 }
 
+// The idle loop plays its asset again in place. Reopening it would demux the
+// file and start a fresh decoder on the channel's tick goroutine at every pass.
+func TestIdleLoop_RewindsWithoutReopen(t *testing.T) {
+	provider := newPassCountingProvider(NewFakeAssetProvider(makeTestFrames(3)))
+	loop := NewIdleLoop("test://idle.ts", provider, 4, 4)
+	defer loop.Close()
+
+	for i := 0; i < 12; i++ {
+		if f := loop.NextFrame(); f.YUV[0] != byte(i%3+1) {
+			t.Fatalf("frame %d: Y[0] = %d, want %d", i, f.YUV[0], i%3+1)
+		}
+	}
+	if n := provider.openCount("test://idle.ts"); n != 1 {
+		t.Fatalf("asset opened %d times for 4 passes, want 1", n)
+	}
+	if n := provider.passCount("test://idle.ts"); n != 4 {
+		t.Fatalf("%d passes, want 4", n)
+	}
+}
+
 func TestIdleLoop_FallsBackToBlackOnOpenError(t *testing.T) {
 	provider := &errorAssetProvider{err: fmt.Errorf("disk failure")}
 	loop := NewIdleLoop("test://broken.ts", provider, 1920, 1080)

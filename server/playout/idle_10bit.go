@@ -76,7 +76,7 @@ func (l *IdleLoop10) NextFrame() *DecodedFrame {
 	}
 
 	if l.iter == nil {
-		iter, err := l.provider.Open(l.assetURI)
+		iter, err := openLooping(l.provider, l.assetURI)
 		if err != nil {
 			slog.Debug("playout: 10-bit idle loop asset open failed, returning black", "uri", l.assetURI, "error", err)
 			return l.blackFrame()
@@ -99,12 +99,10 @@ func (l *IdleLoop10) NextFrame() *DecodedFrame {
 		return frame
 	}
 
-	// EOF -- auto-rewind.
-	l.iter.Close()
-	l.iter = nil
-
-	iter, err := l.provider.Open(l.assetURI)
+	// EOF -- auto-rewind, in place when the iterator can.
+	iter, err := restartLoop(l.iter, l.provider, l.assetURI)
 	if err != nil {
+		l.iter = nil
 		slog.Debug("playout: 10-bit idle loop rewind failed, returning black", "uri", l.assetURI, "error", err)
 		return l.blackFrame()
 	}

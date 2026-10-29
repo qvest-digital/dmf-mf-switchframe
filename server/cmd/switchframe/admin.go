@@ -18,6 +18,7 @@ import (
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/graphics"
+	"github.com/zsiec/switchframe/server/htmlgfx"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/mxl"
 	"github.com/zsiec/switchframe/server/playout"
@@ -47,7 +48,8 @@ func registerCollectors(reg prometheus.Registerer, cs ...prometheus.Collector) {
 }
 
 // registerSubsystemCollectors registers the scrape-time collectors of the
-// playout, clip, replay and graphics subsystems, each only when it runs.
+// playout, clip, replay, graphics and HTML5 graphics subsystems, each only
+// when it runs.
 func (a *App) registerSubsystemCollectors() {
 	if a.appMetrics == nil {
 		return
@@ -64,6 +66,9 @@ func (a *App) registerSubsystemCollectors() {
 	}
 	if a.compositor != nil {
 		cs = append(cs, graphics.NewMetricsCollector(a.compositor))
+	}
+	if a.htmlGfxMgr != nil {
+		cs = append(cs, htmlgfx.NewMetricsCollector(a.htmlGfxMgr))
 	}
 	// Reads the peer poller, which initAPI creates after this, at scrape
 	// time.

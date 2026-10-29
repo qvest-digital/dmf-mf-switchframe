@@ -14,6 +14,7 @@ import (
 type Manager struct {
 	mu       sync.Mutex
 	channels [MaxChannels]*Channel
+	ticks    [MaxChannels]tickStats
 	config   ManagerConfig
 	log      *slog.Logger
 
@@ -70,6 +71,7 @@ func NewManager(config ManagerConfig) *Manager {
 		m.channels[i] = NewChannel(i+1, ChannelConfig{
 			AssetProvider:        config.AssetProvider,
 			AllowedLocalPrefixes: config.AllowedLocalPrefixes,
+			ticks:                &m.ticks[i],
 		})
 		m.podBoards[i] = NewPodBoard(i + 1)
 	}
@@ -699,9 +701,20 @@ func (m *Manager) SetPipelineFormat(width, height int, fps float64) {
 				Height:               height,
 				FPS:                  fps,
 				AllowedLocalPrefixes: m.config.AllowedLocalPrefixes,
+				ticks:                &m.ticks[i],
 			})
 		}
 	}
+}
+
+// tickCounts returns the ticks each channel's run loop made up and skipped,
+// indexed by channel ID - 1.
+func (m *Manager) tickCounts() (madeUp, skipped [MaxChannels]uint64) {
+	for i := range m.ticks {
+		madeUp[i] = m.ticks[i].madeUp.Load()
+		skipped[i] = m.ticks[i].skipped.Load()
+	}
+	return madeUp, skipped
 }
 
 // SetWatchdog sets the watchdog health monitor.

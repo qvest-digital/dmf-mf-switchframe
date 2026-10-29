@@ -2,6 +2,7 @@ package clip
 
 import (
 	"fmt"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -450,5 +451,23 @@ func TestPTSIncrementForDropFrameRates(t *testing.T) {
 			t.Errorf("fps=%v: got PTS increment %d, want %d (num=%d den=%d)",
 				tt.fps, got, tt.wantIncr, num, den)
 		}
+	}
+}
+
+// A clip plays from its first keyframe and skips its leading pictures, so
+// its duration and frame count leave out the frames it does not show.
+func TestValidateCutBeforeKeyframe(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	for _, cut := range cutClips {
+		t.Run(cut.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cut.ts")
+			writeCutTS(t, path, cut.args)
+			result, err := Validate(path)
+			require.NoError(t, err)
+			assert.Equal(t, cut.shown, result.FrameCount)
+			assert.Equal(t, int64(cut.shown*20), result.DurationMs, "20 ms per picture at 50 fps")
+		})
 	}
 }

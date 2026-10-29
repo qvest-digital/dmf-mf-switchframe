@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -1339,5 +1340,826 @@ func TestFileFrameIterator_Seek_NoDecoderFactory(t *testing.T) {
 	err := iter.Seek(0)
 	if err == nil {
 		t.Fatal("Seek() without decoder factory should return error")
+	}
+}
+
+// delayDecoder outputs each frame depth Decode calls after it was fed, as a
+// frame-threaded decoder does once its pipeline has filled. A picture is the
+// last byte of the frame's wire data.
+type delayDecoder struct {
+	depth   int
+	queue   [][]byte
+	decodes int
+	eosSent bool
+}
+
+func (d *delayDecoder) Decode(h264 []byte) ([]byte, int, int, error) {
+	d.decodes++
+	d.queue = append(d.queue, []byte{h264[len(h264)-1]})
+	if len(d.queue) <= d.depth {
+		return nil, 0, 0, fmt.Errorf("no output frame yet (buffering)")
+	}
+	pic := d.queue[0]
+	d.queue = d.queue[1:]
+	return pic, 1, 1, nil
+}
+
+func (d *delayDecoder) SendEOS() error {
+	d.eosSent = true
+	return nil
+}
+
+func (d *delayDecoder) ReceiveFrame() ([]byte, int, int, error) {
+	if len(d.queue) == 0 {
+		return nil, 0, 0, fmt.Errorf("drained")
+	}
+	pic := d.queue[0]
+	d.queue = d.queue[1:]
+	return pic, 1, 1, nil
+}
+
+func (d *delayDecoder) Close() {}
+
+// A looping iterator keeps its decoder across the wrap and feeds it the next
+// pass's first frames to get the last pictures out, as the clip player does.
+// Draining it instead would need a fresh decoder for the next pass, which
+// returns nothing until its pipeline has filled again: the tick that starts
+// the pass would decode depth+1 frames rather than one.
+func TestFileFrameIterator_LoopKeepsDecoderAcrossWrap(t *testing.T) {
+	const n, depth, passes = 10, 3, 4
+	encoded := make([]encodedFrame, n)
+	audio := make([]audioFrameInfo, n)
+	for i := range encoded {
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, 0x41, byte(i)}, pts: int64(i) * 3000, isKeyframe: i == 0}
+		audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: int64(i) * 3000}
+	}
+	dec := &delayDecoder{depth: depth}
+	created := 0
+	iter := &FileFrameIterator{
+		encodedFrames: encoded,
+		audioFrames:   audio,
+		decoder:       dec,
+		decoderFactory: func() (VideoDecoder, error) {
+			created++
+			return &delayDecoder{depth: depth}, nil
+		},
+		fps:         30,
+		totalFrames: n,
+	}
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	for pass := 0; pass < passes; pass++ {
+		if pass > 0 {
+			if err := iter.Rewind(); err != nil {
+				t.Fatalf("pass %d: Rewind: %v", pass, err)
+			}
+		}
+		var pics, sound []byte
+		for {
+			cur := iter.decoder.(*delayDecoder)
+			before := cur.decodes
+			f, err := iter.Next()
+			if err != nil {
+				t.Fatalf("pass %d: Next: %v", pass, err)
+			}
+			if f == nil {
+				break
+			}
+			if pass > 0 && cur.decodes-before != 1 {
+				t.Fatalf("pass %d picture %d took %d decodes, want 1", pass, len(pics), cur.decodes-before)
+			}
+			pics = append(pics, f.YUV[0])
+			for _, a := range f.AudioFrames {
+				sound = append(sound, a.Data[0])
+			}
+		}
+		want := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+		if string(pics) != string(want) {
+			t.Fatalf("pass %d pictures = %v, want %v", pass, pics, want)
+		}
+		if string(sound) != string(want) {
+			t.Fatalf("pass %d audio = %v, want %v", pass, sound, want)
+		}
+	}
+	if created != 0 {
+		t.Fatalf("%d decoders created after the first, want 0", created)
+	}
+	if dec.eosSent {
+		t.Fatal("the decoder was drained at a wrap")
+	}
+}
+
+// Rewinding a pass that was not played out (a trim out-point stops it early)
+// starts over on a fresh decoder: the old one still holds pictures from past
+// the out-point.
+func TestFileFrameIterator_RewindMidPassRestartsDecoder(t *testing.T) {
+	encoded := make([]encodedFrame, 10)
+	for i := range encoded {
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, 0x41, byte(i)}, pts: int64(i) * 3000, isKeyframe: i == 0}
+	}
+	created := 0
+	iter := &FileFrameIterator{
+		encodedFrames: encoded,
+		decoder:       &delayDecoder{depth: 2},
+		decoderFactory: func() (VideoDecoder, error) {
+			created++
+			return &delayDecoder{depth: 2}, nil
+		},
+		fps:         30,
+		totalFrames: 10,
+	}
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	for i := 0; i < 4; i++ {
+		if _, err := iter.Next(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := iter.Rewind(); err != nil {
+		t.Fatal(err)
+	}
+	f, err := iter.Next()
+	if err != nil || f == nil {
+		t.Fatalf("Next after Rewind = %v, %v", f, err)
+	}
+	if f.YUV[0] != 0 || created != 1 {
+		t.Fatalf("after rewind: picture %d on %d new decoders, want picture 0 on 1", f.YUV[0], created)
+	}
+}
+
+// With a real frame-threaded decoder, every pass of a looping iterator puts
+// out the same pictures as the first, on the one decoder.
+func TestFileFrameIterator_Integration_LoopPasses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	created := 0
+	factory := func() (VideoDecoder, error) {
+		created++
+		return codec.NewFFmpegDecoderWithThreads(nil, 4)
+	}
+	dec, err := factory()
+	if err != nil {
+		t.Skipf("FFmpeg decoder not available (non-cgo build?): %v", err)
+	}
+	dec.Close()
+	created = 0
+
+	iter, err := NewFileFrameIteratorWithDecoder(generateTestTSFile(t), factory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	var first [][]byte
+	for pass := 0; pass < 3; pass++ {
+		if pass > 0 {
+			if err := iter.Rewind(); err != nil {
+				t.Fatalf("pass %d: Rewind: %v", pass, err)
+			}
+		}
+		var pics [][]byte
+		for {
+			f, err := iter.Next()
+			if err != nil {
+				t.Fatalf("pass %d: Next: %v", pass, err)
+			}
+			if f == nil {
+				break
+			}
+			pics = append(pics, f.YUV)
+		}
+		if len(pics) != iter.TotalFrames() {
+			t.Fatalf("pass %d: %d pictures, want %d", pass, len(pics), iter.TotalFrames())
+		}
+		if pass == 0 {
+			first = pics
+			continue
+		}
+		for i := range pics {
+			if string(pics[i]) != string(first[i]) {
+				t.Fatalf("pass %d picture %d differs from the first pass", pass, i)
+			}
+		}
+	}
+	if created != 1 {
+		t.Fatalf("%d decoders created for 3 passes, want 1", created)
+	}
+}
+
+// keyedDelayDecoder is a delayDecoder that, like a real decoder, puts out
+// nothing for frames fed before its first keyframe: they reference pictures
+// it never had.
+type keyedDelayDecoder struct {
+	delayDecoder
+	keyed bool
+}
+
+func (d *keyedDelayDecoder) Decode(h264 []byte) ([]byte, int, int, error) {
+	if h264[4]&0x1f == 5 {
+		d.keyed = true
+	}
+	if !d.keyed {
+		return nil, 0, 0, fmt.Errorf("no reference picture")
+	}
+	return d.delayDecoder.Decode(h264)
+}
+
+// A stream cut mid-GOP starts with frames before its first keyframe. A
+// fresh decoder drops them, but a looping iterator keeps its decoder into
+// the next pass, where they would decode against the previous pass's
+// pictures: wrong pictures, and a pass longer than the first. Every pass
+// has to start at the keyframe and carry the same pictures and audio.
+func TestFileFrameIterator_LoopSkipsFramesBeforeFirstKeyframe(t *testing.T) {
+	const n, key, depth, passes = 10, 3, 2, 3
+	encoded := make([]encodedFrame, n)
+	audio := make([]audioFrameInfo, n)
+	for i := range encoded {
+		nal := byte(0x41)
+		if i == key {
+			nal = 0x65
+		}
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: int64(i) * 1800, isKeyframe: i == key}
+		audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: int64(i) * 1800}
+	}
+	iter := newFileFrameIterator(encoded, audio, &keyedDelayDecoder{delayDecoder: delayDecoder{depth: depth}},
+		func() (VideoDecoder, error) {
+			return &keyedDelayDecoder{delayDecoder: delayDecoder{depth: depth}}, nil
+		})
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	want := []byte{3, 4, 5, 6, 7, 8, 9}
+	sounds := make([][]byte, passes)
+	for pass := 0; pass < passes; pass++ {
+		if pass > 0 {
+			if err := iter.Rewind(); err != nil {
+				t.Fatalf("pass %d: Rewind: %v", pass, err)
+			}
+		}
+		var pics, sound []byte
+		for {
+			f, err := iter.Next()
+			if err != nil {
+				t.Fatalf("pass %d: Next: %v", pass, err)
+			}
+			if f == nil {
+				break
+			}
+			pics = append(pics, f.YUV[0])
+			for _, a := range f.AudioFrames {
+				sound = append(sound, a.Data[0])
+			}
+		}
+		if string(pics) != string(want) {
+			t.Fatalf("pass %d pictures = %v, want %v", pass, pics, want)
+		}
+		sounds[pass] = sound
+	}
+	for pass, sound := range sounds {
+		if string(sound) != string(want) {
+			t.Fatalf("pass %d audio = %v, want %v", pass, sound, want)
+		}
+	}
+	if iter.TotalFrames() != len(want) {
+		t.Fatalf("TotalFrames = %d, want %d", iter.TotalFrames(), len(want))
+	}
+}
+
+// A stream cut at an open-GOP keyframe follows it with leading pictures,
+// shown before it, that reference the GOP before. A fresh decoder drops
+// them; a pass has to drop them too, or it shows pictures a fresh decode
+// does not and TotalFrames counts them.
+func TestFileFrameIterator_LoopDropsLeadingPictures(t *testing.T) {
+	const passes = 3
+	pts := []int64{3, 1, 2, 4, 5, 6, 7, 8, 9, 10}
+	encoded := make([]encodedFrame, len(pts))
+	for i := range encoded {
+		nal := byte(0x41)
+		if i == 0 {
+			nal = 0x65
+		}
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: pts[i] * 1800, isKeyframe: i == 0}
+	}
+	iter := newFileFrameIterator(encoded, nil, &delayDecoder{depth: 2},
+		func() (VideoDecoder, error) { return &delayDecoder{depth: 2}, nil })
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	want := []byte{0, 3, 4, 5, 6, 7, 8, 9}
+	for pass := 0; pass < passes; pass++ {
+		if pass > 0 {
+			if err := iter.Rewind(); err != nil {
+				t.Fatalf("pass %d: Rewind: %v", pass, err)
+			}
+		}
+		var pics []byte
+		for {
+			f, err := iter.Next()
+			if err != nil {
+				t.Fatalf("pass %d: Next: %v", pass, err)
+			}
+			if f == nil {
+				break
+			}
+			pics = append(pics, f.YUV[0])
+		}
+		if string(pics) != string(want) {
+			t.Fatalf("pass %d pictures = %v, want %v", pass, pics, want)
+		}
+	}
+	if iter.TotalFrames() != len(want) {
+		t.Fatalf("TotalFrames = %d, want %d", iter.TotalFrames(), len(want))
+	}
+}
+
+// A PES without a PTS is demuxed with PTS 0. Such a frame after the
+// keyframe is not known to be shown before it, so it is not dropped as a
+// leading picture, and with no frame dropped the audio stays as demuxed.
+func TestFileFrameIterator_MissingPTSIsNotLeading(t *testing.T) {
+	pts := []int64{2, 3, 0, 5, 6}
+	encoded := make([]encodedFrame, len(pts))
+	audio := make([]audioFrameInfo, len(pts))
+	for i := range encoded {
+		nal := byte(0x41)
+		if i == 0 {
+			nal = 0x65
+		}
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: pts[i] * 1800, isKeyframe: i == 0}
+		audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: int64(i) * 1800}
+	}
+	iter := newFileFrameIterator(encoded, audio, &delayDecoder{depth: 0},
+		func() (VideoDecoder, error) { return &delayDecoder{depth: 0}, nil })
+	defer iter.Close()
+
+	var pics, sound []byte
+	for {
+		f, err := iter.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f == nil {
+			break
+		}
+		pics = append(pics, f.YUV[0])
+		for _, a := range f.AudioFrames {
+			sound = append(sound, a.Data[0])
+		}
+	}
+	if want := []byte{0, 1, 2, 3, 4}; string(pics) != string(want) || string(sound) != string(want) {
+		t.Fatalf("pictures %v, audio %v, want both %v", pics, sound, want)
+	}
+}
+
+// A stream that does not start at an IDR leaves the decoder's reference
+// and picture order state running from the end of a pass into the next,
+// so each pass starts on a fresh decoder, with the audio of the first.
+func TestFileFrameIterator_LoopWithoutIDRStartsEachPassOnFreshDecoder(t *testing.T) {
+	const n, depth, passes = 10, 2, 3
+	encoded := make([]encodedFrame, n)
+	for i := range encoded {
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, 0x41, byte(i)}, pts: 1000 + int64(i)*1800, isKeyframe: i == 0}
+	}
+	// 48 kHz AAC frames are 1920 ticks; the first one starts before the
+	// first picture and ends after it.
+	audio := make([]audioFrameInfo, n)
+	for i := range audio {
+		audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: int64(i) * 1920, sampleRate: 48000}
+	}
+	created := 0
+	iter := newFileFrameIterator(encoded, audio, &delayDecoder{depth: depth},
+		func() (VideoDecoder, error) {
+			created++
+			return &delayDecoder{depth: depth}, nil
+		})
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	var firstSound []byte
+	for pass := 0; pass < passes; pass++ {
+		if pass > 0 {
+			if err := iter.Rewind(); err != nil {
+				t.Fatalf("pass %d: Rewind: %v", pass, err)
+			}
+		}
+		var pics, sound []byte
+		for {
+			f, err := iter.Next()
+			if err != nil {
+				t.Fatalf("pass %d: Next: %v", pass, err)
+			}
+			if f == nil {
+				break
+			}
+			pics = append(pics, f.YUV[0])
+			for _, a := range f.AudioFrames {
+				sound = append(sound, a.Data[0])
+			}
+		}
+		if want := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}; string(pics) != string(want) {
+			t.Fatalf("pass %d pictures = %v, want %v", pass, pics, want)
+		}
+		if len(sound) == 0 || sound[0] != 0 {
+			t.Fatalf("pass %d audio = %v, want it to start with frame 0", pass, sound)
+		}
+		if pass == 0 {
+			firstSound = sound
+		} else if string(sound) != string(firstSound) {
+			t.Fatalf("pass %d audio = %v, first pass %v", pass, sound, firstSound)
+		}
+	}
+	if created != passes-1 {
+		t.Fatalf("%d decoders created after the first, want %d", created, passes-1)
+	}
+}
+
+// A stream cut before its keyframe drops the audio that ends before the
+// first picture, and keeps the frame that carries its start. A seek to the
+// first picture starts with that frame too.
+func TestFileFrameIterator_AudioStartsAtFirstPicture(t *testing.T) {
+	const n = 5
+	encoded := make([]encodedFrame, n)
+	for i := range encoded {
+		nal := byte(0x41)
+		if i == 1 {
+			nal = 0x65
+		}
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: 7900 + int64(i)*1800, isKeyframe: i == 1}
+	}
+	audio := make([]audioFrameInfo, 10)
+	for i := range audio {
+		audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: int64(i) * 1920, sampleRate: 48000}
+	}
+	iter := newFileFrameIterator(encoded, audio, &delayDecoder{depth: 0},
+		func() (VideoDecoder, error) { return &delayDecoder{depth: 0}, nil })
+	defer iter.Close()
+
+	// The first picture is at 9700; frame 5 spans 9600-11520.
+	for _, seek := range []bool{false, true} {
+		if seek {
+			if err := iter.Seek(0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f, err := iter.Next()
+		if err != nil || f == nil {
+			t.Fatalf("seek %v: Next = %v, %v", seek, f, err)
+		}
+		if len(f.AudioFrames) == 0 || f.AudioFrames[0].Data[0] != 5 {
+			t.Fatalf("seek %v: first audio frames %v, want frame 5 first", seek, f.AudioFrames)
+		}
+	}
+}
+
+// A stream that starts at its keyframe drops no frame and keeps all of its
+// audio. Audio before its first picture is how the container aligns the
+// two: an MP4 with B-frames starts its video at the reorder delay and its
+// audio at 0, and dropping that audio would play the rest early.
+func TestFileFrameIterator_KeepsAudioWhenNoFrameIsDropped(t *testing.T) {
+	const n = 4
+	encoded := make([]encodedFrame, n)
+	for i := range encoded {
+		nal := byte(0x41)
+		if i == 0 {
+			nal = 0x65
+		}
+		encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: 7200 + int64(i)*3600, isKeyframe: i == 0}
+	}
+	audio := make([]audioFrameInfo, 10)
+	for i := range audio {
+		audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: int64(i) * 1920, sampleRate: 48000}
+	}
+	iter := newFileFrameIterator(encoded, audio, &delayDecoder{depth: 0},
+		func() (VideoDecoder, error) { return &delayDecoder{depth: 0}, nil })
+	defer iter.Close()
+
+	for _, seek := range []bool{false, true} {
+		if seek {
+			if err := iter.Seek(0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f, err := iter.Next()
+		if err != nil || f == nil {
+			t.Fatalf("seek %v: Next = %v, %v", seek, f, err)
+		}
+		if len(f.AudioFrames) == 0 || f.AudioFrames[0].Data[0] != 0 {
+			t.Fatalf("seek %v: first audio frames %v, want frame 0 first", seek, f.AudioFrames)
+		}
+	}
+}
+
+// A 33-bit MPEG-TS PTS wraps every 26.5 hours. After a wrap, pictures
+// compare below the keyframe and so does the audio, which the demuxer
+// sorts to the front, so a drop by PTS would take pictures that are not
+// leading and the audio after the wrap. Neither is dropped by PTS when the
+// stream wraps.
+func TestFileFrameIterator_PTSWrapDropsNothingByPTS(t *testing.T) {
+	const n, wrap = 100, int64(1) << 33
+	for _, tc := range []struct {
+		name      string
+		key       int // index of the first keyframe; frames before it are dropped
+		wrapVideo int // first video frame after the wrap
+	}{
+		{name: "wrap in the first GOP", key: 0, wrapVideo: 10},
+		{name: "wrap after frames cut before the keyframe", key: 2, wrapVideo: 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A keyframe every 25 frames from key.
+			encoded := make([]encodedFrame, n)
+			for i := range encoded {
+				key := i >= tc.key && (i-tc.key)%25 == 0
+				nal := byte(0x41)
+				if key {
+					nal = 0x65
+				}
+				pts := (wrap + int64(i-tc.wrapVideo)*1800) % wrap
+				encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: pts, isKeyframe: key}
+			}
+			// The audio wraps with the video; a 48 kHz AAC frame is 1920 ticks.
+			audio := make([]audioFrameInfo, n*1800/1920)
+			first := encoded[0].pts
+			for i := range audio {
+				audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: (first + int64(i)*1920) % wrap, sampleRate: 48000}
+			}
+			// DemuxFile sorts the audio by PTS, so the wrap shows only in
+			// the video.
+			sort.Slice(audio, func(a, b int) bool { return audio[a].pts < audio[b].pts })
+			iter := newFileFrameIterator(encoded, audio, &delayDecoder{depth: 2},
+				func() (VideoDecoder, error) { return &delayDecoder{depth: 2}, nil })
+			defer iter.Close()
+
+			pics, sounds := 0, 0
+			for {
+				f, err := iter.Next()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if f == nil {
+					break
+				}
+				pics++
+				sounds += len(f.AudioFrames)
+			}
+			if want := n - tc.key; pics != want || iter.TotalFrames() != want {
+				t.Fatalf("%d pictures, TotalFrames %d, want %d", pics, iter.TotalFrames(), want)
+			}
+			if sounds != len(audio) {
+				t.Fatalf("%d audio frames put out, want all %d", sounds, len(audio))
+			}
+		})
+	}
+}
+
+// A frame demuxed without a PTS carries 0. Its neighbours' PTS can be
+// anything, and one above 2^32 stepping down to that 0 is no wrap: read as
+// one, it would keep the leading picture and the audio before the
+// keyframe.
+func TestFileFrameIterator_PTSZeroIsNotAWrap(t *testing.T) {
+	for _, base := range []int64{126000, 5_000_000_000} {
+		t.Run(fmt.Sprint(base), func(t *testing.T) {
+			// Two frames before the keyframe, then a frame without a PTS.
+			pts := []int64{base, base + 1800, base + 3600, 0, base + 7200}
+			encoded := make([]encodedFrame, len(pts))
+			for i, p := range pts {
+				nal := byte(0x41)
+				if i == 2 {
+					nal = 0x65
+				}
+				encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: p, isKeyframe: i == 2}
+			}
+			audio := make([]audioFrameInfo, 10)
+			for i := range audio {
+				audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: base + int64(i)*1920, sampleRate: 48000}
+			}
+			iter := newFileFrameIterator(encoded, audio, &delayDecoder{depth: 0},
+				func() (VideoDecoder, error) { return &delayDecoder{depth: 0}, nil })
+			defer iter.Close()
+
+			if got := iter.TotalFrames(); got != 3 {
+				t.Fatalf("TotalFrames %d, want 3", got)
+			}
+			f, err := iter.Next()
+			if err != nil || f == nil {
+				t.Fatalf("Next = %v, %v", f, err)
+			}
+			// The keyframe is at base+3600; audio frame 1 spans it.
+			if len(f.AudioFrames) == 0 || f.AudioFrames[0].PTS != base+1920 {
+				t.Fatalf("first audio frames %v, want the one at %d first", f.AudioFrames, base+1920)
+			}
+		})
+	}
+}
+
+// mp4Clip writes a 2 s 320x240 25 fps MP4 with AAC audio, encoded with
+// libx264's defaults, which use B-frames.
+func mp4Clip(t *testing.T) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg CLI not available, skipping integration test")
+	}
+	path := filepath.Join(t.TempDir(), "clip.mp4")
+	out, err := exec.Command(ffmpegPath, "-y",
+		"-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=25",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=48000",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p",
+		"-c:a", "aac", "-b:a", "64k", "-ac", "2", path).CombinedOutput()
+	if err != nil {
+		t.Skipf("ffmpeg failed to generate test MP4: %v\n%s", err, out)
+	}
+	return path
+}
+
+// cutClipTS writes a 4 s 320x240 50 fps clip with AAC audio, its video
+// encoded with the given arguments.
+func cutClipTS(t *testing.T, video ...string) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg CLI not available, skipping integration test")
+	}
+	path := filepath.Join(t.TempDir(), "cut.ts")
+	args := []string{"-y",
+		"-f", "lavfi", "-i", "testsrc=duration=4:size=320x240:rate=50",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=4:sample_rate=48000",
+		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"}
+	args = append(args, video...)
+	args = append(args, "-c:a", "aac", "-b:a", "64k", "-ac", "2", "-f", "mpegts", path)
+	if out, err := exec.Command(ffmpegPath, args...).CombinedOutput(); err != nil {
+		t.Skipf("ffmpeg failed to generate test TS: %v\n%s", err, out)
+	}
+	return path
+}
+
+func threadedFFmpegFactory(t *testing.T) DecoderFactory {
+	t.Helper()
+	factory := func() (VideoDecoder, error) {
+		return codec.NewFFmpegDecoderWithThreads(nil, 4)
+	}
+	dec, err := factory()
+	if err != nil {
+		t.Skipf("FFmpeg decoder not available (non-cgo build?): %v", err)
+	}
+	dec.Close()
+	return factory
+}
+
+// clipPass is what one pass over an iterator put out.
+type clipPass struct {
+	pics       [][]byte
+	audio      int
+	firstAudio int64
+}
+
+// playPasses plays passes passes over iter, rewinding between them.
+func playPasses(t *testing.T, iter *FileFrameIterator, passes int) []clipPass {
+	t.Helper()
+	out := make([]clipPass, passes)
+	for pass := range out {
+		if pass > 0 {
+			if err := iter.Rewind(); err != nil {
+				t.Fatalf("pass %d: Rewind: %v", pass, err)
+			}
+		}
+		p := &out[pass]
+		for {
+			f, err := iter.Next()
+			if err != nil {
+				t.Fatalf("pass %d: Next: %v", pass, err)
+			}
+			if f == nil {
+				break
+			}
+			p.pics = append(p.pics, f.YUV)
+			if p.audio == 0 && len(f.AudioFrames) > 0 {
+				p.firstAudio = f.AudioFrames[0].PTS
+			}
+			p.audio += len(f.AudioFrames)
+		}
+	}
+	return out
+}
+
+// checkAudioAligned fails unless the pass's audio starts with the frame
+// that carries the first picture and lasts as long as its pictures, to
+// within an AAC frame at each end. 50 fps pictures are 1800 ticks, 48 kHz
+// AAC frames 1920.
+func checkAudioAligned(t *testing.T, pass int, p clipPass, firstPicture int64) {
+	t.Helper()
+	if p.firstAudio > firstPicture || p.firstAudio+1920 <= firstPicture {
+		t.Fatalf("pass %d: first audio PTS %d, first picture %d", pass, p.firstAudio, firstPicture)
+	}
+	if d := p.audio*1920 - len(p.pics)*1800; d < -2*1920 || d > 2*1920 {
+		t.Fatalf("pass %d: %d audio frames for %d pictures", pass, p.audio, len(p.pics))
+	}
+}
+
+// The same with a real decoder: a 50 fps clip whose first 30 frames are
+// cut, so 70 frames precede its first keyframe. Every pass puts out the
+// pictures of the first, with the audio of its pictures.
+func TestFileFrameIterator_Integration_LoopCutBeforeKeyframe(t *testing.T) {
+	path := cutClipTS(t, "-g", "100", "-bf", "0", "-bsf:v", `noise=drop=lt(n\,30)`)
+	iter, err := NewFileFrameIteratorWithDecoder(path, threadedFFmpegFactory(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	passes := playPasses(t, iter, 3)
+	for pass, p := range passes {
+		if len(p.pics) != 100 {
+			t.Fatalf("pass %d: %d pictures, want 100", pass, len(p.pics))
+		}
+		checkAudioAligned(t, pass, p, iter.encodedFrames[0].pts)
+		for i := range p.pics {
+			if string(p.pics[i]) != string(passes[0].pics[i]) {
+				t.Fatalf("pass %d picture %d differs from the first pass", pass, i)
+			}
+		}
+	}
+	if iter.TotalFrames() != 100 {
+		t.Fatalf("TotalFrames = %d, want 100", iter.TotalFrames())
+	}
+}
+
+// An open-GOP clip cut at a keyframe: the keyframe is not an IDR and is
+// followed by a leading picture. Every pass of a loop puts out the
+// pictures of a fresh non-looping decode, with the audio of its pictures,
+// and TotalFrames counts them.
+func TestFileFrameIterator_Integration_LoopOpenGOPCut(t *testing.T) {
+	path := cutClipTS(t, "-bf", "2",
+		"-x264-params", "open-gop=1:keyint=50:min-keyint=50:scenecut=0",
+		"-bsf:v", `noise=drop=lt(n\,50)`)
+	factory := threadedFFmpegFactory(t)
+
+	fresh, err := NewFileFrameIteratorWithDecoder(path, factory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := playPasses(t, fresh, 1)[0].pics
+	fresh.Close()
+	if len(want) == 0 {
+		t.Fatal("a fresh decode put out no pictures")
+	}
+
+	iter, err := NewFileFrameIteratorWithDecoder(path, factory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer iter.Close()
+	iter.SetLoop(true)
+
+	for pass, p := range playPasses(t, iter, 4) {
+		if len(p.pics) != len(want) {
+			t.Fatalf("pass %d: %d pictures, a fresh decode %d", pass, len(p.pics), len(want))
+		}
+		checkAudioAligned(t, pass, p, iter.encodedFrames[0].pts)
+		for i := range p.pics {
+			if string(p.pics[i]) != string(want[i]) {
+				t.Fatalf("pass %d picture %d differs from a fresh decode", pass, i)
+			}
+		}
+	}
+	if iter.TotalFrames() != len(want) {
+		t.Fatalf("TotalFrames = %d, a fresh decode puts out %d", iter.TotalFrames(), len(want))
+	}
+}
+
+// An MP4 with B-frames, read without its edit list, starts its video at the
+// reorder delay and its audio at 0. Nothing is cut, so its audio is kept as
+// demuxed and the first picture plays with the audio from 0.
+func TestFileFrameIterator_Integration_MP4BFramesKeepsAudio(t *testing.T) {
+	path := mp4Clip(t)
+	iter, err := NewFileFrameIteratorWithDecoder(path, threadedFFmpegFactory(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer iter.Close()
+	if iter.encodedFrames[0].pts == 0 || len(iter.audioFrames) == 0 {
+		t.Fatalf("first picture at %d with %d audio frames; the clip has no reorder delay to test",
+			iter.encodedFrames[0].pts, len(iter.audioFrames))
+	}
+
+	f, err := iter.Next()
+	if err != nil || f == nil {
+		t.Fatalf("Next = %v, %v", f, err)
+	}
+	if len(f.AudioFrames) == 0 || f.AudioFrames[0].PTS != 0 {
+		var got []int64
+		for _, a := range f.AudioFrames {
+			got = append(got, a.PTS)
+		}
+		t.Fatalf("first picture (PTS %d) audio PTS %v, want the audio from 0", iter.encodedFrames[0].pts, got)
 	}
 }

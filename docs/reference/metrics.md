@@ -238,6 +238,8 @@ Read by [`playout.MetricsCollector`](../../server/playout/metrics_collector.go),
 | `switchframe_playout_pods_completed` | gauge | `channel` | Ad pods on the channel's board that completed: rejoined or dumped out. Deleting a pod from the board lowers it. |
 | `switchframe_playout_channel_stalled` | gauge | `channel` | 1 while the watchdog finds a running channel delivering no frames. |
 | `switchframe_playout_last_frame_age_seconds` | gauge | `channel` | Time since a watched channel delivered its last frame. |
+| `switchframe_playout_ticks_made_up_total` | counter | `channel` | Extra ticks the channel's run loop ran, at most one per frame period, to make up frame periods it fell behind on. |
+| `switchframe_playout_ticks_skipped_total` | counter | `channel` | Ticks the channel's run loop dropped when it fell more than a second behind: frames the output lost. |
 | `switchframe_playout_cache_used_bytes` | gauge | - | Bytes the playout asset cache holds. |
 | `switchframe_playout_cache_max_bytes` | gauge | - | Bytes the playout asset cache may hold. |
 | `switchframe_playout_cache_items` | gauge | `state` | Assets in the playout cache, by state: ready, pending (queued for a fetch), fetching (or transcoding) and error. |
@@ -270,6 +272,14 @@ Read by [`graphics.MetricsCollector`](../../server/graphics/metrics_collector.go
 |---|---|---|---|
 | `switchframe_graphics_layer_on_air` | gauge | `layer` | 1 while the graphics layer is on program. Layer names and templates are left out: the client names both freely. |
 | `switchframe_graphics_layers_on_air` | gauge | - | Graphics layers on program. |
+
+### HTML5 graphics metrics
+
+Read by [`htmlgfx.MetricsCollector`](../../server/htmlgfx/metrics_collector.go), registered while the engine runs an HTML5 graphics manager.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `switchframe_htmlgfx_frames_delivered_total` | counter | - | Frames the sidecar painted that reached the compositor on a graphics layer. Frames for a pool slot with no layer are not counted. |
 
 ### Redundancy and NMOS metrics
 

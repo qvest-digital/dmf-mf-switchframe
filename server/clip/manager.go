@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"sort"
 	"sync"
 	"time"
 )
@@ -155,6 +157,8 @@ func (m *Manager) Load(playerID int, clipID string) error {
 	if len(frames) == 0 {
 		return ErrNoVideo
 	}
+	demuxed := len(frames)
+	frames, audio = fromFirstKeyframe(frames, audio)
 
 	m.mu.Lock()
 
@@ -197,15 +201,13 @@ func (m *Manager) Load(playerID int, clipID string) error {
 
 	// Count keyframes and check for SPS/PPS presence.
 	keyframes := 0
-	firstKeyIdx := -1
 	hasSPS := false
-	for i, f := range frames {
+	for _, f := range frames {
 		if f.isKeyframe {
-			keyframes++
-			if firstKeyIdx < 0 {
-				firstKeyIdx = i
+			if keyframes == 0 {
 				hasSPS = len(f.sps) > 0
 			}
+			keyframes++
 		}
 	}
 	m.log.Info("clip loaded",
@@ -213,8 +215,8 @@ func (m *Manager) Load(playerID int, clipID string) error {
 		"clipID", clipID,
 		"clipName", c.Name,
 		"frames", len(frames),
+		"framesDropped", demuxed-len(frames),
 		"keyframes", keyframes,
-		"firstKeyframeIdx", firstKeyIdx,
 		"hasSPS", hasSPS,
 		"audioFrames", len(audio),
 		"width", c.Width,
@@ -223,6 +225,85 @@ func (m *Manager) Load(playerID int, clipID string) error {
 	m.mu.Unlock()
 	m.notifyStateChange()
 	return nil
+}
+
+// fromFirstKeyframe drops the frames before the first keyframe, the
+// leading pictures after it, and the audio before it. A stream cut
+// mid-GOP starts with frames that reference pictures it does not carry,
+// and one cut at an open GOP has leading pictures: frames after the
+// keyframe in decode order that show before it and reference the GOP
+// before. A fresh decoder drops both, but the decoder a looping player
+// keeps into the next pass holds the previous pass's references and puts
+// out wrong pictures for them. Starting at the keyframe gives every pass
+// the same pictures, and the audio, spread over the pictures, stays with
+// them. Audio is cut only when a frame was: the AAC frame that spans the
+// keyframe stays, and so does all audio of a clip that starts on a
+// keyframe.
+//
+// A frame demuxed without a PTS carries 0 and is never a leading
+// picture. Across a PTS wrap presentation order cannot be read from the
+// PTS: the pictures after the wrap compare below the keyframe, and so
+// does the audio after it, which the demuxer sorts to the front. Leading
+// pictures and audio are then kept and only the frames before the
+// keyframe go. A clip with no keyframe is returned as it is.
+func fromFirstKeyframe(frames []BufferedFrame, audio []BufferedAudioFrame) ([]BufferedFrame, []BufferedAudioFrame) {
+	first := slices.IndexFunc(frames, func(f BufferedFrame) bool { return f.isKeyframe })
+	if first < 0 {
+		return frames, audio
+	}
+	key := frames[first].pts
+	wrapped := ptsWraps(frames)
+	// Capacity 1 makes the first append copy, leaving the demuxed slice as
+	// it was.
+	kept := frames[first : first+1 : first+1]
+	leading := !wrapped
+	for _, f := range frames[first+1:] {
+		if f.isKeyframe {
+			leading = false
+		}
+		if leading && f.pts != 0 && f.pts < key {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	if len(kept) == len(frames) {
+		return frames, audio
+	}
+	if wrapped {
+		return kept, audio
+	}
+	audio = audio[sort.Search(len(audio), func(j int) bool {
+		return audio[j].pts >= key || audio[j].pts+aacFrameTicks(audio[j]) > key
+	}):]
+	return kept, audio
+}
+
+// ptsWraps reports whether the video PTS steps back by more than half the
+// 33-bit PTS range, which reordering never does and a wrap always does. A
+// frame without a PTS carries 0 and is skipped, or a PTS above 2^32
+// before it would read as a wrap. The audio is not checked: the demuxer
+// sorts it by PTS, so a wrap never shows in it as a step back.
+func ptsWraps(frames []BufferedFrame) bool {
+	var last int64
+	for _, f := range frames {
+		if f.pts == 0 {
+			continue
+		}
+		if last-f.pts > 1<<32 {
+			return true
+		}
+		last = f.pts
+	}
+	return false
+}
+
+// aacFrameTicks is the duration of an AAC frame of 1024 samples in 90 kHz
+// ticks, 0 when the sample rate is unknown.
+func aacFrameTicks(a BufferedAudioFrame) int64 {
+	if a.sampleRate <= 0 {
+		return 0
+	}
+	return 1024 * 90000 / int64(a.sampleRate)
 }
 
 // LoadByName resolves a clip name to its ID via the store and loads it

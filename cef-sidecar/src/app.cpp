@@ -24,6 +24,19 @@ void SwitchframeCefApp::OnBeforeCommandLineProcessing(
     // Disable features that are unnecessary for offscreen rendering
     command_line->AppendSwitch("disable-extensions");
     command_line->AppendSwitch("disable-pdf-extension");
+
+#if defined(__linux__)
+    // Windowless rendering needs no display, but Chromium's default Ozone
+    // platform on Linux is X11 and aborts at start without $DISPLAY.
+    if (!command_line->HasSwitch("ozone-platform")) {
+        command_line->AppendSwitchWithValue("ozone-platform", "headless");
+    }
+#endif
+
+    // Without these Chromium registers with GCM and fetches component
+    // updates at start, outbound traffic a graphics renderer has no use for.
+    command_line->AppendSwitch("disable-background-networking");
+    command_line->AppendSwitch("disable-component-update");
 }
 
 void SwitchframeCefApp::OnContextInitialized() {

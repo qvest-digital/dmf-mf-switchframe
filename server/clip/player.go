@@ -115,6 +115,10 @@ type Player struct {
 
 	sourceFPS float64
 
+	// runOn is set when the clip starts with an IDR picture: the decoder
+	// then runs on from the end of a pass into the next one.
+	runOn bool
+
 	// Pacing: slot paceIdx is due at paceStart + paceIdx frame periods. A
 	// pass that starts with paceIdx 0 anchors paceStart at its first
 	// output; a loop pass whose first frames the previous pass already fed
@@ -321,6 +325,7 @@ func (p *Player) run(ctx context.Context) {
 	// Estimate source FPS from clip PTS values.
 	sourceFPS := estimateFPSFromClipFrames(clip)
 	p.sourceFPS = sourceFPS
+	p.runOn = startsWithIDR(clip[0])
 
 	p.state.Store(StatePlaying)
 
@@ -613,8 +618,10 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 	// nor restarts the decoder: a restarted frame-threaded decoder returns
 	// nothing for its first calls, which held the last picture and left a
 	// gap in the audio at every loop. The next pass starts after the frames
-	// fed here.
-	if p.loop.Load() && held > 0 && p.config.DecodeFrame != nil && totalClipFrames > 2*held {
+	// fed here. Only an IDR resets picture order: run on into an open-GOP
+	// I frame, the decoder lost the last picture of the pass and put out
+	// wrong ones for the first of the next, so such a clip drains instead.
+	if p.loop.Load() && p.runOn && held > 0 && p.config.DecodeFrame != nil && totalClipFrames > 2*held {
 		for held > 0 && fedNext < totalClipFrames {
 			select {
 			case <-ctx.Done():
@@ -682,6 +689,23 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 	p.progress.Store(1000)
 
 	return false, fedNext
+}
+
+// startsWithIDR reports whether f carries an IDR picture.
+func startsWithIDR(f BufferedFrame) bool {
+	for _, nalu := range codec.ExtractNALUs(f.wireData) {
+		if len(nalu) == 0 {
+			continue
+		}
+		if f.IsHEVC() {
+			if t := codec.HEVCNALUType(nalu[0]); t == codec.HEVCNALIDRWRadl || t == codec.HEVCNALIDRNLP {
+				return true
+			}
+		} else if nalu[0]&0x1f == 5 {
+			return true
+		}
+	}
+	return false
 }
 
 // decodeClipFrame feeds frame f to the decoder and returns the picture it
