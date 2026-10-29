@@ -426,7 +426,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 			if p.paceIdx == 0 {
 				p.paceStart = time.Now()
 			}
-			if p.outputFrame(ctx, frameData, fw, fh, srcKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, outputPTS, ptsStep, frameDuration, timer, p.paceStart, &p.paceIdx) {
+			if p.outputFrame(ctx, frameData, fw, fh, srcKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, outputPTS, ptsStep, frameDuration, timer, &p.paceStart, &p.paceIdx) {
 				return true
 			}
 
@@ -529,7 +529,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 
 		// Decode video to YUV420 for the switcher pipeline.
 		// Wire data forwarding to the browser relay is independent of decode
-		// success — the browser has its own decoder and always gets frames.
+		// success -- the browser has its own decoder and always gets frames.
 		frameData, fw, fh, buffered := p.decodeClipFrame(f, frameIdx)
 		if buffered {
 			held++
@@ -626,10 +626,10 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 			if buffered {
 				continue
 			}
-			held--
 			if frameData == nil {
-				continue
+				continue // failed: no picture came out
 			}
+			held--
 			slots := cad.slots(pic)
 			pic++
 			if slots == 0 {
@@ -717,7 +717,7 @@ func (p *Player) decodeClipFrame(f BufferedFrame, frameIdx int) (frameData []byt
 				fw, fh = dw, dh
 			} else {
 				errMsg := err.Error()
-				// EAGAIN ("buffering") is expected for B-frame reordering —
+				// EAGAIN ("buffering") is expected for B-frame reordering --
 				// the decoder needs reference frames before it can output.
 				if strings.Contains(errMsg, "buffering") {
 					p.decodeBuffering++
@@ -740,7 +740,7 @@ func (p *Player) decodeClipFrame(f BufferedFrame, frameIdx int) (frameData []byt
 			}
 		}
 	} else {
-		// No decoder (testing) — pass wire data through as frame data.
+		// No decoder (testing) -- pass wire data through as frame data.
 		frameData = f.wireData
 	}
 	return frameData, fw, fh, buffered
@@ -760,7 +760,7 @@ func (p *Player) outputFrame(
 	pts *ptsStep,
 	frameDuration time.Duration,
 	timer *time.Timer,
-	playbackStart time.Time,
+	playbackStart *time.Time,
 	pacingIdx *int,
 ) bool {
 	// Check for pause. If paused, this blocks until resumed or cancelled.
@@ -768,9 +768,16 @@ func (p *Player) outputFrame(
 	if chPtr != nil {
 		select {
 		case <-*chPtr:
-			// Not paused or just resumed.
-		case <-ctx.Done():
-			return true
+			// Not paused.
+		default:
+			select {
+			case <-*chPtr:
+				// Resumed: the slots due during the pause are not owed,
+				// so pacing restarts from this one.
+				*playbackStart = time.Now().Add(-time.Duration(*pacingIdx) * frameDuration)
+			case <-ctx.Done():
+				return true
+			}
 		}
 	}
 
@@ -793,7 +800,7 @@ func (p *Player) outputFrame(
 
 	// Pace using absolute time to prevent drift from callback overhead. The
 	// frame just output is on screen until the next slot starts.
-	deadline := playbackStart.Add(time.Duration(*pacingIdx+1) * frameDuration)
+	deadline := (*playbackStart).Add(time.Duration(*pacingIdx+1) * frameDuration)
 	wait := time.Until(deadline)
 	if wait > 0 {
 		timer.Reset(wait)

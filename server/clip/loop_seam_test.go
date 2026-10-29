@@ -113,3 +113,45 @@ func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
 	}
 	assert.GreaterOrEqual(t, audioOut, 2*pictures, "audio frames emitted over two passes")
 }
+
+// Resuming after a pause picks up at the output rate: the slots that fell
+// due during the pause are not caught up, which for a looping clip carrying
+// its pacing across wraps would replay passes at full speed.
+func TestPlayerResumeAfterPauseKeepsRate(t *testing.T) {
+	const pictures = 20
+	clip := make([]BufferedFrame, pictures)
+	for i := range clip {
+		clip[i] = BufferedFrame{wireData: []byte{0, 0, 0, 2, 0x41, byte(i)}, pts: int64(i) * 1800, isKeyframe: i == 0}
+	}
+	dec := &threadedDecoder{depth: 4}
+	var mu sync.Mutex
+	var at []time.Time
+	p := NewPlayer(PlayerConfig{
+		Clip: clip, Speed: 1, Loop: true, OutputFPSNum: 50, OutputFPSDen: 1,
+		Decoder: dec, DecodeFrame: dec.Decode,
+		RawVideoOutput: func([]byte, int, int, int64, bool) { mu.Lock(); at = append(at, time.Now()); mu.Unlock() },
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+	time.Sleep(300 * time.Millisecond)
+	p.Pause()
+	time.Sleep(time.Second)
+	resumed := time.Now()
+	p.Resume()
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	after := 0
+	for _, t0 := range at {
+		if t0.After(resumed) {
+			after++
+		}
+	}
+	// 150 ms is 7.5 periods at 50 fps.
+	assert.LessOrEqual(t, after, 10, "outputs in the 150 ms after resuming")
+	assert.GreaterOrEqual(t, after, 5, "outputs in the 150 ms after resuming")
+}
