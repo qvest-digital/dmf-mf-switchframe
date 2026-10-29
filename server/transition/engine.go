@@ -191,6 +191,7 @@ type Engine struct {
 	ingestMaxNano  atomic.Int64
 	framesIngested atomic.Int64
 	framesBlended  atomic.Int64
+	framesRepeated atomic.Int64 // Render frames output again for a frame the renderer had no time for
 
 	// rawBlender is cached for BlendRaw to avoid per-frame allocation (Issue 7).
 	// Recreated only when resolution changes.
@@ -242,6 +243,7 @@ func (e *Engine) Timing() map[string]any {
 		"ingest_max_ms":   float64(e.ingestMaxNano.Load()) / 1e6,
 		"frames_ingested": e.framesIngested.Load(),
 		"frames_blended":  e.framesBlended.Load(),
+		"frames_repeated": e.framesRepeated.Load(),
 	}
 }
 
@@ -985,7 +987,9 @@ func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
 // submitRender hands a frame to the render goroutine, starting it on the
 // first frame, and completes the transition when the position reaches the
 // end: the goroutine then draws that frame, outputs it and calls
-// OnComplete. Caller must hold e.mu; submitRender releases it.
+// OnComplete. A frame the renderer had no time for is made up for with a
+// repeat of the last one it drew, sent once e.mu is released. Caller must
+// hold e.mu; submitRender releases it.
 func (e *Engine) submitRender(yuvA, yuvB []byte, pos float64, pts int64) {
 	f := video.YUV420_8bit
 	if e.colorFormat == video.YUV422_10bit {
@@ -994,10 +998,9 @@ func (e *Engine) submitRender(yuvA, yuvB []byte, pos float64, pts int64) {
 	if e.render == nil {
 		e.render = newAsyncRender(e, e.transitionType)
 	}
-	isKF := !e.firstOutput
-	e.firstOutput = true
+	r := e.render
 	final := !e.manualControl && pos >= 1.0
-	e.render.submit(yuvA, yuvB, e.width, e.height, f, pos, pts, isKF, final)
+	repeat := r.submit(yuvA, yuvB, e.width, e.height, f, pos, pts, final)
 	if final {
 		e.log.Info("auto-complete", "type", e.transitionType)
 		// The goroutine outputs the final frame and calls OnComplete. The
@@ -1009,6 +1012,9 @@ func (e *Engine) submitRender(yuvA, yuvB []byte, pos float64, pts int64) {
 		e.cleanup()
 	}
 	e.mu.Unlock()
+	if repeat {
+		r.flush()
+	}
 }
 
 // takeFinal stops a render still finishing the transition and reports

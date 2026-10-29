@@ -16,7 +16,6 @@ type renderJob struct {
 	f     video.Format
 	pos   float64
 	pts   int64
-	kf    bool
 	final bool
 }
 
@@ -27,6 +26,13 @@ type renderJob struct {
 // a one-slot mailbox instead: a frame that arrives while the renderer is
 // busy replaces the waiting one, so a slow renderer drops frames and the
 // sources keep their rate.
+//
+// Output keeps the sources' rate too. Every source frame opens an output
+// slot carrying its pts, and every slot gets one frame, in order: the
+// renderer fills the open slot with the frame it finishes, and a slot it
+// leaves empty gets a copy of the last finished frame when the next source
+// frame arrives. A frame finished into a slot that is already filled is
+// kept as the last frame without going out.
 type asyncRender struct {
 	e     *Engine
 	ttype Type
@@ -34,14 +40,28 @@ type asyncRender struct {
 	stop  chan struct{} // closed by shutdown
 	done  chan struct{} // closed when the goroutine exits
 
-	mu      sync.Mutex
-	stopped bool
-	final   bool // the final frame is submitted
-	claimed bool // the goroutine calls OnComplete for the final frame
-	pending *renderJob
-	spare   *renderJob
+	mu        sync.Mutex
+	stopped   bool
+	pending   *renderJob
+	spare     *renderJob
+	final     bool  // the final frame is submitted; nothing follows it
+	claimed   bool  // the goroutine calls OnComplete for the final frame
+	slotPTS   int64 // pts of the newest slot
+	slotOpen  bool
+	slotFull  bool
+	keyed     bool // a frame flagged as keyframe went out
+	haveLast  bool // last holds a finished frame
+	repeat    bool // the slot at repeatPTS waits for a copy of last
+	repeatPTS int64
 
-	dst     []byte
+	// outMu orders Output calls, so slots go out in pts order, and guards
+	// last and rep. last is never handed to Output: a consumer may process
+	// an output buffer in place, and a repeat must carry the frame as drawn.
+	outMu        sync.Mutex
+	last, rep    []byte
+	lastW, lastH int
+
+	dst     []byte        // render goroutine only
 	blender *FrameBlender // mix for a frame Render declines
 }
 
@@ -57,14 +77,21 @@ func newAsyncRender(e *Engine, ttype Type) *asyncRender {
 	return r
 }
 
-// submit queues a frame, replacing a waiting one. Nothing is queued after
-// the final frame, which is always drawn.
-func (r *asyncRender) submit(a, b []byte, w, h int, f video.Format, pos float64, pts int64, kf, final bool) {
+// submit queues a frame, replacing a waiting one, and opens its output
+// slot. It reports whether the slot before it was left empty and now waits
+// for a repeat, which the caller sends with flush once it holds no engine
+// lock. Nothing is queued after the final frame.
+func (r *asyncRender) submit(a, b []byte, w, h int, f video.Format, pos float64, pts int64, final bool) (repeat bool) {
 	r.mu.Lock()
 	if r.stopped || r.final {
 		r.mu.Unlock()
-		return
+		return false
 	}
+	if r.slotOpen && !r.slotFull && r.haveLast {
+		r.repeat, r.repeatPTS = true, r.slotPTS
+		repeat = true
+	}
+	r.slotPTS, r.slotOpen, r.slotFull = pts, true, false
 	r.final = final
 	j := r.pending
 	if j == nil {
@@ -75,15 +102,41 @@ func (r *asyncRender) submit(a, b []byte, w, h int, f video.Format, pos float64,
 	}
 	j.a = append(j.a[:0], a...)
 	j.b = append(j.b[:0], b...)
-	j.w, j.h, j.f, j.pos, j.pts, j.kf, j.final = w, h, f, pos, pts, kf, final
-	if r.pending != nil && r.pending.kf {
-		j.kf = true // a dropped frame's keyframe flag moves to its replacement
-	}
+	j.w, j.h, j.f, j.pos, j.pts, j.final = w, h, f, pos, pts, final
 	r.pending = j
 	r.mu.Unlock()
 	select {
 	case r.wake <- struct{}{}:
 	default:
+	}
+	return repeat
+}
+
+// flush sends a repeat that submit left waiting.
+func (r *asyncRender) flush() {
+	r.outMu.Lock()
+	r.flushLocked()
+	r.outMu.Unlock()
+}
+
+// flushLocked sends a waiting repeat, a copy of the last finished frame.
+// Caller holds outMu. Whichever of producer and renderer takes outMu first
+// sends it, so it always goes out ahead of the slot after it.
+func (r *asyncRender) flushLocked() {
+	r.mu.Lock()
+	due, pts, stopped := r.repeat, r.repeatPTS, r.stopped
+	r.repeat = false
+	r.mu.Unlock()
+	if !due || stopped {
+		return
+	}
+	r.rep = growBuf(r.rep, len(r.last))
+	copy(r.rep, r.last)
+	r.e.framesRepeated.Add(1)
+	// Like the renderer's, this stop check races a shutdown landing just
+	// after it; see loop.
+	if out := r.e.config.Output; out != nil {
+		out(r.rep, r.lastW, r.lastH, pts, false)
 	}
 }
 
@@ -119,19 +172,39 @@ func (r *asyncRender) loop() {
 			continue
 		}
 		frame := r.draw(j)
+
+		r.outMu.Lock()
+		r.flushLocked()
 		r.mu.Lock()
-		stopped := r.stopped
+		if r.stopped {
+			// Stopped while drawing: the frame belongs to no transition.
+			r.mu.Unlock()
+			r.outMu.Unlock()
+			return
+		}
+		send := j.final || (r.slotOpen && !r.slotFull && !r.final)
+		r.slotFull = r.slotFull || send
+		kf := send && !r.keyed
+		r.keyed = r.keyed || kf
+		pts := r.slotPTS
+		if !j.final {
+			r.haveLast = true
+		}
 		r.mu.Unlock()
-		if stopped {
-			return // stopped while drawing: the frame belongs to no transition
+		if !j.final {
+			r.last = growBuf(r.last, len(frame))
+			copy(r.last, frame)
+			r.lastW, r.lastH = j.w, j.h
 		}
 		// A shutdown landing between the stop check above and this call
 		// still lets the frame out. Holding r.mu across Output would close
 		// that window of microseconds, but Output can need the engine lock
 		// that shutdown's caller holds.
-		if out := r.e.config.Output; out != nil {
-			out(frame, j.w, j.h, j.pts, j.kf)
+		if out := r.e.config.Output; send && out != nil {
+			out(frame, j.w, j.h, pts, kf)
 		}
+		r.outMu.Unlock()
+
 		if j.final {
 			r.complete()
 			return

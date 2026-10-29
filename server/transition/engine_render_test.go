@@ -346,3 +346,131 @@ func TestRenderFinalFrameStoppedAfterHandOff(t *testing.T) {
 		mu.Unlock()
 	}
 }
+
+// A renderer slower than the sources still gives program one frame per
+// source frame, in pts order: a source frame the renderer has no time for
+// goes out as a repeat of the last frame drawn, so program keeps the
+// sources' rate instead of dropping to the renderer's. The repeat is sent
+// from the source's goroutine without waiting for the renderer, and it
+// carries the frame as drawn although every output buffer is processed in
+// place after it goes out, as the switcher's pipeline does.
+func TestIngestRawFrame_SlowRenderKeepsCadence(t *testing.T) {
+	drawing := make(chan struct{}, 1)
+	gate := make(chan struct{})
+	var mu sync.Mutex
+	var vals []byte
+	var ptss []int64
+	var kfs []bool
+	e := NewEngine(EngineConfig{
+		Render: func(dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
+			drawing <- struct{}{}
+			<-gate
+			for i := range dst {
+				dst[i] = from[0]
+			}
+			return true
+		},
+		Output: func(yuv []byte, w, h int, pts int64, kf bool) {
+			mu.Lock()
+			vals = append(vals, yuv[0])
+			ptss = append(ptss, pts)
+			kfs = append(kfs, kf)
+			mu.Unlock()
+			for i := range yuv {
+				yuv[i] = 0xEE // processed in place downstream
+			}
+		},
+	})
+	require.NoError(t, e.Start("a", "b", Mix, 60000))
+	defer e.Stop()
+	const w, h = 32, 16
+	size := video.YUV420_8bit.FrameSize(w, h)
+	tick := func(i int) {
+		a := make([]byte, size)
+		a[0] = byte(i)
+		start := time.Now()
+		e.IngestRawFrame("a", a, w, h, int64(i))
+		e.IngestRawFrame("b", make([]byte, size), w, h, int64(i))
+		require.Less(t, time.Since(start), 100*time.Millisecond, "tick %d waited for the renderer", i)
+	}
+	outs := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(vals)
+	}
+	waitOuts := func(n int) {
+		require.Eventually(t, func() bool { return outs() == n }, time.Second, time.Millisecond)
+	}
+
+	tick(1)
+	<-drawing
+	gate <- struct{}{}
+	waitOuts(1)
+	tick(2) // drawn, but slower than the next two ticks
+	<-drawing
+	tick(3)
+	require.Equal(t, 2, outs(), "tick 3 sends the frame tick 2 has no time for")
+	tick(4)
+	require.Equal(t, 3, outs(), "tick 4 sends the frame tick 3 has no time for")
+	gate <- struct{}{} // tick 2's frame goes out for tick 4
+	waitOuts(4)
+	<-drawing // then tick 4's frame is drawn into a slot already filled
+	gate <- struct{}{}
+	e.mu.Lock()
+	r := e.render
+	e.mu.Unlock()
+	require.Eventually(t, func() bool {
+		r.outMu.Lock()
+		defer r.outMu.Unlock()
+		return len(r.last) > 0 && r.last[0] == 4
+	}, time.Second, time.Millisecond)
+	tick(5)
+	<-drawing
+	gate <- struct{}{}
+	waitOuts(5)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []int64{1, 2, 3, 4, 5}, ptss, "one frame per source frame, in order")
+	require.Equal(t, []byte{1, 1, 1, 2, 5}, vals, "repeats carry the frame as drawn")
+	require.Equal(t, []bool{true, false, false, false, false}, kfs)
+	require.EqualValues(t, 2, e.Timing()["frames_repeated"])
+}
+
+// A renderer that keeps up sends each frame itself, with no repeats.
+func TestIngestRawFrame_FastRenderSendsNoRepeats(t *testing.T) {
+	var mu sync.Mutex
+	var vals []byte
+	e := NewEngine(EngineConfig{
+		Render: func(dst, from, to []byte, w, h int, f video.Format, pos float64) bool {
+			for i := range dst {
+				dst[i] = from[0]
+			}
+			return true
+		},
+		Output: func(yuv []byte, w, h int, pts int64, kf bool) {
+			mu.Lock()
+			vals = append(vals, yuv[0])
+			mu.Unlock()
+		},
+	})
+	require.NoError(t, e.Start("a", "b", Mix, 60000))
+	defer e.Stop()
+	const w, h = 32, 16
+	size := video.YUV420_8bit.FrameSize(w, h)
+	for i := 1; i <= 5; i++ {
+		a := make([]byte, size)
+		a[0] = byte(i)
+		e.IngestRawFrame("a", a, w, h, int64(i))
+		e.IngestRawFrame("b", make([]byte, size), w, h, int64(i))
+		require.Eventually(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(vals) == i
+		}, time.Second, time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []byte{1, 2, 3, 4, 5}, vals)
+	require.EqualValues(t, 0, e.Timing()["frames_repeated"])
+}
