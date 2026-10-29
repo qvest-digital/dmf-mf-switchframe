@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -214,7 +215,7 @@ func (m *Manager) Load(playerID int, clipID string) error {
 		"clipID", clipID,
 		"clipName", c.Name,
 		"frames", len(frames),
-		"droppedBeforeKeyframe", demuxed-len(frames),
+		"framesDropped", demuxed-len(frames),
 		"keyframes", keyframes,
 		"hasSPS", hasSPS,
 		"audioFrames", len(audio),
@@ -226,28 +227,39 @@ func (m *Manager) Load(playerID int, clipID string) error {
 	return nil
 }
 
-// fromFirstKeyframe drops the frames before the first keyframe and the
-// audio before it. A stream cut mid-GOP starts with frames that reference
-// pictures it does not carry. A fresh decoder fails them, so the first
-// pass spends their slots without a picture, and the decoder a looping
-// player keeps into the next pass holds the previous pass's references
-// and puts out wrong pictures for them. Starting at the keyframe gives
-// every pass the same pictures, and the audio, spread over the pictures,
-// stays with them. A clip with no keyframe is returned as it is.
+// fromFirstKeyframe drops the frames before the first keyframe, the
+// leading pictures after it, and the audio before it. A stream cut
+// mid-GOP starts with frames that reference pictures it does not carry,
+// and one cut at an open GOP has leading pictures: frames after the
+// keyframe in decode order that show before it and reference the GOP
+// before. A fresh decoder drops both, but the decoder a looping player
+// keeps into the next pass holds the previous pass's references and puts
+// out wrong pictures for them. Starting at the keyframe gives every pass
+// the same pictures, and the audio, spread over the pictures, stays with
+// them. A clip with no keyframe is returned as it is.
 func fromFirstKeyframe(frames []BufferedFrame, audio []BufferedAudioFrame) ([]BufferedFrame, []BufferedAudioFrame) {
-	for i, f := range frames {
-		if !f.isKeyframe {
+	first := slices.IndexFunc(frames, func(f BufferedFrame) bool { return f.isKeyframe })
+	if first < 0 {
+		return frames, audio
+	}
+	key := frames[first].pts
+	// Capacity 1 makes the first append copy, leaving the demuxed slice as
+	// it was.
+	kept := frames[first : first+1 : first+1]
+	leading := true
+	for _, f := range frames[first+1:] {
+		if f.isKeyframe {
+			leading = false
+		}
+		if leading && f.pts < key {
 			continue
 		}
-		if i > 0 {
-			frames = frames[i:]
-			audio = audio[sort.Search(len(audio), func(j int) bool {
-				return audio[j].pts >= f.pts
-			}):]
-		}
-		break
+		kept = append(kept, f)
 	}
-	return frames, audio
+	audio = audio[sort.Search(len(audio), func(j int) bool {
+		return audio[j].pts >= key
+	}):]
+	return kept, audio
 }
 
 // LoadByName resolves a clip name to its ID via the store and loads it

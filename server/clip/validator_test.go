@@ -454,16 +454,20 @@ func TestPTSIncrementForDropFrameRates(t *testing.T) {
 	}
 }
 
-// A clip plays from its first keyframe, so its duration and frame count
-// leave out the frames before it: 100 of the 170 frames of a cut clip.
+// A clip plays from its first keyframe and skips its leading pictures, so
+// its duration and frame count leave out the frames it does not show.
 func TestValidateCutBeforeKeyframe(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	path := filepath.Join(t.TempDir(), "cut.ts")
-	writeCutTS(t, path)
-	result, err := Validate(path)
-	require.NoError(t, err)
-	assert.Equal(t, 100, result.FrameCount)
-	assert.Equal(t, int64(2000), result.DurationMs)
+	for _, cut := range cutClips {
+		t.Run(cut.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cut.ts")
+			writeCutTS(t, path, cut.args)
+			result, err := Validate(path)
+			require.NoError(t, err)
+			assert.Equal(t, cut.shown, result.FrameCount)
+			assert.Equal(t, int64(cut.shown*20), result.DurationMs, "20 ms per picture at 50 fps")
+		})
+	}
 }

@@ -63,8 +63,13 @@ func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
 	clip := make([]BufferedFrame, pictures)
 	audio := make([]BufferedAudioFrame, pictures)
 	for i := range clip {
-		// Length-prefixed NAL {0x41, i}: the decoder sees i as its last byte.
-		clip[i] = BufferedFrame{wireData: []byte{0, 0, 0, 2, 0x41, byte(i)}, pts: int64(i) * 1800, isKeyframe: i == 0}
+		// Length-prefixed NAL {0x41, i}, an IDR {0x65, 0} first: the
+		// decoder sees i as its last byte.
+		nal := byte(0x41)
+		if i == 0 {
+			nal = 0x65
+		}
+		clip[i] = BufferedFrame{wireData: []byte{0, 0, 0, 2, nal, byte(i)}, pts: int64(i) * 1800, isKeyframe: i == 0}
 		audio[i] = BufferedAudioFrame{data: []byte{byte(i)}, sampleRate: 48000, channels: 2}
 	}
 	dec := &threadedDecoder{depth: 4, cost: 6 * time.Millisecond}
@@ -181,26 +186,38 @@ func TestPlayerResumeAfterPauseKeepsRate(t *testing.T) {
 	assert.GreaterOrEqual(t, after, 5, "outputs in the 150 ms after resuming")
 }
 
-// keyedDecoder is a threadedDecoder that, like FFmpeg's, fails the frames
-// fed before its first keyframe and puts out nothing for them: they
-// reference pictures it never had. Flush drops its references again.
+// keyedDecoder is a threadedDecoder that, like FFmpeg's, fails what it
+// lacks the references for. Before its first keyframe, an IDR or an
+// open-GOP I frame, it decodes nothing. A leading picture, marked by a
+// non-reference slice NAL, references the GOP before its keyframe, so it
+// decodes only when the decoder had decoded something before that
+// keyframe. Flush drops its references.
 type keyedDecoder struct {
 	threadedDecoder
-	keyed bool
+	keyed, seen, prior bool
 }
 
 func (d *keyedDecoder) Decode(annexB []byte) ([]byte, int, int, error) {
 	// The NAL header is the second-to-last byte, after any SPS/PPS.
-	if annexB[len(annexB)-2]&0x1f == 5 {
-		d.keyed = true
+	switch annexB[len(annexB)-2] {
+	case 0x65, 0x61:
+		d.keyed, d.prior = true, d.seen
+	case 0x01:
+		if !d.prior {
+			return nil, 0, 0, errors.New("no reference picture")
+		}
 	}
 	if !d.keyed {
 		return nil, 0, 0, errors.New("no reference picture")
 	}
+	d.seen = true
 	return d.threadedDecoder.Decode(annexB)
 }
 
-func (d *keyedDecoder) Flush() { d.threadedDecoder.Flush(); d.keyed = false }
+func (d *keyedDecoder) Flush() {
+	d.threadedDecoder.Flush()
+	d.keyed, d.seen, d.prior = false, false, false
+}
 
 // loopRecorder collects what a looping manager player outputs: the
 // pictures in order, the audio, and how much audio had gone out when
@@ -235,72 +252,119 @@ func (r *loopRecorder) waitPics(t *testing.T, n int, timeout time.Duration) {
 	}, timeout, 5*time.Millisecond)
 }
 
-// A clip cut mid-GOP starts with frames before its first keyframe. A
-// fresh decoder fails them, and the decoder a looping player keeps into
-// the next pass decodes them against the previous pass's pictures: wrong
-// pictures, and a pass longer than the first. Every pass has to show the
-// pictures from the keyframe on, with the audio from there in step.
+// A clip cut mid-GOP starts with frames before its first keyframe; one cut
+// at an open GOP has leading pictures after it, which show before it and
+// reference the GOP before. A fresh decoder drops both, but the decoder a
+// looping player keeps into the next pass decodes them against the
+// previous pass's pictures: wrong pictures, and a pass longer than the
+// first. Every pass has to show the keyframe and the pictures after it,
+// with the audio from the keyframe on in step.
 func TestManagerLoopSkipsFramesBeforeFirstKeyframe(t *testing.T) {
-	const n, key, passes = 20, 5, 3
-	frames := make([]BufferedFrame, n)
-	audio := make([]BufferedAudioFrame, n)
-	for i := range frames {
-		nal := byte(0x41)
-		if i == key {
-			nal = 0x65
-		}
-		frames[i] = BufferedFrame{wireData: []byte{0, 0, 0, 2, nal, byte(i)}, pts: int64(i) * 1800, isKeyframe: i == key}
-		audio[i] = BufferedAudioFrame{data: []byte{byte(i)}, pts: int64(i) * 1800, sampleRate: 48000, channels: 2}
-	}
-	dir := t.TempDir()
-	store, err := NewStore(dir, 1<<30)
-	require.NoError(t, err)
-	mgr := NewManager(store, ManagerConfig{
-		DemuxFunc: func(string) ([]BufferedFrame, []BufferedAudioFrame, error) {
-			return slices.Clone(frames), slices.Clone(audio), nil
+	const n, passes = 20, 3
+	// Each frame is {nal, pts in frame periods}, in decode order; a frame's
+	// picture and the audio frame at its pts carry its index.
+	cases := []struct {
+		name   string
+		frames func(i int) (nal byte, pts int)
+		pics   []byte // decode order, as the fake decoder puts them out
+		audio  int    // index of the first audio frame each pass plays
+	}{
+		{
+			name: "cut mid-GOP",
+			frames: func(i int) (byte, int) {
+				if i == 5 {
+					return 0x65, i
+				}
+				return 0x41, i
+			},
+			pics:  seq(5, n),
+			audio: 5,
 		},
-		DecoderFactory: func() (VideoDecoder, error) {
-			return &keyedDecoder{threadedDecoder: threadedDecoder{depth: 2}}, nil
+		{
+			name: "cut at an open GOP",
+			frames: func(i int) (byte, int) {
+				switch i {
+				case 0:
+					return 0x61, 2
+				case 1, 2:
+					return 0x01, i - 1
+				}
+				return 0x41, i
+			},
+			pics:  append([]byte{0}, seq(3, n)...),
+			audio: 2,
 		},
-		OutputRate: func() (int, int) { return 50, 1 },
-	})
-	defer mgr.Close()
-	var rec loopRecorder
-	rec.wire(mgr)
-	c := addTestClip(t, store, dir)
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			frames := make([]BufferedFrame, n)
+			audio := make([]BufferedAudioFrame, n)
+			for i := range frames {
+				nal, pts := tc.frames(i)
+				frames[i] = BufferedFrame{wireData: []byte{0, 0, 0, 2, nal, byte(i)}, pts: int64(pts) * 1800, isKeyframe: nal == 0x65 || nal == 0x61}
+				audio[i] = BufferedAudioFrame{data: []byte{byte(i)}, pts: int64(i) * 1800, sampleRate: 48000, channels: 2}
+			}
+			dir := t.TempDir()
+			store, err := NewStore(dir, 1<<30)
+			require.NoError(t, err)
+			mgr := NewManager(store, ManagerConfig{
+				DemuxFunc: func(string) ([]BufferedFrame, []BufferedAudioFrame, error) {
+					return slices.Clone(frames), slices.Clone(audio), nil
+				},
+				DecoderFactory: func() (VideoDecoder, error) {
+					return &keyedDecoder{threadedDecoder: threadedDecoder{depth: 2}}, nil
+				},
+				OutputRate: func() (int, int) { return 50, 1 },
+			})
+			defer mgr.Close()
+			var rec loopRecorder
+			rec.wire(mgr)
+			c := addTestClip(t, store, dir)
 
-	require.NoError(t, mgr.Load(1, c.ID))
-	require.NoError(t, mgr.Play(1, 1.0, true))
-	const shown = n - key
-	rec.waitPics(t, passes*shown, 5*time.Second)
-	require.NoError(t, mgr.Stop(1))
+			require.NoError(t, mgr.Load(1, c.ID))
+			require.NoError(t, mgr.Play(1, 1.0, true))
+			shown := len(tc.pics)
+			rec.waitPics(t, passes*shown, 5*time.Second)
+			require.NoError(t, mgr.Stop(1))
 
-	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	var want, got []byte
-	for pass := 0; pass < passes; pass++ {
-		for i := key; i < n; i++ {
-			want = append(want, byte(i))
-		}
-	}
-	for _, p := range rec.pics[:passes*shown] {
-		got = append(got, p[0])
-	}
-	require.Equal(t, want, got, "pictures over %d passes", passes)
-	var sound []byte
-	for _, a := range rec.audio {
-		sound = append(sound, a[0])
-	}
-	require.GreaterOrEqual(t, len(sound), passes*shown-1)
-	require.Equal(t, want[:passes*shown-1], sound[:passes*shown-1], "audio over %d passes", passes)
-	for i, a := range rec.audioAtPics[:passes*shown] {
-		require.Equal(t, i, a, "audio frames out when picture %d went out", i)
+			rec.mu.Lock()
+			defer rec.mu.Unlock()
+			var want, got, wantSound, sound []byte
+			for pass := 0; pass < passes; pass++ {
+				want = append(want, tc.pics...)
+				wantSound = append(wantSound, seq(tc.audio, n)...)
+			}
+			for _, p := range rec.pics[:passes*shown] {
+				got = append(got, p[0])
+			}
+			require.Equal(t, want, got, "pictures over %d passes", passes)
+			for _, a := range rec.audio {
+				sound = append(sound, a[0])
+			}
+			// The audio of a pass's last picture may still be on its way.
+			k := min(len(sound), len(wantSound))
+			require.GreaterOrEqual(t, k, len(wantSound)-1)
+			require.Equal(t, wantSound[:k], sound[:k], "audio over %d passes", passes)
+			for i, a := range rec.audioAtPics[:passes*shown] {
+				require.Equal(t, i, a, "audio frames out when picture %d went out", i)
+			}
+		})
 	}
 }
 
-// The same with the real demuxer and decoder: a 50 fps clip whose first 30
-// frames are cut, so 70 frames precede its first keyframe. Every pass
-// puts out the pictures of the first, and as much audio.
+// seq returns the bytes from..to-1.
+func seq(from, to int) []byte {
+	s := make([]byte, 0, to-from)
+	for i := from; i < to; i++ {
+		s = append(s, byte(i))
+	}
+	return s
+}
+
+// The same with the real demuxer and decoder, on 50 fps clips cut before
+// their first keyframe. Every pass puts out the pictures of the first,
+// and each starts its audio with the first audio frame at or after the
+// keyframe, then plays all audio from there.
 func TestManagerLoopCutBeforeKeyframeIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -310,63 +374,104 @@ func TestManagerLoopCutBeforeKeyframeIntegration(t *testing.T) {
 		t.Skipf("FFmpeg decoder not available (non-cgo build?): %v", err)
 	}
 	dec.Close()
-	dir := t.TempDir()
-	writeCutTS(t, filepath.Join(dir, "cut.ts"))
 
-	store, err := NewStore(dir, 1<<30)
-	require.NoError(t, err)
-	mgr := NewManager(store, ManagerConfig{
-		DecoderFactoryForCodec: func(name string) (VideoDecoder, error) {
-			return codec.NewVideoDecoderForCodec(name)
-		},
-	})
-	defer mgr.Close()
-	var rec loopRecorder
-	rec.wire(mgr)
-	c := &Clip{Name: "cut", Filename: "cut.ts", Source: SourceUpload, Codec: "h264", Width: 320, Height: 240}
-	require.NoError(t, store.Add(c))
+	for _, cut := range cutClips {
+		t.Run(cut.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "cut.ts")
+			writeCutTS(t, path, cut.args)
 
-	require.NoError(t, mgr.Load(1, c.ID))
-	require.NoError(t, mgr.Play(1, 1.0, true))
-	const shown, passes = 100, 3
-	rec.waitPics(t, passes*shown+1, 15*time.Second)
-	require.NoError(t, mgr.Stop(1))
+			// What a pass has to play, read from the file: the audio from
+			// the first keyframe's PTS on.
+			frames, srcAudio, err := DemuxFile(path)
+			require.NoError(t, err)
+			first := slices.IndexFunc(frames, func(f BufferedFrame) bool { return f.isKeyframe })
+			require.Positive(t, first, "the cut has to start before a keyframe")
+			start := slices.IndexFunc(srcAudio, func(a BufferedAudioFrame) bool { return a.pts >= frames[first].pts })
+			require.Positive(t, start)
+			wantAudio := len(srcAudio) - start
 
-	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	for pass := 1; pass < passes; pass++ {
-		for i := 0; i < shown; i++ {
-			require.True(t, bytes.Equal(rec.pics[i], rec.pics[pass*shown+i]),
-				"pass %d picture %d differs from the first pass", pass, i)
-		}
-	}
-	// 2 s of 48 kHz AAC is 93.75 frames of 1024 samples.
-	first := rec.audioAtPics[shown]
-	assert.InDelta(t, 94, first, 1, "audio frames in the first pass")
-	for pass := 1; pass < passes; pass++ {
-		got := rec.audioAtPics[(pass+1)*shown] - rec.audioAtPics[pass*shown]
-		assert.Equal(t, first, got, "audio frames in pass %d", pass)
+			store, err := NewStore(dir, 1<<30)
+			require.NoError(t, err)
+			mgr := NewManager(store, ManagerConfig{
+				DecoderFactoryForCodec: func(name string) (VideoDecoder, error) {
+					return codec.NewVideoDecoderForCodec(name)
+				},
+			})
+			defer mgr.Close()
+			var rec loopRecorder
+			rec.wire(mgr)
+			c := &Clip{Name: "cut", Filename: "cut.ts", Source: SourceUpload, Codec: "h264", Width: 320, Height: 240}
+			require.NoError(t, store.Add(c))
+
+			require.NoError(t, mgr.Load(1, c.ID))
+			require.NoError(t, mgr.Play(1, 1.0, true))
+			const passes = 3
+			shown := cut.shown
+			rec.waitPics(t, passes*shown+1, 20*time.Second)
+			require.NoError(t, mgr.Stop(1))
+
+			rec.mu.Lock()
+			defer rec.mu.Unlock()
+			for pass := 1; pass < passes; pass++ {
+				for i := 0; i < shown; i++ {
+					require.True(t, bytes.Equal(rec.pics[i], rec.pics[pass*shown+i]),
+						"pass %d picture %d differs from the first pass", pass, i)
+				}
+			}
+			for pass := 0; pass < passes; pass++ {
+				at := rec.audioAtPics[pass*shown]
+				assert.True(t, bytes.Equal(srcAudio[start].data, rec.audio[at]),
+					"pass %d does not start its audio at the first frame from the keyframe on", pass)
+				got := rec.audioAtPics[(pass+1)*shown] - at
+				assert.Equal(t, wantAudio, got, "audio frames in pass %d", pass)
+			}
+		})
 	}
 }
 
-// writeCutTS writes 4 s of 320x240 50 fps H.264 with AAC to path, one
-// keyframe every 100 frames and the first 30 frames cut, so the 170 frames
-// left start with 70 before their first keyframe. It skips the test
-// without an ffmpeg that can.
-func writeCutTS(t *testing.T, path string) {
+// cutClips are 4 s of 320x240 50 fps H.264 with AAC, cut by dropping the
+// first video packets so they start before a keyframe. shown is the number
+// of pictures from the keyframe on.
+var cutClips = []struct {
+	name  string
+	args  []string
+	shown int
+}{
+	{
+		// One keyframe every 100 frames and the first 30 cut: the 170
+		// frames left start with 70 before their keyframe.
+		name:  "mid-GOP",
+		args:  []string{"-g", "100", "-bf", "0", "-bsf:v", `noise=drop=lt(n\,30)`},
+		shown: 100,
+	},
+	{
+		// Open GOPs of 50 with B-frames and the first 50 packets cut: the
+		// 150 frames left start with 49 before a keyframe, which has a
+		// leading picture after it in decode order.
+		name: "open GOP",
+		args: []string{"-bf", "2", "-x264-params", "open-gop=1:keyint=50:min-keyint=50:scenecut=0",
+			"-bsf:v", `noise=drop=lt(n\,50)`},
+		shown: 100,
+	},
+}
+
+// writeCutTS writes 4 s of 320x240 50 fps H.264 with AAC to path, with the
+// extra video encoder args. It skips the test without an ffmpeg that can.
+func writeCutTS(t *testing.T, path string, videoArgs []string) {
 	t.Helper()
 	ffmpegPath, err := exec.LookPath("ffmpeg")
 	if err != nil {
 		t.Skip("ffmpeg CLI not available, skipping integration test")
 	}
-	out, err := exec.Command(ffmpegPath, "-y",
+	args := []string{"-y",
 		"-f", "lavfi", "-i", "testsrc=duration=4:size=320x240:rate=50",
 		"-f", "lavfi", "-i", "sine=frequency=440:duration=4:sample_rate=48000",
 		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-		"-g", "100", "-bf", "0", "-bsf:v", `noise=drop=lt(n\,30)`,
-		"-c:a", "aac", "-b:a", "64k", "-ac", "2",
-		"-f", "mpegts", path,
-	).CombinedOutput()
+	}
+	args = append(args, videoArgs...)
+	args = append(args, "-c:a", "aac", "-b:a", "64k", "-ac", "2", "-f", "mpegts", path)
+	out, err := exec.Command(ffmpegPath, args...).CombinedOutput()
 	if err != nil {
 		t.Skipf("ffmpeg failed to generate test TS: %v\n%s", err, out)
 	}

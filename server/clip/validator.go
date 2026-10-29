@@ -157,7 +157,8 @@ func Validate(path string) (*ProbeResult, error) {
 
 	// --- Stage 3: Metadata extraction ---
 
-	// Playback starts at the first keyframe; the duration is what plays.
+	// Playback starts at the first keyframe and skips its leading pictures;
+	// the duration is what plays.
 	videoFrames, _ = fromFirstKeyframe(videoFrames, nil)
 	frameCount := len(videoFrames)
 
