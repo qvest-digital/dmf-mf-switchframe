@@ -11,6 +11,7 @@ vi.mock('$lib/api/switch-api', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$lib/api/switch-api')>()),
 	graphicsSetLayerSettings: vi.fn().mockResolvedValue({}),
 	graphicsSetLayerOrder: vi.fn().mockResolvedValue({}),
+	graphicsImportLayers: vi.fn().mockResolvedValue({}),
 }));
 
 const ctx2d = new Proxy({}, {
@@ -77,6 +78,69 @@ describe('GraphicsPanel settings on the engine', () => {
 		expect(api.graphicsSetLayerSettings).toHaveBeenCalledTimes(2);
 		expect(vi.mocked(api.graphicsSetLayerSettings).mock.calls[1][1].config).toMatchObject({ fields: { name: 'Ada' } });
 		expect(container.querySelector('.gfx-unsaved')).toBeNull();
+	});
+
+	it('shows a refusal by the engine instead of retrying it', async () => {
+		vi.mocked(api.graphicsSetLayerSettings).mockRejectedValueOnce(new api.SwitchApiError(400, 'layer config too large'));
+		const { container } = render(GraphicsPanel, { props: { state: stateWith(layer(0, 0)) } });
+		const input = container.querySelector('.field-inp') as HTMLInputElement;
+		const engineValue = input.value;
+		await fireEvent.input(input, { target: { value: 'Ada' } });
+		await vi.advanceTimersByTimeAsync(350);
+		expect(notify).toHaveBeenCalledWith('error', expect.stringContaining('layer config too large'));
+		expect(container.querySelector('.gfx-unsaved')).toBeNull();
+		expect((container.querySelector('.field-inp') as HTMLInputElement).value).toBe(engineValue);
+		await vi.advanceTimersByTimeAsync(10000);
+		expect(api.graphicsSetLayerSettings).toHaveBeenCalledTimes(1);
+	});
+
+	it('clears NOT SAVED and stops retrying once another session removes the layer', async () => {
+		vi.mocked(api.graphicsSetLayerSettings).mockRejectedValue(new Error('engine unreachable'));
+		const { container, rerender } = render(GraphicsPanel, { props: { state: stateWith(layer(0, 0), layer(1, 1)) } });
+		await fireEvent.click(container.querySelector('[data-layer-id="0"]') as HTMLElement);
+		await fireEvent.input(container.querySelector('.field-inp') as HTMLInputElement, { target: { value: 'Ada' } });
+		await vi.advanceTimersByTimeAsync(350);
+		expect(container.querySelector('.gfx-unsaved')).toBeTruthy();
+
+		await rerender({ state: { ...stateWith(layer(1, 1)), timestamp: 2 } });
+		await tick();
+		expect(container.querySelector('.gfx-unsaved')).toBeNull();
+		const calls = vi.mocked(api.graphicsSetLayerSettings).mock.calls.length;
+		await vi.advanceTimersByTimeAsync(10000);
+		expect(api.graphicsSetLayerSettings).toHaveBeenCalledTimes(calls);
+		vi.mocked(api.graphicsSetLayerSettings).mockReset();
+		vi.mocked(api.graphicsSetLayerSettings).mockResolvedValue({});
+	});
+
+	it('clears NOT SAVED when an import replaces the layers', async () => {
+		vi.mocked(api.graphicsSetLayerSettings).mockRejectedValue(new Error('engine unreachable'));
+		const { container } = render(GraphicsPanel, { props: { state: stateWith(layer(0, 0)) } });
+		await fireEvent.input(container.querySelector('.field-inp') as HTMLInputElement, { target: { value: 'Ada' } });
+		await vi.advanceTimersByTimeAsync(350);
+		expect(container.querySelector('.gfx-unsaved')).toBeTruthy();
+
+		// The import opens a file picker; hand it an export file.
+		const create = document.createElement.bind(document);
+		let picker: HTMLInputElement | undefined;
+		const spy = vi.spyOn(document, 'createElement').mockImplementation((tag: string, opts?: ElementCreationOptions) => {
+			const el = create(tag, opts);
+			if (tag === 'input') { picker = el as HTMLInputElement; picker.click = () => {}; }
+			return el;
+		});
+		const importBtn = Array.from(container.querySelectorAll('.gfx-io')).find((b) => b.textContent === 'IMPORT') as HTMLButtonElement;
+		await fireEvent.click(importBtn);
+		spy.mockRestore();
+		const file = { text: async () => '{"format":"switchframe-graphics","version":1,"layers":[{"id":0}]}' };
+		Object.defineProperty(picker!, 'files', { value: [file] });
+		await picker!.onchange!(new Event('change'));
+		await tick();
+		expect(api.graphicsImportLayers).toHaveBeenCalled();
+		expect(container.querySelector('.gfx-unsaved')).toBeNull();
+		const calls = vi.mocked(api.graphicsSetLayerSettings).mock.calls.length;
+		await vi.advanceTimersByTimeAsync(10000);
+		expect(api.graphicsSetLayerSettings).toHaveBeenCalledTimes(calls);
+		vi.mocked(api.graphicsSetLayerSettings).mockReset();
+		vi.mocked(api.graphicsSetLayerSettings).mockResolvedValue({});
 	});
 
 	it('shows the values the engine holds when it opens', () => {
