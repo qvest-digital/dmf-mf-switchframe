@@ -297,6 +297,63 @@ func TestDestinationPair_StopMissedByStandby(t *testing.T) {
 	require.Empty(t, b.SendingDestinationIDs())
 }
 
+// A stop the standby missed before any poll showed it the destination
+// armed on the peer: the peer still holds it, stopped, so it did not lose
+// its state, and the standby must not start it.
+func TestDestinationPair_StopMissedBeforeStandbySawItArmed(t *testing.T) {
+	a, b := pairEngine(t, "a"), pairEngine(t, "b")
+	addBoth(t, a, b, true)
+
+	require.NoError(t, a.StopDestination(pairID)) // B misses it
+	v := viewOf(a, false)
+	v.Grace = 20 * time.Millisecond
+	b.ReconcileDestinations(v)
+	time.Sleep(30 * time.Millisecond)
+	v.SeenPolledAt = time.Now()
+	b.ReconcileDestinations(v)
+
+	requireState(t, b, "stopped", "a")
+	require.Empty(t, b.SendingDestinationIDs())
+
+	// Within the skew of B's own start the stopped peer may be one whose
+	// start has not landed yet: B neither disarms nor takes it over.
+	a, b = pairEngine(t, "a"), pairEngine(t, "b")
+	addBoth(t, a, b, true)
+	require.NoError(t, a.StopDestination(pairID))
+	v = viewOf(a, false)
+	v.Grace, v.Skew = 20*time.Millisecond, time.Hour
+	b.ReconcileDestinations(v)
+	time.Sleep(30 * time.Millisecond)
+	v.SeenPolledAt = time.Now()
+	b.ReconcileDestinations(v)
+	requireState(t, b, "standby", "a")
+}
+
+// The UI sends a switch-over to both engines, and the legs may land apart:
+// a poll the new sender sent after its own move but before the old sender
+// moved still shows the old sender sending. Yielding to it left both
+// engines on standby.
+func TestDestinationPair_SwitchOverLegsLandApart(t *testing.T) {
+	a, b := pairEngine(t, "a"), pairEngine(t, "b")
+	addBoth(t, a, b, true)
+
+	require.NoError(t, b.ReassignDestinationEngine(pairID, "b"))
+	between := viewOf(a, false) // A has not moved yet
+	between.Skew = time.Second
+	require.NoError(t, a.ReassignDestinationEngine(pairID, "b"))
+
+	b.ReconcileDestinations(between)
+	requireState(t, b, string(StateActive), "b")
+	requireState(t, a, "standby", "b")
+
+	// A peer still sending once the skew has passed is answered.
+	time.Sleep(10 * time.Millisecond)
+	later := between
+	later.SeenPolledAt, later.Skew = time.Now(), 5*time.Millisecond
+	b.ReconcileDestinations(later)
+	requireState(t, b, "standby", "a")
+}
+
 // A delete the standby missed deletes it on the standby too.
 func TestDestinationPair_DeleteMissedByStandby(t *testing.T) {
 	a, b := pairEngine(t, "a"), pairEngine(t, "b")
@@ -404,6 +461,9 @@ func TestApplyStartup_IDFollowsTargetNotPosition(t *testing.T) {
 	x := StartupDestination{DestinationConfig: callerConfig}
 	y := StartupDestination{DestinationConfig: DestinationConfig{Type: "rtmp", URL: "rtmp://192.0.2.2/live/key"}}
 	a, b := pairEngine(t, "a"), pairEngine(t, "b")
+	// Armed only, left to the failover tick: an RTMP adapter needs FFmpeg.
+	a.EnablePeerFailover()
+	b.EnablePeerFailover()
 	require.NoError(t, a.ApplyStartup(StartupConfig{Destinations: []StartupDestination{x, y}}))
 	require.NoError(t, b.ApplyStartup(StartupConfig{Destinations: []StartupDestination{y, x}}))
 
