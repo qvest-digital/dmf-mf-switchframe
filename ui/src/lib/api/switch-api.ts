@@ -1252,31 +1252,95 @@ export function getGate(source: string): Promise<GateResponse> {
 
 // --- Graphics Layer API ---
 
+/** How long a retry of a layer add another engine missed waits. */
+const LAYER_ADD_RETRY_DELAY_MS = 500;
+
+/** Sends one layer add to one engine, under id when given, within the
+ * per-engine timeout, and counts the outcome toward its circuit breaker. */
+async function addLayerOn(engine: EngineEndpoint, id?: number): Promise<Response> {
+	const startedAt = Date.now();
+	try {
+		const res = await fetchWithTimeout(`${engine.url}/api/graphics`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', ...authHeaders() },
+			body: JSON.stringify(id === undefined ? {} : { id }),
+		});
+		if (res.ok) recordSuccess(engine.url, startedAt);
+		else if (res.status >= 500) recordFailure(engine.url);
+		return res;
+	} catch (err) {
+		recordFailure(engine.url);
+		throw err;
+	}
+}
+
+/** Whether a failed layer add may have failed for a transient reason: no
+ * answer, or a server error. */
+function transientAddFailure(r: PromiseSettledResult<Response>): boolean {
+	return r.status === 'rejected' || r.value.status >= 500;
+}
+
 /**
  * Adds a graphics layer on every engine under one ID. Each engine numbers
  * its layers itself, and the numbers part once one has missed a create or
- * restarted, so the first engine reachable picks the number and the others
- * are asked for that one. A request by layer ID then reaches one layer on
- * every engine.
+ * restarted, so the first engine that takes the add picks the number and
+ * the others are asked for that one. A request by layer ID then reaches one
+ * layer on every engine. An engine that did not answer, or answered with a
+ * server error, is asked again once with the same ID; a 409 then means the
+ * first request landed.
  */
 export async function graphicsAddLayer(): Promise<{ id: number }> {
 	const engines = getEngineUrls();
 	if (!engines || engines.length <= 1) return request('/api/graphics', { method: 'POST' });
 	const reachable = engines.filter((e) => !isCircuitOpen(e.url));
-	const [first, ...rest] = reachable.length > 0 ? reachable : engines;
-	const layer = await targetEngine<{ id: number }>('/api/graphics', { method: 'POST' }, engines, first.id);
-	if (rest.length > 0) {
-		const { results, availableEngines } = await fanOutMutation('/api/graphics', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json', ...authHeaders() },
-			body: JSON.stringify({ id: layer.id }),
-		}, rest);
-		const failures = describeEngineFailures(results, availableEngines);
-		if (failures) {
-			console.warn(`[dual-api] Graphics layer ${layer.id} not added on ${failures}`);
-			partialFailureCallback?.();
-			partialFailureNotify?.(`POST /api/graphics failed on ${failures}`);
+	const candidates = reachable.length > 0 ? reachable : engines;
+
+	let picker: EngineEndpoint | undefined;
+	let layer: { id: number } | undefined;
+	let lastError: unknown;
+	for (const engine of candidates) {
+		let res: Response;
+		try {
+			res = await addLayerOn(engine);
+		} catch (err) {
+			lastError = err;
+			continue;
 		}
+		if (res.ok) {
+			picker = engine;
+			layer = await res.json();
+			break;
+		}
+		const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+		lastError = new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+		// Too many layers or a refused request is the same on every engine.
+		if (res.status < 500) throw lastError;
+	}
+	if (!picker || !layer) throw lastError ?? new Error('All engines unreachable');
+	const id = layer.id;
+
+	const others = candidates.filter((e) => e !== picker);
+	const results = await Promise.all(others.map(async (engine): Promise<PromiseSettledResult<Response>> => {
+		const send = () => addLayerOn(engine, id).then(
+			(value): PromiseSettledResult<Response> => ({ status: 'fulfilled', value }),
+			(reason): PromiseSettledResult<Response> => ({ status: 'rejected', reason }),
+		);
+		const first = await send();
+		if (!transientAddFailure(first)) return first;
+		await new Promise((r) => setTimeout(r, LAYER_ADD_RETRY_DELAY_MS));
+		const retry = await send();
+		// The first request may have added the layer without its answer
+		// getting back.
+		if (retry.status === 'fulfilled' && retry.value.status === 409) {
+			return { status: 'fulfilled', value: new Response(null, { status: 204 }) };
+		}
+		return retry;
+	}));
+	const failures = describeEngineFailures(results, others);
+	if (failures) {
+		console.warn(`[dual-api] Graphics layer ${id} not added on ${failures}`);
+		partialFailureCallback?.();
+		partialFailureNotify?.(`POST /api/graphics failed on ${failures}`);
 	}
 	return layer;
 }

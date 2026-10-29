@@ -73,6 +73,72 @@ describe('graphicsAddLayer', () => {
 	});
 });
 
+describe('graphicsAddLayer retry', () => {
+	const toB = () => calls.filter((c) => c.url === 'https://engine-b.example.com/api/graphics');
+
+	it('asks engine B again with the same ID after a server error', async () => {
+		const notify = vi.fn();
+		setPartialFailureNotify(notify);
+		let bCalls = 0;
+		answer = (url, body) => {
+			if (url.startsWith('https://engine-a')) return json(201, { id: 7 });
+			bCalls++;
+			return bCalls === 1 ? json(503, { error: 'busy' }) : json(201, { id: body?.id });
+		};
+
+		await expect(graphicsAddLayer()).resolves.toEqual({ id: 7 });
+		expect(toB().map((c) => c.body)).toEqual([{ id: 7 }, { id: 7 }]);
+		expect(notify).not.toHaveBeenCalled();
+	});
+
+	it('counts a 409 on the retry as the first request having landed', async () => {
+		const notify = vi.fn();
+		setPartialFailureNotify(notify);
+		let bCalls = 0;
+		vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+			calls.push({ url, body: JSON.parse(opts?.body as string) });
+			if (url.startsWith('https://engine-a')) return Promise.resolve(json(201, { id: 7 }));
+			bCalls++;
+			return bCalls === 1 ? Promise.reject(new TypeError('Failed to fetch')) : Promise.resolve(json(409, { error: 'taken' }));
+		}));
+
+		await expect(graphicsAddLayer()).resolves.toEqual({ id: 7 });
+		expect(toB()).toHaveLength(2);
+		expect(notify).not.toHaveBeenCalled();
+	});
+
+	it('warns when engine B fails the retry too', async () => {
+		const notify = vi.fn();
+		setPartialFailureNotify(notify);
+		answer = (url) => url.startsWith('https://engine-a') ? json(201, { id: 7 }) : json(503, { error: 'busy' });
+
+		await expect(graphicsAddLayer()).resolves.toEqual({ id: 7 });
+		expect(toB()).toHaveLength(2);
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining('Engine B (HTTP 503)'));
+	});
+
+	it('lets engine B pick the number when engine A does not answer in time', async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+			const body = JSON.parse(opts?.body as string);
+			calls.push({ url, body });
+			if (url.startsWith('https://engine-b')) return Promise.resolve(json(201, { id: 4 }));
+			if (body.id !== undefined) return Promise.resolve(json(201, { id: body.id }));
+			// Engine A accepts the connection and never answers.
+			return new Promise((_, reject) => {
+				opts?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+			});
+		}));
+
+		const added = graphicsAddLayer();
+		await vi.advanceTimersByTimeAsync(3_000);
+		await expect(added).resolves.toEqual({ id: 4 });
+		const toA = calls.filter((c) => c.url === 'https://engine-a.example.com/api/graphics');
+		expect(toA.map((c) => c.body)).toEqual([{}, { id: 4 }]);
+		vi.useRealTimers();
+	});
+});
+
 describe('podCreate', () => {
 	it('sends both engines one pod ID', async () => {
 		await podCreate(1, { template: 'standard' });
