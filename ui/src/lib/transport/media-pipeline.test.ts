@@ -1215,6 +1215,28 @@ describe('MediaPipeline audio', () => {
 			pipeline.destroy();
 		});
 
+		// A network outage closes every source's transport; the first one
+		// back shows the engine is reachable again.
+		it('dials every waiting source once one transport is up again', () => {
+			const pipeline = createMediaPipeline();
+			for (const k of ['w1', 'w2', 'w3']) { pipeline.addSource(k); pipeline.connectSource(k); }
+			const of = (k: string) => mockTransports.filter((t) => t.key === k);
+			const last = (k: string) => of(k).at(-1)!.callbacks as unknown as Callbacks;
+			// Lose them all a few times, so their backoffs grow.
+			for (let i = 0; i < 4; i++) {
+				for (const k of ['w1', 'w2', 'w3']) last(k).onClose();
+				vi.advanceTimersByTime(RECONNECT_MAX_MS);
+			}
+			for (const k of ['w1', 'w2', 'w3']) last(k).onClose();
+			const before = ['w2', 'w3'].map((k) => of(k).length);
+			vi.advanceTimersByTime(RECONNECT_MAX_MS * 1.25);
+			// w1 is back first; w2 and w3, waiting, dial at once.
+			for (const k of ['w2', 'w3']) last(k).onClose();
+			last('w1').onTrackInfo([]);
+			expect(['w2', 'w3'].map((k) => of(k).length)).toEqual(before.map((n) => n + 2));
+			pipeline.destroy();
+		});
+
 		it('stops reconnecting once destroyed', () => {
 			const pipeline = createMediaPipeline();
 			pipeline.addSource('cam1');

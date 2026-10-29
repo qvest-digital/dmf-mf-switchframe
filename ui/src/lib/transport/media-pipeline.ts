@@ -140,7 +140,7 @@ const RECONNECT_GRACE_MS = 3000;
 /** Delay before reconnecting a source whose transport closed or failed to
  * connect; it doubles with each failed attempt up to RECONNECT_MAX_MS. */
 export const RECONNECT_BASE_MS = 500;
-export const RECONNECT_MAX_MS = 8000;
+export const RECONNECT_MAX_MS = 4000;
 
 /**
  * Whether the page has had a user gesture, which a browser requires before
@@ -257,9 +257,12 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			onTrackInfo(tracks: TrackInfo[]) {
 				const source = sources.get(key);
 				if (!source || destroyed || !current()) return;
-				// The transport is up: a later loss starts its backoff afresh.
+				// The transport is up: a later loss starts its backoff afresh,
+				// and the engine is reachable again, so every source still
+				// waiting dials now rather than at the end of its backoff.
 				const r = reconnects.get(key);
 				if (r) r.attempts = 0;
+				dialWaiting();
 
 				// Notify once that MoQ is active (catalog received = WebTransport
 				// + MoQ handshake succeeded, control data will flow on state changes).
@@ -430,9 +433,9 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		reconnects.delete(key);
 	}
 
-	/** Dial at once every source waiting for a reconnect, when the browser
-	 * reports the network back. */
-	function handleOnline(): void {
+	/** Dial at once every source waiting for a reconnect: the browser
+	 * reports the network back, or a transport of this pipeline came up. */
+	function dialWaiting(): void {
 		for (const [key, r] of reconnects) {
 			if (!r.timer) continue;
 			clearTimeout(r.timer);
@@ -729,7 +732,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		stopStallDetection();
 		document.removeEventListener("visibilitychange", handleVisibilityChange);
 		window.removeEventListener("focus", handleWindowFocus);
-		window.removeEventListener("online", handleOnline);
+		window.removeEventListener("online", dialWaiting);
 		for (const key of Array.from(reconnects.keys())) cancelReconnect(key);
 		wanted.clear();
 		for (const key of Array.from(sources.keys())) {
@@ -791,7 +794,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 	document.addEventListener("visibilitychange", handleVisibilityChange);
 	window.addEventListener("focus", handleWindowFocus);
-	window.addEventListener("online", handleOnline);
+	window.addEventListener("online", dialWaiting);
 
 	/** Track which sources should be unmuted (set before audio decoder is ready). */
 	const unmutedSources = new Set<string>();
