@@ -457,17 +457,17 @@ const (
 type RTMPDirect struct {
 	config RTMPCallerConfig
 
-	mu     sync.Mutex
-	ctx    C.rtmp_flv_ctx_t
+	mu  sync.Mutex
+	ctx C.rtmp_flv_ctx_t
 	// intr is the interrupt state every blocking libavformat call polls:
 	// Close aborts through it without taking mu, which a blocked call
 	// holds. Allocated by Start, freed by Close.
 	intr      *C.rtmp_intr_t
 	ioTimeout time.Duration
-	goCtx  context.Context
-	cancel context.CancelFunc
-	stopCh chan struct{}
-	doneCh chan struct{}
+	goCtx     context.Context
+	cancel    context.CancelFunc
+	stopCh    chan struct{}
+	doneCh    chan struct{}
 
 	// reconnectDone is closed by reconnectLoop on exit so Close can join
 	// the goroutine; nil when no loop is running. Guarded by mu.
