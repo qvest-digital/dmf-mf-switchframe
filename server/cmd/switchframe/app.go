@@ -420,11 +420,15 @@ func (a *App) initPrismServer() error {
 			apiSubMux := http.NewServeMux()
 			a.api.RegisterOnMux(apiSubMux)
 
-			// Chain (outermost first): CORS -> logger -> metrics -> auth -> operator -> maxbytes -> handler
+			// Chain (outermost first): CORS -> logger -> metrics -> download ticket -> auth -> operator -> maxbytes -> handler
 			var apiHandler http.Handler = apiSubMux
 			apiHandler = control.MaxBytesMiddleware(apiHandler)
+			unauthenticated := apiHandler
 			apiHandler = a.operatorMW(apiHandler)
 			apiHandler = a.authMW(apiHandler)
+			// A recording download is a browser navigation, which carries no
+			// bearer token; a ticket issued over the API stands in for it.
+			apiHandler = a.api.DownloadTicketMiddleware(apiHandler, unauthenticated)
 			apiHandler = control.MetricsMiddleware(apiHandler)
 			apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
 			apiHandler = control.CORSMiddleware(a.cfg.AllowedOrigins)(apiHandler)

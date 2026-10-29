@@ -74,6 +74,7 @@ type OutputManagerAPI interface {
 	StartRecording(config output.RecorderConfig) error
 	StopRecording() error
 	RecordingStatus() output.RecordingStatus
+	FinalizingRecordings() []string
 	StartSRTOutput(config output.SRTConfig) error
 	StopSRTOutput() error
 	SRTOutputStatus() output.SRTStatus
@@ -557,6 +558,7 @@ type API struct {
 	playoutSamples     []playout.SampleClip
 	recordingDir       atomic.Pointer[string]
 	recArchiveDir      string // finished recordings, listed beside recordingDir
+	downloadTickets    downloadTickets
 	operatorStore      *operator.Store
 	sessionMgr         *operator.SessionManager
 	scte35             SCTE35API

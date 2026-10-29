@@ -32,6 +32,7 @@ func (a *API) registerClipRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/clips/players", a.handleClipPlayersList)
 	mux.HandleFunc("GET /api/clips/recordings", a.handleClipRecordings)
 	mux.HandleFunc("GET /api/clips/recordings/download", a.handleRecordingDownload)
+	mux.HandleFunc("POST /api/clips/recordings/download-url", a.handleRecordingDownloadURL)
 	mux.HandleFunc("POST /api/clips/upload", a.handleClipUpload)
 	mux.HandleFunc("POST /api/clips/from-recording", a.handleClipFromRecording)
 	mux.HandleFunc("POST /api/clips/rescan", a.handleClipRescan)
@@ -457,12 +458,27 @@ func (a *API) handleClipPin(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(c)
 }
 
-// RecordingFileInfo describes a recording file available for import.
+// Recording file states, as GET /api/clips/recordings reports them.
+const (
+	RecordingStateRecording  = "recording"  // the file the running recording writes
+	RecordingStateFinalizing = "finalizing" // closed, being copied into the archive
+	RecordingStateReady      = "ready"      // closed and complete
+	RecordingStateFailed     = "failed"     // nothing usable in it
+)
+
+// errEmptyRecording explains a recording file with no bytes in it: the
+// recorder starts writing at the first program keyframe, so a program
+// source that delivered no video leaves the file empty.
+var errEmptyRecording = errors.New("recording is empty: no program video reached the recorder")
+
+// RecordingFileInfo describes a recording file and how far along it is.
 type RecordingFileInfo struct {
 	Filename string    `json:"filename"`
 	Path     string    `json:"path"`
 	ByteSize int64     `json:"byteSize"`
 	ModTime  time.Time `json:"modTime"`
+	State    string    `json:"state"`
+	Error    string    `json:"error,omitempty"`
 }
 
 // recordingDirs returns the directories recordings are listed and imported
@@ -502,22 +518,25 @@ func (a *API) inRecordingDirs(path string) bool {
 	return false
 }
 
-// handleClipRecordings lists available recording files for clip import.
-// Returns .ts files in the recording directory and the recording archive,
-// excluding the currently active recording file (if any).
+// handleClipRecordings lists the recording files in the recording directory
+// and the recording archive, each with its state: the file the running
+// recording writes, files still being copied into the archive, finished
+// ones, and empty ones nothing can be made of.
 func (a *API) handleClipRecordings(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// Determine the active recording filename to exclude.
 	var activeFilename string
+	finalizing := map[string]bool{}
 	if a.outputMgr != nil {
-		status := a.outputMgr.RecordingStatus()
-		if status.Active {
+		if status := a.outputMgr.RecordingStatus(); status.Active {
 			activeFilename = status.Filename
+		}
+		for _, name := range a.outputMgr.FinalizingRecordings() {
+			finalizing[name] = true
 		}
 	}
 
-	var result []RecordingFileInfo
+	result := []RecordingFileInfo{}
 	listed := map[string]bool{}
 	archive := filepath.Clean(a.recArchiveDir)
 	for _, recDir := range a.recordingDirs() {
@@ -533,13 +552,9 @@ func (a *API) handleClipRecordings(w http.ResponseWriter, _ *http.Request) {
 			if !strings.HasSuffix(strings.ToLower(name), ".ts") {
 				continue
 			}
-			// The active file is only ever in the recording directory;
-			// an archived file of the same name is a finished one.
-			if name == activeFilename && recDir != archive {
-				continue
-			}
 			// A file both written and already archived, on its way out of
-			// the recording directory, is listed once.
+			// the recording directory, is listed once, from where it was
+			// written: the archive copy may still be partial.
 			if listed[name] {
 				continue
 			}
@@ -548,17 +563,26 @@ func (a *API) handleClipRecordings(w http.ResponseWriter, _ *http.Request) {
 				continue
 			}
 			listed[name] = true
-			result = append(result, RecordingFileInfo{
+			rec := RecordingFileInfo{
 				Filename: name,
 				Path:     filepath.Join(recDir, name),
 				ByteSize: info.Size(),
 				ModTime:  info.ModTime(),
-			})
+				State:    RecordingStateReady,
+			}
+			switch {
+			// The active file is only ever in the recording directory;
+			// an archived file of the same name is a finished one.
+			case name == activeFilename && recDir != archive:
+				rec.State = RecordingStateRecording
+			case finalizing[name] && recDir != archive:
+				rec.State = RecordingStateFinalizing
+			case info.Size() == 0:
+				rec.State = RecordingStateFailed
+				rec.Error = errEmptyRecording.Error()
+			}
+			result = append(result, rec)
 		}
-	}
-
-	if result == nil {
-		result = []RecordingFileInfo{}
 	}
 	_ = json.NewEncoder(w).Encode(result)
 }
@@ -629,6 +653,13 @@ func (a *API) handleClipFromRecording(w http.ResponseWriter, r *http.Request) {
 	cleanPath := filepath.Clean(req.Path)
 	if !filepath.IsAbs(cleanPath) || !a.inRecordingDirs(cleanPath) {
 		httperr.Write(w, http.StatusBadRequest, "path must be within the recording directory")
+		return
+	}
+
+	// An empty file would only fail probing with a message naming the
+	// temporary copy; say what it is instead.
+	if fi, err := os.Stat(cleanPath); err == nil && fi.Size() == 0 {
+		httperr.WriteErr(w, http.StatusBadRequest, errEmptyRecording)
 		return
 	}
 
