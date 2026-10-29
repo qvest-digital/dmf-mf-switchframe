@@ -1111,6 +1111,145 @@ func TestScheduler_PreviousDuringIdleWait_ClearsIdleWait(t *testing.T) {
 	}
 }
 
+func TestScheduler_EndLoop_EndsAfterCurrentPass(t *testing.T) {
+	s := NewScheduler()
+	loop := schedClipItem("a", 1000)
+	loop.Loop = true
+	pl := schedPlaylist(loop, schedClipItem("b", 1000))
+	if err := s.LoadPlaylist(pl); err != nil {
+		t.Fatal(err)
+	}
+	s.Start()
+	now := time.Now()
+	s.Tick(now)
+
+	// A finished pass of a looping clip does not advance on its own.
+	s.SignalItemComplete()
+	if d := s.Tick(now); d.Item == nil || d.Item.ID != "a" {
+		t.Fatalf("loop advanced without EndLoop: %+v", d)
+	}
+
+	if err := s.EndLoop(); err != nil {
+		t.Fatalf("EndLoop: %v", err)
+	}
+	if !s.LoopExitPending() {
+		t.Fatal("LoopExitPending = false after EndLoop")
+	}
+	// EndLoop alone does not cut: the pass plays out first.
+	if d := s.Tick(now); d.Item == nil || d.Item.ID != "a" {
+		t.Fatalf("EndLoop advanced before the pass ended: %+v", d)
+	}
+
+	s.SignalItemComplete()
+	if d := s.Tick(now); d.Item == nil || d.Item.ID != "b" {
+		t.Fatalf("after the pass ended: want b, got %+v", d)
+	}
+	if s.LoopExitPending() {
+		t.Fatal("LoopExitPending survived the advance")
+	}
+}
+
+func TestScheduler_EndLoop_LastItemCompletesPlaylist(t *testing.T) {
+	s := NewScheduler()
+	loop := schedClipItem("a", 1000)
+	loop.Loop = true
+	if err := s.LoadPlaylist(schedPlaylist(loop)); err != nil {
+		t.Fatal(err)
+	}
+	s.Start()
+	now := time.Now()
+	s.Tick(now)
+	if err := s.EndLoop(); err != nil {
+		t.Fatal(err)
+	}
+	s.SignalItemComplete()
+	if d := s.Tick(now); !d.Completed {
+		t.Fatalf("want the playlist completed, got %+v", d)
+	}
+}
+
+func TestScheduler_EndLoop_Refused(t *testing.T) {
+	s := NewScheduler()
+	if err := s.EndLoop(); err != ErrNotOnAir {
+		t.Fatalf("off air: want ErrNotOnAir, got %v", err)
+	}
+	if err := s.LoadPlaylist(schedPlaylist(schedClipItem("a", 1000))); err != nil {
+		t.Fatal(err)
+	}
+	s.Start()
+	s.Tick(time.Now())
+	if err := s.EndLoop(); err != ErrNotLooping {
+		t.Fatalf("clip without loop: want ErrNotLooping, got %v", err)
+	}
+}
+
+func TestScheduler_EndLoop_ClearedByNextAndStart(t *testing.T) {
+	s := NewScheduler()
+	loop := schedClipItem("a", 1000)
+	loop.Loop = true
+	loop2 := schedClipItem("b", 1000)
+	loop2.Loop = true
+	if err := s.LoadPlaylist(schedPlaylist(loop, loop2)); err != nil {
+		t.Fatal(err)
+	}
+	s.Start()
+	now := time.Now()
+	s.Tick(now)
+	if err := s.EndLoop(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if d := s.Tick(now); d.Item == nil || d.Item.ID != "b" {
+		t.Fatalf("want b, got %+v", d)
+	}
+	// The release belonged to "a": "b" keeps looping.
+	s.SignalItemComplete()
+	if d := s.Tick(now); d.Item == nil || d.Item.ID != "b" {
+		t.Fatalf("b stopped looping: %+v", d)
+	}
+
+	if err := s.EndLoop(); err != nil {
+		t.Fatal(err)
+	}
+	s.Stop()
+	s.Start()
+	if s.LoopExitPending() {
+		t.Fatal("LoopExitPending survived a restart")
+	}
+}
+
+// Snapshot sync moves the cursor with SetCursor. A release given for the
+// item the engine was on must not make the item it is synced to end after
+// one pass, or the two engines diverge.
+func TestScheduler_SetCursorClearsEndLoop(t *testing.T) {
+	s := NewScheduler()
+	a := schedClipItem("a", 1000)
+	a.Loop = true
+	b := schedClipItem("b", 1000)
+	b.Loop = true
+	if err := s.LoadPlaylist(schedPlaylist(a, b, schedClipItem("c", 1000))); err != nil {
+		t.Fatal(err)
+	}
+	s.Start()
+	now := time.Now()
+	s.Tick(now)
+	if err := s.EndLoop(); err != nil {
+		t.Fatal(err)
+	}
+
+	s.SetCursor(1, ModeAutomated, 200*time.Millisecond)
+	if s.LoopExitPending() {
+		t.Fatal("LoopExitPending survived SetCursor")
+	}
+	s.Tick(now)
+	s.SignalItemComplete()
+	if d := s.Tick(now); d.Item == nil || d.Item.ID != "b" {
+		t.Fatalf("synced looping item ended after one pass: %+v", d)
+	}
+}
+
 func TestScheduler_CueOffAir_StartsAtCuedItem(t *testing.T) {
 	s := NewScheduler()
 	pl := schedPlaylist(

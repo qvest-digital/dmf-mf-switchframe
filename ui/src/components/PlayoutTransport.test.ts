@@ -10,6 +10,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	playoutStop: vi.fn().mockResolvedValue(undefined),
 	playoutNext: vi.fn().mockResolvedValue(undefined),
 	playoutPrevious: vi.fn().mockResolvedValue(undefined),
+	playoutEndLoop: vi.fn().mockResolvedValue(undefined),
 	playoutTakeManual: vi.fn().mockResolvedValue(undefined),
 	playoutReturnToAuto: vi.fn().mockResolvedValue(undefined),
 	apiCall: vi.fn(),
@@ -361,6 +362,38 @@ describe('PlayoutTransport', () => {
 		expect(warning).toBeTruthy();
 		expect(warning!.textContent).toContain('Engine A');
 		expect(warning!.textContent).toContain('Engine B');
+	});
+});
+
+describe('PlayoutTransport end loop', () => {
+	beforeEach(() => vi.clearAllMocks());
+
+	it('offers END LOOP while a looping clip is on air and posts it', async () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', looping: true, itemIndex: 0, itemCount: 2 }) },
+		});
+		const btn = container.querySelector('.t-end-loop') as HTMLButtonElement;
+		expect(btn).toBeTruthy();
+		expect(btn.textContent?.trim()).toBe('END LOOP');
+		expect(btn.disabled).toBe(false);
+		await fireEvent.click(btn);
+		expect(api.playoutEndLoop).toHaveBeenCalledWith(1);
+	});
+
+	it('shows LOOP ENDS once released', () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', looping: true, loopExit: true, itemIndex: 0, itemCount: 2 }) },
+		});
+		const btn = container.querySelector('.t-end-loop') as HTMLButtonElement;
+		expect(btn.textContent?.trim()).toBe('LOOP ENDS');
+		expect(btn.disabled).toBe(true);
+	});
+
+	it('is absent when the item on air does not loop', () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', itemIndex: 0, itemCount: 2 }) },
+		});
+		expect(container.querySelector('.t-end-loop')).toBeNull();
 	});
 });
 

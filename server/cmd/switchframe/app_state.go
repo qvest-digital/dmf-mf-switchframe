@@ -1083,6 +1083,7 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 				SchedulerState:   schedState,
 				SchedulerMode:    s.Mode,
 				PlaylistHash:     a.playoutMgr.PlaylistHash(i + 1),
+				LoopExit:         s.LoopExit,
 			})
 		}
 	}

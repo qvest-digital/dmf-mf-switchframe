@@ -66,6 +66,7 @@ type Scheduler struct {
 	itemComplete bool // channel signaled the current clip/slate finished
 	advancePend  bool // Next() / JumpTo() / Previous() requested an advance
 	holdComplete bool // hold item got its complete signal, waiting for Next()
+	loopExit     bool // EndLoop: the looping item plays its pass out, then ends
 
 	// Transition state.
 	transStartTime  time.Time
@@ -126,6 +127,7 @@ func (s *Scheduler) Start() {
 	s.itemComplete = false
 	s.advancePend = false
 	s.holdComplete = false
+	s.loopExit = false
 	s.idleWaiting = false
 }
 
@@ -194,8 +196,9 @@ func (s *Scheduler) Tick(now time.Time) SchedulerDecision {
 		return s.playingDecision(item)
 	}
 
-	// Loop items never auto-advance, but explicit Next() overrides.
-	if item.Loop && !shouldAdvance {
+	// Loop items never auto-advance, but explicit Next() overrides. After
+	// EndLoop the item ends like any clip once its pass completes.
+	if item.Loop && !s.loopExit && !shouldAdvance {
 		s.itemComplete = false
 		return s.playingDecision(item)
 	}
@@ -305,6 +308,34 @@ func (s *Scheduler) JumpTo(itemID string) error {
 	return ErrItemNotFound
 }
 
+// EndLoop lets the looping clip on air finish its current pass and then end
+// as a clip that does not loop: the playlist moves on, or completes after
+// its last item. Next still cuts away at once.
+func (s *Scheduler) EndLoop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.started || s.stopped {
+		return ErrNotOnAir
+	}
+	if s.playlist == nil || s.cursor >= len(s.playlist.Items) {
+		return ErrNotLooping
+	}
+	item := s.playlist.Items[s.cursor]
+	if !item.Loop || item.Type != ItemClip {
+		return ErrNotLooping
+	}
+	s.loopExit = true
+	return nil
+}
+
+// LoopExitPending reports whether the item on air leaves its loop at the end
+// of the current pass.
+func (s *Scheduler) LoopExitPending() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loopExit
+}
+
 // Cue moves the cursor to the item with the given ID, so the next Start
 // puts that item on air first. The channel calls it only while off air; a
 // scheduler whose playlist ran out still counts as started.
@@ -380,6 +411,7 @@ type SchedulerSnapshot struct {
 	Mode          OnAirMode
 	Cursor        int
 	ItemStartTime time.Time // when the current item started playing
+	LoopExit      bool      // the looping item ends after this pass
 }
 
 // StatusSnapshot returns mode, cursor, and state under a single lock acquisition.
@@ -391,6 +423,7 @@ func (s *Scheduler) StatusSnapshot() SchedulerSnapshot {
 		Mode:          s.mode,
 		Cursor:        s.cursor,
 		ItemStartTime: s.itemStartTime,
+		LoopExit:      s.loopExit,
 	}
 }
 
@@ -410,6 +443,9 @@ func (s *Scheduler) SetCursor(index int, mode OnAirMode, elapsed time.Duration) 
 	s.itemComplete = false
 	s.advancePend = false
 	s.holdComplete = false
+	// A loop release belongs to the item it was given for and to the engine
+	// state the cursor is taken from; the snapshot carries it separately.
+	s.loopExit = false
 	s.idleWaiting = false
 	item := s.playlist.Items[index]
 	if item.DurationMs > 0 {
@@ -447,6 +483,7 @@ func (s *Scheduler) resetItemState() {
 	s.itemComplete = false
 	s.advancePend = false
 	s.holdComplete = false
+	s.loopExit = false
 }
 
 // resolvedDuration returns the effective duration for an item.
