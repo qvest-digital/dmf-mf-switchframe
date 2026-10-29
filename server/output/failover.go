@@ -36,6 +36,11 @@ type PeerView struct {
 	// Grace is how long an armed destination may go unsent by a reachable
 	// peer that owns it before this engine takes it over.
 	Grace time.Duration
+	// Skew is how far apart the two legs of an operator's change sent to
+	// both engines may land. A poll sent within it after this engine's
+	// change may show the peer before its own leg: it is not read as the
+	// peer keeping a destination sending, or having stopped it.
+	Skew time.Duration
 }
 
 func (v PeerView) sends(id string) bool {
@@ -47,6 +52,13 @@ func (v PeerView) sends(id string) bool {
 // d.mu.
 func (v PeerView) freshFor(d *Destination) bool {
 	return v.Known && !v.Down && v.SeenPolledAt.After(d.changedAt)
+}
+
+// settledFor reports whether the peer's lists were taken more than v.Skew
+// after this engine last changed d, so the peer's own leg of an operator's
+// change has landed too. Holds d.mu.
+func (v PeerView) settledFor(d *Destination) bool {
+	return v.Known && !v.Down && v.SeenPolledAt.After(d.changedAt.Add(v.Skew))
 }
 
 // SetPeerProbe installs a fresh read of the peer that the manager makes
@@ -125,16 +137,19 @@ func (m *Manager) PairDestinationIDs() (all, armed []string) {
 //   - a destination this engine owns but the peer sends goes to the peer: the
 //     peer took it over while this engine was away. When both send it, as
 //     after a partition, the leader keeps it.
-//   - a destination on standby here that the peer process had armed and no
-//     longer has is stopped here too, or deleted when the peer deleted it:
-//     the operator's stop or delete reached the peer only.
+//   - a destination on standby here that the peer holds stopped is stopped
+//     here too, and one the peer process held and no longer does is
+//     deleted: the operator's stop or delete reached the peer only.
 //   - an armed destination the peer owns is taken over once the peer is
-//     down, or reachable but not sending it for v.Grace, as when it lost
-//     its state in a restart.
+//     down, or reachable but neither sending nor holding it for v.Grace,
+//     as when it lost its state in a restart.
 //
 // A view taken before this engine's last change of a destination is not
 // acted on, other than a peer that is down: it shows the peer as it was
 // before the change, as when a switch-over moved the destination here.
+// Nor is one taken within v.Skew of the change read as the peer keeping
+// the destination or having stopped it, unless an earlier view showed the
+// peer arm it: the peer's leg of the change may not have landed yet.
 func (m *Manager) ReconcileDestinations(v PeerView) {
 	now := time.Now()
 	m.mu.Lock()
@@ -159,18 +174,18 @@ func (m *Manager) ReconcileDestinations(v PeerView) {
 		armedThere := fresh && slices.Contains(v.Armed, id)
 		local := d.config.Engine == m.engineLabel
 		switch {
-		case local && fresh && v.Label != "" && v.sends(id) && (!d.active || !v.LocalLeads):
+		case local && v.settledFor(d) && v.Label != "" && v.sends(id) && (!d.active || !v.LocalLeads):
 			d.setEngineLocked(v.Label, now)
 			changed = true
 			m.log.Info("destination sent by peer, standing by", "id", id, "peer", v.Label)
 		case !local && fresh && d.peerListed && !listed:
 			deleted = append(deleted, id)
 			m.log.Warn("destination deleted on peer, deleting here", "id", id, "peer", v.Label)
-		case !local && d.armed && fresh && d.peerArmed && !armedThere:
+		case !local && d.armed && listed && !armedThere && (d.peerArmed || v.settledFor(d)):
 			d.setArmedLocked(false, now)
 			changed = true
 			m.log.Warn("destination stopped on peer, disarming here", "id", id, "peer", v.Label)
-		case !local && d.armed && !d.active && m.peerAbsentLocked(d, v, now, fresh):
+		case !local && d.armed && !d.active && m.peerAbsentLocked(d, v, now, fresh, listed && !armedThere):
 			d.setEngineLocked(m.engineLabel, now)
 			changed = true
 			m.log.Warn("destination taken over from peer", "id", id, "peer", v.Label, "peerDown", v.Down)
@@ -215,10 +230,15 @@ func (m *Manager) peerRestartedLocked(v PeerView) bool {
 
 // peerAbsentLocked reports whether the peer, which owns the armed d, fails
 // to send it: down, or up without sending it for v.Grace by polls taken
-// after this engine last changed d.
-func (m *Manager) peerAbsentLocked(d *Destination, v PeerView, now time.Time, fresh bool) bool {
+// after this engine last changed d. A peer that holds d stopped did not
+// lose it: an operator stopped it there.
+func (m *Manager) peerAbsentLocked(d *Destination, v PeerView, now time.Time, fresh, stoppedThere bool) bool {
 	if v.Down {
 		return true
+	}
+	if stoppedThere {
+		d.unsentSince = time.Time{}
+		return false
 	}
 	if !fresh || v.sends(d.id) {
 		return false

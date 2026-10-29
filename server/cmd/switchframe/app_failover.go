@@ -8,6 +8,11 @@ import (
 	"github.com/zsiec/switchframe/server/peer"
 )
 
+// pairChangeSkew is how far apart the UI's two legs of a change sent to both
+// engines may land: it retries a failed leg 500 ms after the first attempt,
+// which gives up after 3 s.
+const pairChangeSkew = 4 * time.Second
+
 // peerProbeTimeout bounds the fresh read of the peer an engine makes before
 // it starts a destination on its own.
 const peerProbeTimeout = time.Second
@@ -27,6 +32,7 @@ func peerOutputView(p *peer.HealthPoller) output.PeerView {
 		Uptime:       time.Duration(st.UptimeMs) * time.Millisecond,
 		LocalLeads:   p.Role() == peer.RoleLeader,
 		Grace:        p.DownAfter(),
+		Skew:         pairChangeSkew,
 	}
 }
 
