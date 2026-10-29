@@ -3,6 +3,9 @@ package mxl
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -536,10 +539,10 @@ func TestMXLWriter_TripleBufferOverrunCorrupts(t *testing.T) {
 	const (
 		width    = 48
 		height   = 16
-		tickFPS  = 50                     // 20 ms tick period
-		grainDur = 20 * time.Millisecond  // WriteGrain held for a full tick
-		burstDur = 5 * time.Millisecond   // producer writes every 5 ms
-		cycles   = 40                     // ~200 ms total
+		tickFPS  = 50                    // 20 ms tick period
+		grainDur = 20 * time.Millisecond // WriteGrain held for a full tick
+		burstDur = 5 * time.Millisecond  // producer writes every 5 ms
+		cycles   = 40                    // ~200 ms total
 	)
 	mock := &corruptionDetectingWriter{sleep: grainDur, snapshotN: 128}
 	w := NewWriter(WriterConfig{Width: width, Height: height})
@@ -688,5 +691,40 @@ func TestWriter_StalledProducerRepeatsOnSchedule(t *testing.T) {
 	}
 	if last := grains[len(grains)-1].index; last+2 < end {
 		t.Fatalf("last grain %d trails the clock at %d", last, end)
+	}
+}
+
+type failingDiscreteWriter struct{ calls atomic.Int64 }
+
+// WriteGrain takes the first grain and refuses every one after it.
+func (f *failingDiscreteWriter) WriteGrain(uint64, []byte) error {
+	if f.calls.Add(1) == 1 {
+		return nil
+	}
+	return errors.New("write refused")
+}
+func (f *failingDiscreteWriter) Close() error { return nil }
+
+// A writer whose every grain write fails is retried once per grain period,
+// not in a loop: the frame stays unwritten, so the goroutine would
+// otherwise find it new on every pass and retry at once.
+func TestWriter_FailingWriteRetriesOncePerGrain(t *testing.T) {
+	rate := Rational{50, 1}
+	fw := &failingDiscreteWriter{}
+	w := NewWriter(WriterConfig{Width: 12, Height: 2, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	w.SetVideoWriter(fw, rate)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+	w.WriteVideo(frameYUV(16), 12, 2, 0)
+	time.Sleep(50 * time.Millisecond)
+	w.WriteVideo(frameYUV(17), 12, 2, 0) // new, and refused from here on
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	_ = w.Close()
+
+	// 350 ms is 17 grain periods at 50/1.
+	if n := fw.calls.Load(); n > 25 {
+		t.Fatalf("%d write attempts in 350ms at 50/1", n)
 	}
 }

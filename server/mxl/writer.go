@@ -23,11 +23,11 @@ type WriterConfig struct {
 	Logger *slog.Logger
 }
 
-// v210Frame holds a converted V210 frame for the steady-rate output ticker.
+// v210Frame holds a converted V210 frame for the video goroutine.
 // slot is the index into Writer.v210Bufs that data points into; -1 indicates
 // a standalone allocation that is not part of the ring and therefore needs
 // no in-flight coordination (no current producer path emits these — both the
-// 8-bit and 10-bit paths use ring slots — but the ticker still honors it).
+// 8-bit and 10-bit paths use ring slots — but the video goroutine still honors it).
 type v210Frame struct {
 	data []byte
 	slot int
@@ -64,7 +64,7 @@ type Writer struct {
 	config WriterConfig
 	log    *slog.Logger
 
-	// videoRef is lock-free: accessed atomically from the ticker hot path.
+	// videoRef is lock-free: accessed atomically from the video goroutine hot path.
 	videoRef atomic.Pointer[videoWriterRef]
 
 	// dataRef is stored atomically (SetDataWriter can race Close), but
@@ -104,7 +104,7 @@ type Writer struct {
 	deinterleaveBuf [][]float32
 
 	// Ring-buffered V210 output to avoid per-frame allocation.
-	// WriteVideo advances v210BufIdx around the ring; the ticker claims
+	// WriteVideo advances v210BufIdx around the ring; the video goroutine claims
 	// v210InFlight = (slot it is about to consume) and then re-confirms that
 	// slot still matches the latest frame before its cgo WriteGrain copy
 	// (claim-then-confirm — see videoTickLoop), clearing it back to -1 after.
@@ -113,10 +113,10 @@ type Writer struct {
 	// equal to one cgo WriteGrain; the confirm step removes any dependence on
 	// the claim landing within a bounded Load→Store gap. The producer's burst
 	// rate must still stay well under four conversions per WriteGrain so the
-	// ticker's confirm loop converges (it does at any realistic frame rate).
+	// video goroutine's confirm loop converges (it does at any realistic frame rate).
 	v210Bufs      [4][]byte
 	v210BufIdx    int
-	v210InFlight  atomic.Int64 // ring slot currently held by the ticker, or -1
+	v210InFlight  atomic.Int64 // ring slot currently held by the video goroutine, or -1
 	v210Drops     atomic.Int64 // WriteVideo calls dropped because the ring was in-flight
 	v210BufWidth  int
 	v210BufHeight int
@@ -142,7 +142,7 @@ func NewWriter(config WriterConfig) *Writer {
 
 // VideoDrops returns the cumulative count of WriteVideo calls dropped because
 // the ring slot the producer would have overwritten was still being consumed
-// by the ticker. Non-zero under sustained over-production (transition storm,
+// by the video goroutine. Non-zero under sustained over-production (transition storm,
 // MXL shared-memory backpressure); steady-state should be 0.
 func (w *Writer) VideoDrops() int64 {
 	return w.v210Drops.Load()
@@ -208,8 +208,8 @@ func (w *Writer) WriteDataGrain(data []byte) error {
 }
 
 // WriteVideo converts a YUV420p frame to V210 and stores it for the
-// steady-rate output ticker. Does NOT write to MXL directly — the
-// ticker goroutine handles that at a fixed frame rate.
+// the video goroutine. Does NOT write to MXL directly — the
+// video goroutine handles that at a fixed frame rate.
 //
 // Called from a single goroutine (video processing loop).
 func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
@@ -227,7 +227,7 @@ func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
 	}
 
 	// Convert YUV420p → V210 using a 4-slot ring coordinated with the
-	// ticker via v210InFlight. See the field doc on v210Bufs.
+	// video goroutine via v210InFlight. See the field doc on v210Bufs.
 	buf, nextIdx, ok := w.acquireV210Slot(width, height)
 	if !ok {
 		return
@@ -255,7 +255,7 @@ func (w *Writer) publishV210(buf []byte, slot int) {
 
 // acquireV210Slot returns the next V210 ring slot for the producer to fill,
 // (re)allocating the ring when the resolution changes. It returns ok=false
-// (after bumping v210Drops) when the slot is currently claimed by the ticker
+// (after bumping v210Drops) when the slot is currently claimed by the video goroutine
 // — the caller must drop the frame rather than overwrite a buffer that is
 // mid-cgo-WriteGrain. Called only from the single video producer goroutine
 // (WriteVideo / WriteVideo10bit — both produce V210 of the same size,
@@ -269,13 +269,13 @@ func (w *Writer) acquireV210Slot(width, height int) ([]byte, int, bool) {
 		w.v210BufIdx = 0
 		w.v210BufWidth = width
 		w.v210BufHeight = height
-		// Safe to drop the claim: any ticker that captured an old-resolution
+		// Safe to drop the claim: any video goroutine that captured an old-resolution
 		// frame still holds a GC-retained pointer to the old backing array,
 		// which is distinct memory from the freshly-allocated ring above.
 		w.v210InFlight.Store(-1)
 	}
 
-	// Pick the slot after the last-published one. If the ticker is mid-
+	// Pick the slot after the last-published one. If the video goroutine is mid-
 	// WriteGrain on that slot, drop the frame rather than overwriting it.
 	// With 4 slots, a single-in-flight consumer always leaves at least one
 	// safe slot; the drop path only fires under extreme producer bursts.
@@ -288,7 +288,7 @@ func (w *Writer) acquireV210Slot(width, height int) ([]byte, int, bool) {
 }
 
 // WriteVideo10bit converts a YUV422P10LE (10-bit 4:2:2 planar) frame to V210
-// LOSSLESSLY and stores it for the steady-rate output ticker. Unlike WriteVideo
+// LOSSLESSLY and stores it for the video goroutine. Unlike WriteVideo
 // (which converts 8-bit 4:2:0 with bit-depth upscale and chroma interpolation),
 // this path preserves the full 10-bit precision and 4:2:2 chroma resolution.
 //
@@ -308,7 +308,7 @@ func (w *Writer) WriteVideo10bit(yuv []byte, width, height int, pts int64) {
 	// Convert YUV422P10LE → V210 losslessly into a ring slot. V210 output is
 	// V210LineStride(width)*height bytes regardless of source bit depth, so
 	// the 10-bit path shares the 8-bit path's 4-slot ring (and its in-flight
-	// coordination with the ticker) instead of allocating ~5.5 MB per frame.
+	// coordination with the video goroutine) instead of allocating ~5.5 MB per frame.
 	buf, nextIdx, ok := w.acquireV210Slot(width, height)
 	if !ok {
 		return
@@ -366,6 +366,7 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 			now = CurrentIndex(ref.rate)
 		}
 
+		writeFailed := false
 		if frame != nil {
 			if index, ok := videoIndexFor(now, last, haveLast, frame.seq != writtenSeq, repeats >= stallRepeats); ok {
 				// Claim-then-confirm: publish the ring slot we intend to read
@@ -390,6 +391,7 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 					w.v210InFlight.Store(-1)
 				}
 				if err != nil {
+					writeFailed = true
 					w.log.Error("mxl writer: failed to write video grain",
 						"error", err, "index", index)
 				} else {
@@ -417,6 +419,13 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 				wait = time.Duration(NsUntilIndex(last+1, ref.rate))
 			} else {
 				wait = time.Duration(NsUntilIndex(last+2, ref.rate)) + grace
+			}
+		}
+		// A write that failed is retried at the next grain, not at once: a
+		// writer that keeps failing would otherwise spin on the same frame.
+		if writeFailed && NsUntilIndex != nil {
+			if next := time.Duration(NsUntilIndex(now+1, ref.rate)); wait < next {
+				wait = next
 			}
 		}
 		if !timer.Stop() {
@@ -566,8 +575,8 @@ func (w *Writer) Close() error {
 	return firstErr
 }
 
-// Start starts background goroutines for steady-rate output.
-// The video ticker writes the latest frame at the configured grain rate.
+// Start starts the background video goroutine.
+// It writes each frame as it arrives and fills grains nothing new arrived for.
 // Call this after SetVideoWriter/SetAudioWriter.
 func (w *Writer) Start(ctx context.Context) {
 	if ref := w.videoRef.Load(); ref != nil && ref.writer != nil {
