@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { watchStaleBundle, type StaleBundleDeps } from './stale-bundle';
+import { tabStorage, watchStaleBundle, type StaleBundleDeps } from './stale-bundle';
+import { holdReload } from './activity';
 
 // A tab left open across engine upgrades kept an old build's request loop
 // running for hours against a refused token.
 describe('watchStaleBundle', () => {
 	let served: string;
 	let hidden: boolean;
+	let hiddenFor: number;
 	let refused: boolean;
 	let idle: number;
 	let busy: boolean;
@@ -17,9 +19,12 @@ describe('watchStaleBundle', () => {
 	let stop: () => void;
 
 	const MIN = 60_000;
+	// Time passes a minute at a step; hidden time grows while hidden and
+	// starts over when shown, as the visibilitychange tracking does.
 	const minutes = async (n: number) => {
 		for (let i = 0; i < n; i++) {
 			idle += MIN;
+			hiddenFor = hidden ? hiddenFor + MIN : 0;
 			await vi.advanceTimersByTimeAsync(MIN);
 		}
 	};
@@ -28,6 +33,7 @@ describe('watchStaleBundle', () => {
 		vi.useFakeTimers();
 		served = 'old';
 		hidden = false;
+		hiddenFor = 0;
 		refused = false;
 		idle = 0;
 		busy = false;
@@ -40,11 +46,11 @@ describe('watchStaleBundle', () => {
 			fetchVersion,
 			reload,
 			prompt,
-			isHidden: () => hidden,
 			storage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => void store.set(k, v) },
 			isTokenRefused: () => refused,
 			idleForMs: () => idle,
-			changesInFlight: () => busy,
+			hiddenForMs: () => hiddenFor,
+			reloadWouldLoseWork: () => busy,
 		};
 	});
 
@@ -96,7 +102,7 @@ describe('watchStaleBundle', () => {
 		expect(prompt).toHaveBeenCalledTimes(1);
 	});
 
-	it('never reloads while a change or an upload is in flight', async () => {
+	it('never reloads while a reload would lose work', async () => {
 		stop = watchStaleBundle(deps);
 		served = 'new';
 		hidden = true;
@@ -107,6 +113,25 @@ describe('watchStaleBundle', () => {
 		await minutes(1);
 		expect(reload).toHaveBeenCalledTimes(1);
 	});
+
+	// Hidden and untouched is not unused: an unsaved playlist, comms or an
+	// audio monitor in that tab hold the reload through the real tracker.
+	for (const reason of ['unsaved playlist', 'comms', 'audio monitor']) {
+		it(`never reloads a hidden, idle tab while held by ${reason}`, async () => {
+			delete deps.reloadWouldLoseWork;
+			const release = holdReload(reason);
+			stop = watchStaleBundle(deps);
+			served = 'new';
+			hidden = true;
+			idle = 10 * MIN;
+			await minutes(30);
+			expect(reload).not.toHaveBeenCalled();
+			expect(prompt).toHaveBeenCalledTimes(1);
+			release();
+			await minutes(1);
+			expect(reload).toHaveBeenCalledTimes(1);
+		});
+	}
 
 	it('starts the hidden time over when the tab is shown', async () => {
 		stop = watchStaleBundle(deps);
@@ -166,5 +191,21 @@ describe('watchStaleBundle', () => {
 		await minutes(10);
 		expect(fetchVersion).not.toHaveBeenCalled();
 		expect(reload).not.toHaveBeenCalled();
+	});
+
+	// Blocked site storage made reading sessionStorage throw, and the root
+	// layout render nothing.
+	it('falls back to memory where site storage is blocked', () => {
+		const original = Object.getOwnPropertyDescriptor(window, 'sessionStorage');
+		Object.defineProperty(window, 'sessionStorage', { configurable: true, get: () => { throw new DOMException('blocked', 'SecurityError'); } });
+		try {
+			const s = tabStorage();
+			expect(s.getItem('k')).toBeNull();
+			s.setItem('k', 'v');
+			expect(s.getItem('k')).toBe('v');
+		} finally {
+			if (original) Object.defineProperty(window, 'sessionStorage', original);
+			else delete (window as unknown as Record<string, unknown>).sessionStorage;
+		}
 	});
 });

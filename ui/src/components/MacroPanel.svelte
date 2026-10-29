@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { holdReload } from '$lib/util/activity';
 	import type { Macro, MacroStep, MacroAction, MacroStepStatus, MacroStepState, ControlRoomState } from '$lib/api/types';
 	import { listMacros, saveMacro, deleteMacro, runMacro, cancelMacro, dismissMacro, listStingers, listPresets } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
@@ -30,6 +31,8 @@
 	let editingSteps = $state<MacroStep[]>([]);
 	let editingName = $state('');
 	let editMode = $state(false);
+	// An open editor holds a macro not saved yet.
+	$effect(() => { if (editMode) return holdReload('unsaved macro'); });
 	let editorError = $state('');
 	let expandedStep = $state<number>(0);
 	let showPicker = $state(false);
