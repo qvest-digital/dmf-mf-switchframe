@@ -58,11 +58,13 @@ RUN curl -fsSLo /tmp/cef.tar.bz2 \
  && rm -f /opt/cef/Release/chrome-sandbox \
  && find /opt/cef/Resources/locales -type f ! -name en-US.pak -delete \
  && strip --strip-unneeded /opt/cef/Release/*.so*
-# Only what CMakeLists.txt reads, so a template or test edit does not
-# recompile the sidecar.
+# Only what CMakeLists.txt reads, so a template edit does not recompile the
+# sidecar. The test sources are among it: the test targets are configured
+# beside the binary, though only the binary is built.
 COPY cef-sidecar/CMakeLists.txt /src/cef-sidecar/
 COPY cef-sidecar/src/ /src/cef-sidecar/src/
 COPY cef-sidecar/resources/ /src/cef-sidecar/resources/
+COPY cef-sidecar/tests/ /src/cef-sidecar/tests/
 # The install rpath ($ORIGIN) instead of the build tree's, so the binary
 # finds libcef.so beside it once copied out.
 RUN cmake -S /src/cef-sidecar -B /build -DCEF_ROOT=/opt/cef \
