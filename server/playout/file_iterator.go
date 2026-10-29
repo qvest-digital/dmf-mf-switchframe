@@ -178,39 +178,42 @@ func NewFileFrameIteratorWithDecoder(path string, factory DecoderFactory) (*File
 		})
 	}
 
-	// Step 5: Estimate FPS from encoded frame PTS values.
-	fps := estimateFPSFromEncodedFrames(encoded)
+	return newFileFrameIterator(encoded, audio, decoder, factory), nil
+}
 
-	// Step 6: Estimate total frames. We know the encoded count, but some may
-	// be consumed by decoder buffering without output, and drain may add extras.
-	// Use encoded count as the best estimate (it matches old behavior closely
-	// since the old code decoded all and counted results).
-	// We'll update this after iteration in a real scenario, but for the API
-	// contract we set it to -1 (unknown) since exact count depends on decoder.
-	// Actually, to maintain backward compat with tests, we decode all frames
-	// upfront just to count... NO. Let's count encoded frames and accept minor
-	// differences. The old code returned len(decoded) which was close to
-	// len(encoded) minus a few buffered frames plus drained frames.
-	// For correctness: set totalFrames = -1 (unknown) and track during iteration.
-	// But existing tests expect TotalFrames() == iterated count. Let's use a
-	// reasonable estimate: len(encoded) is close enough (within 1-2 frames).
-	// The integration test checks count == TotalFrames(), so we need accuracy.
-	// Solution: feed all frames through a counting pass? No, that defeats the purpose.
-	// Better: track output count and make TotalFrames() return outputCount after
-	// iteration, or return len(encoded) as best estimate.
-	// Looking at the test: it checks count == totalFrames AFTER iterating.
-	// If we return -1, that test breaks. Let's return len(encoded) as estimate.
-	// The real decoder may produce slightly different counts, but the test
-	// generates 1s@30fps with zerolatency tune (no B-frames), so encoded==decoded.
+// newFileFrameIterator builds an iterator over demuxed frames. A stream cut
+// mid-GOP starts with frames that reference pictures it does not carry. A
+// fresh decoder drops them, but one that keeps running into the next pass
+// of a loop holds the previous pass's references and puts out wrong
+// pictures for them, so every pass would be longer than the first. They
+// are dropped here, with the audio before the first keyframe, so every
+// pass starts at the keyframe and frame indices count shown pictures.
+func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decoder VideoDecoder, factory DecoderFactory) *FileFrameIterator {
+	for i, ef := range encoded {
+		if !ef.isKeyframe {
+			continue
+		}
+		if i > 0 {
+			encoded = encoded[i:]
+			start := sort.Search(len(audio), func(j int) bool {
+				return audio[j].pts >= ef.pts
+			})
+			audio = audio[start:]
+		}
+		break
+	}
 
+	// totalFrames is the encoded count: a decoder that drops nothing puts
+	// out one picture per frame, held-back ones in later Next calls and the
+	// drain.
 	return &FileFrameIterator{
 		encodedFrames:  encoded,
 		audioFrames:    audio,
 		decoder:        decoder,
 		decoderFactory: factory,
-		fps:            fps,
+		fps:            estimateFPSFromEncodedFrames(encoded),
 		totalFrames:    len(encoded),
-	}, nil
+	}
 }
 
 // Next returns the next decoded frame, or (nil, nil) at end of stream.
