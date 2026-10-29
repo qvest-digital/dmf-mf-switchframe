@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -1852,9 +1853,10 @@ func TestFileFrameIterator_KeepsAudioWhenNoFrameIsDropped(t *testing.T) {
 }
 
 // A 33-bit MPEG-TS PTS wraps every 26.5 hours. After a wrap, pictures
-// compare below the keyframe and the audio list is no longer sorted, so a
-// drop by PTS would take pictures that are not leading and cut the audio
-// at the wrap. Neither is dropped by PTS when the stream wraps.
+// compare below the keyframe and so does the audio, which the demuxer
+// sorts to the front, so a drop by PTS would take pictures that are not
+// leading and the audio after the wrap. Neither is dropped by PTS when the
+// stream wraps.
 func TestFileFrameIterator_PTSWrapDropsNothingByPTS(t *testing.T) {
 	const n, wrap = 100, int64(1) << 33
 	for _, tc := range []struct {
@@ -1883,6 +1885,9 @@ func TestFileFrameIterator_PTSWrapDropsNothingByPTS(t *testing.T) {
 			for i := range audio {
 				audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: (first + int64(i)*1920) % wrap, sampleRate: 48000}
 			}
+			// DemuxFile sorts the audio by PTS, so the wrap shows only in
+			// the video.
+			sort.Slice(audio, func(a, b int) bool { return audio[a].pts < audio[b].pts })
 			iter := newFileFrameIterator(encoded, audio, &delayDecoder{depth: 2},
 				func() (VideoDecoder, error) { return &delayDecoder{depth: 2}, nil })
 			defer iter.Close()
@@ -1904,6 +1909,46 @@ func TestFileFrameIterator_PTSWrapDropsNothingByPTS(t *testing.T) {
 			}
 			if sounds != len(audio) {
 				t.Fatalf("%d audio frames put out, want all %d", sounds, len(audio))
+			}
+		})
+	}
+}
+
+// A frame demuxed without a PTS carries 0. Its neighbours' PTS can be
+// anything, and one above 2^32 stepping down to that 0 is no wrap: read as
+// one, it would keep the leading picture and the audio before the
+// keyframe.
+func TestFileFrameIterator_PTSZeroIsNotAWrap(t *testing.T) {
+	for _, base := range []int64{126000, 5_000_000_000} {
+		t.Run(fmt.Sprint(base), func(t *testing.T) {
+			// Two frames before the keyframe, then a frame without a PTS.
+			pts := []int64{base, base + 1800, base + 3600, 0, base + 7200}
+			encoded := make([]encodedFrame, len(pts))
+			for i, p := range pts {
+				nal := byte(0x41)
+				if i == 2 {
+					nal = 0x65
+				}
+				encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: p, isKeyframe: i == 2}
+			}
+			audio := make([]audioFrameInfo, 10)
+			for i := range audio {
+				audio[i] = audioFrameInfo{data: []byte{byte(i)}, pts: base + int64(i)*1920, sampleRate: 48000}
+			}
+			iter := newFileFrameIterator(encoded, audio, &delayDecoder{depth: 0},
+				func() (VideoDecoder, error) { return &delayDecoder{depth: 0}, nil })
+			defer iter.Close()
+
+			if got := iter.TotalFrames(); got != 3 {
+				t.Fatalf("TotalFrames %d, want 3", got)
+			}
+			f, err := iter.Next()
+			if err != nil || f == nil {
+				t.Fatalf("Next = %v, %v", f, err)
+			}
+			// The keyframe is at base+3600; audio frame 1 spans it.
+			if len(f.AudioFrames) == 0 || f.AudioFrames[0].PTS != base+1920 {
+				t.Fatalf("first audio frames %v, want the one at %d first", f.AudioFrames, base+1920)
 			}
 		})
 	}

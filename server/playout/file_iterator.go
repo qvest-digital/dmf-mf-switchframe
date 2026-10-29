@@ -203,11 +203,11 @@ func NewFileFrameIteratorWithDecoder(path string, factory DecoderFactory) (*File
 // before the first picture would play the rest early by that delay.
 //
 // A 33-bit MPEG-TS PTS that wraps makes the pictures after the wrap
-// compare below the keyframe and the audio list unsorted, so neither
-// leading pictures nor audio are dropped by PTS then.
+// compare below the keyframe, and the audio after it too, which the
+// demuxer sorts to the front, so neither leading pictures nor audio are
+// dropped by PTS then.
 func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decoder VideoDecoder, factory DecoderFactory) *FileFrameIterator {
-	wrapped := ptsWraps(encoded, func(ef encodedFrame) int64 { return ef.pts }) ||
-		ptsWraps(audio, func(af audioFrameInfo) int64 { return af.pts })
+	wrapped := ptsWraps(encoded)
 	for i, ef := range encoded {
 		if !ef.isKeyframe {
 			continue
@@ -560,14 +560,21 @@ func audioFrameTicks(af audioFrameInfo) int64 {
 	return 1024 * 90000 / int64(af.sampleRate)
 }
 
-// ptsWraps reports whether a PTS steps back by more than 2^32 ticks from
-// one element to the next, which reordering never does and a wrap of the
-// 33-bit MPEG-TS PTS always does.
-func ptsWraps[T any](s []T, pts func(T) int64) bool {
-	for i := 1; i < len(s); i++ {
-		if pts(s[i-1])-pts(s[i]) > 1<<32 {
+// ptsWraps reports whether the video PTS steps back by more than 2^32
+// ticks, which reordering never does and a wrap of the 33-bit MPEG-TS PTS
+// always does. A frame without a PTS carries 0 and is skipped, or a PTS
+// above 2^32 before it would read as a wrap. The audio is not checked:
+// the demuxer sorts it by PTS, so a wrap never shows in it as a step back.
+func ptsWraps(encoded []encodedFrame) bool {
+	var last int64
+	for _, ef := range encoded {
+		if ef.pts == 0 {
+			continue
+		}
+		if last-ef.pts > 1<<32 {
 			return true
 		}
+		last = ef.pts
 	}
 	return false
 }
