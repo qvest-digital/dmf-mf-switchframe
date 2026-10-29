@@ -10,6 +10,20 @@ BrowserClient::BrowserClient(CefRefPtr<OffscreenRenderHandler> handler,
                              CefRefPtr<CefRequestHandler> request_handler)
     : handler_(handler), request_handler_(request_handler) {}
 
+bool BrowserClient::OnBeforePopup(
+    CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> /*frame*/,
+    int /*popup_id*/, const CefString& target_url,
+    const CefString& /*target_frame_name*/,
+    WindowOpenDisposition /*target_disposition*/, bool /*user_gesture*/,
+    const CefPopupFeatures& /*popupFeatures*/, CefWindowInfo& /*windowInfo*/,
+    CefRefPtr<CefClient>& /*client*/, CefBrowserSettings& /*settings*/,
+    CefRefPtr<CefDictionaryValue>& /*extra_info*/,
+    bool* /*no_javascript_access*/) {
+    std::cerr << "[policy] refused popup: id=" << browser->GetIdentifier()
+              << " url=" << target_url.ToString() << std::endl;
+    return true;
+}
+
 void BrowserClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
     std::cerr << "[browser] OnAfterCreated: id=" << browser->GetIdentifier() << std::endl;
 }
