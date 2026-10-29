@@ -62,6 +62,11 @@ type ChannelConfig struct {
 	// will accept. Paths must resolve inside one of these prefixes; nil/empty
 	// rejects every local-scheme URI (deny by default).
 	AllowedLocalPrefixes []string
+
+	// ticks counts the ticks the run loop makes up and skips. The manager
+	// owns it, so the count survives the channel being recreated. Nil
+	// counts nothing.
+	ticks *tickStats
 }
 
 // Channel is a tick-driven frame router that registers as a switcher source
@@ -933,7 +938,7 @@ func (c *Channel) configDimensions() (int, int) {
 func (c *Channel) run(ctx context.Context) {
 	defer close(c.done)
 
-	clock := tickClock{period: c.frameDuration, next: time.Now().Add(c.frameDuration)}
+	clock := tickClock{period: c.frameDuration, next: time.Now().Add(c.frameDuration), stats: c.config.ticks}
 	ticker := time.NewTicker(c.frameDuration)
 	defer ticker.Stop()
 
@@ -966,7 +971,16 @@ const maxTickBacklog = time.Second
 // them up instead, one extra tick per period so they do not go out as a burst.
 type tickClock struct {
 	period time.Duration
-	next   time.Time // when the next tick is due
+	next   time.Time  // when the next tick is due
+	stats  *tickStats // may be nil
+}
+
+// tickStats counts the frame periods the run loop fell behind on: ticks it
+// made up late, which keep the frame count whole but not the frame timing,
+// and ticks it dropped to skip ahead, which are frames the output lost.
+type tickStats struct {
+	madeUp  atomic.Uint64
+	skipped atomic.Uint64
 }
 
 // due returns how many ticks to run at now: none before the next tick is
@@ -978,12 +992,18 @@ func (k *tickClock) due(now time.Time) int {
 	behind := now.Sub(k.next)
 	if behind >= maxTickBacklog {
 		slog.Warn("playout: tick loop fell behind, skipping ahead", "behind", behind)
+		if k.stats != nil {
+			k.stats.skipped.Add(uint64(behind / k.period))
+		}
 		k.next = now.Add(k.period)
 		return 1
 	}
 	n := 1
 	if behind >= k.period {
 		n = 2
+		if k.stats != nil {
+			k.stats.madeUp.Add(1)
+		}
 	}
 	k.next = k.next.Add(time.Duration(n) * k.period)
 	return n

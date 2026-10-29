@@ -3592,7 +3592,8 @@ func TestChannel_LoopClip_WrapsWithoutGapOrReopen(t *testing.T) {
 func TestTickClock_MakesUpBlockedTicks(t *testing.T) {
 	const p = 20 * time.Millisecond
 	start := time.Now()
-	k := tickClock{period: p, next: start.Add(p)}
+	var stats tickStats
+	k := tickClock{period: p, next: start.Add(p), stats: &stats}
 	at := func(periods float64) time.Time { return start.Add(time.Duration(periods * float64(p))) }
 
 	ticks := k.due(at(1)) + k.due(at(2))
@@ -3612,14 +3613,21 @@ func TestTickClock_MakesUpBlockedTicks(t *testing.T) {
 	}
 	require.Equal(t, 20, ticks, "every frame period from 1 to 20 gets its tick")
 	require.Zero(t, k.due(at(20.5)), "caught up")
+	// Periods 3 to 20 got their 18 ticks from 12 fires.
+	require.Equal(t, uint64(6), stats.madeUp.Load())
+	require.Zero(t, stats.skipped.Load())
 }
 
 // A loop that fell further behind than it should make up skips ahead.
 func TestTickClock_SkipsAheadPastMaxBacklog(t *testing.T) {
 	const p = 20 * time.Millisecond
 	start := time.Now()
-	k := tickClock{period: p, next: start.Add(p)}
+	var stats tickStats
+	k := tickClock{period: p, next: start.Add(p), stats: &stats}
 	now := start.Add(p + maxTickBacklog)
 	require.Equal(t, 1, k.due(now))
 	require.Equal(t, now.Add(p), k.next)
+	// 51 ticks were due, from p to p+1s; one ran.
+	require.Equal(t, uint64(50), stats.skipped.Load())
+	require.Zero(t, stats.madeUp.Load())
 }

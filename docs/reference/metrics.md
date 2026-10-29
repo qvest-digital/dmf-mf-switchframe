@@ -238,6 +238,8 @@ Read by [`playout.MetricsCollector`](../../server/playout/metrics_collector.go),
 | `switchframe_playout_pods_completed` | gauge | `channel` | Ad pods on the channel's board that completed: rejoined or dumped out. Deleting a pod from the board lowers it. |
 | `switchframe_playout_channel_stalled` | gauge | `channel` | 1 while the watchdog finds a running channel delivering no frames. |
 | `switchframe_playout_last_frame_age_seconds` | gauge | `channel` | Time since a watched channel delivered its last frame. |
+| `switchframe_playout_ticks_made_up_total` | counter | `channel` | Extra ticks the channel's run loop ran, at most one per frame period, to make up frame periods it fell behind on. |
+| `switchframe_playout_ticks_skipped_total` | counter | `channel` | Ticks the channel's run loop dropped when it fell more than a second behind: frames the output lost. |
 | `switchframe_playout_cache_used_bytes` | gauge | - | Bytes the playout asset cache holds. |
 | `switchframe_playout_cache_max_bytes` | gauge | - | Bytes the playout asset cache may hold. |
 | `switchframe_playout_cache_items` | gauge | `state` | Assets in the playout cache, by state: ready, pending (queued for a fetch), fetching (or transcoding) and error. |

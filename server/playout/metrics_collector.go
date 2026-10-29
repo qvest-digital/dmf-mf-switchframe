@@ -27,6 +27,10 @@ var (
 		"1 while the watchdog finds a running channel delivering no frames.", []string{"channel"}, nil)
 	descSinceFrame = prometheus.NewDesc("switchframe_playout_last_frame_age_seconds",
 		"Time since a watched channel delivered its last frame.", []string{"channel"}, nil)
+	descTicksMadeUp = prometheus.NewDesc("switchframe_playout_ticks_made_up_total",
+		"Extra ticks the channel's run loop ran, at most one per frame period, to make up frame periods it fell behind on.", []string{"channel"}, nil)
+	descTicksSkipped = prometheus.NewDesc("switchframe_playout_ticks_skipped_total",
+		"Ticks the channel's run loop dropped when it fell more than a second behind: frames the output lost.", []string{"channel"}, nil)
 
 	descCacheUsed = prometheus.NewDesc("switchframe_playout_cache_used_bytes",
 		"Bytes the playout asset cache holds.", nil, nil)
@@ -54,7 +58,8 @@ func NewMetricsCollector(m *Manager, cache *Cache) *MetricsCollector {
 func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		descChannelState, descItemIndex, descItemCount, descItemRemaining, descPodsArmed,
-		descPodsCompleted, descStalled, descSinceFrame, descCacheUsed, descCacheMax, descCacheItems,
+		descPodsCompleted, descStalled, descSinceFrame, descTicksMadeUp, descTicksSkipped,
+		descCacheUsed, descCacheMax, descCacheItems,
 	} {
 		ch <- d
 	}
@@ -85,6 +90,12 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 			gauge(descPodsArmed, float64(st.Pods.PodsArmed), id)
 			gauge(descPodsCompleted, float64(st.Pods.PodsCompleted), id)
 		}
+	}
+	madeUp, skipped := c.m.tickCounts()
+	for i := range madeUp {
+		id := strconv.Itoa(i + 1)
+		ch <- prometheus.MustNewConstMetric(descTicksMadeUp, prometheus.CounterValue, float64(madeUp[i]), id)
+		ch <- prometheus.MustNewConstMetric(descTicksSkipped, prometheus.CounterValue, float64(skipped[i]), id)
 	}
 	for _, h := range c.m.HealthSummary() {
 		id := strconv.Itoa(h.ChannelID)
