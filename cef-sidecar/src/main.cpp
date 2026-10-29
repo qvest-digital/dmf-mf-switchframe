@@ -19,6 +19,8 @@
 #include "control_socket.h"
 #include "frame_socket.h"
 #include "protocol.h"
+#include "request_policy.h"
+#include "url_policy.h"
 
 int main(int argc, char* argv[]) {
 #if defined(__APPLE__)
@@ -51,6 +53,7 @@ int main(int argc, char* argv[]) {
     std::string control_socket_path;
     std::string frame_socket_path;
     std::string user_data_dir;
+    std::string templates_dir;
 
     for (int i = 1; i < argc; i++) {
         std::string arg(argv[i]);
@@ -60,13 +63,22 @@ int main(int argc, char* argv[]) {
             frame_socket_path = argv[++i];
         } else if (arg == "--user-data-dir" && i + 1 < argc) {
             user_data_dir = argv[++i];
+        } else if (arg == "--templates-dir" && i + 1 < argc) {
+            templates_dir = argv[++i];
         }
     }
 
     if (control_socket_path.empty() || frame_socket_path.empty()) {
-        std::cerr << "Usage: switchframe-cef --control-socket <path> --frame-socket <path> [--user-data-dir <path>]"
+        std::cerr << "Usage: switchframe-cef --control-socket <path> --frame-socket <path> [--user-data-dir <path>] [--templates-dir <path>]"
                   << std::endl;
         return 1;
+    }
+
+    // Without a templates directory no file URL is loaded at all.
+    const std::string templates_root = url_policy::ResolveRoot(templates_dir);
+    if (templates_root.empty()) {
+        std::cerr << "[main] no usable --templates-dir (" << templates_dir
+                  << "): file URLs are refused" << std::endl;
     }
 
     // Default user data dir to a unique temp directory if not specified.
@@ -161,7 +173,8 @@ int main(int argc, char* argv[]) {
     auto browser_pool = std::make_shared<BrowserPool>(
         4, [frame_socket](int id, int w, int h, const void* buf, size_t sz) {
             frame_socket->SendFrame(id, w, h, buf, sz);
-        });
+        },
+        new PolicyRequestHandler(templates_root));
 
     // Get adapter.js source for injection on page load.
     const std::string& adapter_js = adapter::GetAdapterJS();

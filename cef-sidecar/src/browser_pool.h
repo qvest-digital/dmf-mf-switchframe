@@ -11,6 +11,7 @@
 #include "include/cef_life_span_handler.h"
 #include "include/cef_display_handler.h"
 #include "include/cef_load_handler.h"
+#include "include/cef_request_handler.h"
 
 #include "render_handler.h"
 
@@ -27,13 +28,17 @@ public:
     using TitleChangeCallback =
         std::function<void(int browser_id, const std::string& title)>;
 
-    explicit BrowserClient(CefRefPtr<OffscreenRenderHandler> handler);
+    BrowserClient(CefRefPtr<OffscreenRenderHandler> handler,
+                  CefRefPtr<CefRequestHandler> request_handler);
 
     // CefClient overrides
     CefRefPtr<CefRenderHandler> GetRenderHandler() override { return handler_; }
     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
     CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
     CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
+    CefRefPtr<CefRequestHandler> GetRequestHandler() override {
+        return request_handler_;
+    }
 
     // CefLifeSpanHandler overrides
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
@@ -60,6 +65,7 @@ public:
 
 private:
     CefRefPtr<OffscreenRenderHandler> handler_;
+    CefRefPtr<CefRequestHandler> request_handler_;
     LoadEndCallback on_load_end_;
     LoadErrorCallback on_load_error_;
     TitleChangeCallback on_title_change_;
@@ -74,7 +80,9 @@ class BrowserPool {
 public:
     // max_browsers: maximum simultaneous browser instances (slot IDs 0..N-1).
     // on_frame: called on the CEF UI thread when a browser paints a frame.
-    BrowserPool(int max_browsers, FrameCallback on_frame);
+    // request_handler: decides what every browser may navigate to and load.
+    BrowserPool(int max_browsers, FrameCallback on_frame,
+                CefRefPtr<CefRequestHandler> request_handler);
     ~BrowserPool();
 
     // Create a browser in the given slot. Returns false if the slot is invalid,
@@ -111,5 +119,6 @@ private:
     int max_browsers_;
     std::vector<BrowserSlot> slots_;
     FrameCallback on_frame_;
+    CefRefPtr<CefRequestHandler> request_handler_;
     mutable std::mutex mutex_;
 };

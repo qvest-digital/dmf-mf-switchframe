@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -84,5 +85,31 @@ func TestCheckURL_NoTemplatesDir(t *testing.T) {
 	}
 	if err := CheckURL("https://graphics.example.com/a.html", ""); err != nil {
 		t.Errorf("https refused: %v", err)
+	}
+}
+
+// The sidecar enforces the same file URL boundary on every navigation and
+// resource load, so it has to be told the directory, and as an absolute path:
+// it does not resolve it against the engine's working directory.
+func TestSidecarArgs_TemplatesDir(t *testing.T) {
+	t.Chdir(t.TempDir())
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	args := NewManager(nil, Config{TemplatesDir: "templates"}).sidecarArgs("/run/sock")
+	want := []string{
+		"--control-socket", "/run/sock/control.sock",
+		"--frame-socket", "/run/sock/frames.sock",
+		"--user-data-dir", "/run/sock/cef-data",
+		"--templates-dir", filepath.Join(wd, "templates"),
+	}
+	if !slices.Equal(args, want) {
+		t.Errorf("args = %q, want %q", args, want)
+	}
+
+	if args := NewManager(nil, Config{}).sidecarArgs("/run/sock"); slices.Contains(args, "--templates-dir") {
+		t.Errorf("no templates directory configured, args = %q", args)
 	}
 }

@@ -98,16 +98,7 @@ func (m *Manager) Start() error {
 		Binary:                 binPath,
 		ReadyTimeout:           10 * time.Second,
 		DisableShutdownMessage: true, // Manager sends CEF-format shutdown in Close()
-		BuildArgs: func(socketDir string) []string {
-			controlPath := filepath.Join(socketDir, "control.sock")
-			framePath := filepath.Join(socketDir, "frames.sock")
-			userDataDir := filepath.Join(socketDir, "cef-data")
-			return []string{
-				"--control-socket", controlPath,
-				"--frame-socket", framePath,
-				"--user-data-dir", userDataDir,
-			}
-		},
+		BuildArgs:              m.sidecarArgs,
 		Connect: func(socketDir string) (net.Conn, error) {
 			// CEF creates listeners, we connect to them.
 			controlPath := filepath.Join(socketDir, "control.sock")
@@ -137,6 +128,25 @@ func (m *Manager) Start() error {
 	// Connect the frame socket and start read loops.
 	m.connectAfterSpawn()
 	return nil
+}
+
+// sidecarArgs returns the sidecar's command line for a spawn into socketDir.
+// The templates directory is what the sidecar's own URL policy allows file
+// URLs below; it is made absolute here because the sidecar resolves it
+// independently of the engine's working directory.
+func (m *Manager) sidecarArgs(socketDir string) []string {
+	args := []string{
+		"--control-socket", filepath.Join(socketDir, "control.sock"),
+		"--frame-socket", filepath.Join(socketDir, "frames.sock"),
+		"--user-data-dir", filepath.Join(socketDir, "cef-data"),
+	}
+	if dir := m.config.TemplatesDir; dir != "" {
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = abs
+		}
+		args = append(args, "--templates-dir", dir)
+	}
+	return args
 }
 
 // connectAfterSpawn connects the frame socket and starts the control and
