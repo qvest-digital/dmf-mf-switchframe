@@ -307,8 +307,8 @@ type Switcher struct {
 	programSource       string
 	previewSource       string
 	programRelay        *distribution.Relay
-	seq                 uint64       // always use atomic ops, even under s.configMu, to prevent races on lock-free read paths
-	lastStateStamp      atomic.Int64 // Timestamp of the latest state snapshot; see stateStamp
+	seq                 atomic.Uint64 // read on lock-free paths, so written atomically even under s.configMu
+	lastStateStamp      atomic.Int64  // Timestamp of the latest state snapshot; see stateStamp
 	stateCallbacks      []func(internal.ControlRoomState)
 	health              *healthMonitor
 	audioHandler        func(sourceKey string, frame *media.AudioFrame)
@@ -913,7 +913,7 @@ func (s *Switcher) SetEncoder(name string) error {
 	s.log.Info("encoder changed", "from", oldEncoder, "to", name)
 
 	// Broadcast updated state to all connected clients.
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	s.configMu.Lock()
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
@@ -1672,7 +1672,7 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 		"height", f.Height,
 		"fps", fmt.Sprintf("%d/%d", f.FPSNum, f.FPSDen))
 
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	s.configMu.Lock()
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
@@ -2762,7 +2762,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		s.frameSync.SetProgramSource(sourceKey)
 	}
 
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 
@@ -2832,7 +2832,7 @@ func (s *Switcher) SetTransitionAbortThreshold(threshold float64) error {
 	s.configMu.Lock()
 	s.transitionAbortThreshold = threshold
 	s.storeTransitionAbortThresholdAtomic(threshold)
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 	s.notifyStateChange(snapshot)
@@ -2943,7 +2943,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		})
 		s.transitionsStarted.Add(1)
 
-		atomic.AddUint64(&s.seq, 1)
+		s.seq.Add(1)
 		snapshot := s.buildStateLocked()
 		s.configMu.Unlock()
 
@@ -3026,7 +3026,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	})
 	s.transitionsStarted.Add(1)
 
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 
@@ -3053,7 +3053,7 @@ func (s *Switcher) SetFTBDuration(durationMs int) error {
 	s.configMu.Lock()
 	s.ftbDurationMs = durationMs
 	s.ftbDurationMsAtomic.Store(int64(durationMs))
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 	s.notifyStateChange(snapshot)
@@ -3123,7 +3123,7 @@ func (s *Switcher) AbortTransition() {
 		// aborted GPU transition leaves the flag set forever and every
 		// program-source frame is dropped (frozen program output).
 		s.gpuTransActive.Store(false)
-		atomic.AddUint64(&s.seq, 1)
+		s.seq.Add(1)
 	}
 	frameSync := s.frameSync
 	programAfterAbort := s.programSource
@@ -3238,7 +3238,7 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	}
 	frameSync := s.frameSync
 	programAfterTransition := s.programSource
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 
@@ -3303,7 +3303,7 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 	if s.promMetrics != nil && !aborted {
 		s.promMetrics.TransitionsTotal.WithLabelValues("ftb").Inc()
 	}
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 
@@ -3358,7 +3358,7 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 		s.promMetrics.TransitionsTotal.WithLabelValues("ftb_reverse").Inc()
 	}
 
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 
@@ -3499,7 +3499,7 @@ func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) 
 		m[key] = ss
 	})
 	s.health.registerSource(key)
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 	s.log.Info("virtual source registered", "source_key", key)
@@ -3527,7 +3527,7 @@ func (s *Switcher) registerRawSource(key, label string, mxl bool) {
 	if s.frameSyncActive && s.frameSync != nil {
 		s.frameSync.AddSource(key)
 	}
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 	s.log.Info("raw source registered", "source_key", key, "mxl", mxl)
@@ -3581,7 +3581,7 @@ func (s *Switcher) RegisterReplaySource(key string) {
 	if s.frameSyncActive && s.frameSync != nil {
 		s.frameSync.AddSource(key)
 	}
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 	s.log.Info("replay source registered", "source_key", key)
@@ -3675,7 +3675,7 @@ func (s *Switcher) UnregisterSource(key string) {
 		hs.programSource = newProgram
 		hs.previewSource = newPreview
 	})
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 
@@ -3755,7 +3755,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 			hs.previewSource = newPreview
 		})
 		audioCut = s.audioCut
-		atomic.AddUint64(&s.seq, 1)
+		s.seq.Add(1)
 		snapshot = s.buildStateLocked()
 		changed = true
 	}
@@ -3808,7 +3808,7 @@ func (s *Switcher) SetPreview(ctx context.Context, sourceKey string) error {
 	}
 	s.previewSource = sourceKey
 	s.updateHotState(func(hs *hotState) { hs.previewSource = sourceKey })
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 
@@ -3830,7 +3830,7 @@ func (s *Switcher) SetLabel(ctx context.Context, sourceKey, label string) error 
 	ss.label = label
 	labelCopy := label
 	ss.labelAtomic.Store(&labelCopy)
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 
@@ -3862,7 +3862,7 @@ func (s *Switcher) SetSourcePosition(sourceKey string, position int) error {
 	}
 	ss.position = position
 	ss.positionAtomic.Store(int32(position))
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 
@@ -3887,7 +3887,7 @@ func (s *Switcher) SetSourceDelay(sourceKey string, delayMs int) error {
 	s.log.Info("source delay set", "source_key", sourceKey, "delay_ms", delayMs)
 
 	s.configMu.Lock()
-	atomic.AddUint64(&s.seq, 1)
+	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 
@@ -3979,7 +3979,7 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		"state":          s.state.String(),
 		"in_transition":  s.state.isInTransition(),
 		"ftb_active":     s.state.isFTBActive(),
-		"seq":            atomic.LoadUint64(&s.seq),
+		"seq":            s.seq.Load(),
 		"sources":        sources,
 		"source_decoders": map[string]any{
 			"active_count":     activeDecoders,
@@ -4306,7 +4306,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		TallyState:               tally,
 		UnavailableTransitions:   s.unavailableTransitions(),
 		Sources:                  sources,
-		Seq:                      atomic.LoadUint64(&s.seq),
+		Seq:                      s.seq.Load(),
 		Timestamp:                stamp,
 		LastCommandSeq:           s.lastCommandSeq.Load(),
 		LastExecutedSeq:          s.lastExecutedSeq.Load(),

@@ -98,7 +98,6 @@ const NON_IDEMPOTENT_PATHS = new Set([
 	'/api/recording/stop',
 	'/api/output/srt/start',
 	'/api/output/srt/stop',
-	'/api/output/destinations',
 ]);
 
 const NON_IDEMPOTENT_PATTERNS = [

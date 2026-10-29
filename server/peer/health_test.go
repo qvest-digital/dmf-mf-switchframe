@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -161,4 +162,45 @@ func TestHealthPoller_StatusNil(t *testing.T) {
 	status := p.Status()
 	assert.False(t, status.Reachable)
 	assert.True(t, status.LastSeen.IsZero())
+}
+
+// A standby engine reads from the peer's polls which destinations the peer
+// sends, and whether the peer is down, to decide on taking one over.
+func TestHealthPoller_SendingAndDown(t *testing.T) {
+	var fail atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(HealthResponse{
+			Status: "ok", EngineLabel: "a", Sending: []string{"0a1b2c3d"},
+			Destinations: []string{"0a1b2c3d", "4e5f6a7b"}, Armed: []string{"0a1b2c3d"},
+		})
+	}))
+	defer srv.Close()
+
+	p := NewHealthPoller(srv.URL, WithPollInterval(20*time.Millisecond), WithFailureThreshold(3))
+	assert.False(t, p.Status().Down, "not down before any poll")
+	assert.Equal(t, 60*time.Millisecond, p.DownAfter())
+	p.Start()
+	defer p.Stop()
+
+	require.Eventually(t, func() bool { return p.PeerReachable() }, 2*time.Second, 5*time.Millisecond)
+	st := p.Status()
+	assert.Equal(t, []string{"0a1b2c3d"}, st.PeerSending)
+	assert.Equal(t, []string{"0a1b2c3d", "4e5f6a7b"}, st.PeerDestinations)
+	assert.Equal(t, []string{"0a1b2c3d"}, st.PeerArmed)
+	assert.False(t, st.Down)
+
+	// A fetch reads the peer once and leaves the poll's record alone.
+	h, err := p.Fetch(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"0a1b2c3d"}, h.Sending)
+
+	fail.Store(true)
+	require.Eventually(t, func() bool { return p.Status().Down }, 2*time.Second, 5*time.Millisecond)
+	assert.False(t, p.Status().Reachable)
+	_, err = p.Fetch(context.Background())
+	require.Error(t, err)
 }

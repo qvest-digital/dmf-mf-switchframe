@@ -2,11 +2,15 @@ package output
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -88,6 +92,19 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 	return cfg, nil
 }
 
+// startupDestinationID derives a startup destination's ID from where it
+// sends rather than from its position in the file: during a rolling update
+// the two engines of a pair may read files that list the destinations in
+// another order, and one ID has to name one target on both.
+func startupDestinationID(d DestinationConfig) string {
+	target := d.URL
+	if d.Type != "rtmp" {
+		target = net.JoinHostPort(d.Address, strconv.Itoa(d.Port))
+	}
+	sum := sha256.Sum256([]byte("outputs-config/destination\x00" + d.Type + "\x00" + target + "\x00" + d.StreamID))
+	return hex.EncodeToString(sum[:4])
+}
+
 // readInto sets *field from the file at path, without the trailing newline a
 // mounted Secret often carries. An empty path leaves the field alone.
 func readInto(field *string, path, name string) error {
@@ -136,13 +153,30 @@ func (r StartupRecording) RecorderConfig() (RecorderConfig, error) {
 
 // ApplyStartup adds and starts every destination in cfg and starts the
 // recording it names. It stops at the first one the manager refuses.
+//
+// Each destination gets an ID derived from its type and target, so both
+// engines of a pair store it under one ID. With peer
+// failover enabled, a destination one engine sends is armed and left to
+// ReconcileDestinations, which starts it once the peer is known not to send
+// it already.
 func (m *Manager) ApplyStartup(cfg StartupConfig) error {
+	m.mu.Lock()
+	deferStart := m.peerFailover && m.engineLabel != ""
+	m.mu.Unlock()
 	for i, d := range cfg.Destinations {
-		id, err := m.AddDestination(d.DestinationConfig)
+		id, err := m.AddDestinationWithID(startupDestinationID(d.DestinationConfig), d.DestinationConfig)
+		if errors.Is(err, ErrDestinationExists) {
+			return fmt.Errorf("destination %d (%s): same type, target and stream ID as another one", i, d.Type)
+		}
 		if err != nil {
 			return fmt.Errorf("destination %d (%s): %w", i, d.Type, err)
 		}
-		if err := m.StartDestination(id); err != nil {
+		if deferStart && d.Type != "srt-listener" {
+			err = m.armDestination(id)
+		} else {
+			err = m.StartDestination(id)
+		}
+		if err != nil {
 			return fmt.Errorf("destination %d (%s): start: %w", i, d.Type, err)
 		}
 	}
