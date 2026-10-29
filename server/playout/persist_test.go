@@ -1043,3 +1043,39 @@ func TestManager_Recover_CuedOutOfRangeStartsAtTop(t *testing.T) {
 		t.Fatalf("started at %q, want a", got)
 	}
 }
+
+// Rolling restart: both engines on air at b, one restarts and is re-cued at
+// b. An operator Stop then Start on both must start both at the top, or they
+// play different items.
+func TestManager_Recover_StopDropsRecoveredCue(t *testing.T) {
+	pl := testPlaylist(liveItem("a", "cam-1"), liveItem("b", "cam-2"))
+	onAirAtB := func() *Manager {
+		m := NewManager(ManagerConfig{AssetProvider: fakeProvider(5), AllowedLocalPrefixes: []string{"/"}})
+		t.Cleanup(m.Close)
+		if err := m.LoadPlaylist(1, pl); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Start(1); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Next(1); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, 2*time.Second, func() bool { return m.ChannelStates()[0].CurrentItemID == "b" })
+		return m
+	}
+	engineA := onAirAtB()
+	engineB := recoverInto(t, onAirAtB())
+	if st := engineB.ChannelStates()[0]; st.State != "cued" || st.CurrentItemID != "b" {
+		t.Fatalf("restarted engine: state %q item %q, want cued at b", st.State, st.CurrentItemID)
+	}
+
+	for name, m := range map[string]*Manager{"A": engineA, "B": engineB} {
+		if err := m.Stop(1); err != nil {
+			t.Fatal(err)
+		}
+		if got := startAndItem(t, m); got != "a" {
+			t.Fatalf("engine %s started at %q after Stop, want a", name, got)
+		}
+	}
+}
