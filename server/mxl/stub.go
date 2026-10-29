@@ -19,6 +19,16 @@ func init() {
 		ns := float64(time.Now().UnixNano())
 		return uint64(ns * float64(rate.Numerator) / (float64(rate.Denominator) * 1e9))
 	}
+	NsUntilIndex = func(index uint64, rate Rational) uint64 {
+		if rate.Denominator == 0 || rate.Numerator == 0 {
+			return 0
+		}
+		start := float64(index) * float64(rate.Denominator) * 1e9 / float64(rate.Numerator)
+		if d := start - float64(time.Now().UnixNano()); d > 0 {
+			return uint64(d)
+		}
+		return 0
+	}
 }
 
 // Instance is a stub for builds without the mxl build tag.

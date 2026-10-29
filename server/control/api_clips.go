@@ -481,9 +481,9 @@ type RecordingFileInfo struct {
 	Error    string    `json:"error,omitempty"`
 }
 
-// recordingDirs returns the directories recordings are listed and imported
-// from, as absolute paths: where they are written, then where finished ones
-// are archived.
+// recordingDirs returns the directories recordings are imported from and
+// downloaded from, as absolute paths: where they are written, and the
+// archive with every engine's subdirectory in it.
 func (a *API) recordingDirs() []string {
 	var dirs []string
 	for _, d := range []string{a.loadRecordingDir(), a.recArchiveDir} {
@@ -518,10 +518,44 @@ func (a *API) inRecordingDirs(path string) bool {
 	return false
 }
 
-// handleClipRecordings lists the recording files in the recording directory
-// and the recording archive, each with its state: the file the running
-// recording writes, files still being copied into the archive, finished
-// ones, and empty ones nothing can be made of.
+// recordingFiles lists the .ts files directly in dir, a file with no bytes
+// in it as failed.
+func recordingFiles(dir string) []RecordingFileInfo {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []RecordingFileInfo
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(name), ".ts") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		f := RecordingFileInfo{
+			Filename: name,
+			Path:     filepath.Join(dir, name),
+			ByteSize: info.Size(),
+			ModTime:  info.ModTime(),
+			State:    RecordingStateReady,
+		}
+		if info.Size() == 0 {
+			f.State = RecordingStateFailed
+			f.Error = errEmptyRecording.Error()
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// handleClipRecordings lists the recording files with their state: the
+// .ts files in the recording directory, among them the one being recorded
+// and those still being copied into the archive, and those in the
+// recording archive and in each engine's subdirectory of it, so recordings
+// any engine made in an earlier run are offered too.
 func (a *API) handleClipRecordings(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -537,51 +571,39 @@ func (a *API) handleClipRecordings(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	result := []RecordingFileInfo{}
-	listed := map[string]bool{}
-	archive := filepath.Clean(a.recArchiveDir)
-	for _, recDir := range a.recordingDirs() {
-		entries, err := os.ReadDir(recDir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			name := entry.Name()
-			if !strings.HasSuffix(strings.ToLower(name), ".ts") {
-				continue
-			}
-			// A file both written and already archived, on its way out of
-			// the recording directory, is listed once, from where it was
-			// written: the archive copy may still be partial.
-			if listed[name] {
-				continue
-			}
-			info, err := entry.Info()
-			if err != nil {
-				continue
-			}
-			listed[name] = true
-			rec := RecordingFileInfo{
-				Filename: name,
-				Path:     filepath.Join(recDir, name),
-				ByteSize: info.Size(),
-				ModTime:  info.ModTime(),
-				State:    RecordingStateReady,
-			}
+	local := map[string]bool{}
+	if dir := a.loadRecordingDir(); dir != "" {
+		for _, f := range recordingFiles(dir) {
 			switch {
-			// The active file is only ever in the recording directory;
-			// an archived file of the same name is a finished one.
-			case name == activeFilename && recDir != archive:
-				rec.State = RecordingStateRecording
-			case finalizing[name] && recDir != archive:
-				rec.State = RecordingStateFinalizing
-			case info.Size() == 0:
-				rec.State = RecordingStateFailed
-				rec.Error = errEmptyRecording.Error()
+			case f.Filename == activeFilename:
+				f.State, f.Error = RecordingStateRecording, ""
+			case finalizing[f.Filename]:
+				f.State, f.Error = RecordingStateFinalizing, ""
 			}
-			result = append(result, rec)
+			local[f.Filename] = true
+			result = append(result, f)
+		}
+	}
+	if root := a.recArchiveDir; root != "" {
+		dirs := []string{root}
+		if entries, err := os.ReadDir(root); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					dirs = append(dirs, filepath.Join(root, e.Name()))
+				}
+			}
+		}
+		own := filepath.Clean(a.recArchiveOwn)
+		for _, dir := range dirs {
+			for _, f := range recordingFiles(dir) {
+				// This engine's file, archived but not yet removed from
+				// the recording directory, is listed once, from there: the
+				// archive copy may still be partial.
+				if filepath.Clean(dir) == own && local[f.Filename] {
+					continue
+				}
+				result = append(result, f)
+			}
 		}
 	}
 	_ = json.NewEncoder(w).Encode(result)

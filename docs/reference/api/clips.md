@@ -75,7 +75,7 @@
 
 ### `GET /api/clips/recordings`
 
-**Purpose:** list the `.ts` files in the recording directory and in `--recording-archive-dir`, with how far along each one is.
+**Purpose:** list the `.ts` files in the recording directory, in `--recording-archive-dir` and in each engine's subdirectory of it, with how far along each one is.
 **Handler:** `(*API).handleClipRecordings`.
 
 **Response 200:** `[{ "filename": "...", "path": "...", "byteSize": ..., "modTime": "...", "state": "...", "error": "..." }, ...]`. `state` is `recording` (the file the running recording writes), `finalizing` (closed, still being copied into the archive), `ready`, or `failed` (empty: no program video reached the recorder; `error` says so).

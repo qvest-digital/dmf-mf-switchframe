@@ -196,3 +196,7 @@ type ContinuousWriter interface {
 // This is a time function — wraps mxlGetCurrentIndex in cgo builds,
 // uses a monotonic clock approximation in stub builds.
 var CurrentIndex func(rate Rational) uint64
+
+// NsUntilIndex returns the nanoseconds until the given grain/sample index
+// starts at the given rate, 0 when it has started. Same clock as CurrentIndex.
+var NsUntilIndex func(index uint64, rate Rational) uint64

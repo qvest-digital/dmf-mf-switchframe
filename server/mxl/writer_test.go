@@ -3,6 +3,9 @@ package mxl
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -536,10 +539,10 @@ func TestMXLWriter_TripleBufferOverrunCorrupts(t *testing.T) {
 	const (
 		width    = 48
 		height   = 16
-		tickFPS  = 50                     // 20 ms tick period
-		grainDur = 20 * time.Millisecond  // WriteGrain held for a full tick
-		burstDur = 5 * time.Millisecond   // producer writes every 5 ms
-		cycles   = 40                     // ~200 ms total
+		tickFPS  = 50                    // 20 ms tick period
+		grainDur = 20 * time.Millisecond // WriteGrain held for a full tick
+		burstDur = 5 * time.Millisecond  // producer writes every 5 ms
+		cycles   = 40                    // ~200 ms total
 	)
 	mock := &corruptionDetectingWriter{sleep: grainDur, snapshotN: 128}
 	w := NewWriter(WriterConfig{Width: width, Height: height})
@@ -577,5 +580,151 @@ func TestMXLWriter_TripleBufferOverrunCorrupts(t *testing.T) {
 	// gate should have dropped frames rather than overwriting a held slot.
 	if w.VideoDrops() == 0 {
 		t.Fatalf("expected VideoDrops() > 0 under sustained over-production (20 ms hold + 5 ms producer cadence); got 0")
+	}
+}
+
+// frameYUV returns a 12x2 YUV420p frame whose luma is value, so the V210 it
+// becomes identifies the frame.
+func frameYUV(value byte) []byte {
+	const width, height = 12, 2
+	yuv := make([]byte, width*height+2*(width/2)*(height/2))
+	for i := 0; i < width*height; i++ {
+		yuv[i] = value
+	}
+	for i := width * height; i < len(yuv); i++ {
+		yuv[i] = 128
+	}
+	return yuv
+}
+
+// A producer at the grain rate, its frames jittering around the instants
+// the writer would sample on, must get exactly one grain per frame. A
+// writer sampling the latest frame on a ticker of its own loses a frame
+// whenever two arrive between two of its ticks and shows the one before
+// twice in the next; that is how a 50p clip played at 50p reached the
+// program flow with a seventh of its frames repeated.
+func TestWriter_GrainRateProducerGetsOneGrainPerFrame(t *testing.T) {
+	const frames = 100
+	rate := Rational{50, 1}
+	period := 20 * time.Millisecond
+
+	mock := &mockDiscreteWriter{}
+	w := NewWriter(WriterConfig{Width: 12, Height: 2})
+	w.SetVideoWriter(mock, rate)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start the producer on the instant the writer starts, so a writer on
+	// a ticker of its own samples right where the frames arrive.
+	start := time.Now()
+	w.Start(ctx)
+	for k := 0; k < frames; k++ {
+		jitter := time.Duration((k*7)%9-4) * time.Millisecond // -4..+4 ms
+		time.Sleep(time.Until(start.Add(time.Duration(k)*period + jitter)))
+		w.WriteVideo(frameYUV(byte(16+k%200)), 12, 2, 0)
+	}
+	time.Sleep(period / 2)
+	cancel()
+	_ = w.Close()
+
+	// Each frame's grains, in index order, between the first frame and
+	// the last.
+	grains := mock.getGrains()
+	var runs []int
+	for i, g := range grains {
+		if i > 0 && g.index != grains[i-1].index+1 {
+			t.Fatalf("grain %d follows %d", g.index, grains[i-1].index)
+		}
+		if i > 0 && bytes.Equal(g.data, grains[i-1].data) {
+			runs[len(runs)-1]++
+			continue
+		}
+		runs = append(runs, 1)
+	}
+	// The last frame repeats until the writer stops; the first frame may
+	// meet a grain that is already late.
+	if len(runs) != frames {
+		t.Fatalf("%d frames produced, %d reached the flow", frames, len(runs))
+	}
+	repeated := 0
+	for _, n := range runs[1 : len(runs)-1] {
+		repeated += n - 1
+	}
+	// A host scheduling hiccup can still cost a repeat or two.
+	if repeated > 2 {
+		t.Fatalf("%d grains repeat a frame; runs %v", repeated, runs)
+	}
+}
+
+// With no new frame the last one is still written once per grain period,
+// each as its grain starts once the stall is established, so a stalled
+// program source keeps its flow fed and its head on the clock.
+func TestWriter_StalledProducerRepeatsOnSchedule(t *testing.T) {
+	rate := Rational{50, 1}
+	mock := &mockDiscreteWriter{}
+	w := NewWriter(WriterConfig{Width: 12, Height: 2})
+	w.SetVideoWriter(mock, rate)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+	w.WriteVideo(frameYUV(16), 12, 2, 0)
+
+	time.Sleep(400 * time.Millisecond)
+	// Sample the head well inside a grain period.
+	time.Sleep(time.Duration(NsUntilIndex(CurrentIndex(rate)+1, rate)) + 5*time.Millisecond)
+	end := CurrentIndex(rate)
+	head := mock.getGrains()
+	cancel()
+	_ = w.Close()
+	if got := head[len(head)-1].index; got != end {
+		t.Fatalf("head %d mid-period of grain %d during a stall", got, end)
+	}
+
+	grains := mock.getGrains()
+	if len(grains) < 18 {
+		t.Fatalf("%d grains in 400ms at 50/1, want about 20", len(grains))
+	}
+	for i := 1; i < len(grains); i++ {
+		if grains[i].index != grains[i-1].index+1 {
+			t.Fatalf("grain %d follows %d", grains[i].index, grains[i-1].index)
+		}
+	}
+	if last := grains[len(grains)-1].index; last+2 < end {
+		t.Fatalf("last grain %d trails the clock at %d", last, end)
+	}
+}
+
+type failingDiscreteWriter struct{ calls atomic.Int64 }
+
+// WriteGrain takes the first grain and refuses every one after it.
+func (f *failingDiscreteWriter) WriteGrain(uint64, []byte) error {
+	if f.calls.Add(1) == 1 {
+		return nil
+	}
+	return errors.New("write refused")
+}
+func (f *failingDiscreteWriter) Close() error { return nil }
+
+// A writer whose every grain write fails is retried once per grain period,
+// not in a loop: the frame stays unwritten, so the goroutine would
+// otherwise find it new on every pass and retry at once.
+func TestWriter_FailingWriteRetriesOncePerGrain(t *testing.T) {
+	rate := Rational{50, 1}
+	fw := &failingDiscreteWriter{}
+	w := NewWriter(WriterConfig{Width: 12, Height: 2, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	w.SetVideoWriter(fw, rate)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+	w.WriteVideo(frameYUV(16), 12, 2, 0)
+	time.Sleep(50 * time.Millisecond)
+	w.WriteVideo(frameYUV(17), 12, 2, 0) // new, and refused from here on
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	_ = w.Close()
+
+	// 350 ms is 17 grain periods at 50/1.
+	if n := fw.calls.Load(); n > 25 {
+		t.Fatalf("%d write attempts in 350ms at 50/1", n)
 	}
 }

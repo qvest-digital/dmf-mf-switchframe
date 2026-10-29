@@ -31,6 +31,20 @@ func init() {
 		}
 		return uint64(C.mxlGetCurrentIndex(&cr))
 	}
+	NsUntilIndex = func(index uint64, rate Rational) uint64 {
+		if rate.Denominator == 0 || rate.Numerator == 0 {
+			return 0
+		}
+		cr := C.mxlRational{
+			numerator:   C.int64_t(rate.Numerator),
+			denominator: C.int64_t(rate.Denominator),
+		}
+		ns := uint64(C.mxlGetNsUntilIndex(C.uint64_t(index), &cr))
+		if ns == ^uint64(0) { // MXL_UNDEFINED_INDEX on an invalid rate
+			return 0
+		}
+		return ns
+	}
 }
 
 // statusError converts an mxlStatus to a Go error.
