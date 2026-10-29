@@ -114,7 +114,9 @@ jobs:
   # The sidecar has to start, connect, render a template and deliver frames to
   # the compositor in the image as shipped: with no display, no extra
   # capabilities and the default seccomp profile. The CUDA image cannot start
-  # without a driver; its sidecar comes from the same stage.
+  # without a driver; its sidecar comes from the same stage. The template is
+  # the sidecar's test fixture, which loads nothing from the network, so a
+  # CDN outage cannot hold back a push.
   smoke:
     if: github.repository == 'qvest-digital/dmf-mf-switchframe'
     needs: image
@@ -160,8 +162,9 @@ jobs:
         run: |
           set -euo pipefail
           docker image inspect switchframe-mxl:smoke --format 'image size: {{.Size}} bytes'
-          docker run -d --name sf-smoke -p 8081:8081 -p 9090:9090 switchframe-mxl:smoke \
-            --http-fallback --api-token smoke --html5-graphics=true
+          docker run -d --name sf-smoke -p 8081:8081 -p 9090:9090 \
+            -v "$PWD/cef-sidecar/test-templates:/smoke-templates:ro" switchframe-mxl:smoke \
+            --http-fallback --api-token smoke --html5-graphics=true --cef-templates-dir /smoke-templates
           trap 'docker logs sf-smoke 2>&1 | grep -E "htmlgfx|sidecar" || true; docker rm -f sf-smoke >/dev/null' EXIT
           api() { curl -fsS --max-time 10 -H 'Authorization: Bearer smoke' "$@"; }
           frames() {
