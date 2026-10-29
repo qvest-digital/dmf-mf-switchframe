@@ -410,7 +410,7 @@ func metricsTestServer() http.Handler {
 		w.WriteHeader(http.StatusOK)
 	})
 	operatorCheck := OperatorTokenChecker(func(token string) bool { return token == "op-token" })
-	var h http.Handler = AuthMiddleware("api-token", operatorCheck)(api)
+	h := AuthMiddleware("api-token", operatorCheck)(api)
 	h = RouteMetricsMiddleware(api)(h)
 	top := http.NewServeMux()
 	top.Handle("/api/", h)
