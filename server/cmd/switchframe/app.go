@@ -1465,17 +1465,7 @@ func (a *App) initMXL() error {
 			slog.Info("mxl: GPU preview encoder registered", "flow", flowName)
 		} else if a.cfg.PreviewProxy {
 			// CPU preview encoder fallback.
-			pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
-			pe, err := preview.NewEncoder(preview.Config{
-				SourceKey:     flowName,
-				Width:         pw,
-				Height:        ph,
-				Bitrate:       a.cfg.PreviewBitrate,
-				FPSNum:        srcCfg.FPSNum,
-				FPSDen:        srcCfg.FPSDen,
-				Relay:         relay,
-				FrameInterval: a.cfg.PreviewFrameInterval,
-			})
+			pe, err := preview.NewEncoder(a.sourcePreviewConfig(flowName, relay, srcCfg.FPSNum, srcCfg.FPSDen))
 			if err != nil {
 				slog.Error("mxl: preview encoder failed", "flow", flowName, "error", err)
 			} else {
