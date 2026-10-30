@@ -97,26 +97,47 @@ type flowStore struct {
 	mu    sync.Mutex
 	flows map[string]*liveFlow
 	gates map[string]chan struct{}
+	// held receives a value each time an open of a gated flow starts
+	// waiting at its gate.
+	held  map[string]chan struct{}
 	opens map[string]int
 }
 
 func newFlowStore(flows map[string]*liveFlow) *flowStore {
-	return &flowStore{flows: flows, gates: map[string]chan struct{}{}, opens: map[string]int{}}
+	return &flowStore{flows: flows, gates: map[string]chan struct{}{}, held: map[string]chan struct{}{}, opens: map[string]int{}}
 }
 
 func (s *flowStore) gate(id string) chan struct{} {
 	g := make(chan struct{})
 	s.mu.Lock()
 	s.gates[id] = g
+	s.held[id] = make(chan struct{}, 16)
 	s.mu.Unlock()
 	return g
 }
 
+// heldAt returns once an open of gated flow id waits at its gate.
+func (s *flowStore) heldAt(t *testing.T, id string) {
+	t.Helper()
+	s.mu.Lock()
+	h := s.held[id]
+	s.mu.Unlock()
+	select {
+	case <-h:
+	case <-time.After(time.Second):
+		t.Fatalf("flow %s never opened", id)
+	}
+}
+
 func (s *flowStore) open(id string) (DiscreteReader, error) {
 	s.mu.Lock()
-	g := s.gates[id]
+	g, held := s.gates[id], s.held[id]
 	s.mu.Unlock()
 	if g != nil {
+		select {
+		case held <- struct{}{}:
+		default:
+		}
 		<-g
 	}
 	s.mu.Lock()
@@ -394,6 +415,9 @@ func TestRetarget_LaterRetargetWins(t *testing.T) {
 	r := startVideo(t, flow)
 
 	flow.(Retargetable).Retarget("b")
+	// Replaced while its open is under way, so the open returns a handle
+	// nothing reads.
+	store.heldAt(t, "b")
 	flow.(Retargetable).Retarget("c")
 	deadline := time.Now().Add(time.Second)
 	for nextGrain(t, r).V210[0] != 3 {
@@ -402,14 +426,23 @@ func TestRetarget_LaterRetargetWins(t *testing.T) {
 		}
 	}
 	close(gate)
-	time.Sleep(50 * time.Millisecond)
+	deadline = time.Now().Add(time.Second)
+	for !store.handle("b").isClosed() {
+		if time.Now().After(deadline) {
+			t.Fatal("handle opened for the superseded retarget was not closed")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	for i := 0; i < 20; i++ {
 		if g := nextGrain(t, r); g.V210[0] != 3 {
 			t.Fatalf("superseded flow %d took over", g.V210[0])
 		}
 	}
-	if b := store.handle("b"); !b.isClosed() {
-		t.Error("handle opened for the superseded retarget was not closed")
+	store.mu.Lock()
+	opens := store.opens["b"]
+	store.mu.Unlock()
+	if opens != 1 {
+		t.Errorf("flow b opened %d times, want once", opens)
 	}
 }
 
@@ -582,5 +615,77 @@ func TestConnect_SameFlowIsANoOp(t *testing.T) {
 	}
 	if first.(*liveFlow).isClosed() {
 		t.Error("the handle being read was replaced")
+	}
+}
+
+// A connection that failed leaves nothing under way, so connecting again to
+// the flow the input still reads is a no-op rather than a reopen, which
+// would replace the handle being read.
+func TestConnect_FailedConnectionLeavesNothingUnderWay(t *testing.T) {
+	store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape)})
+	first, _ := store.open("a")
+	flow := NewReopeningReader("a", first, store.open, nil)
+	startVideo(t, flow)
+	if err := flow.(Retargetable).Connect(context.Background(), "missing"); err == nil {
+		t.Fatal("connection to a missing flow succeeded")
+	}
+	if err := flow.(Retargetable).Connect(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	opens := store.opens["a"]
+	store.mu.Unlock()
+	if opens != 1 {
+		t.Errorf("flow a opened %d times, want once", opens)
+	}
+	if first.(*liveFlow).isClosed() {
+		t.Error("the handle being read was replaced")
+	}
+}
+
+// A retarget a later connection replaced stops opening its flow, also while
+// that flow is missing. Otherwise an input disconnected or moved away from a
+// flow nobody writes keeps opening it for as long as the process runs, and
+// every such open is one more turn at libmxl's instance lock.
+func TestRetarget_SupersededRetargetStopsOpening(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		after func(Retargetable) error
+	}{
+		{"disconnected", func(r Retargetable) error { r.Retarget(""); return nil }},
+		{"connected elsewhere", func(r Retargetable) error {
+			return r.Connect(context.Background(), "a")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape)})
+			opened := func() int {
+				store.mu.Lock()
+				defer store.mu.Unlock()
+				return store.opens["missing"]
+			}
+			flow := NewRetargetableReader(store.open, nil, nil)
+			t.Cleanup(func() { _ = flow.Close() })
+			startVideo(t, flow)
+
+			flow.(Retargetable).Retarget("missing")
+			deadline := time.Now().Add(time.Second)
+			for opened() == 0 {
+				if time.Now().After(deadline) {
+					t.Fatal("the missing flow was never opened")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if err := tc.after(flow.(Retargetable)); err != nil {
+				t.Fatal(err)
+			}
+			before := opened()
+			time.Sleep(7 * reopenInterval / 2)
+			// One open may already be under way when the retarget is
+			// replaced; a loop still retrying makes three more.
+			if n := opened() - before; n > 1 {
+				t.Errorf("superseded retarget opened the missing flow %d more times", n)
+			}
+		})
 	}
 }
