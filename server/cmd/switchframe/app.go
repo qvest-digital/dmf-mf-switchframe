@@ -1268,10 +1268,10 @@ func (a *App) initMXL() error {
 	}
 	a.mxlInstance = inst
 
-	// A flow the domain does not list fails at once rather than in libmxl,
-	// where its open would hold every other open of the instance.
-	openReader := mxl.OnlyListed(a.cfg.MXLDomain, inst.OpenReader)
-	openAudioReader := mxl.OnlyListed(a.cfg.MXLDomain, inst.OpenAudioReader)
+	// On an mxlfs a missing flow is waited for outside libmxl, where its
+	// open would hold every other open of the instance for the wait.
+	openReader := mxl.WalkFirst(a.cfg.MXLDomain, inst.OpenReader)
+	openAudioReader := mxl.WalkFirst(a.cfg.MXLDomain, inst.OpenAudioReader)
 
 	// Register MXL sources.
 	// Each spec is "videoUUID", "videoUUID:audioUUID", or "videoUUID:audioUUID:dataUUID".
@@ -1316,7 +1316,7 @@ func (a *App) initMXL() error {
 			}
 		} else {
 			// Open MXL video flow.
-			vf, err := inst.OpenReader(videoFlowID)
+			vf, err := openReader(videoFlowID)
 			if err != nil {
 				slog.Warn("mxl: could not open video flow", "flowID", videoFlowID, "error", err)
 			} else {
@@ -1325,7 +1325,7 @@ func (a *App) initMXL() error {
 
 			// Open MXL audio flow if specified.
 			if audioFlowID != "" {
-				af, err := inst.OpenAudioReader(audioFlowID)
+				af, err := openAudioReader(audioFlowID)
 				if err != nil {
 					slog.Warn("mxl: could not open audio flow", "flowID", audioFlowID, "error", err)
 				} else {
@@ -1335,7 +1335,7 @@ func (a *App) initMXL() error {
 
 			// Open MXL data flow if specified (for SCTE-104 ancillary data).
 			if dataFlowID != "" {
-				df, err := inst.OpenReader(dataFlowID)
+				df, err := openReader(dataFlowID)
 				if err != nil {
 					slog.Warn("mxl: could not open data flow", "flowID", dataFlowID, "error", err)
 				} else {
