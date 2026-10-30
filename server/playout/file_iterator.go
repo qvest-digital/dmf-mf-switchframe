@@ -198,9 +198,10 @@ func NewFileFrameIteratorWithDecoder(path string, factory DecoderFactory) (*File
 //
 // A stream that drops no frame keeps all of its audio. Audio before its
 // first picture is then how the container aligns the two: an MP4 with
-// B-frames, read without its edit list, starts its video at the reorder
-// delay and its audio at the AAC priming frame, and dropping the audio
-// before the first picture would play the rest early by that delay.
+// B-frames whose edit list the demuxer does not apply starts its video at
+// the reorder delay and its audio at the AAC priming frame, and dropping
+// the audio before the first picture would play the rest early by that
+// delay.
 //
 // A 33-bit MPEG-TS PTS that wraps makes the pictures after the wrap
 // compare below the keyframe, and the audio after it too, which the

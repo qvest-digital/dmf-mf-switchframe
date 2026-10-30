@@ -254,7 +254,8 @@ func TestBuildSampleTable_EmptyInputs(t *testing.T) {
 
 func TestReadVideoSamples_NegativeCTTSOffset(t *testing.T) {
 	// CTTS v1 with signed offset that produces negative composition time.
-	// DTS=100, CTTS offset=-200 → compositionTime should clamp to 0, not -100.
+	// DTS=0, CTTS offset=-200 -> PTS -200, a picture before the stream
+	// starts. Clamped to 0 it would read as "no PTS" and be kept as shown.
 	track := &mp4Track{
 		handlerType:    "vide",
 		timescale:      90000,
@@ -290,9 +291,7 @@ func TestReadVideoSamples_NegativeCTTSOffset(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, frames, 1)
 
-	// PTS should be 0 (clamped), not negative.
-	assert.GreaterOrEqual(t, frames[0].pts, int64(0),
-		"PTS should be clamped to 0 when CTTS produces negative composition time")
+	assert.Equal(t, int64(-200), frames[0].pts)
 }
 
 // --- NALU length normalization edge case tests ---
