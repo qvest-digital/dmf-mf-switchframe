@@ -254,6 +254,7 @@ func (h *Host) spawnLocked(ctx context.Context) error {
 		args = append([]string{socketPath}, h.cfg.Args...)
 	}
 	cmd := exec.CommandContext(ctx, h.cfg.Binary, args...)
+	cmd.Env = h.cfg.Env
 	cmd.Stderr = &sidecarLogger{prefix: "sidecar"}
 
 	// Capture stdout for READY signal.

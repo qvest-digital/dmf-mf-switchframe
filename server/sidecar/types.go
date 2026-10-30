@@ -37,6 +37,10 @@ type Config struct {
 	// If empty, os.MkdirTemp is used.
 	SocketDir string
 
+	// Env is the complete environment of the sidecar process. If nil, the
+	// sidecar inherits the host process's environment.
+	Env []string
+
 	// BuildArgs constructs the command arguments from the socket directory.
 	// If nil, the control socket path is passed as the first argument
 	// followed by Args.
