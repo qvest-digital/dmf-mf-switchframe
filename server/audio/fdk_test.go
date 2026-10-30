@@ -267,7 +267,7 @@ func TestFDKEncoderDelayMatchesDecodedStream(t *testing.T) {
 	}
 	enc, err := NewFDKEncoder(48000, 2)
 	require.NoError(t, err)
-	defer enc.Close()
+	defer func() { _ = enc.Close() }()
 
 	const onset = 10 * 1024
 	var adts []byte
