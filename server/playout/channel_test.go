@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3744,4 +3745,255 @@ func TestChannel_NextLiveItemAirsItsInputOnTheFirstTick(t *testing.T) {
 	defer mu.Unlock()
 	require.Equal(t, byte(0xAA), aired[len(aired)-2], "item a is on air before Next")
 	require.Equal(t, byte(0xBB), aired[len(aired)-1], "item b's first tick must air its input, not the idle picture")
+}
+
+// captureLog sends the default logger to a buffer for the test's duration.
+func captureLog(t *testing.T) *syncBuffer {
+	t.Helper()
+	buf := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// An operator jump to a live item other than the one after the cursor
+// aired the idle picture on its first ticks and reported its source as
+// missing: only the tick armed the source, so it had no picture yet.
+func TestChannel_JumpToALiveItemAirsItsInputOnTheFirstTick(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		jump func(ch *Channel) error
+	}{
+		// From a, two items ahead.
+		{"JumpTo", func(ch *Channel) error { return ch.JumpTo("c") }},
+		// From d, reached by a jump that armed only d.
+		{"Previous", func(ch *Channel) error {
+			if err := ch.JumpTo("d"); err != nil {
+				return err
+			}
+			return ch.Previous()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureLog(t)
+			ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, Width: 320, Height: 240, FPS: 30.0})
+			src := &armedLiveSources{armed: map[string]bool{}, pics: map[string]*DecodedFrame{}}
+			fill := map[string]byte{"cam-a": 0xAA, "cam-b": 0xBB, "cam-c": 0xCC, "cam-d": 0xDD}
+			ch.SetGPUSourceTap(src.read)
+			ch.SetLiveSourcePrepare(src.arm)
+			var mu sync.Mutex
+			var aired []byte
+			ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+				mu.Lock()
+				defer mu.Unlock()
+				aired = append(aired, yuv[0])
+			})
+			require.NoError(t, ch.LoadPlaylist(testPlaylist(
+				liveItem("a", "cam-a"), liveItem("b", "cam-b"), liveItem("c", "cam-c"), liveItem("d", "cam-d"))))
+
+			ch.mu.Lock()
+			ch.state = StateOnAir
+			ch.scheduler.Start()
+			ch.mu.Unlock()
+
+			now := time.Now()
+			for i := 0; i < 5; i++ {
+				ch.tick(now)
+				src.deliver(fill)
+				now = now.Add(33 * time.Millisecond)
+			}
+			require.NoError(t, tc.jump(ch))
+			// The source's next picture, between the jump and the next tick.
+			src.deliver(fill)
+			ch.tick(now)
+
+			mu.Lock()
+			defer mu.Unlock()
+			require.Equal(t, byte(0xAA), aired[len(aired)-2], "item a is on air before the jump")
+			require.Equal(t, byte(0xCC), aired[len(aired)-1], "item c's first tick must air its input, not the idle picture")
+			require.NotContains(t, logs.String(), "source=cam-c")
+		})
+	}
+}
+
+// A live item whose source has not delivered a picture since it was armed
+// airs the idle picture, which is no reason to report the source as
+// missing; one that still has none after liveTapGrace is.
+func TestChannel_LiveItemWaitingForItsFirstPictureIsNotReportedMissing(t *testing.T) {
+	logs := captureLog(t)
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, Width: 320, Height: 240, FPS: 30.0})
+	src := &armedLiveSources{armed: map[string]bool{}, pics: map[string]*DecodedFrame{}}
+	fill := map[string]byte{"cam-a": 0xAA, "cam-c": 0xCC}
+	ch.SetGPUSourceTap(src.read)
+	ch.SetLiveSourcePrepare(src.arm)
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(liveItem("a", "cam-a"), liveItem("b", "cam-b"), liveItem("c", "cam-c"))))
+
+	ch.mu.Lock()
+	ch.state = StateOnAir
+	ch.scheduler.Start()
+	ch.mu.Unlock()
+
+	now := time.Now()
+	ch.tick(now)
+	src.deliver(fill)
+	now = now.Add(33 * time.Millisecond)
+	ch.tick(now)
+	require.NoError(t, ch.JumpTo("c"))
+	now = now.Add(33 * time.Millisecond)
+	ch.tick(now)
+	require.NotContains(t, logs.String(), "live source not available", "item c went on air this tick")
+
+	ch.mu.Lock()
+	since, ok := ch.liveTapMissSince["cam-c"]
+	require.True(t, ok, "item c's first read without a picture starts the grace")
+	ch.liveTapMissSince["cam-c"] = since.Add(-liveTapGrace)
+	ch.mu.Unlock()
+	ch.tick(now.Add(33 * time.Millisecond))
+	require.Contains(t, logs.String(), "live source not available")
+	require.Contains(t, logs.String(), "source=cam-c")
+}
+
+// A standby engine aligns its cursor with the active engine's by a seek,
+// which neither armed the item's source nor gave it a grace: the item's
+// start is backdated by the elapsed time, so the first tick aired the idle
+// picture and reported the source missing.
+func TestChannel_SeekToALiveItemAirsItsInputOnTheFirstTick(t *testing.T) {
+	logs := captureLog(t)
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, Width: 320, Height: 240, FPS: 30.0})
+	src := &armedLiveSources{armed: map[string]bool{}, pics: map[string]*DecodedFrame{}}
+	fill := map[string]byte{"cam-a": 0xAA, "cam-b": 0xBB, "cam-c": 0xCC}
+	ch.SetGPUSourceTap(src.read)
+	ch.SetLiveSourcePrepare(src.arm)
+	var mu sync.Mutex
+	var aired []byte
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		aired = append(aired, yuv[0])
+	})
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(liveItem("a", "cam-a"), liveItem("b", "cam-b"), liveItem("c", "cam-c"))))
+
+	ch.mu.Lock()
+	ch.state = StateOnAir
+	ch.scheduler.Start()
+	ch.mu.Unlock()
+
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		ch.tick(now)
+		src.deliver(fill)
+		now = now.Add(33 * time.Millisecond)
+	}
+	require.NoError(t, ch.SeekToItem(2, 5000))
+	src.deliver(fill)
+	ch.tick(now)
+
+	mu.Lock()
+	require.Equal(t, byte(0xCC), aired[len(aired)-1], "item c's first tick must air its input, not the idle picture")
+	mu.Unlock()
+
+	// No picture yet on the tick after the seek is no reason to report it.
+	src.mu.Lock()
+	delete(src.pics, "cam-c")
+	src.mu.Unlock()
+	require.NoError(t, ch.SeekToItem(2, 5000))
+	ch.tick(now.Add(33 * time.Millisecond))
+	require.NotContains(t, logs.String(), "source=cam-c", "item c has been on air this engine for one tick")
+}
+
+// A transition reads its incoming item before that item starts, so a grace
+// counted from the item's start counted from the outgoing item's: an
+// incoming live source that had no picture yet was reported missing at once.
+func TestChannel_TransitionIntoALiveItemGivesItsSourceTheGrace(t *testing.T) {
+	logs := captureLog(t)
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, Width: 320, Height: 240, FPS: 30.0})
+	src := &armedLiveSources{armed: map[string]bool{}, pics: map[string]*DecodedFrame{}}
+	ch.SetGPUSourceTap(src.read)
+	ch.SetLiveSourcePrepare(src.arm)
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
+	itemB := liveItem("b", "cam-b")
+	itemB.Transition = &TransitionConfig{Type: "dissolve", DurationMs: 300}
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(liveItem("a", "cam-a"), itemB)))
+
+	ch.mu.Lock()
+	ch.state = StateOnAir
+	ch.scheduler.Start()
+	ch.mu.Unlock()
+
+	// Item a has been on air for longer than the grace.
+	now := time.Now().Add(-time.Minute)
+	transitionTicks := 0
+	for i := 0; i < 20; i++ {
+		if i == 3 {
+			require.NoError(t, ch.Next())
+		}
+		src.mu.Lock()
+		src.pics["cam-a"] = &DecodedFrame{YUV: bytes.Repeat([]byte{0xAA}, video.YUV420FrameSize(320, 240)), Width: 320, Height: 240}
+		src.mu.Unlock()
+		ch.tick(now)
+		if ch.scheduler.State() == SchedTransitioning {
+			transitionTicks++
+		}
+		now = now.Add(33 * time.Millisecond)
+	}
+	require.GreaterOrEqual(t, transitionTicks, 5, "the transition never ran")
+	require.NotContains(t, logs.String(), "source=cam-b")
+}
+
+// The output may hand the frame's buffer to a pipeline that returns it to a
+// pool, where the next reader overwrites it: the splice scan read the
+// buffer after the output and took that reader's picture as a candidate.
+func TestChannel_SpliceScanReadsTheFrameBeforeTheOutputTakesIt(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, Width: 320, Height: 240, FPS: 30.0})
+	src := &armedLiveSources{armed: map[string]bool{}, pics: map[string]*DecodedFrame{}}
+	ch.SetGPUSourceTap(src.read)
+	ch.SetLiveSourcePrepare(src.arm)
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		// The buffer back in the pool, taken and filled by another reader.
+		for i := range yuv {
+			yuv[i] = 0x11
+		}
+	})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector: &fakeSpliceInjector{}, BlackDetector: NewBlackDetector(BlackDetectorConfig{}),
+		PreRollMs: 100, WindowMs: 200,
+	})
+	t.Cleanup(sc.Cancel)
+	ch.SetSpliceCoordinator(sc)
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(liveItem("a", "cam-a"))))
+
+	ch.mu.Lock()
+	ch.state = StateOnAir
+	ch.scheduler.Start()
+	ch.mu.Unlock()
+
+	now := time.Now()
+	ch.tick(now)
+	require.NoError(t, sc.BeginSplice("pod-1", true, true, 30000, 0))
+	src.deliver(map[string]byte{"cam-a": 0xAA})
+	ch.tick(now.Add(33 * time.Millisecond))
+
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	require.Len(t, sc.active.candidates, 1)
+	require.Equal(t, byte(0xAA), sc.active.candidates[0].YUV[0], "the candidate is the aired picture, not the next reader's")
 }

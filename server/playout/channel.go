@@ -124,6 +124,10 @@ type Channel struct {
 	lastLiveTapMiss  string // for once-per-item logging of tap failures
 	activeLiveSource string // current live source key (for audio routing)
 
+	// When each live source first had no picture for this item, for the
+	// grace before reporting it missing.
+	liveTapMissSince map[string]time.Time
+
 	// Sentinel frame returned by tapLiveSource when GPU alias succeeded.
 	// emitFrame skips CPU output for this frame (GPU pipeline already has it).
 	gpuAliasedSentinel DecodedFrame
@@ -540,7 +544,12 @@ func (c *Channel) Previous() error {
 		return ErrNotOnAir
 	}
 	c.mu.Unlock()
-	return c.scheduler.Previous()
+	if err := c.scheduler.Previous(); err != nil {
+		return err
+	}
+	// The item airs on the next tick; its source may not have been armed.
+	c.prepareLiveSources()
+	return nil
 }
 
 // JumpTo finds the item with the given ID and moves the cursor to it. On
@@ -550,7 +559,13 @@ func (c *Channel) JumpTo(itemID string) error {
 	c.mu.Lock()
 	if c.state == StateOnAir {
 		c.mu.Unlock()
-		return c.scheduler.JumpTo(itemID)
+		if err := c.scheduler.JumpTo(itemID); err != nil {
+			return err
+		}
+		// The item airs on the next tick; unless it was the one after the
+		// cursor, nothing has armed its source.
+		c.prepareLiveSources()
+		return nil
 	}
 	if err := c.scheduler.Cue(itemID); err != nil {
 		c.mu.Unlock()
@@ -685,6 +700,9 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 	c.itemStartTime = time.Now().Add(-elapsed)
 
 	c.mu.Unlock()
+	// The item airs on the next tick; nothing has armed its source on this
+	// engine.
+	c.prepareLiveSources()
 	return nil
 }
 
@@ -1186,6 +1204,7 @@ func (c *Channel) handleItemChange(item *PlaylistItem, secScheduler *SecondaryEv
 	prevLiveSource := c.activeLiveSource
 	c.secondaryItemID = item.ID
 	c.lastLiveTapMiss = "" // reset so new item gets a fresh warning
+	clear(c.liveTapMissSince)
 	c.itemStartTime = now.UTC()
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(item.DurationMs)
@@ -1955,16 +1974,42 @@ func (c *Channel) tapLiveSource(sourceKey string) *DecodedFrame {
 	if tap != nil {
 		frame := tap(sourceKey)
 		if frame != nil {
+			c.mu.Lock()
+			delete(c.liveTapMissSince, sourceKey)
+			c.mu.Unlock()
 			return frame
 		}
 	}
 
-	// Log once when the tap fails so operators know the source is misconfigured.
-	c.logLiveTapMissOnce(sourceKey)
+	// Log once when the tap fails so operators know the source is
+	// misconfigured. A tap that starts copying a source when its item is
+	// armed has no picture until the source's next one arrives, which is
+	// no reason to report the source as missing. The grace runs from the
+	// first read without a picture, not from the item's start: an item
+	// reached by a seek starts in the past, and a transition reads its
+	// incoming item before that item starts.
+	now := time.Now()
+	c.mu.Lock()
+	since, ok := c.liveTapMissSince[sourceKey]
+	if !ok {
+		if c.liveTapMissSince == nil {
+			c.liveTapMissSince = make(map[string]time.Time)
+		}
+		c.liveTapMissSince[sourceKey] = now
+		since = now
+	}
+	c.mu.Unlock()
+	if now.Sub(since) >= liveTapGrace {
+		c.logLiveTapMissOnce(sourceKey)
+	}
 
 	// Fallback: return idle frame.
 	return c.idleLoop.NextFrame()
 }
+
+// liveTapGrace is how long a live item's source may have no picture before
+// the channel reports it as not available.
+const liveTapGrace = time.Second
 
 // logLiveTapMissOnce logs a warning the first time a live source tap fails per item.
 // Prevents log spam (one warning per source per item change).
@@ -2084,6 +2129,14 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 		return
 	}
 
+	// Feed splice coordinator. Before the output: outputFn may hand
+	// frame.YUV to a pipeline that returns it to a pool, from which the
+	// next reader may already be overwriting it, so nothing here reads
+	// frame.YUV after outputFn.
+	if sc != nil {
+		sc.IngestFrame(frame.YUV, frame.Width, frame.Height, pts)
+	}
+
 	if outputFn != nil {
 		outputFn(frame.YUV, frame.Width, frame.Height, pts, frame.IsKeyframe)
 	}
@@ -2114,11 +2167,6 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 				c.outputAudioPTS, c.outputAudioPTSFrac = advancePTS(c.outputAudioPTS, c.outputAudioPTSFrac, aStepInt, aStepFrac)
 			}
 		}
-	}
-
-	// Feed splice coordinator.
-	if sc != nil {
-		sc.IngestFrame(frame.YUV, frame.Width, frame.Height, pts)
 	}
 
 	c.outputPTS, c.outputPTSFrac = advancePTS(c.outputPTS, c.outputPTSFrac, vStepInt, vStepFrac)

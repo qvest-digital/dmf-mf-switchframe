@@ -113,6 +113,7 @@ func (a *App) initPlayout() error {
 	// CPU encoders for the relays no GPU preview encoder feeds.
 	relayW, relayH := parsePreviewResolution(a.cfg.PreviewResolution)
 	relayFeed := newPlayoutRelayFeed(relayW, relayH, a.cfg.PreviewBitrate, a.cfg.PreviewFrameInterval)
+	liveTaps := &playoutLiveTaps{sw: a.sw}
 
 	// Channel lifecycle: register/unregister as switcher sources.
 	mgr.OnChannelLifecycle(
@@ -182,6 +183,7 @@ func (a *App) initPlayout() error {
 				playoutPreviewGroupID[idx].Store(0)
 			}
 			relayFeed.stop(idx)
+			liveTaps.settle(key, nil)
 			// Release GPU preview encoder and cached frames.
 			if gs := a.gpu(); gs != nil && gs.sourceManager != nil {
 				gs.sourceManager.RemoveSource(key)
@@ -209,13 +211,7 @@ func (a *App) initPlayout() error {
 	mgr.SetGPUSourceTap(func(channelKey, sourceKey string) *playout.DecodedFrame {
 		gs := a.gpu()
 		if gs == nil || gs.sourceManager == nil {
-			f := a.sw.ReadLiveTap(sourceKey)
-			if f == nil {
-				return nil
-			}
-			return &playout.DecodedFrame{
-				YUV: f.Data, Width: f.Width, Height: f.Height, PTS: f.PTS, IsKeyframe: true,
-			}
+			return liveTaps.read(channelKey, sourceKey)
 		}
 		yuv, w, h, pts := gs.sourceManager.ReadCachedFrame(sourceKey)
 		if yuv == nil {
@@ -228,7 +224,8 @@ func (a *App) initPlayout() error {
 
 	// The switcher copies a source's pictures only once something asks for
 	// them, so the item after the one on air is asked for ahead of time.
-	// The GPU source manager caches every source anyway.
+	// An engine with a GPU source manager airs a live item through the
+	// VRAM alias instead, which needs no arming.
 	mgr.SetLiveSourcePrepare(func(sourceKey string) {
 		if gs := a.gpu(); gs == nil || gs.sourceManager == nil {
 			a.sw.ArmLiveTap(sourceKey)
@@ -272,6 +269,7 @@ func (a *App) initPlayout() error {
 			DTS:        pts,
 			IsKeyframe: isKeyframe,
 		}
+		liveTaps.settle(key, frame)
 		a.sw.IngestReplayVideo(key, frame)
 	})
 
