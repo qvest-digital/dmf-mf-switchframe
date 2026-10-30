@@ -35,6 +35,9 @@ func (t *playoutLiveTaps) read(channelKey, sourceKey string) *playout.DecodedFra
 		buf = pool.Acquire()
 	}
 	f, ok := t.sw.ReadLiveTap(sourceKey, buf)
+	// An empty picture airs nothing: the output reads no picture as the
+	// GPU alias signal.
+	ok = ok && len(f.Data) > 0
 	if buf != nil {
 		if ok && &f.Data[0] == &buf[0] {
 			t.mu.Lock()
