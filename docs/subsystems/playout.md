@@ -140,7 +140,7 @@ Pod priority determines contention: `PriorityMandatory` wins over `PriorityHigh`
 
 Each `PlaylistItem` can carry `SecondaryEvents` that fire at elapsed offsets anchored to item start or end. `SecondaryEventScheduler.BeginItem(events, durationMs)` computes absolute fire times and sorts them. `Tick(elapsedMs)` walks the sorted array firing any whose `fireMs` has arrived, marking them to prevent re-firing. Supported event types:
 
-- `graphics_on`, `graphics_off`, `graphics_update` — dispatch to the graphics subsystem.
+- `graphics_on`, `graphics_off` - auto on/off of the layer. `graphics_update` sends `template` to an HTML5 layer as its data JSON, unchanged, as `PUT /api/graphics/{id}/html5/data` does; on a template layer it only logs, since template layers render in the browser.
 - `audio_level`, `audio_mute`, `audio_afv` — per-source mixer controls.
 - `caption_mode`, `caption_text` — caption subsystem state.
 - `scte35_cue` — on-the-fly SCTE-35 cue with full parameters (see [../scte35.md](./scte35.md)).
