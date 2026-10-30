@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.38](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.37...mxl-v1.0.0-rc.38) (2026-10-30)
+
+
+### Bug Fixes
+
+* **audio:** stamp program audio frames with the encoder's delay ([#179](https://github.com/qvest-digital/dmf-mf-switchframe/issues/179)) ([6cf0b61](https://github.com/qvest-digital/dmf-mf-switchframe/commit/6cf0b6134de8f4cbb91fb059210c3c15e5d12986))
+
 ## [1.0.0-rc.37](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.36...mxl-v1.0.0-rc.37) (2026-10-30)
 
 
