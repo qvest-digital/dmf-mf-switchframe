@@ -589,6 +589,31 @@ func TestConnect_SameFlowIsANoOp(t *testing.T) {
 	}
 }
 
+// A connection that failed leaves nothing under way, so connecting again to
+// the flow the input still reads is a no-op rather than a reopen, which
+// would replace the handle being read.
+func TestConnect_FailedConnectionLeavesNothingUnderWay(t *testing.T) {
+	store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape)})
+	first, _ := store.open("a")
+	flow := NewReopeningReader("a", first, store.open, nil)
+	startVideo(t, flow)
+	if err := flow.(Retargetable).Connect(context.Background(), "missing"); err == nil {
+		t.Fatal("connection to a missing flow succeeded")
+	}
+	if err := flow.(Retargetable).Connect(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	opens := store.opens["a"]
+	store.mu.Unlock()
+	if opens != 1 {
+		t.Errorf("flow a opened %d times, want once", opens)
+	}
+	if first.(*liveFlow).isClosed() {
+		t.Error("the handle being read was replaced")
+	}
+}
+
 // A retarget a later connection replaced stops opening its flow, also while
 // that flow is missing. Otherwise an input disconnected or moved away from a
 // flow nobody writes keeps opening it for as long as the process runs, and

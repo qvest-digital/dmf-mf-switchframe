@@ -202,8 +202,8 @@ func (r *reopener[T]) retarget(id string) {
 
 // connect moves the reader to id as retarget does, but tries once and
 // reports the outcome: an error when id cannot be opened within ctx or has
-// another shape, in which case the reader keeps what it reads. An empty id
-// disconnects.
+// another shape, in which case the reader keeps what it reads and nothing
+// retries id. An empty id disconnects.
 func (r *reopener[T]) connect(ctx context.Context, id string) error {
 	gen, skip := r.begin(id)
 	if skip || id == "" {
@@ -213,6 +213,11 @@ func (r *reopener[T]) connect(ctx context.Context, id string) error {
 	go func() { res <- r.prepare(ctx, id, gen) }()
 	select {
 	case err := <-res:
+		if err != nil {
+			// Nothing is under way any more, so a connection to the
+			// flow still read is again a no-op.
+			r.supersede(gen)
+		}
 		return err
 	case <-ctx.Done():
 		r.supersede(gen)
