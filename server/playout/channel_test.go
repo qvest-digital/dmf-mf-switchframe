@@ -3869,3 +3869,42 @@ func TestChannel_LiveItemWaitingForItsFirstPictureIsNotReportedMissing(t *testin
 	require.Contains(t, logs.String(), "live source not available")
 	require.Contains(t, logs.String(), "source=cam-c")
 }
+
+// The output may hand the frame's buffer to a pipeline that returns it to a
+// pool, where the next reader overwrites it: the splice scan read the
+// buffer after the output and took that reader's picture as a candidate.
+func TestChannel_SpliceScanReadsTheFrameBeforeTheOutputTakesIt(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, Width: 320, Height: 240, FPS: 30.0})
+	src := &armedLiveSources{armed: map[string]bool{}, pics: map[string]*DecodedFrame{}}
+	ch.SetGPUSourceTap(src.read)
+	ch.SetLiveSourcePrepare(src.arm)
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		// The buffer back in the pool, taken and filled by another reader.
+		for i := range yuv {
+			yuv[i] = 0x11
+		}
+	})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector: &fakeSpliceInjector{}, BlackDetector: NewBlackDetector(BlackDetectorConfig{}),
+		PreRollMs: 100, WindowMs: 200,
+	})
+	t.Cleanup(sc.Cancel)
+	ch.SetSpliceCoordinator(sc)
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(liveItem("a", "cam-a"))))
+
+	ch.mu.Lock()
+	ch.state = StateOnAir
+	ch.scheduler.Start()
+	ch.mu.Unlock()
+
+	now := time.Now()
+	ch.tick(now)
+	require.NoError(t, sc.BeginSplice("pod-1", true, true, 30000, 0))
+	src.deliver(map[string]byte{"cam-a": 0xAA})
+	ch.tick(now.Add(33 * time.Millisecond))
+
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	require.Len(t, sc.active.candidates, 1)
+	require.Equal(t, byte(0xAA), sc.active.candidates[0].YUV[0], "the candidate is the aired picture, not the next reader's")
+}

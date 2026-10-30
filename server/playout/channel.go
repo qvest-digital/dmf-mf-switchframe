@@ -2107,6 +2107,14 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 		return
 	}
 
+	// Feed splice coordinator. Before the output: outputFn may hand
+	// frame.YUV to a pipeline that returns it to a pool, from which the
+	// next reader may already be overwriting it, so nothing here reads
+	// frame.YUV after outputFn.
+	if sc != nil {
+		sc.IngestFrame(frame.YUV, frame.Width, frame.Height, pts)
+	}
+
 	if outputFn != nil {
 		outputFn(frame.YUV, frame.Width, frame.Height, pts, frame.IsKeyframe)
 	}
@@ -2137,11 +2145,6 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 				c.outputAudioPTS, c.outputAudioPTSFrac = advancePTS(c.outputAudioPTS, c.outputAudioPTSFrac, aStepInt, aStepFrac)
 			}
 		}
-	}
-
-	// Feed splice coordinator.
-	if sc != nil {
-		sc.IngestFrame(frame.YUV, frame.Width, frame.Height, pts)
 	}
 
 	c.outputPTS, c.outputPTSFrac = advancePTS(c.outputPTS, c.outputPTSFrac, vStepInt, vStepFrac)
