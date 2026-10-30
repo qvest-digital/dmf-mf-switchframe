@@ -697,6 +697,10 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(remainMs)
 	c.secondaryItemID = item.ID
+	// A seek is not an item change, so the previous item's tap grace and
+	// warning dedup are dropped here.
+	c.lastLiveTapMiss = ""
+	clear(c.liveTapMissSince)
 	c.itemStartTime = time.Now().Add(-elapsed)
 
 	c.mu.Unlock()
