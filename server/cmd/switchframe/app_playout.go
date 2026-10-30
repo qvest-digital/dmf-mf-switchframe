@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -296,12 +297,7 @@ func (a *App) initPlayout() error {
 
 	// Wire secondary event handler. The splice coordinator and PTS provider
 	// are set below after the coordinator is created.
-	secHandler := &playoutSecondaryHandler{
-		compositor:     a.compositor,
-		mixer:          a.mixer,
-		captionMgr:     a.captionMgr,
-		scte35Injector: a.scte35Injector,
-	}
+	secHandler := a.newPlayoutSecondaryHandler()
 	mgr.SetSecondaryHandler(secHandler)
 
 	// As-run logger: persistent event log for traffic reconciliation.
@@ -368,11 +364,29 @@ func (a *App) initPlayout() error {
 	return nil
 }
 
+// newPlayoutSecondaryHandler wires the secondary event handler to the
+// engine's subsystems. The splice coordinator and PTS provider are set by
+// initPlayout once the coordinator exists.
+func (a *App) newPlayoutSecondaryHandler() *playoutSecondaryHandler {
+	h := &playoutSecondaryHandler{
+		compositor:     a.compositor,
+		mixer:          a.mixer,
+		captionMgr:     a.captionMgr,
+		scte35Injector: a.scte35Injector,
+	}
+	// A nil *htmlgfx.Manager in the interface would pass the nil check.
+	if a.htmlGfxMgr != nil {
+		h.html5 = a.htmlGfxMgr
+	}
+	return h
+}
+
 // playoutSecondaryHandler implements playout.SecondaryEventHandler by
 // delegating to real subsystems (graphics, audio, captions, SCTE-35).
 // Nil subsystem pointers are safe — each method checks before calling.
 type playoutSecondaryHandler struct {
 	compositor        graphicsController
+	html5             html5DataUpdater
 	mixer             audioController
 	captionMgr        captionController
 	scte35Injector    scte35Cuer
@@ -387,6 +401,13 @@ type graphicsController interface {
 	AutoOn(id int, duration time.Duration) error
 	AutoOff(id int, duration time.Duration) error
 	DeleteImage(id int) error
+}
+
+// html5DataUpdater is the part of *htmlgfx.Manager that
+// PUT /api/graphics/{id}/html5/data uses.
+type html5DataUpdater interface {
+	BrowserForLayer(layerID int) int
+	Update(browserID int, data string) error
 }
 
 type audioController interface {
@@ -430,9 +451,20 @@ func (h *playoutSecondaryHandler) OnGraphicsOff(layer int) error {
 	return h.compositor.AutoOff(layer, 500*time.Millisecond)
 }
 
+// OnGraphicsUpdate hands an HTML5 layer the event's template as its data
+// JSON, unchanged, exactly as PUT /api/graphics/{id}/html5/data hands it
+// the request's "data". A template-based layer is rendered by the browser
+// UI and posted as frames, so the engine has nothing to re-render for it.
 func (h *playoutSecondaryHandler) OnGraphicsUpdate(layer int, template string) error {
-	// Update is a re-render hint — currently a no-op since template-based
-	// rendering is not yet implemented. Log for visibility.
+	if h.html5 != nil {
+		if browserID := h.html5.BrowserForLayer(layer); browserID >= 0 {
+			if !json.Valid([]byte(template)) {
+				return fmt.Errorf("playout: graphics_update on HTML5 layer %d: data is not JSON: %q", layer, template)
+			}
+			slog.Info("playout: secondary graphics_update", "layer", layer, "html5Browser", browserID, "data", template)
+			return h.html5.Update(browserID, template)
+		}
+	}
 	slog.Info("playout: secondary graphics_update", "layer", layer, "template", template)
 	return nil
 }

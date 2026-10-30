@@ -139,6 +139,20 @@
 		return Math.max(0, Math.min(100, (abs / itemDurationMs) * 100));
 	}
 
+	/** An HTML5 layer reads a GFX Update's template as its data JSON. */
+	function takesData(evt: SecondaryEvent): boolean {
+		return evt.type === 'graphics_update' && !!graphicsLayers.find((l) => l.id === (evt.layer ?? 0))?.html5Url;
+	}
+
+	function isJSON(text: string): boolean {
+		try {
+			JSON.parse(text);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 	function isGraphicsType(type: string): boolean {
 		return type === 'graphics_on' || type === 'graphics_off' || type === 'graphics_update';
 	}
@@ -261,10 +275,11 @@
 							</label>
 							{#if evt.type === 'graphics_on' || evt.type === 'graphics_update'}
 								<label class="sec-field">
-									<span class="sec-field-label">Template</span>
+									<span class="sec-field-label">{takesData(evt) ? 'Data (JSON)' : 'Template'}</span>
 									<input
 										class="sec-input"
 										type="text"
+										aria-invalid={takesData(evt) && !isJSON(evt.template ?? '')}
 										value={evt.template ?? ''}
 										onchange={(e) => updateEvent(idx, { template: (e.target as HTMLInputElement).value || undefined })}
 									/>
@@ -767,6 +782,10 @@
 	.sec-select:focus,
 	.sec-input:focus {
 		border-color: var(--accent-blue);
+	}
+
+	.sec-input[aria-invalid='true'] {
+		border-color: var(--tally-program);
 	}
 
 	.sec-input[type='number'] {
