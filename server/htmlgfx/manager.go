@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -102,6 +103,7 @@ func (m *Manager) Start() error {
 		ReadyTimeout:           10 * time.Second,
 		DisableShutdownMessage: true, // Manager sends CEF-format shutdown in Close()
 		BuildArgs:              m.sidecarArgs,
+		Env:                    sidecarEnv(os.Environ()),
 		Connect: func(socketDir string) (net.Conn, error) {
 			// CEF creates listeners, we connect to them.
 			controlPath := filepath.Join(socketDir, "control.sock")
@@ -150,6 +152,27 @@ func (m *Manager) sidecarArgs(socketDir string) []string {
 		args = append(args, "--templates-dir", dir)
 	}
 	return args
+}
+
+// sidecarEnv filters environ down to what Chromium needs to start headless.
+// The sidecar is an unsandboxed Chromium rendering operator-supplied pages,
+// so a compromised renderer must not find the engine's API token or other
+// secrets in its environment. The result is never nil, so exec does not fall
+// back to inheriting everything.
+func sidecarEnv(environ []string) []string {
+	env := []string{}
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		switch name {
+		case "PATH", "HOME", "TMPDIR", "LANG", "TZ", "XDG_CACHE_HOME", "XDG_CONFIG_HOME":
+			env = append(env, kv)
+		default:
+			if strings.HasPrefix(name, "LC_") {
+				env = append(env, kv)
+			}
+		}
+	}
+	return env
 }
 
 // connectAfterSpawn connects the frame socket and starts the control and
