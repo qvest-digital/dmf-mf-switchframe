@@ -138,6 +138,19 @@ func (m *Mixer) tick() *media.AudioFrame {
 		m.promMetrics.FramesMixedTotal.Inc()
 	}
 
+	// The frame carries the audio mixed the encoder's delay before this
+	// tick, so it is stamped with that audio's time: stamped with the
+	// tick's, every output played the program audio late by the delay.
+	// The PCM sinks above get the mix itself and keep the tick's PTS.
+	if de, ok := m.encoder.(delayedEncoder); ok {
+		// Not masked to 33 bits: advanceOutputPTS leaves the seeded
+		// timeline unmasked. A PTS below the delay comes only before the
+		// video seed, which no output aligns against.
+		if d := int64(de.Delay()) * 90000 / int64(m.sampleRate); d > 0 && pts > d {
+			pts -= d
+		}
+	}
+
 	m.mu.Unlock()
 
 	return &media.AudioFrame{

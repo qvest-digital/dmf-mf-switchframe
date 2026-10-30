@@ -3,7 +3,11 @@
 package audio
 
 import (
+	"encoding/binary"
 	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -250,4 +254,51 @@ func TestFDKEncoderEncodeAfterClose(t *testing.T) {
 	_, err = enc.Encode(silence)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "closed")
+}
+
+// The encoder delay FDK reports is how far its frames lag their PCM: a tone
+// burst encoded by FDK and decoded by FFmpeg, whose AAC decoder adds no
+// delay of its own, comes out exactly Delay samples later than it went in.
+// Uncompensated, it put every output's program audio 42.7 ms behind video.
+func TestFDKEncoderDelayMatchesDecodedStream(t *testing.T) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not found")
+	}
+	enc, err := NewFDKEncoder(48000, 2)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	const onset = 10 * 1024
+	var adts []byte
+	for f := 0; f < 30; f++ {
+		pcm := make([]float32, 2048)
+		for i := 0; i < 1024; i++ {
+			if s := f*1024 + i; s >= onset && s < onset+480 {
+				v := float32(0.8 * math.Sin(2*math.Pi*1000*float64(s-onset)/48000))
+				pcm[2*i], pcm[2*i+1] = v, v
+			}
+		}
+		aac, err := enc.Encode(pcm)
+		require.NoError(t, err)
+		adts = append(adts, aac...)
+	}
+	require.Positive(t, enc.Delay())
+
+	path := filepath.Join(t.TempDir(), "burst.aac")
+	require.NoError(t, os.WriteFile(path, adts, 0o644))
+	raw, err := exec.Command(ffmpegPath, "-v", "error", "-i", path, "-ac", "1", "-f", "s16le", "-").Output()
+	require.NoError(t, err)
+
+	first := -1
+	for i := 0; i+1 < len(raw); i += 2 {
+		if v := int16(binary.LittleEndian.Uint16(raw[i:])); v > 1600 || v < -1600 {
+			first = i / 2
+			break
+		}
+	}
+	require.GreaterOrEqual(t, first, 0, "the burst decodes")
+	// The burst rises from zero, so its first sample above the threshold
+	// sits a few samples in.
+	require.InDelta(t, onset+enc.Delay(), first, 8)
 }
