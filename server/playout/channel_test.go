@@ -3997,3 +3997,82 @@ func TestChannel_SpliceScanReadsTheFrameBeforeTheOutputTakesIt(t *testing.T) {
 	require.Len(t, sc.active.candidates, 1)
 	require.Equal(t, byte(0xAA), sc.active.candidates[0].YUV[0], "the candidate is the aired picture, not the next reader's")
 }
+
+// graceChannel is an on-air channel over live items that read from sources
+// with no picture, plus the log it reports to.
+func graceChannel(t *testing.T, items ...PlaylistItem) (*Channel, *armedLiveSources, *syncBuffer) {
+	t.Helper()
+	logs := captureLog(t)
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, Width: 320, Height: 240, FPS: 30.0})
+	src := &armedLiveSources{armed: map[string]bool{}, pics: map[string]*DecodedFrame{}}
+	ch.SetGPUSourceTap(src.read)
+	ch.SetLiveSourcePrepare(src.arm)
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(items...)))
+	ch.mu.Lock()
+	ch.state = StateOnAir
+	ch.scheduler.Start()
+	ch.mu.Unlock()
+	return ch, src, logs
+}
+
+// expireGrace backdates a source's first miss so its grace has run out.
+func expireGrace(t *testing.T, ch *Channel, source string) {
+	t.Helper()
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	since, ok := ch.liveTapMissSince[source]
+	require.True(t, ok, "source %s has no grace running", source)
+	ch.liveTapMissSince[source] = since.Add(-2 * liveTapGrace)
+}
+
+// The grace belongs to one item. A source that missed on item a without
+// ever delivering a picture, then airs item b more than liveTapGrace
+// later, gets the grace again from b's first miss.
+func TestChannel_LiveTapGraceDoesNotCarryOverToTheNextItem(t *testing.T) {
+	ch, _, logs := graceChannel(t, liveItem("a", "cam-x"), liveItem("b", "cam-x"))
+	now := time.Now()
+	ch.tick(now)
+	expireGrace(t, ch, "cam-x")
+
+	require.NoError(t, ch.JumpTo("b"))
+	ch.tick(now.Add(33 * time.Millisecond))
+	require.NotContains(t, logs.String(), "live source not available",
+		"item b's first miss starts its own grace")
+}
+
+// A picture ends the grace. A source that recovered and drops again is
+// reported after liveTapGrace from the drop, not from its first miss.
+func TestChannel_LiveTapGraceRestartsAfterAPicture(t *testing.T) {
+	ch, src, logs := graceChannel(t, liveItem("a", "cam-x"))
+	fill := map[string]byte{"cam-x": 0xAA}
+	now := time.Now()
+	ch.tick(now)
+	expireGrace(t, ch, "cam-x")
+
+	src.deliver(fill)
+	now = now.Add(33 * time.Millisecond)
+	ch.tick(now)
+	require.NotContains(t, logs.String(), "live source not available", "a picture is on air")
+
+	src.mu.Lock()
+	delete(src.pics, "cam-x")
+	src.mu.Unlock()
+	ch.tick(now.Add(33 * time.Millisecond))
+	require.NotContains(t, logs.String(), "live source not available",
+		"the drop starts a new grace")
+}
+
+// A seek to a live item is not an item change, so the grace of the item
+// that was on air has to be dropped by the seek itself.
+func TestChannel_SeekToItemDropsTheLiveTapGrace(t *testing.T) {
+	ch, _, logs := graceChannel(t, liveItem("a", "cam-x"), liveItem("b", "cam-x"))
+	now := time.Now()
+	ch.tick(now)
+	expireGrace(t, ch, "cam-x")
+
+	require.NoError(t, ch.SeekToItem(1, 5000))
+	ch.tick(now.Add(33 * time.Millisecond))
+	require.NotContains(t, logs.String(), "live source not available",
+		"the seek target's first miss starts its own grace")
+}
