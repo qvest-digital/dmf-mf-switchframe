@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.39](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.38...mxl-v1.0.0-rc.39) (2026-10-30)
+
+
+### Bug Fixes
+
+* **clip:** apply MP4 edit lists to video and audio timestamps ([#181](https://github.com/qvest-digital/dmf-mf-switchframe/issues/181)) ([ce1888c](https://github.com/qvest-digital/dmf-mf-switchframe/commit/ce1888c4320ebec7ab2532a4474568f3c1ae6aec))
+
 ## [1.0.0-rc.38](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.37...mxl-v1.0.0-rc.38) (2026-10-30)
 
 
