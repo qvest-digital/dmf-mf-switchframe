@@ -1268,6 +1268,11 @@ func (a *App) initMXL() error {
 	}
 	a.mxlInstance = inst
 
+	// A flow the domain does not list fails at once rather than in libmxl,
+	// where its open would hold every other open of the instance.
+	openReader := mxl.OnlyListed(a.cfg.MXLDomain, inst.OpenReader)
+	openAudioReader := mxl.OnlyListed(a.cfg.MXLDomain, inst.OpenAudioReader)
+
 	// Register MXL sources.
 	// Each spec is "videoUUID", "videoUUID:audioUUID", or "videoUUID:audioUUID:dataUUID".
 	for _, raw := range a.cfg.MXLSources {
@@ -1297,12 +1302,12 @@ func (a *App) initMXL() error {
 			// flow, so a later connection has a reader loop to take over.
 			in := &mxlInput{}
 			pf := a.sw.PipelineFormat()
-			videoFlow = mxl.NewRetargetableReader(inst.OpenReader, expectMXLVideo(pf.FPSNum, pf.FPSDen), nil)
-			audioFlow = mxl.NewRetargetableAudioReader(inst.OpenAudioReader, expectMXLFormat(mxl.DataFormatAudio), nil)
+			videoFlow = mxl.NewRetargetableReader(openReader, expectMXLVideo(pf.FPSNum, pf.FPSDen), nil)
+			audioFlow = mxl.NewRetargetableAudioReader(openAudioReader, expectMXLFormat(mxl.DataFormatAudio), nil)
 			in.Video = videoFlow.(mxl.Retargetable)
 			in.Audio = audioFlow.(mxl.Retargetable)
 			if dataFlowID != "" {
-				dataFlow = mxl.NewRetargetableReader(inst.OpenReader, expectMXLFormat(mxl.DataFormatData), nil)
+				dataFlow = mxl.NewRetargetableReader(openReader, expectMXLFormat(mxl.DataFormatData), nil)
 				in.Data = dataFlow.(mxl.Retargetable)
 			}
 			a.namedMXLInputs.add(spec.Name, in)
@@ -1315,7 +1320,7 @@ func (a *App) initMXL() error {
 			if err != nil {
 				slog.Warn("mxl: could not open video flow", "flowID", videoFlowID, "error", err)
 			} else {
-				videoFlow = mxl.NewReopeningReader(videoFlowID, vf, inst.OpenReader, nil)
+				videoFlow = mxl.NewReopeningReader(videoFlowID, vf, openReader, nil)
 			}
 
 			// Open MXL audio flow if specified.
@@ -1324,7 +1329,7 @@ func (a *App) initMXL() error {
 				if err != nil {
 					slog.Warn("mxl: could not open audio flow", "flowID", audioFlowID, "error", err)
 				} else {
-					audioFlow = mxl.NewReopeningAudioReader(audioFlowID, af, inst.OpenAudioReader, nil)
+					audioFlow = mxl.NewReopeningAudioReader(audioFlowID, af, openAudioReader, nil)
 				}
 			}
 
@@ -1334,7 +1339,7 @@ func (a *App) initMXL() error {
 				if err != nil {
 					slog.Warn("mxl: could not open data flow", "flowID", dataFlowID, "error", err)
 				} else {
-					dataFlow = mxl.NewReopeningReader(dataFlowID, df, inst.OpenReader, nil)
+					dataFlow = mxl.NewReopeningReader(dataFlowID, df, openReader, nil)
 				}
 			}
 		}
