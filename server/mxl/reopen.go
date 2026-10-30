@@ -265,10 +265,19 @@ func (r *reopener[T]) replacePending(p *pendingFlow[T]) {
 // prepare opens id for retarget gen once, checks it, waits until it is
 // written here and hands it to the reader loop. It returns the open error,
 // a shape error, the wait's error when ctx ends first, or errSuperseded
-// when a later retarget or close came first.
+// when a later retarget or close came first. The retry loop of a retarget
+// ends only on errSuperseded, so an open that fails reports it as well:
+// otherwise a retarget replaced while its flow is missing retries it for
+// good.
 func (r *reopener[T]) prepare(ctx context.Context, id string, gen uint64) error {
+	if r.stale(gen) {
+		return errSuperseded
+	}
 	h, err := r.open(id)
 	if err != nil {
+		if r.stale(gen) {
+			return errSuperseded
+		}
 		return fmt.Errorf("flow %s: %w", id, err)
 	}
 	if err := r.check(id, h); err != nil {
@@ -313,10 +322,7 @@ func (r *reopener[T]) waitWritten(ctx context.Context, h T, gen uint64) error {
 				return nil
 			}
 		}
-		r.mu.Lock()
-		stale := r.gen != gen || r.closed
-		r.mu.Unlock()
-		if stale {
+		if r.stale(gen) {
 			return errSuperseded
 		}
 		select {
@@ -325,6 +331,13 @@ func (r *reopener[T]) waitWritten(ctx context.Context, h T, gen uint64) error {
 		case <-tick.C:
 		}
 	}
+}
+
+// stale reports whether a later retarget or close replaced retarget gen.
+func (r *reopener[T]) stale(gen uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.gen != gen || r.closed
 }
 
 // shape is the configuration the reader loops read.

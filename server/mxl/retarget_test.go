@@ -408,7 +408,11 @@ func TestRetarget_LaterRetargetWins(t *testing.T) {
 			t.Fatalf("superseded flow %d took over", g.V210[0])
 		}
 	}
-	if b := store.handle("b"); !b.isClosed() {
+	// A retarget replaced before it reached the open does not open at all.
+	store.mu.Lock()
+	opened := store.opens["b"] > 0
+	store.mu.Unlock()
+	if b := store.handle("b"); opened && !b.isClosed() {
 		t.Error("handle opened for the superseded retarget was not closed")
 	}
 }
@@ -582,5 +586,52 @@ func TestConnect_SameFlowIsANoOp(t *testing.T) {
 	}
 	if first.(*liveFlow).isClosed() {
 		t.Error("the handle being read was replaced")
+	}
+}
+
+// A retarget a later connection replaced stops opening its flow, also while
+// that flow is missing. Otherwise an input disconnected or moved away from a
+// flow nobody writes keeps opening it for as long as the process runs, and
+// every such open is one more turn at libmxl's instance lock.
+func TestRetarget_SupersededRetargetStopsOpening(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		after func(Retargetable) error
+	}{
+		{"disconnected", func(r Retargetable) error { r.Retarget(""); return nil }},
+		{"connected elsewhere", func(r Retargetable) error {
+			return r.Connect(context.Background(), "a")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape)})
+			opened := func() int {
+				store.mu.Lock()
+				defer store.mu.Unlock()
+				return store.opens["missing"]
+			}
+			flow := NewRetargetableReader(store.open, nil, nil)
+			t.Cleanup(func() { _ = flow.Close() })
+			startVideo(t, flow)
+
+			flow.(Retargetable).Retarget("missing")
+			deadline := time.Now().Add(time.Second)
+			for opened() == 0 {
+				if time.Now().After(deadline) {
+					t.Fatal("the missing flow was never opened")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if err := tc.after(flow.(Retargetable)); err != nil {
+				t.Fatal(err)
+			}
+			before := opened()
+			time.Sleep(7 * reopenInterval / 2)
+			// One open may already be under way when the retarget is
+			// replaced; a loop still retrying makes three more.
+			if n := opened() - before; n > 1 {
+				t.Errorf("superseded retarget opened the missing flow %d more times", n)
+			}
+		})
 	}
 }
