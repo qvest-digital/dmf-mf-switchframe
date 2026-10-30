@@ -124,6 +124,10 @@ type Channel struct {
 	lastLiveTapMiss  string // for once-per-item logging of tap failures
 	activeLiveSource string // current live source key (for audio routing)
 
+	// When each live source first had no picture for this item, for the
+	// grace before reporting it missing.
+	liveTapMissSince map[string]time.Time
+
 	// Sentinel frame returned by tapLiveSource when GPU alias succeeded.
 	// emitFrame skips CPU output for this frame (GPU pipeline already has it).
 	gpuAliasedSentinel DecodedFrame
@@ -696,6 +700,9 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 	c.itemStartTime = time.Now().Add(-elapsed)
 
 	c.mu.Unlock()
+	// The item airs on the next tick; nothing has armed its source on this
+	// engine.
+	c.prepareLiveSources()
 	return nil
 }
 
@@ -1197,6 +1204,7 @@ func (c *Channel) handleItemChange(item *PlaylistItem, secScheduler *SecondaryEv
 	prevLiveSource := c.activeLiveSource
 	c.secondaryItemID = item.ID
 	c.lastLiveTapMiss = "" // reset so new item gets a fresh warning
+	clear(c.liveTapMissSince)
 	c.itemStartTime = now.UTC()
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(item.DurationMs)
@@ -1966,6 +1974,9 @@ func (c *Channel) tapLiveSource(sourceKey string) *DecodedFrame {
 	if tap != nil {
 		frame := tap(sourceKey)
 		if frame != nil {
+			c.mu.Lock()
+			delete(c.liveTapMissSince, sourceKey)
+			c.mu.Unlock()
 			return frame
 		}
 	}
@@ -1973,11 +1984,22 @@ func (c *Channel) tapLiveSource(sourceKey string) *DecodedFrame {
 	// Log once when the tap fails so operators know the source is
 	// misconfigured. A tap that starts copying a source when its item is
 	// armed has no picture until the source's next one arrives, which is
-	// no reason to report the source as missing.
+	// no reason to report the source as missing. The grace runs from the
+	// first read without a picture, not from the item's start: an item
+	// reached by a seek starts in the past, and a transition reads its
+	// incoming item before that item starts.
+	now := time.Now()
 	c.mu.Lock()
-	onAirFor := time.Since(c.itemStartTime)
+	since, ok := c.liveTapMissSince[sourceKey]
+	if !ok {
+		if c.liveTapMissSince == nil {
+			c.liveTapMissSince = make(map[string]time.Time)
+		}
+		c.liveTapMissSince[sourceKey] = now
+		since = now
+	}
 	c.mu.Unlock()
-	if onAirFor >= liveTapGrace {
+	if now.Sub(since) >= liveTapGrace {
 		c.logLiveTapMissOnce(sourceKey)
 	}
 
@@ -1985,8 +2007,8 @@ func (c *Channel) tapLiveSource(sourceKey string) *DecodedFrame {
 	return c.idleLoop.NextFrame()
 }
 
-// liveTapGrace is how long a live item may be on air without a picture of
-// its source before the channel reports the source as not available.
+// liveTapGrace is how long a live item's source may have no picture before
+// the channel reports it as not available.
 const liveTapGrace = time.Second
 
 // logLiveTapMissOnce logs a warning the first time a live source tap fails per item.
