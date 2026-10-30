@@ -42,6 +42,41 @@ func TestEditWindow(t *testing.T) {
 	}
 }
 
+// I P B B at 25 fps in a 12800 timescale, presented from 1024 to 3072:
+// the earliest picture ends at 1536, the latest starts at 2560.
+func TestEditHidesPictures(t *testing.T) {
+	tests := []struct {
+		name  string
+		edits []mp4Edit
+		want  bool
+	}{
+		{"no edit list", nil, false},
+		{"reorder delay only", []mp4Edit{{160, 1024, 1}}, false},
+		{"starts inside the earliest picture", []mp4Edit{{120, 1535, 1}}, false},
+		{"starts at the second picture", []mp4Edit{{120, 1536, 1}}, true},
+		// 80 ms = 1024 ticks: presents 1024 to 2048, before the latest.
+		{"ends before the latest picture", []mp4Edit{{80, 1024, 1}}, true},
+		{"falls back", []mp4Edit{{160, 1536, 0}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			track := mp4Track{
+				timescale:      12800,
+				movieTimescale: 1000,
+				stts:           []mp4.SttsEntry{{SampleCount: 4, SampleDelta: 512}},
+				ctts: []mp4.CttsEntry{
+					{SampleCount: 1, SampleOffsetV0: 1024},
+					{SampleCount: 1, SampleOffsetV0: 2048},
+					{SampleCount: 2, SampleOffsetV0: 512},
+				},
+				stsz:  []uint32{8, 8, 8, 8},
+				edits: tt.edits,
+			}
+			assert.Equal(t, tt.want, track.editHidesPictures())
+		})
+	}
+}
+
 // An AAC track with 2112 priming samples, as Apple and FDK encoders write,
 // carries two frames wholly before the edit and one straddling it. Played
 // in order, the two would delay all audio by 2048 samples (43 ms at 48 kHz).
@@ -229,4 +264,51 @@ func abs64(v int64) int64 {
 		return -v
 	}
 	return v
+}
+
+// A stream-copy cut, as `ffmpeg -ss 1.5 -c copy` and trim-without-re-encode
+// tools write, starts at the keyframe before the cut point and hides the
+// 0.5 s of pictures up to it with the edit list, the audio there too. The
+// players keep every picture after the keyframe and spread the audio over
+// them by order, so audio dropped by the edit would leave each pass 0.5 s
+// short of audio and play the first picture with audio from 0.5 s later.
+// The edit is not applied: video and audio cover the same time from the
+// keyframe, as before edit lists were read. 0.25 s, half of what the cut
+// hides, separates the two; the mux leaves the audio a few frames apart.
+func TestDemuxMP4_StreamCopyCutKeepsAudioWithPictures(t *testing.T) {
+	ffmpegPath := requireFFmpeg(t)
+	dir := t.TempDir()
+	enc := filepath.Join(dir, "enc.mp4")
+	cut := filepath.Join(dir, "cut.mp4")
+	out, err := exec.Command(ffmpegPath, "-v", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc=duration=4:size=160x120:rate=25",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=4:sample_rate=48000",
+		"-c:v", "libx264", "-bf", "2", "-g", "25", "-keyint_min", "25", "-sc_threshold", "0",
+		"-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "64k", "-ac", "2", enc).CombinedOutput()
+	require.NoError(t, err, string(out))
+	out, err = exec.Command(ffmpegPath, "-v", "error", "-y",
+		"-ss", "1.5", "-i", enc, "-c", "copy", cut).CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	video, audio, err := demuxMP4(cut)
+	require.NoError(t, err)
+	video, audio = fromFirstKeyframe(video, audio)
+	require.NotEmpty(t, video)
+	require.NotEmpty(t, audio)
+
+	const tolerance = 90000 / 4
+	frame := int64(90000 / 25)
+	lo, hi := int64(math.MaxInt64), int64(math.MinInt64)
+	for _, f := range video {
+		lo, hi = min(lo, f.pts), max(hi, f.pts)
+	}
+	videoSpan := hi + frame - lo
+	audioSpan := int64(len(audio)) * aacFrameTicks(audio[0])
+	t.Logf("MEASURE: %d pictures over %.3f s, %d audio frames over %.3f s, first audio %.3f s from the keyframe",
+		len(video), float64(videoSpan)/90000, len(audio), float64(audioSpan)/90000,
+		float64(audio[0].pts-video[0].pts)/90000)
+	assert.Less(t, abs64(videoSpan-audioSpan), int64(tolerance),
+		"video covers %d ticks, audio %d", videoSpan, audioSpan)
+	assert.Less(t, abs64(audio[0].pts-video[0].pts), int64(tolerance),
+		"first audio frame %d ticks, keyframe %d", audio[0].pts, video[0].pts)
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
 	"sort"
 
 	mp4 "github.com/abema/go-mp4"
@@ -55,6 +56,15 @@ func demuxMP4(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
 
 	if videoTrack == nil {
 		return nil, nil, fmt.Errorf("no video track found in MP4")
+	}
+
+	// An edit hiding whole pictures is applied to no track, so the video
+	// and audio stay together as the players pair them.
+	if videoTrack.editHidesPictures() {
+		videoTrack.edits = nil
+		if audioTrack != nil {
+			audioTrack.edits = nil
+		}
 	}
 
 	// Build sample tables and read samples.
@@ -150,6 +160,8 @@ func (t *mp4Track) editWindow() (start, end, shift int64) {
 		if t.movieTimescale == 0 {
 			return 0, end, 0
 		}
+		// The delay moves the audio PTS only: the players pair audio with
+		// pictures by order, so they do not play it.
 		delay = int64(edits[0].segmentDuration * uint64(t.timescale) / uint64(t.movieTimescale))
 		edits = edits[1:]
 	}
@@ -162,6 +174,37 @@ func (t *mp4Track) editWindow() (start, end, shift int64) {
 		end = e.mediaTime + int64(e.segmentDuration*uint64(t.timescale)/uint64(t.movieTimescale))
 	}
 	return e.mediaTime, end, delay - e.mediaTime
+}
+
+// editHidesPictures reports whether the track's edit leaves whole pictures
+// out of its window, as a stream-copy cut writes: it starts at the
+// keyframe before the cut point and the edit starts at the cut point.
+// Pictures outside the edit are kept (see readVideoSamples) and neither
+// fromFirstKeyframe nor playout drops one by its PTS against the edit,
+// while audio outside it is dropped. The players spread the audio over the
+// pictures by order, so applying such an edit would play the hidden
+// pictures with audio from after them and leave each pass short of audio.
+//
+// A picture is presented until the next composition time, so the earliest
+// is hidden exactly when the second earliest is at or before the edit
+// start, and the latest when it is at or after the edit end. An edit that
+// only removes the B-frame reorder delay starts at the earliest
+// composition time and hides nothing; one that starts inside the earliest
+// picture hides part of it, which the picture's negative PTS carries.
+func (t *mp4Track) editHidesPictures() bool {
+	start, end, _ := t.editWindow()
+	n := len(t.stsz)
+	if n == 0 {
+		return false
+	}
+	ct := buildDTSTable(t.stts, n)
+	if offsets := buildCTSOffsets(t.ctts, t.cttsVersion, n); offsets != nil {
+		for i := range ct {
+			ct[i] += offsets[i]
+		}
+	}
+	slices.Sort(ct)
+	return n > 1 && ct[1] <= start || ct[n-1] >= end
 }
 
 // parseMP4Tracks walks the MP4 box tree and extracts track metadata. fileSize
