@@ -13,6 +13,7 @@ typedef struct {
 	int sample_rate;
 	int frame_size;    // samples per channel per frame (1024 for AAC-LC)
 	int max_out_bytes; // max output buffer size
+	int delay;         // samples per channel an output frame lags its input
 } aacenc_t;
 
 static int aacenc_open(aacenc_t* h, int sample_rate, int channels, int bitrate) {
@@ -91,6 +92,7 @@ static int aacenc_open(aacenc_t* h, int sample_rate, int channels, int bitrate) 
 
 	h->frame_size = info.frameLength;
 	h->max_out_bytes = info.maxOutBufBytes;
+	h->delay = (int)info.nDelay;
 
 	return 0;
 }
@@ -150,6 +152,10 @@ static int aacenc_encode(aacenc_t* h, INT_PCM* pcm, int num_samples,
 
 static int aacenc_frame_size(aacenc_t* h) {
 	return h->frame_size;
+}
+
+static int aacenc_delay(aacenc_t* h) {
+	return h->delay;
 }
 
 static int aacenc_max_out_bytes(aacenc_t* h) {
@@ -257,6 +263,13 @@ func (e *FDKEncoder) Encode(pcm []float32) ([]byte, error) {
 	}
 	// Return a copy so callers own the slice (outBuf is reused next call).
 	return append([]byte(nil), outBuf[:n]...), nil
+}
+
+// Delay returns how many samples per channel the audio in an encoded frame
+// lags the PCM passed in for it: the encoder's lookahead and filterbank
+// delay, as FDK reports it.
+func (e *FDKEncoder) Delay() int {
+	return int(C.aacenc_delay(&e.handle))
 }
 
 // Close releases the encoder resources. Safe to call multiple times
