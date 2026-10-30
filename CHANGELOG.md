@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0-rc.36](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.35...mxl-v1.0.0-rc.36) (2026-10-30)
+
+
+### Bug Fixes
+
+* **playout:** arm a live item's source when the cursor jumps to it ([8c5cfc8](https://github.com/qvest-digital/dmf-mf-switchframe/commit/8c5cfc88d1246b3f0289ca0437b3426382e39171))
+* **switcher:** stop allocating a picture per frame in the live tap ([8c5cfc8](https://github.com/qvest-digital/dmf-mf-switchframe/commit/8c5cfc88d1246b3f0289ca0437b3426382e39171))
+
 ## [1.0.0-rc.35](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.34...mxl-v1.0.0-rc.35) (2026-10-29)
 
 
