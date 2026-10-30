@@ -97,26 +97,47 @@ type flowStore struct {
 	mu    sync.Mutex
 	flows map[string]*liveFlow
 	gates map[string]chan struct{}
+	// held receives a value each time an open of a gated flow starts
+	// waiting at its gate.
+	held  map[string]chan struct{}
 	opens map[string]int
 }
 
 func newFlowStore(flows map[string]*liveFlow) *flowStore {
-	return &flowStore{flows: flows, gates: map[string]chan struct{}{}, opens: map[string]int{}}
+	return &flowStore{flows: flows, gates: map[string]chan struct{}{}, held: map[string]chan struct{}{}, opens: map[string]int{}}
 }
 
 func (s *flowStore) gate(id string) chan struct{} {
 	g := make(chan struct{})
 	s.mu.Lock()
 	s.gates[id] = g
+	s.held[id] = make(chan struct{}, 16)
 	s.mu.Unlock()
 	return g
 }
 
+// heldAt returns once an open of gated flow id waits at its gate.
+func (s *flowStore) heldAt(t *testing.T, id string) {
+	t.Helper()
+	s.mu.Lock()
+	h := s.held[id]
+	s.mu.Unlock()
+	select {
+	case <-h:
+	case <-time.After(time.Second):
+		t.Fatalf("flow %s never opened", id)
+	}
+}
+
 func (s *flowStore) open(id string) (DiscreteReader, error) {
 	s.mu.Lock()
-	g := s.gates[id]
+	g, held := s.gates[id], s.held[id]
 	s.mu.Unlock()
 	if g != nil {
+		select {
+		case held <- struct{}{}:
+		default:
+		}
 		<-g
 	}
 	s.mu.Lock()
@@ -394,6 +415,9 @@ func TestRetarget_LaterRetargetWins(t *testing.T) {
 	r := startVideo(t, flow)
 
 	flow.(Retargetable).Retarget("b")
+	// Replaced while its open is under way, so the open returns a handle
+	// nothing reads.
+	store.heldAt(t, "b")
 	flow.(Retargetable).Retarget("c")
 	deadline := time.Now().Add(time.Second)
 	for nextGrain(t, r).V210[0] != 3 {
@@ -402,18 +426,23 @@ func TestRetarget_LaterRetargetWins(t *testing.T) {
 		}
 	}
 	close(gate)
-	time.Sleep(50 * time.Millisecond)
+	deadline = time.Now().Add(time.Second)
+	for !store.handle("b").isClosed() {
+		if time.Now().After(deadline) {
+			t.Fatal("handle opened for the superseded retarget was not closed")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	for i := 0; i < 20; i++ {
 		if g := nextGrain(t, r); g.V210[0] != 3 {
 			t.Fatalf("superseded flow %d took over", g.V210[0])
 		}
 	}
-	// A retarget replaced before it reached the open does not open at all.
 	store.mu.Lock()
-	opened := store.opens["b"] > 0
+	opens := store.opens["b"]
 	store.mu.Unlock()
-	if b := store.handle("b"); opened && !b.isClosed() {
-		t.Error("handle opened for the superseded retarget was not closed")
+	if opens != 1 {
+		t.Errorf("flow b opened %d times, want once", opens)
 	}
 }
 
