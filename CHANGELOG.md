@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-rc.37](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.36...mxl-v1.0.0-rc.37) (2026-10-30)
+
+
+### Bug Fixes
+
+* **htmlgfx:** start the sidecar with a minimal environment ([#178](https://github.com/qvest-digital/dmf-mf-switchframe/issues/178)) ([445f515](https://github.com/qvest-digital/dmf-mf-switchframe/commit/445f51507707e3f3352ed9a882cf9a36f9759827))
+* **mxl:** leave nothing under way after a failed connection ([cc42d6b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/cc42d6b7752c71f37fc8e966ee18123d68bc09e3))
+* **mxl:** stop a superseded retarget retrying a missing flow ([cc42d6b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/cc42d6b7752c71f37fc8e966ee18123d68bc09e3))
+* **mxl:** wait for a missing flow on mxlfs outside libmxl's lock ([cc42d6b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/cc42d6b7752c71f37fc8e966ee18123d68bc09e3))
+* **playout:** drop the live tap grace on a standby seek ([#176](https://github.com/qvest-digital/dmf-mf-switchframe/issues/176)) ([a49a2ad](https://github.com/qvest-digital/dmf-mf-switchframe/commit/a49a2adf2542792adbe0183d64b88c94c85d2d26))
+* **playout:** send GFX Update events to HTML5 layers as data ([#175](https://github.com/qvest-digital/dmf-mf-switchframe/issues/175)) ([10584a5](https://github.com/qvest-digital/dmf-mf-switchframe/commit/10584a530264a124666629b528a44b648f90f0fd))
+
 ## [1.0.0-rc.36](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.35...mxl-v1.0.0-rc.36) (2026-10-30)
 
 
