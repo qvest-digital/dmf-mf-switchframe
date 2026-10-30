@@ -1816,8 +1816,9 @@ func TestFileFrameIterator_AudioStartsAtFirstPicture(t *testing.T) {
 
 // A stream that starts at its keyframe drops no frame and keeps all of its
 // audio. Audio before its first picture is how the container aligns the
-// two: an MP4 with B-frames starts its video at the reorder delay and its
-// audio at 0, and dropping that audio would play the rest early.
+// two: an MP4 with B-frames whose edit list is not applied starts its
+// video at the reorder delay and its audio at 0, and dropping that audio
+// would play the rest early.
 func TestFileFrameIterator_KeepsAudioWhenNoFrameIsDropped(t *testing.T) {
 	const n = 4
 	encoded := make([]encodedFrame, n)
@@ -2136,9 +2137,10 @@ func TestFileFrameIterator_Integration_LoopOpenGOPCut(t *testing.T) {
 	}
 }
 
-// An MP4 with B-frames, read without its edit list, starts its video at the
-// reorder delay and its audio at 0. Nothing is cut, so its audio is kept as
-// demuxed and the first picture plays with the audio from 0.
+// An MP4 with B-frames has its video and audio shifted to start at 0 by
+// their edit lists, the AAC priming frame dropped. Nothing is cut, so its
+// audio is kept as demuxed and the first picture plays with the audio
+// from 0.
 func TestFileFrameIterator_Integration_MP4BFramesKeepsAudio(t *testing.T) {
 	path := mp4Clip(t)
 	iter, err := NewFileFrameIteratorWithDecoder(path, threadedFFmpegFactory(t))
@@ -2146,9 +2148,15 @@ func TestFileFrameIterator_Integration_MP4BFramesKeepsAudio(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer iter.Close()
-	if iter.encodedFrames[0].pts == 0 || len(iter.audioFrames) == 0 {
-		t.Fatalf("first picture at %d with %d audio frames; the clip has no reorder delay to test",
-			iter.encodedFrames[0].pts, len(iter.audioFrames))
+	reordered := false
+	for i := 1; i < len(iter.encodedFrames); i++ {
+		if iter.encodedFrames[i].pts < iter.encodedFrames[i-1].pts {
+			reordered = true
+		}
+	}
+	if !reordered || len(iter.audioFrames) == 0 {
+		t.Fatalf("reordered %v with %d audio frames; the clip has no B-frames to test",
+			reordered, len(iter.audioFrames))
 	}
 
 	f, err := iter.Next()

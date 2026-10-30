@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"slices"
 	"sort"
 
 	mp4 "github.com/abema/go-mp4"
@@ -56,6 +58,15 @@ func demuxMP4(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
 		return nil, nil, fmt.Errorf("no video track found in MP4")
 	}
 
+	// An edit hiding whole pictures is applied to no track, so the video
+	// and audio stay together as the players pair them.
+	if videoTrack.editHidesPictures() {
+		videoTrack.edits = nil
+		if audioTrack != nil {
+			audioTrack.edits = nil
+		}
+	}
+
 	// Build sample tables and read samples.
 	videoFrames, err := readVideoSamples(f, videoTrack, info.Size())
 	if err != nil {
@@ -79,7 +90,7 @@ func demuxMP4(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
 	// player.go drain phase). The output encoder uses tune=zerolatency
 	// (bframes=0), so the output stream never contains B-frames.
 
-	// Audio frames have no B-frame reordering — sort by PTS for proper playback.
+	// Audio frames have no B-frame reordering -- sort by PTS for proper playback.
 	sort.Slice(audioFrames, func(i, j int) bool {
 		return audioFrames[i].pts < audioFrames[j].pts
 	})
@@ -122,6 +133,78 @@ type mp4Track struct {
 	stco []uint64        // chunk offsets (unified: stco + co64)
 
 	cttsVersion uint8 // version of ctts box (affects offset interpretation)
+
+	// Edit list (edts/elst). Segment durations are in movieTimescale (mvhd),
+	// media times in timescale (mdhd).
+	edits          []mp4Edit
+	movieTimescale uint32
+}
+
+// mp4Edit is one elst entry. mediaTime -1 is an empty edit.
+type mp4Edit struct {
+	segmentDuration uint64
+	mediaTime       int64
+	mediaRate       int16
+}
+
+// editWindow reads the track's edit list in media timescale units: the
+// media in [start, end) is presented, and presentation time = composition
+// time + shift. It handles one edit, optionally after one empty edit (an
+// initial delay), at normal rate. Any other list presents all the media at
+// its composition times, as before edit lists were read.
+func (t *mp4Track) editWindow() (start, end, shift int64) {
+	end = math.MaxInt64
+	edits := t.edits
+	var delay int64
+	if len(edits) == 2 && edits[0].mediaTime == -1 {
+		if t.movieTimescale == 0 {
+			return 0, end, 0
+		}
+		// The delay moves the audio PTS only: the players pair audio with
+		// pictures by order, so they do not play it.
+		delay = int64(edits[0].segmentDuration * uint64(t.timescale) / uint64(t.movieTimescale))
+		edits = edits[1:]
+	}
+	if len(edits) != 1 || edits[0].mediaTime < 0 || edits[0].mediaRate != 1 {
+		return 0, end, 0
+	}
+	e := edits[0]
+	// A zero duration, as fragmented files write, presents all the media.
+	if e.segmentDuration > 0 && t.movieTimescale > 0 {
+		end = e.mediaTime + int64(e.segmentDuration*uint64(t.timescale)/uint64(t.movieTimescale))
+	}
+	return e.mediaTime, end, delay - e.mediaTime
+}
+
+// editHidesPictures reports whether the track's edit leaves whole pictures
+// out of its window, as a stream-copy cut writes: it starts at the
+// keyframe before the cut point and the edit starts at the cut point.
+// Pictures outside the edit are kept (see readVideoSamples) and neither
+// fromFirstKeyframe nor playout drops one by its PTS against the edit,
+// while audio outside it is dropped. The players spread the audio over the
+// pictures by order, so applying such an edit would play the hidden
+// pictures with audio from after them and leave each pass short of audio.
+//
+// A picture is presented until the next composition time, so the earliest
+// is hidden exactly when the second earliest is at or before the edit
+// start, and the latest when it is at or after the edit end. An edit that
+// only removes the B-frame reorder delay starts at the earliest
+// composition time and hides nothing; one that starts inside the earliest
+// picture hides part of it, which the picture's negative PTS carries.
+func (t *mp4Track) editHidesPictures() bool {
+	start, end, _ := t.editWindow()
+	n := len(t.stsz)
+	if n == 0 {
+		return false
+	}
+	ct := buildDTSTable(t.stts, n)
+	if offsets := buildCTSOffsets(t.ctts, t.cttsVersion, n); offsets != nil {
+		for i := range ct {
+			ct[i] += offsets[i]
+		}
+	}
+	slices.Sort(ct)
+	return n > 1 && ct[1] <= start || ct[n-1] >= end
 }
 
 // parseMP4Tracks walks the MP4 box tree and extracts track metadata. fileSize
@@ -131,6 +214,7 @@ type mp4Track struct {
 func parseMP4Tracks(r io.ReadSeeker, fileSize int64) ([]mp4Track, error) {
 	var tracks []mp4Track
 	var currentTrack *mp4Track
+	var movieTimescale uint32
 
 	_, err := mp4.ReadBoxStructure(r, func(h *mp4.ReadHandle) (interface{}, error) {
 		switch h.BoxInfo.Type {
@@ -143,6 +227,7 @@ func parseMP4Tracks(r io.ReadSeeker, fileSize int64) ([]mp4Track, error) {
 			return nil, err
 
 		case mp4.BoxType(mp4.BoxTypeMoov()),
+			mp4.BoxType(mp4.BoxTypeEdts()),
 			mp4.BoxType(mp4.BoxTypeMdia()),
 			mp4.BoxType(mp4.BoxTypeMinf()),
 			mp4.BoxType(mp4.BoxTypeStbl()),
@@ -150,6 +235,33 @@ func parseMP4Tracks(r io.ReadSeeker, fileSize int64) ([]mp4Track, error) {
 			// Container boxes: expand to parse children.
 			_, err := h.Expand()
 			return nil, err
+
+		case mp4.BoxType(mp4.BoxTypeMvhd()):
+			box, _, err := h.ReadPayload()
+			if err != nil {
+				return nil, err
+			}
+			movieTimescale = box.(*mp4.Mvhd).Timescale
+			return nil, nil
+
+		case mp4.BoxType(mp4.BoxTypeElst()):
+			if currentTrack == nil {
+				return nil, nil
+			}
+			box, _, err := h.ReadPayload()
+			if err != nil {
+				return nil, err
+			}
+			elst := box.(*mp4.Elst)
+			currentTrack.edits = make([]mp4Edit, len(elst.Entries))
+			for i, e := range elst.Entries {
+				currentTrack.edits[i] = mp4Edit{
+					segmentDuration: elst.GetSegmentDuration(i),
+					mediaTime:       elst.GetMediaTime(i),
+					mediaRate:       e.MediaRateInteger,
+				}
+			}
+			return nil, nil
 
 		case mp4.BoxType(mp4.BoxTypeHdlr()):
 			if currentTrack == nil {
@@ -412,6 +524,9 @@ func parseMP4Tracks(r io.ReadSeeker, fileSize int64) ([]mp4Track, error) {
 	if err != nil {
 		return nil, err
 	}
+	for i := range tracks {
+		tracks[i].movieTimescale = movieTimescale
+	}
 
 	return tracks, nil
 }
@@ -621,6 +736,9 @@ func readVideoSamples(r io.ReadSeeker, track *mp4Track, fileSize int64) ([]Buffe
 	numSamples := len(sampleTable)
 	dts := buildDTSTable(track.stts, numSamples)
 	ctsOffsets := buildCTSOffsets(track.ctts, track.cttsVersion, numSamples)
+	// Pictures outside the edit stay: dropping one could drop a reference.
+	// Those before it get a negative PTS, which marks them as leading.
+	_, _, shift := track.editWindow()
 
 	frames := make([]BufferedFrame, 0, numSamples)
 
@@ -638,17 +756,12 @@ func readVideoSamples(r io.ReadSeeker, track *mp4Track, fileSize int64) ([]Buffe
 		// Normalize NALU length prefix to 4 bytes if needed.
 		wireData := normalizeNALULengthSize(data, track.naluLengthSize)
 
-		// Compute PTS in 90kHz.
-		var compositionTime int64
+		// Compute PTS in 90kHz. A negative PTS is a picture presented before
+		// the stream starts; clamping it to 0 would read as "no PTS" and keep
+		// it as shown.
+		compositionTime := dts[i] + shift
 		if ctsOffsets != nil {
-			compositionTime = dts[i] + ctsOffsets[i]
-		} else {
-			compositionTime = dts[i]
-		}
-		// CTTS v1 uses signed offsets which can produce negative composition
-		// times. Clamp to zero to avoid invalid negative PTS values.
-		if compositionTime < 0 {
-			compositionTime = 0
+			compositionTime += ctsOffsets[i]
 		}
 		pts90k := compositionTime * 90000 / int64(track.timescale)
 
@@ -701,7 +814,9 @@ func readAudioSamples(r io.ReadSeeker, track *mp4Track, fileSize int64) ([]Buffe
 	}
 
 	numSamples := len(sampleTable)
-	dts := buildDTSTable(track.stts, numSamples)
+	// One entry past the last sample is where the last sample ends.
+	dts := buildDTSTable(track.stts, numSamples+1)
+	start, end, shift := track.editWindow()
 
 	sampleRate := track.audioSampleRate
 	channels := track.audioChannels
@@ -715,6 +830,15 @@ func readAudioSamples(r io.ReadSeeker, track *mp4Track, fileSize int64) ([]Buffe
 	frames := make([]BufferedAudioFrame, 0, numSamples)
 
 	for i, sample := range sampleTable {
+		// Frames wholly outside the edit are not presented: before it the
+		// encoder priming, after it the padding of the last frame. Playout
+		// and the clip player send audio frames in order without their PTS,
+		// so a priming frame left in would delay all audio by its length.
+		// A frame straddling the start is kept whole; raw AAC cannot be cut.
+		if start > 0 && dts[i+1] <= start || dts[i] >= end {
+			continue
+		}
+
 		// Read raw AAC frame from file.
 		if _, err := r.Seek(int64(sample.offset), io.SeekStart); err != nil {
 			return nil, fmt.Errorf("seek to audio sample %d: %w", i, err)
@@ -726,7 +850,7 @@ func readAudioSamples(r io.ReadSeeker, track *mp4Track, fileSize int64) ([]Buffe
 		}
 
 		// PTS in 90kHz.
-		pts90k := dts[i] * 90000 / int64(track.timescale)
+		pts90k := (dts[i] + shift) * 90000 / int64(track.timescale)
 
 		frames = append(frames, BufferedAudioFrame{
 			data:       rawAAC,
