@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.40](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.39...mxl-v1.0.0-rc.40) (2026-10-31)
+
+
+### Bug Fixes
+
+* **moq:** make previews recover without a page reload ([#183](https://github.com/qvest-digital/dmf-mf-switchframe/issues/183)) ([cc58f62](https://github.com/qvest-digital/dmf-mf-switchframe/commit/cc58f620ff2e65bae485ff9c4bae189529e89f9d))
+
 ## [1.0.0-rc.39](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.38...mxl-v1.0.0-rc.39) (2026-10-30)
 
 
