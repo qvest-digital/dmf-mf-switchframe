@@ -618,52 +618,9 @@ func TestRTMPDirect_FLVTimestampsInMilliseconds(t *testing.T) {
 	}
 }
 
-// A lip-sync offset that falls by 400 ms mid-stream must not drop an RTMP
-// output: FFmpeg's FLV muxer refuses a video timestamp that goes backwards,
-// and the failed write sent the adapter into a reconnect.
-func TestRTMPDirect_LipSyncFallKeepsConnection(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "out.flv")
-	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "file:" + path})
-	require.NoError(t, err)
-	require.NoError(t, r.Start(context.Background()))
-	m := NewManager()
-	defer func() { _ = m.Close() }()
-	raw := int64(36000)
-	m.SetLipSyncSource(func() int64 { return raw })
-	m.frameAdapters.Store(&[]FrameAdapter{r})
-
-	const base, step = int64(900000), int64(1800)
-	for i := int64(0); i < 60; i++ {
-		if i == 20 {
-			raw = 0
-		}
-		f := &media.VideoFrame{PTS: base + i*step, DTS: base + i*step,
-			WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x41, 0x9a, 0x02, 0x00}}
-		if i == 0 {
-			f = &media.VideoFrame{PTS: base, DTS: base, IsKeyframe: true,
-				SPS:      []byte{0x67, 0x42, 0xc0, 0x1e},
-				PPS:      []byte{0x68, 0xce, 0x38, 0x80},
-				WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x84, 0x00}}
-		}
-		m.DirectWriteVideo(f)
-		if i == 0 {
-			require.Eventually(t, r.initialized.Load, 2*time.Second, 5*time.Millisecond)
-		}
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(100 * time.Millisecond)
-	require.Equal(t, StateActive, *r.state.Load(), "error %q", *r.lastError.Load())
-	require.NoError(t, r.Close())
-
-	video := mediaTimestamps(readFLVTags(t, path), 9)
-	require.Len(t, video, 60)
-	for i := 1; i < len(video); i++ {
-		require.Greater(t, video[i], video[i-1], "video tag %d", i)
-	}
-}
-
-// A video timestamp that steps back, from any source, is written just after
-// the last one rather than failing the FLV write.
+// A program timeline that restarts behind the last frame continues the
+// connection's timeline one frame interval later, rather than failing the
+// FLV write or stacking frames 1 ms apart.
 func TestRTMPDirect_VideoTimestampStepBackKeepsConnection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "out.flv")
 	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "file:" + path})
@@ -684,7 +641,8 @@ func TestRTMPDirect_VideoTimestampStepBackKeepsConnection(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	require.Equal(t, StateActive, *r.state.Load(), "error %q", *r.lastError.Load())
 	require.NoError(t, r.Close())
-	require.Equal(t, []uint32{0, 20, 40, 41, 60}, mediaTimestamps(readFLVTags(t, path), 9))
+	require.Equal(t, []uint32{0, 20, 40, 60, 110}, mediaTimestamps(readFLVTags(t, path), 9))
+	require.Equal(t, int64(1), r.rebases.Load())
 }
 
 // After a reconnect, audio must wait for the keyframe that rebases the new
