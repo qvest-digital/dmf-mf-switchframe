@@ -14,6 +14,11 @@ var (
 		[]string{"source", "essence"}, nil)
 	descMXLLag = prometheus.NewDesc("switchframe_mxl_reader_lag_grains",
 		"Grains an MXL input's video read position trails the head of its flow.", []string{"source"}, nil)
+
+	descMXLAudioOverlaps = prometheus.NewDesc("switchframe_mxl_writer_audio_overlaps_total",
+		"Program audio batches the MXL output dropped because they overlapped audio already written.", nil, nil)
+	descMXLVideoIndexDrops = prometheus.NewDesc("switchframe_mxl_writer_video_index_drops_total",
+		"Program video frames the MXL output dropped because the grain index of their PTS was not after the last grain written.", nil, nil)
 )
 
 // mxlReaderCollector exposes what each MXL input's readers have lost, read
@@ -42,4 +47,26 @@ func (c *mxlReaderCollector) Collect(ch chan<- prometheus.Metric) {
 			}
 		}
 	}
+}
+
+// mxlWriterCollector exposes what the program MXL output dropped for
+// landing on media time already written, read at scrape time from counters
+// its writer keeps. It exposes nothing without an MXL output.
+type mxlWriterCollector struct {
+	writer *mxl.Writer
+}
+
+// Describe implements prometheus.Collector.
+func (c *mxlWriterCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- descMXLAudioOverlaps
+	ch <- descMXLVideoIndexDrops
+}
+
+// Collect implements prometheus.Collector.
+func (c *mxlWriterCollector) Collect(ch chan<- prometheus.Metric) {
+	if c.writer == nil {
+		return
+	}
+	ch <- prometheus.MustNewConstMetric(descMXLAudioOverlaps, prometheus.CounterValue, float64(c.writer.AudioOverlaps()))
+	ch <- prometheus.MustNewConstMetric(descMXLVideoIndexDrops, prometheus.CounterValue, float64(c.writer.VideoIndexDrops()))
 }

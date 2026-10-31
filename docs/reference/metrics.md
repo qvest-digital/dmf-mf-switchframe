@@ -309,6 +309,8 @@ Read by [`mxlReaderCollector`](../../server/cmd/switchframe/metrics_mxl.go), fro
 | `switchframe_mxl_reader_skipped_grains_total` | counter | `source` | Video grains an MXL input skipped because its consumer was behind. |
 | `switchframe_mxl_reader_resyncs_total` | counter | `source`, `essence` | Times an MXL input jumped to the head after the ring overwrote its read position, losing what lay between, by essence. |
 | `switchframe_mxl_reader_lag_grains` | gauge | `source` | Grains an MXL input's video read position trails the head of its flow. |
+| `switchframe_mxl_writer_audio_overlaps_total` | counter | - | Program audio batches the MXL output dropped because they overlapped audio already written. |
+| `switchframe_mxl_writer_video_index_drops_total` | counter | - | Program video frames the MXL output dropped because the grain index of their PTS was not after the last grain written. |
 ## Go runtime and process metrics
 
 Registered at package init by [`metrics.go`](../../server/metrics/metrics.go) via `collectors.NewGoCollector()` and `collectors.NewProcessCollector()`.
