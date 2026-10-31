@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/clock"
 )
 
 // WriterConfig configures an MXL flow writer.
@@ -92,7 +94,10 @@ type Writer struct {
 	videoKick  chan struct{} // buffered(1)
 	videoSeq   uint64        // frames stored; producer goroutine only
 
-	// Last written audio index for monotonic enforcement.
+	// audioOverlaps counts batches dropped for overlapping the last write.
+	audioOverlaps atomic.Int64
+
+	// Last written audio index (exclusive end) for monotonic enforcement.
 	// Only accessed from the single mixer output goroutine.
 	lastAudioIndex uint64
 
@@ -519,14 +524,14 @@ func (w *Writer) WriteAudio(pcm []float32, pts int64, sampleRate, channels int) 
 		}
 	}
 
-	// Wall-clock index with monotonic enforcement: never overlap previous batch.
-	var index uint64
-	if CurrentIndex != nil {
-		index = CurrentIndex(rate)
-	}
-	expectedNext := w.lastAudioIndex + uint64(samplesPerCh)
-	if index < expectedNext && w.lastAudioIndex > 0 {
-		index = expectedNext
+	// The batch goes at the indices of its own PTS: OpenSamples(index, n)
+	// writes [index-n, index). A batch overlapping the last write is
+	// dropped, not moved later, so later audio stays on its time.
+	start := clock.PTSIndex(clock.Rate{Num: rate.Numerator, Den: rate.Denominator}, pts)
+	index := start + uint64(samplesPerCh)
+	if w.lastAudioIndex > 0 && start < w.lastAudioIndex {
+		w.audioOverlaps.Add(1)
+		return
 	}
 	w.lastAudioIndex = index
 
@@ -534,6 +539,12 @@ func (w *Writer) WriteAudio(pcm []float32, pts int64, sampleRate, channels int) 
 		w.log.Error("mxl writer: failed to write audio samples",
 			"error", err, "index", index)
 	}
+}
+
+// AudioOverlaps returns how many audio batches were dropped for
+// overlapping audio already written.
+func (w *Writer) AudioOverlaps() int64 {
+	return w.audioOverlaps.Load()
 }
 
 // Close releases the writer resources and waits for goroutines to exit.
