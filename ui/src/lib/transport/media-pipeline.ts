@@ -211,6 +211,13 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	/** Last video frame of each source's current transport
 	 * (performance.now()); none until it delivers one. */
 	const lastMedia = new Map<string, number>();
+	/** First video frame of each source's current transport. */
+	const firstMedia = new Map<string, number>();
+	/** Sources whose current transport delivered video over more than
+	 * STALL_REDIAL_MS. A relay replays its cached GOP to every new
+	 * subscriber in one burst, so a transport that only received that
+	 * burst is not live and its silence is no stall. */
+	const liveMedia = new Set<string>();
 	/** Pending replacement of each source's stalled transport. */
 	const stallRedials = new Map<string, ReturnType<typeof setTimeout>>();
 	let stallRedialInterval: ReturnType<typeof setInterval> | null = null;
@@ -509,7 +516,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		source.transport = null;
 		clearConnectDeadline(key);
 		clearStallRedial(key);
-		lastMedia.delete(key);
+		forgetMedia(key);
 		try { transport.close(); } catch { /* already closed */ }
 		source.latestGroupID = 0;
 		try { source.videoDecoder.flush(); } catch { /* decoder may be in error state */ }
@@ -573,8 +580,25 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		for (const key of Array.from(stallRedials.keys())) clearStallRedial(key);
 	}
 
+	/** Record a video frame on a source's current transport. */
+	function noteMedia(key: string): void {
+		const now = performance.now();
+		const first = firstMedia.get(key);
+		if (first === undefined) firstMedia.set(key, now);
+		else if (now - first > STALL_REDIAL_MS) liveMedia.add(key);
+		lastMedia.set(key, now);
+	}
+
+	/** Forget the video seen on a source's current transport. */
+	function forgetMedia(key: string): void {
+		lastMedia.delete(key);
+		firstMedia.delete(key);
+		liveMedia.delete(key);
+	}
+
 	/** Replace, after the reconnect backoff, the transport of every source
-	 * that delivered a video frame and then none for STALL_REDIAL_MS. A
+	 * that delivered video over more than STALL_REDIAL_MS and then none for
+	 * STALL_REDIAL_MS. A
 	 * source delivering frames on a transport that has been up for
 	 * RECONNECT_STABLE_MS starts its backoff afresh. */
 	function checkStalledTransports(): void {
@@ -595,7 +619,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				}
 				continue;
 			}
-			if (stallRedials.has(key)) continue;
+			if (!liveMedia.has(key) || stallRedials.has(key)) continue;
 			stallRedials.set(key, setTimeout(() => {
 				stallRedials.delete(key);
 				const s = sources.get(key);
@@ -673,7 +697,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 		// Track frame arrival for stall detection
 		lastFrameTime.set(sourceKey, performance.now());
-		if (source.transport) lastMedia.set(sourceKey, performance.now());
+		if (source.transport) noteMedia(sourceKey);
 		// If this source was previously marked as stalled, clear it
 		clearSourceStall(sourceKey);
 
@@ -737,7 +761,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		cancelReconnect(key);
 		clearConnectDeadline(key);
 		upSince.delete(key);
-		lastMedia.delete(key);
+		forgetMedia(key);
 
 		// Clean up stall tracking
 		lastFrameTime.delete(key);
@@ -818,7 +842,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		cancelReconnect(key);
 		clearConnectDeadline(key);
 		upSince.delete(key);
-		lastMedia.delete(key);
+		forgetMedia(key);
 		// A disconnected source receives no frames, so it must not read as
 		// stalled; connectSource re-arms it.
 		if (lastFrameTime.delete(key)) disconnectedWithFrames.add(key);
@@ -939,6 +963,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		stopStallRedials();
 		upSince.clear();
 		lastMedia.clear();
+		firstMedia.clear();
+		liveMedia.clear();
 		wanted.clear();
 		for (const key of Array.from(sources.keys())) {
 			removeSource(key);

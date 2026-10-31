@@ -87,7 +87,7 @@ describe('preview recovery per disconnect class', () => {
 		p.connectSource(KEY);
 		p.startStallDetection();
 		up(p);
-		frames(p, 1000);
+		frames(p, STALL_REDIAL_MS + 1000);
 	});
 	afterEach(() => {
 		p.destroy();
@@ -135,6 +135,23 @@ describe('preview recovery per disconnect class', () => {
 	it('redials a source that goes silent once, not periodically', () => {
 		silent(10 * 60_000);
 		expect(dials.length, 'dials in 10 min of silence').toBe(2);
+	});
+
+	// A replay, a stopped playout channel or a paused clip keeps its last GOP
+	// in the relay, and the server replays it to every new subscriber in one
+	// burst. That burst is not live video: after the one redial the source
+	// is left alone, as on a source that carries nothing at all.
+	it('does not redial a source whose sessions only replay a cached GOP', () => {
+		for (let t = 0; t < 10 * 60_000; t += 100) {
+			while (answered < dials.length) {
+				dials[answered++].cb.onTrackInfo(catalog);
+				for (let i = 0; i < 25; i++) {
+					p.feedVideoFrame(KEY, new Uint8Array([1]), i === 0, i * 20_000, i === 0 ? desc : null);
+				}
+			}
+			vi.advanceTimersByTime(100);
+		}
+		expect(dials.length, 'dials in 10 min of replayed GOPs').toBe(2);
 	});
 
 	// Once the input is wired again the engine closes the session, as its
