@@ -151,6 +151,7 @@ Read by [`switcher.MetricsCollector`](../../server/switcher/metrics_collector.go
 | `switchframe_ftb_active` | gauge | - | 1 while the program is faded to black. |
 | `switchframe_program_frames_total` | counter | - | Program frames sent to the outputs. |
 | `switchframe_program_repeated_frames_total` | counter | - | Program frames re-sent because no new frame was ready in its slot. |
+| `switchframe_program_pts_step_errors_total` | counter | - | Encoded program video packets, from the CPU or the GPU encoder, whose PTS step from the packet before is not one program frame period, within one tick. |
 | `switchframe_program_dropped_frames_total` | counter | `stage` | Program frames dropped, by stage: proc (the processing queue was full), encode (the encoder was behind), stale (from a superseded program). |
 | `switchframe_pipeline_deadline_violations_total` | counter | - | Program frames whose processing took longer than the frame budget. |
 | `switchframe_pipeline_frame_budget_seconds` | gauge | - | Time the pipeline has per frame at the program rate. |
