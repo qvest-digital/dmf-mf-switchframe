@@ -116,7 +116,7 @@
 
 **Response 200:** `[]output.DestinationStatus`.
 
-An RTMP destination's status also carries `mediaSeconds` (media time sent: one program frame interval per video frame written), `videoDropped` and `audioDropped` (frames dropped because the destination did not take them in time). Each is omitted while zero.
+An RTMP destination's status also carries `mediaSeconds` (media time sent: one program frame interval per video frame written), `timelineRebases` (program timeline restarts carried over onto the connection timeline), `videoDropped` and `audioDropped` (frames dropped because the destination did not take them in time). Each is omitted while zero.
 
 ---
 

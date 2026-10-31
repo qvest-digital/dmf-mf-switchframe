@@ -736,13 +736,14 @@ func (r *RTMPDirect) Status() AdapterStatus {
 	state := *r.state.Load()
 	errStr := *r.lastError.Load()
 	return AdapterStatus{
-		State:        state,
-		BytesWritten: r.bytesWritten.Load(),
-		MediaTicks:   r.mediaTicks.Load(),
-		VideoDropped: r.videoDropped.Load(),
-		AudioDropped: r.audioDropped.Load(),
-		StartedAt:    r.startedAt,
-		Error:        errStr,
+		State:           state,
+		BytesWritten:    r.bytesWritten.Load(),
+		MediaTicks:      r.mediaTicks.Load(),
+		TimelineRebases: r.rebases.Load(),
+		VideoDropped:    r.videoDropped.Load(),
+		AudioDropped:    r.audioDropped.Load(),
+		StartedAt:       r.startedAt,
+		Error:           errStr,
 	}
 }
 

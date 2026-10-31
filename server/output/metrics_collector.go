@@ -22,6 +22,9 @@ var (
 	descOutputMedia = prometheus.NewDesc("switchframe_output_media_seconds_total",
 		"Media time an output of timed frames (RTMP) has sent: one program frame interval per video frame written. Its rate is 1 while every program frame reaches the destination, and falls below 1 by the share of frames dropped and while the connection is down.",
 		[]string{"output"}, nil)
+	descOutputRebases = prometheus.NewDesc("switchframe_output_timeline_rebases_total",
+		"Program timeline restarts an output of timed frames (RTMP) carried over: its connection timeline continued one frame interval after the last frame instead of stepping back.",
+		[]string{"output"}, nil)
 	descOutputDroppedFrames = prometheus.NewDesc("switchframe_output_dropped_frames_total",
 		"Frames an output of timed frames (RTMP) dropped because the destination did not take them in time, by kind (video, audio).",
 		[]string{"output", "kind"}, nil)
@@ -56,7 +59,7 @@ func NewMetricsCollector(m *Manager) *MetricsCollector {
 func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		descOutputInfo, descOutputState, descOutputBytes, descOutputDropped, descOutputOverflows,
-		descOutputClients, descOutputMedia, descOutputDroppedFrames, descRecordingActive, descRecordingFailed, descRecordingBytes,
+		descOutputClients, descOutputMedia, descOutputRebases, descOutputDroppedFrames, descRecordingActive, descRecordingFailed, descRecordingBytes,
 		descRecordingDuration, descRecordingDropped,
 	} {
 		ch <- d
@@ -94,6 +97,7 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 		output(d.ID, d.Config.Type, d.Config.Name, d.State, d.BytesWritten, d.DroppedPackets, d.OverflowCount, d.Connections)
 		if d.Config.Type == "rtmp" {
 			ch <- prometheus.MustNewConstMetric(descOutputMedia, prometheus.CounterValue, d.MediaSeconds, d.ID)
+			ch <- prometheus.MustNewConstMetric(descOutputRebases, prometheus.CounterValue, float64(d.TimelineRebases), d.ID)
 			ch <- prometheus.MustNewConstMetric(descOutputDroppedFrames, prometheus.CounterValue, float64(d.VideoDropped), d.ID, "video")
 			ch <- prometheus.MustNewConstMetric(descOutputDroppedFrames, prometheus.CounterValue, float64(d.AudioDropped), d.ID, "audio")
 		}
