@@ -57,6 +57,9 @@ type Relay struct {
 	videoInfoReady  chan struct{}
 	audioInfo       AudioInfo
 	audioInfoSet    bool
+	// catalogChanged is closed, and replaced, whenever the info a catalog
+	// is built from changes.
+	catalogChanged chan struct{}
 
 	gopMu    sync.RWMutex
 	gopCache []*media.VideoFrame
@@ -71,6 +74,7 @@ func NewRelay() *Relay {
 		log:            slog.With("component", "relay"),
 		sessions:       make(map[string]Viewer),
 		videoInfoReady: make(chan struct{}),
+		catalogChanged: make(chan struct{}),
 		audioCache:     make(map[int][]*media.AudioFrame),
 	}
 }
@@ -84,6 +88,7 @@ func (r *Relay) SetVideoInfo(info VideoInfo) {
 		r.videoInfo = info
 		r.videoInfoSet = true
 		close(r.videoInfoReady)
+		r.signalCatalogChange()
 		r.log.Debug("video info set",
 			"codec", info.Codec,
 			"width", info.Width,
@@ -97,10 +102,13 @@ func (r *Relay) SetVideoInfo(info VideoInfo) {
 func (r *Relay) SetAudioTrackCount(count int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.audioTrackCount = count
 	if count == 0 {
-		r.audioTrackCount = 1
+		count = 1
 	}
+	if count != max(r.audioTrackCount, 1) {
+		r.signalCatalogChange()
+	}
+	r.audioTrackCount = count
 }
 
 // AudioTrackCount returns the number of audio tracks, defaulting to 1.
@@ -121,11 +129,26 @@ func (r *Relay) SetAudioInfo(info AudioInfo) {
 	if !r.audioInfoSet {
 		r.audioInfo = info
 		r.audioInfoSet = true
+		r.signalCatalogChange()
 		r.log.Debug("audio info set",
 			"codec", info.Codec,
 			"sampleRate", info.SampleRate,
 			"channels", info.Channels)
 	}
+}
+
+// CatalogChanged returns a channel that is closed the next time the video
+// info, audio info or audio track count a catalog is built from changes.
+func (r *Relay) CatalogChanged() <-chan struct{} {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.catalogChanged
+}
+
+// signalCatalogChange wakes every CatalogChanged waiter. r.mu must be held.
+func (r *Relay) signalCatalogChange() {
+	close(r.catalogChanged)
+	r.catalogChanged = make(chan struct{})
 }
 
 // AudioInfo returns the detected audio codec parameters, or sensible

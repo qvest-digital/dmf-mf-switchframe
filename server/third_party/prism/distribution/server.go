@@ -112,11 +112,8 @@ const (
 	wtErrInternal       webtransport.SessionErrorCode = 3
 	wtErrBadRequest     webtransport.SessionErrorCode = 4
 	wtErrSetupFailed    webtransport.SessionErrorCode = 5
+	wtErrCatalogChanged webtransport.SessionErrorCode = 6
 )
-
-// videoInfoTimeout is how long a new viewer waits for the first keyframe
-// (and its SPS/PPS) before proceeding with default codec parameters.
-const videoInfoTimeout = 30 * time.Second
 
 // statsInterval is how often per-viewer stats snapshots are sent.
 const statsInterval = 1 * time.Second
@@ -420,10 +417,9 @@ func (s *Server) handleMoQ(w http.ResponseWriter, r *http.Request) {
 		return // setupMoQ already logged and closed the session
 	}
 
-	waitCtx, waitCancel := context.WithTimeout(r.Context(), videoInfoTimeout)
-	defer waitCancel()
-	relay.WaitVideoInfo(waitCtx)
-
+	// No wait for video info: a stream without it yet, such as an input
+	// wired to nothing, answers its catalog at once from defaults, and the
+	// session closes once the real info arrives (closeOnCatalogChange).
 	relay.AddViewer(moqSession)
 	defer relay.RemoveViewer(moqSession.ID())
 

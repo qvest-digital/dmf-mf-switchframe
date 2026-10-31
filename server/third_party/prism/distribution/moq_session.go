@@ -335,6 +335,8 @@ func (m *MoQSession) handleSubscribe(ctx context.Context, sub moq.Subscribe) {
 
 // handleCatalogSubscribe builds and delivers the catalog, then sends SUBSCRIBE_OK.
 func (m *MoQSession) handleCatalogSubscribe(ctx context.Context, sub moq.Subscribe, alias uint64) {
+	// Taken before the catalog is built, so a change in between is not missed.
+	changed := m.relay.CatalogChanged()
 	catalogJSON, err := buildMoQCatalog(m.streamKey, m.relay, m.controlBroadcaster != nil)
 	if err != nil {
 		m.sendSubscribeError(sub.RequestID, 500, "catalog build failed")
@@ -348,10 +350,52 @@ func (m *MoQSession) handleCatalogSubscribe(ctx context.Context, sub moq.Subscri
 	}
 
 	m.sendSubscribeOK(sub.RequestID, alias, moq.GroupOrderAscending, true, 0, 0)
+	go m.closeOnCatalogChange(ctx, changed)
+}
+
+// closeOnCatalogChange closes the session once the info its catalog was
+// built from changes, as it does when an input wired to nothing gets its
+// first video or audio. A viewer reads the catalog once per session and
+// reconnects on a close, which brings it the new catalog and its tracks.
+func (m *MoQSession) closeOnCatalogChange(ctx context.Context, changed <-chan struct{}) {
+	select {
+	case <-ctx.Done():
+	case <-changed:
+		m.log.Info("catalog changed, closing session")
+		if m.session != nil {
+			_ = m.session.CloseWithError(wtErrCatalogChanged, "catalog changed")
+		}
+	}
+}
+
+// cancelSubscription ends the subscription of a track, if any, so that a
+// repeated SUBSCRIBE replaces it instead of leaving its write loop behind.
+func (m *MoQSession) cancelSubscription(trackName string) {
+	m.mu.Lock()
+	old := m.subscriptions[trackName]
+	delete(m.subscriptions, trackName)
+	m.mu.Unlock()
+	if old != nil && old.cancel != nil {
+		old.cancel()
+	}
+}
+
+// fail closes the session after an error that is not confined to one
+// stream, so the viewer sees the close and reconnects. An error caused by
+// the subscription's own context ending is no failure.
+func (m *MoQSession) fail(ctx context.Context, op string, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+	m.log.Warn("moq session failed", "op", op, "error", err)
+	if m.session != nil {
+		_ = m.session.CloseWithError(wtErrInternal, op+" failed")
+	}
 }
 
 // handleMediaSubscribe creates a track subscription and starts the write loop.
 func (m *MoQSession) handleMediaSubscribe(ctx context.Context, sub moq.Subscribe, alias uint64, trackName string, mediaType string, audioIdx int) {
+	m.cancelSubscription(trackName)
 	subCtx, subCancel := context.WithCancel(ctx)
 
 	trackSub := &moqTrackSub{
@@ -524,9 +568,13 @@ func (m *MoQSession) Stats() ViewerStats {
 
 // --- Write loops ---
 
+// writeVideoLoop writes each group on a stream of its own. An error on
+// that stream ends the group, and the next keyframe opens a new one; any
+// other error ends the session.
 func (m *MoQSession) writeVideoLoop(ctx context.Context, sub *moqTrackSub) {
 	var currentStream *webtransport.SendStream
 	var currentGroupID uint32
+	var wireGroupID uint32
 
 	closeStream := func() {
 		if currentStream != nil {
@@ -547,6 +595,7 @@ func (m *MoQSession) writeVideoLoop(ctx context.Context, sub *moqTrackSub) {
 
 			if frame.IsKeyframe {
 				closeStream()
+				wireGroupID = nextWireGroup(wireGroupID, currentGroupID, frame.GroupID)
 				currentGroupID = frame.GroupID
 
 				t0 := time.Now()
@@ -557,15 +606,19 @@ func (m *MoQSession) writeVideoLoop(ctx context.Context, sub *moqTrackSub) {
 						"group", currentGroupID)
 				}
 				if err != nil {
-					m.log.Debug("video stream open failed", "error", err)
+					m.fail(ctx, "video stream open", err)
 					return
 				}
 
 				tsMS := uint32(frame.PTS / 1000)
-				if err := sub.writer.WriteStreamHeader(stream, TrackIDVideo, currentGroupID, tsMS); err != nil {
+				if err := sub.writer.WriteStreamHeader(stream, TrackIDVideo, wireGroupID, tsMS); err != nil {
 					stream.Close()
-					m.log.Debug("video header write failed", "error", err)
-					return
+					if !streamOnly(err) {
+						m.fail(ctx, "video header write", err)
+						return
+					}
+					m.log.Debug("video group dropped", "group", currentGroupID, "error", err)
+					continue
 				}
 				currentStream = stream
 			}
@@ -585,8 +638,12 @@ func (m *MoQSession) writeVideoLoop(ctx context.Context, sub *moqTrackSub) {
 			}
 			if err != nil {
 				closeStream()
-				m.log.Debug("video frame write failed", "error", err)
-				return
+				if !streamOnly(err) {
+					m.fail(ctx, "video frame write", err)
+					return
+				}
+				m.log.Debug("video group dropped", "group", currentGroupID, "error", err)
+				continue
 			}
 			m.bytesSent.Add(n)
 			m.lastVideoTsMS.Store(frame.PTS / 1000)
@@ -594,8 +651,12 @@ func (m *MoQSession) writeVideoLoop(ctx context.Context, sub *moqTrackSub) {
 	}
 }
 
+// writeAudioLoop writes the track on one stream. An error on that stream
+// ends it, and the next frame opens a new one; any other error ends the
+// session.
 func (m *MoQSession) writeAudioLoop(ctx context.Context, sub *moqTrackSub) {
 	var stream *webtransport.SendStream
+	var groupID uint32
 	defer func() {
 		if stream != nil {
 			stream.Close()
@@ -615,25 +676,36 @@ func (m *MoQSession) writeAudioLoop(ctx context.Context, sub *moqTrackSub) {
 				var err error
 				stream, err = openUniStream(ctx, m.session)
 				if err != nil {
-					m.log.Debug("audio stream open failed", "error", err)
+					m.fail(ctx, "audio stream open", err)
 					return
 				}
 
 				trackID := AudioTrackID(sub.audioTrackIndex)
 				tsMS := uint32(frame.PTS / 1000)
-				if err := sub.writer.WriteStreamHeader(stream, trackID, 0, tsMS); err != nil {
+				err = sub.writer.WriteStreamHeader(stream, trackID, groupID, tsMS)
+				groupID++
+				if err != nil {
 					stream.Close()
 					stream = nil
-					m.log.Debug("audio header write failed", "error", err)
-					return
+					if !streamOnly(err) {
+						m.fail(ctx, "audio header write", err)
+						return
+					}
+					continue
 				}
 			}
 
 			tsMS := uint32(frame.PTS / 1000)
 			n, err := sub.writer.WriteAudioFrame(stream, frame.Data, tsMS)
 			if err != nil {
-				m.log.Debug("audio frame write failed", "error", err)
-				return
+				stream.Close()
+				stream = nil
+				if !streamOnly(err) {
+					m.fail(ctx, "audio frame write", err)
+					return
+				}
+				m.log.Debug("audio stream dropped", "track", sub.trackName, "error", err)
+				continue
 			}
 			m.bytesSent.Add(n)
 			m.lastAudioTsMS.Store(int64(tsMS))
@@ -655,23 +727,29 @@ func (m *MoQSession) writeCaptionLoop(ctx context.Context, sub *moqTrackSub) {
 
 			stream, err := openUniStream(ctx, m.session)
 			if err != nil {
-				m.log.Debug("caption stream open failed", "error", err)
+				m.fail(ctx, "caption stream open", err)
 				return
 			}
 
 			tsMS := uint32(frame.PTS / 1000)
 			if err := sub.writer.WriteStreamHeader(stream, TrackIDCaptions, groupID, tsMS); err != nil {
 				stream.Close()
-				m.log.Debug("caption header write failed", "error", err)
-				return
+				if !streamOnly(err) {
+					m.fail(ctx, "caption write", err)
+					return
+				}
+				continue
 			}
 
 			data := frame.Serialize()
 			n, err := sub.writer.WriteDataObject(stream, data, tsMS)
 			if err != nil {
 				stream.Close()
-				m.log.Debug("caption frame write failed", "error", err)
-				return
+				if !streamOnly(err) {
+					m.fail(ctx, "caption write", err)
+					return
+				}
+				continue
 			}
 
 			m.bytesSent.Add(n + sub.writer.StreamHeaderSize())
@@ -683,6 +761,7 @@ func (m *MoQSession) writeCaptionLoop(ctx context.Context, sub *moqTrackSub) {
 
 // handleStatsSubscribe sets up the stats track subscription and starts the write loop.
 func (m *MoQSession) handleStatsSubscribe(ctx context.Context, sub moq.Subscribe, alias uint64) {
+	m.cancelSubscription("stats")
 	subCtx, subCancel := context.WithCancel(ctx)
 
 	trackSub := &moqTrackSub{
@@ -743,22 +822,28 @@ func (m *MoQSession) writeStatsLoop(ctx context.Context, sub *moqTrackSub) {
 
 			stream, err := openUniStream(ctx, m.session)
 			if err != nil {
-				m.log.Debug("stats stream open failed", "error", err)
+				m.fail(ctx, "stats stream open", err)
 				return
 			}
 
 			tsMS := uint32(time.Now().UnixMilli())
 			if err := sub.writer.WriteStreamHeader(stream, 0, groupID, tsMS); err != nil {
 				stream.Close()
-				m.log.Debug("stats header write failed", "error", err)
-				return
+				if !streamOnly(err) {
+					m.fail(ctx, "stats write", err)
+					return
+				}
+				continue
 			}
 
 			n, err := sub.writer.WriteDataObject(stream, data, tsMS)
 			if err != nil {
 				stream.Close()
-				m.log.Debug("stats write failed", "error", err)
-				return
+				if !streamOnly(err) {
+					m.fail(ctx, "stats write", err)
+					return
+				}
+				continue
 			}
 
 			m.bytesSent.Add(n + sub.writer.StreamHeaderSize())
@@ -778,6 +863,8 @@ func (m *MoQSession) handleControlSubscribe(ctx context.Context, sub moq.Subscri
 		return
 	}
 
+	// Before Subscribe: the old subscription's cancel unsubscribes m.id.
+	m.cancelSubscription("control")
 	subCtx, subCancel := context.WithCancel(ctx)
 
 	// Subscribe to the broadcaster to get a per-session channel.
@@ -827,22 +914,28 @@ func (m *MoQSession) writeControlLoop(ctx context.Context, sub *moqTrackSub, ch 
 
 			stream, err := openUniStream(ctx, m.session)
 			if err != nil {
-				m.log.Debug("control stream open failed", "error", err)
+				m.fail(ctx, "control stream open", err)
 				return
 			}
 
 			tsMS := uint32(time.Now().UnixMilli())
 			if err := sub.writer.WriteStreamHeader(stream, 0, groupID, tsMS); err != nil {
 				stream.Close()
-				m.log.Debug("control header write failed", "error", err)
-				return
+				if !streamOnly(err) {
+					m.fail(ctx, "control write", err)
+					return
+				}
+				continue
 			}
 
 			n, err := sub.writer.WriteDataObject(stream, data, tsMS)
 			if err != nil {
 				stream.Close()
-				m.log.Debug("control write failed", "error", err)
-				return
+				if !streamOnly(err) {
+					m.fail(ctx, "control write", err)
+					return
+				}
+				continue
 			}
 
 			m.bytesSent.Add(n + sub.writer.StreamHeaderSize())
