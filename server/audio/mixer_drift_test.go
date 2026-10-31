@@ -8,17 +8,18 @@ import (
 
 // A source whose audio has no media clock, such as an SRT stream, is placed
 // on the timeline at its arrival (clock.ArrivalPTS) and drifts against the
-// program at its sender's clock error. Over a simulated hour at +100 ppm
-// the mixer must never underrun or overrun that source's ring. The drift is not resampled: the
-// mixer moves the source back onto the read point each time it runs more
-// than one period off, and counts it. At +100 ppm and 40 ms periods that is
-// 0.36 s / 40 ms = 9 moves an hour; this test pins that behaviour.
+// program at its sender's clock error. The mixer must never underrun or
+// overrun that source's ring. The drift is not resampled: the mixer moves
+// the source back onto the read point each time it runs more than one
+// period off, and counts it. The test runs an hour of drift at +100 ppm,
+// 0.36 s, as 6 minutes at +1000 ppm: 0.36 s / 40 ms periods = about 9
+// moves, as many as the hour makes, in a tenth of the ticks.
 func TestDriftingSourceOverAnHour(t *testing.T) {
 	const (
-		fps       = 25
-		period    = 48000 / fps // samples per program frame
-		ppm       = 100
-		hourTicks = 3600 * fps
+		fps    = 25
+		period = 48000 / fps // samples per program frame
+		ppm    = 1000
+		ticks  = 360 * fps
 	)
 	start := clock.TAINow()
 	now := start
@@ -31,12 +32,13 @@ func TestDriftingSourceOverAnHour(t *testing.T) {
 	m.SetActive("srt:cam", true)
 
 	var frac int64
-	pcm := make([]float32, 2*(period+1))
+	// Room for the most samples one sender period delivers.
+	pcm := make([]float32, 2*(period+period*ppm/1_000_000+1))
 	for i := range pcm {
 		pcm[i] = 0.25
 	}
 	underruns, maxDepth := 0, 0
-	for tick := 0; tick < hourTicks; tick++ {
+	for tick := 0; tick < ticks; tick++ {
 		now = start + int64(tick)*1_000_000_000/fps
 		// The sender delivers one period of its clock, which runs ppm fast.
 		frac += period * ppm
@@ -68,8 +70,8 @@ func TestDriftingSourceOverAnHour(t *testing.T) {
 	}
 	moves := m.ChannelRealigns()["srt:cam"]
 	if moves < 8 || moves > 10 {
-		t.Errorf("%d realigns in an hour at +%d ppm, want about 9 (one per %d-sample period of drift)",
+		t.Errorf("%d realigns in 6 minutes at +%d ppm, want about 9 (one per %d-sample period of drift)",
 			moves, ppm, period)
 	}
-	t.Logf("+%d ppm for an hour: %d realigns, max ring depth %d samples", ppm, moves, maxDepth)
+	t.Logf("+%d ppm for 6 minutes: %d realigns, max ring depth %d samples", ppm, moves, maxDepth)
 }
