@@ -50,10 +50,6 @@ All flags are defined in [`parseConfig`](../../server/cmd/switchframe/main.go). 
 |---|---|---|---|
 | `--format` | string | `1080p29.97` | Video standard preset; see [`FormatPresets`](../../server/switcher/format.go) |
 | `--color-format` | string | `standard` | Pipeline color profile: `standard`, `standard-hevc`, `professional` |
-| `--frame-sync` | bool | `false` | Enable freerun frame synchronizer |
-| `--low-latency-sync` | bool | `false` | Source-driven frame sync (lower latency, less smooth output) |
-| `--frc-quality` | string | `none` | Frame rate conversion: `none`, `nearest`, `blend`, `mcfi` |
-| `--ref-clock` | bool | `false` | Use reference clock for synchronous A/V processing (experimental) |
 
 ### Relay and preview encoding
 

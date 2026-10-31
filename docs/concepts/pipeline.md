@@ -68,7 +68,7 @@ if old != nil {
 }
 ```
 
-The swap is a single pointer store. Reads from [`Switcher.videoProcessingLoop`](../../server/switcher/switcher.go) always see either the old pipeline or the new one — never a half-configured mix. The old pipeline's `inflight` wait group lets a frame that was already mid-flight finish cleanly before its nodes' `Close()` runs. Bypass flags are carried across rebuilds via [`Pipeline.RestoreBypass`](../../server/switcher/pipeline_loop.go) so the operator's "bypass compositor" toggle survives a graphics-layer change.
+The swap is a single pointer store. Reads from the sync loop ([`sync_loop.go`](../../server/switcher/sync_loop.go)) always see either the old pipeline or the new one - never a half-configured mix. The old pipeline's `inflight` wait group lets a frame that was already mid-flight finish cleanly before its nodes' `Close()` runs. Bypass flags are carried across rebuilds via [`Pipeline.RestoreBypass`](../../server/switcher/pipeline_loop.go) so the operator's "bypass compositor" toggle survives a graphics-layer change.
 
 ```mermaid
 stateDiagram-v2
@@ -106,23 +106,13 @@ When demand spikes beyond capacity, `Acquire()` falls back to a heap allocation 
 
 The pool is recreated on format change in [`Switcher.SetPipelineFormat`](../../server/switcher/switcher.go); old-sized buffers drain naturally through `Release()`'s cap check.
 
-### From handler to encode
+### From ingest to encode
 
-The switcher receives decoded YUV in [`Switcher.handleRawVideoFrame`](../../server/switcher/switcher.go). Audio and captions take their own paths; for video the handler:
-
-1. Records health for the source.
-2. If a transition is active, routes both sources to the [`transition.Engine`](../../server/transition/engine.go) via `IngestRawFrame`.
-3. Otherwise filters to program-only; non-program frames are dropped.
-4. Feeds graphics/DVE source caches (or the GPU source manager) with the YUV.
-5. Calls [`Switcher.broadcastProcessedFromPF`](../../server/switcher/switcher.go), which `Ref()`s the frame and enqueues `videoProcWork` onto a buffered `videoProcCh` channel with the current `programEpoch` stamped.
-
-A single goroutine — [`Switcher.videoProcessingLoop`](../../server/switcher/switcher.go) — drains the channel, rewrites PTS to the wall-clock domain, calls `normalizeResolution`, then runs the atomic pipeline pointer's `Run`. The encode node is async: it has its own goroutine and channel, so a slow encoder (hardware warmup, stinger transition) can't back up the pipeline loop. The final encoded frame reaches [`Switcher.broadcastWithCaptions`](../../server/switcher/switcher.go), which injects SEI NALUs and then broadcasts to the program relay.
-
-Frames whose `epoch` no longer matches `programEpoch` are dropped at the top of `videoProcessingLoop` — that's how a Cut that races frame delivery guarantees no wrong-source flashes.
+Decoded YUV enters through [`Switcher.IngestRawVideo`](../../server/switcher/switcher.go). It is stamped with media time, fed to the GPU source manager or the CPU fill caches of every source, and buffered in the [`FrameSynchronizer`](../../server/switcher/frame_sync.go). On each reference-clock tick, the sync loop ([`sync_loop.go`](../../server/switcher/sync_loop.go)) takes the program source's frame due at the read point. During a transition it takes both sources' frames and blends them. It stamps the tick's PTS, normalizes the resolution, and runs the atomic pipeline pointer's `Run` on its own goroutine. See [frame-sync-and-timing](frame-sync-and-timing.md).
 
 ## Key types and entry points
 
-- Entry: [`server/switcher/switcher.go`](../../server/switcher/switcher.go) → `Switcher.handleRawVideoFrame()` for raw YUV, `Switcher.handleVideoFrame()` for legacy H.264 sources.
+- Entry: [`server/switcher/switcher.go`](../../server/switcher/switcher.go) -> `Switcher.IngestRawVideo()`; [`server/switcher/sync_loop.go`](../../server/switcher/sync_loop.go) -> `processVideoTick()`.
 - Pipeline root: [`server/switcher/pipeline_loop.go`](../../server/switcher/pipeline_loop.go) → `Pipeline` struct, `Pipeline.Build`, `Pipeline.Run`, `Pipeline.RestoreBypass`.
 - Hot swap: [`server/switcher/switcher.go`](../../server/switcher/switcher.go) → `Switcher.pipeline` is `atomic.Pointer[Pipeline]`; `Switcher.rebuildPipeline` and `Switcher.swapPipeline` are the write path.
 - Node interface: [`server/switcher/pipeline_node.go`](../../server/switcher/pipeline_node.go) → `PipelineNode` (7 methods).
@@ -137,15 +127,13 @@ State guarded by `Switcher.mu` (write lock for mutations, read lock for per-fram
 
 **Cut latency is one frame, not one GOP.** This is only true because source decoders are permanently warm and because source H.264 keyframes are *not* propagated through the raw YUV pipeline. Downstream IDR placement is controlled by [`Switcher.forceNextIDR`](../../server/switcher/switcher.go), which `Cut()` sets so the program encoder emits a keyframe. See the comment in [`source_decoder.go`](../../server/switcher/source_decoder.go) where `IsKeyframe` is intentionally set to `false` on every decoded frame — propagating source keyframes caused excessive IDRs on the output (one per source GOP boundary).
 
-**The pipeline pointer is read lock-free.** `videoProcessingLoop` loads it with `s.pipeline.Load()` on every frame. Never hold `s.mu` while doing pipeline work — builders go under the lock, but the swap itself (`atomic.Pointer.Swap`) is lock-free, and drain runs in a detached goroutine. `Switcher.Close` explicitly waits on `drainWg` before closing `pipeCodecs` so a still-draining old pipeline cannot touch a closed encoder.
+**The pipeline pointer is read lock-free.** The sync loop loads it with `s.pipeline.Load()` on every frame. Never hold `s.mu` while doing pipeline work - builders go under the lock, but the swap itself (`atomic.Pointer.Swap`) is lock-free, and drain runs in a detached goroutine. `Switcher.Close` explicitly waits on `drainWg` before closing `pipeCodecs` so a still-draining old pipeline cannot touch a closed encoder.
 
 **`MakeWritable` is mandatory before in-place modification.** The fill caches in `graphics.KeyProcessorBridge` and `dve.Compositor` may retain the exact buffer the pipeline is about to modify. Without `MakeWritable` the compositor would rewrite the fill cache, breaking the next frame's key. [`Pipeline.Run`](../../server/switcher/pipeline_loop.go) calls it as its first step; any node that acts on `src.Data` without going through the standard chain must call it explicitly.
 
 **Refcount underflow leaks, it does not panic.** [`ProcessingFrame.ReleaseYUV`](../../server/switcher/processing_frame.go) logs an error when `refs < 0` and bails out rather than crashing. A leaked buffer is a memory cost the system will absorb; a panic on the encode goroutine would take the whole broadcast down. The same philosophy governs the panic recover in [`encodeNode.processWorkItem`](../../server/switcher/node_encode.go) — a cgo crash invalidates the encoder so the next frame recreates it, instead of killing the program output.
 
 **Bypass flags belong to node names, not positions.** When the pipeline rebuilds, node positions may shift (a newly active node inserts into the chain). [`Pipeline.BypassState`](../../server/switcher/pipeline_loop.go) returns a `map[string]bool` keyed on `node.Name()`, and `RestoreBypass` reapplies by name. This is how operator bypass toggles survive enabling a chroma key — both before and after, `compositor` is still `compositor`.
-
-**Epoch discards prevent cross-source flashes.** `videoProcWork` carries the `programEpoch` captured at enqueue time. `Cut()` calls `programEpoch.Add(1)`; any work item with the old epoch is dropped at the top of `videoProcessingLoop`. The epoch is zero for transition/FRC output because those frames are legitimately not "from" a single program source — they're synthesized.
 
 **Async encode can drop under sustained overload.** The encode channel has a buffer of 4. When a hardware encoder stalls (NVENC warmup, stinger spike), Process() drops the newest frame and re-arms `forceNextIDR` so the next successful encode is a keyframe. Raw sinks (MXL, preview) have already received the frame because they run *before* encode in the chain. H.264 viewers see the same drop they would have seen with channel backpressure, but MXL and preview continue to tick.
 

@@ -43,63 +43,23 @@ sequenceDiagram
 
 The per-source decoder goroutine (see [`source_decoder.go`](../../server/switcher/source_decoder.go)) converts AVC1 → Annex B in reusable scratch buffers, prepends VPS/SPS/PPS on keyframes so the FFmpeg decoder can initialize mid-stream, calls `DecodeInto` directly into a [`FramePool`](../../server/switcher/frame_pool.go) buffer, then stamps a fresh [`ProcessingFrame`](../../server/switcher/processing_frame.go) with `SetRefs(1)`, propagates timing markers (`ArrivalNano`, `DecodeStartNano`, `DecodeEndNano`), optionally applies an ST map warp, and invokes its callback.
 
-The callback (built by [`Switcher.makeDecoderCallback`](../../server/switcher/switcher.go)) routes the YUV frame through the frame sync if active, through the delay buffer if a per-source lip-sync delay is set, or directly into [`Switcher.handleRawVideoFrame`](../../server/switcher/switcher.go) otherwise.
+The decoder hands the YUV frame to [`Switcher.IngestRawVideo`](../../server/switcher/switcher.go).
 
 ### Stage 2: synchronization
 
-The [`FrameSynchronizer`](../../server/switcher/frame_sync.go) is the central clock of the freerun pipeline. Sources freewheel on their own PTS clocks; the frame sync aligns them to a single tick grid at the pipeline frame rate. See the [frame-sync doc](frame-sync-and-timing.md) for the full story on PTS rewriting, Bresenham remainder accumulation, and MCFI interpolation.
+[`Switcher.IngestRawVideo`](../../server/switcher/switcher.go) is the one entry point for decoded video. It stamps the frame with media time if its producer did not (see [frame-sync-and-timing](frame-sync-and-timing.md#media-time)). It feeds the GPU source manager or the CPU grading and live-tap paths, and the CPU key and DVE fill caches of every source. Then it pushes the frame into the source's ring in the [`FrameSynchronizer`](../../server/switcher/frame_sync.go).
 
-From the media-path perspective, what matters is:
+### Stage 3: the tick
 
-1. `IngestRawVideo` pushes the decoded frame into the per-source ring buffer and, if this source is the program source, signals `programFrameReady` so the tick loop can fire immediately instead of waiting for the timer.
-2. The tick loop's three-phase `releaseTick` pops one frame per source, stamps monotonic PTS, runs FRC interpolation in parallel goroutines if needed, and invokes `onRawVideo` (which is [`Switcher.handleRawVideoFrame`](../../server/switcher/switcher.go)) for each.
+On every tick of the reference clock, [`processVideoTick`](../../server/switcher/sync_loop.go) takes the program source's frame due at the tick's read point. It falls back to a repeat or black, and holds black during FTB. It stamps the frame with the tick's PTS. During a transition it takes both sources' due frames, advances the engine by one tick and blends, on the GPU when a runner is attached and on the CPU otherwise.
 
-The program source gets **early delivery** inside the tick — Phase 1.5 — so its frame reaches the pipeline without waiting for other sources' MCFI to finish. Non-program sources' frames flow into graphics and DVE fill caches for transitions and PIPs, where they'll be read from memory when the operator arms a slot.
+### Stage 4: pipeline
 
-### Stage 3: the switcher handler
+`runPipelineAndBroadcast` runs on the sync loop's goroutine:
 
-[`Switcher.handleRawVideoFrame`](../../server/switcher/switcher.go) is the decision point:
-
-```mermaid
-flowchart TD
-  in[handleRawVideoFrame]
-  h[Record health]
-  q[Check state]
-  t{Transition<br/>active?}
-  ftb{FTB<br/>active?}
-  p{Program<br/>source?}
-  eng[Route to transition.Engine<br/>via IngestRawFrame]
-  gpu[Ingest into GPU source mgr<br/>or CPU fill caches]
-  drop[Drop: filtered]
-  enq[broadcastProcessedFromPF<br/>enqueueVideoWork]
-
-  in --> h --> q --> t
-  t -->|yes| eng
-  t -->|no| gpu
-  gpu --> ftb
-  ftb -->|yes| drop
-  ftb -->|no| p
-  p -->|no| drop
-  p -->|yes| enq
-```
-
-During a transition (see [subsystems/transition.md](../subsystems/transition.md)), both `fromSource` and `toSource` raw frames are ingested into the [`transition.Engine`](../../server/transition/engine.go). The engine blends them and calls the switcher's `broadcastProcessed` output, which wraps the blended YUV in a fresh `ProcessingFrame` and enqueues it — same channel as the normal path, except the epoch is zero (always accepted).
-
-During normal operation, only the program source's frame makes it onto the queue. The `sourceKey` is stamped on the `videoProcWork` so the GPU pipeline can use `RunFromCache` to skip the CPU→GPU upload entirely when a GPU source manager is attached.
-
-Every enqueue goes through [`Switcher.enqueueVideoWork`](../../server/switcher/switcher.go), a tiny helper that implements newest-wins drop when `videoProcCh` is full. Critically, it releases the dropped frame's pool buffer — without that, a sustained overload would empty the pool and the decoder goroutines would fall back to heap allocations.
-
-### Stage 4: the processing goroutine
-
-[`Switcher.videoProcessingLoop`](../../server/switcher/switcher.go) is a single dedicated goroutine, `runtime.LockOSThread`-pinned, that drains `videoProcCh`. Its body is short:
-
-1. **Epoch check** — if `work.epoch` is nonzero and doesn't match `programEpoch`, release and continue. This is how a Cut that races frame delivery discards stale frames from the old program source.
-2. **Sub-stage timing** — compute decode queue time, decode duration, sync wait, and process-queue wait from the frame's timing fields into atomic counters for the perf endpoint.
-3. **Resolution normalize** — if the frame's dimensions differ from the pipeline format, scale with bilinear into a fresh pool buffer.
-4. **Wall-clock PTS rewrite** — [`Switcher.wallClockVideoPTS`](../../server/switcher/switcher.go) rebases source PTS onto a frame-counter locked to the audio mixer's epoch, preventing A/V drift across source cuts.
-5. **GPU or CPU** — if a GPU pipeline runner is registered, try `RunFromCache` (zero-upload), then `RunWithUpload` (CPU→GPU, pipeline stays GPU-side), and fall back to the CPU pipeline on error.
-6. **CPU path** — load the atomic pipeline pointer and call `Run(work.yuvFrame)`.
-7. **Thumbnail capture** (if a client is polling), then release.
+1. **Resolution normalize** - a frame whose dimensions differ from the pipeline format is scaled into a fresh pool buffer.
+2. **GPU or CPU** - with a GPU pipeline runner, `RunFromCache` runs the source manager's cached frame of the popped frame's PTS (zero upload) and `RunWithUpload` uploads anything else. Without one, the CPU pipeline runs.
+3. **Thumbnail capture** (if a client is polling), then release.
 
 The CPU pipeline's `Run` walks the active nodes — see the [pipeline doc](pipeline.md#the-node-chain-and-atomic-swap) for the chain. Briefly, they execute in this order:
 
@@ -164,29 +124,26 @@ CEA-608/708 captions ride in the same SEI NALUs as `pic_timing`. The [`caption.M
 
 - Relay → viewer: [`server/switcher/source_viewer.go`](../../server/switcher/source_viewer.go) → `sourceViewer.SendVideo/SendAudio/SendCaptions`.
 - Per-source decode: [`server/switcher/source_decoder.go`](../../server/switcher/source_decoder.go) → `sourceDecoder.decodeLoop()`.
-- Frame sync release: [`server/switcher/frame_sync.go`](../../server/switcher/frame_sync.go) → `FrameSynchronizer.releaseTick()`.
-- Switcher routing: [`server/switcher/switcher.go`](../../server/switcher/switcher.go) → `Switcher.handleRawVideoFrame`, `Switcher.handleVideoFrame`, `Switcher.handleAudioFrame`, `Switcher.handleCaptionFrame`.
-- Enqueue + dedup: [`server/switcher/switcher.go`](../../server/switcher/switcher.go) → `Switcher.broadcastProcessedFromPF`, `Switcher.enqueueVideoWork`.
-- Processing goroutine: [`server/switcher/switcher.go`](../../server/switcher/switcher.go) → `Switcher.videoProcessingLoop()`.
+- Frame sync: [`server/switcher/frame_sync.go`](../../server/switcher/frame_sync.go) -> `FrameSynchronizer.IngestRawVideo()`, `syncSource.popAt()`.
+- Ingest and routing: [`server/switcher/switcher.go`](../../server/switcher/switcher.go) -> `Switcher.IngestRawVideo`, `Switcher.handleAudioFrame`, `Switcher.handleCaptionFrame`.
+- Tick processing: [`server/switcher/sync_loop.go`](../../server/switcher/sync_loop.go) -> `processTick`, `processVideoTick`, `runPipelineAndBroadcast`.
 - Caption injection and broadcast: [`server/switcher/switcher.go`](../../server/switcher/switcher.go) → `Switcher.broadcastWithCaptions`, `Switcher.broadcastOwnedToProgram`.
 - Output fan-out: [`server/output/manager.go`](../../server/output/manager.go) → `Manager`.
 - Direct output callback: [`server/output/manager.go`](../../server/output/manager.go) registers via `Switcher.SetOutputVideoCallback`.
 
 ## Gotchas and invariants
 
-**Audio skips the frame sync deliberately.** Forcing audio through the 30 fps tick grid causes a bursty arrival pattern downstream browsers cannot absorb cleanly. See the comment on [`sourceViewer.SendAudio`](../../server/switcher/source_viewer.go) — audio always flows through `handleAudioFrame` directly, with PTS correction applied from the frame sync's published delta.
+**Audio skips the frame sync.** Audio goes to the mixer as it arrives ([`sourceViewer.SendAudio`](../../server/switcher/source_viewer.go)); each tick pulls it from the mixer at the read point, the media time the tick's video shows.
 
 **Raw sinks run before encode, on purpose.** MXL output and program preview encoder consume raw YUV. Putting them after the encode node would make them pay for H.264 encoding and then throw it away. Putting them before means a stalled encoder still ticks raw output — critical for MXL broadcast continuity.
 
 **Direct output bypasses the relay for the muxer.** The MPEG-TS muxer runs at microsecond precision to hit CBR targets. A relay → viewer channel → drain goroutine adds three hops of jitter. [`Switcher.outputVideoCallback`](../../server/switcher/switcher.go) is a synchronous function call from the encode goroutine to the muxer, eliminating that variance. See [`app_state.go`](../../server/cmd/switchframe/app_state.go) for where it's wired.
 
-**Every frame carries an epoch.** `programEpoch` is bumped on Cut and transition complete. The video processing loop drops work items whose epoch is stale. Without this, a sequence like "deliver frame from A → cut to B → frame-from-A-still-in-queue lands on program" would produce a single-frame flash of the old source. Transition/FRC output stamps epoch=0 to always pass.
-
 **`MakeWritable` is called once per frame at the top of `Pipeline.Run`.** Source frames delivered via shallow copy + `Ref` from `frame_sync` would otherwise be mutated in place by the compositor, corrupting the fill cache. The invariant is: anything that modifies `src.Data` inside a `Process()` method has already had `MakeWritable` run for that call, so in-place writes are safe.
 
-**The frame pool is closed after the processing goroutine exits.** [`Switcher.Close`](../../server/switcher/switcher.go) closes `videoProcCh`, waits on `videoProcDone` (the loop's defer closes it), then waits on `drainWg` (old pipelines still draining), then closes `pipeCodecs` (kills the encoder), then closes the frame pool. Reversing any of those steps risks use-after-close on the encoder or buffer releases into a munmapped pool.
+**The frame pool is closed after the sync loop exits.** [`Switcher.Close`](../../server/switcher/switcher.go) stops the reference clock and waits for the sync loop, then waits on `drainWg` (old pipelines still draining), then closes `pipeCodecs` (kills the encoder), then closes the frame pool. Reversing any of those steps risks use-after-close on the encoder or buffer releases into a munmapped pool.
 
-**Transition frames do not carry a source key.** The transition engine blends two sources into a synthetic frame. Stamping a source key on the `videoProcWork` would make the GPU pipeline try `RunFromCache(sourceKey)` for a frame that doesn't exist in the cache. The engine's output path explicitly passes `sourceKey=""`, and the cache path is skipped.
+**Transition frames do not carry a source key.** A blended frame is not in the GPU source cache, so the transition path uploads it instead of calling `RunFromCache`.
 
 ## Related docs
 

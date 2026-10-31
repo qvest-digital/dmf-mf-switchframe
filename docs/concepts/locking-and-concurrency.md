@@ -10,7 +10,7 @@
 
 A live video switcher has to do two contradictory things at once. It has to accept control commands — a director pressing CUT, an API call toggling a graphics layer, a producer loading a replay clip — and it has to never drop a frame. Dropping a frame shows on-air; delaying a command by a frame does not. The concurrency model is engineered around that asymmetry.
 
-The server is built from a small number of long-lived goroutines and many short-lived ones. Each source has its own viewer goroutine ([`sourceViewer.SendVideo`](../../server/switcher/source_viewer.go)) that receives frames from the Prism relay and a decoder goroutine ([`sourceDecoder`](../../server/switcher/source_decoder.go)) that turns H.264 into YUV. The switcher has a [`videoProcessingLoop`](../../server/switcher/pipeline_loop.go) goroutine that pulls one raw frame per tick, runs it through the processing pipeline, and hands the encoded result to the output fan-out. The mixer has an [`outputTicker`](../../server/audio/mixer_ticker.go) goroutine that wakes every ~21.3 ms, reads from per-source PCM ring buffers, mixes, limits, encodes, and pushes to the program relay. Each SRT ingest source has a decoder and a stats poller. Each output destination has an async writer and, for SRT, a reconnect loop.
+The server is built from a small number of long-lived goroutines and many short-lived ones. Each source has its own viewer goroutine ([`sourceViewer.SendVideo`](../../server/switcher/source_viewer.go)) that receives frames from the Prism relay and a decoder goroutine ([`sourceDecoder`](../../server/switcher/source_decoder.go)) that turns H.264 into YUV. The switcher has a [`videoProcessingLoop`](../../server/switcher/pipeline_loop.go) goroutine that pulls one raw frame per tick, runs it through the processing pipeline, and hands the encoded result to the output fan-out. The switcher's sync loop pulls the mixer once per program tick; the mixer reads its per-source PCM ring buffers, mixes and limits, and the sync loop encodes and pushes to the program relay. Each SRT ingest source has a decoder and a stats poller. Each output destination has an async writer and, for SRT, a reconnect loop.
 
 The rules that make this tractable are simple.
 
@@ -18,7 +18,7 @@ The rules that make this tractable are simple.
 
 **Atomics carry counters, not control.** Everywhere you see `atomic.Int64`, `atomic.Pointer`, or `atomic.Bool`, the value is either a counter (frames sent, audio samples mixed), a snapshot pointer (the current pipeline, the current layout, the current key state), or a boolean gate (video-started, GPU-active). They are never used to synchronize mutation of a data structure — that role belongs to the mutex. `atomicutil.UpdateMax` provides a lock-free CAS loop for high-water-mark tracking without contention.
 
-**Channels cross goroutine boundaries; mutexes stay inside one goroutine's write path.** PCM samples cross from the per-source ingest path to the mixer output ticker through a [`PCMRingBuffer`](../../server/audio/ringbuf.go) — a circular sample buffer protected only by the mixer mutex, which is held for microseconds. Video frames cross from the source decoder into the switcher through a channel into [`videoProcessingLoop`](../../server/switcher/pipeline_loop.go). Encoded output frames cross from the pipeline into the TSMuxer through a direct callback registered under `Manager.mu` during startup — once wired, calls proceed with no lock.
+**Channels cross goroutine boundaries; mutexes stay inside one goroutine's write path.** PCM samples cross from the per-source ingest path to the program tick through a [`PCMRingBuffer`](../../server/audio/ringbuf.go) - a circular sample buffer protected only by the mixer mutex, which is held for microseconds. Video frames cross from the source decoder into the switcher through a channel into [`videoProcessingLoop`](../../server/switcher/pipeline_loop.go). Encoded output frames cross from the pipeline into the TSMuxer through a direct callback registered under `Manager.mu` during startup - once wired, calls proceed with no lock.
 
 The rest of this doc walks the lock inventory subsystem by subsystem. If you are tracing a deadlock, start at "Lock inventory"; if you are reasoning about a new feature, start at "Frame flow".
 
@@ -35,7 +35,7 @@ sequenceDiagram
     participant SV as sourceViewer
     participant SD as sourceDecoder
     participant FS as FrameSynchronizer
-    participant SW as Switcher<br/>(videoProcessingLoop)
+    participant SW as Switcher<br/>(sync loop)
     participant PL as Pipeline<br/>(atomic.Pointer)
     participant OM as Output Manager
     participant MUX as TSMuxer
@@ -79,7 +79,7 @@ The switcher bundles — `hotState`, `graphicsHandlers`, `audioHandlers`, `frame
 
 **`atomic.CompareAndSwap` for high-water marks.** `atomicutil.UpdateMax` in [`internal/atomicutil/max.go`](../../server/internal/atomicutil/max.go) updates a running maximum without locking. Pipeline timing, mix-cycle latency, inter-frame gap tracking — all use this. The pattern is a tight CAS loop that retries only if a concurrent writer raced with a higher value, which is cheap because progress is still monotonic.
 
-**Ring buffers for PCM hand-off.** The audio mixer's [`PCMRingBuffer`](../../server/audio/ringbuf.go) carries samples from source ingest (bursty, per-packet) to the output ticker (fixed 21.3 ms cadence). It is not thread-safe on its own; instead, the mixer's `mu` is held for the microseconds required to push or pop, and the buffer's circular layout means there is no allocation per frame. When the buffer underruns, `Pop` returns silence rather than blocking — bursty SRT delivery would otherwise stall the output ticker.
+**Ring buffers for PCM hand-off.** The audio mixer's [`PCMRingBuffer`](../../server/audio/ringbuf.go) carries samples from source ingest (bursty, per-packet) to the program tick (one frame period). It is not thread-safe on its own; instead, the mixer's `mu` is held for the microseconds required to push or pop, and the buffer's circular layout means there is no allocation per frame. When the buffer underruns, `Pop` returns silence rather than blocking - bursty SRT delivery would otherwise stall the program tick.
 
 ### Lock ordering
 
@@ -209,8 +209,7 @@ Each long-lived goroutine owns specific data and reads shared state only through
 |---|---|---|---|
 | `sourceViewer.SendVideo` callback | [`source_viewer.go`](../../server/switcher/source_viewer.go) | per source | atomic counters (videoSent/audioSent/captionSent); dispatches to decoder via atomic.Pointer |
 | `sourceDecoder` loop | [`source_decoder.go`](../../server/switcher/source_decoder.go) | per source | FFmpeg decoder handle (single-writer under decoderMu) |
-| `videoProcessingLoop` | [`pipeline_loop.go`](../../server/switcher/pipeline_loop.go) | per switcher | pipeline execution (reads Pipeline via atomic.Pointer) |
-| `outputTicker` | [`mixer_ticker.go`](../../server/audio/mixer_ticker.go) | per mixer | audio output cadence (holds Mixer.mu for the tick) |
+| sync loop | [`sync_loop.go`](../../server/switcher/sync_loop.go) | per switcher | pipeline execution (reads Pipeline via atomic.Pointer) |
 | `srt.Source` stats poller | [`srt/source.go`](../../server/srt/source.go) | per SRT source | stats via StatsManager.mu |
 | `srt.Caller` reconnect loop | [`srt/caller.go`](../../server/srt/caller.go) | per SRT caller | backoff timer, connection state under Caller.mu |
 | `srt.Listener` accept loop | [`srt/listener.go`](../../server/srt/listener.go) | per listener | incoming connection dispatch |
@@ -248,7 +247,7 @@ The one explicit ordering rule — Manager → Destination in `output/manager.go
 - **Two-bundle snapshots are intentionally racy.** A handler that loads `hotState` and `sourcesAtomic` in sequence can observe them from different versions. This is benign: the routing branches in `handleRawVideoFrame` produce a correct disposition (program, filtered, or transition source) for any interleaving. Don't "fix" it with a lock.
 - **`atomic.Pointer[T]` implies T is immutable once published.** If you mutate a pipeline, layout, or key snapshot after `Store`, readers can observe torn state. Always `build new; swap; dispose of old`.
 - **`Close` on any goroutine-owning struct waits on its own WaitGroup.** `Switcher.Close`, `Mixer.Close`, `Manager.Close`, `Context.Close`. Do not skip the wait — cgo resources may still be in flight.
-- **Ring-buffer push is newest-wins.** The mixer's [`PCMRingBuffer.Push`](../../server/audio/ringbuf.go) discards oldest samples on overflow; the output ticker would otherwise stall on a bursty SRT source. Underruns return silence, not the last frame, because freeze-repeat sounds worse on live audio than a brief mute.
+- **Ring-buffer push is newest-wins.** The mixer's [`PCMRingBuffer.Push`](../../server/audio/ringbuf.go) discards oldest samples on overflow; the program tick would otherwise stall on a bursty SRT source. Underruns return silence, not the last frame, because freeze-repeat sounds worse on live audio than a brief mute.
 - **GPU Context close is a two-phase barrier.** Setting `closed` atomically first prevents new `Sync` calls; taking `mu` then waits for in-flight syncs before destroying streams. Do not invert this — destroying streams while a sync is in flight will crash CUDA.
 - **Operator / macro locks hold for the entire operation.** `API.macroMu` is held for the full macro run; `API.uploadMu` for the full clip upload. These are mutexes not queues — concurrent requests block until the in-flight one finishes.
 - **Prometheus registry is global but per-subsystem metrics are passed in.** See [metrics.md](../reference/metrics.md). A subsystem receives its `*metrics.Metrics` via `SetMetrics` under its own mutex, so metric emission itself is a single atomic counter increment with no contention.

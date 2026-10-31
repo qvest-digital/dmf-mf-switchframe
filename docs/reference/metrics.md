@@ -61,7 +61,7 @@ Registered per-instance via `NewMetrics` and attached to the switcher with `Swit
 
 | Metric | Type | Labels | Fires on |
 |---|---|---|---|
-| `switchframe_mixer_frames_mixed_total` | counter | — | Every audio frame emitted from `tick()` (decoded, mixed, re-encoded). |
+| `switchframe_mixer_frames_mixed_total` | counter | - | Every `ProduceSamples` call: one per program tick. |
 | `switchframe_mixer_encode_errors_total` | counter | — | Every FDK-AAC encode failure in the mixer. |
 
 ## Pipeline metrics
