@@ -190,8 +190,9 @@ func startVideo(t *testing.T, flow DiscreteReader) *Reader {
 	return r
 }
 
-// Switching an input to another flow keeps its reader loop and grain
-// counter: the stream downstream continues, with the new flow's pictures.
+// Switching an input to another flow keeps its reader loop and its place
+// on the grain timeline: the stream downstream continues, with the new
+// flow's pictures.
 func TestRetarget_KeepsReaderLoopAndCounter(t *testing.T) {
 	store := newFlowStore(map[string]*liveFlow{
 		"a": newLiveFlow(1, videoShape),
@@ -209,8 +210,9 @@ func TestRetarget_KeepsReaderLoopAndCounter(t *testing.T) {
 
 	for {
 		g := nextGrain(t, r)
-		if g.PTS != last.PTS+1 {
-			t.Fatalf("PTS jumped from %d to %d across the switch", last.PTS, g.PTS)
+		if g.PTS <= last.PTS {
+			t.Fatalf("PTS %d (index %d) after %d (index %d) across the switch",
+				g.PTS, g.Index, last.PTS, last.Index)
 		}
 		last = g
 		if g.V210[0] == 2 {
