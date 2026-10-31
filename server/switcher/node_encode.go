@@ -51,6 +51,14 @@ type encodeNode struct {
 	wg        sync.WaitGroup
 	closeOnce sync.Once
 
+	// pred, when non-nil, receives the encode node this one follows on
+	// the program, nil for none. The goroutine sends nothing before that
+	// node's goroutine has ended: both feed the one program, and every
+	// item left in the old queue is earlier than any in this one. done
+	// closes when this node's goroutine ends.
+	pred chan *encodeNode
+	done chan struct{}
+
 	// Diagnostic counter: frames dropped because the encoder goroutine
 	// was still busy with the previous frame.
 	encodeDropCount *atomic.Int64
@@ -106,6 +114,7 @@ func (n *encodeNode) start() {
 	// bounded to ~3 extra frames (100ms) in the worst case. Previously
 	// 2, but software x264 on single-core VPS dropped 3-4% of frames.
 	n.encodeCh = make(chan encodeWork, 4)
+	n.done = make(chan struct{})
 	n.wg.Add(1)
 	go n.encodeLoop()
 }
@@ -118,6 +127,8 @@ func (n *encodeNode) start() {
 // Close() runs. This is enforced by the Pipeline.Run()/Close() contract.
 func (n *encodeNode) Close() error {
 	n.closeOnce.Do(func() {
+		// A node never placed on the program follows nothing.
+		n.follow(nil)
 		if n.encodeCh != nil {
 			close(n.encodeCh)
 			n.wg.Wait()
@@ -130,12 +141,30 @@ func (n *encodeNode) Close() error {
 // Runs in a dedicated goroutine for the lifetime of the node.
 func (n *encodeNode) encodeLoop() {
 	defer n.wg.Done()
+	defer close(n.done)
+	if n.pred != nil {
+		if prev := <-n.pred; prev != nil {
+			<-prev.done
+		}
+	}
 	for work := range n.encodeCh {
 		if work.repeat {
 			n.onRepeat(work.repeatPTS)
 			continue
 		}
 		n.processWorkItem(work)
+	}
+}
+
+// follow hands the node the encode node it replaces on the program, nil
+// for none. Only the first call counts; a node without pred ignores it.
+func (n *encodeNode) follow(prev *encodeNode) {
+	if n.pred == nil {
+		return
+	}
+	select {
+	case n.pred <- prev:
+	default:
 	}
 }
 
