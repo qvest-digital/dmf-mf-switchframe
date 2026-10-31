@@ -20,7 +20,9 @@ type gpuEncodeNode struct {
 }
 
 // NewGPUEncodeNode creates an encode pipeline node.
-// onEncoded is called with the encoded H.264 bitstream for each frame.
+// onEncoded is called once per encoded packet, with the PTS of the frame
+// that packet encodes, which is not the frame just processed when the
+// encoder holds input.
 func NewGPUEncodeNode(ctx *Context, encoder *GPUEncoder, forceIDR *atomic.Bool, onEncoded func([]byte, bool, int64)) GPUPipelineNode {
 	return &gpuEncodeNode{
 		ctx:       ctx,
@@ -48,13 +50,15 @@ func (n *gpuEncodeNode) ProcessGPU(frame *GPUFrame) error {
 	if n.forceIDR != nil {
 		idr = n.forceIDR.Swap(false)
 	}
-	data, isIDR, err := n.encoder.EncodeGPU(frame, idr)
+	pkts, err := n.encoder.EncodeGPUPackets(frame, idr)
 	if err != nil {
 		n.lastErr.Store(err)
 		return err
 	}
-	if len(data) > 0 && n.onEncoded != nil {
-		n.onEncoded(data, isIDR, frame.PTS)
+	if n.onEncoded != nil {
+		for _, pkt := range pkts {
+			n.onEncoded(pkt.Data, pkt.IsKeyframe, pkt.PTS)
+		}
 	}
 	return nil
 }

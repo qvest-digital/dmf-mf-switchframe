@@ -32,6 +32,11 @@ func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 	return nil, false, errFFmpegDisabled
 }
 
+// EncodePackets is a stub that always returns an error.
+func (e *FFmpegEncoder) EncodePackets(yuv []byte, pts int64, forceIDR bool) ([]EncodedPacket, error) {
+	return nil, errFFmpegDisabled
+}
+
 // Close is a no-op stub.
 func (e *FFmpegEncoder) Close() {}
 
@@ -52,6 +57,11 @@ func NewFFmpegHWFramesEncoderHEVC(cudaCtx unsafe.Pointer, width, height, bitrate
 // EncodeNV12CUDA is a stub that always returns an error.
 func (e *FFmpegHWFramesEncoder) EncodeNV12CUDA(yDevPtr, uvDevPtr unsafe.Pointer, pitch int, pts int64, forceIDR bool, cudaStream unsafe.Pointer) ([]byte, bool, error) {
 	return nil, false, errFFmpegDisabled
+}
+
+// EncodeNV12CUDAPackets is a stub that always returns an error.
+func (e *FFmpegHWFramesEncoder) EncodeNV12CUDAPackets(yDevPtr, uvDevPtr unsafe.Pointer, pitch int, pts int64, forceIDR bool, cudaStream unsafe.Pointer) ([]EncodedPacket, error) {
+	return nil, errFFmpegDisabled
 }
 
 // Close is a no-op stub.

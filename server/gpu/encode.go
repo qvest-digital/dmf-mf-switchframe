@@ -116,9 +116,49 @@ func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrat
 // When falling back, downloads NV12→YUV420p to CPU then encodes via FFmpeg.
 //
 // Returns the H.264 bitstream, whether it's an IDR, and any error.
+//
+// EncodeGPU reads at most one packet per call, and the packet it returns
+// can encode an earlier frame when the encoder holds input.
+// EncodeGPUPackets returns every ready packet with its own PTS.
 func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, error) {
+	pkts, err := e.encodeGPU(frame, forceIDR, false)
+	if err != nil || len(pkts) == 0 {
+		return nil, false, err
+	}
+	return pkts[0].Data, pkts[0].IsKeyframe, nil
+}
+
+// EncodeGPUPackets encodes a GPU-resident frame as EncodeGPU does and
+// returns every packet the encoder has ready afterwards. Each packet
+// carries the PTS and DTS, in 90 kHz units, of the frame it encodes.
+func (e *GPUEncoder) EncodeGPUPackets(frame *GPUFrame, forceIDR bool) ([]codec.EncodedPacket, error) {
+	return e.encodeGPU(frame, forceIDR, true)
+}
+
+// singlePacket adapts a single-packet encode result. PTS is the input
+// frame's, which is all a single-packet caller has.
+func singlePacket(data []byte, isIDR bool, pts int64, err error) ([]codec.EncodedPacket, error) {
+	if err != nil || len(data) == 0 {
+		return nil, err
+	}
+	return []codec.EncodedPacket{{Data: data, PTS: pts, DTS: pts, IsKeyframe: isIDR}}, nil
+}
+
+// hasKeyframe reports whether any packet is a keyframe.
+func hasKeyframe(pkts []codec.EncodedPacket) bool {
+	for _, p := range pkts {
+		if p.IsKeyframe {
+			return true
+		}
+	}
+	return false
+}
+
+// encodeGPU is EncodeGPU and EncodeGPUPackets: drain selects reading every
+// ready packet over reading one.
+func (e *GPUEncoder) encodeGPU(frame *GPUFrame, forceIDR, drain bool) ([]codec.EncodedPacket, error) {
 	if frame == nil {
-		return nil, false, fmt.Errorf("gpu: encode: nil frame")
+		return nil, fmt.Errorf("gpu: encode: nil frame")
 	}
 
 	// GOP safety: force IDR if NVENC's internal GOP counter may have failed.
@@ -151,17 +191,17 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 			if e.nv12Tmp == nil {
 				pool, err := NewFramePool(e.gpuCtx, e.width, e.height, 1)
 				if err != nil {
-					return nil, false, fmt.Errorf("gpu: NV12 tmp pool alloc: %w", err)
+					return nil, fmt.Errorf("gpu: NV12 tmp pool alloc: %w", err)
 				}
 				tmp, err := pool.Acquire()
 				if err != nil {
 					pool.Close()
-					return nil, false, fmt.Errorf("gpu: NV12 tmp alloc: %w", err)
+					return nil, fmt.Errorf("gpu: NV12 tmp alloc: %w", err)
 				}
 				e.nv12Tmp = tmp
 			}
 			if err := ScaleP210ToNV12On(e.gpuCtx, e.nv12Tmp, frame, nil); err != nil {
-				return nil, false, fmt.Errorf("gpu: P210→NV12 convert: %w", err)
+				return nil, fmt.Errorf("gpu: P210->NV12 convert: %w", err)
 			}
 			e.nv12Tmp.PTS = frame.PTS
 			encFrame = e.nv12Tmp
@@ -173,7 +213,7 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 			if e.p010Tmp == nil {
 				tmp, err := e.gpuCtx.Pool().Acquire()
 				if err != nil {
-					return nil, false, fmt.Errorf("gpu: P010 tmp alloc: %w", err)
+					return nil, fmt.Errorf("gpu: P010 tmp alloc: %w", err)
 				}
 				e.p010Tmp = tmp
 				slog.Info("gpu: P010 tmp frame allocated",
@@ -183,7 +223,7 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 			}
 			// Convert P210 → P010 (chroma downsample + MSB shift) on GPU.
 			if err := ConvertP210ToP010MSB(e.gpuCtx, e.p010Tmp, frame); err != nil {
-				return nil, false, fmt.Errorf("gpu: P210→P010 convert: %w", err)
+				return nil, fmt.Errorf("gpu: P210->P010 convert: %w", err)
 			}
 			e.p010Tmp.PTS = frame.PTS
 			encFrame = e.p010Tmp
@@ -193,14 +233,21 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 		uvDevPtr := unsafe.Pointer(uintptr(encFrame.DevPtr) + uintptr(encFrame.Pitch*encFrame.Height))
 
 		encStream := unsafe.Pointer(e.gpuCtx.EncStream())
-		data, isIDR, err := e.hwEnc.EncodeNV12CUDA(yDevPtr, uvDevPtr, encFrame.Pitch, frame.PTS, forceIDR, encStream)
-		if err != nil {
-			return nil, false, fmt.Errorf("gpu: hw_frames encode failed: %w", err)
+		var pkts []codec.EncodedPacket
+		var err error
+		if drain {
+			pkts, err = e.hwEnc.EncodeNV12CUDAPackets(yDevPtr, uvDevPtr, encFrame.Pitch, frame.PTS, forceIDR, encStream)
+		} else {
+			data, isIDR, encErr := e.hwEnc.EncodeNV12CUDA(yDevPtr, uvDevPtr, encFrame.Pitch, frame.PTS, forceIDR, encStream)
+			pkts, err = singlePacket(data, isIDR, frame.PTS, encErr)
 		}
-		if isIDR {
+		if err != nil {
+			return nil, fmt.Errorf("gpu: hw_frames encode failed: %w", err)
+		}
+		if hasKeyframe(pkts) {
 			e.framesSinceIDR = 0
 		}
-		return data, isIDR, nil
+		return pkts, nil
 	}
 
 	// Fallback: download GPU NV12 → CPU YUV420p, then encode
@@ -208,19 +255,25 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 	err := Download(e.gpuCtx, e.cpuBuf, frame, frame.Width, frame.Height)
 	if err != nil {
 		e.cpuBufMu.Unlock()
-		return nil, false, fmt.Errorf("gpu: encode: download failed: %w", err)
+		return nil, fmt.Errorf("gpu: encode: download failed: %w", err)
 	}
 
-	data, isIDR, err := e.ffEnc.Encode(e.cpuBuf, frame.PTS, forceIDR)
+	var pkts []codec.EncodedPacket
+	if drain {
+		pkts, err = e.ffEnc.EncodePackets(e.cpuBuf, frame.PTS, forceIDR)
+	} else {
+		data, isIDR, encErr := e.ffEnc.Encode(e.cpuBuf, frame.PTS, forceIDR)
+		pkts, err = singlePacket(data, isIDR, frame.PTS, encErr)
+	}
 	e.cpuBufMu.Unlock()
 
-	if isIDR {
+	if hasKeyframe(pkts) {
 		e.framesSinceIDR = 0
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("gpu: encode failed: %w", err)
+		return nil, fmt.Errorf("gpu: encode failed: %w", err)
 	}
-	return data, isIDR, nil
+	return pkts, nil
 }
 
 // EncodeGPUOn encodes a GPU-resident NV12 frame to H.264 using the specified

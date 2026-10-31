@@ -65,7 +65,9 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 
 	h->ctx->width = width;
 	h->ctx->height = height;
-	h->ctx->time_base = (AVRational){fps_den, fps_num};
+	// Frame PTS arrive in 90 kHz units, so packet PTS come back in them.
+	// Rate control and VUI timing read framerate, not time_base.
+	h->ctx->time_base = (AVRational){1, 90000};
 	h->ctx->framerate = (AVRational){fps_num, fps_den};
 
 	// Constrained VBR (cVBR): ABR target with tight VBV ceiling.
@@ -287,7 +289,9 @@ static int ffenc_open_preview(ffenc_t* h, int width, int height, int bitrate,
 
 	h->ctx->width = width;
 	h->ctx->height = height;
-	h->ctx->time_base = (AVRational){fps_den, fps_num};
+	// Frame PTS arrive in 90 kHz units, so packet PTS come back in them.
+	// Rate control and VUI timing read framerate, not time_base.
+	h->ctx->time_base = (AVRational){1, 90000};
 	h->ctx->framerate = (AVRational){fps_num, fps_den};
 
 	// Constrained VBR: same formula as production encoder.
@@ -350,21 +354,14 @@ static int ffenc_open_preview(ffenc_t* h, int width, int height, int bitrate,
 	return 0;
 }
 
-// ffenc_encode encodes one YUV420 frame.
+// ffenc_send submits one YUV420 frame to the encoder.
 // yuv_data points to packed planar YUV420 (Y: w*h, U: w/2*h/2, V: w/2*h/2).
 // If force_idr is non-zero, the frame is forced to be an IDR keyframe.
 // input_pts is the presentation timestamp passed through from the pipeline
 // (90 kHz MPEG-TS time base) for correct A/V sync.
-// On success (return 0): out_buf/out_len point directly into pkt->data.
-// Caller must copy the data before calling ffenc_unref_packet().
-// Returns 0 on success, 1 if EAGAIN (need more input), negative on error.
-static int ffenc_encode(ffenc_t* h, unsigned char* yuv_data, int force_idr,
-                        int64_t input_pts,
-                        unsigned char** out_buf, int* out_len, int* is_idr) {
-	*out_buf = NULL;
-	*out_len = 0;
-	*is_idr = 0;
-
+// Returns 0 on success, negative on error.
+static int ffenc_send(ffenc_t* h, unsigned char* yuv_data, int force_idr,
+                      int64_t input_pts) {
 	// Make the frame writable (in case it's referenced by the encoder).
 	int rc = av_frame_make_writable(h->frame);
 	if (rc < 0) {
@@ -436,10 +433,23 @@ static int ffenc_encode(ffenc_t* h, unsigned char* yuv_data, int force_idr,
 	if (rc < 0) {
 		return -2; // send failed
 	}
+	return 0;
+}
 
-	rc = avcodec_receive_packet(h->ctx, h->pkt);
-	if (rc == AVERROR(EAGAIN)) {
-		return 1; // need more input
+// ffenc_receive takes the next packet the encoder has ready, with the PTS
+// and DTS of the frame it encodes (90 kHz, the context time_base).
+// On success (return 0): out_buf/out_len point directly into pkt->data.
+// Caller must copy the data before calling ffenc_unref_packet().
+// Returns 0 with a packet, 1 if none is ready (EAGAIN or EOF), negative on error.
+static int ffenc_receive(ffenc_t* h, unsigned char** out_buf, int* out_len,
+                         int* is_idr, int64_t* out_pts, int64_t* out_dts) {
+	*out_buf = NULL;
+	*out_len = 0;
+	*is_idr = 0;
+
+	int rc = avcodec_receive_packet(h->ctx, h->pkt);
+	if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) {
+		return 1; // nothing ready
 	}
 	if (rc < 0) {
 		return -3; // receive failed
@@ -450,6 +460,8 @@ static int ffenc_encode(ffenc_t* h, unsigned char* yuv_data, int force_idr,
 	*out_buf = h->pkt->data;
 	*out_len = h->pkt->size;
 	*is_idr = (h->pkt->flags & AV_PKT_FLAG_KEY) ? 1 : 0;
+	*out_pts = h->pkt->pts;
+	*out_dts = h->pkt->dts;
 
 	return 0;
 }
@@ -734,9 +746,38 @@ func (e *FFmpegEncoder) Extradata() []byte {
 // to the encoded bitstream for A/V sync.
 // If forceIDR is true, the encoder forces an IDR keyframe.
 // Returns the encoded bitstream, whether the frame is a keyframe, and any error.
+//
+// Encode reads at most one packet per call, and the packet it returns can
+// encode an earlier frame when the encoder holds input. EncodePackets
+// returns every ready packet with the PTS of the frame it encodes.
 func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+	if err := e.send(yuv, pts, forceIDR); err != nil {
+		return nil, false, err
+	}
+	pkt, ok, err := e.receive()
+	if err != nil || !ok {
+		// !ok: EAGAIN, the encoder needs more input before producing
+		// output. This is normal for hardware encoders (e.g. VideoToolbox)
+		// that buffer a few frames during warmup. Return nil data, no error.
+		return nil, false, err
+	}
+	return pkt.Data, pkt.IsKeyframe, nil
+}
+
+// EncodePackets encodes a packed YUV420 planar frame and returns every
+// packet the encoder has ready afterwards: none while it holds input,
+// several when it catches up. Each packet carries the PTS and DTS, in
+// 90 kHz units, of the frame it encodes.
+func (e *FFmpegEncoder) EncodePackets(yuv []byte, pts int64, forceIDR bool) ([]EncodedPacket, error) {
+	if err := e.send(yuv, pts, forceIDR); err != nil {
+		return nil, err
+	}
+	return drainPackets(e.receive)
+}
+
+func (e *FFmpegEncoder) send(yuv []byte, pts int64, forceIDR bool) error {
 	if e.closed {
-		return nil, false, errors.New("encoder is closed")
+		return errors.New("encoder is closed")
 	}
 
 	w := int(e.handle.width)
@@ -748,13 +789,13 @@ func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 	if e.handle.pix_fmt_10bit != 0 {
 		expected := video.YUV422_10bitFrameSize(w, h)
 		if len(yuv) != expected {
-			return nil, false, fmt.Errorf("YUV buffer must be %d bytes (%dx%d*4, YUV422P10LE), got %d",
+			return fmt.Errorf("YUV buffer must be %d bytes (%dx%d*4, YUV422P10LE), got %d",
 				expected, w, h, len(yuv))
 		}
 	} else {
 		expected := video.YUV420FrameSize(w, h)
 		if len(yuv) != expected {
-			return nil, false, fmt.Errorf("YUV buffer must be %d bytes (%dx%d*3/2), got %d",
+			return fmt.Errorf("YUV buffer must be %d bytes (%dx%d*3/2), got %d",
 				expected, w, h, len(yuv))
 		}
 	}
@@ -764,40 +805,48 @@ func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 		forceIDRInt = C.int(1)
 	}
 
-	var outBuf *C.uchar
-	var outLen C.int
-	var isIDR C.int
-
-	rc := C.ffenc_encode(
+	rc := C.ffenc_send(
 		&e.handle,
 		(*C.uchar)(unsafe.Pointer(&yuv[0])),
 		forceIDRInt,
 		C.int64_t(pts),
-		&outBuf, &outLen, &isIDR,
 	)
 	if rc < 0 {
-		return nil, false, fmt.Errorf("FFmpeg encode error: code %d", int(rc))
+		return fmt.Errorf("FFmpeg encode error: code %d", int(rc))
+	}
+	return nil
+}
+
+// receive returns the next ready packet, or ok=false when none is ready.
+func (e *FFmpegEncoder) receive() (pkt EncodedPacket, ok bool, err error) {
+	var outBuf *C.uchar
+	var outLen, isIDR C.int
+	var pktPTS, pktDTS C.int64_t
+
+	rc := C.ffenc_receive(&e.handle, &outBuf, &outLen, &isIDR, &pktPTS, &pktDTS)
+	if rc < 0 {
+		return pkt, false, fmt.Errorf("FFmpeg encode error: code %d", int(rc))
 	}
 	if rc == 1 {
-		// EAGAIN: encoder needs more input before producing output.
-		// This is normal for hardware encoders (e.g. VideoToolbox) that
-		// buffer a few frames during warmup. Return nil data, no error.
-		return nil, false, nil
+		return pkt, false, nil
 	}
 
-	n := int(outLen)
-	if n == 0 || outBuf == nil {
+	if outLen == 0 || outBuf == nil {
 		// A packet was successfully received (rc==0); release it before
 		// returning, mirroring the success path so no buffer is stranded.
 		C.ffenc_unref_packet(&e.handle)
-		return nil, false, errors.New("encoder produced no output")
+		return pkt, false, errors.New("encoder produced no output")
 	}
 
 	// GoBytes copies pkt->data into Go memory; then unref releases the AVPacket.
-	result := C.GoBytes(unsafe.Pointer(outBuf), outLen)
+	pkt = EncodedPacket{
+		Data:       C.GoBytes(unsafe.Pointer(outBuf), outLen),
+		PTS:        int64(pktPTS),
+		DTS:        int64(pktDTS),
+		IsKeyframe: isIDR != 0,
+	}
 	C.ffenc_unref_packet(&e.handle)
-
-	return result, isIDR != 0, nil
+	return pkt, true, nil
 }
 
 // Close releases the encoder resources. Safe to call multiple times.

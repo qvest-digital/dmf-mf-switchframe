@@ -64,7 +64,9 @@ static int ffenc_open_cuda_hw(ffenc_hw_frames_t* h, int width, int height,
 	h->base.height = height;
 	h->base.ctx->width = width;
 	h->base.ctx->height = height;
-	h->base.ctx->time_base = (AVRational){fps_den, fps_num};
+	// Frame PTS arrive in 90 kHz units, so packet PTS come back in them.
+	// NVENC rate control and VUI timing read framerate, not time_base.
+	h->base.ctx->time_base = (AVRational){1, 90000};
 	h->base.ctx->framerate = (AVRational){fps_num, fps_den};
 	h->base.ctx->bit_rate = bitrate;
 	h->base.ctx->rc_max_rate = bitrate + bitrate / 5;
@@ -223,7 +225,9 @@ static int ffenc_open_cuda_hw_v2(ffenc_hw_frames_t* h, int width, int height,
 	h->base.height = height;
 	h->base.ctx->width = width;
 	h->base.ctx->height = height;
-	h->base.ctx->time_base = (AVRational){fps_den, fps_num};
+	// Frame PTS arrive in 90 kHz units, so packet PTS come back in them.
+	// NVENC rate control and VUI timing read framerate, not time_base.
+	h->base.ctx->time_base = (AVRational){1, 90000};
 	h->base.ctx->framerate = (AVRational){fps_num, fps_den};
 	h->base.ctx->bit_rate = bitrate;
 	h->base.ctx->rc_max_rate = bitrate + bitrate / 5;
@@ -358,23 +362,18 @@ static int ffenc_open_cuda_hw_v2(ffenc_hw_frames_t* h, int width, int height,
 	return 0;
 }
 
-// ffenc_encode_nv12_cuda encodes one NV12 frame from CUDA device memory.
+// ffenc_send_nv12_cuda submits one NV12 frame from CUDA device memory.
 // y_dev_ptr points to Y plane, uv_dev_ptr points to UV plane (both device pointers).
 // pitch is the row stride in bytes.
 // cuda_ctx is the CUcontext to push before encoding (cgo goroutines may migrate threads).
 // cuda_stream is the CUDA stream to use for device-to-device copies. If NULL,
 // falls back to synchronous cuMemcpy2D (legacy behavior). Using an explicit
 // stream prevents races with kernel launches on non-blocking streams.
-// Returns 0 on success, 1 if EAGAIN, negative on error.
-static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
-                                   void* y_dev_ptr, void* uv_dev_ptr,
-                                   int pitch, int64_t input_pts, int force_idr,
-                                   void* cuda_ctx, void* cuda_stream,
-                                   unsigned char** out_buf, int* out_len, int* is_idr) {
-	*out_buf = NULL;
-	*out_len = 0;
-	*is_idr  = 0;
-
+// Returns 0 on success, negative on error.
+static int ffenc_send_nv12_cuda(ffenc_hw_frames_t* h,
+                                 void* y_dev_ptr, void* uv_dev_ptr,
+                                 int pitch, int64_t input_pts, int force_idr,
+                                 void* cuda_ctx, void* cuda_stream) {
 	// Ensure CUDA context is active on this thread. cgo goroutines may
 	// migrate to threads that haven't called cudaSetDevice(0).
 	// If the push fails, return immediately WITHOUT popping: popping here
@@ -453,20 +452,41 @@ static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
 	}
 
 	int rc = avcodec_send_frame(h->base.ctx, frame);
+	cuCtxPopCurrent(&prev_ctx);
 	if (rc < 0) {
-		cuCtxPopCurrent(&prev_ctx);
 		return rc; // return actual FFmpeg error code (negative)
 	}
+	return 0;
+}
 
-	rc = avcodec_receive_packet(h->base.ctx, h->base.pkt);
+// ffenc_receive_hw takes the next packet the encoder has ready, with the
+// PTS and DTS of the frame it encodes (90 kHz, the context time_base).
+// cuda_ctx is pushed around the receive, as for the send.
+// On success (return 0): out_buf/out_len point into pkt->data until
+// ffenc_unref_packet_hw.
+// Returns 0 with a packet, 1 if none is ready (EAGAIN or EOF), negative on error.
+static int ffenc_receive_hw(ffenc_hw_frames_t* h, void* cuda_ctx,
+                            unsigned char** out_buf, int* out_len, int* is_idr,
+                            int64_t* out_pts, int64_t* out_dts) {
+	*out_buf = NULL;
+	*out_len = 0;
+	*is_idr  = 0;
+
+	CUcontext prev_ctx;
+	if (cuCtxPushCurrent((CUcontext)cuda_ctx) != CUDA_SUCCESS) {
+		return -7;
+	}
+	int rc = avcodec_receive_packet(h->base.ctx, h->base.pkt);
 	cuCtxPopCurrent(&prev_ctx);
 
-	if (rc == AVERROR(EAGAIN)) return 1;
+	if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) return 1;
 	if (rc < 0) return -3;
 
 	*out_buf = h->base.pkt->data;
 	*out_len = h->base.pkt->size;
 	*is_idr  = (h->base.pkt->flags & AV_PKT_FLAG_KEY) ? 1 : 0;
+	*out_pts = h->base.pkt->pts;
+	*out_dts = h->base.pkt->dts;
 	return 0;
 }
 
@@ -584,9 +604,36 @@ func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fp
 // with non-blocking streams). Callers should pass their workflow's stream
 // to prevent data races.
 // Returns the encoded Annex B H.264 bitstream, whether it's an IDR, and any error.
+//
+// EncodeNV12CUDA reads at most one packet per call, and the packet it
+// returns can encode an earlier frame when the encoder holds input.
+// EncodeNV12CUDAPackets returns every ready packet with its own PTS.
 func (e *FFmpegHWFramesEncoder) EncodeNV12CUDA(yDevPtr, uvDevPtr unsafe.Pointer, pitch int, pts int64, forceIDR bool, cudaStream unsafe.Pointer) ([]byte, bool, error) {
+	if err := e.send(yDevPtr, uvDevPtr, pitch, pts, forceIDR, cudaStream); err != nil {
+		return nil, false, err
+	}
+	pkt, ok, err := e.receive()
+	if err != nil || !ok {
+		// !ok: EAGAIN, need more input.
+		return nil, false, err
+	}
+	return pkt.Data, pkt.IsKeyframe, nil
+}
+
+// EncodeNV12CUDAPackets encodes one NV12 frame from CUDA device memory, as
+// EncodeNV12CUDA, and returns every packet the encoder has ready
+// afterwards. Each packet carries the PTS and DTS, in 90 kHz units, of the
+// frame it encodes.
+func (e *FFmpegHWFramesEncoder) EncodeNV12CUDAPackets(yDevPtr, uvDevPtr unsafe.Pointer, pitch int, pts int64, forceIDR bool, cudaStream unsafe.Pointer) ([]EncodedPacket, error) {
+	if err := e.send(yDevPtr, uvDevPtr, pitch, pts, forceIDR, cudaStream); err != nil {
+		return nil, err
+	}
+	return drainPackets(e.receive)
+}
+
+func (e *FFmpegHWFramesEncoder) send(yDevPtr, uvDevPtr unsafe.Pointer, pitch int, pts int64, forceIDR bool, cudaStream unsafe.Pointer) error {
 	if e.closed {
-		return nil, false, errors.New("encoder is closed")
+		return errors.New("encoder is closed")
 	}
 
 	forceIDRInt := C.int(0)
@@ -594,33 +641,46 @@ func (e *FFmpegHWFramesEncoder) EncodeNV12CUDA(yDevPtr, uvDevPtr unsafe.Pointer,
 		forceIDRInt = 1
 	}
 
-	var outBuf *C.uchar
-	var outLen, isIDR C.int
-
-	rc := C.ffenc_encode_nv12_cuda(&e.handle,
+	rc := C.ffenc_send_nv12_cuda(&e.handle,
 		yDevPtr, uvDevPtr,
 		C.int(pitch), C.int64_t(pts), forceIDRInt,
-		e.cudaCtx, cudaStream,
-		&outBuf, &outLen, &isIDR)
+		e.cudaCtx, cudaStream)
 	if rc < 0 {
-		return nil, false, fmt.Errorf("NVENC hw_frames encode error: code %d", int(rc))
+		return fmt.Errorf("NVENC hw_frames encode error: code %d", int(rc))
+	}
+	return nil
+}
+
+// receive returns the next ready packet, or ok=false when none is ready.
+func (e *FFmpegHWFramesEncoder) receive() (pkt EncodedPacket, ok bool, err error) {
+	var outBuf *C.uchar
+	var outLen, isIDR C.int
+	var pktPTS, pktDTS C.int64_t
+
+	rc := C.ffenc_receive_hw(&e.handle, e.cudaCtx,
+		&outBuf, &outLen, &isIDR, &pktPTS, &pktDTS)
+	if rc < 0 {
+		return pkt, false, fmt.Errorf("NVENC hw_frames encode error: code %d", int(rc))
 	}
 	if rc == 1 {
-		// EAGAIN -- need more input
-		return nil, false, nil
+		return pkt, false, nil
 	}
 
 	if outLen == 0 || outBuf == nil {
 		// A packet was successfully received (rc==0); release it before
 		// returning, mirroring the success path so no buffer is stranded.
 		C.ffenc_unref_packet_hw(&e.handle)
-		return nil, false, errors.New("NVENC hw_frames encoder produced no output")
+		return pkt, false, errors.New("NVENC hw_frames encoder produced no output")
 	}
 
-	result := C.GoBytes(unsafe.Pointer(outBuf), outLen)
+	pkt = EncodedPacket{
+		Data:       C.GoBytes(unsafe.Pointer(outBuf), outLen),
+		PTS:        int64(pktPTS),
+		DTS:        int64(pktDTS),
+		IsKeyframe: isIDR != 0,
+	}
 	C.ffenc_unref_packet_hw(&e.handle)
-
-	return result, isIDR != 0, nil
+	return pkt, true, nil
 }
 
 // Close releases the encoder resources. Safe to call multiple times.
