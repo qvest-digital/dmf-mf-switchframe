@@ -6,25 +6,26 @@ import (
 	"time"
 )
 
-// Tick represents one frame period from the reference clock.
+// Tick is one program frame period. Index is the program grain index on
+// TAI; every timestamp in the tick is derived from it.
 type Tick struct {
-	Number        int64         // monotonic tick index
-	VideoPTS      int64         // 90kHz PTS for this video frame
-	AudioSamples  int           // exact sample count for this frame period
+	Number        int64         // ticks since the clock started
+	Index         uint64        // program grain index (synthetic in non-realtime mode)
+	VideoPTS      int64         // 90 kHz PTS of the grain's TAI
+	ReadPTS       int64         // newest input media time this tick may show
+	AudioStart    uint64        // first sample index of this period: I(Ra, T(Rv, Index))
+	AudioSamples  int           // I(Ra, T(Rv, Index+1)) - AudioStart
 	FrameDuration time.Duration // nominal frame duration (for overload detection)
 }
 
-// ptsMask33 masks a PTS value to 33 bits (MPEG-TS PTS range: 0 to 2^33-1).
-const ptsMask33 = int64(1<<33) - 1
-
-// ReferenceClock produces ticks at a stable frame rate, driving synchronous
-// A/V processing. Rate can be changed at runtime (for source clock recovery).
+// ReferenceClock produces one tick per program frame. In realtime mode the
+// ticks are the grains of the program rate on TAI (ReaderDelayGrains
+// behind is what each tick reads); otherwise they are produced on demand
+// from index 0, for deterministic tests.
 type ReferenceClock struct {
-	mu           sync.Mutex
-	fpsNum       int
-	fpsDen       int
-	sampleRate   int
-	accum        *AudioAccumulator
+	rate         Rate
+	sampleRate   Rate
+	basePTS      int64
 	tickCount    atomic.Int64
 	ticks        chan Tick
 	request      chan struct{} // non-realtime: consumer signals readiness
@@ -32,27 +33,19 @@ type ReferenceClock struct {
 	wg           sync.WaitGroup
 	realtime     bool
 	running      atomic.Bool
-	droppedTicks atomic.Int64 // ticks dropped because consumer was behind
-
-	// currentPTS tracks the running PTS value using Bresenham accumulation
-	// (Issue 2). Eliminates truncation drift for non-integer PTS deltas
-	// (e.g., 59.94fps where exact delta = 1501.5).
-	currentPTS int64
-
-	// ptsRemainder is the Bresenham fractional remainder for PTS computation.
-	ptsRemainder int64
+	droppedTicks atomic.Int64 // ticks not delivered because the consumer was behind
 }
 
 // NewReferenceClock creates a clock at the given rate.
-// realtime=true: ticks paced to wall clock (production).
-// realtime=false: ticks produced when consumed (deterministic testing).
+// realtime=true: ticks are the program grains on TAI (production); basePTS
+// is unused, PTS is the engine timeline's (PTSBase at Epoch).
+// realtime=false: ticks produced when consumed, PTS from basePTS
+// (deterministic testing).
 func NewReferenceClock(fpsNum, fpsDen, sampleRate int, basePTS int64, realtime bool) *ReferenceClock {
 	c := &ReferenceClock{
-		fpsNum:     fpsNum,
-		fpsDen:     fpsDen,
-		sampleRate: sampleRate,
-		accum:      NewAudioAccumulator(sampleRate, fpsNum, fpsDen),
-		currentPTS: basePTS,
+		rate:       Rate{int64(fpsNum), int64(fpsDen)},
+		sampleRate: Rate{int64(sampleRate), 1},
+		basePTS:    basePTS,
 		stop:       make(chan struct{}),
 		realtime:   realtime,
 	}
@@ -64,6 +57,42 @@ func NewReferenceClock(fpsNum, fpsDen, sampleRate int, basePTS int64, realtime b
 		c.request = make(chan struct{}, 1)
 	}
 	return c
+}
+
+// tickAt builds the tick for program grain index n.
+func (c *ReferenceClock) tickAt(n uint64) Tick {
+	ts, next, read := c.timestamps(n)
+	start := TimestampToIndex(c.sampleRate, ts)
+	return Tick{
+		Number:        c.tickCount.Add(1) - 1,
+		Index:         n,
+		VideoPTS:      c.pts(ts),
+		ReadPTS:       c.pts(read),
+		AudioStart:    start,
+		AudioSamples:  int(TimestampToIndex(c.sampleRate, next) - start),
+		FrameDuration: frameDuration(int(c.rate.Num), int(c.rate.Den)),
+	}
+}
+
+// timestamps returns the TAI of grain n, of grain n+1 and of the grain the
+// tick reads, n - ReaderDelayGrains. Non-realtime timestamps are offset so
+// that index 0 is time 0 and the read grain of the first ticks exists.
+func (c *ReferenceClock) timestamps(n uint64) (ts, next, read int64) {
+	if c.realtime {
+		return IndexToTimestamp(c.rate, n), IndexToTimestamp(c.rate, n+1),
+			IndexToTimestamp(c.rate, n-ReaderDelayGrains)
+	}
+	off := IndexToTimestamp(c.rate, ReaderDelayGrains)
+	s := n + ReaderDelayGrains
+	return IndexToTimestamp(c.rate, s) - off, IndexToTimestamp(c.rate, s+1) - off,
+		IndexToTimestamp(c.rate, n) - off
+}
+
+func (c *ReferenceClock) pts(ts int64) int64 {
+	if c.realtime {
+		return PTS(ts)
+	}
+	return c.basePTS + roundDiv(ts*9, 100_000)
 }
 
 // Start begins producing ticks on the Ticks channel.
@@ -92,8 +121,7 @@ func (c *ReferenceClock) Stop() {
 }
 
 // Ticks returns the receive channel for clock ticks.
-// In non-realtime mode, each receive triggers computation of the next tick,
-// ensuring SetRate takes effect immediately on the very next read.
+// In non-realtime mode, each receive triggers computation of the next tick.
 func (c *ReferenceClock) Ticks() <-chan Tick {
 	if !c.realtime {
 		// Signal the producer to compute and send the next tick.
@@ -106,25 +134,9 @@ func (c *ReferenceClock) Ticks() <-chan Tick {
 	return c.ticks
 }
 
-// SetRate changes the clock rate. Thread-safe. Takes effect on next tick.
-// Rebases the PTS accumulator so the next tick continues from the current
-// PTS position, avoiding discontinuities (Issue 6).
-func (c *ReferenceClock) SetRate(fpsNum, fpsDen int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	// currentPTS already holds the PTS for the next tick. Just reset the
-	// Bresenham remainder so the new rate starts clean from currentPTS.
-	c.ptsRemainder = 0
-	c.fpsNum = fpsNum
-	c.fpsDen = fpsDen
-	c.accum.Reset(c.sampleRate, fpsNum, fpsDen)
-}
-
-// Rate returns the current rate.
+// Rate returns the program frame rate.
 func (c *ReferenceClock) Rate() (fpsNum, fpsDen int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.fpsNum, c.fpsDen
+	return int(c.rate.Num), int(c.rate.Den)
 }
 
 // TickCount returns ticks produced so far.
@@ -145,73 +157,37 @@ func frameDuration(fpsNum, fpsDen int) time.Duration {
 	return time.Duration(int64(fpsDen) * int64(time.Second) / int64(fpsNum))
 }
 
-// produceTick creates the next tick under the lock, advancing state.
-// Uses Bresenham accumulation for PTS (Issue 2) and 33-bit masking (Issue 8).
-func (c *ReferenceClock) produceTick() Tick {
-	c.mu.Lock()
-	dur := frameDuration(c.fpsNum, c.fpsDen)
-	samples := c.accum.SamplesForTick()
-	count := c.tickCount.Load()
-
-	// The PTS for this tick is currentPTS (already computed).
-	pts := c.currentPTS & ptsMask33
-
-	// Advance currentPTS for the NEXT tick using Bresenham accumulation.
-	// This distributes the fractional PTS delta (e.g., 1501.5 for 59.94fps)
-	// across ticks with zero cumulative error.
-	c.ptsRemainder += int64(90000) * int64(c.fpsDen)
-	delta := c.ptsRemainder / int64(c.fpsNum)
-	c.ptsRemainder %= int64(c.fpsNum)
-	c.currentPTS += delta
-
-	c.tickCount.Add(1)
-	c.mu.Unlock()
-
-	return Tick{
-		Number:        count,
-		VideoPTS:      pts,
-		AudioSamples:  samples,
-		FrameDuration: dur,
-	}
-}
-
-// runRealtime produces wall-clock-paced ticks with drift compensation.
+// runRealtime delivers one tick at the TAI start of each program grain.
+// A tick the consumer has not taken by the next one is dropped; after a
+// stall the clock resumes at the current grain, so a tick's PTS is always
+// its grain's.
 func (c *ReferenceClock) runRealtime() {
 	defer c.wg.Done()
 
-	next := time.Now()
+	n := TimestampToIndex(c.rate, TAINow()) + 1
 	for {
-		tick := c.produceTick()
-
-		// Advance next deadline by nominal frame duration.
-		// This compensates for late wakeups: if we wake 5ms late,
-		// the next sleep is 5ms shorter.
-		next = next.Add(tick.FrameDuration)
-
+		if wait := IndexToTimestamp(c.rate, n) - TAINow(); wait > 0 {
+			select {
+			case <-c.stop:
+				return
+			case <-time.After(time.Duration(wait)):
+			}
+		}
 		select {
 		case <-c.stop:
 			return
 		default:
 		}
-
-		// Non-blocking send: drop tick if consumer is behind (overload).
+		if cur := TimestampToIndex(c.rate, TAINow()); cur > n {
+			c.droppedTicks.Add(int64(cur - n))
+			n = cur
+		}
 		select {
-		case c.ticks <- tick:
+		case c.ticks <- c.tickAt(n):
 		default:
 			c.droppedTicks.Add(1)
 		}
-
-		// Sleep until next deadline.
-		delay := time.Until(next)
-		if delay <= 0 {
-			// Already behind — don't sleep, continue immediately.
-			continue
-		}
-		select {
-		case <-c.stop:
-			return
-		case <-time.After(delay):
-		}
+		n++
 	}
 }
 
@@ -230,8 +206,7 @@ func (c *ReferenceClock) runNonRealtime() {
 			return
 		}
 
-		// Compute the tick now (after SetRate has had a chance to run).
-		tick := c.produceTick()
+		tick := c.tickAt(uint64(c.tickCount.Load()))
 
 		select {
 		case c.ticks <- tick:

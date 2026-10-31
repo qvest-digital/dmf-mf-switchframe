@@ -656,7 +656,6 @@ type Switcher struct {
 	// both videoProcessingLoop and the mixer's outputTicker, driving
 	// A/V from a single clock source.
 	refClock         *clock.ReferenceClock
-	clockRecovery    *clock.ClockRecovery
 	aacBuffer        *clock.AACFrameBuffer
 	syncMixer        syncMixerInterface
 	syncLoopWg       sync.WaitGroup

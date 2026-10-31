@@ -211,17 +211,6 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 	// Health is now recorded in IngestRawVideo (the entry point for ALL sources),
 	// so we don't need to record it here in the sync loop.
 
-	// Record arrival for clock recovery (diagnostics only).
-	// Clock recovery observes the program source's frame rate but never
-	// mutates the reference clock. The pipeline rate is fixed at startup
-	// from PipelineFormat and must not change at runtime. A previous bug
-	// allowed SetRate() here, which created a feedback loop: a transient
-	// stall caused clock recovery to snap to a lower rate (e.g. 24fps),
-	// which then became self-confirming.
-	if cr := s.clockRecovery; cr != nil {
-		cr.RecordArrival(time.Now())
-	}
-
 	s.runPipelineAndBroadcast(pf, tick)
 }
 
@@ -774,15 +763,6 @@ func (s *Switcher) SetReferenceClock(rc *clock.ReferenceClock) {
 	defer s.configMu.Unlock()
 	s.refClock = rc
 	s.useRefClock.Store(true)
-}
-
-// SetClockRecovery attaches a clock recovery instance to the switcher.
-// When set, program source frame arrivals are tracked and the reference
-// clock rate is adjusted if a rate change is detected.
-func (s *Switcher) SetClockRecovery(cr *clock.ClockRecovery) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	s.clockRecovery = cr
 }
 
 // SetAACBuffer attaches an AAC frame buffer for the synchronous audio path.
