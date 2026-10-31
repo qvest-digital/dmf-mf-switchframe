@@ -670,13 +670,19 @@ func (s *Switcher) makeBroadcastBlack(width, height int, pts int64) *ProcessingF
 	return &cp
 }
 
-// repeatLastVideoFrame rebroadcasts the most recently encoded frame with
-// an updated PTS. This keeps downstream decoders fed during overload.
-// Uses the last successfully broadcast H.264 frame (Issue 1), not raw YUV.
-// If no last frame exists (startup), generates broadcast black.
+// repeatLastVideoFrame keeps downstream decoders fed during overload, or
+// when the program source has no frame, by sending the last broadcast
+// frame again under pts. Only a keyframe is repeated: it decodes on its
+// own, while a second copy of a predicted frame would apply its slice to
+// the picture twice. After a predicted frame nothing is sent and decoders
+// hold the last picture; re-encoding the raw frame instead would cost the
+// encode an overloaded tick skips. With no frame broadcast yet it sends
+// the last raw frame of an encoder-less configuration, or broadcast black.
 func (s *Switcher) repeatLastVideoFrame(pts int64) {
-	// Try the last broadcast H.264 frame first (Issue 1 fix).
 	if last := s.lastBroadcastVFrame.Load(); last != nil && len(last.WireData) > 0 {
+		if !last.IsKeyframe {
+			return
+		}
 		// Copy WireData to avoid aliasing the stored frame.
 		wireCopy := make([]byte, len(last.WireData))
 		copy(wireCopy, last.WireData)
@@ -684,7 +690,7 @@ func (s *Switcher) repeatLastVideoFrame(pts int64) {
 			PTS:        pts,
 			DTS:        pts,
 			WireData:   wireCopy,
-			IsKeyframe: last.IsKeyframe,
+			IsKeyframe: true,
 		}
 		s.broadcastToProgram(frame)
 		s.syncLoopRepeats.Add(1)
