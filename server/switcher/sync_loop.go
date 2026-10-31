@@ -662,13 +662,33 @@ func (s *Switcher) makeBroadcastBlack(width, height int, pts int64) *ProcessingF
 
 // repeatLastVideoFrame keeps downstream decoders fed during overload, or
 // when the program source has no frame, by sending the last broadcast
-// frame again under pts. Only a keyframe is repeated: it decodes on its
+// frame again under pts. The CPU pipeline's encoder emits its frames on
+// its own goroutine, after the tick that queued them, so the repeat goes
+// through its queue: sent from here it would overtake a frame of an
+// earlier tick still encoding, and the program PTS would step back. The
+// GPU pipeline and an encoder-less configuration emit on this goroutine,
+// so their repeat is sent here.
+func (s *Switcher) repeatLastVideoFrame(pts int64) {
+	queued := false
+	if s.gpuRunner.Load() == nil {
+		s.withPipeline(func(p *Pipeline) {
+			if enc := p.asyncEncoder(); enc != nil {
+				queued = enc.queueRepeat(pts)
+			}
+		})
+	}
+	if !queued {
+		s.emitRepeat(pts)
+	}
+}
+
+// emitRepeat sends the last broadcast frame again under pts. Only a keyframe is repeated: it decodes on its
 // own, while a second copy of a predicted frame would apply its slice to
 // the picture twice. After a predicted frame nothing is sent and decoders
 // hold the last picture; re-encoding the raw frame instead would cost the
 // encode an overloaded tick skips. With no frame broadcast yet it sends
 // the last raw frame of an encoder-less configuration, or broadcast black.
-func (s *Switcher) repeatLastVideoFrame(pts int64) {
+func (s *Switcher) emitRepeat(pts int64) {
 	if last := s.lastBroadcastVFrame.Load(); last != nil && len(last.WireData) > 0 {
 		if !last.IsKeyframe {
 			return
