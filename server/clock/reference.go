@@ -139,6 +139,21 @@ func (c *ReferenceClock) Rate() (fpsNum, fpsDen int) {
 	return int(c.rate.Num), int(c.rate.Den)
 }
 
+// catchUp returns the grain to deliver at TAI now when grain n is next:
+// n itself while now is still within it, otherwise the grain now is in,
+// counting the grains that passed undelivered.
+func (c *ReferenceClock) catchUp(n uint64, now int64) uint64 {
+	if now < IndexToTimestamp(c.rate, n+1) {
+		return n
+	}
+	cur := n + 1
+	for now >= IndexToTimestamp(c.rate, cur+1) {
+		cur++
+	}
+	c.droppedTicks.Add(int64(cur - n))
+	return cur
+}
+
 // TickCount returns ticks produced so far.
 func (c *ReferenceClock) TickCount() int64 {
 	return c.tickCount.Load()
@@ -178,10 +193,7 @@ func (c *ReferenceClock) runRealtime() {
 			return
 		default:
 		}
-		if cur := TimestampToIndex(c.rate, TAINow()); cur > n {
-			c.droppedTicks.Add(int64(cur - n))
-			n = cur
-		}
+		n = c.catchUp(n, TAINow())
 		select {
 		case c.ticks <- c.tickAt(n):
 		default:

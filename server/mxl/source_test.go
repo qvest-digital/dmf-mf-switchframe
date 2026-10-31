@@ -250,29 +250,6 @@ func TestInterleaveChannels(t *testing.T) {
 	}
 }
 
-// delayedDiscreteReader wraps a discrete reader and blocks for the
-// specified delay duration before delegating to the inner reader.
-// This simulates hardware warmup / ring buffer initialization delay.
-type delayedDiscreteReader struct {
-	inner   DiscreteReader
-	delay   time.Duration
-	started time.Time
-	once    sync.Once
-}
-
-func (d *delayedDiscreteReader) ReadGrain(index uint64, timeout uint64) ([]byte, GrainInfo, error) {
-	d.once.Do(func() { d.started = time.Now() })
-	remaining := d.delay - time.Since(d.started)
-	if remaining > 0 {
-		time.Sleep(remaining) // block until delay expires
-	}
-	return d.inner.ReadGrain(index, timeout)
-}
-
-func (d *delayedDiscreteReader) ConfigInfo() FlowConfig     { return d.inner.ConfigInfo() }
-func (d *delayedDiscreteReader) HeadIndex() (uint64, error) { return d.inner.HeadIndex() }
-func (d *delayedDiscreteReader) Close() error               { return d.inner.Close() }
-
 // makeV210FrameWithY creates a V210 frame where all Y samples are set to the given value.
 // Cb/Cr are set to 128 (neutral chroma). Width must be divisible by 6, height must be even.
 func makeV210FrameWithY(width, height int, yVal byte) []byte {
