@@ -2,6 +2,7 @@ package audio
 
 import (
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 )
 
@@ -11,9 +12,11 @@ const aacPrimingSamples = 1024
 
 // IngestFrame processes an AAC audio frame from a source. Decodes to PCM,
 // applies the per-channel processing chain (trim -> EQ -> compressor), and
-// pushes the processed result into the channel's ring buffer, stamped with
-// frame.PTS. No immediate output is produced -- ProduceSamples reads the
-// ring buffers.
+// pushes the processed result into the channel's ring buffer. The decoded
+// samples are stamped with the TAI of their arrival, as the video of the
+// sources that deliver AAC (relay, clip, playout, replay) is: frame.PTS is
+// the source's own timeline, not the engine's. No immediate output is
+// produced -- ProduceSamples reads the ring buffers.
 func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	// Audio forwarding: if this source is being forwarded to another channel
 	// (e.g., live source → playout channel), ingest for the destination too.
@@ -157,8 +160,9 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 	}
 
 	// Push processed PCM to ring buffer for clock-driven output.
+	n := len(trimmedPCM) / m.numChannels
 	ch.ringBuf.Push(trimmedPCM)
-	m.stampRing(ch, frame.PTS, len(trimmedPCM)/m.numChannels)
+	m.stampRing(ch, clock.ArrivalPTS(n, m.sampleRate), n)
 	m.mu.Unlock()
 }
 

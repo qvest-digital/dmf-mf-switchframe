@@ -310,18 +310,18 @@ func TestMixerIngestAACFrame(t *testing.T) {
 	mixer.AddChannel(sourceKey)
 	mixer.SetActive(sourceKey, true)
 
-	// Feed each AAC frame stamped with its media time and read the program
-	// period it covers right after, as the reference clock does.
-	start := nowIndex()
+	// The mixer stamps AAC with its arrival. Each frame is fed with a PTS
+	// of the source's own timeline and the program period that ends at
+	// its arrival is read right after, as the reference clock reads.
 	var output []float32
 	for k, aacData := range aacFrames {
-		idx := start + uint64(k*frameSize)
 		mixer.IngestFrame(sourceKey, &media.AudioFrame{
-			PTS:        clock.IndexPTS(rate48k, idx),
+			PTS:        int64(k * frameSize * 90000 / sampleRate),
 			Data:       aacData,
 			SampleRate: sampleRate,
 			Channels:   channels,
 		})
+		idx := nowIndex() - frameSize
 		output = append(output, mixer.ProduceSamples(idx, frameSize, clock.IndexPTS(rate48k, idx))...)
 	}
 	require.Len(t, output, len(aacFrames)*frameSize*channels)

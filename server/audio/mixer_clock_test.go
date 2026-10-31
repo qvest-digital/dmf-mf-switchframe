@@ -67,14 +67,16 @@ func TestMixer_IngestFrameProducesOutput(t *testing.T) {
 	tl := newTimeline()
 	for i := 0; i < 3; i++ {
 		m.IngestFrame("cam1", &media.AudioFrame{
-			PTS:        tl.pts(i * 1024),
 			Data:       []byte{0xFF, 0xF1, 0x50, 0x80, 0x02, 0x00, 0xFC},
 			SampleRate: 48000,
 			Channels:   2,
 		})
 	}
 
-	for i := 0; i < 3; i++ {
+	// AAC is stamped with its arrival: the three frames end at about the
+	// timeline's base, so the two periods before it are theirs.
+	tl.read = tl.base - 2*1024
+	for i := 0; i < 2; i++ {
 		out := tl.produce(m, 1024)
 		require.Len(t, out, 1024*2)
 		for j, v := range out {
