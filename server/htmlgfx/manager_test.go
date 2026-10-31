@@ -857,6 +857,35 @@ func sendEvents(t *testing.T, mock *mockSidecar, id int, events ...ControlRespon
 	}
 }
 
+// commandsSent returns the commands the mock has received once it has
+// received every command the manager sent before this call: a "next" sent
+// now arrives after them on the one control connection.
+func commandsSent(t *testing.T, mgr *Manager, mock *mockSidecar, id int) []ControlCommand {
+	t.Helper()
+	count := func(cmds []ControlCommand) int {
+		n := 0
+		for _, c := range cmds {
+			if c.Cmd == "next" {
+				n++
+			}
+		}
+		return n
+	}
+	want := count(mock.getCommands()) + 1
+	require.NoError(t, mgr.Next(id))
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		cmds := mock.getCommands()
+		if count(cmds) >= want {
+			return cmds
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the mock sidecar never received the barrier command")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func countUpdates(cmds []ControlCommand) int {
 	n := 0
 	for _, c := range cmds {
@@ -888,13 +917,13 @@ func TestManagerReplaysDataOnceWhenFormatBecomesKnown(t *testing.T) {
 	sendEvents(t, mock, id, unknown, unknown, unknown, ograf, ograf, ControlResponse{Event: "stopped"})
 	waitForStatus(t, mgr, id, "stopped", 2*time.Second)
 
-	require.Equal(t, 2, countUpdates(mock.getCommands()), "the operator's update and one replay")
+	require.Equal(t, 2, countUpdates(commandsSent(t, mgr, mock, id)), "the operator's update and one replay")
 
 	// A new page in the slot reports its format afresh and gets the data.
 	require.NoError(t, mgr.LoadURL(id, "https://templates.test/other.html"))
 	sendEvents(t, mock, id, ograf, ControlResponse{Event: "stopped"})
 	waitForStatus(t, mgr, id, "stopped", 2*time.Second)
-	require.Equal(t, 3, countUpdates(mock.getCommands()))
+	require.Equal(t, 3, countUpdates(commandsSent(t, mgr, mock, id)))
 }
 
 // A template reports a failure as a load error early, and the sidecar's
