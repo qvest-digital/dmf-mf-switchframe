@@ -618,6 +618,7 @@ type Switcher struct {
 	// The reference clock drives every program frame and audio period
 	// (sync_loop.go).
 	refClock         *clock.ReferenceClock
+	clockStopped     bool // set by stopClock under configMu; a replaced clock is not restarted
 	aacBuffer        *clock.AACFrameBuffer
 	syncMixer        syncMixerInterface
 	syncLoopWg       sync.WaitGroup

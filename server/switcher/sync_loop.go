@@ -30,7 +30,16 @@ func (s *Switcher) synchronousProcessingLoop(rc *clock.ReferenceClock) {
 	for {
 		tick, ok := <-rc.Ticks()
 		if !ok {
-			return
+			// A rate change replaces the clock before stopping the old
+			// one; the loop follows it rather than ending.
+			s.configMu.Lock()
+			next, stopped := s.refClock, s.clockStopped
+			s.configMu.Unlock()
+			if stopped || next == rc {
+				return
+			}
+			rc = next
+			continue
 		}
 		s.processTick(tick)
 	}
@@ -788,6 +797,7 @@ func (s *Switcher) SetReferenceClock(rc *clock.ReferenceClock) {
 // the one goroutine that produces program video and audio.
 func (s *Switcher) Start() {
 	s.configMu.Lock()
+	s.clockStopped = false
 	if s.refClock == nil {
 		pf := s.pipelineFormat.Load()
 		s.refClock = clock.NewReferenceClock(pf.FPSNum, pf.FPSDen, programSampleRate, clock.PTSBase, true)
@@ -801,6 +811,7 @@ func (s *Switcher) Start() {
 // stopClock stops the reference clock and waits for the sync loop to end.
 func (s *Switcher) stopClock() {
 	s.configMu.Lock()
+	s.clockStopped = true
 	rc := s.refClock
 	s.configMu.Unlock()
 	if rc == nil {
@@ -812,21 +823,27 @@ func (s *Switcher) stopClock() {
 }
 
 // restartClockAt replaces a realtime clock whose rate is not the pipeline's.
+// It never waits for the sync loop, so it is safe on the loop goroutine
+// (a timed format change): the new clock is installed and started before
+// the old one stops, and the loop moves over to it when the old clock's
+// Ticks channel closes.
 func (s *Switcher) restartClockAt(fpsNum, fpsDen int) {
 	s.configMu.Lock()
-	rc := s.refClock
-	s.configMu.Unlock()
-	if rc == nil || !rc.Realtime() {
+	old := s.refClock
+	if old == nil || !old.Realtime() || s.clockStopped {
+		s.configMu.Unlock()
 		return
 	}
-	if n, d := rc.Rate(); n == fpsNum && d == fpsDen {
+	if n, d := old.Rate(); n == fpsNum && d == fpsDen {
+		s.configMu.Unlock()
 		return
 	}
-	s.stopClock()
-	s.configMu.Lock()
 	s.refClock = clock.NewReferenceClock(fpsNum, fpsDen, programSampleRate, clock.PTSBase, true)
+	if s.syncLoopRunning.Load() {
+		s.refClock.Start()
+	}
 	s.configMu.Unlock()
-	s.Start()
+	old.Stop()
 }
 
 // programSampleRate is the program audio sample rate.
