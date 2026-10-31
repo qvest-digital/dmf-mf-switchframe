@@ -193,7 +193,7 @@ Read by [`output.MetricsCollector`](../../server/output/metrics_collector.go), o
 | `switchframe_output_bytes_total` | counter | `output` | Bytes the output sent since it last started. |
 | `switchframe_output_dropped_packets_total` | counter | `output` | TS packets the output dropped because it could not keep up. |
 | `switchframe_output_overflows_total` | counter | `output` | Times an SRT caller's reconnect buffer overflowed, losing what it held. |
-| `switchframe_output_media_seconds_total` | counter | `output` | Media time an output of timed frames (RTMP) has sent: one program frame interval per video frame written. Its rate is 1 while every program frame reaches the destination, and falls below 1 by the share of frames dropped and while the connection is down. |
+| `switchframe_output_media_seconds_total` | counter | `output` | Media time an output of timed frames (RTMP) has sent: the PTS span of the video frames written, each adding its step from the frame offered before it, and one frame interval across a program timeline restart. Its rate is 1 while every program frame reaches the destination, and falls below 1 by the media of the frames dropped and while the connection is down. |
 | `switchframe_output_timeline_rebases_total` | counter | `output` | Program timeline restarts an output of timed frames (RTMP) carried over: its connection timeline continued one frame interval after the last frame instead of stepping back. |
 | `switchframe_output_dropped_frames_total` | counter | `output`, `kind` | Frames an output of timed frames (RTMP) dropped because the destination did not take them in time, by kind (video, audio). |
 | `switchframe_output_clients` | gauge | `output` | Clients connected to an SRT listener output. |

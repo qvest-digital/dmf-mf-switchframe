@@ -506,7 +506,7 @@ type RTMPDirect struct {
 	// the goroutine; nil when no loop is running. Guarded by mu.
 	reconnectDone chan struct{}
 
-	videoCh chan *media.VideoFrame
+	videoCh chan offeredVideo
 	audioCh chan *media.AudioFrame
 
 	initialized atomic.Bool
@@ -529,16 +529,15 @@ type RTMPDirect struct {
 	pendingIDR   atomic.Bool
 	bytesWritten atomic.Int64
 	// mediaTicks is the media time sent on the connections, in 90 kHz
-	// ticks: one program frame interval per video frame written. The
-	// interval is measured where frames are offered (WriteVideo), before
-	// any is dropped, so a destination that takes every other frame sends
-	// half a second of it per second. offeredPTS is the previous offered
-	// frame's PTS, offeredSteps the last two steps; frameTicks is the
-	// interval.
+	// ticks: the PTS span of the video frames written, each frame adding
+	// its step from the frame offered before it (WriteVideo), so a frame
+	// dropped before the write is missing from it. A connection's first
+	// frame adds nothing. offeredPTS is the previous offered frame's PTS;
+	// frameTicks is the last offered step that can be a frame interval,
+	// what a step that cannot be one counts as.
 	mediaTicks   atomic.Int64
 	offered      atomic.Bool
 	offeredPTS   atomic.Int64
-	offeredSteps [2]atomic.Int64
 	frameTicks   atomic.Int64
 	videoDropped atomic.Int64
 	audioDropped atomic.Int64
@@ -574,10 +573,11 @@ func NewRTMPDirect(config RTMPCallerConfig) (*RTMPDirect, error) {
 	}
 
 	r := &RTMPDirect{
-		config:    config,
-		bo:        backoff.Backoff{JitterPct: 0.20},
-		ioTimeout: rtmpIOTimeout,
-		caFile:    systemCABundle(),
+		config:      config,
+		bo:          backoff.Backoff{JitterPct: 0.20},
+		lastVideoTS: -1,
+		ioTimeout:   rtmpIOTimeout,
+		caFile:      systemCABundle(),
 	}
 	r.state.Store(ptrTo(StateStopped))
 	r.lastError.Store(ptrTo(""))
@@ -618,7 +618,7 @@ func (r *RTMPDirect) ID() string { return "rtmp-direct" }
 // Start initializes channels and spawns the write loop. The actual RTMP
 // connection is deferred until the first keyframe arrives.
 func (r *RTMPDirect) Start(ctx context.Context) error {
-	r.videoCh = make(chan *media.VideoFrame, rtmpVideoChSize)
+	r.videoCh = make(chan offeredVideo, rtmpVideoChSize)
 	r.audioCh = make(chan *media.AudioFrame, rtmpAudioChSize)
 	r.stopCh = make(chan struct{})
 	r.doneCh = make(chan struct{})
@@ -704,11 +704,11 @@ func (r *RTMPDirect) WriteVideo(frame *media.VideoFrame) error {
 		return fmt.Errorf("RTMP direct not active (state: %s)", state)
 	}
 
-	r.measureFrameInterval(frame.PTS)
+	step := r.offeredStep(frame.PTS)
 
 	// Silently drop during reconnect or starting.
 	select {
-	case r.videoCh <- frame:
+	case r.videoCh <- offeredVideo{frame, step}:
 	default:
 		r.videoDropped.Add(1)
 	}
@@ -767,15 +767,15 @@ func (r *RTMPDirect) writeLoop() {
 	for {
 		// Priority: always drain video first.
 		select {
-		case frame := <-r.videoCh:
-			r.handleVideo(frame)
+		case v := <-r.videoCh:
+			r.handleVideo(v.frame, v.step)
 			continue
 		default:
 		}
 
 		select {
-		case frame := <-r.videoCh:
-			r.handleVideo(frame)
+		case v := <-r.videoCh:
+			r.handleVideo(v.frame, v.step)
 		case frame := <-r.audioCh:
 			r.handleAudio(frame)
 		case <-r.stopCh:
@@ -786,8 +786,17 @@ func (r *RTMPDirect) writeLoop() {
 	}
 }
 
-// handleVideo processes a single video frame.
-func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
+// offeredVideo is a video frame queued for the write loop, with its PTS
+// step from the frame offered before it; 0 when that step cannot be a
+// frame interval.
+type offeredVideo struct {
+	frame *media.VideoFrame
+	step  int64
+}
+
+// handleVideo processes a single video frame; step is its offeredVideo
+// step.
+func (r *RTMPDirect) handleVideo(frame *media.VideoFrame, step int64) {
 	state := *r.state.Load()
 	if state != StateActive {
 		return
@@ -812,6 +821,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		if r.connectFn != nil {
 			r.initialized.Store(true)
 			r.ptsBase = framePTS
+			r.lastVideoTS = -1
 
 			return
 		}
@@ -844,28 +854,25 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		r.lastVideoTS = -1
 	}
 
-	// In test mode, skip the C write call.
-	if r.connectFn != nil {
-		r.bytesWritten.Add(int64(len(frame.WireData)))
-		r.mediaTicks.Add(r.frameTicks.Load())
-		return
-	}
-
 	if len(frame.WireData) == 0 {
 		return
 	}
 
+	// The first frame on a connection starts its span.
+	sent := int64(0)
+	if r.lastVideoTS >= 0 {
+		sent = step
+		if sent == 0 {
+			sent = r.frameTicks.Load()
+		}
+	}
 	pts := framePTS - r.ptsBase
 	// Program PTS only steps back when the program timeline restarts (a
 	// new reference clock). The connection's timeline continues one frame
 	// interval after the last frame instead, audio with it, as after a
 	// reconnect: FLV timestamps cannot go backwards.
 	if r.lastVideoTS >= 0 && pts <= r.lastVideoTS {
-		interval := r.frameTicks.Load()
-		if interval <= 0 {
-			interval = max(r.offeredSteps[0].Load(), 1)
-		}
-		r.ptsBase = framePTS - (r.lastVideoTS + interval)
+		r.ptsBase = framePTS - (r.lastVideoTS + max(r.frameTicks.Load(), 1))
 		pts = framePTS - r.ptsBase
 		r.rebases.Add(1)
 	}
@@ -873,6 +880,13 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		pts = 0
 	}
 	r.lastVideoTS = pts
+
+	// In test mode, skip the C write call.
+	if r.connectFn != nil {
+		r.bytesWritten.Add(int64(len(frame.WireData)))
+		r.mediaTicks.Add(sent)
+		return
+	}
 
 	isKey := C.int(0)
 	if frame.IsKeyframe {
@@ -896,7 +910,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 	}
 
 	r.bytesWritten.Add(int64(len(frame.WireData)))
-	r.mediaTicks.Add(r.frameTicks.Load())
+	r.mediaTicks.Add(sent)
 }
 
 // maxFrameTicks bounds a PTS step that can be a frame interval: one
@@ -904,28 +918,21 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 // as across a source change, not an interval.
 const maxFrameTicks = 90000
 
-// measureFrameInterval takes the program frame interval from the PTS steps
-// of the frames offered: the median of the last three. One forward PTS jump
-// is never taken for an interval, and steps that jitter around the
-// interval average out to it rather than to their low side.
-func (r *RTMPDirect) measureFrameInterval(pts int64) {
+// offeredStep returns an offered frame's PTS step from the frame offered
+// before it, across a 33-bit PTS wrap, or 0 when the step cannot be a
+// frame interval. A step that can be one is the frame interval from then
+// on.
+func (r *RTMPDirect) offeredStep(pts int64) int64 {
 	prevPTS := r.offeredPTS.Swap(pts)
 	if !r.offered.Swap(true) {
-		return
+		return 0
 	}
-	step := pts - prevPTS
+	step := unwrapPTS(pts, prevPTS) - prevPTS
 	if step <= 0 || step > maxFrameTicks {
-		return
+		return 0
 	}
-	a := r.offeredSteps[1].Swap(r.offeredSteps[0].Swap(step))
-	b := r.offeredSteps[1].Load()
-	if a > 0 && b > 0 {
-		r.frameTicks.Store(median3(a, b, step))
-	}
-}
-
-func median3(a, b, c int64) int64 {
-	return max(min(a, b), min(max(a, b), c))
+	r.frameTicks.Store(step)
+	return step
 }
 
 // handleAudio processes a single audio frame.

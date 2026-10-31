@@ -147,7 +147,7 @@ func TestRTMPDirect_WriteDropsDuringReconnect(t *testing.T) {
 
 	// Manually set state to reconnecting without actually starting.
 	r.state.Store(ptrTo(StateReconnecting))
-	r.videoCh = make(chan *media.VideoFrame, rtmpVideoChSize)
+	r.videoCh = make(chan offeredVideo, rtmpVideoChSize)
 	r.audioCh = make(chan *media.AudioFrame, rtmpAudioChSize)
 	r.stopCh = make(chan struct{})
 
@@ -307,7 +307,7 @@ func TestRTMPDirect_ChannelOverflowCountsDrops(t *testing.T) {
 	require.NoError(t, err)
 
 	// Set up channels and state manually (no writeLoop draining them).
-	r.videoCh = make(chan *media.VideoFrame, rtmpVideoChSize)
+	r.videoCh = make(chan offeredVideo, rtmpVideoChSize)
 	r.audioCh = make(chan *media.AudioFrame, rtmpAudioChSize)
 	r.stopCh = make(chan struct{})
 	r.state.Store(ptrTo(StateActive))
@@ -660,7 +660,7 @@ func TestRTMPDirect_AudioWaitsForRebaseAfterReconnect(t *testing.T) {
 	r.handleAudio(&media.AudioFrame{PTS: 180000, Data: []byte{0x21, 0x10}})
 	require.Zero(t, r.bytesWritten.Load(), "audio before the rebasing keyframe")
 
-	r.handleVideo(&media.VideoFrame{PTS: 270000, IsKeyframe: true, WireData: []byte{0x01}})
+	r.handleVideo(&media.VideoFrame{PTS: 270000, IsKeyframe: true, WireData: []byte{0x01}}, 0)
 	require.False(t, r.pendingIDR.Load())
 	r.handleAudio(&media.AudioFrame{PTS: 180000, Data: []byte{0x21, 0x10}})
 	require.Zero(t, r.bytesWritten.Load()-1, "audio from before the new base")
@@ -741,7 +741,7 @@ func rtmpForMediaTime(t *testing.T) *RTMPDirect {
 	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://example.com/live/key"})
 	require.NoError(t, err)
 	r.connectFn = func(string) error { return nil }
-	r.videoCh = make(chan *media.VideoFrame, 1)
+	r.videoCh = make(chan offeredVideo, 1)
 	r.state.Store(ptrTo(StateActive))
 	r.initialized.Store(true)
 	return r
@@ -749,8 +749,8 @@ func rtmpForMediaTime(t *testing.T) *RTMPDirect {
 
 func (r *RTMPDirect) testWrite() {
 	select {
-	case f := <-r.videoCh:
-		r.handleVideo(f)
+	case v := <-r.videoCh:
+		r.handleVideo(v.frame, v.step)
 	default:
 	}
 }

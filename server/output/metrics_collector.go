@@ -20,7 +20,7 @@ var (
 	descOutputOverflows = prometheus.NewDesc("switchframe_output_overflows_total",
 		"Times an SRT caller's reconnect buffer overflowed, losing what it held.", []string{"output"}, nil)
 	descOutputMedia = prometheus.NewDesc("switchframe_output_media_seconds_total",
-		"Media time an output of timed frames (RTMP) has sent: one program frame interval per video frame written. Its rate is 1 while every program frame reaches the destination, and falls below 1 by the share of frames dropped and while the connection is down.",
+		"Media time an output of timed frames (RTMP) has sent: the PTS span of the video frames written, each adding its step from the frame offered before it, and one frame interval across a program timeline restart. Its rate is 1 while every program frame reaches the destination, and falls below 1 by the media of the frames dropped and while the connection is down.",
 		[]string{"output"}, nil)
 	descOutputRebases = prometheus.NewDesc("switchframe_output_timeline_rebases_total",
 		"Program timeline restarts an output of timed frames (RTMP) carried over: its connection timeline continued one frame interval after the last frame instead of stepping back.",
