@@ -78,22 +78,53 @@ func TestWriter_VideoIndexIsTheFramePTS(t *testing.T) {
 
 // A burst of frames delivered at once does not move any of them off its
 // own grain: each frame written is at the grain of its PTS, and the last
-// one is written.
+// one is written. The rest of the burst arrives after the video goroutine
+// loaded the first frame and before it claimed that frame's ring slot.
 func TestWriter_VideoBurstKeepsIndices(t *testing.T) {
 	base := clock.TimestampToIndex(videoRate, clock.TAINow())
 	fixClock(t, base)
-	w, mock := videoIndexWriter(t)
+	mock := &mockDiscreteWriter{}
+	w := NewWriter(WriterConfig{Width: 12, Height: 2})
+	w.SetVideoWriter(mock, Rational{videoRate.Num, videoRate.Den})
+	loaded := make(chan struct{})
+	burst := make(chan struct{})
+	first := true
+	w.videoLoaded = func() {
+		if first {
+			first = false
+			close(loaded)
+			<-burst
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w.Start(ctx)
+	t.Cleanup(func() { cancel(); _ = w.Close() })
+
 	const frames = 6
-	for k := uint64(0); k < frames; k++ {
+	w.WriteVideo(frameYUV(16), 12, 2, clock.IndexPTS(videoRate, base))
+	select {
+	case <-loaded:
+	case <-time.After(time.Second):
+		t.Fatal("video goroutine never loaded the first frame")
+	}
+	for k := uint64(1); k < frames; k++ {
 		w.WriteVideo(frameYUV(byte(16+k)), 12, 2, clock.IndexPTS(videoRate, base+k))
 	}
-	time.Sleep(100 * time.Millisecond)
+	close(burst)
 
 	want := make([][]byte, frames)
 	for k := range want {
 		want[k] = frameV210(t, byte(16+k))
 	}
-	got := mock.getGrains()
+	deadline := time.Now().Add(time.Second)
+	var got []writtenGrain
+	for {
+		got = mock.getGrains()
+		if (len(got) > 0 && got[len(got)-1].index == base+frames-1) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	for _, g := range got {
 		k := -1
 		for i := range want {

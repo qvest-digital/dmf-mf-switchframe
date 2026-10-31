@@ -95,6 +95,10 @@ type Writer struct {
 	latestV210 atomic.Pointer[v210Frame]
 	videoKick  chan struct{} // buffered(1)
 	videoSeq   uint64        // frames stored; producer goroutine only
+	// videoLoaded, when set, runs on the video goroutine right after it
+	// loads the latest frame, before it claims the frame's ring slot.
+	// Tests use it to publish frames inside that window.
+	videoLoaded func()
 
 	// audioOverlaps counts batches dropped for overlapping the last write.
 	audioOverlaps atomic.Int64
@@ -376,6 +380,9 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 		}
 
 		frame := w.latestV210.Load()
+		if w.videoLoaded != nil {
+			w.videoLoaded()
+		}
 		ref = w.videoRef.Load()
 		if ref == nil || ref.writer == nil {
 			return
