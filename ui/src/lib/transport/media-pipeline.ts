@@ -144,7 +144,7 @@ const RECONNECT_GRACE_MS = 3000;
 /** Delay before reconnecting a source whose transport closed or failed to
  * connect; it doubles with each failed attempt up to RECONNECT_MAX_MS. */
 export const RECONNECT_BASE_MS = 500;
-export const RECONNECT_MAX_MS = 4000;
+export const RECONNECT_MAX_MS = 30_000;
 /** How long a transport has to deliver its catalog. A dial made while the
  * network is down can hang in the QUIC handshake for longer than the
  * outage lasts; it is abandoned and dialled again. */
@@ -156,6 +156,13 @@ export const RECONNECT_STABLE_MS = 10_000;
 /** Least time between two early dials of the sources waiting to
  * reconnect, set off by another source of the pipeline coming up. */
 export const DIAL_WAITING_MIN_MS = 1000;
+/** How long a connected source may go without a video frame before its
+ * transport is replaced. An open session that stopped carrying frames is
+ * otherwise never noticed: nothing closes it. The replacement waits out
+ * the reconnect backoff with the old transport still open, so an input
+ * wired to nothing is dialled at most once per RECONNECT_MAX_MS, and the
+ * engine closing that session once the input is wired still reaches it. */
+export const STALL_REDIAL_MS = 3000;
 
 /**
  * Whether the page has had a user gesture, which a browser requires before
@@ -198,6 +205,12 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	const upSince = new Map<string, number>();
 	/** When waiting sources were last dialled early. */
 	let lastDialWaiting = -Infinity;
+	/** Last video frame, or catalog, of each source's current transport
+	 * (performance.now()). */
+	const lastMedia = new Map<string, number>();
+	/** Pending replacement of each source's stalled transport. */
+	const stallRedials = new Map<string, ReturnType<typeof setTimeout>>();
+	let stallRedialInterval: ReturnType<typeof setInterval> | null = null;
 	/** Deadline of each source's transport that has not delivered its
 	 * catalog yet. */
 	const connectDeadlines = new Map<string, ReturnType<typeof setTimeout>>();
@@ -336,6 +349,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				// has stayed up: see transportLost.
 				clearConnectDeadline(key);
 				upSince.set(key, Date.now());
+				lastMedia.set(key, performance.now());
 				dialWaiting();
 
 				// Notify once that MoQ is active (catalog received = WebTransport
@@ -473,17 +487,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	 * reconnect of the new relay session starts its group IDs afresh.
 	 */
 	function transportLost(key: string): void {
-		const source = sources.get(key);
-		if (!source?.transport) return;
-		const transport = source.transport;
-		source.transport = null;
-		clearConnectDeadline(key);
-		try { transport.close(); } catch { /* already closed */ }
-		source.latestGroupID = 0;
-		try { source.videoDecoder.flush(); } catch { /* decoder may be in error state */ }
-		for (const buf of source.buffers.values()) buf.clear();
-		const up = upSince.get(key);
-		upSince.delete(key);
+		if (!sources.get(key)?.transport) return;
+		const up = dropTransport(key);
 		if (up !== undefined && Date.now() - up >= RECONNECT_STABLE_MS) {
 			const r = reconnects.get(key);
 			if (r) r.attempts = 0;
@@ -491,20 +496,45 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		scheduleReconnect(key);
 	}
 
-	function scheduleReconnect(key: string): void {
-		if (destroyed || !wanted.has(key)) return;
+	/** Close a source's transport and drop what it delivered. Returns when
+	 * the transport delivered its catalog, if it did. */
+	function dropTransport(key: string): number | undefined {
+		const source = sources.get(key);
+		if (!source?.transport) return undefined;
+		const transport = source.transport;
+		source.transport = null;
+		clearConnectDeadline(key);
+		clearStallRedial(key);
+		lastMedia.delete(key);
+		try { transport.close(); } catch { /* already closed */ }
+		source.latestGroupID = 0;
+		try { source.videoDecoder.flush(); } catch { /* decoder may be in error state */ }
+		for (const buf of source.buffers.values()) buf.clear();
+		const up = upSince.get(key);
+		upSince.delete(key);
+		return up;
+	}
+
+	/** The next reconnect delay of a source; each call backs off further. */
+	function nextBackoff(key: string): number {
 		let r = reconnects.get(key);
 		if (!r) {
 			r = { timer: null, attempts: 0 };
 			reconnects.set(key, r);
 		}
-		if (r.timer) return;
 		const backoff = Math.min(RECONNECT_BASE_MS * 2 ** r.attempts, RECONNECT_MAX_MS);
 		r.attempts++;
 		// Jitter, so every source of a page does not dial at the same moment.
-		const delay = backoff * (0.75 + Math.random() * 0.5);
+		return backoff * (0.75 + Math.random() * 0.5);
+	}
+
+	function scheduleReconnect(key: string): void {
+		if (destroyed || !wanted.has(key)) return;
+		if (reconnects.get(key)?.timer) return;
+		const delay = nextBackoff(key);
+		const r = reconnects.get(key)!;
 		r.timer = setTimeout(() => {
-			r!.timer = null;
+			r.timer = null;
 			const source = sources.get(key);
 			if (destroyed || !source || !wanted.has(key) || source.transport) return;
 			openTransport(key, source);
@@ -515,6 +545,50 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		const r = reconnects.get(key);
 		if (r?.timer) clearTimeout(r.timer);
 		reconnects.delete(key);
+		clearStallRedial(key);
+	}
+
+	function clearStallRedial(key: string): void {
+		const t = stallRedials.get(key);
+		if (t) clearTimeout(t);
+		stallRedials.delete(key);
+	}
+
+	/** Replace, after the reconnect backoff, the transport of every source
+	 * that delivered its catalog and then no video frame for
+	 * STALL_REDIAL_MS. A source delivering frames on a transport that has
+	 * been up for RECONNECT_STABLE_MS starts its backoff afresh. */
+	function checkStalledTransports(): void {
+		if (wanted.size === 0) {
+			if (stallRedialInterval !== null) clearInterval(stallRedialInterval);
+			stallRedialInterval = null;
+			return;
+		}
+		const now = performance.now();
+		for (const key of wanted) {
+			const source = sources.get(key);
+			const up = upSince.get(key);
+			const last = lastMedia.get(key);
+			if (!source?.transport || up === undefined || last === undefined) continue;
+			if (now - last <= STALL_REDIAL_MS) {
+				if (Date.now() - up >= RECONNECT_STABLE_MS) {
+					const r = reconnects.get(key);
+					if (r && !r.timer) r.attempts = 0;
+				}
+				continue;
+			}
+			if (stallRedials.has(key)) continue;
+			stallRedials.set(key, setTimeout(() => {
+				stallRedials.delete(key);
+				const s = sources.get(key);
+				if (destroyed || !s?.transport || !wanted.has(key)) return;
+				const seen = lastMedia.get(key);
+				if (seen !== undefined && performance.now() - seen <= STALL_REDIAL_MS) return;
+				console.warn(`[MediaPipeline] source "${key}" delivered no video for ${STALL_REDIAL_MS} ms, reconnecting`);
+				dropTransport(key);
+				openTransport(key, s);
+			}, nextBackoff(key)));
+		}
 	}
 
 	/** Dial at once every source waiting for a reconnect: the browser
@@ -581,6 +655,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 		// Track frame arrival for stall detection
 		lastFrameTime.set(sourceKey, performance.now());
+		if (source.transport) lastMedia.set(sourceKey, performance.now());
 		// If this source was previously marked as stalled, clear it
 		clearSourceStall(sourceKey);
 
@@ -644,6 +719,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		cancelReconnect(key);
 		clearConnectDeadline(key);
 		upSince.delete(key);
+		lastMedia.delete(key);
 
 		// Clean up stall tracking
 		lastFrameTime.delete(key);
@@ -692,6 +768,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	}
 
 	function openTransport(key: string, source: SourceMedia): void {
+		if (stallRedialInterval === null) stallRedialInterval = setInterval(checkStalledTransports, STALL_CHECK_INTERVAL_MS);
 		const current = () => sources.get(key) === source && source.transport === transport;
 		// program-preview gets high priority (16) so QUIC schedules it
 		// ahead of multiview tiles (96) during bandwidth contention.
@@ -723,6 +800,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		cancelReconnect(key);
 		clearConnectDeadline(key);
 		upSince.delete(key);
+		lastMedia.delete(key);
 		// A disconnected source receives no frames, so it must not read as
 		// stalled; connectSource re-arms it.
 		if (lastFrameTime.delete(key)) disconnectedWithFrames.add(key);
@@ -840,7 +918,10 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		window.removeEventListener("online", handleOnline);
 		for (const key of Array.from(reconnects.keys())) cancelReconnect(key);
 		for (const key of Array.from(connectDeadlines.keys())) clearConnectDeadline(key);
+		if (stallRedialInterval !== null) clearInterval(stallRedialInterval);
+		stallRedialInterval = null;
 		upSince.clear();
+		lastMedia.clear();
 		wanted.clear();
 		for (const key of Array.from(sources.keys())) {
 			removeSource(key);
