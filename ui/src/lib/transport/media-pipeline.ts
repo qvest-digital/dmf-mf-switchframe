@@ -162,6 +162,10 @@ export const DIAL_WAITING_MIN_MS = 1000;
  * delivered a frame is left open, so a source wired to nothing or idle
  * keeps one session, which the engine closes once its catalog changes. */
 export const STALL_REDIAL_MS = 3000;
+/** How long after its first video frame a transport must still receive one
+ * to count as carrying live video. A relay replays its cached GOP to a new
+ * subscriber in one burst, which never spans this long. */
+export const LIVE_MEDIA_SPAN_MS = 1000;
 /** WebTransport close code of a session whose catalog went stale: the
  * engine's wtErrCatalogChanged. The source has media again, so it is
  * dialled at once whatever backoff it built up. */
@@ -214,9 +218,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	/** First video frame of each source's current transport. */
 	const firstMedia = new Map<string, number>();
 	/** Sources whose current transport delivered video over more than
-	 * STALL_REDIAL_MS. A relay replays its cached GOP to every new
-	 * subscriber in one burst, so a transport that only received that
-	 * burst is not live and its silence is no stall. */
+	 * LIVE_MEDIA_SPAN_MS. A transport that only received a replayed GOP is
+	 * not live, and its silence is no stall. */
 	const liveMedia = new Set<string>();
 	/** Pending replacement of each source's stalled transport. */
 	const stallRedials = new Map<string, ReturnType<typeof setTimeout>>();
@@ -585,7 +588,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		const now = performance.now();
 		const first = firstMedia.get(key);
 		if (first === undefined) firstMedia.set(key, now);
-		else if (now - first > STALL_REDIAL_MS) liveMedia.add(key);
+		else if (now - first > LIVE_MEDIA_SPAN_MS) liveMedia.add(key);
 		lastMedia.set(key, now);
 	}
 
@@ -597,9 +600,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	}
 
 	/** Replace, after the reconnect backoff, the transport of every source
-	 * that delivered video over more than STALL_REDIAL_MS and then none for
-	 * STALL_REDIAL_MS. A
-	 * source delivering frames on a transport that has been up for
+	 * that carried live video and then none for STALL_REDIAL_MS. A source
+	 * delivering frames on a transport that has been up for
 	 * RECONNECT_STABLE_MS starts its backoff afresh. */
 	function checkStalledTransports(): void {
 		if (wanted.size === 0) {

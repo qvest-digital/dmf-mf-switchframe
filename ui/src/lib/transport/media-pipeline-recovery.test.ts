@@ -40,7 +40,7 @@ vi.mock('$lib/prism/moq-transport', () => ({
 }));
 
 import {
-	createMediaPipeline, CLOSE_CATALOG_CHANGED, RECONNECT_MAX_MS, STALL_REDIAL_MS, STALL_THRESHOLD_MS, type MediaPipeline,
+	createMediaPipeline, CLOSE_CATALOG_CHANGED, LIVE_MEDIA_SPAN_MS, RECONNECT_MAX_MS, STALL_REDIAL_MS, STALL_THRESHOLD_MS, type MediaPipeline,
 } from './media-pipeline';
 import { clearAllStalls, isSourceStalled } from './source-errors.svelte';
 
@@ -87,7 +87,7 @@ describe('preview recovery per disconnect class', () => {
 		p.connectSource(KEY);
 		p.startStallDetection();
 		up(p);
-		frames(p, STALL_REDIAL_MS + 1000);
+		frames(p, LIVE_MEDIA_SPAN_MS + 500);
 	});
 	afterEach(() => {
 		p.destroy();
@@ -152,6 +152,16 @@ describe('preview recovery per disconnect class', () => {
 			vi.advanceTimersByTime(100);
 		}
 		expect(dials.length, 'dials in 10 min of replayed GOPs').toBe(2);
+	});
+
+	// A relay unregistered and registered again right after a reconnect:
+	// the new session carries a little live video and then none.
+	it('redials a source whose fresh session carried live video briefly', () => {
+		silent(STALL_REDIAL_MS + 30_000);
+		expect(dials.length, 'stall redial').toBe(2);
+		frames(p, LIVE_MEDIA_SPAN_MS + 500);
+		silent(STALL_REDIAL_MS + 30_000);
+		expect(dials.length, 'redial of the briefly live session').toBe(3);
 	});
 
 	// Once the input is wired again the engine closes the session, as its
