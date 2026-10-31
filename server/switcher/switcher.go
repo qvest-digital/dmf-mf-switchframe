@@ -1238,6 +1238,7 @@ func newAsyncEncodeNode(s *Switcher) *encodeNode {
 		encodeNilCount:  &s.pipeEncodeNil,
 		encodeDropCount: &s.pipeEncodeDrop,
 		onEncoded:       s.broadcastWithCaptions,
+		onRepeat:        s.emitRepeat,
 		encoder10bit:    is10bit,
 	}
 	enc.start()
@@ -1308,10 +1309,19 @@ func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
 // the race, the registration is dropped and the new pipeline is used.
 // Returns (frame, false) when no pipeline is configured.
 func (s *Switcher) runPipelineGuarded(frame *ProcessingFrame) (*ProcessingFrame, bool) {
+	out := frame
+	ok := s.withPipeline(func(p *Pipeline) { out = p.Run(frame) })
+	return out, ok
+}
+
+// withPipeline runs f on the current pipeline while it is registered as in
+// flight, so swapPipeline cannot close its nodes under f. It reports false,
+// without calling f, when no pipeline is configured.
+func (s *Switcher) withPipeline(f func(p *Pipeline)) bool {
 	for {
 		p := s.pipeline.Load()
 		if p == nil {
-			return frame, false
+			return false
 		}
 		p.inflight.Add(1)
 		if s.pipeline.Load() != p {
@@ -1321,9 +1331,9 @@ func (s *Switcher) runPipelineGuarded(frame *ProcessingFrame) (*ProcessingFrame,
 			p.inflight.Done()
 			continue
 		}
-		out := p.Run(frame)
+		f(p)
 		p.inflight.Done()
-		return out, true
+		return true
 	}
 }
 
