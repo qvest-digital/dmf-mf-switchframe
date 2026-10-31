@@ -116,6 +116,17 @@ func (p *Pipeline) RestoreBypass(state map[string]bool) {
 	p.bypassSet = state
 }
 
+// asyncEncoder returns the pipeline's encode node when it encodes on a
+// goroutine of its own, nil otherwise.
+func (p *Pipeline) asyncEncoder() *encodeNode {
+	for _, n := range p.activeNodes {
+		if enc, ok := n.(*encodeNode); ok && enc.encodeCh != nil {
+			return enc
+		}
+	}
+	return nil
+}
+
 // SetMetrics sets the Prometheus metrics instance for per-node observations.
 // Must be called after Build() but before Run(). Nil is safe (no observations).
 func (p *Pipeline) SetMetrics(m *metrics.Metrics) {

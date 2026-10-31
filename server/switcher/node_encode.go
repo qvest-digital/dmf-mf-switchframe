@@ -16,10 +16,14 @@ import (
 var _ PipelineNode = (*encodeNode)(nil)
 var _ AsyncMetricsProvider = (*encodeNode)(nil)
 
-// encodeWork holds a frame and encode parameters for async processing.
+// encodeWork holds a frame and encode parameters for async processing,
+// or, with repeat set and no frame, a repeat of the last program frame at
+// repeatPTS.
 type encodeWork struct {
-	frame    *ProcessingFrame
-	forceIDR bool
+	frame     *ProcessingFrame
+	forceIDR  bool
+	repeat    bool
+	repeatPTS int64
 }
 
 type encodeNode struct {
@@ -30,6 +34,10 @@ type encodeNode struct {
 
 	// Output callback -- called with encoded H.264 frame.
 	onEncoded func(frame *media.VideoFrame)
+	// onRepeat sends the last program frame again at a shed tick's PTS.
+	// It runs on the encode goroutine, after every frame queued before
+	// the repeat has come out.
+	onRepeat func(pts int64)
 
 	// Diagnostic counter for hardware encoder warmup (nil frame returns)
 	encodeNilCount *atomic.Int64
@@ -123,6 +131,10 @@ func (n *encodeNode) Close() error {
 func (n *encodeNode) encodeLoop() {
 	defer n.wg.Done()
 	for work := range n.encodeCh {
+		if work.repeat {
+			n.onRepeat(work.repeatPTS)
+			continue
+		}
 		n.processWorkItem(work)
 	}
 }
@@ -213,27 +225,52 @@ func (n *encodeNode) doEncode(src *ProcessingFrame, forceIDR bool) {
 	}
 }
 
+// queueRepeat queues a repeat of the last program frame at pts behind the
+// frames already queued, so it reaches the program after them. It reports
+// false when the node has no async goroutine, and the caller repeats
+// itself. A repeat that finds the queue full is dropped like a frame the
+// encoder is too busy for, and the tick goes without a frame.
+func (n *encodeNode) queueRepeat(pts int64) bool {
+	if n.encodeCh == nil || n.onRepeat == nil {
+		return false
+	}
+	select {
+	case n.encodeCh <- encodeWork{repeat: true, repeatPTS: pts}:
+	default:
+		if n.encodeDropCount != nil {
+			n.encodeDropCount.Add(1)
+		}
+	}
+	return true
+}
+
 func (n *encodeNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
 	forceIDR := src.IsKeyframe
 	if n.forceIDR != nil {
 		forceIDR = forceIDR || n.forceIDR.CompareAndSwap(true, false)
 	}
 
-	// Async path: enqueue work for the background goroutine.
-	// Only use async when the frame has ref tracking (managed frames).
-	// Unmanaged frames (refs == nil, e.g. test code) can't safely Ref(),
-	// so they fall through to synchronous encode.
-	if n.encodeCh != nil && src.Refs() > 0 {
-		src.Ref() // +1 for async encode goroutine
+	// Async path: enqueue work for the background goroutine. The queue
+	// orders the program: every frame and repeat goes through it while the
+	// goroutine runs, as one encoded here would overtake those queued. An
+	// unmanaged frame (refs == nil, such as broadcast black) cannot be
+	// Ref()'d past this call, so the queue gets a managed copy of it.
+	if n.encodeCh != nil {
+		work := src
+		if src.Refs() > 0 {
+			src.Ref() // +1 for async encode goroutine
+		} else {
+			work = managedCopy(src)
+		}
 		select {
-		case n.encodeCh <- encodeWork{frame: src, forceIDR: forceIDR}:
+		case n.encodeCh <- encodeWork{frame: work, forceIDR: forceIDR}:
 			// queued for async encode
 		default:
 			// Encoder goroutine still busy — drop this frame from H.264 output.
 			// Raw YUV sinks already received this frame (they run before encode
 			// in the pipeline). H.264 viewers will experience the same drop they
 			// would have seen from videoProcCh backpressure before this change.
-			src.ReleaseYUV()
+			work.ReleaseYUV()
 			if forceIDR && n.forceIDR != nil {
 				// Re-arm so the next frame carries the IDR request.
 				n.forceIDR.Store(true)
@@ -245,8 +282,19 @@ func (n *encodeNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
 		return src
 	}
 
-	// Synchronous fallback: no start() called, or frame is unmanaged
-	// (no ref tracking). Used in tests and for transient frames.
+	// Synchronous: no start() called, as in tests.
 	n.doEncode(src, forceIDR)
 	return src
+}
+
+// managedCopy returns a reference-counted copy of an unmanaged frame that
+// owns its data, for a consumer that outlives the caller's hold on it.
+func managedCopy(src *ProcessingFrame) *ProcessingFrame {
+	cp := *src
+	cp.Data = append([]byte(nil), src.Data...)
+	cp.pool = nil
+	cp.GPUData = nil
+	cp.refs = nil
+	cp.SetRefs(1)
+	return &cp
 }
