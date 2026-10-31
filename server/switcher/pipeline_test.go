@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -224,9 +225,10 @@ func TestPipeline_EncodeFailureDropsFrame(t *testing.T) {
 	m := metrics.NewMetrics(reg)
 	sw.SetMetrics(m)
 
+	enc := &failingEncoder{called: make(chan struct{})}
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-			return &failingEncoder{}, nil
+			return enc, nil
 		},
 	)
 	require.NoError(t, sw.BuildPipeline())
@@ -236,18 +238,23 @@ func TestPipeline_EncodeFailureDropsFrame(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	// Send raw YUV frame — should be dropped (encode error)
+	// A raw YUV frame is dropped on the encode error. It is encoded at a
+	// program tick, on the encoder's goroutine.
 	sendRawFrame(sw, "cam1", 100, true)
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-enc.called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the encoder never got the frame")
+	}
+	// The error is counted once the failed Encode has returned.
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(m.PipelineEncodeErrorsTotal) >= 1
+	}, 5*time.Second, time.Millisecond, "encode error metric should be incremented")
 
 	viewer.mu.Lock()
 	count := len(viewer.videos)
 	viewer.mu.Unlock()
 	require.Equal(t, 0, count, "frame should be dropped on encode error, not passed through")
-
-	// Verify encode error metric was incremented
-	val := testutil.ToFloat64(m.PipelineEncodeErrorsTotal)
-	require.GreaterOrEqual(t, val, 1.0, "encode error metric should be incremented")
 }
 
 func TestPipeline_TransitionOutputReachesViewer(t *testing.T) {
@@ -648,9 +655,17 @@ func TestPipeline_CompositorDoesNotCorruptSharedBuffer(t *testing.T) {
 }
 
 // failingEncoder always returns an error from Encode.
-type failingEncoder struct{}
+// failingEncoder fails every Encode, and signals called, when set, after
+// the first failure has been returned.
+type failingEncoder struct {
+	called chan struct{}
+	once   sync.Once
+}
 
 func (e *failingEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+	if e.called != nil {
+		defer e.once.Do(func() { close(e.called) })
+	}
 	return nil, false, fmt.Errorf("mock encode failure")
 }
 
