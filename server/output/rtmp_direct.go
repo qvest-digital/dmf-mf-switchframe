@@ -542,6 +542,7 @@ type RTMPDirect struct {
 	frameTicks   atomic.Int64
 	videoDropped atomic.Int64
 	audioDropped atomic.Int64
+	rebases      atomic.Int64 // timeline restarts carried over (handleVideo)
 	startedAt    time.Time
 	bo           backoff.Backoff
 
@@ -854,13 +855,21 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 	}
 
 	pts := framePTS - r.ptsBase
+	// Program PTS only steps back when the program timeline restarts (a
+	// new reference clock). The connection's timeline continues one frame
+	// interval after the last frame instead, audio with it, as after a
+	// reconnect: FLV timestamps cannot go backwards.
+	if r.lastVideoTS >= 0 && pts <= r.lastVideoTS {
+		interval := r.frameTicks.Load()
+		if interval <= 0 {
+			interval = max(r.offeredSteps[0].Load(), 1)
+		}
+		r.ptsBase = framePTS - (r.lastVideoTS + interval)
+		pts = framePTS - r.ptsBase
+		r.rebases.Add(1)
+	}
 	if pts < 0 {
 		pts = 0
-	}
-	// A step back, as when the lip-sync offset shrinks, is written 1 ms
-	// after the last frame instead: the FLV timestamp unit.
-	if r.lastVideoTS >= 0 && pts <= r.lastVideoTS {
-		pts = r.lastVideoTS + 90
 	}
 	r.lastVideoTS = pts
 

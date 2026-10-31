@@ -77,7 +77,6 @@ type TSMuxer struct {
 	// path uses newest-wins (zero content latency) while the audio path
 	// uses a FIFO ring buffer (content delayed by buffer depth). Without
 	// compensation, video content appears ahead of audio content.
-	lipSyncOffset int64 // 90kHz ticks added to video PTS only
 
 	// Diagnostics: track upstream PTS values and rebased output PTS
 	// to identify A/V sync drift.
@@ -123,23 +122,6 @@ func (m *TSMuxer) SetOutput(fn func([]byte)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.output = fn
-}
-
-// SetLipSyncOffset90k sets the lip-sync compensation offset in 90kHz ticks.
-// This value is added to video PTS only, delaying video presentation relative
-// to audio to compensate for the audio ring buffer's FIFO latency.
-// Thread-safe — can be called concurrently with WriteVideo/WriteAudio.
-func (m *TSMuxer) SetLipSyncOffset90k(ticks int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lipSyncOffset = ticks
-}
-
-// LipSyncOffset90k returns the current lip-sync offset in 90kHz ticks.
-func (m *TSMuxer) LipSyncOffset90k() int64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.lipSyncOffset
 }
 
 // SetResolution sets the video resolution for SDT service_type selection.
@@ -498,14 +480,14 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	// presentation for SRT/recording output to compensate for the audio
 	// ring buffer's FIFO latency. The browser path handles its own
 	// compensation in audio-decoder.ts getPlaybackPTS().
-	muxerPTS := (frame.PTS - m.ptsBase + m.muxerEpoch + m.lipSyncOffset) & 0x1FFFFFFFF
+	muxerPTS := (frame.PTS - m.ptsBase + m.muxerEpoch) & 0x1FFFFFFFF
 	// Diagnostic: verify muxerPTS deltas are nominal.
 	if prev := m.diagPrevMuxerPTS; prev != 0 {
 		delta := (muxerPTS - prev) & 0x1FFFFFFFF
 		if !isNominalPTSDelta(delta) {
 			slog.Warn("muxer: non-nominal muxerPTS delta",
 				"delta", delta, "muxerPTS", muxerPTS, "prevMuxerPTS", prev,
-				"upstreamPTS", frame.PTS, "lipSyncOffset", m.lipSyncOffset)
+				"upstreamPTS", frame.PTS)
 		}
 	}
 	m.diagPrevMuxerPTS = muxerPTS
@@ -527,8 +509,6 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 			"muxed_audio", m.lastMuxedAudioPTS,
 			"muxed_gap_90k", muxedGap,
 			"muxed_gap_ms", float64(muxedGap)/90.0,
-			"lip_sync_90k", m.lipSyncOffset,
-			"lip_sync_ms", float64(m.lipSyncOffset)/90.0,
 		)
 	}
 
