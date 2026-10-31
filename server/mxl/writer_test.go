@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/internal/video"
 )
 
@@ -583,6 +584,12 @@ func TestMXLWriter_TripleBufferOverrunCorrupts(t *testing.T) {
 	}
 }
 
+// framePTS is the PTS of the program frame for grain index of a flow at
+// rate.
+func framePTS(rate Rational, index uint64) int64 {
+	return clock.IndexPTS(clock.Rate{Num: rate.Numerator, Den: rate.Denominator}, index)
+}
+
 // frameYUV returns a 12x2 YUV420p frame whose luma is value, so the V210 it
 // becomes identifies the frame.
 func frameYUV(value byte) []byte {
@@ -615,13 +622,16 @@ func TestWriter_GrainRateProducerGetsOneGrainPerFrame(t *testing.T) {
 	defer cancel()
 
 	// Start the producer on the instant the writer starts, so a writer on
-	// a ticker of its own samples right where the frames arrive.
+	// a ticker of its own samples right where the frames arrive. Frame k
+	// is the program frame of grain first+k, delivered around that grain.
+	first := CurrentIndex(rate) + 1
+	time.Sleep(time.Duration(NsUntilIndex(first, rate)))
 	start := time.Now()
 	w.Start(ctx)
 	for k := 0; k < frames; k++ {
 		jitter := time.Duration((k*7)%9-4) * time.Millisecond // -4..+4 ms
 		time.Sleep(time.Until(start.Add(time.Duration(k)*period + jitter)))
-		w.WriteVideo(frameYUV(byte(16+k%200)), 12, 2, 0)
+		w.WriteVideo(frameYUV(byte(16+k%200)), 12, 2, framePTS(rate, first+uint64(k)))
 	}
 	time.Sleep(period / 2)
 	cancel()
@@ -667,7 +677,7 @@ func TestWriter_StalledProducerRepeatsOnSchedule(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w.Start(ctx)
-	w.WriteVideo(frameYUV(16), 12, 2, 0)
+	w.WriteVideo(frameYUV(16), 12, 2, framePTS(rate, CurrentIndex(rate)))
 
 	time.Sleep(400 * time.Millisecond)
 	// Sample the head well inside a grain period.
@@ -716,9 +726,9 @@ func TestWriter_FailingWriteRetriesOncePerGrain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w.Start(ctx)
-	w.WriteVideo(frameYUV(16), 12, 2, 0)
+	w.WriteVideo(frameYUV(16), 12, 2, framePTS(rate, CurrentIndex(rate)))
 	time.Sleep(50 * time.Millisecond)
-	w.WriteVideo(frameYUV(17), 12, 2, 0) // new, and refused from here on
+	w.WriteVideo(frameYUV(17), 12, 2, framePTS(rate, CurrentIndex(rate))) // new, and refused from here on
 	time.Sleep(300 * time.Millisecond)
 	cancel()
 	_ = w.Close()
