@@ -20,6 +20,16 @@ builds the same way.
     push under the repository's own name. Do not reintroduce them from an
     upstream merge.
   - Source changes, each a fix or a flag upstream can take as is.
+  - One deliberate divergence: the timing core. Program video and audio
+    are driven by one reference clock on TAI, and every timestamp is media
+    time. This replaces upstream's two frame paths (async wall-clock PTS
+    and the reference-clock sync loop), whose timestamps disagreed and
+    were patched downstream. It covers the switcher frame path
+    (`server/switcher/sync_loop.go`, `frame_sync.go`, `switcher.go`), the
+    mixer's clocking (`server/audio/`), `server/clock/`, the MXL
+    reader and writer timestamps, and the output timestamps
+    (`server/output/`). Upstream changes to these files do not merge
+    mechanically: port them by hand onto the single path.
 - No Helm chart lives here.
 
 ## Building
