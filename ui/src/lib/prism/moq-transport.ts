@@ -49,7 +49,9 @@ export interface MoQTransportCallbacks {
 	onServerStats: (stats: ServerStats) => void;
 	onViewerStats?: (stats: ServerViewerStats) => void;
 	onControlState?: (data: Uint8Array) => void;
-	onClose: () => void;
+	/** closeCode is the application code the server closed the session
+	 * with, when it closed it cleanly. */
+	onClose: (closeCode?: number) => void;
 	onError: (err: string) => void;
 }
 
@@ -166,8 +168,8 @@ export class MoQTransport {
 		}
 
 		this.transport.closed
-			.then(() => {
-				if (!this.closed) this.callbacks.onClose();
+			.then((info) => {
+				if (!this.closed) this.callbacks.onClose(info?.closeCode);
 			})
 			.catch(() => {
 				if (!this.closed) this.callbacks.onClose();

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { reloadHolds } from '$lib/util/activity';
 import { monitorSubscriberCount, setMonitorDimmed, setMonitorMuted, setMonitorSolo, setMonitorVolume } from '$lib/audio/monitor.svelte';
-import { createMediaPipeline, RECONNECT_BASE_MS, RECONNECT_MAX_MS, CONNECT_TIMEOUT_MS, RECONNECT_STABLE_MS, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
+import { createMediaPipeline, RECONNECT_BASE_MS, RECONNECT_MAX_MS, CONNECT_TIMEOUT_MS, RECONNECT_STABLE_MS, STALL_REDIAL_MS, type MediaPipeline, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
 import { isSourceStalled, clearAllStalls, clearSourceStall } from './source-errors.svelte';
 
 // Mock all Prism modules since they use Web Workers, WebCodecs,
@@ -1208,6 +1208,20 @@ describe('MediaPipeline audio', () => {
 	describe('reconnect', () => {
 		type Callbacks = { onTrackInfo(t: unknown[]): void; onClose(): void; onError(e: string): void; onControlState(d: Uint8Array): void };
 		const cb = (i: number) => mockTransports[i].callbacks as unknown as Callbacks;
+		/** Keep a source's transport delivering video for ms milliseconds:
+		 * a transport that delivers none is replaced (STALL_REDIAL_MS). */
+		const liveFor = (pipeline: MediaPipeline, key: string, ms: number) => {
+			for (let t = 0; t < ms; t += 100) {
+				pipeline.feedVideoFrame(key, new Uint8Array([1]), false, t * 1000, null);
+				vi.advanceTimersByTime(100);
+			}
+		};
+		/** Advance until each of keys has dialled again. */
+		const untilRedialled = (keys: string[]) => {
+			const of = (k: string) => mockTransports.filter((t) => t.key === k).length;
+			const before = keys.map(of);
+			for (let t = 0; t < 2 * RECONNECT_MAX_MS && keys.some((k, i) => of(k) === before[i]); t += 100) vi.advanceTimersByTime(100);
+		};
 		beforeEach(() => {
 			vi.useFakeTimers();
 			mockTransports.length = 0;
@@ -1291,15 +1305,15 @@ describe('MediaPipeline audio', () => {
 			expectNextAfter(RECONNECT_BASE_MS * 4);
 			for (let i = 0; i < 6; i++) {
 				cb(mockTransports.length - 1).onClose();
-				vi.advanceTimersByTime(RECONNECT_MAX_MS);
+				untilRedialled(['cam1']);
 			}
 			expectNextAfter(RECONNECT_MAX_MS);
 			// Up, but lost before it stayed up: the backoff goes on.
 			cb(mockTransports.length - 1).onTrackInfo([]);
 			expectNextAfter(RECONNECT_MAX_MS);
-			// Up for RECONNECT_STABLE_MS: its loss starts afresh.
+			// Up and delivering for RECONNECT_STABLE_MS: its loss starts afresh.
 			cb(mockTransports.length - 1).onTrackInfo([]);
-			vi.advanceTimersByTime(RECONNECT_STABLE_MS);
+			liveFor(pipeline, 'cam1', RECONNECT_STABLE_MS);
 			expectNextAfter(RECONNECT_BASE_MS);
 			pipeline.destroy();
 		});
@@ -1346,7 +1360,7 @@ describe('MediaPipeline audio', () => {
 			expect(onControlState).toHaveBeenCalledTimes(1);
 			// A late close of the old transport does not drop the new one.
 			cb(0).onClose();
-			vi.advanceTimersByTime(RECONNECT_MAX_MS);
+			liveFor(pipeline, 'program-preview', RECONNECT_MAX_MS);
 			expect(mockTransports.length).toBe(2);
 			pipeline.destroy();
 		});
@@ -1392,11 +1406,11 @@ describe('MediaPipeline audio', () => {
 			// Lose them all a few times, so their backoffs grow.
 			for (let i = 0; i < 4; i++) {
 				for (const k of ['w1', 'w2', 'w3']) last(k).onClose();
-				vi.advanceTimersByTime(RECONNECT_MAX_MS);
+				untilRedialled(['w1', 'w2', 'w3']);
 			}
 			for (const k of ['w1', 'w2', 'w3']) last(k).onClose();
 			const before = ['w2', 'w3'].map((k) => of(k).length);
-			vi.advanceTimersByTime(RECONNECT_MAX_MS * 1.25);
+			untilRedialled(['w1', 'w2', 'w3']);
 			// w1 is back first; w2 and w3, waiting, dial at once.
 			for (const k of ['w2', 'w3']) last(k).onClose();
 			last('w1').onTrackInfo([]);
@@ -1422,7 +1436,7 @@ describe('MediaPipeline audio', () => {
 			expect(of().length).toBe(2);
 			// A transport that delivers its catalog in time is kept.
 			(of()[1].callbacks as unknown as Callbacks).onTrackInfo([]);
-			vi.advanceTimersByTime(CONNECT_TIMEOUT_MS * 3);
+			liveFor(pipeline, 'hang', CONNECT_TIMEOUT_MS * 3);
 			expect(of().length).toBe(2);
 			warn.mockRestore();
 			pipeline.destroy();
@@ -1481,7 +1495,9 @@ describe('MediaPipeline audio', () => {
 			old.onError('stream reset');
 			old.onVideoFrame(new Uint8Array([0, 0, 0, 1, 0x65]), true, 9000, 7, null);
 			old.onTrackInfo([{ type: 'video', codec: 'avc1.640028', width: 1920, height: 1080 }]);
-			vi.advanceTimersByTime(RECONNECT_MAX_MS * 2);
+			// Past any reconnect the old transport could have set off, short
+			// of STALL_REDIAL_MS, after which the silent new one is replaced.
+			vi.advanceTimersByTime(STALL_REDIAL_MS - 100);
 
 			// The new transport is untouched: not closed, not replaced.
 			expect((cur as unknown as { close: ReturnType<typeof vi.fn> }).close).not.toHaveBeenCalled();

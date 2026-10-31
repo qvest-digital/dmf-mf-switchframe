@@ -1,9 +1,11 @@
 package distribution
 
 import (
+	"errors"
 	"log/slog"
 	"sync/atomic"
 
+	webtransport "github.com/quic-go/webtransport-go"
 	"github.com/zsiec/prism/media"
 )
 
@@ -76,4 +78,25 @@ func drainVideo(videoCh chan *media.VideoFrame) int {
 // client never received on this stream, and is undecodable there.
 func fitsVideoStream(frame *media.VideoFrame, streamGroup uint32) bool {
 	return frame.GroupID == streamGroup
+}
+
+// streamOnly reports whether err ended one stream rather than the
+// session: the viewer reset the stream or stopped reading it.
+func streamOnly(err error) bool {
+	var se *webtransport.StreamError
+	return errors.As(err, &se)
+}
+
+// nextWireGroup returns the group ID to send for a keyframe of producer
+// group g, given the last ID sent and the producer group it was sent
+// for. Producer IDs pass through as differences while they increase, so a
+// gap still shows the viewer that groups were skipped. A producer that
+// counts from the start again, as a restarted channel does, continues
+// after the last ID sent: a viewer drops a group below the newest it has
+// seen.
+func nextWireGroup(lastWire, lastProducer, g uint32) uint32 {
+	if g > lastProducer {
+		return lastWire + (g - lastProducer)
+	}
+	return lastWire + 1
 }
