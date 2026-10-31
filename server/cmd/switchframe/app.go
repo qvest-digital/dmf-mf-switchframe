@@ -503,6 +503,7 @@ func (a *App) initCoreEngine() error {
 
 	// Create AAC frame buffer wired to the encoder.
 	aacBuf := clock.NewAACFrameBuffer(2, 48000, aacEnc.Encode)
+	aacBuf.SetEncoderDelay(aacEnc.Delay())
 	aacBuf.SetBasePTS(90000)
 
 	a.sw.SetAACBuffer(aacBuf)

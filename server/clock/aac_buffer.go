@@ -22,6 +22,8 @@ type AACFrameBuffer struct {
 	currentPTS   int64 // PTS of the next frame to emit
 	ptsRemainder int64 // Bresenham fractional remainder
 	ptsInited    bool  // true after first SetBasePTS or first frame emission
+
+	delayPTS int64 // encoder delay in 90 kHz ticks (SetEncoderDelay)
 }
 
 // NewAACFrameBuffer creates a buffer that accumulates interleaved PCM samples
@@ -45,8 +47,17 @@ func (b *AACFrameBuffer) SetBasePTS(pts int64) {
 	b.ptsInited = true
 }
 
+// SetEncoderDelay sets how many samples per channel the audio in an
+// encoded frame lags the PCM fed for it. Each frame is then stamped with
+// the PTS of the first sample it carries: the PTS of its PCM less the
+// delay.
+func (b *AACFrameBuffer) SetEncoderDelay(samples int) {
+	b.delayPTS = int64(samples) * 90000 / int64(b.sampleRate)
+}
+
 // Feed adds interleaved PCM samples and returns any complete AAC frames.
-// Each frame has PTS = basePTS + frameCount * frameDuration90k.
+// Each frame has PTS = basePTS + frameCount * frameDuration90k, less the
+// encoder delay.
 // frameDuration90k = 1024 * 90000 / sampleRate (= 1920 at 48kHz).
 func (b *AACFrameBuffer) Feed(pcm []float32) ([]*media.AudioFrame, error) {
 	if len(pcm) == 0 {
@@ -96,7 +107,7 @@ func (b *AACFrameBuffer) advancePTS() int64 {
 		b.currentPTS = b.basePTS
 		b.ptsInited = true
 	}
-	pts := b.currentPTS
+	pts := b.currentPTS - b.delayPTS
 
 	// Bresenham: advance by 1024 * 90000 / sampleRate with remainder tracking.
 	// This eliminates truncation drift for non-integer durations (e.g., 44.1kHz).
