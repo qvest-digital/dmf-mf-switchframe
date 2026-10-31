@@ -62,6 +62,7 @@ type MoQSession struct {
 
 	damagedGroup atomic.Uint32
 	closed       atomic.Bool
+	failOnce     sync.Once
 
 	videoSent      atomic.Int64
 	audioSent      atomic.Int64
@@ -382,15 +383,19 @@ func (m *MoQSession) cancelSubscription(trackName string) {
 
 // fail closes the session after an error that is not confined to one
 // stream, so the viewer sees the close and reconnects. An error caused by
-// the subscription's own context ending is no failure.
+// the subscription's own context ending, or by the session having closed,
+// is no failure. Every write loop of a lost connection fails; only the
+// first one is logged.
 func (m *MoQSession) fail(ctx context.Context, op string, err error) {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || (m.session != nil && m.session.Context().Err() != nil) {
 		return
 	}
-	m.log.Warn("moq session failed", "op", op, "error", err)
-	if m.session != nil {
-		_ = m.session.CloseWithError(wtErrInternal, op+" failed")
-	}
+	m.failOnce.Do(func() {
+		m.log.Warn("moq session failed", "op", op, "error", err)
+		if m.session != nil {
+			_ = m.session.CloseWithError(wtErrInternal, op+" failed")
+		}
+	})
 }
 
 // handleMediaSubscribe creates a track subscription and starts the write loop.
@@ -651,12 +656,22 @@ func (m *MoQSession) writeVideoLoop(ctx context.Context, sub *moqTrackSub) {
 	}
 }
 
+// maxAudioStreamFailures is how many audio streams in a row may fail
+// before the session is given up. A viewer that resets every stream would
+// otherwise have one opened for each frame, about fifty a second.
+const maxAudioStreamFailures = 8
+
 // writeAudioLoop writes the track on one stream. An error on that stream
-// ends it, and the next frame opens a new one; any other error ends the
-// session.
+// ends it, and the next frame opens a new one; any other error, or
+// maxAudioStreamFailures stream errors in a row, ends the session.
 func (m *MoQSession) writeAudioLoop(ctx context.Context, sub *moqTrackSub) {
 	var stream *webtransport.SendStream
 	var groupID uint32
+	failures := 0 // stream errors since the last frame written
+	tooManyFailures := func() bool {
+		failures++
+		return failures >= maxAudioStreamFailures
+	}
 	defer func() {
 		if stream != nil {
 			stream.Close()
@@ -687,7 +702,7 @@ func (m *MoQSession) writeAudioLoop(ctx context.Context, sub *moqTrackSub) {
 				if err != nil {
 					stream.Close()
 					stream = nil
-					if !streamOnly(err) {
+					if !streamOnly(err) || tooManyFailures() {
 						m.fail(ctx, "audio header write", err)
 						return
 					}
@@ -700,13 +715,14 @@ func (m *MoQSession) writeAudioLoop(ctx context.Context, sub *moqTrackSub) {
 			if err != nil {
 				stream.Close()
 				stream = nil
-				if !streamOnly(err) {
+				if !streamOnly(err) || tooManyFailures() {
 					m.fail(ctx, "audio frame write", err)
 					return
 				}
 				m.log.Debug("audio stream dropped", "track", sub.trackName, "error", err)
 				continue
 			}
+			failures = 0
 			m.bytesSent.Add(n)
 			m.lastAudioTsMS.Store(int64(tsMS))
 		}

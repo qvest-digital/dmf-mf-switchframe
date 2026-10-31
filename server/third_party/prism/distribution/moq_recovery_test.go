@@ -5,15 +5,21 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
 	webtransport "github.com/quic-go/webtransport-go"
+	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/certs"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/prism/moq"
@@ -79,6 +85,72 @@ func subscribeTrack(m *MoQSession, track string) *moqTrackSub {
 	return m.subscriptions[track]
 }
 
+// testWriter wraps a track's writer and counts the writes that failed. With
+// err set, every write fails with it instead of writing, once gate, if
+// set, is closed.
+type testWriter struct {
+	StreamFrameWriter
+	err     error
+	gate    chan struct{}
+	entered atomic.Int32
+	failed  atomic.Int32
+}
+
+func (w *testWriter) write(f func() (int64, error)) (int64, error) {
+	w.entered.Add(1)
+	var n int64
+	err := w.err
+	if err != nil {
+		if w.gate != nil {
+			<-w.gate
+		}
+	} else {
+		n, err = f()
+	}
+	if err != nil {
+		w.failed.Add(1)
+	}
+	return n, err
+}
+
+func (w *testWriter) WriteStreamHeader(s io.Writer, trackID byte, groupID, tsMS uint32) error {
+	_, err := w.write(func() (int64, error) {
+		return 0, w.StreamFrameWriter.WriteStreamHeader(s, trackID, groupID, tsMS)
+	})
+	return err
+}
+
+func (w *testWriter) WriteVideoFrame(s io.Writer, f *media.VideoFrame) (int64, error) {
+	return w.write(func() (int64, error) { return w.StreamFrameWriter.WriteVideoFrame(s, f) })
+}
+
+func (w *testWriter) WriteAudioFrame(s io.Writer, data []byte, tsMS uint32) (int64, error) {
+	return w.write(func() (int64, error) { return w.StreamFrameWriter.WriteAudioFrame(s, data, tsMS) })
+}
+
+func (w *testWriter) WriteDataObject(s io.Writer, data []byte, tsMS uint32) (int64, error) {
+	return w.write(func() (int64, error) { return w.StreamFrameWriter.WriteDataObject(s, data, tsMS) })
+}
+
+// wrapWriter puts a testWriter in front of sub's writer. The write loop
+// reads the writer only after it receives a frame, which the test sends
+// after this.
+func wrapWriter(sub *moqTrackSub, err error) *testWriter {
+	w := &testWriter{StreamFrameWriter: sub.writer, err: err}
+	sub.writer = w
+	return w
+}
+
+// until polls cond for up to 5 s.
+func until(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); !cond(); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+}
+
 func keyframe(group uint32) *media.VideoFrame {
 	return &media.VideoFrame{IsKeyframe: true, GroupID: group, WireData: []byte{0, 0, 0, 1, 0x65}}
 }
@@ -95,12 +167,14 @@ func delta(group uint32) *media.VideoFrame {
 func TestMoQVideoStreamResetResumesAtNextKeyframe(t *testing.T) {
 	m, client := moqTestSession(t)
 	sub := subscribeTrack(m, "video")
+	w := wrapWriter(sub, nil)
 
 	m.SendVideo(keyframe(1))
 	cancelFirstUniStream(t, client)
-	time.Sleep(100 * time.Millisecond) // STOP_SENDING reaches the server
-	m.SendVideo(delta(1))              // the write that fails
-	time.Sleep(50 * time.Millisecond)
+	until(t, "a failed video write", func() bool {
+		m.SendVideo(delta(1))
+		return w.failed.Load() > 0
+	})
 
 	m.SendVideo(keyframe(2))
 	m.SendVideo(delta(2))
@@ -119,18 +193,123 @@ func TestMoQVideoStreamResetResumesAtNextKeyframe(t *testing.T) {
 
 func TestMoQAudioStreamResetOpensNewStream(t *testing.T) {
 	m, client := moqTestSession(t)
-	subscribeTrack(m, "audio0")
+	w := wrapWriter(subscribeTrack(m, "audio0"), nil)
 
 	m.SendAudio(&media.AudioFrame{Data: []byte{0xff, 0xf1}})
 	cancelFirstUniStream(t, client)
-	time.Sleep(100 * time.Millisecond)
-	m.SendAudio(&media.AudioFrame{PTS: 21_333, Data: []byte{0xff, 0xf1}}) // the write that fails
-	time.Sleep(50 * time.Millisecond)
+	until(t, "a failed audio write", func() bool {
+		m.SendAudio(&media.AudioFrame{PTS: 21_333, Data: []byte{0xff, 0xf1}})
+		return w.failed.Load() > 0
+	})
 
 	m.SendAudio(&media.AudioFrame{PTS: 42_666, Data: []byte{0xff, 0xf1}})
 	acceptGroup(t, client)
 	if m.session.Context().Err() != nil {
 		t.Fatal("a reset of the audio stream closed the session")
+	}
+}
+
+// A viewer that resets every audio stream it is sent would have the
+// session open one for each frame for as long as it stays connected.
+func TestMoQAudioStreamFailuresInARowCloseSession(t *testing.T) {
+	m, _ := moqTestSession(t)
+	w := wrapWriter(subscribeTrack(m, "audio0"), &webtransport.StreamError{ErrorCode: stopSending})
+
+	until(t, "the session to close", func() bool {
+		m.SendAudio(&media.AudioFrame{Data: []byte{0xff, 0xf1}})
+		return m.session.Context().Err() != nil
+	})
+	if n := w.failed.Load(); n != maxAudioStreamFailures {
+		t.Fatalf("session closed after %d failed audio streams, want %d", n, maxAudioStreamFailures)
+	}
+}
+
+// logRecorder records the messages of every log record at Warn or above.
+type logRecorder struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (r *logRecorder) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelWarn }
+func (r *logRecorder) WithAttrs([]slog.Attr) slog.Handler           { return r }
+func (r *logRecorder) WithGroup(string) slog.Handler                { return r }
+func (r *logRecorder) Handle(_ context.Context, rec slog.Record) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.msgs = append(r.msgs, rec.Message)
+	return nil
+}
+
+func (r *logRecorder) count(msg string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, m := range r.msgs {
+		if m == msg {
+			n++
+		}
+	}
+	return n
+}
+
+// An error that is not confined to one stream closes the session, so the
+// viewer reconnects; left open, the viewer would freeze on a session that
+// carries nothing. Every track fails once the connection is gone, and the
+// loss is logged once, not once per track.
+func TestMoQSessionErrorClosesSessionOnce(t *testing.T) {
+	m, client := moqTestSession(t)
+	logs := &logRecorder{}
+	m.log = slog.New(logs)
+	broken := errors.New("connection lost")
+	gate := make(chan struct{})
+	var writers []*testWriter
+	for _, track := range []string{"video", "audio0", "captions"} {
+		w := wrapWriter(subscribeTrack(m, track), broken)
+		w.gate = gate
+		writers = append(writers, w)
+	}
+
+	m.SendVideo(keyframe(1))
+	m.SendAudio(&media.AudioFrame{Data: []byte{0xff, 0xf1}})
+	m.SendCaptions(&ccx.CaptionFrame{})
+	// Every track is mid-write when the connection goes.
+	until(t, "a write on every track", func() bool {
+		for _, w := range writers {
+			if w.entered.Load() == 0 {
+				return false
+			}
+		}
+		return true
+	})
+	close(gate)
+	select {
+	case <-client.Context().Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("session left open after a session error")
+	}
+	// The write loops return after their failure; give the last one time
+	// to log before counting.
+	time.Sleep(50 * time.Millisecond)
+	if n := logs.count("moq session failed"); n != 1 {
+		t.Fatalf("session failure logged %d times, want 1", n)
+	}
+}
+
+// A write that fails because its subscription ended, by UNSUBSCRIBE or a
+// repeated SUBSCRIBE, is no session error.
+func TestMoQFailIgnoresEndedSubscription(t *testing.T) {
+	m, _ := moqTestSession(t)
+	logs := &logRecorder{}
+	m.log = slog.New(logs)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	m.fail(ctx, "video frame write", errors.New("context canceled"))
+	if m.session.Context().Err() != nil {
+		t.Fatal("an ended subscription closed the session")
+	}
+	if n := logs.count("moq session failed"); n != 0 {
+		t.Fatalf("an ended subscription logged %d session failures, want 0", n)
 	}
 }
 
@@ -159,7 +338,8 @@ func TestMoQWireGroupIDsIncreaseAcrossProducerRestart(t *testing.T) {
 // loop has to end with it rather than block for the session's lifetime.
 func TestMoQRepeatedSubscribeEndsPreviousSubscription(t *testing.T) {
 	m, _ := moqTestSession(t)
-	for _, track := range []string{"video", "audio0", "captions", "stats"} {
+	m.controlBroadcaster = NewControlBroadcaster()
+	for _, track := range []string{"video", "audio0", "captions", "stats", "control"} {
 		first := subscribeTrack(m, track)
 		cancelled := false
 		cancel := first.cancel
