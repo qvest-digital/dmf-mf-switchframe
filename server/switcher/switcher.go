@@ -3199,8 +3199,17 @@ func (s *Switcher) SetSourceDelay(sourceKey string, delayMs int) error {
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 
+	// Video and audio are each delayed once, as a read offset in media
+	// time: the frame sync reads the source's frames, the mixer its audio,
+	// that much earlier. The delay buffer holds back captions.
 	s.delayBuffer.SetDelay(sourceKey, time.Duration(delayMs)*time.Millisecond)
 	s.frameSync.SetSourceDelay(sourceKey, delayMs, s.pipelineFormat.Load().FrameDuration())
+	s.configMu.Lock()
+	m, _ := s.syncMixer.(sourceDelayMixer)
+	s.configMu.Unlock()
+	if m != nil {
+		m.SetSourceDelay(sourceKey, delayMs)
+	}
 
 	s.log.Info("source delay set", "source_key", sourceKey, "delay_ms", delayMs)
 

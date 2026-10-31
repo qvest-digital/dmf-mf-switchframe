@@ -140,44 +140,17 @@ func TestDelayBuffer_100msDelay(t *testing.T) {
 	require.LessOrEqual(t, elapsed, 200*time.Millisecond, "frame delivered too late: %v", elapsed)
 }
 
-func TestDelayBuffer_PairedVideoAndAudio(t *testing.T) {
+// Audio is not held back by wall clock: it keeps its media time and the
+// mixer reads it the source delay earlier. Delaying it here as well would
+// delay it twice, and late for its own media time.
+func TestDelayBuffer_AudioPassesThroughUnderDelay(t *testing.T) {
 	handler := &delayTestHandler{}
 	db := NewDelayBuffer(handler)
 	defer db.Close()
 
 	db.SetDelay("cam1", 80*time.Millisecond)
-
-	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
-	af := &media.AudioFrame{PTS: 1000, Data: []byte{0x02}}
-
-	pushTime := time.Now()
-	db.handleVideoFrame("cam1", vf)
-	db.handleAudioFrame("cam1", af)
-
-	// Neither should be delivered immediately.
-	time.Sleep(10 * time.Millisecond)
-	require.Equal(t, 0, handler.videoCount(), "video delivered before delay elapsed")
-	require.Equal(t, 0, handler.audioCount(), "audio delivered before delay elapsed")
-
-	// Wait for delay to elapse.
-	time.Sleep(130 * time.Millisecond)
-	require.Equal(t, 1, handler.videoCount(), "video count")
-	require.Equal(t, 1, handler.audioCount(), "audio count")
-
-	// Both should arrive at approximately the same time.
-	videos := handler.getVideos()
-	audios := handler.getAudios()
-	diff := videos[0].recvTime.Sub(audios[0].recvTime)
-	if diff < 0 {
-		diff = -diff
-	}
-	require.Less(t, diff, 10*time.Millisecond, "video/audio delivery difference = %v, want < 10ms", diff)
-
-	// Both should have correct delay from push time.
-	vElapsed := videos[0].recvTime.Sub(pushTime)
-	aElapsed := audios[0].recvTime.Sub(pushTime)
-	require.GreaterOrEqual(t, vElapsed, 70*time.Millisecond, "video delivered too early: %v", vElapsed)
-	require.GreaterOrEqual(t, aElapsed, 70*time.Millisecond, "audio delivered too early: %v", aElapsed)
+	db.handleAudioFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0x02}})
+	require.Equal(t, 1, handler.audioCount(), "audio held back by the delay buffer")
 }
 
 func TestDelayBuffer_IndependentSources(t *testing.T) {

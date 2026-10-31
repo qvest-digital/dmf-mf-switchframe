@@ -87,7 +87,8 @@ type Channel struct {
 	balance              float64        // -1.0 (hard left) to +1.0 (hard right), 0.0 = center
 	balL                 float32        // cached left gain from BalanceGains()
 	balR                 float32        // cached right gain from BalanceGains()
-	audioDelay           *DelayBuffer   // per-source audio delay for lip-sync correction
+	delayMs              int            // audio-only lip-sync delay (SetAudioDelay)
+	sourceDelayMs        int            // the source's A/V delay (SetSourceDelay)
 	isPCM                bool           // true if this channel receives raw PCM (not AAC)
 	sampleRateWarned     bool           // true after first sample rate mismatch log (once per channel)
 	resampler            *Resampler     // nil when source rate matches mixer rate; lazy-init on mismatch
@@ -131,6 +132,7 @@ type Mixer struct {
 	// ingested for dstKey. Used by playout to route live source audio
 	// through the playout mixer channel.
 	audioForwards map[string]string // srcKey → dstKey
+	sourceDelays  map[string]int    // SetSourceDelay by source key, kept across AddChannel
 
 	// Reusable accumulator for mix output (used by produceSamplesLocked)
 	mixAccum []float32
@@ -231,6 +233,7 @@ func NewMixer(config MixerConfig) *Mixer {
 	return &Mixer{
 		log:          slog.With("component", "audio"),
 		channels:     make(map[string]*Channel),
+		sourceDelays: make(map[string]int),
 		masterLevel:  0.0,
 		masterLinear: 1.0, // 0 dB = unity
 		sampleRate:   config.SampleRate,
@@ -366,24 +369,49 @@ func (m *Mixer) AddChannel(sourceKey string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.channels[sourceKey] = &Channel{
-		sourceKey:   sourceKey,
-		levelLinear: 1.0, // 0 dB = unity
-		trimLinear:  1.0, // 0 dB = unity
-		hpf:         NewHPF(m.sampleRate),
-		gate:        NewGate(m.sampleRate, m.numChannels),
-		eq:          NewEQ(m.sampleRate, m.numChannels),
-		compressor:  NewCompressor(m.sampleRate, m.numChannels),
-		balance:     0,
-		balL:        1.0,
-		balR:        1.0,
-		audioDelay:  NewDelayBuffer(0),
-		ringBuf:     m.newChannelRingBuf(),
+		sourceKey:     sourceKey,
+		levelLinear:   1.0, // 0 dB = unity
+		trimLinear:    1.0, // 0 dB = unity
+		hpf:           NewHPF(m.sampleRate),
+		gate:          NewGate(m.sampleRate, m.numChannels),
+		eq:            NewEQ(m.sampleRate, m.numChannels),
+		compressor:    NewCompressor(m.sampleRate, m.numChannels),
+		balance:       0,
+		balL:          1.0,
+		balR:          1.0,
+		sourceDelayMs: m.sourceDelays[sourceKey],
 	}
+	ch := m.channels[sourceKey]
+	ch.ringBuf = m.newChannelRingBuf(m.delaySamples(ch))
 }
 
-// newChannelRingBuf creates a PCM ring buffer for a mixer channel.
-func (m *Mixer) newChannelRingBuf() *PCMRingBuffer {
-	return NewPCMRingBufferWithChannels(10*1024*m.numChannels, m.numChannels)
+// maxAudioDelayMs bounds SetAudioDelay and SetSourceDelay each.
+const maxAudioDelayMs = 500
+
+// newChannelRingBuf creates a PCM ring buffer for a mixer channel that
+// holds delay samples beyond the read window.
+func (m *Mixer) newChannelRingBuf(delay int) *PCMRingBuffer {
+	return NewPCMRingBufferWithChannels((10*1024+delay)*m.numChannels, m.numChannels)
+}
+
+// delaySamples is how far behind the tick's read point ch is read.
+func (m *Mixer) delaySamples(ch *Channel) int {
+	return (ch.delayMs + ch.sourceDelayMs) * m.sampleRate / 1000
+}
+
+// resizeRing gives ch a ring large enough for its delay, keeping the
+// audio buffered so far. Caller holds m.mu.
+func (m *Mixer) resizeRing(ch *Channel) {
+	rb := m.newChannelRingBuf(m.delaySamples(ch))
+	if ch.ringBuf != nil {
+		rb.Push(ch.ringBuf.Pop(ch.ringBuf.Len()))
+	}
+	ch.ringBuf = rb
+}
+
+// clampDelayMs limits a delay to [0, maxAudioDelayMs].
+func clampDelayMs(ms int) int {
+	return max(0, min(ms, maxAudioDelayMs))
 }
 
 // stampRing records that ch's newest pushed samples, n of them, start at
@@ -393,7 +421,7 @@ func (m *Mixer) stampRing(ch *Channel, pts int64, n int) {
 }
 
 // popAt returns the n samples of ch starting at sample index start of the
-// media timeline, as interleaved values. Audio buffered before start is
+// media timeline less ch's delay, as interleaved values. Audio buffered before start is
 // dropped and a start before the buffered audio gets silence: exactly on
 // the first read of a ring, and afterwards only when the ring is more than
 // a period (n) off, so a source's own jitter never splices its audio. Nil
@@ -402,6 +430,7 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 	if ch.ringEnd == 0 {
 		return nil
 	}
+	start -= uint64(m.delaySamples(ch))
 	c := m.numChannels
 	have := ch.ringBuf.FrameCount()
 	end := clock.TimestampToIndex(clock.Rate{Num: int64(m.sampleRate), Den: 1}, ch.ringEnd)
@@ -695,7 +724,7 @@ func (m *Mixer) ChannelStates() map[string]internal.AudioChannel {
 			HPFEnabled:   ch.hpf.Enabled(),
 			PeakL:        LinearToDBFS(ch.peakL),
 			PeakR:        LinearToDBFS(ch.peakR),
-			AudioDelayMs: ch.audioDelay.DelayMs(),
+			AudioDelayMs: ch.delayMs,
 		}
 		// Include EQ band settings
 		if ch.eq != nil {
@@ -813,8 +842,9 @@ func (m *Mixer) GetCompressor(sourceKey string) (CompressorState, error) {
 	}, nil
 }
 
-// SetAudioDelay sets the audio delay in milliseconds for a source channel.
-// Used for lip-sync correction in multi-camera setups.
+// SetAudioDelay sets the audio-only delay in milliseconds, clamped to
+// [0, 500], for a source channel, for lip-sync correction: the channel is
+// read that much earlier in media time than the tick's read point.
 func (m *Mixer) SetAudioDelay(sourceKey string, delayMs int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -822,8 +852,27 @@ func (m *Mixer) SetAudioDelay(sourceKey string, delayMs int) error {
 	if !ok {
 		return fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
-	ch.audioDelay.SetDelayMs(delayMs)
+	ch.delayMs = clampDelayMs(delayMs)
+	m.resizeRing(ch)
 	return nil
+}
+
+// SetSourceDelay sets the delay in milliseconds, clamped to [0, 500], of
+// a source whose video the frame sync delays by the same amount. It adds
+// to the audio delay and holds for a channel added later.
+func (m *Mixer) SetSourceDelay(sourceKey string, delayMs int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delayMs = clampDelayMs(delayMs)
+	if delayMs == 0 {
+		delete(m.sourceDelays, sourceKey)
+	} else {
+		m.sourceDelays[sourceKey] = delayMs
+	}
+	if ch, ok := m.channels[sourceKey]; ok {
+		ch.sourceDelayMs = delayMs
+		m.resizeRing(ch)
+	}
 }
 
 // AudioDelayMs returns the current audio delay in milliseconds for a source channel.
@@ -834,7 +883,7 @@ func (m *Mixer) AudioDelayMs(sourceKey string) int {
 	if !ok {
 		return 0
 	}
-	return ch.audioDelay.DelayMs()
+	return ch.delayMs
 }
 
 // GainReduction returns the current limiter gain reduction in dB.

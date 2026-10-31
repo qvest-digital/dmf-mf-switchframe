@@ -870,6 +870,12 @@ type syncMixerInterface interface {
 	AdvanceCrossfade()
 }
 
+// sourceDelayMixer is a mixer that delays a source's audio by its source
+// delay (audio.Mixer).
+type sourceDelayMixer interface {
+	SetSourceDelay(sourceKey string, delayMs int)
+}
+
 // SetOutputAudioCallback registers a callback invoked for each AAC frame
 // produced by the sync loop. Intended for broadcasting to the program relay
 // (browser viewers). Only used in reference clock mode.

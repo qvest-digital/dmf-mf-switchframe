@@ -144,38 +144,10 @@ func (db *DelayBuffer) handleVideoFrame(sourceKey string, frame *media.VideoFram
 	})
 }
 
-// handleAudioFrame implements frameHandler. If delay=0 for the source,
-// the frame is forwarded immediately. Otherwise it is scheduled via
-// time.AfterFunc for release after the configured delay.
+// handleAudioFrame implements frameHandler and forwards the frame at once:
+// a source's audio is delayed in the mixer, as a media-time read offset.
 func (db *DelayBuffer) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
-	if !db.hasAnyDelay.Load() {
-		db.handler.handleAudioFrame(sourceKey, frame)
-		return
-	}
-	db.mu.Lock()
-	if db.stopped.Load() {
-		db.mu.Unlock()
-		return
-	}
-	sd := db.sources[sourceKey]
-	if sd == nil || sd.delay == 0 {
-		db.mu.Unlock()
-		db.handler.handleAudioFrame(sourceKey, frame)
-		return
-	}
-	delay := sd.delay
-	gen := sd.generation.Load()
-	db.mu.Unlock()
-
-	time.AfterFunc(delay, func() {
-		if db.stopped.Load() {
-			return
-		}
-		if sd.generation.Load() != gen {
-			return
-		}
-		db.handler.handleAudioFrame(sourceKey, frame)
-	})
+	db.handler.handleAudioFrame(sourceKey, frame)
 }
 
 // handleCaptionFrame implements frameHandler. If delay=0 for the source,

@@ -89,13 +89,10 @@ func (sv *sourceViewer) SendVideo(frame *media.VideoFrame) {
 // video tick clock (30 fps). Routing audio through the frame sync batches
 // delivery to tick boundaries, causing bursty timing that downstream audio
 // schedulers (browser AudioContext) cannot absorb cleanly.
-// If a delay buffer is configured, frames route through it for lip-sync delay.
+// A source delay does not hold audio back here: the mixer reads the
+// source's audio that much earlier in media time.
 func (sv *sourceViewer) SendAudio(frame *media.AudioFrame) {
 	sv.audioSent.Add(1)
-	if db := sv.delayBuffer.Load(); db != nil {
-		db.handleAudioFrame(sv.sourceKey, frame)
-		return
-	}
 	sv.handler.handleAudioFrame(sv.sourceKey, frame)
 }
 

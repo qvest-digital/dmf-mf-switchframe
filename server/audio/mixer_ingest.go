@@ -32,19 +32,6 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 }
 
 func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
-	// Apply per-source audio delay for lip-sync correction.
-	// Done before all processing so PFL monitoring reflects corrected timing.
-	m.mu.RLock()
-	if ch, ok := m.channels[sourceKey]; ok && ch.audioDelay != nil && ch.audioDelay.DelayMs() > 0 {
-		m.mu.RUnlock()
-		frame = ch.audioDelay.Ingest(frame)
-		if frame == nil {
-			return // still filling delay buffer
-		}
-	} else {
-		m.mu.RUnlock()
-	}
-
 	m.mu.Lock()
 
 	ch, ok := m.channels[sourceKey]

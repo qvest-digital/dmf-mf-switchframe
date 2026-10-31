@@ -116,7 +116,7 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 			"trim":                ch.trim,
 			"eq_bypassed":         ch.eq.IsBypassed(),
 			"compressor_bypassed": ch.compressor.IsBypassed(),
-			"delay_ms":            ch.audioDelay.DelayMs(),
+			"delay_ms":            ch.delayMs,
 			"peak_l_dbfs":         LinearToDBFS(ch.peakL),
 			"peak_r_dbfs":         LinearToDBFS(ch.peakR),
 			"realigns":            ch.realigns,
