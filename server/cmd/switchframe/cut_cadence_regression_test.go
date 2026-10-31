@@ -11,23 +11,27 @@ import (
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
 // programVideoRecorder records the PTS of every program video frame and
-// when it arrived.
+// kicks next for each one.
 type programVideoRecorder struct {
 	mu   sync.Mutex
 	pts  []int64
-	wall []time.Time
+	next chan int64
 }
 
 func (r *programVideoRecorder) ID() string { return "cadence-recorder" }
 func (r *programVideoRecorder) SendVideo(f *media.VideoFrame) {
 	r.mu.Lock()
 	r.pts = append(r.pts, f.PTS)
-	r.wall = append(r.wall, time.Now())
 	r.mu.Unlock()
+	select {
+	case r.next <- f.PTS:
+	default:
+	}
 }
 func (r *programVideoRecorder) SendAudio(*media.AudioFrame)    {}
 func (r *programVideoRecorder) SendCaptions(*ccx.CaptionFrame) {}
@@ -35,32 +39,39 @@ func (r *programVideoRecorder) Stats() distribution.ViewerStats {
 	return distribution.ViewerStats{}
 }
 
-func (r *programVideoRecorder) since(t time.Time) (pts []int64, wall []time.Time) {
+func (r *programVideoRecorder) all() []int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for i, w := range r.wall {
-		if !w.Before(t) {
-			pts = append(pts, r.pts[i])
-			wall = append(wall, w)
-		}
-	}
-	return pts, wall
+	return append([]int64(nil), r.pts...)
 }
 
-func (r *programVideoRecorder) last() (int64, time.Time, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(r.pts) == 0 {
-		return 0, time.Time{}, false
+// waitFrames waits for n program frames after the first seen, and returns
+// how many there are then.
+func (r *programVideoRecorder) waitFrames(t *testing.T, seen, n int) int {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if got := len(r.all()); got >= seen+n {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d program frames, want %d", len(r.all()), seen+n)
+		}
+		time.Sleep(time.Millisecond)
 	}
-	return r.pts[len(r.pts)-1], r.wall[len(r.wall)-1], true
 }
 
 // A cut from the built-in colour bars back to a live raw source keeps the
-// program at its own rate: one frame period per frame, media time
-// advancing with wall time, whichever source's frames the program
-// showed before. The test runs the app's engine and program encoder as
-// the default configuration builds them.
+// program on its own grid: every program frame lies a whole number of
+// frame periods after the one before, across every cut, whichever
+// source's frames the program showed before. The test runs the app's
+// engine and program encoder as the default configuration builds them,
+// on a reference clock that ticks on demand, so no tick is dropped
+// however slow the host is. A program grain can still go without a frame
+// where the switcher sheds load: a tick after one that overran its
+// period (a predicted frame is not repeated), a frame the async encoder
+// was too busy to take, or one it returned nothing for. The grains
+// missing never outnumber those.
 func TestCutFromBuiltinBackToLiveKeepsProgramCadence(t *testing.T) {
 	a := &App{programRelay: distribution.NewRelay()}
 	a.cfg.Format, a.cfg.ColorFormat = "1080p29.97", "standard" // the flag defaults
@@ -77,37 +88,19 @@ func TestCutFromBuiltinBackToLiveKeepsProgramCadence(t *testing.T) {
 	if err := a.sw.BuildPipeline(); err != nil {
 		t.Fatal(err)
 	}
-	// The program runs from construction or from Start, as the engine has it.
-	if st, ok := any(a.sw).(interface{ Start() }); ok {
-		st.Start()
-	}
-	rec := &programVideoRecorder{}
-	a.programRelay.AddViewer(rec)
-	ctx := context.Background()
-
 	pf := a.sw.PipelineFormat()
 	period := int64(90000) * int64(pf.FPSDen) / int64(pf.FPSNum) // 3003 at 29.97
-	frameDur := time.Duration(int64(time.Second) * int64(pf.FPSDen) / int64(pf.FPSNum))
-
-	// The program's own timeline, read off the bars, so the live source's
-	// PTS is on it whatever epoch the program counts from.
+	a.sw.SetReferenceClock(clock.NewReferenceClock(pf.FPSNum, pf.FPSDen, 48000, clock.PTSBase, false))
+	rec := &programVideoRecorder{next: make(chan int64, 1)}
+	a.programRelay.AddViewer(rec)
+	ctx := context.Background()
 	if err := a.sw.Cut(ctx, switcher.BuiltinSourceKeyColorbars); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	var basePTS int64
-	var baseWall time.Time
-	for {
-		if p, w, ok := rec.last(); ok {
-			basePTS, baseWall = p, w
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no program frame from the colour bars")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 
+	// The live source delivers a frame for each program frame, stamped
+	// with that frame's media time, so it keeps pace with the program
+	// however fast the clock runs.
 	const live = "mxl:live"
 	a.sw.RegisterMXLSource(live)
 	stop := make(chan struct{})
@@ -115,66 +108,60 @@ func TestCutFromBuiltinBackToLiveKeepsProgramCadence(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		tk := time.NewTicker(frameDur)
-		defer tk.Stop()
 		size := pf.Width * pf.Height * 3 / 2
 		for {
+			var pts int64
 			select {
 			case <-stop:
 				return
-			case now := <-tk.C:
-				pts := basePTS + int64(now.Sub(baseWall)/frameDur)*period
-				buf := make([]byte, size)
-				for i := range buf[:pf.Width*pf.Height] {
-					buf[i] = 128
-				}
-				a.sw.IngestRawVideo(live, &switcher.ProcessingFrame{
-					Data: buf, Width: pf.Width, Height: pf.Height,
-					PTS: pts, DTS: pts, IsKeyframe: true,
-					Format: switcher.ColorYUV420_8bit,
-				})
+			case pts = <-rec.next:
 			}
+			buf := make([]byte, size)
+			for i := range buf[:pf.Width*pf.Height] {
+				buf[i] = 128
+			}
+			frame := &switcher.ProcessingFrame{
+				Data: buf, Width: pf.Width, Height: pf.Height,
+				PTS: pts, DTS: pts, IsKeyframe: true,
+				Format: switcher.ColorYUV420_8bit,
+			}
+			frame.SetRefs(1) // managed, as every producer ingests
+			a.sw.IngestRawVideo(live, frame)
 		}
 	}()
 	defer func() { close(stop); wg.Wait() }()
 
-	if err := a.sw.Cut(ctx, live); err != nil {
-		t.Fatal(err)
+	a.sw.Start()
+	seen := rec.waitFrames(t, 0, 5) // the live source has frames before the cut
+	for _, cut := range []struct {
+		source string
+		frames int
+	}{{live, 15}, {switcher.BuiltinSourceKeyColorbars, 30}, {live, 30}} {
+		if err := a.sw.Cut(ctx, cut.source); err != nil {
+			t.Fatal(err)
+		}
+		seen = rec.waitFrames(t, seen, cut.frames)
 	}
-	time.Sleep(500 * time.Millisecond)
-	if err := a.sw.Cut(ctx, switcher.BuiltinSourceKeyColorbars); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(time.Second)
-	if err := a.sw.Cut(ctx, live); err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now().Add(200 * time.Millisecond) // past the cut itself
-	time.Sleep(1200 * time.Millisecond)
 
-	pts, wall := rec.since(start)
-	if len(pts) < 20 {
-		t.Fatalf("%d program frames in 1 s after the cut, want about 30", len(pts))
-	}
-	// A step is one frame period, or a whole number of them where the
-	// clock dropped a late tick; never a fraction of one.
-	drops := 0
+	pts := rec.all()
+	vp, _ := a.sw.DebugSnapshot()["video_pipeline"].(map[string]any)
+	encodeDrop, _ := vp["encode_drop"].(int64)
+	encodeNil, _ := vp["encode_nil"].(int64)
+	shed := a.sw.PerfSample().ProcDropped + encodeDrop + encodeNil
+	missing := int64(0)
 	for i := 1; i < len(pts); i++ {
+		// T(n) rounds to the nanosecond and PTS to the 90 kHz tick, so a
+		// step may be one tick off a whole number of periods; never more.
 		d := pts[i] - pts[i-1]
 		k := (d + period/2) / period
-		if k < 1 || d < k*period-k || d > k*period+k {
-			t.Fatalf("program PTS step %d is %d ticks (%d -> %d), want one frame period %d +-1",
-				i, d, pts[i-1], pts[i], period)
+		if k < 1 || d < k*period-1 || d > k*period+1 {
+			t.Fatalf("program PTS step %d of %d is %d ticks (%d -> %d), want a whole number of frame periods %d +-1",
+				i, len(pts)-1, d, pts[i-1], pts[i], period)
 		}
-		drops += int(k - 1)
+		missing += k - 1
 	}
-	if drops > 3 {
-		t.Fatalf("%d ticks dropped in 1 s", drops)
-	}
-	mediaSec := float64(pts[len(pts)-1]-pts[0]) / 90000
-	wallSec := wall[len(wall)-1].Sub(wall[0]).Seconds()
-	if r := mediaSec / wallSec; r < 0.98 || r > 1.02 {
-		t.Fatalf("program media time advanced %.3f s in %.3f s of wall time (%.2fx), want 1x +-2%%",
-			mediaSec, wallSec, r)
+	if missing > shed {
+		t.Fatalf("%d program grains have no frame, but the switcher shed only %d (ticks %d, encoder busy %d, encoder empty %d)",
+			missing, shed, shed-encodeDrop-encodeNil, encodeDrop, encodeNil)
 	}
 }
