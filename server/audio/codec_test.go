@@ -35,6 +35,7 @@ func (m *mockEncoder) Encode(pcm []float32) ([]byte, error) {
 	m.calls++
 	return m.data, nil
 }
+func (m *mockEncoder) Delay() int   { return 0 }
 func (m *mockEncoder) Close() error { return nil }
 
 func TestCodecInterfaces(t *testing.T) {

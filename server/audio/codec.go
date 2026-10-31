@@ -19,6 +19,9 @@ type Decoder interface {
 type Encoder interface {
 	// Encode encodes interleaved float32 PCM into an AAC frame.
 	Encode(pcm []float32) ([]byte, error)
+	// Delay returns how many samples per channel the audio in an encoded
+	// frame lags the PCM passed in for it (0 when unknown).
+	Delay() int
 	Close() error
 }
 

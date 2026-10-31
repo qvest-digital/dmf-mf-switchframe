@@ -81,14 +81,6 @@ func (m *delayTestHandler) getVideos() []delayTaggedVideo {
 	return cp
 }
 
-func (m *delayTestHandler) getAudios() []delayTaggedAudio {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	cp := make([]delayTaggedAudio, len(m.audios))
-	copy(cp, m.audios)
-	return cp
-}
-
 func TestDelayBuffer_ZeroDelayPassthrough(t *testing.T) {
 	handler := &delayTestHandler{}
 	db := NewDelayBuffer(handler)
