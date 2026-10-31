@@ -56,28 +56,29 @@ func TestCPUTransition_DVEIsNotAMix(t *testing.T) {
 	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "dve-push-left", 60000, ""))
 	require.NoError(t, sw.SetTransitionPosition(context.Background(), 0.5))
 
-	send := func(key string, data []byte, pts int64) {
-		sw.handleRawVideoFrame(key, &ProcessingFrame{
+	send := func(key string, data []byte) {
+		sw.IngestRawVideo(key, &ProcessingFrame{
 			Data: append([]byte(nil), data...), Format: ColorYUV420_8bit,
-			Width: w, Height: h, PTS: pts, Codec: "h264",
+			Width: w, Height: h, Codec: "h264",
 		})
 	}
-	send("cam1", from, 100)
-	send("cam2", to, 101)
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(frames) >= 1
-	}, time.Second, 5*time.Millisecond)
-	sw.AbortTransition()
-
-	mu.Lock()
-	got := frames[len(frames)-1]
-	mu.Unlock()
+	send("cam1", from)
+	send("cam2", to)
 
 	want := make([]byte, video.YUV420_8bit.FrameSize(w, h))
 	require.True(t, dve.CPUTransitionForType("dve-push-left")(want, from, to, w, h, video.YUV420_8bit, 0.5))
-	require.Equal(t, want, got, "program must carry the push, not a mix")
+	// The ticks before both frames are due show black; wait for the push.
+	var got []byte
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(frames) == 0 {
+			return false
+		}
+		got = frames[len(frames)-1]
+		return bytes.Equal(want, got)
+	}, time.Second, 5*time.Millisecond, "program must carry the push, not a mix")
+	sw.AbortTransition()
 
 	mix := make([]byte, len(want))
 	for i := range mix {

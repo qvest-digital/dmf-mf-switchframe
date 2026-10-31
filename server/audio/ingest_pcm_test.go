@@ -1,11 +1,9 @@
 package audio
 
 import (
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
 )
 
 func TestIngestPCM_PeakMetering(t *testing.T) {
@@ -14,12 +12,8 @@ func TestIngestPCM_PeakMetering(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: make([]float32, 4)}, nil
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			return &mockEncoder{}, nil
 		},
 	})
 	defer func() { _ = m.Close() }()
@@ -44,22 +38,11 @@ func TestIngestPCM_PeakMetering(t *testing.T) {
 func TestIngestPCM_MutedChannelSkipped(t *testing.T) {
 	t.Parallel()
 
-	var mu sync.Mutex
-	var outputFrames []*media.AudioFrame
-
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output: func(frame *media.AudioFrame) {
-			mu.Lock()
-			outputFrames = append(outputFrames, frame)
-			mu.Unlock()
-		},
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: make([]float32, 2048)}, nil
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			return &mockEncoder{}, nil
 		},
 	})
 	defer func() { _ = m.Close() }()
@@ -82,22 +65,11 @@ func TestIngestPCM_MutedChannelSkipped(t *testing.T) {
 func TestIngestPCM_InactiveChannelSkipped(t *testing.T) {
 	t.Parallel()
 
-	var mu sync.Mutex
-	var outputFrames []*media.AudioFrame
-
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output: func(frame *media.AudioFrame) {
-			mu.Lock()
-			outputFrames = append(outputFrames, frame)
-			mu.Unlock()
-		},
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: make([]float32, 2048)}, nil
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			return &mockEncoder{}, nil
 		},
 	})
 	defer func() { _ = m.Close() }()

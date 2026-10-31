@@ -65,9 +65,19 @@ func TestPipelineFormatGuard_10bit_FrameNotTruncatedThroughPipeline(t *testing.T
 
 	var capturedData []byte
 	var capturedFormat switcher.PipelineColorFormat
+	var earlierSizes []int // frames before the source's, such as black
 	done := make(chan struct{}, 1)
 
+	// The program shows black until the source frame is due; the source
+	// frame is the one whose first Y sample is 500.
 	sw.SetRawVideoSink(switcher.RawVideoSink(func(pf *switcher.ProcessingFrame) {
+		if capturedData != nil {
+			return
+		}
+		if len(pf.Data) < 2 || binary.LittleEndian.Uint16(pf.Data) != 500 {
+			earlierSizes = append(earlierSizes, len(pf.Data))
+			return
+		}
 		capturedData = make([]byte, len(pf.Data))
 		copy(capturedData, pf.Data)
 		capturedFormat = pf.Format
@@ -121,6 +131,13 @@ func TestPipelineFormatGuard_10bit_FrameNotTruncatedThroughPipeline(t *testing.T
 	}
 
 	eightBitSize := switcher.ColorYUV420_8bit.FrameSize(w, h)
+
+	// Guard 0: every frame before it was full 10-bit size too.
+	for i, size := range earlierSizes {
+		assert.Equal(t, frameSize, size,
+			"frame %d before the source frame has wrong size: got %d, want %d (8-bit = %d)",
+			i, size, frameSize, eightBitSize)
+	}
 
 	// Guard 1: full 10-bit data reached the raw sink.
 	require.Equal(t, frameSize, len(capturedData),
@@ -269,7 +286,12 @@ func TestPipelineFormatGuard_10bit_ResolutionChangePreservesFormat(t *testing.T)
 	var capturedFormat switcher.PipelineColorFormat
 	done := make(chan struct{}, 1)
 
+	// The program shows black until the source frame is due; the source
+	// frame is the one whose first Y sample is 600.
 	sw.SetRawVideoSink(switcher.RawVideoSink(func(pf *switcher.ProcessingFrame) {
+		if capturedData != nil || len(pf.Data) < 2 || binary.LittleEndian.Uint16(pf.Data) != 600 {
+			return
+		}
 		capturedData = make([]byte, len(pf.Data))
 		copy(capturedData, pf.Data)
 		capturedW = pf.Width

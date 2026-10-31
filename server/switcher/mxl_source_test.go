@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -96,45 +97,21 @@ func TestIngestRawVideo_EnqueuesWork(t *testing.T) {
 
 	sw.IngestRawVideo("mxl-cam1", pf)
 
-	// The frame should be enqueued and processed through the pipeline,
-	// ultimately reaching the program relay.
+	// A tick shows the frame through the pipeline to the program relay.
 	require.Eventually(t, func() bool {
 		viewer.mu.Lock()
 		defer viewer.mu.Unlock()
 		return len(viewer.videos) >= 1
-	}, 200*time.Millisecond, 5*time.Millisecond,
+	}, time.Second, 5*time.Millisecond,
 		"frame should reach program relay via pipeline encode")
 
 	viewer.mu.Lock()
 	got := viewer.videos[len(viewer.videos)-1]
-	require.Equal(t, int64(1000), got.PTS, "PTS should be preserved")
 	viewer.mu.Unlock()
-}
-
-func TestIngestRawVideo_NonProgramSourceDropped(t *testing.T) {
-	programRelay := newTestRelay()
-	sw := newTestSwitcher(t, programRelay)
-	defer sw.Close()
-
-	sw.RegisterMXLSource("mxl-cam1")
-	sw.RegisterMXLSource("mxl-cam2")
-	require.NoError(t, sw.Cut(context.Background(), "mxl-cam1"))
-
-	initialFiltered := sw.routeFiltered.Load()
-
-	// Ingest a frame for the non-program source.
-	pf := &ProcessingFrame{
-		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
-		Width:      4,
-		Height:     4,
-		PTS:        1000,
-		IsKeyframe: true,
-		GroupID:    1,
-	}
-	sw.IngestRawVideo("mxl-cam2", pf)
-
-	require.Equal(t, initialFiltered+1, sw.routeFiltered.Load(),
-		"non-program source frame should increment routeFiltered counter")
+	pf2 := sw.PipelineFormat()
+	r := clock.Rate{Num: int64(pf2.FPSNum), Den: int64(pf2.FPSDen)}
+	require.Equal(t, clock.IndexPTS(r, clock.PTSIndex(r, got.PTS)), got.PTS,
+		"program PTS should be the tick's, on the frame grid")
 }
 
 func TestIngestRawVideo_UnknownSourceDropped(t *testing.T) {
@@ -155,38 +132,6 @@ func TestIngestRawVideo_UnknownSourceDropped(t *testing.T) {
 
 	require.Equal(t, initialFiltered+1, sw.routeFiltered.Load(),
 		"unknown source frame should increment routeFiltered counter")
-}
-
-func TestIngestRawVideo_FTBActiveDropped(t *testing.T) {
-	programRelay := newTestRelay()
-	sw := newTestSwitcher(t, programRelay)
-	defer sw.Close()
-
-	sw.RegisterMXLSource("mxl-cam1")
-	require.NoError(t, sw.Cut(context.Background(), "mxl-cam1"))
-
-	// Simulate FTB active. transitionState updates the legacy s.state; the
-	// hotState publication is done explicitly by production writers so the
-	// state+transEngine pair lands atomically — here we mirror that pattern.
-	sw.configMu.Lock()
-	sw.transitionState(StateFTBTransitioning)
-	sw.transitionState(StateFTB)
-	sw.updateHotState(func(hs *hotState) { hs.state = StateFTB })
-	sw.configMu.Unlock()
-
-	initialFiltered := sw.routeFiltered.Load()
-
-	pf := &ProcessingFrame{
-		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
-		Width:      4,
-		Height:     4,
-		PTS:        1000,
-		IsKeyframe: true,
-	}
-	sw.IngestRawVideo("mxl-cam1", pf)
-
-	require.Equal(t, initialFiltered+1, sw.routeFiltered.Load(),
-		"FTB active should cause frame to be filtered")
 }
 
 func TestIngestRawVideo_HealthTracking(t *testing.T) {
@@ -382,7 +327,7 @@ func TestIngestRawVideo_KeyBridgeFillCachedForNonProgram(t *testing.T) {
 
 func TestRegisterRawSource_FrameSyncWiring(t *testing.T) {
 	// Verify that SRT/MXL raw sources are added to the frame synchronizer
-	// and that IngestRawVideo routes through it for steady-rate release.
+	// and that IngestRawVideo routes through it to the sync loop.
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
@@ -395,9 +340,6 @@ func TestRegisterRawSource_FrameSyncWiring(t *testing.T) {
 	)
 	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
-
-	// Enable frame sync BEFORE registering the raw source.
-	sw.SetFrameSync(true, 10*time.Millisecond)
 
 	sw.RegisterSRTSource("srt:cam1")
 	require.NoError(t, sw.Cut(context.Background(), "srt:cam1"))
@@ -413,8 +355,8 @@ func TestRegisterRawSource_FrameSyncWiring(t *testing.T) {
 	fs.mu.Unlock()
 	require.True(t, inSync, "SRT source should be registered in frame sync")
 
-	// Ingest a frame — it should route through frame sync and eventually
-	// be released to handleRawVideoFrame → pipeline → program relay.
+	// Ingest a frame: it should route through frame sync and be shown by
+	// a tick, through the pipeline to the program relay.
 	pf := &ProcessingFrame{
 		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:  4,
@@ -425,37 +367,13 @@ func TestRegisterRawSource_FrameSyncWiring(t *testing.T) {
 	}
 	sw.IngestRawVideo("srt:cam1", pf)
 
-	// Frame sync releases on tick — wait for it to reach the program relay.
+	// A tick shows it; wait for it to reach the program relay.
 	require.Eventually(t, func() bool {
 		viewer.mu.Lock()
 		defer viewer.mu.Unlock()
 		return len(viewer.videos) >= 1
 	}, 500*time.Millisecond, 5*time.Millisecond,
 		"frame should reach program relay via frame sync → pipeline")
-}
-
-func TestRegisterRawSource_FrameSyncWiring_PostEnable(t *testing.T) {
-	// Verify that raw sources registered BEFORE frame sync is enabled
-	// also get added to the synchronizer.
-	programRelay := newTestRelay()
-	sw := newTestSwitcher(t, programRelay)
-	defer sw.Close()
-
-	sw.RegisterSRTSource("srt:cam1")
-
-	// Enable frame sync AFTER the source is registered.
-	sw.SetFrameSync(true, 10*time.Millisecond)
-
-	sw.configMu.Lock()
-	fs := sw.frameSync
-	sw.configMu.Unlock()
-	require.NotNil(t, fs)
-
-	fs.mu.Lock()
-	_, inSync := fs.sources["srt:cam1"]
-	fs.mu.Unlock()
-	require.True(t, inSync,
-		"SRT source registered before SetFrameSync should still be in sync")
 }
 
 func TestMXLSource_DebugSnapshotSafe(t *testing.T) {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -229,12 +228,16 @@ func WithWipeConfig(wc *wipemap.WipeConfig) TransitionOption {
 
 // sourceState tracks a registered source and its Relay/viewer pair.
 type sourceState struct {
-	key            string
-	label          string
-	relay          *distribution.Relay
-	viewer         *sourceViewer
-	isVirtual      bool // true for virtual sources (replay, etc.)
-	isMXL          bool // true for MXL raw YUV sources (no H.264 decode/IDR gating)
+	key       string
+	label     string
+	relay     *distribution.Relay
+	viewer    *sourceViewer
+	isVirtual bool // true for virtual sources (replay, etc.)
+	isMXL     bool // true for MXL raw YUV sources (no H.264 decode/IDR gating)
+	// mediaTimed: the producer stamps frames with engine-timeline PTS (MXL
+	// grain index, or an anchored ST 2110 media clock). Other sources,
+	// SRT among them, are stamped at arrival.
+	mediaTimed     bool
 	useRawPipeline bool // true when source has a per-source decoder (always-decode mode)
 	position       int  // display order in the UI (1-based)
 
@@ -343,29 +346,6 @@ type Switcher struct {
 	audioTransition      audioTransitionHandler
 	delayBuffer          *DelayBuffer
 	frameSync            *FrameSynchronizer
-	frameSyncActive      bool
-
-	// Callback to seed audio PTS epoch from first program video frame.
-	onFirstVideoPTS     func(pts int64)
-	firstVideoPTSSeeded bool
-
-	// Wall-clock video PTS: rewrites program relay video PTS to match the
-	// mixer's wall-clock audio PTS, keeping A/V aligned after source cuts.
-	// Seeded from the first program video frame (same as audio seed).
-	// Enabled via EnableWallClockVideoPTS() — off by default for backward compat.
-	//
-	// videoPTSMu guards the seeding + per-frame state below. These fields are
-	// touched by both the videoProcessingLoop goroutine (wallClockVideoPTS via
-	// the per-frame rewrite at videoProcessingLoop and the GPU-transition path
-	// in handleRawVideoFrame) and the frame-delivery goroutines (the one-time
-	// seeding block in handleRawVideoFrame). videoPTSEpoch is a 24-byte
-	// time.Time, so an unsynchronized read can tear; serialize all access.
-	videoPTSMu            sync.Mutex
-	videoPTSStart         int64
-	videoPTSEpoch         time.Time
-	videoPTS              int64
-	videoPTSInited        bool
-	wallClockVideoEnabled bool
 
 	// DSK graphics compositor — applies overlay in YUV420 domain.
 	compositorRef *graphics.Compositor
@@ -392,6 +372,7 @@ type Switcher struct {
 	// Created in New(), passed to each sourceDecoder and tapped in
 	// videoProcessingLoop for program output capture.
 	thumbnailCache       *ThumbnailCache
+	lastSourceLostLog    time.Time // sync-loop goroutine only
 	lastProgramThumbTime time.Time
 
 	// Wipe map store — resolves gradient maps for gradient-map-based wipe transitions.
@@ -439,7 +420,6 @@ type Switcher struct {
 	// Initialized non-nil in New() so Load() never returns nil.
 	graphicsHandlers atomic.Pointer[graphicsHandlers]
 	audioHandlers    atomic.Pointer[audioHandlers]
-	frameSyncBundle  atomic.Pointer[frameSyncBundle]
 
 	// sourcesAtomic is the primary sources map, published via atomic
 	// CoW in withSourcesMut. All readers call *sourcesAtomic.Load() — no
@@ -501,7 +481,6 @@ type Switcher struct {
 	videoProcMaxNano    atomic.Int64 // max video processing time (ns)
 	videoProcLastNano   atomic.Int64 // last video processing time (ns)
 	videoBroadcastCount atomic.Int64 // frames sent to program relay
-	videoProcDropped    atomic.Int64 // frames dropped due to full channel
 
 	// Command queue for PTP-timed command execution (multi-region redundancy).
 	cmdQueue          *cmdqueue.Queue
@@ -536,7 +515,6 @@ type Switcher struct {
 	// Last broadcast PTS for replay PTS anchoring (atomic, lock-free).
 	lastBroadcastPTS atomic.Int64
 	// PTS delta diagnostic: detect jitter at program broadcast stage.
-	lastBroadcastCheckPTS atomic.Int64
 
 	// Broadcast interval diagnostics (atomic, lock-free).
 	lastBroadcastNano         atomic.Int64 // UnixNano of last program broadcast
@@ -551,17 +529,13 @@ type Switcher struct {
 	transSeamCount     atomic.Int64 // number of transition seams measured
 
 	// Frame routing counters (atomic, lock-free).
-	routeToEngine     atomic.Int64 // frames routed to transition engine
-	routeToIdleEngine atomic.Int64 // frames routed to engine but engine was idle (dropped)
-	routeToPipeline   atomic.Int64 // frames routed to normal pipeline
-	routeFiltered     atomic.Int64 // frames filtered (non-program, FTB, etc.)
+	routeFiltered atomic.Int64 // frames filtered (non-program, FTB, etc.)
 
 	// GPU pipeline counters (atomic, lock-free).
 	gpuFramesProcessed  atomic.Int64 // frames processed via GPU pipeline
 	gpuCacheMisses      atomic.Int64 // RunFromCache failed (fallback to RunWithUpload)
 	gpuTransitionFrames atomic.Int64 // frames processed via GPU transition
 	gpuFallbackFrames   atomic.Int64 // frames that fell back to CPU pipeline
-	gpuTransActive      atomic.Bool  // true while GPU handles a transition (gates videoProcCh drain)
 
 	// frameInterval observes the gap between program frames; nil without
 	// metrics. A pointer of its own because the broadcast path holds no lock.
@@ -579,14 +553,11 @@ type Switcher struct {
 	lastDecodeQueueNs atomic.Int64 // T1 - T0: sourceDecoder channel wait
 	lastDecodeNs      atomic.Int64 // T2 - T1: H.264 decode duration
 	lastSyncWaitNs    atomic.Int64 // T3 - T2: frame_sync tick alignment wait
-	lastProcQueueNs   atomic.Int64 // T5 - T4: videoProcCh queue wait
 
 	// Program epoch — monotonically increasing counter incremented on every
 	// program source change (Cut, transition complete). Frames stamped with
 	// a stale epoch are discarded in videoProcessingLoop to prevent wrong-source
 	// frames from reaching the pipeline during concurrent Cut/transition races.
-	programEpoch      atomic.Uint64
-	programEpochStale atomic.Int64 // count of frames discarded as stale
 
 	// forceNextIDR is set when a new output viewer joins the program relay
 	// (e.g., SRT output starts). The next encode call forces an IDR keyframe
@@ -644,31 +615,22 @@ type Switcher struct {
 	// the encoder factory at runtime. Set via SetEncoderOpts().
 	encoderOpts *codec.EncoderOptions
 
-	// Async video processing: frames are sent to videoProcCh and processed
-	// in a dedicated goroutine, decoupling the source relay's delivery
-	// goroutine from the 30-100ms decode+encode overhead. Without this,
-	// audio delivery from the same goroutine gets starved.
-	videoProcCh   chan videoProcWork
-	videoProcDone chan struct{}
-
-	// Reference clock fields (used when useRefClock is true).
-	// When useRefClock is set, the synchronous processing loop replaces
-	// both videoProcessingLoop and the mixer's outputTicker, driving
-	// A/V from a single clock source.
+	// The reference clock drives every program frame and audio period
+	// (sync_loop.go).
 	refClock         *clock.ReferenceClock
 	aacBuffer        *clock.AACFrameBuffer
 	syncMixer        syncMixerInterface
 	syncLoopWg       sync.WaitGroup
-	useRefClock      atomic.Bool
 	ticksBehind      int
+	audioStamped     bool                            // sync-loop goroutine only
+	nextAudioStart   uint64                          // sync-loop goroutine only
 	syncLoopRunning  atomic.Bool                     // double-start guard (Issue 10)
 	cachedBlackFrame atomic.Pointer[ProcessingFrame] // cached broadcast black (Issue 11)
 
 	// stall feeds the pipeline while the program source delivers nothing.
-	stall           programStall
-	stallFillFrames atomic.Int64
-	// stallTransitionFeeds counts frames fed to a transition for a stalled side.
-	stallTransitionFeeds atomic.Int64
+	// programRepeats counts ticks that showed a frame again because the
+	// program source had nothing new, or black after a loss.
+	programRepeats atomic.Int64
 	// lastEnqueueNano is when a frame other than a fill was last queued for
 	// the pipeline: it arrived then, however long the pipeline takes.
 	lastEnqueueNano atomic.Int64
@@ -682,7 +644,6 @@ type Switcher struct {
 	lastEncodedFrame    atomic.Pointer[ProcessingFrame]
 	lastBroadcastVFrame atomic.Pointer[media.VideoFrame] // last broadcast H.264 frame (for overload repeat)
 	lastOverloadLog     time.Time                        // rate-limit overload logging to 1/sec
-	lastTickPTS         int64                            // diagnostic: last tick PTS for delta check
 	lastGPUErrorLog     time.Time                        // rate-limit GPU error logging to 1/sec
 	sourceLostAt        atomic.Pointer[time.Time]        // when program source stopped providing frames (sync loop goroutine only)
 
@@ -691,31 +652,6 @@ type Switcher struct {
 	// outputAudioCallbackDirect delivers AAC frames to the muxer (SRT/recording).
 	outputAudioCallback       atomic.Pointer[func(*media.AudioFrame)]
 	outputAudioCallbackDirect atomic.Pointer[func(*media.AudioFrame)]
-}
-
-// videoProcWork represents a unit of work for the async video processing
-// goroutine. Contains a pre-decoded YUV frame needing encode + broadcast.
-type videoProcWork struct {
-	// yuvFrame: pre-decoded YUV from source decoder or transition engine, needing encode only
-	yuvFrame *ProcessingFrame
-	// epoch: program epoch at enqueue time. Frames with stale epoch are
-	// discarded in videoProcessingLoop to prevent wrong-source flashes
-	// during concurrent Cut/transition races. Zero means "always process"
-	// (used by transition engine output which is always valid).
-	epoch uint64
-	// enqueueNano: UnixNano when enqueued to videoProcCh. Used to measure
-	// how long the frame waited in the videoProcCh buffer before being
-	// picked up by videoProcessingLoop.
-	enqueueNano int64
-	// sourceKey: the source key of the program source that produced this frame.
-	// Used by the GPU pipeline to look up the source's cached GPU frame
-	// (via RunFromCache) instead of re-uploading from CPU memory.
-	// Empty for transition/FRC output which produces blended/synthesized frames.
-	sourceKey string
-	// fill marks a frame programStall fed while the program source stalled.
-	fill bool
-	// keepPTS skips the wall-clock PTS rewrite, as for built-in sources.
-	keepPTS bool
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -728,8 +664,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 		log:                      slog.With("component", "switcher"),
 		programRelay:             programRelay,
 		health:                   newHealthMonitor(),
-		videoProcCh:              make(chan videoProcWork, 8),
-		videoProcDone:            make(chan struct{}),
+		frameSync:                NewFrameSynchronizer(),
 		thumbnailCache:           NewThumbnailCache(),
 		ftbDurationMs:            defaultFTBDurationMs,
 		transitionAbortThreshold: defaultTransitionAbortThreshold,
@@ -741,8 +676,6 @@ func New(programRelay *distribution.Relay) *Switcher {
 	s.delayBuffer = NewDelayBuffer(s)
 	s.initAtomicSlots()
 	s.registerBuiltinSourcesLocked()
-	go s.videoProcessingLoop()
-	s.startProgramStallFiller()
 	s.startBuiltinProducer()
 	return s
 }
@@ -991,7 +924,7 @@ func (s *Switcher) GetRawPreviewSink() RawVideoSink {
 // Close stops the health monitor, delay buffer, frame sync, and unregisters
 // all sources. Idempotent — gated by sync.Once so a second call (e.g. from
 // `t.Cleanup` plus an existing `defer sw.Close()`) does not panic on
-// double-close of videoProcCh. Concurrent callers see serialized behavior:
+// double-close. Concurrent callers see serialized behavior:
 // one runs the body, the rest wait and observe a fully-closed switcher.
 func (s *Switcher) Close() {
 	s.closeOnce.Do(func() {
@@ -999,37 +932,12 @@ func (s *Switcher) Close() {
 		s.health.stop()
 		s.delayBuffer.Close()
 
-		// Stop reference clock first — this closes the Ticks channel,
-		// which exits the synchronous processing loop.
-		if s.useRefClock.Load() && s.refClock != nil {
-			s.refClock.Stop()
-			s.syncLoopWg.Wait()
-		}
+		// Stopping the reference clock closes its Ticks channel, which ends
+		// the sync loop, the only goroutine running the pipeline.
+		s.stopClock()
 
-		// Stop frame sync FIRST to prevent sends to videoProcCh after it is closed.
-		// The frame sync ticker goroutine delivers frames via handleRawVideoFrame,
-		// which calls enqueueVideoWork. If we close videoProcCh while the ticker is
-		// still running, a send on the closed channel causes a panic.
-		//
-		// We grab the pointer under the lock but call Stop() outside the lock,
-		// because Stop() waits for the tick loop goroutine to exit, and that
-		// goroutine's delivery callbacks acquire s.configMu — holding it
-		// here would deadlock.
-		s.configMu.Lock()
-		fs := s.frameSync
-		s.configMu.Unlock()
-		if fs != nil {
-			fs.Stop()
-		}
-
-		// The stall filler sends to videoProcCh too.
-		s.stopProgramStallFiller()
-
-		// Shut down async video processing goroutine.
-		close(s.videoProcCh)
-		<-s.videoProcDone
-		// Release pre-allocated frame pool buffers. Safe after videoProcDone
-		// guarantees no more pipeline work (no concurrent Acquire calls).
+		// Release pre-allocated frame pool buffers. Safe once the sync loop
+		// has exited: no more pipeline work (no concurrent Acquire calls).
 		if fp := s.framePool.Load(); fp != nil {
 			fp.Close()
 		}
@@ -1106,19 +1014,6 @@ func (s *Switcher) SetAudioTransition(handler audioTransitionHandler) {
 	defer s.configMu.Unlock()
 	s.audioTransition = handler
 	s.updateAudioHandlers(func(ah *audioHandlers) { ah.audioTransition = handler })
-}
-
-// SetOnFirstVideoPTS registers a callback invoked once when the first
-// program video frame enters the pipeline. Used to seed the audio mixer's
-// PTS epoch so audio and video start from the same wall-clock moment.
-func (s *Switcher) SetOnFirstVideoPTS(fn func(pts int64)) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	if s.useRefClock.Load() {
-		return // reference clock handles PTS — no seeding needed
-	}
-	s.onFirstVideoPTS = fn
-	s.updateHotState(func(hs *hotState) { hs.onFirstVideoPTS = fn })
 }
 
 // RequestKeyframe forces the next encoded frame to be an IDR keyframe.
@@ -1475,119 +1370,6 @@ func (s *Switcher) RebuildPipeline() {
 	s.rebuildPipeline()
 }
 
-// SetFrameSync enables or disables the freerun frame synchronizer. When
-// enabled, all source video and audio frames are buffered and released at
-// a common tick rate (program frame rate) instead of flowing through the
-// per-source delay buffer. This ensures frame-aligned output across sources.
-//
-// The tickRate parameter sets the release interval (e.g., 33ms for 30fps).
-// Passing 0 uses the default of 33.333ms (30fps).
-//
-// When enabled, existing source viewers are re-wired to route through the
-// FrameSynchronizer. When disabled, they revert to the delay buffer.
-func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-
-	if enabled == s.frameSyncActive {
-		return
-	}
-
-	if enabled {
-		if tickRate <= 0 {
-			if f := s.pipelineFormat.Load(); f != nil {
-				tickRate = f.FrameDuration()
-			} else {
-				tickRate = 33333 * time.Microsecond
-			}
-		}
-		fs := NewFrameSynchronizer(tickRate,
-			func(sourceKey string, frame media.VideoFrame) {
-				s.handleVideoFrame(sourceKey, &frame)
-			},
-			func(sourceKey string, frame media.AudioFrame) {
-				s.handleAudioFrame(sourceKey, &frame)
-			},
-		)
-		fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
-			s.handleRawVideoFrame(sourceKey, pf)
-		}
-		fs.framePool = s.framePool.Load()
-		s.frameSync = fs
-
-		// Wire all existing source viewers to the frame sync.
-		for key, ss := range *s.sourcesAtomic.Load() {
-			if ss.viewer != nil {
-				ss.viewer.frameSync.Store(fs)
-				ss.viewer.delayBuffer.Store(nil) // bypass delay buffer
-			}
-			fs.AddSource(key)
-		}
-		fs.SetProgramSource(s.programSource)
-		fs.Start()
-		s.log.Info("frame sync enabled", "tick_rate", tickRate)
-	} else {
-		if s.frameSync != nil {
-			s.frameSync.Stop()
-		}
-		s.frameSync = nil
-
-		// Revert all source viewers to the delay buffer.
-		for _, ss := range *s.sourcesAtomic.Load() {
-			if ss.viewer != nil {
-				ss.viewer.frameSync.Store(nil)
-				ss.viewer.delayBuffer.Store(s.delayBuffer)
-			}
-		}
-		s.log.Info("frame sync disabled")
-	}
-	s.frameSyncActive = enabled
-	fs := s.frameSync
-	db := s.delayBuffer
-	s.updateFrameSyncBundle(func(fsb *frameSyncBundle) {
-		fsb.sync = fs
-		fsb.delayBuffer = db
-		fsb.active = enabled
-	})
-}
-
-// SetClockDrivenSync enables clock-driven frame sync output. When enabled,
-// the frame sync uses only timer-driven releases at a fixed rate, decoupling
-// output timing from source jitter. Adds up to one frame of latency (~33ms)
-// but produces rock-steady output timing like a hardware TBC/frame sync.
-func (s *Switcher) SetClockDrivenSync(enabled bool) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	if s.frameSync != nil {
-		s.frameSync.SetClockDriven(enabled)
-	}
-}
-
-// SetFrameSyncBufferOnly puts the frame sync into buffer-only mode.
-// Ring buffers still accept frames, but the tickLoop timer is not started.
-// This is used in reference clock mode where the sync loop pops frames
-// directly from the ring buffers, preventing two goroutines from racing
-// over the same buffers. Must be called before the frame sync is started
-// (i.e., before SetFrameSync enables it, or immediately after).
-func (s *Switcher) SetFrameSyncBufferOnly(enabled bool) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	if s.frameSync != nil {
-		s.frameSync.SetBufferOnly(enabled)
-	}
-}
-
-// SetFRCQuality sets the frame rate conversion quality for all sources.
-// Only effective when frame sync is enabled.
-func (s *Switcher) SetFRCQuality(q FRCQuality) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	if s.frameSync != nil {
-		s.frameSync.SetFRCQuality(q)
-	}
-	s.log.Info("FRC quality set", "quality", q.String())
-}
-
 // SetFrameBudget sets the per-frame processing time budget in nanoseconds.
 // When pipeline latency exceeds this budget, deadlineViolations is incremented.
 // Default is 33ms (30fps). Call with 16_666_666 for 60fps sources.
@@ -1612,8 +1394,16 @@ func (s *Switcher) GetFramePool() *FramePool {
 
 // SetPipelineFormat changes the global pipeline format at runtime.
 // Returns error if a transition is currently active.
-// Propagates change to: frame budget, frame sync tick rate, encoder.
+// Propagates change to: frame budget, encoder, and the reference clock rate.
 func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
+	if err := s.setPipelineFormat(f); err != nil {
+		return err
+	}
+	s.restartClockAt(f.FPSNum, f.FPSDen)
+	return nil
+}
+
+func (s *Switcher) setPipelineFormat(f PipelineFormat) error {
 	s.configMu.Lock()
 
 	if s.state.isInTransition() {
@@ -1630,12 +1420,6 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	// configMu; hot-path readers Load() it without a lock.
 	newPool := NewFramePool(512, f.Width, f.Height, f.Color.ColorFormat)
 	s.framePool.Store(newPool)
-
-	// Update frame sync tick rate and pool reference if active.
-	if s.frameSyncActive && s.frameSync != nil {
-		s.frameSync.SetFramePool(newPool)
-		s.frameSync.SetTickRate(f.FrameDuration())
-	}
 
 	// Force encoder recreation on next frame.
 	if s.pipeCodecs != nil {
@@ -1724,7 +1508,6 @@ func (s *Switcher) trackBroadcastInterval() {
 			"state", state.String(),
 			"program_source", programSrc,
 			"has_engine", hasEngine,
-			"idle_engine_drops", s.routeToIdleEngine.Load(),
 		)
 	}
 }
@@ -1763,95 +1546,16 @@ func (s *Switcher) measureTransSeam() {
 	s.log.Info("transition seam measured", "gap_ms", float64(gap)/1e6)
 }
 
-// EnableWallClockVideoPTS enables wall-clock PTS rewriting on the program
-// relay. When enabled, video PTS is rewritten to match the mixer's
-// wall-clock audio PTS, keeping A/V aligned after source cuts.
-// No-op when the reference clock is active (PTS comes from the clock).
-func (s *Switcher) EnableWallClockVideoPTS() {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	if s.useRefClock.Load() {
-		return // reference clock handles PTS
-	}
-	s.wallClockVideoEnabled = true
-	s.updateHotState(func(hs *hotState) { hs.wallClockVideoEnabled = true })
-}
-
-// wallClockVideoPTS returns a hybrid PTS: frame-counter for regular spacing
-// with wall-clock resync to match the mixer's audio PTS timeline.
-// When the reference clock is active, returns sourcePTS unchanged — PTS
-// is already set by the sync loop from the reference clock.
-func (s *Switcher) wallClockVideoPTS(sourcePTS int64) int64 {
-	if s.useRefClock.Load() {
-		return sourcePTS // PTS comes from reference clock, not wall clock
-	}
-	// wallClockVideoEnabled is published via the hotState mirror under configMu
-	// (EnableWallClockVideoPTS); read the mirror to avoid an unsynchronized
-	// plain-field read racing with that writer.
-	if !s.hotState.Load().wallClockVideoEnabled {
-		return sourcePTS
-	}
-	now := time.Now()
-
-	// videoPTSMu serializes the seeding + per-frame update against the one-time
-	// seeding in handleRawVideoFrame and against concurrent wallClockVideoPTS
-	// calls from the videoProcessingLoop and GPU-transition goroutines. Without
-	// it, a torn read of videoPTSEpoch (a 24-byte time.Time) corrupts the
-	// wall-clock PTS for the rest of the session.
-	s.videoPTSMu.Lock()
-	defer s.videoPTSMu.Unlock()
-	if !s.videoPTSInited {
-		s.videoPTSStart = sourcePTS
-		s.videoPTSEpoch = now
-		s.videoPTS = sourcePTS
-		s.videoPTSInited = true
-		return sourcePTS
-	}
-
-	// Frame counter: advance by video frame duration for regular spacing.
-	pf := s.pipelineFormat.Load()
-	var frameDur int64 = 3000 // default 30fps
-	if pf != nil {
-		frameDur = int64(90000) * int64(pf.FPSDen) / int64(pf.FPSNum)
-	}
-	s.videoPTS += frameDur
-
-	// Wall-clock resync: nudge toward wall clock to prevent drift.
-	wallPTS := s.videoPTSStart + int64(now.Sub(s.videoPTSEpoch).Seconds()*90000)
-	drift := wallPTS - s.videoPTS
-	if drift > frameDur {
-		s.videoPTS += frameDur / 2
-	} else if drift < -frameDur {
-		s.videoPTS -= frameDur / 2
-	}
-
-	// No 33-bit mask here — the muxer handles PTS rebasing and wrapping.
-	// Masking would put video PTS in a different domain than audio PTS.
-	return s.videoPTS
-}
-
 // broadcastToProgram sends a video frame to the program relay with a
 // monotonically increasing GroupID. When wall-clock video PTS is enabled,
 // rewrites PTS to stay aligned with the mixer's wall-clock audio PTS.
 func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	f := *frame // shallow struct copy — avoids mutating shared frame
-	// PTS is already in wall-clock domain — rewritten in videoProcessingLoop
-	// before pipeline.Run(). No wallClockVideoPTS call here.
 	f.DTS = f.PTS
 	if f.IsKeyframe {
 		f.GroupID = s.programGroupID.Add(1)
 	} else {
 		f.GroupID = s.programGroupID.Load()
-	}
-	// Diagnostic: verify PTS deltas at program broadcast stage match a
-	// supported frame-rate grid (IsNominalPTSDelta covers 24/25/30/50/60
-	// plus their NTSC variants with ±1 tick tolerance).
-	if prev := s.lastBroadcastCheckPTS.Swap(f.PTS); prev != 0 {
-		delta := f.PTS - prev
-		if !video.IsNominalPTSDelta(delta) {
-			slog.Warn("broadcastToProgram: non-nominal PTS delta",
-				"delta", delta, "pts", f.PTS, "prevPts", prev)
-		}
 	}
 	s.lastBroadcastPTS.Store(f.PTS)
 	s.measureTransSeam()
@@ -1876,7 +1580,6 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 // program relay with a monotonically increasing GroupID. Rewrites PTS
 // to wall-clock time.
 func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
-	// PTS is already in wall-clock domain — rewritten in videoProcessingLoop.
 	frame.DTS = frame.PTS
 	if frame.IsKeyframe {
 		frame.GroupID = s.programGroupID.Add(1)
@@ -1898,6 +1601,9 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	if cb := s.outputVideoCallback.Load(); cb != nil {
 		(*cb)(frame)
 	}
+	// Kept for repeats on a tick with no new frame or under overload.
+	stored := *frame
+	s.lastBroadcastVFrame.Store(&stored)
 }
 
 // ProgramRelay returns the program relay for external broadcast (e.g. authored captions).
@@ -2154,308 +1860,6 @@ func (s *Switcher) broadcastWithCaptions(frame *media.VideoFrame) {
 	s.broadcastOwnedToProgram(frame)
 }
 
-// enqueueVideoWork sends a work item to the async video processing goroutine
-// with newest-wins drop policy when the channel is full.
-func (s *Switcher) enqueueVideoWork(work videoProcWork) {
-	if !work.fill {
-		s.lastEnqueueNano.Store(time.Now().UnixNano())
-	}
-	select {
-	case s.videoProcCh <- work:
-	default:
-		// Channel full — drop oldest, enqueue new (newest-wins).
-		// Release pool buffer from dropped frame to prevent pool exhaustion.
-		select {
-		case dropped := <-s.videoProcCh:
-			if dropped.yuvFrame != nil {
-				dropped.yuvFrame.ReleaseYUV()
-			}
-		default:
-		}
-		select {
-		case s.videoProcCh <- work:
-		default:
-			// Re-enqueue failed (race: another writer filled the slot).
-			// Release the new frame's buffer to prevent pool exhaustion.
-			if work.yuvFrame != nil {
-				work.yuvFrame.ReleaseYUV()
-			}
-			s.videoProcDropped.Add(1)
-		}
-	}
-}
-
-// videoProcessingLoop runs in a dedicated goroutine, draining videoProcCh
-// and running each frame through the encode pipeline. This prevents
-// the source relay's delivery goroutine from blocking on video processing,
-// which would starve audio delivery.
-//
-// When the reference clock is active, the sync loop is the sole frame
-// processor. This loop only drains videoProcCh to prevent
-// handleRawVideoFrame from blocking, but does not process the frames.
-func (s *Switcher) videoProcessingLoop() {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	defer close(s.videoProcDone)
-
-	if s.useRefClock.Load() {
-		// Sync loop is the sole frame processor. Drain videoProcCh to prevent
-		// handleRawVideoFrame from blocking, but don't process the frames.
-		for work := range s.videoProcCh {
-			if work.yuvFrame != nil {
-				work.yuvFrame.ReleaseYUV()
-			}
-		}
-		return
-	}
-
-	for work := range s.videoProcCh {
-		// Drain PTP-timed commands that are now ready to execute.
-		s.drainCommandQueue()
-
-		if work.yuvFrame == nil {
-			continue
-		}
-		// Discard frames stamped with a stale program epoch. This prevents
-		// wrong-source frames from reaching the pipeline when a Cut or
-		// transition complete races with frame delivery.
-		if work.epoch != 0 && work.epoch != s.programEpoch.Load() {
-			work.yuvFrame.ReleaseYUV()
-			s.programEpochStale.Add(1)
-			continue
-		}
-		arrivalNano := work.yuvFrame.ArrivalNano // save before Run may reallocate
-
-		// Compute sub-stage breakdown from frame timestamps
-		if arrivalNano > 0 && work.yuvFrame.DecodeStartNano > 0 {
-			s.lastDecodeQueueNs.Store(work.yuvFrame.DecodeStartNano - arrivalNano)
-		}
-		if work.yuvFrame.DecodeStartNano > 0 && work.yuvFrame.DecodeEndNano > 0 {
-			s.lastDecodeNs.Store(work.yuvFrame.DecodeEndNano - work.yuvFrame.DecodeStartNano)
-		}
-		if work.yuvFrame.SyncReleaseNano > 0 {
-			if work.yuvFrame.DecodeEndNano > 0 {
-				s.lastSyncWaitNs.Store(work.yuvFrame.SyncReleaseNano - work.yuvFrame.DecodeEndNano)
-			} else {
-				// FRC-synthesized frame: no decode→sync wait by definition.
-				// Store 0 to prevent stale values from previous fresh frames.
-				s.lastSyncWaitNs.Store(0)
-			}
-		}
-		if work.enqueueNano > 0 {
-			s.lastProcQueueNs.Store(time.Now().UnixNano() - work.enqueueNano)
-		}
-
-		start := time.Now()
-
-		// When the GPU pipeline handles transitions, drop stale frames
-		// from the previous program source that were queued in videoProcCh
-		// before the transition started. Without this, these frames continue
-		// through RunFromCache → pipeline.Run → encode → broadcast,
-		// interleaving the previous source's content with the transition.
-		//
-		// Only drop frames with a sourceKey (normal pipeline frames). Frames
-		// with empty sourceKey come from the CPU transition engine's Output
-		// callback and must be processed.
-		//
-		// Uses gpuTransActive (atomic bool set/cleared in StartTransition /
-		// handleTransitionComplete) instead of s.state to avoid a data race
-		// with the mu-protected state field.
-		if s.gpuTransActive.Load() && work.sourceKey != "" {
-			work.yuvFrame.ReleaseYUV()
-			continue
-		}
-		// A filled frame queued just before a transition started must not
-		// interleave with the transition's frames.
-		if work.fill && s.hotState.Load().state.isInTransition() {
-			work.yuvFrame.ReleaseYUV()
-			continue
-		}
-
-		// Normalize to pipeline format resolution before processing.
-		// Sources may deliver at different resolutions (e.g., 720p camera
-		// + 1080p file). Scaling here rather than on the delivery hot path
-		// avoids blocking source frame delivery goroutines.
-		work.yuvFrame = s.normalizeResolution(work.yuvFrame)
-
-		// Rewrite PTS to wall-clock domain BEFORE pipeline.Run() so that
-		// all pipeline nodes — including raw sinks (preview encoder, MXL
-		// output) — see the same PTS as the program relay and audio mixer.
-		// Previously, wallClockVideoPTS was called in broadcastToProgram
-		// (after the encode node), so raw sinks received the raw source PTS
-		// which was in a different domain than the mixer's audio PTS.
-		//
-		// Built-in virtual sources (source:black, source:colorbars) already
-		// produce strictly CFR PTS from a frame counter in the internal
-		// producer; feeding them through wallClockVideoPTS adds the drift-
-		// nudging feedback loop on top, which can introduce ±frameDur/2 PTS
-		// steps when videoProcessingLoop backs up briefly — visible as the
-		// sprite animation jittering on the program output. Skip the
-		// rewrite for built-ins; their PTS is already in a monotonic CFR
-		// domain compatible with the mixer's wall-clock audio PTS.
-		if !isBuiltinSource(work.sourceKey) && !work.keepPTS {
-			work.yuvFrame.PTS = s.wallClockVideoPTS(work.yuvFrame.PTS)
-		}
-		if !work.fill && s.stall.noteFrame(work.yuvFrame, work.sourceKey, work.epoch, time.Now()) {
-			s.log.Info("program source resumed", "program_source", work.sourceKey,
-				"filled_frames", s.stallFillFrames.Load())
-		}
-
-		// Route through GPU pipeline if available, fall back to CPU.
-		gpuUsed := false
-		if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
-			// Try zero-upload path first: use pre-cached GPU frame from source manager.
-			if work.sourceKey != "" {
-				if err := h.runner.RunFromCache(work.sourceKey, work.yuvFrame.PTS); err == nil {
-					gpuUsed = true
-					s.gpuFramesProcessed.Add(1)
-				} else {
-					s.gpuCacheMisses.Add(1)
-				}
-			}
-			// Fall back to CPU→GPU upload if cache miss or no source key.
-			if !gpuUsed {
-				if err := h.runner.RunWithUpload(work.yuvFrame.Data, work.yuvFrame.Width, work.yuvFrame.Height, work.yuvFrame.PTS); err == nil {
-					gpuUsed = true
-					s.gpuFramesProcessed.Add(1)
-				}
-			}
-		}
-		if !gpuUsed {
-			if h := s.gpuRunner.Load(); h != nil {
-				// GPU was available but failed — this is a fallback.
-				s.gpuFallbackFrames.Add(1)
-			}
-			work.yuvFrame, _ = s.runPipelineGuarded(work.yuvFrame)
-		}
-
-		// Program output thumbnail capture: bounded async encode via the
-		// cache's SpawnEncode (at most one encode in flight for this key).
-		// Captures the final processed YUV before encode/release. Only
-		// 8-bit YUV420 is supported by ScaleAndEncodeJPEG.
-		if s.thumbnailCache != nil && s.thumbnailCache.ShouldCapture() &&
-			work.yuvFrame != nil && work.yuvFrame.Format == ColorYUV420_8bit &&
-			len(work.yuvFrame.Data) > 0 && time.Since(s.lastProgramThumbTime) >= time.Second {
-			s.lastProgramThumbTime = time.Now()
-			yuvCopy := make([]byte, len(work.yuvFrame.Data))
-			copy(yuvCopy, work.yuvFrame.Data)
-			s.thumbnailCache.SpawnEncode("program_output", yuvCopy, work.yuvFrame.Width, work.yuvFrame.Height)
-		}
-
-		work.yuvFrame.ReleaseYUV()
-
-		dur := time.Since(start).Nanoseconds()
-		s.videoProcLastNano.Store(dur)
-		s.videoProcCount.Add(1)
-		atomicutil.UpdateMax(&s.videoProcMaxNano, dur)
-		if dur > s.frameBudgetNs.Load() {
-			s.deadlineViolations.Add(1)
-		}
-
-		if arrivalNano > 0 {
-			e2e := time.Now().UnixNano() - arrivalNano
-			s.lastE2ENs.Store(e2e)
-			atomicutil.UpdateMax(&s.maxE2ENs, e2e)
-		}
-	}
-}
-
-// broadcastProcessed handles frames that are already decoded to YUV
-// (e.g., from the transition engine). Enqueues for pipeline processing.
-// Format-aware: uses the pipeline's color format to determine frame size
-// and codec string, supporting both 8-bit YUV420 and 10-bit YUV422P10LE.
-func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, isKeyframe bool) {
-	s.transOutputCount.Add(1)
-	if s.pipeline.Load() == nil {
-		return
-	}
-
-	// Lock-free lookup: load the current program from hotState and look it up
-	// in the atomic sources snapshot. Benign two-load race — if the program
-	// source is unregistered mid-call, groupID stays zero.
-	hs := s.hotState.Load()
-	sources := *s.sourcesAtomic.Load()
-	var groupID uint32
-	if ss, ok := sources[hs.programSource]; ok {
-		groupID = ss.lastGroupID.Load()
-	}
-
-	// Use the pipeline's color format for frame sizing and codec metadata.
-	pf := s.pipelineFormat.Load()
-	colorFmt := ColorYUV420_8bit
-	codecStr := "h264"
-	if pf != nil {
-		colorFmt = pf.Color.ColorFormat
-		codecStr = pf.Color.Codec.String()
-	}
-
-	expectedSize := colorFmt.FrameSize(width, height)
-	if len(yuv) < expectedSize {
-		return
-	}
-
-	// Load the pool once: Acquire and the stored pool pointer must come from
-	// the same FramePool even if SetPipelineFormat swaps s.framePool mid-call.
-	pool := s.framePool.Load()
-
-	// Defensive: if the frame exceeds pool buffer capacity (e.g., 4K clip
-	// in a 1080p pipeline), skip rather than panic on slice bounds.
-	poolBufSize := pool.BufSize()
-	if expectedSize > poolBufSize {
-		s.log.Warn("broadcastProcessed: frame exceeds pool buffer size, dropping",
-			"frame_w", width, "frame_h", height,
-			"frame_bytes", expectedSize, "pool_bytes", poolBufSize,
-		)
-		return
-	}
-
-	buf := pool.Acquire()
-	copy(buf, yuv[:expectedSize])
-
-	frame := &ProcessingFrame{
-		Data: buf[:expectedSize], Width: width, Height: height,
-		PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
-		Format:  colorFmt,
-		Codec:   codecStr,
-		GroupID: groupID,
-		pool:    pool,
-	}
-	frame.SetRefs(1)
-	s.enqueueVideoWork(videoProcWork{yuvFrame: frame, enqueueNano: time.Now().UnixNano()})
-}
-
-// broadcastProcessedFromPF handles a ProcessingFrame from the always-decode
-// pipeline. For refcounted frames (from source_decoder via frame_sync), uses
-// Ref + shallow copy for zero-copy delivery to the pipeline goroutine. The
-// pipeline's MakeWritable call ensures exclusive buffer ownership before any
-// in-place modification, so source frames retained by frame_sync (lastRawVideo)
-// are never mutated. For unmanaged frames (FRC scratch buffers), falls back to
-// DeepCopy since FRC reuses its internal scratch buffers between calls.
-//
-// sourceKey identifies the program source that produced this frame, enabling
-// the GPU pipeline to use RunFromCache instead of re-uploading from CPU.
-// Pass "" for transition/FRC output (blended/synthesized frames).
-func (s *Switcher) broadcastProcessedFromPF(sourceKey string, pf *ProcessingFrame) {
-	if s.pipeline.Load() == nil {
-		return
-	}
-	epoch := s.programEpoch.Load()
-	enqueueNano := time.Now().UnixNano()
-	if pf.refs != nil {
-		// Managed frame: Ref for pipeline, shallow copy shares YUV + refs.
-		// Pipeline.Run calls MakeWritable before in-place processing.
-		pf.Ref()
-		cp := new(ProcessingFrame)
-		*cp = *pf
-		s.enqueueVideoWork(videoProcWork{yuvFrame: cp, epoch: epoch, enqueueNano: enqueueNano, sourceKey: sourceKey})
-	} else {
-		// Unmanaged frame (FRC scratch buffer): must deep-copy.
-		cp := pf.DeepCopy()
-		cp.SetRefs(1)
-		s.enqueueVideoWork(videoProcWork{yuvFrame: cp, epoch: epoch, enqueueNano: enqueueNano, sourceKey: sourceKey})
-	}
-}
-
 // normalizeResolution scales a ProcessingFrame to the pipeline format
 // resolution if it differs. Called in the video processing goroutine
 // (not on the delivery hot path) to avoid blocking source frame delivery.
@@ -2633,11 +2037,6 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	}
 
 	var outputCb func(yuv []byte, width, height int, pts int64, isKeyframe bool)
-	if !gpuActive {
-		outputCb = func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
-			s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
-		}
-	}
 
 	// A DVE transition runs on a mix engine. The GPU pipeline draws it
 	// when there is one; otherwise the engine draws it on the CPU.
@@ -2674,16 +2073,8 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		engine.SetColorFormat(video.YUV422_10bit)
 	}
 
-	// In ref clock mode, use StartSync so the engine relies on tick-driven
-	// AutoAdvancePosition instead of wall-clock timing. This prevents position
-	// jitter from two competing clocks (wall-clock vs tick-driven).
-	if s.useRefClock.Load() {
-		engine.StartSync(fromSource, sourceKey, engineType, durationMs)
-	} else if err := engine.Start(fromSource, sourceKey, engineType, durationMs); err != nil {
-		// Roll back state since we failed to start.
-		s.rollbackTransitionState(StateTransitioning, startGen, StateIdle)
-		return fmt.Errorf("start transition: %w", err)
-	}
+	// The sync loop advances the position one tick at a time.
+	engine.StartSync(fromSource, sourceKey, engineType, durationMs)
 
 	// Upload gradient map to GPU runner for gradient-map wipe transitions.
 	// This must happen after engine.Start (which resolves the gradient map)
@@ -2756,14 +2147,6 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		hs.previewSource = fromSource
 	})
 	s.transitionsStarted.Add(1)
-	// Signal videoProcessingLoop to drop stale queued frames during GPU transitions.
-	if gpuActive {
-		s.gpuTransActive.Store(true)
-	}
-	// During transition, the destination (incoming) source drives the release.
-	if s.frameSync != nil {
-		s.frameSync.SetProgramSource(sourceKey)
-	}
 
 	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
@@ -2896,11 +2279,6 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 			ftbRevGPUActive = true
 		}
 		var ftbRevOutputCb func(yuv []byte, width, height int, pts int64, isKeyframe bool)
-		if !ftbRevGPUActive {
-			ftbRevOutputCb = func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
-				s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
-			}
-		}
 		engine := transition.NewEngine(transition.EngineConfig{
 			DecoderFactory: ftbRevDecoderFactory,
 			HintWidth:      ftbHintW,
@@ -2917,11 +2295,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 			engine.SetColorFormat(video.YUV422_10bit)
 		}
 
-		if err := engine.Start(fromSource, "", transition.FTBReverse, ftbRevDurMs); err != nil {
-			// Roll back to StateFTB (unless a concurrent Cut/abort moved on).
-			s.rollbackTransitionState(StateFTBReversing, ftbRevStartGen, StateFTB)
-			return fmt.Errorf("start FTB reverse: %w", err)
-		}
+		engine.StartSync(fromSource, "", transition.FTBReverse, ftbRevDurMs)
 
 		// Start audio BEFORE publishing engine (prevents position race).
 		audioHandler := s.audioHandlers.Load().audioTransition
@@ -2980,11 +2354,6 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		ftbFwdGPUActive = true
 	}
 	var ftbFwdOutputCb func(yuv []byte, width, height int, pts int64, isKeyframe bool)
-	if !ftbFwdGPUActive {
-		ftbFwdOutputCb = func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
-			s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
-		}
-	}
 	engine := transition.NewEngine(transition.EngineConfig{
 		DecoderFactory: ftbFwdDecoderFactory,
 		HintWidth:      ftbFwdHintW,
@@ -3001,11 +2370,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		engine.SetColorFormat(video.YUV422_10bit)
 	}
 
-	if err := engine.Start(fromSource, "", transition.FTB, ftbFwdDurMs); err != nil {
-		// Roll back to idle (unless a concurrent Cut/abort moved on).
-		s.rollbackTransitionState(StateFTBTransitioning, ftbFwdStartGen, StateIdle)
-		return fmt.Errorf("start FTB: %w", err)
-	}
+	engine.StartSync(fromSource, "", transition.FTB, ftbFwdDurMs)
 
 	// Start audio BEFORE publishing engine (prevents position race).
 	audioHandler := s.audioHandlers.Load().audioTransition
@@ -3122,14 +2487,8 @@ func (s *Switcher) AbortTransition() {
 			hs.state = newState
 			hs.transEngine = nil
 		})
-		// Allow videoProcessingLoop to resume — without this, a manually
-		// aborted GPU transition leaves the flag set forever and every
-		// program-source frame is dropped (frozen program output).
-		s.gpuTransActive.Store(false)
 		s.seq.Add(1)
 	}
-	frameSync := s.frameSync
-	programAfterAbort := s.programSource
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
 
@@ -3137,14 +2496,6 @@ func (s *Switcher) AbortTransition() {
 		engine.Stop()
 	}
 	if wasActive {
-		// Restore the frame sync program source. StartTransition retargeted
-		// it to the incoming source (early-release phase lock + FRC quality);
-		// engine.Stop() never fires OnComplete, so handleTransitionComplete
-		// will not restore it for a manual abort. programSource is unchanged
-		// by the abort, so this re-points the sync at the on-air source.
-		if frameSync != nil {
-			frameSync.SetProgramSource(programAfterAbort)
-		}
 
 		s.log.Warn("transition aborted", "type", transType, "reason", "manual abort")
 
@@ -3213,9 +2564,6 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 		// StartTransition). Don't reassert it here — an operator who called
 		// SetPreview during the transition to queue the next cut would see
 		// their choice clobbered.
-		// Bump program epoch so in-flight frames from the transition
-		// engine or old program source are discarded.
-		s.programEpoch.Add(1)
 	}
 
 	// Record transition seam start — the gap from now until the first
@@ -3234,13 +2582,10 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 		}
 		hs.transEngine = nil
 	})
-	s.gpuTransActive.Store(false) // allow videoProcessingLoop to resume
 	s.transitionsCompleted.Add(1)
 	if s.promMetrics != nil && !aborted {
 		s.promMetrics.TransitionsTotal.WithLabelValues(transType).Inc()
 	}
-	frameSync := s.frameSync
-	programAfterTransition := s.programSource
 	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
@@ -3250,21 +2595,13 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 		h.runner.ClearWipeMap()
 	}
 
-	// Update frame sync program source after unlock.
-	// Completed: programSource was updated to destination.
-	// Aborted: programSource is unchanged (reverts to old program).
-	if frameSync != nil {
-		frameSync.SetProgramSource(programAfterTransition)
-	}
-
 	completeDur := time.Since(completeStart)
 	if aborted {
 		s.log.Warn("transition aborted", "type", transType, "reason", "engine aborted",
 			"complete_ms", completeDur.Milliseconds())
 	} else {
 		s.log.Info("transition completed", "type", transType,
-			"complete_ms", completeDur.Milliseconds(),
-			"idle_engine_drops", s.routeToIdleEngine.Load())
+			"complete_ms", completeDur.Milliseconds())
 	}
 
 	if audioHandler != nil {
@@ -3395,9 +2732,9 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	useRaw := false
 
 	// Always-decode mode: create per-source decoder that converts H.264 → YUV
-	// at ingest time. Decoded frames route through frameSync/delayBuffer via callback.
+	// at ingest time. Decoded frames enter through IngestRawVideo.
 	if s.sourceDecoderFactory != nil {
-		cb := s.makeDecoderCallback(key)
+		cb := s.IngestRawVideo
 		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool.Load(), &s.pipelineFormat, s.stmapRegistry, &s.gpuSourceActive)
 		if sd != nil {
 			sd.thumbnailCache = s.thumbnailCache
@@ -3406,12 +2743,11 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 		}
 	}
 
-	if s.frameSyncActive && s.frameSync != nil {
-		viewer.frameSync.Store(s.frameSync)
-		s.frameSync.AddSource(key)
-	} else {
-		viewer.delayBuffer.Store(s.delayBuffer)
-	}
+	// Decoded video goes to the frame synchronizer, audio and captions
+	// through the delay buffer.
+	viewer.frameSync.Store(s.frameSync)
+	viewer.delayBuffer.Store(s.delayBuffer)
+	s.frameSync.AddSource(key)
 	relay.AddViewer(viewer)
 	var decoderCount int
 	s.withSourcesMut(func(m map[string]*sourceState) {
@@ -3435,45 +2771,6 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 		s.log.Warn("high source decoder memory usage",
 			"active_decoders", decoderCount,
 			"estimated_yuv_mb", estimatedMB)
-	}
-}
-
-// makeDecoderCallback creates the callback function for a sourceDecoder.
-// Decoded YUV frames route through frameSync or delayBuffer, same as H.264
-// frames but using the raw video path.
-func (s *Switcher) makeDecoderCallback(key string) func(string, *ProcessingFrame) {
-	return func(sourceKey string, pf *ProcessingFrame) {
-		// Route through frame sync or delay buffer (same as SendVideo
-		// would for the legacy path, but for decoded YUV). Lock-free lookup.
-		sources := *s.sourcesAtomic.Load()
-		ss := sources[sourceKey]
-		if ss == nil || ss.viewer == nil {
-			pf.ReleaseYUV()
-			return
-		}
-		// Feed the GPU source manager once, same contract as
-		// Switcher.IngestRawVideo. This callback bypasses
-		// Switcher.IngestRawVideo to preserve its viewer-level
-		// frameSync / delayBuffer routing, but it is still the
-		// producer-side entry point and therefore owns the GPU feed.
-		// handleRawVideoFrame no longer re-feeds the GPU source manager
-		// (it would race with this write under concurrent ticks).
-		if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil && len(pf.Data) > 0 {
-			h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
-		} else {
-			pf = s.gradeSourceFrame(sourceKey, pf)
-			s.recordLiveTap(sourceKey, pf)
-		}
-		if fs := ss.viewer.frameSync.Load(); fs != nil {
-			fs.IngestRawVideo(sourceKey, pf)
-			return // frame sync owns the buffer (FRC or ring buffer handles release)
-		}
-		if db := ss.viewer.delayBuffer.Load(); db != nil {
-			db.handleRawVideoFrame(sourceKey, pf)
-			return // delay buffer handles release internally
-		}
-		s.handleRawVideoFrame(sourceKey, pf)
-		pf.ReleaseYUV() // direct path: frame consumed synchronously, safe to release
 	}
 }
 
@@ -3519,18 +2816,17 @@ func (s *Switcher) registerRawSource(key, label string, mxl bool) {
 	s.configMu.Lock()
 	s.withSourcesMut(func(m map[string]*sourceState) {
 		ss := &sourceState{
-			key:      key,
-			label:    label,
-			position: len(m) + 1,
-			isMXL:    mxl,
+			key:        key,
+			label:      label,
+			position:   len(m) + 1,
+			isMXL:      mxl,
+			mediaTimed: mxl,
 		}
 		ss.initAtomicMirrors()
 		m[key] = ss
 	})
 	s.health.registerSource(key)
-	if s.frameSyncActive && s.frameSync != nil {
-		s.frameSync.AddSource(key)
-	}
+	s.frameSync.AddSource(key)
 	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
@@ -3582,9 +2878,7 @@ func (s *Switcher) RegisterReplaySource(key string) {
 		m[key] = ss
 	})
 	s.health.registerSource(key)
-	if s.frameSyncActive && s.frameSync != nil {
-		s.frameSync.AddSource(key)
-	}
+	s.frameSync.AddSource(key)
 	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
@@ -3599,41 +2893,66 @@ func (s *Switcher) IngestReplayVideo(sourceKey string, pf *ProcessingFrame) {
 	s.IngestRawVideo(sourceKey, pf)
 }
 
-// IngestRawVideo accepts a raw YUV420p frame from an MXL or SRT source.
-// When frame sync is active, frames are buffered in the synchronizer's
-// per-source ring and released at steady tick rate. Otherwise, delegates
-// directly to handleRawVideoFrame for immediate processing.
-//
-// Ownership: IngestRawVideo always CONSUMES pf — callers must not release or
-// reuse pf after the call. The frame-sync path takes ownership of the buffer
-// (ring buffer / FRC releases it); the direct path releases it here after
-// handleRawVideoFrame returns. This mirrors makeDecoderCallback's direct path.
+// IngestRawVideo is the one entry point for decoded source video. It
+// consumes pf. An MXL or ST 2110 source's producer stamps its frames on the
+// engine timeline; any other source's frame is stamped with the TAI of its
+// arrival, so every frame in the synchronizer is on one timeline.
 func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
-	// Record health for ALL sources — in buffer-only mode (ref clock),
-	// handleRawVideoFrame doesn't fire, so this is the only place that
-	// updates health for non-program sources.
 	s.health.recordFrame(sourceKey, time.Now())
+	ss := (*s.sourcesAtomic.Load())[sourceKey]
+	if ss == nil {
+		pf.ReleaseYUV()
+		s.routeFiltered.Add(1)
+		return
+	}
+	if !ss.mediaTimed {
+		pf.PTS = clock.NowPTS()
+	}
+	pf.DTS = pf.PTS
 
-	// Feed the GPU source manager once, at ingest time, on the producer
-	// goroutine. Downstream consumers (handleRawVideoFrame,
-	// feedSourceSubsystems) no longer re-ingest into entry.current;
-	// doing so raced with this writer and let a sync-loop freeze-repeat
-	// frame overwrite a newer producer frame, corrupting content/PTS
-	// binding in RunFromCache. SRT sources still have a separate NVDEC
-	// zero-copy path via IngestGPUFrame.
+	// The GPU source manager is fed here, once per frame, and nowhere else.
 	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil && len(pf.Data) > 0 {
 		h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 	} else {
 		pf = s.gradeSourceFrame(sourceKey, pf)
 		s.recordLiveTap(sourceKey, pf)
 	}
+	s.noteRawVideo(ss, sourceKey, pf)
+	s.frameSync.IngestRawVideo(sourceKey, pf)
+}
 
-	if fs := s.frameSyncBundle.Load().sync; fs != nil {
-		fs.IngestRawVideo(sourceKey, pf)
-		return // frame sync owns the buffer (ring buffer / FRC handles release)
+// noteRawVideo does the per-frame work that belongs to arrival rather than
+// to a tick: source counters, encoder parameters from the program source's
+// decoder, and the CPU fill feeds of keyers and the DVE compositor, which
+// read every source, not only program. With a GPU source manager those are
+// fed from its cache instead.
+func (s *Switcher) noteRawVideo(ss *sourceState, sourceKey string, pf *ProcessingFrame) {
+	ss.rawFrameCount.Add(1)
+	if ss.viewer != nil {
+		if dec := ss.viewer.srcDecoder.Load(); dec != nil && sourceKey == s.hotState.Load().programSource {
+			avgSize, avgFPS := dec.Stats()
+			if pipeCodecs := s.pipeCodecsAtomic.Load(); pipeCodecs != nil {
+				pipeCodecs.updateSourceStats(avgSize, avgFPS)
+			}
+		}
 	}
-	s.handleRawVideoFrame(sourceKey, pf)
-	pf.ReleaseYUV() // direct path: frame consumed synchronously, safe to release
+	ss.lastGroupID.Store(pf.GroupID)
+	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil {
+		return
+	}
+	gh := s.graphicsHandlers.Load()
+	if pf.Format == ColorYUV422_10bit {
+		if gh.keyBridge != nil {
+			gh.keyBridge.IngestFillYUV10(sourceKey, pf.Data, pf.Width, pf.Height)
+		}
+		return
+	}
+	if gh.keyBridge != nil {
+		gh.keyBridge.IngestFillYUV(sourceKey, pf.Data, pf.Width, pf.Height)
+	}
+	if gh.dveCompositor != nil && gh.dveCompositor.NeedsSource(sourceKey) {
+		gh.dveCompositor.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+	}
 }
 
 // UnregisterSource removes a source from the switcher and detaches its
@@ -3670,7 +2989,6 @@ func (s *Switcher) UnregisterSource(key string) {
 	s.liveTaps.entries.Delete(key)
 	if s.programSource == key {
 		s.programSource = ""
-		s.programEpoch.Add(1)
 	}
 	if s.previewSource == key {
 		s.previewSource = ""
@@ -3725,19 +3043,11 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 			abortAudioToken = s.audioTransToken
 			s.transEngine = nil
 			s.transitionState(StateIdle)
-			// Allow videoProcessingLoop to resume — engine.Stop() never
-			// fires OnComplete, so handleTransitionComplete will not clear
-			// the GPU-transition flag for this abort path.
-			s.gpuTransActive.Store(false)
 		}
 		oldProgram = s.programSource
 		s.programSource = sourceKey
-		if s.frameSync != nil {
-			s.frameSync.SetProgramSource(sourceKey)
-		}
 		// Bump program epoch so in-flight frames from the old program
 		// source are discarded in videoProcessingLoop.
-		s.programEpoch.Add(1)
 		// All sources use the raw pipeline (always-decode or MXL) —
 		// no IDR gating needed. Frames flow immediately after cut.
 		s.cutsTotal.Add(1)
@@ -3889,6 +3199,7 @@ func (s *Switcher) SetSourceDelay(sourceKey string, delayMs int) error {
 	}
 
 	s.delayBuffer.SetDelay(sourceKey, time.Duration(delayMs)*time.Millisecond)
+	s.frameSync.SetSourceDelay(sourceKey, delayMs, s.pipelineFormat.Load().FrameDuration())
 
 	s.log.Info("source delay set", "source_key", sourceKey, "delay_ms", delayMs)
 
@@ -3997,31 +3308,25 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		"deadline_violations":   s.deadlineViolations.Load(),
 		"frame_budget_ms":       float64(s.frameBudgetNs.Load()) / 1e6,
 		"video_pipeline": map[string]any{
-			"frames_processed":       s.videoProcCount.Load(),
-			"frames_broadcast":       s.videoBroadcastCount.Load(),
-			"stall_fill_frames":      s.stallFillFrames.Load(),
-			"stall_transition_feeds": s.stallTransitionFeeds.Load(),
-			"frames_dropped":         s.videoProcDropped.Load(),
-			"epoch_stale":            s.programEpochStale.Load(),
-			"encode_nil":             s.pipeEncodeNil.Load(),
-			"encode_drop":            s.pipeEncodeDrop.Load(),
-			"trans_output":           s.transOutputCount.Load(),
-			"last_proc_time_ms":      float64(s.videoProcLastNano.Load()) / 1e6,
-			"max_proc_time_ms":       float64(s.videoProcMaxNano.Load()) / 1e6,
-			"max_broadcast_gap_ms":   float64(s.maxBroadcastIntervalNano.Load()) / 1e6,
-			"route_to_engine":        s.routeToEngine.Load(),
-			"route_to_idle_engine":   s.routeToIdleEngine.Load(),
-			"route_to_pipeline":      s.routeToPipeline.Load(),
-			"route_filtered":         s.routeFiltered.Load(),
-			"queue_len":              len(s.videoProcCh),
-			"output_fps":             s.outputFPSLastSecond.Load(),
-			"trans_seam_last_ms":     float64(s.transSeamLastNano.Load()) / 1e6,
-			"trans_seam_max_ms":      float64(s.transSeamMaxNano.Load()) / 1e6,
-			"trans_seam_count":       s.transSeamCount.Load(),
-			"gpu_frames_processed":   s.gpuFramesProcessed.Load(),
-			"gpu_cache_misses":       s.gpuCacheMisses.Load(),
-			"gpu_transition_frames":  s.gpuTransitionFrames.Load(),
-			"gpu_fallback_frames":    s.gpuFallbackFrames.Load(),
+			"frames_processed":      s.videoProcCount.Load(),
+			"frames_broadcast":      s.videoBroadcastCount.Load(),
+			"stall_fill_frames":     s.programRepeats.Load(),
+			"frames_dropped":        s.overloadDrops.Load(),
+			"encode_nil":            s.pipeEncodeNil.Load(),
+			"encode_drop":           s.pipeEncodeDrop.Load(),
+			"trans_output":          s.transOutputCount.Load(),
+			"last_proc_time_ms":     float64(s.videoProcLastNano.Load()) / 1e6,
+			"max_proc_time_ms":      float64(s.videoProcMaxNano.Load()) / 1e6,
+			"max_broadcast_gap_ms":  float64(s.maxBroadcastIntervalNano.Load()) / 1e6,
+			"route_filtered":        s.routeFiltered.Load(),
+			"output_fps":            s.outputFPSLastSecond.Load(),
+			"trans_seam_last_ms":    float64(s.transSeamLastNano.Load()) / 1e6,
+			"trans_seam_max_ms":     float64(s.transSeamMaxNano.Load()) / 1e6,
+			"trans_seam_count":      s.transSeamCount.Load(),
+			"gpu_frames_processed":  s.gpuFramesProcessed.Load(),
+			"gpu_cache_misses":      s.gpuCacheMisses.Load(),
+			"gpu_transition_frames": s.gpuTransitionFrames.Load(),
+			"gpu_fallback_frames":   s.gpuFallbackFrames.Load(),
 		},
 		"codec": map[string]any{
 			"encoder":  s.codecEncoder,
@@ -4436,67 +3741,14 @@ func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 	}
 }
 
-// handleVideoFrame implements frameHandler. It is called by sourceViewers
-// when a video frame arrives from a source (legacy H.264 path). In
-// always-decode mode, most sources use handleRawVideoFrame instead.
-// This handler is still used for virtual sources (replay) which produce
-// pre-encoded H.264 output.
+// handleVideoFrame takes a compressed frame from a source with no decoder.
+// It only keeps the source's frame statistics: program video is made from
+// decoded frames by the sync loop alone.
 func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.health.recordFrame(sourceKey, time.Now())
-
-	// Lock-free hot-path snapshot. hotState + sources two-load race is
-	// benign; audioHandlers is independent.
-	hs := s.hotState.Load()
-	sources := *s.sourcesAtomic.Load()
-	ah := s.audioHandlers.Load()
-
-	ss := sources[sourceKey]
-	isProgramSource := sourceKey == hs.programSource
-	engine := hs.transEngine
-	inTrans := hs.state.isInTransition()
-	isFTB := hs.state.isFTBActive()
-	audioHandler := ah.audioTransition
-
-	// Update per-source frame statistics (single-writer per source viewer).
-	if ss != nil {
+	if ss := (*s.sourcesAtomic.Load())[sourceKey]; ss != nil {
 		s.updateFrameStats(ss, frame)
 	}
-
-	// Check if transition is active — route both sources to engine.
-	// Non-virtual sources should have per-source decoders and use
-	// handleRawVideoFrame, but the engine can accept H.264 from
-	// virtual sources via IngestFrame.
-	if inTrans && engine != nil {
-		if engine.State() != transition.StateActive {
-			s.routeToIdleEngine.Add(1)
-			return
-		}
-		s.routeToEngine.Add(1)
-		// WireData is AVC1 (length-prefixed); decoder expects Annex B.
-		annexB := codec.AVC1ToAnnexB(frame.WireData)
-		if frame.IsKeyframe {
-			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
-		}
-		engine.IngestFrame(sourceKey, annexB, frame.PTS, frame.IsKeyframe)
-
-		// Sync audio crossfade position with video on every frame.
-		if audioHandler != nil {
-			audioHandler.OnTransitionPosition(engine.Position())
-		}
-		return
-	}
-
-	// Normal frame routing.
-	if ss == nil || !isProgramSource || isFTB {
-		s.routeFiltered.Add(1)
-		return
-	}
-
-	s.routeToPipeline.Add(1)
-	// Virtual sources (replay) and fallback non-raw sources pass through
-	// directly. In always-decode mode, non-virtual sources normally use
-	// handleRawVideoFrame, but this path handles legacy/test scenarios.
-	s.broadcastToProgram(frame)
 }
 
 // handleAudioFrame implements frameHandler. It is called by sourceViewers
@@ -4511,27 +3763,10 @@ func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 	hs := s.hotState.Load()
 	sources := *s.sourcesAtomic.Load()
 	ah := s.audioHandlers.Load()
-	fsb := s.frameSyncBundle.Load()
 
 	handler := ah.audioHandler
 	_, ok := sources[sourceKey]
 	isProgram := ok && hs.programSource == sourceKey
-	fs := fsb.sync
-
-	// Apply PTS correction from FrameSynchronizer. Audio bypasses the frame
-	// sync entirely (to avoid bursty tick-quantized delivery), but video PTS
-	// is rewritten by the frame sync (forward-clamped during freezes). This
-	// creates A/V desync — audio PTS uses raw source PTS while video uses
-	// adjusted PTS. The correction delta aligns audio PTS with video PTS.
-	if fs != nil {
-		if delta := fs.GetSourcePTSCorrection(sourceKey); delta > 0 {
-			// Copy the frame before mutating PTS — the relay may fan-out
-			// the same pointer to multiple viewers.
-			adjusted := *frame
-			adjusted.PTS = (adjusted.PTS + delta) & ptsMask33
-			frame = &adjusted
-		}
-	}
 
 	// Route to audio handler (mixer) if set — ALL sources
 	if handler != nil {
@@ -4544,221 +3779,6 @@ func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 		return
 	}
 	s.programRelay.BroadcastAudio(frame)
-}
-
-// handleRawVideoFrame implements frameHandler for decoded YUV frames
-// from the per-source sourceDecoder pipeline. This is the always-decode
-// path — frames arrive as raw YUV420 and flow directly through the
-// processing pipeline without H.264 decode/IDR gating.
-//
-// Routing logic mirrors IngestRawVideo:
-//  1. Health tracking
-//  2. During transition → engine.IngestRawFrame
-//  3. Program source → broadcastProcessedFromPF (key→compositor→encode→relay)
-//  4. Non-program → filtered (dropped)
-func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
-	s.health.recordFrame(sourceKey, time.Now())
-
-	// Lock-free hot-path snapshot. The hotState / sources two-load race is
-	// benign — either snapshot routes the frame correctly (see design
-	// doc §invariants).
-	hs := s.hotState.Load()
-	sources := *s.sourcesAtomic.Load()
-	gh := s.graphicsHandlers.Load()
-	ah := s.audioHandlers.Load()
-
-	ss, ok := sources[sourceKey]
-	if ok && ss != nil {
-		ss.rawFrameCount.Add(1)
-	}
-	programSource := hs.programSource
-	fTBActive := hs.state.isFTBActive()
-	inTrans := hs.state.isInTransition()
-	engine := hs.transEngine
-	audioHandler := ah.audioTransition
-	keyBridge := gh.keyBridge
-	dveComp := gh.dveCompositor
-
-	if !ok {
-		s.routeFiltered.Add(1)
-		return
-	}
-
-	// Update source stats from the sourceDecoder for encoder parameter derivation.
-	// Guard against nil viewer — MXL and replay sources have no viewer.
-	if ss != nil {
-		if ss.viewer != nil {
-			if dec := ss.viewer.srcDecoder.Load(); dec != nil {
-				avgSize, avgFPS := dec.Stats()
-				if sourceKey == programSource {
-					if pipeCodecs := s.pipeCodecsAtomic.Load(); pipeCodecs != nil {
-						pipeCodecs.updateSourceStats(avgSize, avgFPS)
-					}
-				}
-			}
-		}
-		ss.lastGroupID.Store(pf.GroupID)
-	}
-
-	// GPU source manager is fed at ingest time by IngestRawVideo (or by
-	// the source decoder callback). Re-ingesting here would race with
-	// that writer — the producer could push a newer frame to
-	// entry.current while this handler, running on the frame-sync tick
-	// goroutine, overwrites it with the popped (possibly freeze-repeat)
-	// frame. The next RunFromCache would then read stale content under a
-	// newer PTS, which manifested as visible frame reorder on program
-	// output (e.g. colorbars sprite going backwards).
-	//
-	// CPU fill paths (keyBridge, dveCompositor) are still fed here for
-	// configurations without a GPU source manager — those subsystems have
-	// no other feed point in the async path.
-	if h := s.gpuSourceMgr.Load(); h == nil || h.mgr == nil {
-		if pf.Format == ColorYUV422_10bit {
-			if keyBridge != nil {
-				keyBridge.IngestFillYUV10(sourceKey, pf.Data, pf.Width, pf.Height)
-			}
-		} else {
-			if keyBridge != nil {
-				keyBridge.IngestFillYUV(sourceKey, pf.Data, pf.Width, pf.Height)
-			}
-			if dveComp != nil && dveComp.NeedsSource(sourceKey) {
-				dveComp.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
-			}
-		}
-	}
-
-	// During transition (including FTB): route to engine for blending.
-	// This must come BEFORE the FTB filter — FTB transitions need frames
-	// from the program source to produce the fade-to-black blend.
-	if inTrans && engine != nil {
-		if engine.State() != transition.StateActive {
-			s.routeToIdleEngine.Add(1)
-			return
-		}
-		s.routeToEngine.Add(1)
-
-		// GPU transition path: blend both sources on GPU, bypassing CPU blend.
-		// The engine still tracks position and handles auto-complete (SkipBlend
-		// mode), but the actual pixel blend happens on GPU.
-		// Use the original transition type string (not engine type, which is
-		// always "mix" for DVE transitions) so the GPU pipeline can dispatch
-		// DVE-specific compositing. Read from the same hotState snapshot we
-		// took at handler entry to avoid a lockless race against StartTransition.
-		tt := transition.Type(hs.transTypeOrig)
-		if tt == "" {
-			tt = engine.TransitionType()
-		}
-		if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
-			// Feed the engine for state tracking (SkipBlend skips CPU blend).
-			engine.IngestRawFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
-			pos := engine.Position()
-
-			if audioHandler != nil {
-				audioHandler.OnTransitionPosition(pos)
-			}
-
-			// Determine if this frame should trigger GPU blend output.
-			// Same trigger logic as CPU blendAndOutput: TO-source triggers
-			// for most types, FROM-source triggers for FTB/FTBReverse.
-			isTrigger := false
-			if (tt == transition.FTB || tt == transition.FTBReverse) && sourceKey == engine.FromSource() {
-				isTrigger = true
-			} else if sourceKey == engine.ToSource() {
-				isTrigger = true
-			}
-
-			if isTrigger {
-				fromKey := engine.FromSource()
-				toKey := engine.ToSource()
-				wipeDir := s.transitionWipeDirToGPU(engine.WipeDirection())
-				pts := s.wallClockVideoPTS(pf.PTS)
-
-				// Clamp position to 1.0 for the final blend frame.
-				blendPos := pos
-				if blendPos > 1.0 {
-					blendPos = 1.0
-				}
-
-				// Extract stinger frame data if this is a stinger transition.
-				var stinger *GPUStingerFrame
-				if tt == transition.Stinger {
-					yuv, alpha, sw, sh, cutPt := engine.StingerFrameAt(blendPos)
-					if yuv != nil && alpha != nil {
-						stinger = &GPUStingerFrame{
-							YUV:      yuv,
-							Alpha:    alpha,
-							Width:    sw,
-							Height:   sh,
-							CutPoint: cutPt,
-						}
-					}
-				}
-
-				if err := h.runner.RunTransition(fromKey, toKey, string(tt), wipeDir, blendPos, pts, stinger); err != nil {
-					s.log.Debug("GPU transition blend failed, no fallback",
-						"err", err, "from", fromKey, "to", toKey, "type", tt)
-				} else {
-					s.gpuTransitionFrames.Add(1)
-				}
-
-				// Complete transition AFTER the GPU blend frame is produced.
-				// This ensures the last blended frame reaches the encoder
-				// before the switcher changes programSource and epoch.
-				if pos >= 1.0 {
-					engine.ForceComplete()
-				}
-			}
-			return
-		}
-
-		// CPU transition path (no GPU available).
-		engine.IngestRawFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
-		if audioHandler != nil {
-			audioHandler.OnTransitionPosition(engine.Position())
-		}
-		return
-	}
-
-	// Normal: only program source passes through. FTB hold (StateFTB)
-	// filters all frames — screen stays black until FTB is toggled off.
-	if sourceKey != programSource || fTBActive {
-		s.routeFiltered.Add(1)
-		return
-	}
-
-	s.routeToPipeline.Add(1)
-
-	// Seed BOTH audio and video PTS epochs from first program video frame.
-	// Both must seed at the same moment with the same PTS to stay aligned.
-	// firstVideoPTSSeeded + the video epoch fields are guarded by videoPTSMu
-	// so this seeding (which runs on a frame-delivery goroutine) is ordered
-	// with the per-frame wallClockVideoPTS read/update on the processing loop.
-	// wallClockVideoEnabled is read from the hotState mirror (its published
-	// snapshot under configMu).
-	s.videoPTSMu.Lock()
-	firstSeed := !s.firstVideoPTSSeeded
-	if firstSeed {
-		s.firstVideoPTSSeeded = true
-		now := time.Now()
-		// Seed video epoch directly (same moment as audio).
-		if s.hotState.Load().wallClockVideoEnabled && !s.videoPTSInited {
-			s.videoPTSStart = pf.PTS
-			s.videoPTSEpoch = now
-			s.videoPTS = pf.PTS
-			s.videoPTSInited = true
-		}
-	}
-	s.videoPTSMu.Unlock()
-	// Seed audio epoch via callback, outside videoPTSMu (the callback reaches
-	// into the audio mixer; holding the video PTS lock across it is unsafe).
-	if firstSeed {
-		if cb := s.hotState.Load().onFirstVideoPTS; cb != nil {
-			cb(pf.PTS)
-		}
-	}
-
-	// Enqueue as yuvFrame — the processing loop handles key→compositor→encode→broadcast.
-	s.broadcastProcessedFromPF(sourceKey, pf)
 }
 
 // handleCaptionFrame implements frameHandler. Only the current program

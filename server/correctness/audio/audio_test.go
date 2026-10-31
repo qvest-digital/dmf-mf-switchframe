@@ -537,8 +537,7 @@ func TestMasterGainStaging(t *testing.T) {
 
 	// Test the limiter at unity (no limiting for below-threshold signals)
 	// and the EQ at flat (bypass) as proxies for the master chain components.
-	// Testing the full mixer master chain requires the clock-driven ticker,
-	// so we test the individual components that make up the chain.
+	// The individual components that make up the chain are tested here.
 
 	t.Run("unity_gain", func(t *testing.T) {
 		t.Parallel()

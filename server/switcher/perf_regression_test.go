@@ -131,52 +131,6 @@ func BenchmarkDecodeLoop_OldPath_PoolMiss(b *testing.B) {
 	}
 }
 
-// BenchmarkFRCIngest_WithSceneChange measures FRC ingest cost with
-// scene change detection enabled (the old behavior for all sources).
-func BenchmarkFRCIngest_WithSceneChange(b *testing.B) {
-	frc := newFRCSource(FRCMCFI, 3000)
-	yuvSize := ColorYUV420_8bit.FrameSize(1920, 1080)
-	// Pre-allocate a single buffer and reuse — we're benchmarking FRC ingest
-	// cost, not allocation cost (that's covered by FramePool benchmarks).
-	yuv := make([]byte, yuvSize)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		pf := &ProcessingFrame{
-			Data:   yuv,
-			Width:  1920,
-			Height: 1080,
-			PTS:    int64(i * 3000),
-		}
-		pf.SetRefs(2)
-		frc.ingest(pf)
-	}
-	frc.reset()
-}
-
-// BenchmarkFRCIngest_Nearest measures FRC ingest cost at FRCNearest
-// (skips scene change detection — our optimization).
-func BenchmarkFRCIngest_Nearest(b *testing.B) {
-	frc := newFRCSource(FRCNearest, 3000)
-	yuvSize := ColorYUV420_8bit.FrameSize(1920, 1080)
-	yuv := make([]byte, yuvSize)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		pf := &ProcessingFrame{
-			Data:   yuv,
-			Width:  1920,
-			Height: 1080,
-			PTS:    int64(i * 3000),
-		}
-		pf.SetRefs(2)
-		frc.ingest(pf)
-	}
-	frc.reset()
-}
-
 // BenchmarkSRTCallback_OldSharedBuffer simulates the old SRT OnRawVideo path:
 // single make() shared between pipeline and relay channels.
 func BenchmarkSRTCallback_OldSharedBuffer(b *testing.B) {

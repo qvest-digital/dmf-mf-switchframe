@@ -11,15 +11,13 @@ import (
 )
 
 // TestMixer_CloseCompletesWithinTimeout verifies that Mixer.Close() completes
-// within a reasonable time and does not deadlock. The mixer uses WaitWithTimeout
-// internally (5s for the ticker goroutine), so we allow 6s for the full close.
+// within a reasonable time and does not deadlock.
 func TestMixer_CloseCompletesWithinTimeout(t *testing.T) {
 	t.Parallel()
 
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(_ *media.AudioFrame) {},
 	})
 
 	// Add a channel to exercise the codec cleanup path.
@@ -40,35 +38,6 @@ func TestMixer_CloseCompletesWithinTimeout(t *testing.T) {
 	}
 }
 
-// TestMixer_CloseClockDriven verifies that a clock-driven mixer (no internal
-// ticker goroutine) closes cleanly without blocking.
-func TestMixer_CloseClockDriven(t *testing.T) {
-	t.Parallel()
-
-	m := NewMixer(MixerConfig{
-		SampleRate:  48000,
-		Channels:    2,
-		Output:      func(_ *media.AudioFrame) {},
-		ClockDriven: true,
-	})
-
-	m.AddChannel("cam1")
-	m.SetActive("cam1", true)
-
-	done := make(chan struct{})
-	go func() {
-		_ = m.Close()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// OK
-	case <-time.After(2 * time.Second):
-		t.Fatal("Clock-driven Mixer.Close() should complete almost instantly")
-	}
-}
-
 // TestMixer_ConcurrentClose verifies that calling Close() from multiple
 // goroutines simultaneously doesn't panic or race (sync.Once protects it).
 func TestMixer_ConcurrentClose(t *testing.T) {
@@ -77,7 +46,6 @@ func TestMixer_ConcurrentClose(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(_ *media.AudioFrame) {},
 	})
 	m.AddChannel("cam1")
 
@@ -115,7 +83,6 @@ func TestMixer_CloseDoesNotHoldMuDuringCgo(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(_ *media.AudioFrame) {},
 	})
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
@@ -147,29 +114,17 @@ func TestMixer_CloseDoesNotHoldMuDuringCgo(t *testing.T) {
 	})
 }
 
-// TestMixer_TickAfterCloseDoesNotResurrectCodecs verifies that a straggler
-// tick() running after Close() has freed the codecs does not recreate or use
-// them. This models the pathological shutdown path where the ticker goroutine
-// outlives the shutdown wait: Close() sets m.closed before freeing, so the late
-// tick() must observe the closed flag, produce no output, and never invoke the
-// encoder/decoder factory again.
-func TestMixer_TickAfterCloseDoesNotResurrectCodecs(t *testing.T) {
+// TestMixer_IngestAfterCloseDoesNotResurrectDecoder verifies that an ingest
+// running after Close() has freed the decoders does not recreate one: Close()
+// sets m.closed before freeing, and initChannelDecoder must observe it.
+func TestMixer_IngestAfterCloseDoesNotResurrectDecoder(t *testing.T) {
 	t.Parallel()
 
-	var encodersCreated atomic.Int32
 	var decodersCreated atomic.Int32
 
-	// Use a clock-driven mixer so no background ticker races with our manual
-	// tick() call — we drive tick() ourselves to model the straggler.
 	m := NewMixer(MixerConfig{
-		SampleRate:  48000,
-		Channels:    2,
-		ClockDriven: true,
-		Output:      func(_ *media.AudioFrame) {},
-		EncoderFactory: func(_, _ int) (Encoder, error) {
-			encodersCreated.Add(1)
-			return &mockEncoder{data: []byte{0xFF}}, nil
-		},
+		SampleRate: 48000,
+		Channels:   2,
 		DecoderFactory: func(_, _ int) (Decoder, error) {
 			decodersCreated.Add(1)
 			return &mockDecoder{samples: make([]float32, 2048)}, nil
@@ -178,19 +133,9 @@ func TestMixer_TickAfterCloseDoesNotResurrectCodecs(t *testing.T) {
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
 
-	// Prime the encoder via one normal tick so the factory has run once.
-	require.NotNil(t, m.tick(), "tick before close should produce output")
-	require.Equal(t, int32(1), encodersCreated.Load(), "encoder created once before close")
-
 	require.NoError(t, m.Close())
 
-	// A straggler tick() after Close must not produce output and must not
-	// recreate the encoder that Close just freed.
-	require.Nil(t, m.tick(), "tick after close must produce no output")
-	require.Equal(t, int32(1), encodersCreated.Load(),
-		"closed mixer must not recreate the encoder")
-
-	// Ingest after close must not recreate the decoder either.
+	// Ingest after close must not create the decoder.
 	m.IngestFrame("cam1", &media.AudioFrame{
 		PTS: 2000, Data: []byte{0xFF}, SampleRate: 48000, Channels: 2,
 	})

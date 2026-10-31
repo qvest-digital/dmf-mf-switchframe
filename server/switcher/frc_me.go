@@ -7,6 +7,18 @@ import (
 	"github.com/zsiec/switchframe/server/switcher/frcasm"
 )
 
+// frcMEBlockSize is the block size for motion estimation.
+const frcMEBlockSize = 16
+
+// frcMESearchRange is the search range for diamond search motion estimation.
+const frcMESearchRange = 32
+
+// frcNearThresholdLow is the alpha below which MCFI returns the earlier frame.
+const frcNearThresholdLow = 0.05
+
+// frcNearThresholdHigh is the alpha above which MCFI returns the later frame.
+const frcNearThresholdHigh = 0.95
+
 // Compile-time assertion: diamondSearch's computeSAD closure calls
 // frcasm.SadBlock16x16, which is hardcoded to 16x16. This must match.
 var _ [frcMEBlockSize - 16]struct{} // compile error if frcMEBlockSize < 16

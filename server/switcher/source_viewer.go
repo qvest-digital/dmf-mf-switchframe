@@ -14,7 +14,6 @@ import (
 // originating source key attached.
 type frameHandler interface {
 	handleVideoFrame(sourceKey string, frame *media.VideoFrame)
-	handleRawVideoFrame(sourceKey string, pf *ProcessingFrame)
 	handleAudioFrame(sourceKey string, frame *media.AudioFrame)
 	handleCaptionFrame(sourceKey string, frame *ccx.CaptionFrame)
 }
@@ -64,11 +63,10 @@ func (sv *sourceViewer) ID() string {
 	return sv.id
 }
 
-// SendVideo forwards a video frame to the handler tagged with the source key.
-// When a sourceDecoder is set (always-decode mode), the H.264 frame is sent
-// to the decoder goroutine; decoded YUV frames flow through frameSync/delay
-// buffer/handler via the sourceDecoder callback. Otherwise, the legacy H.264
-// path is used: frame sync → delay buffer → handler.
+// SendVideo forwards a video frame tagged with the source key. With a
+// sourceDecoder (always-decode mode) the frame goes to the decoder, whose
+// output enters Switcher.IngestRawVideo; otherwise only its statistics are
+// kept.
 func (sv *sourceViewer) SendVideo(frame *media.VideoFrame) {
 	arrivalNano := time.Now().UnixNano()
 	sv.videoSent.Add(1)
@@ -77,11 +75,7 @@ func (sv *sourceViewer) SendVideo(frame *media.VideoFrame) {
 		dec.Send(frame, arrivalNano)
 		return
 	}
-	// Legacy H.264 path
-	if fs := sv.frameSync.Load(); fs != nil {
-		fs.IngestVideo(sv.sourceKey, frame)
-		return
-	}
+	// No decoder: frame statistics only.
 	if db := sv.delayBuffer.Load(); db != nil {
 		db.handleVideoFrame(sv.sourceKey, frame)
 		return

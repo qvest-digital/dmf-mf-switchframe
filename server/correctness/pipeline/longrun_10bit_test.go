@@ -56,9 +56,8 @@ func TestPipeline10bit_LongRunNoCrash(t *testing.T) {
 			pf := make10bitFrame(w, ht, yVal, 512, 512, pts, (fed+i)%30 == 0)
 			h.sw.IngestRawVideo("long10", pf)
 			pts += ptsDelta
+			time.Sleep(h.sw.PipelineFormat().FrameDuration())
 		}
-
-		time.Sleep(20 * time.Millisecond)
 	}
 
 	h.waitForPipeline(500 * time.Millisecond)
@@ -108,8 +107,8 @@ func TestPipeline10bit_LongRunMemoryStability(t *testing.T) {
 			pf := make10bitFrame(w, ht, yVal, 512, 512, pts, (fed+i)%30 == 0)
 			h.sw.IngestRawVideo("mem10", pf)
 			pts += ptsDelta
+			time.Sleep(h.sw.PipelineFormat().FrameDuration())
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
 
 	h.waitForPipeline(500 * time.Millisecond)
@@ -188,7 +187,7 @@ func TestPipeline10bit_PeriodicCuts(t *testing.T) {
 			h.sw.IngestRawVideo(activeSource, pf)
 			pts += ptsDelta
 			if i < framesPerSeg-1 {
-				time.Sleep(3 * time.Millisecond)
+				time.Sleep(h.sw.PipelineFormat().FrameDuration())
 			}
 		}
 

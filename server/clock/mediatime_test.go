@@ -156,3 +156,25 @@ func TestRealtimeTickDropsOnlyPassedGrains(t *testing.T) {
 		t.Fatal("no tick")
 	}
 }
+
+// An anchored source keeps its own timestamp distances, video and audio
+// alike, and is placed again only after a jump.
+func TestAnchorKeepsSourceDistances(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	var a Anchor
+	v0 := a.PTS(1_000_000)
+	now += 10_000_000 // audio arrives 10 ms later than its timestamp says
+	a0 := a.PTS(1_000_000 - 1800)
+	if v0-a0 != 1800 {
+		t.Fatalf("audio %d ticks before video, want the source's 1800", v0-a0)
+	}
+	now += 3_000_000_000
+	if j := a.PTS(1_000_000 + 270_000); j-v0 != 270_000 || a.Moves() != 0 {
+		t.Fatalf("PTS step %d after 3 s, want 270000 without a move", j-v0)
+	}
+	now += 1_000_000_000
+	if j := a.PTS(5_000_000_000); a.Moves() != 1 || j != PTS(now) {
+		t.Fatalf("a jump far from the clock was not placed at arrival (PTS %d, moves %d)", j, a.Moves())
+	}
+}

@@ -15,6 +15,8 @@ type Tick struct {
 	ReadPTS       int64         // newest input media time this tick may show
 	AudioStart    uint64        // first sample index of this period: I(Ra, T(Rv, Index))
 	AudioSamples  int           // I(Ra, T(Rv, Index+1)) - AudioStart
+	AudioPTS      int64         // 90 kHz PTS of sample AudioStart
+	ReadSample    uint64        // sample index of the read point: I(Ra, T(Rv, Index-ReaderDelayGrains))
 	FrameDuration time.Duration // nominal frame duration (for overload detection)
 }
 
@@ -63,6 +65,7 @@ func NewReferenceClock(fpsNum, fpsDen, sampleRate int, basePTS int64, realtime b
 func (c *ReferenceClock) tickAt(n uint64) Tick {
 	ts, next, read := c.timestamps(n)
 	start := TimestampToIndex(c.sampleRate, ts)
+	readSample := TimestampToIndex(c.sampleRate, read)
 	return Tick{
 		Number:        c.tickCount.Add(1) - 1,
 		Index:         n,
@@ -70,6 +73,8 @@ func (c *ReferenceClock) tickAt(n uint64) Tick {
 		ReadPTS:       c.pts(read),
 		AudioStart:    start,
 		AudioSamples:  int(TimestampToIndex(c.sampleRate, next) - start),
+		AudioPTS:      c.pts(IndexToTimestamp(c.sampleRate, start)),
+		ReadSample:    readSample,
 		FrameDuration: frameDuration(int(c.rate.Num), int(c.rate.Den)),
 	}
 }
@@ -152,6 +157,11 @@ func (c *ReferenceClock) catchUp(n uint64, now int64) uint64 {
 	}
 	c.droppedTicks.Add(int64(cur - n))
 	return cur
+}
+
+// Realtime reports whether the clock follows TAI.
+func (c *ReferenceClock) Realtime() bool {
+	return c.realtime
 }
 
 // TickCount returns ticks produced so far.

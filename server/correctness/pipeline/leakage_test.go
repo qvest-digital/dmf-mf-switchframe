@@ -88,7 +88,7 @@ func TestNoFrameLeakageAfterCut(t *testing.T) {
 	require.Greater(t, len(decodedAll2), prevDecodedLen,
 		"phase 2: should have more frames after feeding leakB")
 
-	decodedP2 := decodedAll2[prevDecodedLen:]
+	decodedP2 := h.sinceCut(decodedAll2)
 	t.Logf("Phase 2 (leakB, Y=230): decoded %d new frames", len(decodedP2))
 
 	// Log flush frames.
@@ -133,7 +133,7 @@ func TestNoFrameLeakageAfterCut(t *testing.T) {
 	require.Greater(t, len(decodedAll3), prevDecodedLen,
 		"phase 3: should have more frames after cutting back to leakA")
 
-	decodedP3 := decodedAll3[prevDecodedLen:]
+	decodedP3 := h.sinceCut(decodedAll3)
 	t.Logf("Phase 3 (leakA again, Y=20): decoded %d new frames", len(decodedP3))
 
 	actualFlush3 := flushFrames
@@ -167,7 +167,7 @@ func TestNoFrameLeakageAfterCut(t *testing.T) {
 	require.Greater(t, len(decodedAll4), prevDecodedLen,
 		"phase 4: should have more frames after cutting to leakB again")
 
-	decodedP4 := decodedAll4[prevDecodedLen:]
+	decodedP4 := h.sinceCut(decodedAll4)
 	t.Logf("Phase 4 (leakB again, Y=230): decoded %d new frames", len(decodedP4))
 
 	actualFlush4 := flushFrames
@@ -247,7 +247,7 @@ func TestNoFrameLeakageDuringTransition(t *testing.T) {
 			IsKeyframe: i == 0,
 		}
 		h.sw.IngestRawVideo("trA", pf)
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(h.sw.PipelineFormat().FrameDuration())
 	}
 	h.waitForPipeline(300 * time.Millisecond)
 
@@ -359,7 +359,6 @@ func TestNoFrameLeakageUnderPoolPressure(t *testing.T) {
 	const (
 		numCuts       = 20
 		framesPerCut  = 6
-		framePaceMs   = 2 // very fast — creates pool pressure
 		thresholdLow  = 80.0
 		thresholdHigh = 170.0
 		flushPerCut   = 3 // frames allowed for pipeline flush after each cut
@@ -408,7 +407,8 @@ func TestNoFrameLeakageUnderPoolPressure(t *testing.T) {
 			}
 			h.sw.IngestRawVideo(inactiveSource, pfInactive)
 
-			time.Sleep(time.Duration(framePaceMs) * time.Millisecond)
+			// One program frame period: frames fed faster are dropped unseen.
+			time.Sleep(h.sw.PipelineFormat().FrameDuration())
 		}
 	}
 	wg.Wait()
@@ -541,7 +541,7 @@ func TestNoFrameLeakageWithGraphicsOverlay(t *testing.T) {
 	require.Greater(t, len(decodedAll2), prevDecodedLen,
 		"phase 2: should have more frames after cutting to gfxB")
 
-	decodedP2 := decodedAll2[prevDecodedLen:]
+	decodedP2 := h.sinceCut(decodedAll2)
 	t.Logf("Phase 2 (gfxB + overlay, expected Y≈231): decoded %d new frames", len(decodedP2))
 
 	actualFlush := flushMax
@@ -575,7 +575,7 @@ func TestNoFrameLeakageWithGraphicsOverlay(t *testing.T) {
 	require.Greater(t, len(decodedAll3), prevDecodedLen,
 		"phase 3: should have more frames after cutting back to gfxA")
 
-	decodedP3 := decodedAll3[prevDecodedLen:]
+	decodedP3 := h.sinceCut(decodedAll3)
 	t.Logf("Phase 3 (gfxA + overlay again): decoded %d new frames", len(decodedP3))
 
 	actualFlush3 := flushMax

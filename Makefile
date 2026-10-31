@@ -104,9 +104,9 @@ demo: build-server node_modules_check
 		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
 		echo ""; \
 		if [ -d test/clips ]; then \
-			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CF_FLAG $$CERT_FLAGS & \
+			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --scte35 --captions --preview-proxy $$CF_FLAG $$CERT_FLAGS & \
 		else \
-			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CF_FLAG $$CERT_FLAGS & \
+			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --scte35 --captions --preview-proxy $$CF_FLAG $$CERT_FLAGS & \
 		fi; \
 		cd ui && npm run dev & \
 		wait
@@ -140,9 +140,9 @@ demo-cef: build-server cef-sidecar node_modules_check
 		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
 		echo ""; \
 		if [ -d test/clips ]; then \
-			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CEF_FLAGS $$CERT_FLAGS & \
+			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --scte35 --captions --preview-proxy $$CEF_FLAGS $$CERT_FLAGS & \
 		else \
-			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CEF_FLAGS $$CERT_FLAGS & \
+			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --scte35 --captions --preview-proxy $$CEF_FLAGS $$CERT_FLAGS & \
 		fi; \
 		cd ui && npm run dev & \
 		wait
@@ -186,9 +186,9 @@ demo-captions: build-server build-asr-sidecar-whisper node_modules_check
 		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
 		echo ""; \
 		if [ -d test/clips ]; then \
-			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$ASR_FLAGS $$CERT_FLAGS & \
+			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --scte35 --captions --preview-proxy $$ASR_FLAGS $$CERT_FLAGS & \
 		else \
-			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$ASR_FLAGS $$CERT_FLAGS & \
+			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --scte35 --captions --preview-proxy $$ASR_FLAGS $$CERT_FLAGS & \
 		fi; \
 		cd ui && npm run dev & \
 		wait
@@ -213,9 +213,9 @@ demo-advanced: build-server build-asr-sidecar-whisper cef-sidecar node_modules_c
 		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
 		echo ""; \
 		if [ -d test/clips ]; then \
-			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$ASR_FLAGS $$CEF_FLAGS $$CERT_FLAGS & \
+			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --scte35 --captions --preview-proxy $$ASR_FLAGS $$CEF_FLAGS $$CERT_FLAGS & \
 		else \
-			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$ASR_FLAGS $$CEF_FLAGS $$CERT_FLAGS & \
+			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --scte35 --captions --preview-proxy $$ASR_FLAGS $$CEF_FLAGS $$CERT_FLAGS & \
 		fi; \
 		cd ui && npm run dev & \
 		wait

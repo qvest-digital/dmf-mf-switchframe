@@ -4,7 +4,7 @@ package audio
 // NOT thread-safe — caller must provide synchronization (mixer mutex).
 //
 // Sources push variable-length PCM chunks as they arrive (bursty).
-// The output ticker pulls exactly N samples per tick (fixed cadence).
+// The mixer pulls exactly N samples per period (fixed cadence).
 // When the buffer has fewer than N samples, silence (zeros) is
 // returned — less audible than freeze-repeat with bursty SRT delivery.
 type PCMRingBuffer struct {
@@ -14,14 +14,6 @@ type PCMRingBuffer struct {
 	count    int       // current number of samples in buffer
 	cap      int       // total capacity in samples
 	channels int       // interleaved channel count (>=1)
-
-	// Reusable scratch buffers for PopDriftCompensated, grown via growBuf to
-	// avoid per-tick heap allocations on the realtime mixing path. rawScratch
-	// holds the samples read from the ring; outScratch holds the (optionally
-	// resampled) result returned to the caller. The caller copies the result
-	// out before the next pop on this buffer, so reuse is safe.
-	rawScratch []float32
-	outScratch []float32
 }
 
 // NewPCMRingBuffer creates a ring buffer with the given capacity in samples.
@@ -113,114 +105,6 @@ func (rb *PCMRingBuffer) Pop(n int) []float32 {
 	return out
 }
 
-// PopDriftCompensated reads samples with adaptive drift compensation.
-// Always returns exactly n samples. Adjusts the actual number consumed
-// from the buffer to steer depth toward targetDepth:
-//
-//   - depth > target + threshold: consume n + channels (micro speed-up)
-//   - depth < target - threshold: consume n - channels (micro slow-down)
-//   - otherwise: consume exactly n (no correction)
-//
-// The ±channels adjustment is absorbed by linear interpolation so the
-// output is always exactly n samples with no discontinuities. This
-// corrects clock drift between push source and pop consumer at a rate
-// of ±1 sample per frame (~20μs at 48kHz) — completely inaudible.
-//
-// channels is needed to keep adjustments frame-aligned (stereo pairs).
-// targetDepth is in total sample values (samples × channels).
-func (rb *PCMRingBuffer) PopDriftCompensated(n, targetDepth, channels int) []float32 {
-	if n <= 0 {
-		return nil
-	}
-	if channels < 1 {
-		channels = 1
-	}
-
-	// Not enough data for even a reduced read — return silence.
-	if rb.count < n-channels {
-		return make([]float32, n)
-	}
-
-	// Determine how many samples to actually consume.
-	threshold := 1024 * channels // 1 AAC frame hysteresis
-	actual := n
-	if rb.count > targetDepth+threshold && rb.count >= n+channels {
-		actual = n + channels // consume 1 extra frame-pair (speed up)
-	} else if rb.count < targetDepth-threshold && rb.count >= n-channels && n > channels {
-		actual = n - channels // consume 1 fewer frame-pair (slow down)
-	}
-
-	// Safety clamp: never read past what's buffered. Today the production
-	// parameters (targetDepth-threshold == n, frame-aligned counts) guarantee
-	// actual <= rb.count whenever we get here, but that's a fragile coincidence
-	// — any future change to driftTarget(), the hysteresis threshold, or the
-	// per-tick sample count could let the no-correction branch leave actual == n
-	// while rb.count < n, over-reading stale data and driving rb.count negative.
-	// Clamp to a frame-aligned count so correctness doesn't depend on that
-	// coincidence. The result is still interpolated up to exactly n below.
-	if actual > rb.count {
-		actual = rb.count - (rb.count % channels)
-		// If the clamp leaves too few frames to interpolate, fall back to
-		// silence rather than returning a partially-filled scratch buffer.
-		if actual < 2*channels {
-			return make([]float32, n)
-		}
-	}
-
-	// Read 'actual' samples from ring buffer into reusable scratch.
-	raw := growBuf(rb.rawScratch, actual)
-	rb.rawScratch = raw
-	first := rb.cap - rb.rd
-	if first >= actual {
-		copy(raw, rb.buf[rb.rd:rb.rd+actual])
-	} else {
-		copy(raw[:first], rb.buf[rb.rd:])
-		copy(raw[first:], rb.buf[:actual-first])
-	}
-	rb.rd = (rb.rd + actual) % rb.cap
-	rb.count -= actual
-
-	// If actual == n, no resampling needed.
-	if actual == n {
-		return raw
-	}
-
-	// Linear interpolation: resample 'actual' samples to exactly 'n'.
-	out := growBuf(rb.outScratch, n)
-	rb.outScratch = out
-	frames := n / channels
-	srcFrames := actual / channels
-
-	// Guard: need at least 2 source frames to interpolate.
-	if srcFrames < 2 || frames < 2 {
-		copy(out, raw)
-		return out
-	}
-
-	for f := 0; f < frames; f++ {
-		srcPos := float64(f) * float64(srcFrames-1) / float64(frames-1)
-		srcIdx := int(srcPos)
-		frac := float32(srcPos - float64(srcIdx))
-
-		if srcIdx >= srcFrames-1 {
-			srcIdx = srcFrames - 2
-			frac = 1.0
-		}
-		if srcIdx < 0 {
-			srcIdx = 0
-			frac = 0
-		}
-
-		for c := 0; c < channels; c++ {
-			s0 := raw[srcIdx*channels+c]
-			s1 := raw[(srcIdx+1)*channels+c]
-			out[f*channels+c] = s0 + frac*(s1-s0)
-		}
-	}
-
-	return out
-}
-
 // Len returns the current number of buffered samples (interleaved values).
 func (rb *PCMRingBuffer) Len() int {
 	return rb.count
@@ -236,8 +120,7 @@ func (rb *PCMRingBuffer) FrameCount() int {
 	return rb.count / rb.channels
 }
 
-// Reset clears all buffered samples. Scratch buffers are retained so the
-// next pops reuse their capacity without reallocating.
+// Reset clears all buffered samples.
 func (rb *PCMRingBuffer) Reset() {
 	rb.rd = 0
 	rb.wr = 0

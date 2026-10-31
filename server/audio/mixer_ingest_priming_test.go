@@ -43,14 +43,9 @@ func TestIngestFrame_CompensatesForDecoderPriming(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   channels,
-		Output:     func(frame *media.AudioFrame) {},
 		DecoderFactory: func(sampleRate, ch int) (Decoder, error) {
 			return dec, nil
 		},
-		EncoderFactory: func(sampleRate, ch int) (Encoder, error) {
-			return &mockEncoder{}, nil
-		},
-		ClockDriven: true, // avoid ticker draining the ring buffer
 	})
 	defer func() { _ = m.Close() }()
 
@@ -94,14 +89,9 @@ func TestIngestFrame_PrimingOffsetAppliedOncePerSource(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   channels,
-		Output:     func(frame *media.AudioFrame) {},
 		DecoderFactory: func(sampleRate, ch int) (Decoder, error) {
 			return dec, nil
 		},
-		EncoderFactory: func(sampleRate, ch int) (Encoder, error) {
-			return &mockEncoder{}, nil
-		},
-		ClockDriven: true,
 	})
 	defer func() { _ = m.Close() }()
 
@@ -143,14 +133,9 @@ func TestIngestPCM_DoesNotApplyPrimingOffset(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   channels,
-		Output:     func(frame *media.AudioFrame) {},
 		DecoderFactory: func(sampleRate, ch int) (Decoder, error) {
 			return &mockDecoder{samples: make([]float32, 2048)}, nil
 		},
-		EncoderFactory: func(sampleRate, ch int) (Encoder, error) {
-			return &mockEncoder{}, nil
-		},
-		ClockDriven: true,
 	})
 	defer func() { _ = m.Close() }()
 
@@ -186,15 +171,10 @@ func TestIngestFrame_PrimingOffsetReappliedAfterReconnect(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   channels,
-		Output:     func(frame *media.AudioFrame) {},
 		DecoderFactory: func(sampleRate, ch int) (Decoder, error) {
 			factoryCalls++
 			return &primingDecoder{primingN: 1, pcmPerCall: pcmChunk}, nil
 		},
-		EncoderFactory: func(sampleRate, ch int) (Encoder, error) {
-			return &mockEncoder{}, nil
-		},
-		ClockDriven: true,
 	})
 	defer func() { _ = m.Close() }()
 

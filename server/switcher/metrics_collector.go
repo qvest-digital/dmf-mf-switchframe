@@ -56,8 +56,6 @@ var (
 		"Frames the source's decoder dropped.", []string{"source"}, nil)
 	descSourceDecodeLatency = prometheus.NewDesc("switchframe_source_decode_latency_seconds",
 		"Decode time of the source's most recent frame.", []string{"source"}, nil)
-	descSourceDrift = prometheus.NewDesc("switchframe_source_clock_drift_ppm",
-		"Estimated drift of the source's clock against the pipeline clock; positive is faster.", []string{"source"}, nil)
 )
 
 // MetricsCollector exposes the switcher's program and per-source state as
@@ -80,7 +78,7 @@ func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 		descProgramFrames, descProgramRepeated, descProgramDropped, descDeadlineViolations,
 		descFrameBudget, descQueueDepth, descStageLatency, descGPUFallback, descLastProgramFrameAge,
 		descSourceInfo, descSourceHealth, descSourceLastFrameAge, descSourceFrames,
-		descSourceDecodeFPS, descSourceDecodeDrops, descSourceDecodeLatency, descSourceDrift,
+		descSourceDecodeFPS, descSourceDecodeDrops, descSourceDecodeLatency,
 	} {
 		ch <- d
 	}
@@ -116,10 +114,9 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	gauge(descFTBActive, flag(state.FTBActive))
 
 	counter(descProgramFrames, s.videoBroadcastCount.Load())
-	counter(descProgramRepeated, s.stallFillFrames.Load())
-	counter(descProgramDropped, s.videoProcDropped.Load(), "proc")
+	counter(descProgramRepeated, s.programRepeats.Load())
+	counter(descProgramDropped, s.overloadDrops.Load(), "proc")
 	counter(descProgramDropped, s.pipeEncodeDrop.Load(), "encode")
-	counter(descProgramDropped, s.programEpochStale.Load(), "stale")
 	counter(descDeadlineViolations, s.deadlineViolations.Load())
 	counter(descGPUFallback, s.gpuFallbackFrames.Load())
 	gauge(descFrameBudget, seconds(perf.FrameBudgetNs))
@@ -156,8 +153,5 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 		gauge(descSourceDecodeFPS, src.AvgFPS, source)
 		counter(descSourceDecodeDrops, src.DecodeDrops, source)
 		gauge(descSourceDecodeLatency, seconds(src.DecodeLastNs), source)
-		if src.DriftSamples > 0 {
-			gauge(descSourceDrift, float64(src.DriftPPM), source)
-		}
 	}
 }

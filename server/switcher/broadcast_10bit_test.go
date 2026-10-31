@@ -2,206 +2,158 @@ package switcher
 
 import (
 	"encoding/binary"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
-// TestBroadcastProcessed_10bit_FrameNotDropped verifies that broadcastProcessed
-// does not drop 10-bit YUV422P10LE frames due to incorrect size calculation.
-// Before the fix, it hardcoded ColorYUV420_8bit.FrameSize() which returns w*h*3/2,
-// causing 10-bit frames (w*h*4) to be truncated or silently dropped.
-func TestBroadcastProcessed_10bit_FrameNotDropped(t *testing.T) {
-	programRelay := distribution.NewRelay()
-	sw := NewTestSwitcher(t, programRelay)
-	defer sw.Close()
-
-	// Configure 10-bit pipeline.
-	fmt10 := PipelineFormat{
-		Name:   "test-10bit",
-		Width:  16,
-		Height: 16,
-		FPSNum: 30000,
-		FPSDen: 1001,
-		Color: PipelineColorConfig{
-			ColorFormat: ColorYUV422_10bit,
-			Codec:       CodecHEVC,
-		},
-	}
-	sw.pipelineFormat.Store(&fmt10)
-	sw.framePool.Store(NewFramePool(8, 16, 16, ColorYUV422_10bit))
-
-	sw.SetPipelineCodecs(
-		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
-	)
-	require.NoError(t, sw.BuildPipeline())
-
-	// Register a source so broadcastProcessed can look up groupID.
-	cam1Relay := distribution.NewRelay()
-	sw.RegisterSource("cam1", cam1Relay)
-	sw.configMu.Lock()
-	sw.programSource = "cam1"
-	sw.configMu.Unlock()
-
-	w, h := 16, 16
-	frame10Size := ColorYUV422_10bit.FrameSize(w, h)
-	yuv := make([]byte, frame10Size)
-	// Fill with known 10-bit Y values > 255.
-	for i := 0; i < w*h; i++ {
-		binary.LittleEndian.PutUint16(yuv[i*2:], uint16(500))
-	}
-	for i := w * h * 2; i < frame10Size; i += 2 {
-		binary.LittleEndian.PutUint16(yuv[i:], 512)
-	}
-
-	countBefore := sw.transOutputCount.Load()
-	sw.broadcastProcessed(yuv, w, h, 90000, true)
-
-	// Wait for the video processing loop to pick up the frame.
-	time.Sleep(50 * time.Millisecond)
-
-	countAfter := sw.transOutputCount.Load()
-	assert.Equal(t, countBefore+1, countAfter,
-		"broadcastProcessed should increment transOutputCount for 10-bit frames")
-
-	// Verify the frame made it into the processing pipeline by checking
-	// that no frames were dropped. The processing loop runs in the background,
-	// so we just verify the enqueue succeeded (no panic, no truncation).
+// sinkCapture records what the pipeline's raw sink saw last.
+type sinkCapture struct {
+	mu     sync.Mutex
+	n      int
+	codec  string
+	format PipelineColorFormat
+	data   []byte
 }
 
-// TestBroadcastProcessed_10bit_CorrectCodecAndFormat verifies that
-// broadcastProcessed sets the correct codec string and color format
-// on the ProcessingFrame based on the pipeline configuration.
-func TestBroadcastProcessed_10bit_CorrectCodecAndFormat(t *testing.T) {
-	// Uses newTestSwitcherDirect to avoid depending on the async
-	// videoProcessingLoop goroutine — runs the pipeline synchronously
-	// so the test is deterministic on slow CI runners.
-	programRelay := distribution.NewRelay()
-	sw := newTestSwitcherDirect(programRelay)
-	defer sw.closeDirect()
-
-	// Configure 10-bit pipeline.
-	fmt10 := PipelineFormat{
-		Name:   "test-10bit",
-		Width:  16,
-		Height: 16,
-		FPSNum: 30000,
-		FPSDen: 1001,
-		Color: PipelineColorConfig{
-			ColorFormat: ColorYUV422_10bit,
-			Codec:       CodecHEVC,
-		},
+// formatSwitcher returns a clock-less switcher whose pipeline runs format
+// cf at 16x16 with a mock encoder and a capturing raw sink.
+func formatSwitcher(t *testing.T, cf PipelineColorFormat, codec PipelineCodec) (*Switcher, *sinkCapture) {
+	t.Helper()
+	sw := tickSwitcher(t)
+	f := PipelineFormat{
+		Name: "fmt", Width: 16, Height: 16, FPSNum: 30000, FPSDen: 1001,
+		Color: PipelineColorConfig{ColorFormat: cf, Codec: codec},
 	}
-	sw.pipelineFormat.Store(&fmt10)
-	sw.framePool.Store(NewFramePool(8, 16, 16, ColorYUV422_10bit))
-
-	sw.SetPipelineCodecs(
-		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
-	)
-
-	// Set up raw video sink to capture the ProcessingFrame metadata.
-	// Store the sink directly (not via SetRawVideoSink which triggers
-	// rebuildPipeline and creates a leaked encode goroutine when
-	// BuildPipeline is called afterward).
-	var capturedCodec string
-	var capturedFormat PipelineColorFormat
-	var capturedDataLen int
+	sw.pipelineFormat.Store(&f)
+	sw.framePool.Store(NewFramePool(8, 16, 16, cf))
+	sw.SetPipelineCodecs(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+		return transition.NewMockEncoder(), nil
+	})
+	c := &sinkCapture{}
+	// Stored directly: SetRawVideoSink rebuilds the pipeline.
 	sink := RawVideoSink(func(pf *ProcessingFrame) {
-		capturedCodec = pf.Codec
-		capturedFormat = pf.Format
-		capturedDataLen = len(pf.Data)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.n++
+		c.codec, c.format = pf.Codec, pf.Format
+		c.data = append(c.data[:0], pf.Data...)
 	})
 	sw.rawVideoSink.Store(&sink)
-
 	require.NoError(t, sw.BuildPipeline())
+	return sw, c
+}
 
-	cam1Relay := distribution.NewRelay()
-	sw.RegisterSource("cam1", cam1Relay)
-	sw.configMu.Lock()
-	sw.programSource = "cam1"
-	sw.configMu.Unlock()
-
-	w, h := 16, 16
-	frame10Size := ColorYUV422_10bit.FrameSize(w, h)
-	yuv := make([]byte, frame10Size)
-	for i := 0; i < w*h; i++ {
-		binary.LittleEndian.PutUint16(yuv[i*2:], 500)
+// frame10 is a 16x16 10-bit 4:2:2 frame of luma y, its last quarter set to
+// sentinel bytes when sentinel != 0, stamped with grain i.
+func frame10(sw *Switcher, i uint64, y uint16, sentinel byte) *ProcessingFrame {
+	size := ColorYUV422_10bit.FrameSize(16, 16)
+	buf := make([]byte, size)
+	for j := 0; j < 16*16; j++ {
+		binary.LittleEndian.PutUint16(buf[j*2:], y)
 	}
-	for i := w * h * 2; i < frame10Size; i += 2 {
-		binary.LittleEndian.PutUint16(yuv[i:], 512)
+	for j := 16 * 16 * 2; j < size; j += 2 {
+		binary.LittleEndian.PutUint16(buf[j:], 512)
 	}
-
-	// broadcastProcessed enqueues the frame to videoProcCh.
-	sw.broadcastProcessed(yuv, w, h, 90000, true)
-
-	// Run pipeline synchronously — raw sink callback fires during Run().
-	frame := sw.runPipelineDirect(t)
-	if frame != nil {
-		frame.ReleaseYUV()
+	if sentinel != 0 {
+		for j := size * 3 / 4; j < size; j++ {
+			buf[j] = sentinel
+		}
 	}
+	return &ProcessingFrame{Data: buf, Width: 16, Height: 16, Format: ColorYUV422_10bit,
+		Codec: "h265", PTS: grainPTS(sw, i)}
+}
 
-	assert.Equal(t, "h265", capturedCodec,
-		"HEVC pipeline should set codec to h265")
-	assert.Equal(t, ColorYUV422_10bit, capturedFormat,
-		"frame Format should match pipeline color format")
-	assert.Equal(t, frame10Size, capturedDataLen,
+// A 10-bit source frame reaches the pipeline whole: full size, the
+// sentinel in the Cr plane intact.
+func TestProgram_10bit_SentinelSurvivesPipeline(t *testing.T) {
+	sw, c := formatSwitcher(t, ColorYUV422_10bit, CodecHEVC)
+	onProgram(t, sw, "mxl:cam1")
+	g := grainNow(sw)
+	sw.IngestRawVideo("mxl:cam1", frame10(sw, g, 500, 0xEF))
+	sw.processVideoTick(tickAt(sw, g+clock.ReaderDelayGrains))
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	require.Equal(t, 1, c.n, "frame never reached the raw sink")
+	size := ColorYUV422_10bit.FrameSize(16, 16)
+	require.Len(t, c.data, size, "frame data truncated (8-bit size = %d)", ColorYUV420_8bit.FrameSize(16, 16))
+	for i := size * 3 / 4; i < size; i++ {
+		require.Equal(t, byte(0xEF), c.data[i], "sentinel lost at byte %d", i)
+	}
+	require.Equal(t, ColorYUV422_10bit, c.format)
+}
+
+// A transition in a 10-bit HEVC pipeline blends 10-bit frames: the blended
+// frame reaches the pipeline whole and tagged with the pipeline's format
+// and codec.
+func TestTransitionOutput_10bit_CorrectCodecAndFormat(t *testing.T) {
+	sw, c := formatSwitcher(t, ColorYUV422_10bit, CodecHEVC)
+	sw.SetTransitionConfig(TransitionConfig{})
+	onProgram(t, sw, "mxl:cam1")
+	sw.RegisterMXLSource("mxl:cam2")
+	require.NoError(t, sw.StartTransition(t.Context(), "mxl:cam2", "mix", 60000, ""))
+	defer sw.AbortTransition()
+
+	g := grainNow(sw)
+	sw.IngestRawVideo("mxl:cam1", frame10(sw, g, 500, 0))
+	sw.IngestRawVideo("mxl:cam2", frame10(sw, g, 700, 0))
+	sw.processVideoTick(tickAt(sw, g+clock.ReaderDelayGrains))
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	require.Equal(t, 1, c.n, "transition output never reached the raw sink")
+	assert.Equal(t, "h265", c.codec, "HEVC pipeline should set codec to h265")
+	assert.Equal(t, ColorYUV422_10bit, c.format, "frame Format should match pipeline color format")
+	assert.Len(t, c.data, ColorYUV422_10bit.FrameSize(16, 16),
 		"frame data should be full 10-bit size (not truncated to 8-bit)")
 }
 
-// TestBroadcastProcessed_8bit_StillWorks verifies that broadcastProcessed
-// still works correctly for standard 8-bit YUV420 frames.
-func TestBroadcastProcessed_8bit_StillWorks(t *testing.T) {
-	programRelay := distribution.NewRelay()
-	sw := newTestSwitcherDirect(programRelay)
-	defer sw.closeDirect()
+// The same for an 8-bit AVC pipeline.
+func TestTransitionOutput_8bit_StillWorks(t *testing.T) {
+	sw, c := formatSwitcher(t, ColorYUV420_8bit, CodecAVC)
+	sw.SetTransitionConfig(TransitionConfig{})
+	onProgram(t, sw, "mxl:cam1")
+	sw.RegisterMXLSource("mxl:cam2")
+	require.NoError(t, sw.StartTransition(t.Context(), "mxl:cam2", "mix", 60000, ""))
+	defer sw.AbortTransition()
 
-	sw.SetPipelineCodecs(
-		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
-	)
-
-	var capturedCodec string
-	var capturedFormat PipelineColorFormat
-	sink := RawVideoSink(func(pf *ProcessingFrame) {
-		capturedCodec = pf.Codec
-		capturedFormat = pf.Format
-	})
-	sw.rawVideoSink.Store(&sink)
-
-	require.NoError(t, sw.BuildPipeline())
-
-	cam1Relay := distribution.NewRelay()
-	sw.RegisterSource("cam1", cam1Relay)
-	sw.configMu.Lock()
-	sw.programSource = "cam1"
-	sw.configMu.Unlock()
-
-	w, h := 320, 240
-	frame8Size := ColorYUV420_8bit.FrameSize(w, h)
-	yuv := make([]byte, frame8Size)
-	for i := range yuv {
-		yuv[i] = 128
+	g := grainNow(sw)
+	for _, k := range []string{"mxl:cam1", "mxl:cam2"} {
+		pf := &ProcessingFrame{Data: makeTestYUV(16, 16, 128), Width: 16, Height: 16,
+			Format: ColorYUV420_8bit, Codec: "h264", PTS: grainPTS(sw, g)}
+		sw.IngestRawVideo(k, pf)
 	}
+	sw.processVideoTick(tickAt(sw, g+clock.ReaderDelayGrains))
 
-	sw.broadcastProcessed(yuv, w, h, 90000, true)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	require.Equal(t, 1, c.n, "transition output never reached the raw sink")
+	assert.Equal(t, "h264", c.codec)
+	assert.Equal(t, ColorYUV420_8bit, c.format)
+}
 
-	// Run pipeline synchronously — raw sink callback fires during Run().
-	frame := sw.runPipelineDirect(t)
-	if frame != nil {
-		frame.ReleaseYUV()
-	}
+// Black is in the pipeline's format: 10-bit 4:2:2 black is Y=64, Cb=Cr=512.
+func TestProgramBlack_InPipelineFormat(t *testing.T) {
+	sw, c := formatSwitcher(t, ColorYUV422_10bit, CodecHEVC)
+	onProgram(t, sw, "mxl:never") // delivers nothing: black
+	sw.tickNow()
 
-	assert.Equal(t, "h264", capturedCodec)
-	assert.Equal(t, ColorYUV420_8bit, capturedFormat)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	require.Equal(t, 1, c.n, "black never reached the raw sink")
+	require.Equal(t, ColorYUV422_10bit, c.format)
+	require.Len(t, c.data, ColorYUV422_10bit.FrameSize(16, 16))
+	ySize := ColorYUV422_10bit.YPlaneSize(16, 16)
+	require.Equal(t, uint16(64), binary.LittleEndian.Uint16(c.data[0:]))
+	require.Equal(t, uint16(64), binary.LittleEndian.Uint16(c.data[ySize-2:]))
+	require.Equal(t, uint16(512), binary.LittleEndian.Uint16(c.data[ySize:]))
+	require.Equal(t, uint16(512), binary.LittleEndian.Uint16(c.data[len(c.data)-2:]))
 }
 
 // TestTransitionEngine_10bit_SetColorFormat verifies that the transition engine

@@ -3,6 +3,7 @@
 package stress
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
@@ -17,6 +18,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
@@ -33,6 +35,42 @@ const (
 	testWidth  = 320
 	testHeight = 240
 )
+
+// driveMixer pulls the mixer's output every 20ms on a goroutine, as the
+// sync loop does, and returns a stop func reporting how many output
+// samples were NaN, Inf or outside [-1, 1].
+func driveMixer(m *audio.Mixer) (stop func() int) {
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	bad := 0
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		const n = 960 // 20ms at 48kHz
+		rate := clock.Rate{Num: 48000, Den: 1}
+		start := clock.TimestampToIndex(rate, clock.TAINow())
+		tk := time.NewTicker(20 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-tk.C:
+			}
+			for _, v := range m.ProduceSamples(start, n, clock.IndexPTS(rate, start)) {
+				if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) || v < -1 || v > 1 {
+					bad++
+				}
+			}
+			start += n
+		}
+	}()
+	return func() int {
+		close(done)
+		wg.Wait()
+		return bad
+	}
+}
 
 // captureViewer captures video frames broadcast to the program relay.
 type captureViewer struct {
@@ -84,6 +122,44 @@ func frameSize(w, h int) int {
 	return w*h + (w/2)*(h/2)*2
 }
 
+// blackTag is the first byte of a broadcast-black program frame (Y=16).
+const blackTag = 0x10
+
+// ingestTagged ingests a 320x240 YUV420 frame whose every byte is tag, so
+// the program frame made from it names its source.
+func ingestTagged(sw *switcher.Switcher, key string, tag byte) {
+	sw.IngestRawVideo(key, &switcher.ProcessingFrame{
+		Data:  bytes.Repeat([]byte{tag}, frameSize(320, 240)),
+		Width: 320, Height: 240,
+	})
+}
+
+// tagEncoder is a mock encoder whose output ends with the first luma byte
+// of the frame it encoded, so an encoded program frame names its source.
+type tagEncoder struct{}
+
+func (tagEncoder) Encode(yuv []byte, _ int64, _ bool) ([]byte, bool, error) {
+	return []byte{0x00, 0x00, 0x00, 0x01, 0x65, yuv[0]}, true, nil
+}
+func (tagEncoder) Close() {}
+
+// requireTags checks that every captured frame carries one of the valid
+// tags, after a prefix of black from before any source frame was due.
+func requireTags(t *testing.T, videos []*media.VideoFrame, valid map[byte]bool) {
+	t.Helper()
+	started := false
+	for i, frame := range videos {
+		require.NotEmpty(t, frame.WireData, "frame %d has empty WireData", i)
+		tag := frame.WireData[0]
+		if !started && tag == blackTag {
+			continue
+		}
+		started = true
+		require.True(t, valid[tag], "frame %d has invalid tag 0x%02X", i, tag)
+	}
+	require.True(t, started, "no source frame reached program")
+}
+
 // ==========================================================================
 // TestRapidCutsNoFrameCorruption
 //
@@ -114,10 +190,8 @@ func TestRapidCutsNoFrameCorruption(t *testing.T) {
 		sw.RegisterSource(key, relays[i])
 	}
 
-	// Cut to initial source.
-	require.NoError(t, sw.Cut(context.Background(), "camA"))
-
-	// Start background frame generators for all sources.
+	// Start background frame generators for all sources, live at the
+	// program frame rate, then cut to the initial source.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -126,23 +200,18 @@ func TestRapidCutsNoFrameCorruption(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			pts := int64(idx * 10000)
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				default:
 				}
-				relays[idx].BroadcastVideo(&media.VideoFrame{
-					PTS:        pts,
-					IsKeyframe: true,
-					WireData:   []byte{sourceTags[idx]},
-				})
-				pts += 3003
-				time.Sleep(5 * time.Millisecond)
+				ingestTagged(sw, sourceKeys[idx], sourceTags[idx])
+				time.Sleep(sw.PipelineFormat().FrameDuration())
 			}
 		}(i)
 	}
+	require.NoError(t, sw.Cut(context.Background(), "camA"))
 
 	// Perform 20 rapid cuts over ~2 seconds.
 	rng := rand.New(rand.NewSource(42))
@@ -160,16 +229,12 @@ func TestRapidCutsNoFrameCorruption(t *testing.T) {
 	require.Greater(t, len(videos), 0, "should have captured output frames")
 
 	validTags := map[byte]bool{0xAA: true, 0xBB: true, 0xCC: true, 0xDD: true}
+	requireTags(t, videos, validTags)
 	framesPerSource := map[byte]int{}
-
-	for i, frame := range videos {
-		require.NotEmpty(t, frame.WireData, "frame %d has empty WireData", i)
-
-		tag := frame.WireData[0]
-		require.True(t, validTags[tag],
-			"frame %d has unknown tag 0x%02X (expected one of 0xAA, 0xBB, 0xCC, 0xDD)", i, tag)
-
-		framesPerSource[tag]++
+	for _, frame := range videos {
+		if tag := frame.WireData[0]; validTags[tag] {
+			framesPerSource[tag]++
+		}
 	}
 
 	// Log per-source frame counts.
@@ -423,7 +488,7 @@ func TestConcurrentCutAndTransition(t *testing.T) {
 	})
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
+			return tagEncoder{}, nil
 		},
 	)
 	require.NoError(t, sw.BuildPipeline())
@@ -436,25 +501,25 @@ func TestConcurrentCutAndTransition(t *testing.T) {
 	sw.RegisterSource("camC", camCRelay)
 
 	// Cut to A first.
+	ingestTagged(sw, "camA", 0xAA)
+	ingestTagged(sw, "camB", 0xBB)
 	require.NoError(t, sw.Cut(context.Background(), "camA"))
-	camARelay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0xAA}})
 
 	// Start dissolve A -> B.
 	require.NoError(t, sw.StartTransition(context.Background(), "camB", "mix", 5000, ""))
 
 	// Feed some frames to drive the transition partway.
 	for i := 0; i < 3; i++ {
-		camARelay.BroadcastVideo(&media.VideoFrame{PTS: int64(100 + i*33), IsKeyframe: i == 0, WireData: []byte{0xAA}})
-		camBRelay.BroadcastVideo(&media.VideoFrame{PTS: int64(200 + i*33), IsKeyframe: i == 0, WireData: []byte{0xBB}})
+		ingestTagged(sw, "camA", 0xAA)
+		ingestTagged(sw, "camB", 0xBB)
+		time.Sleep(sw.PipelineFormat().FrameDuration())
 	}
-
-	time.Sleep(20 * time.Millisecond)
 
 	// Mid-transition: cut to C. This should abort the transition.
 	require.NoError(t, sw.Cut(context.Background(), "camC"))
 
 	// Feed frames from C.
-	camCRelay.BroadcastVideo(&media.VideoFrame{PTS: 500, IsKeyframe: true, WireData: []byte{0xCC}})
+	ingestTagged(sw, "camC", 0xCC)
 	time.Sleep(20 * time.Millisecond)
 
 	// Verify: program source is C, not stuck in transition.
@@ -467,14 +532,10 @@ func TestConcurrentCutAndTransition(t *testing.T) {
 
 	// Feed 5 more camC frames to verify output after cut-during-transition.
 	for i := 0; i < 5; i++ {
-		camCRelay.BroadcastVideo(&media.VideoFrame{
-			PTS:        int64(600 + i*33),
-			IsKeyframe: i == 0,
-			WireData:   []byte{0xCC},
-		})
-		time.Sleep(10 * time.Millisecond)
+		ingestTagged(sw, "camC", 0xCC)
+		time.Sleep(sw.PipelineFormat().FrameDuration())
 	}
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	// Capture output frames produced after the cut.
 	allVideos := capture.videosCopy()
@@ -484,7 +545,7 @@ func TestConcurrentCutAndTransition(t *testing.T) {
 	// Verify at least 1 captured frame has camC's WireData tag (0xCC).
 	camCFrameCount := 0
 	for _, frame := range postCutFrames {
-		if len(frame.WireData) > 0 && frame.WireData[0] == 0xCC {
+		if len(frame.WireData) > 0 && frame.WireData[len(frame.WireData)-1] == 0xCC {
 			camCFrameCount++
 		}
 	}
@@ -664,17 +725,17 @@ func TestMixerChannelChurn(t *testing.T) {
 	}
 	t.Parallel()
 
-	// The mixer produces encoded AAC output only when an encoder factory is
-	// provided. This test validates the ingest + channel lifecycle hot path
+	// driveMixer pulls the mixer's output concurrently, as the sync loop
+	// does. This test validates the ingest + channel lifecycle hot path
 	// under churn: no panic, no deadlock, no data race under the race detector.
 	// FDK AAC encoding is tested in the audio correctness suite; here we focus
 	// on state machine robustness.
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = mixer.Close() }()
+	stopDrive := driveMixer(mixer)
 
 	// Add 2 initial channels.
 	mixer.AddChannel("src1")
@@ -733,6 +794,7 @@ func TestMixerChannelChurn(t *testing.T) {
 	peak := mixer.ProgramPeak()
 	require.False(t, math.IsNaN(peak[0]), "program peak L is NaN after churn")
 	require.False(t, math.IsNaN(peak[1]), "program peak R is NaN after churn")
+	require.Zero(t, stopDrive(), "mixer output samples NaN, Inf or outside [-1, 1]")
 
 	t.Logf("Mixer channel churn: 10 add/remove cycles, surviving channels functional, no panic")
 }
@@ -766,33 +828,28 @@ func TestRapidCutsWithConcurrentFrameInjection(t *testing.T) {
 		sw.RegisterSource(key, relays[i])
 	}
 
-	require.NoError(t, sw.Cut(context.Background(), "s1"))
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// 4 goroutines inject frames as fast as possible.
+	// 4 goroutines inject frames at the program frame rate, then the cuts
+	// start.
 	var wg sync.WaitGroup
 	for i := range relays {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			pts := int64(0)
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				default:
 				}
-				relays[idx].BroadcastVideo(&media.VideoFrame{
-					PTS:        pts,
-					IsKeyframe: true,
-					WireData:   []byte{sourceTags[idx]},
-				})
-				pts += 3003
+				ingestTagged(sw, sourceKeys[idx], sourceTags[idx])
+				time.Sleep(sw.PipelineFormat().FrameDuration())
 			}
 		}(i)
 	}
+	require.NoError(t, sw.Cut(context.Background(), "s1"))
 
 	// Main goroutine performs rapid cuts.
 	rng := rand.New(rand.NewSource(99))
@@ -815,12 +872,7 @@ done:
 	videos := capture.videosCopy()
 	require.Greater(t, len(videos), 0, "should have captured output frames")
 
-	validTags := map[byte]bool{0x01: true, 0x02: true, 0x03: true, 0x04: true}
-	for i, frame := range videos {
-		require.NotEmpty(t, frame.WireData, "frame %d has empty WireData", i)
-		require.True(t, validTags[frame.WireData[0]],
-			"frame %d has invalid tag 0x%02X", i, frame.WireData[0])
-	}
+	requireTags(t, videos, map[byte]bool{0x01: true, 0x02: true, 0x03: true, 0x04: true})
 
 	t.Logf("Concurrent injection + rapid cuts: %d cuts, %d output frames, all valid", cutCount, len(videos))
 }
@@ -962,10 +1014,8 @@ done:
 // ==========================================================================
 // TestMixerChannelChurnWithPCMValidation
 //
-// Extended mixer test: creates a mixer without an encoder (PCM-only mode)
-// and validates the raw PCM output does not contain NaN or Inf values.
-// Since the standard mixer encodes to AAC, this test validates the
-// PCM pipeline indirectly by checking IngestPCM doesn't corrupt state.
+// Extended mixer test: churns channels under heavy PCM ingest and
+// validates the mixer's PCM output does not contain NaN or Inf values.
 // ==========================================================================
 
 func TestMixerChannelChurnWithPCMValidation(t *testing.T) {
@@ -974,14 +1024,13 @@ func TestMixerChannelChurnWithPCMValidation(t *testing.T) {
 	}
 	t.Parallel()
 
-	// Use a mixer with no encoder (output frames will have nil Data
-	// since there's no AAC encoder). We validate via the mixer's metering.
+	// The mixer's PCM output is pulled concurrently and validated.
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = mixer.Close() }()
+	stopDrive := driveMixer(mixer)
 
 	// Generate stereo PCM test data.
 	mono := testutil.GenerateSineWavePCM(440, -6.0, 48000, 0.02) // 20ms
@@ -1023,6 +1072,8 @@ func TestMixerChannelChurnWithPCMValidation(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		mixer.RemoveChannel(fmt.Sprintf("ch-%d", i))
 	}
+
+	require.Zero(t, stopDrive(), "mixer output samples NaN, Inf or outside [-1, 1]")
 
 	t.Logf("Mixer PCM churn: 20 channels created, heavy ingest, no panic")
 }

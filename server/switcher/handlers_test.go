@@ -27,18 +27,6 @@ func TestAudioHandlers_CopyOnWrite(t *testing.T) {
 	}
 }
 
-func TestFrameSyncBundle_CopyOnWrite(t *testing.T) {
-	old := &frameSyncBundle{active: true}
-	next := *old
-	next.active = false
-	if !old.active {
-		t.Error("CoW mutated old.active")
-	}
-	if next.active {
-		t.Error("CoW did not apply mutation")
-	}
-}
-
 func TestSwitcher_GroupedHandlers_InitializedNonNil(t *testing.T) {
 	sw := New(nil)
 	defer sw.Close()
@@ -48,8 +36,5 @@ func TestSwitcher_GroupedHandlers_InitializedNonNil(t *testing.T) {
 	}
 	if ah := sw.audioHandlers.Load(); ah == nil {
 		t.Error("audioHandlers.Load() returned nil after New()")
-	}
-	if fsb := sw.frameSyncBundle.Load(); fsb == nil {
-		t.Error("frameSyncBundle.Load() returned nil after New()")
 	}
 }

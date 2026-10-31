@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/clock"
 )
 
 // Finding #23: popProgramFrame used to return a borrowed value copy that
@@ -51,7 +52,7 @@ func TestSyncLoopPopAndNormalizeDoesNotDoubleReleaseLastRawVideo(t *testing.T) {
 	// sync-loop transition path does for mismatched-resolution sources.
 	ingestSyncTestFrame(s, "cam1", 160, 120, 40, 0)
 
-	got := s.popProgramFrame(fs, "cam1", 3000)
+	got, _ := s.popProgramFrame(fs, "cam1", clock.Tick{VideoPTS: 3000, ReadPTS: 3000})
 	require.NotNil(t, got)
 	got = s.normalizeResolution(got)
 	require.NotNil(t, got)
@@ -89,7 +90,7 @@ func TestSyncLoopPopProgramFrameReturnsCountedRef(t *testing.T) {
 	// pipeline's MakeWritable detects the share with lastRawVideo and
 	// copies before mutating (frames retained by frame_sync are never
 	// mutated in place).
-	got := s.popProgramFrame(fs, "cam1", 3000)
+	got, _ := s.popProgramFrame(fs, "cam1", clock.Tick{VideoPTS: 3000, ReadPTS: 3000})
 	require.NotNil(t, got)
 	require.Equal(t, int32(2), got.Refs(),
 		"popped frame must hold its own reference alongside lastRawVideo")
@@ -110,7 +111,7 @@ func TestSyncLoopPopProgramFrameReturnsCountedRef(t *testing.T) {
 	got.ReleaseYUV()
 
 	// Freeze-repeat pop (no fresh frame): same contract.
-	frozen := s.popProgramFrame(fs, "cam1", 6000)
+	frozen, _ := s.popProgramFrame(fs, "cam1", clock.Tick{VideoPTS: 6000, ReadPTS: 6000})
 	require.NotNil(t, frozen)
 	require.Equal(t, int32(2), frozen.Refs(),
 		"freeze-repeat copy must also hold its own reference")
@@ -153,7 +154,7 @@ func TestSyncLoopPopProgramFrameUnmanagedFrameSingleOwner(t *testing.T) {
 	pf.SetPool(pool)
 	s.frameSync.IngestRawVideo("cam1", pf)
 
-	got := s.popProgramFrame(fs, "cam1", 3000)
+	got, _ := s.popProgramFrame(fs, "cam1", clock.Tick{VideoPTS: 3000, ReadPTS: 3000})
 	require.NotNil(t, got)
 
 	// Caller-side release, as the transition tick and the lastEncodedFrame
@@ -182,7 +183,7 @@ func TestSyncLoopPopProgramFrameUnmanagedFrameSingleOwner(t *testing.T) {
 	}
 
 	// Freeze-repeat pop must still serve the intact frame.
-	frozen := s.popProgramFrame(fs, "cam1", 6000)
+	frozen, _ := s.popProgramFrame(fs, "cam1", clock.Tick{VideoPTS: 6000, ReadPTS: 6000})
 	require.NotNil(t, frozen)
 	require.Equal(t, byte(40), frozen.Data[0], "freeze-repeat frame content must be intact")
 	frozen.ReleaseYUV()

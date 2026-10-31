@@ -9,7 +9,7 @@ import (
 // Channels with AFV enabled activate when they match the program source and
 // deactivate when they don't. Non-AFV channels are unaffected.
 //
-// To avoid audible clicks, a 4-tick (~85ms) crossfade ramp is set up between
+// To avoid audible clicks, a 4-period crossfade ramp is set up between
 // the outgoing and incoming AFV channels, identical to what OnCut does.
 func (m *Mixer) OnProgramChange(newProgramSource string) {
 	m.mu.Lock()
@@ -87,7 +87,7 @@ func (m *Mixer) OnProgramChange(newProgramSource string) {
 			// so it fades out with the transition instead of being hard-cut
 			// (which clicks). The ramped outgoing source (transCrossfadeFrom)
 			// fades smoothly; any extra stragglers at least avoid an instant
-			// discontinuity. They are all deactivated together in tick() when
+			// discontinuity. They are all deactivated together by advanceCutCrossfade when
 			// the crossfade completes.
 			if m.afvDeactivateOnComplete == nil {
 				m.afvDeactivateOnComplete = make(map[string]struct{})
@@ -107,10 +107,10 @@ func (m *Mixer) OnProgramChange(newProgramSource string) {
 	}
 }
 
-// OnCut initiates a 2-tick (~42ms) crossfade between old and new source,
-// driven entirely by the output ticker. The ticker advances
-// transCrossfadePosition linearly over cutTotalFrames ticks and auto-clears
-// when complete. No timer goroutines needed.
+// OnCut initiates a 4-period crossfade between old and new source, driven
+// by AdvanceCrossfade, which advances transCrossfadePosition linearly over
+// cutTotalFrames periods and auto-clears when complete. No timer goroutines
+// needed.
 func (m *Mixer) OnCut(oldSource, newSource string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -124,7 +124,7 @@ func (m *Mixer) OnCut(oldSource, newSource string) {
 	m.transCrossfadeAudioPos = 0.0
 	m.mixCycleTransPos = 0.0
 
-	// Set up cut crossfade: the ticker will advance position over 4 ticks.
+	// Set up cut crossfade: AdvanceCrossfade advances position over 4 periods.
 	m.cutFramesRemaining = 4
 	m.cutTotalFrames = 4
 
@@ -136,6 +136,7 @@ func (m *Mixer) OnCut(oldSource, newSource string) {
 	if ch, ok := m.channels[newSource]; ok {
 		if ch.ringBuf != nil {
 			ch.ringBuf.Reset()
+			ch.placed = false
 		}
 		ch.active = true
 		// The cut put this source on program; a later OnTransitionAbort must
@@ -183,6 +184,7 @@ func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMo
 	if ch, ok := m.channels[newSource]; ok {
 		if ch.ringBuf != nil {
 			ch.ringBuf.Reset()
+			ch.placed = false
 		}
 		if !ch.active {
 			// Remember that this transition is what activated the channel
@@ -194,10 +196,6 @@ func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMo
 		// doesn't produce warmup transients in the mix output.
 		m.initChannelDecoder(ch)
 	}
-
-	// Pre-warm the encoder so the first real output frame doesn't have
-	// MDCT warmup artifacts (audible pop at passthrough->mixing boundary).
-	_ = m.ensureEncoder()
 
 	return token
 }

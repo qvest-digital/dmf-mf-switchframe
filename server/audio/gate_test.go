@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
 )
 
 func TestGate_NewGate_StartsBypassed(t *testing.T) {
@@ -323,7 +322,6 @@ func TestMixer_SetGate_UnknownSource(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(*media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -337,7 +335,6 @@ func TestMixer_SetGate_ValidParams(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(*media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -352,7 +349,6 @@ func TestMixer_GetGate_ReturnsState(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(*media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -376,7 +372,6 @@ func TestMixer_GetGate_UnknownSource(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(*media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -389,7 +384,6 @@ func TestMixer_ChannelStates_IncludesGate(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(*media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -413,7 +407,6 @@ func TestMixer_DebugSnapshot_IncludesGate(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(*media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -436,7 +429,6 @@ func TestMixer_IngestPCM_GateApplied(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(*media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 

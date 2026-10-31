@@ -39,9 +39,7 @@ func TestInitPlayout_LiveItemAirsInputWithoutGPU(t *testing.T) {
 		mixer: audio.NewMixer(audio.MixerConfig{
 			SampleRate:     48000,
 			Channels:       2,
-			ClockDriven:    true,
 			DecoderFactory: audioDecoderFactory(),
-			EncoderFactory: audioEncoderFactory(),
 		}),
 	}
 	require.Nil(t, a.gpu())

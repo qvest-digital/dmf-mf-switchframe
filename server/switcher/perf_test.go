@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
@@ -27,15 +27,11 @@ func TestSwitcher_PerfSubStages(t *testing.T) {
 	if sample.SyncWaitNs != 0 {
 		t.Errorf("initial SyncWaitNs should be 0, got %d", sample.SyncWaitNs)
 	}
-	if sample.ProcQueueNs != 0 {
-		t.Errorf("initial ProcQueueNs should be 0, got %d", sample.ProcQueueNs)
-	}
 
 	// Verify the fields are populated from the atomic stores
 	sw.lastDecodeQueueNs.Store(100)
 	sw.lastDecodeNs.Store(200)
 	sw.lastSyncWaitNs.Store(300)
-	sw.lastProcQueueNs.Store(400)
 
 	sample = sw.PerfSample()
 	if sample.DecodeQueueNs != 100 {
@@ -47,78 +43,25 @@ func TestSwitcher_PerfSubStages(t *testing.T) {
 	if sample.SyncWaitNs != 300 {
 		t.Errorf("SyncWaitNs should be 300, got %d", sample.SyncWaitNs)
 	}
-	if sample.ProcQueueNs != 400 {
-		t.Errorf("ProcQueueNs should be 400, got %d", sample.ProcQueueNs)
-	}
-}
-
-func TestPerfSample_FRCFrameZeroesSyncWait(t *testing.T) {
-	// FRC-synthesized frames have DecodeEndNano=0 (no actual decode).
-	// The sync wait measurement should store 0 for these frames,
-	// not retain a stale value from a previous fresh frame.
-	programRelay := newTestRelay()
-	sw := newTestSwitcher(t, programRelay)
-	defer sw.Close()
-
-	// Simulate a prior fresh frame leaving a stale sync wait value.
-	sw.lastSyncWaitNs.Store(25_000_000) // 25ms stale value
-
-	// Simulate processing an FRC frame: DecodeEndNano=0, SyncReleaseNano set.
-	// This is what videoProcessingLoop does when it dequeues a work item.
-	frame := &ProcessingFrame{
-		Data:            make([]byte, 64),
-		Width:           8,
-		Height:          4,
-		PTS:             1000,
-		DecodeEndNano:   0,                 // FRC frame — no decode
-		SyncReleaseNano: 1_000_000_000_000, // non-zero: was released by sync
-	}
-
-	// Replicate the videoProcessingLoop sync wait measurement logic.
-	if frame.SyncReleaseNano > 0 {
-		if frame.DecodeEndNano > 0 {
-			sw.lastSyncWaitNs.Store(frame.SyncReleaseNano - frame.DecodeEndNano)
-		} else {
-			sw.lastSyncWaitNs.Store(0)
-		}
-	}
-
-	sample := sw.PerfSample()
-	require.Equal(t, int64(0), sample.SyncWaitNs,
-		"FRC frame (DecodeEndNano=0) should zero out sync wait, not retain stale value")
 }
 
 func TestPerfSample_FreshFramePreservesSyncWait(t *testing.T) {
-	// Fresh (decoded) frames have both DecodeEndNano and SyncReleaseNano set.
-	// The sync wait should be the difference between them.
-	programRelay := newTestRelay()
-	sw := newTestSwitcher(t, programRelay)
-	defer sw.Close()
+	// A fresh frame's sync wait is the time from its arrival to the tick
+	// that shows it.
+	s := tickSwitcher(t)
+	onProgram(t, s, "mxl:cam1")
+	s.lastSyncWaitNs.Store(1) // a stale value the fresh frame replaces
 
-	decodeEnd := int64(1_000_000_000)
-	syncRelease := int64(1_005_000_000) // 5ms later
+	g := grainNow(s)
+	pf := mxlFrame(s, g, 50)
+	pf.ArrivalNano = time.Now().Add(-5 * time.Millisecond).UnixNano()
+	s.IngestRawVideo("mxl:cam1", pf)
+	s.processVideoTick(tickAt(s, g+clock.ReaderDelayGrains))
 
-	frame := &ProcessingFrame{
-		Data:            make([]byte, 64),
-		Width:           8,
-		Height:          4,
-		PTS:             1000,
-		DecodeEndNano:   decodeEnd,
-		SyncReleaseNano: syncRelease,
-	}
-
-	// Replicate the updated measurement logic.
-	if frame.SyncReleaseNano > 0 {
-		if frame.DecodeEndNano > 0 {
-			sw.lastSyncWaitNs.Store(frame.SyncReleaseNano - frame.DecodeEndNano)
-		} else {
-			sw.lastSyncWaitNs.Store(0)
-		}
-	}
-
-	sample := sw.PerfSample()
-	require.Equal(t, int64(5_000_000), sample.SyncWaitNs,
-		"fresh frame sync wait should be SyncReleaseNano - DecodeEndNano")
+	wait := s.PerfSample().SyncWaitNs
+	require.GreaterOrEqual(t, wait, int64(5_000_000),
+		"fresh frame sync wait should be the time since its arrival")
+	require.Less(t, wait, int64(time.Second))
 }
 
 func TestPerfSample_RawFrameCount(t *testing.T) {
@@ -153,22 +96,15 @@ func TestPerfSample_RawFrameCount(t *testing.T) {
 }
 
 func TestPerfSample_FrameSyncFields(t *testing.T) {
-	// FrameSync fields should be zero when no frame sync is active.
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	sample := sw.PerfSample()
-	require.Equal(t, float64(0), sample.FrameSyncReleaseFPS, "frame sync release FPS should be 0 without frame sync")
-	require.Equal(t, 0, sample.FrameSyncSourceCount, "frame sync source count should be 0 without frame sync")
+	require.Equal(t, builtinSourceCount, sample.FrameSyncSourceCount,
+		"frame sync source count: the 2 built-ins")
 
-	// Enable frame sync
-	sw.SetFrameSync(true, 33*time.Millisecond)
-
-	// Register a relay-based source (has viewer → gets added to frame sync).
-	// SetFrameSync also adds the 2 built-in virtual sources (source:black,
-	// source:colorbars) to the synchronizer so their producer-fed frames
-	// route through the same tick loop.
+	// A relay-based source is added to the frame synchronizer.
 	sourceRelay := newTestRelay()
 	sw.RegisterSource("cam1", sourceRelay)
 
@@ -177,38 +113,8 @@ func TestPerfSample_FrameSyncFields(t *testing.T) {
 		"frame sync source count: cam1 + 2 built-ins")
 }
 
-func TestFrameSynchronizer_ReleaseFPS(t *testing.T) {
-	fs := NewFrameSynchronizer(
-		33*time.Millisecond,
-		func(key string, frame media.VideoFrame) {},
-		func(key string, frame media.AudioFrame) {},
-	)
-
-	// First call initializes state, returns 0.
-	fps := fs.ReleaseFPS()
-	require.Equal(t, float64(0), fps, "first call should return 0 (no baseline)")
-
-	// Simulate some releases via the atomic counters.
-	fs.programDrivenReleases.Store(30)
-	fs.timerDrivenReleases.Store(0)
-
-	// Hack: set the last time slightly in the past so elapsed > 0.
-	fs.mu.Lock()
-	fs.releaseFPSLastTime = time.Now().Add(-1 * time.Second)
-	fs.releaseFPSLastTotal = 0
-	fs.mu.Unlock()
-
-	fps = fs.ReleaseFPS()
-	require.InDelta(t, 30.0, fps, 2.0,
-		"should compute ~30 FPS from 30 releases in ~1 second")
-}
-
 func TestFrameSynchronizer_SourceCount(t *testing.T) {
-	fs := NewFrameSynchronizer(
-		33*time.Millisecond,
-		func(key string, frame media.VideoFrame) {},
-		func(key string, frame media.AudioFrame) {},
-	)
+	fs := NewFrameSynchronizer()
 
 	require.Equal(t, 0, fs.SourceCount(), "initial source count should be 0")
 
@@ -320,7 +226,7 @@ func (m *mockGPUPipelineRunnerWithTiming) RunWithUpload(yuv []byte, width, heigh
 	return nil
 }
 
-func (m *mockGPUPipelineRunnerWithTiming) RunFromCache(sourceKey string, pts int64) error {
+func (m *mockGPUPipelineRunnerWithTiming) RunFromCache(sourceKey string, srcPTS, pts int64) error {
 	return fmt.Errorf("mock: no cached GPU frame")
 }
 

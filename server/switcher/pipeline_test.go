@@ -13,14 +13,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/transition"
 	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
-// sendRawFrame sends a raw YUV420 frame through handleRawVideoFrame,
-// simulating what the sourceDecoder produces in always-decode mode.
+// sendRawFrame sends a raw YUV420 frame through IngestRawVideo, as the
+// sourceDecoder does in always-decode mode. pts is replaced by the arrival
+// time for a non-MXL source.
 // The YUV buffer is 4x4 (24 bytes) for test compatibility with mock decoders.
 func sendRawFrame(sw *Switcher, sourceKey string, pts int64, isKeyframe bool) {
 	pf := &ProcessingFrame{
@@ -31,7 +33,7 @@ func sendRawFrame(sw *Switcher, sourceKey string, pts int64, isKeyframe bool) {
 		IsKeyframe: isKeyframe,
 		Codec:      "h264",
 	}
-	sw.handleRawVideoFrame(sourceKey, pf)
+	sw.IngestRawVideo(sourceKey, pf)
 }
 
 func TestPipeline_AlwaysReEncodes(t *testing.T) {
@@ -66,8 +68,10 @@ func TestPipeline_AlwaysReEncodes(t *testing.T) {
 	got := viewer.videos[len(viewer.videos)-1]
 	viewer.mu.Unlock()
 
-	// PTS is preserved through the encode pipeline
-	require.Equal(t, int64(100), got.PTS)
+	// The encoded PTS is the tick's, on the program frame grid.
+	pf := sw.PipelineFormat()
+	r := clock.Rate{Num: int64(pf.FPSNum), Den: int64(pf.FPSDen)}
+	require.Equal(t, clock.IndexPTS(r, clock.PTSIndex(r, got.PTS)), got.PTS, "PTS off the program grid")
 	require.Greater(t, got.GroupID, uint32(0), "GroupID should be set (keyframe increments programGroupID)")
 }
 
@@ -120,7 +124,7 @@ func TestPipeline_CompositorEncodesOnce(t *testing.T) {
 
 func TestPipeline_TransitionPlusCompositor_SingleEncode(t *testing.T) {
 	// In always-decode mode, both sources provide raw YUV via IngestRawFrame.
-	// The transition engine blends YUV and outputs to broadcastProcessed.
+	// The sync loop blends YUV with the transition engine.
 	// The pipeline encoder should be created exactly once.
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
@@ -306,25 +310,24 @@ func TestPipeline_EncodeFailureMetrics(t *testing.T) {
 
 	// Send raw YUV frame — will fail at encode
 	sendRawFrame(sw, "cam1", 100, true)
-	time.Sleep(10 * time.Millisecond)
 
 	// Check that the encode error metric was incremented
-	val := testutil.ToFloat64(m.PipelineEncodeErrorsTotal)
-	require.GreaterOrEqual(t, val, 1.0, "encode error metric should be incremented")
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(m.PipelineEncodeErrorsTotal) >= 1
+	}, time.Second, 5*time.Millisecond, "encode error metric should be incremented")
 }
 
 func TestPipeline_SourceStatsPropagate(t *testing.T) {
 	// Validates that source bitrate/fps are propagated to pipeline codecs
-	// via handleRawVideoFrame (always-decode mode).
+	// via IngestRawVideo (always-decode mode).
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(t, programRelay)
 
-	var lastBitrate int
-	var lastFPSNum int
+	var lastBitrate, lastFPSNum atomic.Int64 // set on the sync loop's first encode
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-			lastBitrate = bitrate
-			lastFPSNum = fpsNum
+			lastBitrate.Store(int64(bitrate))
+			lastFPSNum.Store(int64(fpsNum))
 			return transition.NewMockEncoder(), nil
 		},
 	)
@@ -360,7 +363,7 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 			PTS:        int64(i * 33333),
 			IsKeyframe: i == 0,
 		}
-		sw.handleRawVideoFrame("cam1", pf)
+		sw.IngestRawVideo("cam1", pf)
 		time.Sleep(2 * time.Millisecond)
 	}
 
@@ -375,14 +378,16 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 	pc.mu.Unlock()
 
 	// Verify the encoder factory received the pipeline format's FPS (default 1080p29.97).
-	require.Equal(t, 30000, lastFPSNum, "encoder factory should receive pipeline format fpsNum")
-	require.Greater(t, lastBitrate, 0, "encoder factory should receive a positive bitrate")
+	require.Eventually(t, func() bool { return lastFPSNum.Load() != 0 }, time.Second, 5*time.Millisecond,
+		"encoder never created")
+	require.Equal(t, int64(30000), lastFPSNum.Load(), "encoder factory should receive pipeline format fpsNum")
+	require.Greater(t, lastBitrate.Load(), int64(0), "encoder factory should receive a positive bitrate")
 }
 
 func TestPipeline_AsyncVideoProcessing(t *testing.T) {
-	// Verify that handleRawVideoFrame does NOT block the caller for the
+	// Verify that IngestRawVideo does NOT block the caller for the
 	// duration of encode. This is critical because the source decoder's
-	// callback calls handleRawVideoFrame synchronously — if it blocks
+	// callback calls IngestRawVideo synchronously: if it blocks
 	// for 30ms on encode, audio delivery gets starved.
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
@@ -405,13 +410,13 @@ func TestPipeline_AsyncVideoProcessing(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	// handleRawVideoFrame should return quickly (< 5ms), NOT block for 30ms encode
+	// IngestRawVideo should return quickly (< 5ms), NOT block for 30ms encode
 	start := time.Now()
 	sendRawFrame(sw, "cam1", 100, true)
 	elapsed := time.Since(start)
 
 	require.Less(t, elapsed, 5*time.Millisecond,
-		"handleRawVideoFrame should return immediately, not block for encode (took %v)", elapsed)
+		"IngestRawVideo should return immediately, not block for encode (took %v)", elapsed)
 
 	// But the frame should still be processed asynchronously
 	require.Eventually(t, func() bool {
@@ -423,10 +428,8 @@ func TestPipeline_AsyncVideoProcessing(t *testing.T) {
 }
 
 func TestPipeline_AsyncTransitionOutput(t *testing.T) {
-	// Verify that broadcastProcessed (transition engine output) does NOT
-	// block the caller. During transitions, handleRawVideoFrame routes
-	// frames to the engine which outputs via broadcastProcessed — encoding
-	// happens asynchronously.
+	// Verify that ingest during a transition does NOT block the caller:
+	// the sync loop blends and encodes on its own goroutine.
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
@@ -451,7 +454,7 @@ func TestPipeline_AsyncTransitionOutput(t *testing.T) {
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 	require.NoError(t, sw.SetPreview(context.Background(), "cam2"))
 
-	// Start transition — broadcastProcessed will be called with slow encoder
+	// Start transition; the blended output goes through the slow encoder.
 	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 60000, ""))
 
 	// Feed raw YUV frames from both sources; should return quickly
@@ -461,7 +464,7 @@ func TestPipeline_AsyncTransitionOutput(t *testing.T) {
 	elapsed := time.Since(start)
 
 	require.Less(t, elapsed, 10*time.Millisecond,
-		"handleRawVideoFrame during transition should not block for encode (took %v)", elapsed)
+		"IngestRawVideo during transition should not block for encode (took %v)", elapsed)
 
 	// Transition output should still reach viewer asynchronously
 	require.Eventually(t, func() bool {
@@ -496,9 +499,10 @@ func TestPipeline_EncoderBufferingDropsFrames(t *testing.T) {
 	programRelay.AddViewer(viewer)
 
 	sw := newTestSwitcher(t, programRelay)
+	enc := newBufferingEncoder(transition.NewMockEncoder(), 3)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-			return newBufferingEncoder(transition.NewMockEncoder(), 3), nil
+			return enc, nil
 		},
 	)
 	require.NoError(t, sw.BuildPipeline())
@@ -508,23 +512,20 @@ func TestPipeline_EncoderBufferingDropsFrames(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	// Send 5 raw YUV frames: first 3 should be silently dropped (buffering),
-	// frames 4 and 5 should produce output.
-	for i := range 5 {
-		sendRawFrame(sw, "cam1", int64(i*100+100), i == 0)
-		time.Sleep(5 * time.Millisecond) // let async processing run
-	}
+	// Every tick encodes a frame: the first 3 should be silently dropped
+	// (buffering), every later one should produce output.
+	sendRawFrame(sw, "cam1", 100, true)
 
 	require.Eventually(t, func() bool {
 		viewer.mu.Lock()
 		defer viewer.mu.Unlock()
 		return len(viewer.videos) >= 2
-	}, 200*time.Millisecond, 5*time.Millisecond,
+	}, 2*time.Second, 5*time.Millisecond,
 		"should receive frames after encoder warmup")
 
+	sw.Close() // drains the encoder
 	viewer.mu.Lock()
-	// Exactly 2 frames should have made it through (frames 4 and 5)
-	require.Equal(t, 2, len(viewer.videos), "only post-warmup frames should reach viewer")
+	require.Equal(t, int(enc.calls.Load())-3, len(viewer.videos), "only post-warmup frames should reach viewer")
 	viewer.mu.Unlock()
 }
 
@@ -533,6 +534,7 @@ func TestPipeline_EncoderBufferingDropsFrames(t *testing.T) {
 type bufferingEncoder struct {
 	inner     transition.VideoEncoder
 	remaining atomic.Int32
+	calls     atomic.Int32
 }
 
 func newBufferingEncoder(inner transition.VideoEncoder, warmupFrames int) *bufferingEncoder {
@@ -542,6 +544,7 @@ func newBufferingEncoder(inner transition.VideoEncoder, warmupFrames int) *buffe
 }
 
 func (e *bufferingEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+	e.calls.Add(1)
 	if e.remaining.Add(-1) >= 0 {
 		return nil, false, nil // EAGAIN — no output yet
 	}
@@ -570,10 +573,9 @@ func TestPipelineCodecs_ClampsBitrate(t *testing.T) {
 }
 
 func TestPipeline_CompositorDoesNotCorruptSharedBuffer(t *testing.T) {
-	// Regression test: broadcastProcessedFromPF must deep-copy the YUV buffer
-	// BEFORE applying in-place processors (compositor, key bridge). The frame
-	// sync and FRC retain references to source buffers for repeated/interpolated
-	// frames. If the compositor modifies the shared buffer in-place, repeated
+	// Regression test: the pipeline must not apply in-place processors
+	// (compositor, key bridge) to a source buffer the frame sync retains for
+	// repeated frames. If the compositor modifies the shared buffer in-place, repeated
 	// frames get the overlay baked in progressively (visible as blinking).
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
@@ -619,21 +621,19 @@ func TestPipeline_CompositorDoesNotCorruptSharedBuffer(t *testing.T) {
 	original := make([]byte, len(sharedYUV))
 	copy(original, sharedYUV)
 
-	// Send the shared buffer through the pipeline twice (simulating
-	// repeated frames from frame sync).
+	// Ingest the shared buffer twice; the ticks show it, then repeat it.
 	for i := 0; i < 2; i++ {
 		pf := &ProcessingFrame{
 			Data:       sharedYUV, // same underlying buffer both times
 			Width:      4,
 			Height:     4,
-			PTS:        int64(i * 100),
 			IsKeyframe: i == 0,
 			Codec:      "h264",
 		}
-		sw.broadcastProcessedFromPF("", pf)
+		sw.IngestRawVideo("cam1", pf)
 	}
 
-	// Wait for async processing.
+	// Wait for the ticks.
 	require.Eventually(t, func() bool {
 		viewer.mu.Lock()
 		defer viewer.mu.Unlock()
@@ -655,48 +655,6 @@ func (e *failingEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, b
 }
 
 func (e *failingEncoder) Close() {}
-
-func TestEnqueueVideoWork_DroppedFrameReleasesPool(t *testing.T) {
-	// When the videoProcCh is full and a new frame arrives, the oldest
-	// frame is dropped. Its pool buffer must be released to prevent
-	// exhausting the FramePool under sustained back-pressure.
-	programRelay := newTestRelay()
-	sw := newTestSwitcher(t, programRelay)
-	sw.SetPipelineCodecs(
-		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-			return &slowEncoder{
-				inner: transition.NewMockEncoder(),
-				delay: 100 * time.Millisecond, // slow enough to fill channel
-			}, nil
-		},
-	)
-	require.NoError(t, sw.BuildPipeline())
-	defer sw.Close()
-
-	pool := NewFramePool(4, 4, 4, ColorYUV420_8bit) // small pool to detect leaks
-
-	// Fill the channel completely, then enqueue one more to trigger drop.
-	for i := 0; i < cap(sw.videoProcCh)+1; i++ {
-		pf := &ProcessingFrame{
-			Data:       pool.Acquire(),
-			Width:      4,
-			Height:     4,
-			PTS:        int64(i * 100),
-			IsKeyframe: i == 0,
-			pool:       pool,
-		}
-		sw.enqueueVideoWork(videoProcWork{yuvFrame: pf})
-	}
-
-	// Let pipeline drain.
-	time.Sleep(50 * time.Millisecond)
-
-	// At least one frame was dropped. Check pool stats — hits > 0 means
-	// the dropped frame's buffer was returned to the pool via ReleaseYUV.
-	hits, _ := pool.Stats()
-	require.Greater(t, hits, uint64(0),
-		"dropped frame's buffer should be returned to pool (hits > 0)")
-}
 
 func TestBuildNodeList_Ordering(t *testing.T) {
 	// The node ordering is architecturally critical:
@@ -778,7 +736,7 @@ func (m *mockGPUPipelineRunner) RunWithUpload(yuv []byte, width, height int, pts
 	return nil
 }
 
-func (m *mockGPUPipelineRunner) RunFromCache(sourceKey string, pts int64) error {
+func (m *mockGPUPipelineRunner) RunFromCache(sourceKey string, srcPTS, pts int64) error {
 	// Mock always falls back to RunWithUpload.
 	return fmt.Errorf("mock: no cached GPU frame")
 }

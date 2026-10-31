@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
 )
 
 func TestStateString(t *testing.T) {
@@ -297,44 +296,6 @@ func TestStateRejectsDoubleTransition(t *testing.T) {
 	err = sw.StartTransition(context.Background(), "cam2", "mix", 500, "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "already active")
-}
-
-func TestStateFTBBlocksPassthrough(t *testing.T) {
-	// When in StateFTB, video frames should not be passed through
-	programRelay := newTestRelay()
-	viewer := newMockProgramViewer("test-viewer")
-	programRelay.AddViewer(viewer)
-
-	sw := newTestSwitcher(t, programRelay)
-	sw.SetTransitionConfig(mockTransitionCodecs())
-	defer sw.Close()
-
-	cam1Relay := newTestRelay()
-	sw.RegisterSource("cam1", cam1Relay)
-	require.NoError(t, sw.Cut(context.Background(), "cam1"))
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
-
-	// Start FTB and complete
-	err := sw.FadeToBlack(context.Background())
-	require.NoError(t, err)
-	err = sw.SetTransitionPosition(context.Background(), 1.0)
-	require.NoError(t, err)
-	time.Sleep(20 * time.Millisecond)
-
-	// Count frames before
-	viewer.mu.Lock()
-	countBefore := len(viewer.videos)
-	viewer.mu.Unlock()
-
-	// Send a frame — should be blocked by FTB
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 200, IsKeyframe: true, WireData: []byte{0x01}})
-	time.Sleep(10 * time.Millisecond)
-
-	viewer.mu.Lock()
-	countAfter := len(viewer.videos)
-	viewer.mu.Unlock()
-
-	require.Equal(t, countBefore, countAfter, "frames should not pass through during FTB")
 }
 
 func TestSwitcherDebugSnapshotIncludesState(t *testing.T) {

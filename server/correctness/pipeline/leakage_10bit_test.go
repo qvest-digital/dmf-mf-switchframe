@@ -54,7 +54,7 @@ func TestNoFrameLeakageAfterCut10bit(t *testing.T) {
 			int64(90000+i*ptsDelta), i == 0)
 		h.sw.IngestRawVideo("leak10A", pf)
 		if i < 59 {
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(h.sw.PipelineFormat().FrameDuration())
 		}
 	}
 	h.waitForPipeline(500 * time.Millisecond)
@@ -79,7 +79,7 @@ func TestNoFrameLeakageAfterCut10bit(t *testing.T) {
 			int64(90000+60*ptsDelta+i*ptsDelta), i == 0)
 		h.sw.IngestRawVideo("leak10B", pf)
 		if i < 59 {
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(h.sw.PipelineFormat().FrameDuration())
 		}
 	}
 	h.waitForPipeline(500 * time.Millisecond)
@@ -88,7 +88,7 @@ func TestNoFrameLeakageAfterCut10bit(t *testing.T) {
 	p2All := decodeCapturedFrames(t, p2Videos)
 	require.Greater(t, len(p2All), prevLen, "phase 2: should have more frames")
 
-	p2New := p2All[prevLen:]
+	p2New := h.sinceCut(p2All)
 	t.Logf("Phase 2 (leak10B, 10-bit Y=850): decoded %d new frames", len(p2New))
 
 	actualFlush := flushFrames

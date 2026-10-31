@@ -5,99 +5,66 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 )
-
-// mockEncoderCapture captures the PCM input passed to Encode.
-type mockEncoderCapture struct {
-	mu     sync.Mutex
-	pcmRef *[]float32
-}
-
-func (m *mockEncoderCapture) Encode(pcm []float32) ([]byte, error) {
-	m.mu.Lock()
-	*m.pcmRef = append([]float32{}, pcm...)
-	m.mu.Unlock()
-	return []byte{0xFF}, nil
-}
-func (m *mockEncoderCapture) Close() error { return nil }
-
-// mockEncoderCallCounter counts calls to Encode for verifying priming behavior.
-type mockEncoderCallCounter struct {
-	mu        sync.Mutex
-	callCount int
-	lastPCM   []float32
-}
-
-func (m *mockEncoderCallCounter) Encode(pcm []float32) ([]byte, error) {
-	m.mu.Lock()
-	m.callCount++
-	m.lastPCM = append([]float32{}, pcm...)
-	m.mu.Unlock()
-	return []byte{0xFF}, nil
-}
-func (m *mockEncoderCallCounter) Close() error { return nil }
-func (m *mockEncoderCallCounter) CallCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.callCount
-}
 
 func TestMixerCloseIdempotent(t *testing.T) {
 	t.Parallel()
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(_ *media.AudioFrame) {},
 	})
 	require.NoError(t, m.Close())
 	require.NoError(t, m.Close(), "second Close must not panic")
 }
 
-// TestMixerCloseConcurrentNoDoubleClose verifies that calling Close()
-// concurrently from multiple goroutines closes each decoder and the
-// encoder exactly once (not zero, not twice).
-
-func TestMixerIgnoresInactiveChannel(t *testing.T) {
-	var output []*media.AudioFrame
-
+// newDecodingMixer returns a stereo mixer whose decoders all return pcm.
+func newDecodingMixer(t *testing.T, pcm []float32) *Mixer {
+	t.Helper()
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) { output = append(output, frame) },
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
+			return &mockDecoder{samples: pcm}, nil
+		},
 	})
-	defer func() { _ = m.Close() }()
+	t.Cleanup(func() { _ = m.Close() })
+	return m
+}
+
+func requireSilent(t *testing.T, pcm []float32, msg string) {
+	t.Helper()
+	for i, v := range pcm {
+		require.Equal(t, float32(0), v, "%s: sample %d", msg, i)
+	}
+}
+
+func TestMixerIgnoresInactiveChannel(t *testing.T) {
+	m := newDecodingMixer(t, constPCM(1024, 0.5))
+	tl := newTimeline()
 
 	m.AddChannel("cam1")
-	// cam1 is inactive (not activated) — frames should be dropped
-	frame := &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
+	// cam1 is inactive (not activated) -- its audio is not mixed
+	frame := &media.AudioFrame{PTS: tl.pts(0), Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
 	m.IngestFrame("cam1", frame)
 
-	require.Equal(t, 0, len(output), "inactive channel should not output frames")
+	requireSilent(t, tl.produce(m, 1024), "inactive channel should not reach the program")
 }
 
 func TestMixerMutedChannelSilent(t *testing.T) {
-	var output []*media.AudioFrame
-
-	m := NewMixer(MixerConfig{
-		SampleRate: 48000,
-		Channels:   2,
-		Output:     func(frame *media.AudioFrame) { output = append(output, frame) },
-	})
-	defer func() { _ = m.Close() }()
+	m := newDecodingMixer(t, constPCM(1024, 0.5))
+	tl := newTimeline()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
 	_ = m.SetMuted("cam1", true)
 
-	frame := &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
+	frame := &media.AudioFrame{PTS: tl.pts(0), Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
 	m.IngestFrame("cam1", frame)
 
-	// Muted channel: in passthrough mode, no output since single source is muted
-	require.Equal(t, 0, len(output), "muted channel should produce no output")
+	requireSilent(t, tl.produce(m, 1024), "muted channel should produce silence")
 }
 
 func TestMixerGainApplication(t *testing.T) {
@@ -112,7 +79,6 @@ func TestSetMasterLevelRejectsNaN(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -125,7 +91,6 @@ func TestSetMasterLevelRejectsInf(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -142,7 +107,6 @@ func TestSetMasterLevelRejectsOutOfRange(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -159,7 +123,6 @@ func TestSetMasterLevelAcceptsValidRange(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -168,39 +131,10 @@ func TestSetMasterLevelAcceptsValidRange(t *testing.T) {
 	}
 }
 
-func TestMixerEnsureEncoderPrimesOnTransitionStart(t *testing.T) {
-	// Verify that OnTransitionStart also primes the encoder.
-	var enc *mockEncoderCallCounter
-
-	m := NewMixer(MixerConfig{
-		SampleRate: 48000,
-		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
-		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
-			return &mockDecoder{samples: nil}, nil
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			enc = &mockEncoderCallCounter{}
-			return enc, nil
-		},
-	})
-	defer func() { _ = m.Close() }()
-
-	m.AddChannel("cam1")
-	m.AddChannel("cam2")
-	m.SetActive("cam1", true)
-
-	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
-
-	require.NotNil(t, enc, "encoder should have been created by OnTransitionStart")
-	require.GreaterOrEqual(t, enc.CallCount(), 1, "encoder should be primed with silent frame")
-}
-
 func TestMixerSetAFV(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -217,7 +151,6 @@ func TestMixerAFVActivatesOnCut(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -240,8 +173,12 @@ func TestMixerAFVActivatesOnCut(t *testing.T) {
 	// cam2 goes to program → cam2 activates, cam1 deactivates after crossfade
 	m.OnProgramChange("cam2")
 	require.True(t, m.IsChannelActive("cam2"), "cam2 should activate on program")
-	// cam1 stays active during the 2-tick crossfade ramp (~42ms), then deactivates.
-	time.Sleep(100 * time.Millisecond)
+	// cam1 stays active during the 4-period crossfade ramp, then deactivates.
+	for i := 0; i < 3; i++ {
+		m.AdvanceCrossfade()
+		require.True(t, m.IsChannelActive("cam1"), "cam1 should stay active during the ramp (period %d)", i+1)
+	}
+	m.AdvanceCrossfade()
 	require.False(t, m.IsChannelActive("cam1"), "cam1 should deactivate after crossfade completes")
 }
 
@@ -252,13 +189,9 @@ func TestMixerAFVActivatesOnCut(t *testing.T) {
 // that isn't the new program must be kept active to fade out with the
 // transition — not hard-cut to inactive immediately (which clicks).
 func TestMixerAFVMultipleActiveNotHardCut(t *testing.T) {
-	// Clock-driven so no background ticker advances/completes the crossfade
-	// before we inspect the mid-transition state.
 	m := NewMixer(MixerConfig{
-		SampleRate:  48000,
-		Channels:    2,
-		ClockDriven: true,
-		Output:      func(_ *media.AudioFrame) {},
+		SampleRate: 48000,
+		Channels:   2,
 	})
 	defer func() { _ = m.Close() }()
 
@@ -316,7 +249,6 @@ func TestMixerAFVDisabledChannelStaysActive(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -344,7 +276,6 @@ func TestMixerAFVToggledOff(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -368,7 +299,6 @@ func TestMixerIsChannelActive(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -386,7 +316,6 @@ func TestMixerOnTransitionStart(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -416,7 +345,6 @@ func TestMixerOnTransitionPosition(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -438,7 +366,6 @@ func TestMixerOnTransitionComplete(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -459,20 +386,11 @@ func TestMixerOnTransitionComplete(t *testing.T) {
 func TestMixerOnTransitionAbortSnapsPosition(t *testing.T) {
 	// OnTransitionAbort should snap position to 0.0 before clearing state,
 	// preventing an audio discontinuity when the T-bar is pulled back.
-	var capturedPCM []float32
-	var outputFrames []*media.AudioFrame
-
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output: func(frame *media.AudioFrame) {
-			outputFrames = append(outputFrames, frame)
-		},
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
 	defer func() { _ = m.Close() }()
@@ -507,7 +425,6 @@ func TestMixerTransitionCrossfadeGains(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -541,7 +458,6 @@ func TestMixerTransitionGainsNotActive(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -554,7 +470,6 @@ func TestMixerTransitionFTBReverseGains(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -587,7 +502,6 @@ func TestMixerTransitionFTBForwardGains(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -619,7 +533,6 @@ func TestMixerTransitionDipGains(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -660,48 +573,28 @@ func TestMixerTransitionDipGains(t *testing.T) {
 	require.InDelta(t, 1.0, newGain, 0.001, "dip at 1.0: source B full")
 }
 
-func TestMixerTickerProducesOutputWithPartialChannels(t *testing.T) {
+func TestProduceSamples_PartialChannels(t *testing.T) {
 	// Two active channels, but only one has data in its ring buffer.
-	// The clock-driven ticker still produces output regardless.
-	var mu sync.Mutex
-	var outputFrames []*media.AudioFrame
-
+	// ProduceSamples still mixes the one that has.
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output: func(frame *media.AudioFrame) {
-			mu.Lock()
-			outputFrames = append(outputFrames, frame)
-			mu.Unlock()
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			return &mockEncoder{data: []byte{0xFF}}, nil
-		},
 	})
 	defer func() { _ = m.Close() }()
+	tl := newTimeline()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 	m.SetActive("cam2", true)
 
-	// Only push data to cam1's ring buffer — cam2 has no data
-	pcm := make([]float32, 1024*2)
-	for i := range pcm {
-		pcm[i] = 0.5
-	}
-	m.mu.Lock()
-	m.channels["cam1"].ringBuf.Push(pcm)
-	m.mu.Unlock()
+	// Only push data to cam1's ring buffer -- cam2 has no data
+	tl.push(m, "cam1", constPCM(1024, 0.5), 0)
 
-	// Wait for ticker to fire — 300ms gives slack on shared CI runners.
-	time.Sleep(300 * time.Millisecond)
-
-	// Output should have been produced despite channel 2 being empty
-	mu.Lock()
-	count := len(outputFrames)
-	mu.Unlock()
-	require.GreaterOrEqual(t, count, 1, "ticker should produce output even if one channel has no data")
+	out := tl.produce(m, 1024)
+	require.Len(t, out, 1024*2)
+	require.InDelta(t, 0.5, out[0], 0.01, "cam1's audio should be mixed although cam2 has none")
+	require.InDelta(t, 0.5, out[len(out)-1], 0.01, "cam1's audio should fill the whole period")
 }
 
 func TestChannelDecoderInitOnce(t *testing.T) {
@@ -711,23 +604,12 @@ func TestChannelDecoderInitOnce(t *testing.T) {
 
 	var factoryCalls atomic.Int64
 
-	var mu sync.Mutex
-	var outputFrames []*media.AudioFrame
-
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output: func(frame *media.AudioFrame) {
-			mu.Lock()
-			outputFrames = append(outputFrames, frame)
-			mu.Unlock()
-		},
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			factoryCalls.Add(1)
 			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
 	defer func() { _ = m.Close() }()
@@ -768,12 +650,8 @@ func TestMixerRemoveChannelCleansUpState(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
 	defer func() { _ = m.Close() }()
@@ -803,7 +681,6 @@ func TestMixerTrimRangeValidation(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -816,21 +693,13 @@ func TestMixerTrimRangeValidation(t *testing.T) {
 }
 
 func TestMixerPerChannelPeaks(t *testing.T) {
-	var outputFrames []*media.AudioFrame
-
 	pcm := []float32{0.5, 0.3, 0.5, 0.3} // L=0.5, R=0.3 interleaved stereo
 
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output: func(frame *media.AudioFrame) {
-			outputFrames = append(outputFrames, frame)
-		},
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
 	defer func() { _ = m.Close() }()
@@ -858,13 +727,9 @@ func TestChannelDecoderInitOnceCrossfade(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			factoryCalls.Add(1)
 			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
 	defer func() { _ = m.Close() }()
@@ -893,16 +758,10 @@ func TestChannelDecoderInitOnceCrossfade(t *testing.T) {
 		"decoder factory should not be called again on subsequent crossfades, got %d", factoryCalls.Load())
 }
 
-// TestMixerPassthroughRaceSafety exercises the RLock-to-Lock upgrade in
-// IngestFrame. One goroutine ingests frames while another toggles passthrough
-// by activating a second channel. With -race this detects the TOCTOU bug
-// where passthrough is checked under RLock then re-acquired under Lock.
-
 func TestMixer_SetProgramMute_ResetsEnvelopes(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -970,12 +829,8 @@ func BenchmarkMixerMixingPath(b *testing.B) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
 	defer func() { _ = m.Close() }()
@@ -1006,7 +861,6 @@ func TestStereoGainInterpolation(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -1113,7 +967,6 @@ func TestChannelGainCached(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -1156,7 +1009,6 @@ func TestMixer_SetStingerAudio(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -1187,7 +1039,6 @@ func TestMixer_SetStingerAudio_SampleRateMismatch(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -1204,7 +1055,6 @@ func TestMixer_AddStingerAudio_Basic(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -1243,7 +1093,6 @@ func TestMixer_AddStingerAudio_FadeEnvelope(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -1307,7 +1156,6 @@ func TestMixer_AddStingerAudio_Exhaustion(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -1341,7 +1189,6 @@ func TestMixer_AddStingerAudio_StereoFadeSymmetry(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -1383,7 +1230,6 @@ func TestMixer_StingerAudioClearedOnComplete(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -1408,8 +1254,6 @@ func TestMixerUnmuteFadeInRamp(t *testing.T) {
 	// When SetProgramMute transitions from true→false, the mixer should apply
 	// a 5ms linear fade-in ramp to prevent uncompressed burst after
 	// compressor/limiter envelopes were reset to zero during mute.
-	var allCapturedPCM [][]float32
-
 	pcm := make([]float32, 2048)
 	for i := range pcm {
 		pcm[i] = 0.5
@@ -1418,14 +1262,8 @@ func TestMixerUnmuteFadeInRamp(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			enc := &mockEncoderCapture{pcmRef: new([]float32)}
-			allCapturedPCM = append(allCapturedPCM, *enc.pcmRef)
-			return enc, nil
 		},
 	})
 	defer func() { _ = m.Close() }()
@@ -1455,7 +1293,6 @@ func TestMixerUnmuteFadeNotScheduledOnMute(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -1481,12 +1318,8 @@ func TestMixerResamplerCreatedOncePerChannel(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
 	defer func() { _ = m.Close() }()
@@ -1519,43 +1352,25 @@ func TestMixerResamplerCreatedOncePerChannel(t *testing.T) {
 	require.True(t, resampler1 == resampler2, "resampler should be reused, not recreated")
 }
 
-// TestMixerResamplerDisablesPassthrough verifies that when a source needs
-// resampling, passthrough mode is disabled (can't forward raw AAC at wrong rate).
-
-func TestMixer_TickerProducesOutputWithNoSourceData(t *testing.T) {
+func TestProduceSamples_NoSourceData(t *testing.T) {
 	// When no active channel produces audio (e.g., program on a video-only
-	// source), the clock-driven ticker still produces output frames at the
-	// fixed cadence to keep the browser's audio pipeline fed.
-	var mu sync.Mutex
-	var frames []*media.AudioFrame
-
+	// source), ProduceSamples still returns a full period of silence to
+	// keep the program's audio pipeline fed.
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output: func(f *media.AudioFrame) {
-			mu.Lock()
-			frames = append(frames, f)
-			mu.Unlock()
-		},
-		EncoderFactory: func(sr, ch int) (Encoder, error) {
-			return &mockEncoderCapture{pcmRef: new([]float32)}, nil
-		},
 	})
 	defer func() { _ = m.Close() }()
+	tl := newTimeline()
 
 	// Add a channel and activate it, but never send any audio.
 	// This simulates a video-only source on program.
 	m.AddChannel("video_only")
 	m.SetActive("video_only", true)
 
-	// Wait for the ticker to produce frames (~21ms per frame).
-	// 300ms ≈ 14 ticks — slack for shared CI runners under load.
-	time.Sleep(300 * time.Millisecond)
-
-	mu.Lock()
-	count := len(frames)
-	mu.Unlock()
-
-	require.GreaterOrEqual(t, count, 2,
-		"ticker should produce output frames even when no source audio arrives")
+	for i := 0; i < 3; i++ {
+		out := tl.produce(m, 1024)
+		require.Len(t, out, 1024*2, "period %d should be a full period", i)
+		requireSilent(t, out, "no source audio")
+	}
 }

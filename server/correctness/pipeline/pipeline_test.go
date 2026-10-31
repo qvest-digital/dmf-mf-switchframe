@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 	"github.com/zsiec/switchframe/server/dve"
@@ -46,6 +47,7 @@ func TestFullPipelineCutToTS(t *testing.T) {
 	h.addSource("camB", sourceB)
 
 	// Cut to A and feed 30 frames with spacing to let pipeline drain.
+	start := time.Now()
 	h.cut(t, "camA")
 	h.feedFrames("camA", 30, 90000)
 	h.waitForPipeline(500 * time.Millisecond)
@@ -58,6 +60,7 @@ func TestFullPipelineCutToTS(t *testing.T) {
 	h.cut(t, "camB")
 	h.feedFrames("camB", 30, 90000+30*ptsDelta)
 	h.waitForPipeline(500 * time.Millisecond)
+	elapsed := time.Since(start)
 
 	totalCount := h.capture.videoCount()
 	t.Logf("Total frames after camB: %d", totalCount)
@@ -74,11 +77,13 @@ func TestFullPipelineCutToTS(t *testing.T) {
 	require.Equal(t, testWidth, vs.Width)
 	require.Equal(t, testHeight, vs.Height)
 
-	// Verify frame count. We fed 60 frames total; async pipeline drops some.
+	// Verify frame count: one program frame per reference clock tick
+	// from the first cut on.
 	videoFrames := testutil.ProbeVideoFrames(t, tsPath)
-	t.Logf("MEASURE: video frame count = %d, expected ~60", len(videoFrames))
-	require.InDelta(t, 60, len(videoFrames), 15,
-		"expected ~60 video frames, got %d", len(videoFrames))
+	ticks := int(elapsed / h.sw.PipelineFormat().FrameDuration())
+	t.Logf("MEASURE: video frame count = %d, expected ~%d", len(videoFrames), ticks)
+	require.InDelta(t, ticks, len(videoFrames), 15,
+		"expected ~%d video frames, got %d", ticks, len(videoFrames))
 
 	// Verify PTS is monotonically increasing.
 	ptsValues := make([]int64, len(videoFrames))
@@ -180,6 +185,7 @@ func TestFullPipelineTransitionToTS(t *testing.T) {
 	h.addSource("camB", sourceB)
 
 	// Cut to A and feed initial frames.
+	start := time.Now()
 	h.cut(t, "camA")
 	h.feedFrames("camA", 15, 90000)
 	h.waitForPipeline(200 * time.Millisecond)
@@ -200,15 +206,18 @@ func TestFullPipelineTransitionToTS(t *testing.T) {
 	h.cut(t, "camB")
 	h.feedFrames("camB", 15, 90000+45*ptsDelta)
 	h.waitForPipeline(200 * time.Millisecond)
+	elapsed := time.Since(start)
 
 	// Write TS and verify.
 	tsPath := h.writeTS(t)
 	testutil.RequireNoErrors(t, tsPath)
 
+	// One program frame per reference clock tick from the first cut on.
 	videoFrames := testutil.ProbeVideoFrames(t, tsPath)
-	t.Logf("MEASURE: video frame count = %d, expected ~60", len(videoFrames))
-	require.InDelta(t, 60, len(videoFrames), 15,
-		"expected ~60 video frames, got %d", len(videoFrames))
+	ticks := int(elapsed / h.sw.PipelineFormat().FrameDuration())
+	t.Logf("MEASURE: video frame count = %d, expected ~%d", len(videoFrames), ticks)
+	require.InDelta(t, ticks, len(videoFrames), 15,
+		"expected ~%d video frames, got %d", ticks, len(videoFrames))
 
 	// Verify PTS monotonic.
 	ptsValues := make([]int64, len(videoFrames))
@@ -486,6 +495,7 @@ func TestFullPipelineLayoutToTS(t *testing.T) {
 			IsKeyframe: i == 0,
 		}
 		h.sw.IngestRawVideo("camB", pfB)
+		time.Sleep(h.sw.PipelineFormat().FrameDuration())
 	}
 
 	h.waitForPipeline(400 * time.Millisecond)
@@ -596,6 +606,7 @@ func TestFullPipelineKeyingToTS(t *testing.T) {
 			IsKeyframe: i == 0,
 		}
 		h.sw.IngestRawVideo("camB", pfB)
+		time.Sleep(h.sw.PipelineFormat().FrameDuration())
 	}
 
 	h.waitForPipeline(400 * time.Millisecond)
@@ -1378,16 +1389,19 @@ func monoToStereo(mono []float32) []float32 {
 // feedPCMChunks feeds PCM data to the mixer in chunks, paced at real-time rate.
 // This simulates a continuous audio source.
 func feedPCMChunks(mixer *audio.Mixer, sourceKey string, pcm []float32, chunkSize, sampleRate int) {
-	// Pace at slightly faster than real-time to keep ring buffer fed.
+	// Deliver in real time on the media timeline, as a live source does:
+	// the mixer reads audio at its media time, so audio stamped off the
+	// current time is never played.
 	chunkDuration := time.Duration(float64(time.Second) * float64(chunkSize/2) / float64(sampleRate))
-	pace := chunkDuration * 8 / 10 // 80% of real-time → slightly faster
+	tk := time.NewTicker(chunkDuration)
+	defer tk.Stop()
 
-	pts := int64(90000)
+	pts := clock.NowPTS()
 	for offset := 0; offset+chunkSize <= len(pcm); offset += chunkSize {
 		chunk := pcm[offset : offset+chunkSize]
 		mixer.IngestPCM(sourceKey, chunk, pts, 2)
 		pts += int64(chunkSize/2) * 90000 / int64(sampleRate)
-		time.Sleep(pace)
+		<-tk.C
 	}
 }
 
@@ -1519,7 +1533,7 @@ func TestPipelineSourceIdentity(t *testing.T) {
 	require.Greater(t, len(decodedAll), len(decodedPhase1),
 		"phase 2: should have more decoded frames after feeding srcB")
 
-	decodedPhase2 := decodedAll[len(decodedPhase1):]
+	decodedPhase2 := h.sinceCut(decodedAll)
 	t.Logf("Phase 2 (srcB): decoded %d new frames", len(decodedPhase2))
 
 	// Allow first 3 frames for pipeline flush (stale srcA frames in encoder).
@@ -1558,7 +1572,7 @@ func TestPipelineSourceIdentity(t *testing.T) {
 	require.Greater(t, len(decodedAllP3), len(decodedAll),
 		"phase 3: should have more decoded frames after feeding srcA again")
 
-	decodedPhase3 := decodedAllP3[len(decodedAll):]
+	decodedPhase3 := h.sinceCut(decodedAllP3)
 	t.Logf("Phase 3 (srcA again): decoded %d new frames", len(decodedPhase3))
 
 	// Allow first 3 frames for pipeline flush.
@@ -1676,7 +1690,7 @@ func TestPipelineTransitionBlendProgression(t *testing.T) {
 		}
 		h.sw.IngestRawVideo("srcB", pfB)
 
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(h.sw.PipelineFormat().FrameDuration())
 	}
 
 	h.waitForPipeline(500 * time.Millisecond)

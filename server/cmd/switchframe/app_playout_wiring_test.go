@@ -66,9 +66,7 @@ func TestInitPlayout_RelayCarriesChannelVideoAndAudioWithoutGPU(t *testing.T) {
 		mixer: audio.NewMixer(audio.MixerConfig{
 			SampleRate:     48000,
 			Channels:       2,
-			ClockDriven:    true,
 			DecoderFactory: audioDecoderFactory(),
-			EncoderFactory: audioEncoderFactory(),
 		}),
 	}
 	require.NoError(t, a.initPlayout())

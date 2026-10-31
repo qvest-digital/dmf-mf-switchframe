@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/zsiec/switchframe/server/clock"
 	"log/slog"
 	"strings"
 	"sync"
@@ -498,12 +499,6 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	src.OnRawVideo = func(sourceKey string, yuv []byte, w, h int, pts int64) {
 		pts = ptsLin.Linearize(pts, srt.StreamVideo)
 
-		// Track source video PTS for A/V gap measurement.
-		a.sourceLastVideoPTS.Store(pts)
-		if a.sourceLastAudioPTS.Load() != 0 {
-			a.sourceAVGapInited.Store(true)
-		}
-
 		// Surface persistent size mismatch: if the decoded frame is larger than
 		// the pool buffer, each of the three fan-out copies below falls back to a
 		// fresh heap allocation every frame, defeating the off-GC-heap pool. Log
@@ -585,12 +580,6 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 
 		src.OnRawVideoGPU = func(sourceKey string, yDevPtr, uvDevPtr uintptr, pitch, w, h int, pts int64, bitDepth int) {
 			pts = ptsLin.Linearize(pts, srt.StreamVideo)
-
-			// Track source video PTS for A/V gap measurement.
-			a.sourceLastVideoPTS.Store(pts)
-			if a.sourceLastAudioPTS.Load() != 0 {
-				a.sourceAVGapInited.Store(true)
-			}
 
 			// Acquire pool frame for device-to-device copy.
 			frame, err := pool.Acquire()
@@ -677,12 +666,6 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 
 	src.OnRawAudio = func(sourceKey string, pcm []float32, pts int64, sampleRate, channels int) {
 		pts = ptsLin.Linearize(pts, srt.StreamAudio)
-
-		// Track source audio PTS for A/V gap measurement.
-		a.sourceLastAudioPTS.Store(pts)
-		if a.sourceLastVideoPTS.Load() != 0 {
-			a.sourceAVGapInited.Store(true)
-		}
 
 		pcmCopy := make([]float32, len(pcm))
 		copy(pcmCopy, pcm)
@@ -1161,8 +1144,11 @@ func (a *App) startSRTAudioRelay(rc *srtRelayContext) {
 	)
 	go func() {
 		for job := range rc.audioCh {
-			// Deliver to mixer.
-			a.mixer.IngestPCM(rc.key, job.pcm, job.pts, job.channels)
+			// An SRT stream has no media clock: its audio is placed on the
+			// timeline at its arrival, as its video is (Switcher.IngestRawVideo).
+			// A sender clock that drifts is moved back onto the read point by
+			// the mixer once it is a frame period off.
+			a.mixer.IngestPCM(rc.key, job.pcm, clock.ArrivalPTS(len(job.pcm)/max(job.channels, 1), job.sampleRate), job.channels)
 
 			// Encode for relay.
 			if rc.relay == nil {

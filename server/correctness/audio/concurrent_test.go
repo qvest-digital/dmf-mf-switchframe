@@ -12,25 +12,81 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 )
 
-// mockEncoder is a trivial encoder that converts float32 PCM to raw bytes.
-// It satisfies audio.Encoder without needing cgo/fdk-aac.
-type mockEncoder struct{}
+// rate48k is the mixer's sample rate as a media-timeline rate.
+var rate48k = clock.Rate{Num: 48000, Den: 1}
 
-func (e *mockEncoder) Encode(pcm []float32) ([]byte, error) {
-	// Just return some non-empty bytes so the mixer thinks encoding succeeded.
-	// We rely on SetRawAudioSink for actual PCM capture.
-	return make([]byte, len(pcm)*4), nil
+// period is the sample count the program clock asks the mixer for per call.
+const period = 1024
+
+// readLag is how far behind the current TAI time the program read point
+// runs, in samples: a feeder pushes a chunk once its media time is due, so
+// the reader finds it buffered two periods later.
+const readLag = 2 * period
+
+// nowIndex returns the 48 kHz media-timeline sample index of now.
+func nowIndex() uint64 { return clock.TimestampToIndex(rate48k, clock.TAINow()) }
+
+// runProgramClock stands in for the reference clock: until stop is closed
+// it calls m.ProduceSamples for every period whose end is readLag behind
+// now, on a contiguous read point, then AdvanceCrossfade. The returned
+// channel is closed when the loop has exited.
+func runProgramClock(m *audio.Mixer, stop <-chan struct{}) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		read := nowIndex() - readLag
+		for {
+			for read+period <= nowIndex()-readLag {
+				m.ProduceSamples(read, period, clock.IndexPTS(rate48k, read))
+				m.AdvanceCrossfade()
+				read += period
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}()
+	return done
 }
 
-func (e *mockEncoder) Close() error { return nil }
-
-func mockEncoderFactory(sampleRate, channels int) (audio.Encoder, error) {
-	return &mockEncoder{}, nil
+// feedRealtime ingests pcm (interleaved stereo, looped) for key in chunks
+// of chunk samples, each stamped with its media time and pushed once that
+// time is due, as a live source delivers. It returns the number of chunks
+// pushed once stop is closed, or once pcm is used up when loop is false.
+func feedRealtime(m *audio.Mixer, key string, pcm []float32, chunk int, loop bool, stop <-chan struct{}) int {
+	const ch = 2
+	start := nowIndex()
+	pushed := 0
+	for offset := 0; ; offset += chunk * ch {
+		if offset+chunk*ch > len(pcm) {
+			if !loop {
+				return pushed
+			}
+			offset = 0
+		}
+		idx := start + uint64(pushed*chunk)
+		for nowIndex() < idx {
+			select {
+			case <-stop:
+				return pushed
+			case <-time.After(time.Millisecond):
+			}
+		}
+		select {
+		case <-stop:
+			return pushed
+		default:
+		}
+		m.IngestPCM(key, pcm[offset:offset+chunk*ch], clock.IndexPTS(rate48k, idx), ch)
+		pushed++
+	}
 }
 
 // generateStereoSine produces interleaved stereo float32 PCM at the given frequency.
@@ -68,8 +124,9 @@ func pcmStats(pcm []float32) (rms float64, maxAbs float64, hasNaN bool, hasInf b
 	return
 }
 
-// newTestMixer creates a mixer with mock encoder and raw PCM capture.
-// Returns the mixer and a function to retrieve all captured PCM.
+// newTestMixer creates a mixer with raw PCM capture, driven by a program
+// clock (runProgramClock) until the test ends. Returns the mixer and a
+// function to retrieve all captured PCM.
 func newTestMixer(t *testing.T) (*audio.Mixer, func() []float32) {
 	t.Helper()
 
@@ -77,10 +134,8 @@ func newTestMixer(t *testing.T) (*audio.Mixer, func() []float32) {
 	var captured []float32
 
 	m := audio.NewMixer(audio.MixerConfig{
-		SampleRate:     48000,
-		Channels:       2,
-		Output:         func(f *media.AudioFrame) {}, // no-op, we use raw sink
-		EncoderFactory: mockEncoderFactory,
+		SampleRate: 48000,
+		Channels:   2,
 	})
 
 	sink := audio.RawAudioSink(func(pcm []float32, pts int64, sampleRate, channels int) {
@@ -89,6 +144,13 @@ func newTestMixer(t *testing.T) (*audio.Mixer, func() []float32) {
 		mu.Unlock()
 	})
 	m.SetRawAudioSink(sink)
+
+	stop := make(chan struct{})
+	done := runProgramClock(m, stop)
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+	})
 
 	getCaptured := func() []float32 {
 		mu.Lock()
@@ -129,7 +191,6 @@ func TestMixerConcurrentIngestFromMultipleSources(t *testing.T) {
 
 	const sampleRate = 48000
 	const durationSec = 1.0
-	const chunkSize = 1024 * 2 // stereo chunk = 1024 samples * 2 channels
 
 	// 4 goroutines feed simultaneously for 1 second
 	var wg sync.WaitGroup
@@ -138,18 +199,13 @@ func TestMixerConcurrentIngestFromMultipleSources(t *testing.T) {
 		go func(key string, freq float64) {
 			defer wg.Done()
 			pcm := generateStereoSine(freq, sampleRate, durationSec)
-			// Feed in chunks matching AAC frame size
-			for offset := 0; offset+chunkSize <= len(pcm); offset += chunkSize {
-				m.IngestPCM(key, pcm[offset:offset+chunkSize], int64(offset)*90000/int64(sampleRate*2), 2)
-				// Pace to avoid overwhelming the ring buffer
-				time.Sleep(time.Millisecond * 5)
-			}
+			feedRealtime(m, key, pcm, 1024, false, nil)
 		}(s.key, s.freqHz)
 	}
 
 	wg.Wait()
 
-	// Give the mixer ticker time to drain remaining ring buffer data
+	// Give the program clock time to drain remaining ring buffer data
 	time.Sleep(200 * time.Millisecond)
 
 	output := getCaptured()
@@ -178,7 +234,6 @@ func TestMixerAddRemoveWhileMixing(t *testing.T) {
 	defer m.Close()
 
 	const sampleRate = 48000
-	const chunkSize = 1024 * 2
 
 	// Start with ch1 and ch2 feeding
 	m.AddChannel("ch1")
@@ -193,20 +248,7 @@ func TestMixerAddRemoveWhileMixing(t *testing.T) {
 
 	feedChannel := func(key string, freqHz float64, stop <-chan struct{}) {
 		pcm := generateStereoSine(freqHz, sampleRate, 5.0) // long buffer
-		offset := 0
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			if offset+chunkSize > len(pcm) {
-				offset = 0 // loop
-			}
-			m.IngestPCM(key, pcm[offset:offset+chunkSize], int64(offset)*90000/int64(sampleRate*2), 2)
-			offset += chunkSize
-			time.Sleep(10 * time.Millisecond)
-		}
+		feedRealtime(m, key, pcm, 1024, true, stop)
 	}
 
 	// Start feeding ch1 and ch2
@@ -271,7 +313,7 @@ func TestMixerAddRemoveWhileMixing(t *testing.T) {
 	close(stopCh3)
 	close(stopCh4)
 
-	// Give ticker time to flush
+	// Give the program clock time to flush
 	time.Sleep(100 * time.Millisecond)
 
 	output := getCaptured()
@@ -301,12 +343,10 @@ func TestMixerAddRemoveWhileMixing(t *testing.T) {
 func TestMixerCrossfadeConcurrentWithIngest(t *testing.T) {
 	t.Parallel()
 
-	// ClockDriven mixer: no internal ticker, ProduceSamples is deterministic.
+	// No program clock: ProduceSamples is called here, deterministically.
 	m := audio.NewMixer(audio.MixerConfig{
-		SampleRate:  48000,
-		Channels:    2,
-		ClockDriven: true,
-		Output:      func(_ *media.AudioFrame) {},
+		SampleRate: 48000,
+		Channels:   2,
 	})
 	defer m.Close()
 
@@ -331,6 +371,7 @@ func TestMixerCrossfadeConcurrentWithIngest(t *testing.T) {
 	// data races, panics, or corruption under concurrent access.
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
+	feedStart := nowIndex()
 
 	for _, feed := range []struct {
 		key string
@@ -352,7 +393,8 @@ func TestMixerCrossfadeConcurrentWithIngest(t *testing.T) {
 				if offset+chunkSize > len(pcm) {
 					offset = 0
 				}
-				m.IngestPCM(key, pcm[offset:offset+chunkSize], int64(offset)*90000/int64(sampleRate*2), 2)
+				pts := clock.IndexPTS(rate48k, feedStart+uint64(offset/2))
+				m.IngestPCM(key, pcm[offset:offset+chunkSize], pts, 2)
 				offset += chunkSize
 				time.Sleep(time.Millisecond)
 			}
@@ -372,13 +414,16 @@ func TestMixerCrossfadeConcurrentWithIngest(t *testing.T) {
 	// Ring buffer capacity is 10*1024*2 = 20480 samples.
 	// We'll produce 8 ticks * 1024 samples * 2 channels = 16384 values per tick.
 	// Fill with ~9K stereo samples (18K values) to stay within capacity.
+	// The fill is stamped as the audio from read on, where the reads are.
 	const fillSamples = 9 * 1024 * 2 // stereo values to push
-	m.IngestPCM("camA", pcmA[:fillSamples], 0, 2)
-	m.IngestPCM("camB", pcmB[:fillSamples], 0, 2)
+	read := nowIndex()
+	m.IngestPCM("camA", pcmA[:fillSamples], clock.IndexPTS(rate48k, read), 2)
+	m.IngestPCM("camB", pcmB[:fillSamples], clock.IndexPTS(rate48k, read), 2)
 
 	// Produce pre-crossfade output to verify camA signal is present.
 	const samplesPerTick = 1024
-	preCrossfade := m.ProduceSamples(samplesPerTick)
+	preCrossfade := m.ProduceSamples(read, samplesPerTick, clock.IndexPTS(rate48k, read))
+	read += samplesPerTick
 	require.Greater(t, len(preCrossfade), 0, "pre-crossfade should produce output")
 
 	preRMS, _, _, _ := pcmStats(preCrossfade)
@@ -389,10 +434,11 @@ func TestMixerCrossfadeConcurrentWithIngest(t *testing.T) {
 	m.OnProgramChange("camB")
 
 	// Produce samples deterministically through the 4-tick crossfade ramp
-	// and a few ticks beyond. No timing dependency — purely sequential.
+	// and a few ticks beyond. No timing dependency -- purely sequential.
 	var allOutput []float32
 	for i := 0; i < 8; i++ {
-		samples := m.ProduceSamples(samplesPerTick)
+		samples := m.ProduceSamples(read, samplesPerTick, clock.IndexPTS(rate48k, read))
+		read += samplesPerTick
 		m.AdvanceCrossfade()
 		allOutput = append(allOutput, samples...)
 	}
@@ -468,11 +514,11 @@ func TestMixerRingBufferStarvation(t *testing.T) {
 	const sampleRate = 48000
 	const chunkSize = 1024 * 2
 
-	// Add channel but don't feed it — mixer should read silence from empty ring buffer
+	// Add channel but don't feed it -- mixer should read silence from empty ring buffer
 	m.AddChannel("starved")
 	m.SetActive("starved", true)
 
-	// Wait 500ms — the mixer ticker is running, reading from the empty ring buffer
+	// Wait 500ms -- the program clock is running, reading from the empty ring buffer
 	time.Sleep(500 * time.Millisecond)
 
 	outputBeforeFeed := getCaptured()
@@ -497,22 +543,7 @@ func TestMixerRingBufferStarvation(t *testing.T) {
 	// Now start feeding
 	pcm := generateStereoSine(440, sampleRate, 1.0)
 	stop := make(chan struct{})
-	go func() {
-		offset := 0
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			if offset+chunkSize > len(pcm) {
-				offset = 0
-			}
-			m.IngestPCM("starved", pcm[offset:offset+chunkSize], int64(offset)*90000/int64(sampleRate*2), 2)
-			offset += chunkSize
-			time.Sleep(10 * time.Millisecond)
-		}
-	}()
+	go feedRealtime(m, "starved", pcm, 1024, true, stop)
 
 	// Wait for signal to propagate through ring buffer
 	time.Sleep(500 * time.Millisecond)
@@ -543,7 +574,6 @@ func TestMixerHighContentionIngest(t *testing.T) {
 	defer m.Close()
 
 	const sampleRate = 48000
-	const chunkSize = 1024 * 2
 	const numChannels = 8
 
 	// Add 8 channels
@@ -557,7 +587,8 @@ func TestMixerHighContentionIngest(t *testing.T) {
 	var totalIngests atomic.Int64
 	stop := make(chan struct{})
 
-	// 8 goroutines all feeding at high rate (every 10ms instead of 21ms)
+	// 8 goroutines all feeding at high rate: 256-sample chunks, four
+	// ingests per program period.
 	for i := 0; i < numChannels; i++ {
 		wg.Add(1)
 		go func(idx int) {
@@ -565,21 +596,7 @@ func TestMixerHighContentionIngest(t *testing.T) {
 			key := fmt.Sprintf("src%d", idx)
 			freq := 220.0 * float64(idx+1)
 			pcm := generateStereoSine(freq, sampleRate, 5.0)
-			offset := 0
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-				}
-				if offset+chunkSize > len(pcm) {
-					offset = 0
-				}
-				m.IngestPCM(key, pcm[offset:offset+chunkSize], int64(offset)*90000/int64(sampleRate*2), 2)
-				offset += chunkSize
-				totalIngests.Add(1)
-				time.Sleep(10 * time.Millisecond) // faster than ticker cadence
-			}
+			totalIngests.Add(int64(feedRealtime(m, key, pcm, 256, true, stop)))
 		}(i)
 	}
 

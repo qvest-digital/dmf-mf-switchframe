@@ -17,10 +17,13 @@ var (
 		"A source's fader level.", []string{"source"}, nil)
 	descChannelMuted = prometheus.NewDesc("switchframe_audio_source_muted",
 		"1 while a source is muted.", []string{"source"}, nil)
+	descChannelRealigns = prometheus.NewDesc("switchframe_audio_source_realigns_total",
+		"Times a source's audio was moved onto the program read point because it ran more than a period off: the behaviour for sources whose audio has no media clock, such as a drifting SRT stream.",
+		[]string{"source"}, nil)
 	descMixCycle = prometheus.NewDesc("switchframe_audio_mix_cycle_seconds",
 		"Time the most recent mix cycle took.", nil, nil)
 	descMaxFrameGap = prometheus.NewDesc("switchframe_audio_max_frame_gap_seconds",
-		"Longest gap between program audio frames since the mixer started.", nil, nil)
+		"Longest gap between consecutive program audio periods since the mixer started.", nil, nil)
 	descDecodeErrors = prometheus.NewDesc("switchframe_audio_decode_errors_total",
 		"Source audio frames the mixer failed to decode.", nil, nil)
 )
@@ -45,7 +48,7 @@ func NewMetricsCollector(m *Mixer) *MetricsCollector {
 func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		descLoudness, descProgramPeak, descChannelPeak, descChannelLevel, descChannelMuted,
-		descMixCycle, descMaxFrameGap, descDecodeErrors,
+		descChannelRealigns, descMixCycle, descMaxFrameGap, descDecodeErrors,
 	} {
 		ch <- d
 	}
@@ -85,5 +88,8 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 			muted = 1
 		}
 		gauge(descChannelMuted, muted, source)
+	}
+	for key, n := range c.m.ChannelRealigns() {
+		ch <- prometheus.MustNewConstMetric(descChannelRealigns, prometheus.CounterValue, float64(n), metrics.SourceLabel(key))
 	}
 }

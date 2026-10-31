@@ -11,9 +11,9 @@ const aacPrimingSamples = 1024
 
 // IngestFrame processes an AAC audio frame from a source. Decodes to PCM,
 // applies the per-channel processing chain (trim -> EQ -> compressor), and
-// pushes the processed result into the channel's ring buffer for clock-driven
-// output. No immediate output is produced -- the outputTicker reads from ring
-// buffers at a fixed cadence.
+// pushes the processed result into the channel's ring buffer, stamped with
+// frame.PTS. No immediate output is produced -- ProduceSamples reads the
+// ring buffers.
 func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	// Audio forwarding: if this source is being forwarded to another channel
 	// (e.g., live source → playout channel), ingest for the destination too.
@@ -122,7 +122,7 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 	ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
 
 	// Pipeline order: Trim -> Phase -> HPF -> Gate -> EQ -> Compressor -> Balance -> [push to ring buffer]
-	// Fader gain and transition gain are applied by the ticker at read time.
+	// Fader gain and transition gain are applied by ProduceSamples at read time.
 
 	// Apply trim (input gain)
 	ch.trimBuf = growBuf(ch.trimBuf, len(pcm))
@@ -171,6 +171,7 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 
 	// Push processed PCM to ring buffer for clock-driven output.
 	ch.ringBuf.Push(trimmedPCM)
+	m.stampRing(ch, frame.PTS, len(trimmedPCM)/m.numChannels)
 	m.mu.Unlock()
 }
 
@@ -242,7 +243,7 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 	pcm = m.resampleIfNeeded(ch, pcm, 0) // PCM sources don't carry sample rate in-band
 
 	// Pipeline order: Trim -> Phase -> HPF -> Gate -> EQ -> Compressor -> Balance -> [push to ring buffer]
-	// Fader gain and transition gain are applied by the ticker at read time.
+	// Fader gain and transition gain are applied by ProduceSamples at read time.
 
 	// Apply trim (input gain)
 	ch.trimBuf = growBuf(ch.trimBuf, len(pcm))
@@ -291,8 +292,9 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 
 	// Always push to ring buffer, even for inactive channels. This keeps the
 	// buffer primed so that when a channel activates via AFV, there is no
-	// silence gap from an empty ring buffer. The tick() loop only reads from
+	// silence gap from an empty ring buffer. ProduceSamples only reads from
 	// active channels, so inactive data won't be mixed into output.
 	ch.ringBuf.Push(trimmedPCM)
+	m.stampRing(ch, pts, len(trimmedPCM)/m.numChannels)
 	m.mu.Unlock()
 }

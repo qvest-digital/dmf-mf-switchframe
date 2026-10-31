@@ -119,6 +119,7 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 			"delay_ms":            ch.audioDelay.DelayMs(),
 			"peak_l_dbfs":         LinearToDBFS(ch.peakL),
 			"peak_r_dbfs":         LinearToDBFS(ch.peakR),
+			"realigns":            ch.realigns,
 		}
 		channelDetails[key] = detail
 	}
@@ -138,15 +139,12 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 		"channels_muted":         mutedCount,
 		"channels":               channelDetails,
 		"frames_mixed":           m.framesMixed.Load(),
-		"frames_output_total":    m.outputFrameCount.Load(),
 		"trans_crossfade_active": transCrossfadeActive,
 		"trans_crossfade_pos":    transCrossfadePos,
 		"trans_crossfade_from":   transCrossfadeFrom,
 		"trans_crossfade_to":     transCrossfadeTo,
 		"trans_crossfade_count":  m.transCrossfades.Load(),
 		"decode_errors":          m.decodeErrors.Load(),
-		"encode_errors":          m.encodeErrors.Load(),
-		"ticker_frames_dropped":  m.tickerFramesDropped.Load(),
 		"max_inter_frame_gap_ms": maxGapMs,
 	}
 

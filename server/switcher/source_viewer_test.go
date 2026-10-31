@@ -3,7 +3,6 @@ package switcher
 import (
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/ccx"
@@ -37,10 +36,6 @@ func (m *mockFrameHandler) handleVideoFrame(sourceKey string, frame *media.Video
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.videos = append(m.videos, videoFrameWithSource{sourceKey, frame})
-}
-
-func (m *mockFrameHandler) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
-	// No-op for source viewer tests
 }
 
 func (m *mockFrameHandler) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
@@ -114,12 +109,8 @@ func TestSourceViewer_ConcurrentFrameSyncToggle(t *testing.T) {
 	// Build a minimal DelayBuffer and FrameSynchronizer to use as toggle targets.
 	db := NewDelayBuffer(handler)
 
-	videoOut := func(key string, f media.VideoFrame) {}
-	audioOut := func(key string, f media.AudioFrame) {}
-	fs := NewFrameSynchronizer(33333*time.Microsecond, videoOut, audioOut)
+	fs := NewFrameSynchronizer()
 	fs.AddSource("camera1")
-	fs.Start()
-	defer fs.Stop()
 
 	const numFrames = 2000
 	var wg sync.WaitGroup
@@ -180,13 +171,7 @@ func TestSourceViewer_AudioBypassesFrameSync(t *testing.T) {
 	handler := &mockFrameHandler{}
 	sv := newSourceViewer("camera1", handler)
 
-	audioOut := func(key string, f media.AudioFrame) {
-		handler.handleAudioFrame(key, &f)
-	}
-	videoOut := func(key string, f media.VideoFrame) {
-		handler.handleVideoFrame(key, &f)
-	}
-	fs := NewFrameSynchronizer(33*time.Millisecond, videoOut, audioOut)
+	fs := NewFrameSynchronizer()
 	fs.AddSource("camera1")
 	sv.frameSync.Store(fs)
 

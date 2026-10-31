@@ -56,10 +56,8 @@ func TestSoak(t *testing.T) {
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output: func(frame *media.AudioFrame) {
-			programRelay.BroadcastAudio(frame)
-		},
 	})
+	driveProgramAudio(sw, mixer, mockAACEncode)
 	defer func() { _ = mixer.Close() }()
 
 	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {

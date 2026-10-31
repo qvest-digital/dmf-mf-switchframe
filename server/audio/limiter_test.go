@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
 )
 
 func TestLimiter_BelowThreshold_Passthrough(t *testing.T) {
@@ -390,7 +389,6 @@ func newTestMixerForLimiter(t *testing.T) *Mixer {
 	return NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(_ *media.AudioFrame) {},
 	})
 }
 

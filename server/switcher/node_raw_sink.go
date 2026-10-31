@@ -20,10 +20,10 @@ func (n *rawSinkNode) Latency() time.Duration                { return 50 * time.
 func (n *rawSinkNode) Close() error                          { return nil }
 
 func (n *rawSinkNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
+	// The sink reads the YUV synchronously, under the pipeline's own
+	// reference, and copies what it keeps.
 	if sinkPtr := n.sink.Load(); sinkPtr != nil {
-		src.Ref()        // +1 for sink
-		(*sinkPtr)(src)  // sink reads YUV synchronously
-		src.ReleaseYUV() // -1 for sink (pipeline's ref remains)
+		(*sinkPtr)(src)
 	}
 	return src
 }

@@ -215,10 +215,8 @@ type PerfMixCycleCurrent struct {
 
 // PerfAudioCounters holds audio frame counts.
 type PerfAudioCounters struct {
-	Output       int64 `json:"output"`
 	Mixed        int64 `json:"mixed"`
 	DecodeErrors int64 `json:"decode_errors"`
-	EncodeErrors int64 `json:"encode_errors"`
 }
 
 // PerfLoudness holds LUFS meter values.
@@ -381,10 +379,8 @@ func (s *Sampler) Snapshot(baselineName string) *PerfSnapshot {
 				Windows: ringToWindows(s.mixCycleRing),
 			},
 			Counters: PerfAudioCounters{
-				Output:       mx.FramesOutput,
 				Mixed:        mx.FramesMixed,
 				DecodeErrors: mx.DecodeErrors,
-				EncodeErrors: mx.EncodeErrors,
 			},
 			Loudness: PerfLoudness{
 				MomentaryLUFS:  mx.MomentaryLUFS,

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/zsiec/switchframe/server/clock"
 	"log/slog"
 	"net"
 	"net/http"
@@ -567,6 +568,7 @@ func (a *App) activateST2110Receiver(id string, params nmos.StagedParams) error 
 			Key:      sourceKey,
 			Channels: 2,
 			OnRawVideo: func(key string, yuv []byte, w, h int, pts int64) {
+				pts = st2110Anchor(key).PTS(pts)
 				pf := &switcher.ProcessingFrame{
 					Data:   yuv,
 					Width:  w,
@@ -626,7 +628,7 @@ func (a *App) activateST2110Receiver(id string, params nmos.StagedParams) error 
 			Key:      sourceKey,
 			Channels: 2,
 			OnRawAudio: func(key string, pcm []float32, pts int64, channels int) {
-				a.mixer.IngestPCM(key, pcm, pts, channels)
+				a.mixer.IngestPCM(key, pcm, st2110Anchor(key).PTS(pts), channels)
 			},
 		})
 
@@ -1060,4 +1062,14 @@ func clockRefType(ptpMode string) string {
 		return "ptp"
 	}
 	return "internal"
+}
+
+// st2110Anchors places each ST 2110 source's media clock on the engine
+// timeline, one anchor per source key shared by its video and audio
+// receivers, so the pair keeps its own A/V relation.
+var st2110Anchors sync.Map // source key -> *clock.Anchor
+
+func st2110Anchor(key string) *clock.Anchor {
+	a, _ := st2110Anchors.LoadOrStore(key, &clock.Anchor{})
+	return a.(*clock.Anchor)
 }

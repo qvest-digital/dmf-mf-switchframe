@@ -67,8 +67,11 @@ var (
 
 // SetTAISource replaces the TAI clock. The mxl package installs libmxl's
 // mxlGetTime; without it, the system clock stands in, which differs from
-// TAI by a constant only.
+// TAI by a constant only. nil restores the system clock.
 func SetTAISource(now func() int64) {
+	if now == nil {
+		now = func() int64 { return time.Now().UnixNano() }
+	}
 	taiNowMu.Lock()
 	taiNow = now
 	taiNowMu.Unlock()
@@ -112,6 +115,13 @@ func PTSIndex(r Rate, pts int64) uint64 {
 	return TimestampToIndex(r, TimestampOf(pts))
 }
 
+// ArrivalPTS returns the PTS of the first of n samples at the given rate
+// that end now: how audio without a media clock is placed on the
+// timeline, at its arrival.
+func ArrivalPTS(n, sampleRate int) int64 {
+	return PTS(TAINow() - int64(n)*1_000_000_000/int64(sampleRate))
+}
+
 // NowPTS returns the PTS of the current TAI time.
 func NowPTS() int64 {
 	return PTS(TAINow())
@@ -122,4 +132,42 @@ func roundDiv(a, b int64) int64 {
 		return (a + b/2) / b
 	}
 	return -((-a + b/2) / b)
+}
+
+// Anchor maps a source's own 90 kHz timeline, such as an RTP media clock
+// locked to PTP, onto the engine timeline: the first timestamp is
+// placed at the time it arrives and every later one keeps its distance to
+// it, so the source's video and audio keep their own relation (its lip
+// sync) and its frame cadence. A jump of more than MaxAnchorSkew away from
+// the clock, as on a source restart, places the source again.
+type Anchor struct {
+	mu     sync.Mutex
+	offset int64
+	set    bool
+	moves  int64
+}
+
+// MaxAnchorSkew is how far an anchored source may run from the clock
+// before it is placed again.
+const MaxAnchorSkew = 2 * 90000
+
+// PTS maps the source timestamp src to the engine timeline.
+func (a *Anchor) PTS(src int64) int64 {
+	now := NowPTS()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.set {
+		a.offset, a.set = now-src, true
+	} else if d := src + a.offset - now; d > MaxAnchorSkew || d < -MaxAnchorSkew {
+		a.offset = now - src
+		a.moves++
+	}
+	return src + a.offset
+}
+
+// Moves returns how often the source was placed again after a jump.
+func (a *Anchor) Moves() int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.moves
 }

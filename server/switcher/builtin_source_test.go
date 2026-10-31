@@ -445,7 +445,7 @@ func TestSwitcher_SpriteMotionIsMonotonic(t *testing.T) {
 		// bars region above.
 		cbOff := w * h
 		halfW := w / 2
-		trackY := (h*4/5) + (h-(h*4/5))/2
+		trackY := (h * 4 / 5) + (h-(h*4/5))/2
 		if trackY >= h {
 			trackY = h - 1
 		}

@@ -13,14 +13,12 @@ import (
 // Store the new pointer. The struct is immutable once published — never
 // mutate fields on a pointer returned by Load.
 type hotState struct {
-	programSource         string
-	previewSource         string
-	state                 State
-	transTypeOrig         string
-	transitionMaxForward  float64
-	wallClockVideoEnabled bool
-	transEngine           *transition.Engine
-	onFirstVideoPTS       func(pts int64)
+	programSource        string
+	previewSource        string
+	state                State
+	transTypeOrig        string
+	transitionMaxForward float64
+	transEngine          *transition.Engine
 }
 
 // updateHotState publishes a new hotState snapshot via copy-on-write. The
@@ -55,15 +53,6 @@ func (s *Switcher) updateAudioHandlers(fn func(*audioHandlers)) {
 	s.audioHandlers.Store(&next)
 }
 
-func (s *Switcher) updateFrameSyncBundle(fn func(*frameSyncBundle)) {
-	var next frameSyncBundle
-	if old := s.frameSyncBundle.Load(); old != nil {
-		next = *old
-	}
-	fn(&next)
-	s.frameSyncBundle.Store(&next)
-}
-
 // withSourcesMut CoW-updates the atomic sources map. fn receives a fresh
 // shallow copy of the current map; mutations applied to fn's parameter are
 // published atomically via sourcesAtomic.Store when fn returns. The CoW
@@ -82,7 +71,6 @@ func (s *Switcher) withSourcesMut(fn func(m map[string]*sourceState)) {
 	s.sourcesAtomic.Store(&next)
 }
 
-
 // storeTransitionAbortThreshold bit-packs a float64 into the uint64 atomic.
 func (s *Switcher) storeTransitionAbortThresholdAtomic(v float64) {
 	s.transitionAbortThresholdAtomic.Store(math.Float64bits(v))
@@ -96,7 +84,6 @@ func (s *Switcher) initAtomicSlots() {
 	s.hotState.Store(&hotState{state: StateIdle})
 	s.graphicsHandlers.Store(&graphicsHandlers{})
 	s.audioHandlers.Store(&audioHandlers{})
-	s.frameSyncBundle.Store(&frameSyncBundle{delayBuffer: s.delayBuffer})
 	// Seed sourcesAtomic to an empty map so *sourcesAtomic.Load() is never
 	// nil before the first Register call.
 	empty := map[string]*sourceState{}

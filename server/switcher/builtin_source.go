@@ -175,6 +175,7 @@ func (s *Switcher) registerBuiltinSourcesLocked() {
 			m[k] = ss
 		})
 		s.health.registerSource(k)
+		s.frameSync.AddSource(k)
 	}
 }
 
@@ -314,6 +315,8 @@ func (s *Switcher) builtinProducerLoop() {
 				PTS:    pts,
 				DTS:    pts,
 			}
+			// Managed, as the frame synchronizer keeps it beyond this call.
+			pframe.SetRefs(1)
 			s.IngestRawVideo(key, pframe)
 			if tap != nil {
 				// Tap sees the same bytes Frame() returned. Frame()
@@ -367,8 +370,8 @@ func fillYUVRect(buf []byte, f video.Format, width, height, x0, y0, x1, y1 int, 
 	yOff := 0
 	cbOff := f.CbOffset(width, height)
 	crOff := f.CrOffset(width, height)
-	chromaW := f.ChromaWidth(width)  // w/2 for both 420 and 422
-	chromaStep := 2                  // 4:2:0: chroma row every 2 luma rows
+	chromaW := f.ChromaWidth(width) // w/2 for both 420 and 422
+	chromaStep := 2                 // 4:2:0: chroma row every 2 luma rows
 	if f == video.YUV422_10bit {
 		chromaStep = 1 // 4:2:2: chroma row == luma row
 	}

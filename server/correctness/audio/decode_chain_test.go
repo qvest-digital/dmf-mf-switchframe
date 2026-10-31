@@ -6,12 +6,12 @@ import (
 	"math"
 	"math/cmplx"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 )
 
@@ -254,7 +254,7 @@ func TestAACDecodeChainSampleRate(t *testing.T) {
 }
 
 // ==========================================================================
-// TestMixerIngestAACFrame: feed AAC frames through mixer, verify non-silent output
+// TestMixerIngestAACFrame: feed AAC frames through mixer, verify non-silent mixed PCM
 // ==========================================================================
 
 func TestMixerIngestAACFrame(t *testing.T) {
@@ -294,30 +294,14 @@ func TestMixerIngestAACFrame(t *testing.T) {
 	}
 	t.Logf("MEASURE: prepared %d AAC frames for mixer ingest", len(aacFrames))
 
-	// Collect output frames from the mixer.
-	var outputFrames []*media.AudioFrame
-	outputCh := make(chan *media.AudioFrame, 100)
-
 	decoderFactory := func(sr, ch int) (audio.Decoder, error) {
 		return audio.NewFDKDecoder(sr, ch)
 	}
-	encoderFactory := func(sr, ch int) (audio.Encoder, error) {
-		return audio.NewFDKEncoder(sr, ch)
-	}
 
 	mixer := audio.NewMixer(audio.MixerConfig{
-		SampleRate: sampleRate,
-		Channels:   channels,
-		Output: func(f *media.AudioFrame) {
-			cp := *f
-			cp.Data = append([]byte(nil), f.Data...)
-			select {
-			case outputCh <- &cp:
-			default:
-			}
-		},
+		SampleRate:     sampleRate,
+		Channels:       channels,
 		DecoderFactory: decoderFactory,
-		EncoderFactory: encoderFactory,
 	})
 	defer mixer.Close()
 
@@ -326,64 +310,34 @@ func TestMixerIngestAACFrame(t *testing.T) {
 	mixer.AddChannel(sourceKey)
 	mixer.SetActive(sourceKey, true)
 
-	// Feed AAC frames.
-	pts := int64(0)
-	ptsDelta := int64(1024 * 90000 / sampleRate) // 90kHz clock
-	for _, aacData := range aacFrames {
+	// Feed each AAC frame stamped with its media time and read the program
+	// period it covers right after, as the reference clock does.
+	start := nowIndex()
+	var output []float32
+	for k, aacData := range aacFrames {
+		idx := start + uint64(k*frameSize)
 		mixer.IngestFrame(sourceKey, &media.AudioFrame{
-			PTS:        pts,
+			PTS:        clock.IndexPTS(rate48k, idx),
 			Data:       aacData,
 			SampleRate: sampleRate,
 			Channels:   channels,
 		})
-		pts += ptsDelta
+		output = append(output, mixer.ProduceSamples(idx, frameSize, clock.IndexPTS(rate48k, idx))...)
 	}
+	require.Len(t, output, len(aacFrames)*frameSize*channels)
 
-	// Wait for mixer output ticker to produce frames.
-	// The ticker runs at ~21.3ms intervals (1024/48000).
-	deadline := time.After(3 * time.Second)
-	minFrames := 5
-	for len(outputFrames) < minFrames {
-		select {
-		case f := <-outputCh:
-			outputFrames = append(outputFrames, f)
-		case <-deadline:
-			t.Logf("MEASURE: timed out waiting for mixer output, got %d frames", len(outputFrames))
-			goto analyze
-		}
-	}
-
-analyze:
-	t.Logf("MEASURE: mixer produced %d output frames", len(outputFrames))
-	require.Greater(t, len(outputFrames), 0, "mixer should produce at least 1 output frame")
-
-	// Decode output frames and check for non-silence.
-	outDec, err := audio.NewFDKDecoder(sampleRate, channels)
-	require.NoError(t, err)
-	defer outDec.Close()
-
-	var totalSamples int
 	var maxAbsVal float32
 	var rmsAccum float64
 	var rmsCount int
-	for _, f := range outputFrames {
-		if len(f.Data) == 0 {
-			continue
+	for _, s := range output {
+		absVal := float32(math.Abs(float64(s)))
+		if absVal > maxAbsVal {
+			maxAbsVal = absVal
 		}
-		pcm, decErr := outDec.Decode(f.Data)
-		if decErr != nil || pcm == nil {
-			continue
-		}
-		for _, s := range pcm {
-			absVal := float32(math.Abs(float64(s)))
-			if absVal > maxAbsVal {
-				maxAbsVal = absVal
-			}
-			rmsAccum += float64(s) * float64(s)
-			rmsCount++
-		}
-		totalSamples += len(pcm)
+		rmsAccum += float64(s) * float64(s)
+		rmsCount++
 	}
+	totalSamples := len(output)
 
 	rms := float32(0)
 	if rmsCount > 0 {

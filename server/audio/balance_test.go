@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
 )
 
 func TestBalanceGains_Center(t *testing.T) {
@@ -63,7 +62,6 @@ func TestSetBalance_ValidatesRange(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -89,7 +87,6 @@ func TestSetBalance_UpdatesCachedGains(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -117,7 +114,6 @@ func TestBalance_IngestPCM_HardLeftZerosRight(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -156,7 +152,6 @@ func TestBalance_CenterTransparency(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -195,7 +190,6 @@ func TestBalance_ChannelStatesIncludesBalance(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -216,7 +210,6 @@ func TestBalance_DebugSnapshotIncludesBalance(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -241,7 +234,6 @@ func TestBalance_IngestPCM_MonoIgnoresBalance(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   1,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 

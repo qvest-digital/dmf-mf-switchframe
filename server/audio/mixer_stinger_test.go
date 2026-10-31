@@ -5,14 +5,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
 )
 
 func TestMixer_SetStingerAudio_MonoUpmixesToStereo(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -44,7 +42,6 @@ func TestMixer_SetStingerAudio_SurroundDownmixesToStereo(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -87,7 +84,6 @@ func TestMixer_SetStingerAudio_DropsOnInvalidChannels(t *testing.T) {
 			m := NewMixer(MixerConfig{
 				SampleRate: 48000,
 				Channels:   2,
-				Output:     func(frame *media.AudioFrame) {},
 			})
 			defer func() { _ = m.Close() }()
 

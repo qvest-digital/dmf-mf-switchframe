@@ -3,6 +3,7 @@
 package switching
 
 import (
+	"bytes"
 	"context"
 	"math"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 	"github.com/zsiec/switchframe/server/internal"
@@ -89,6 +91,73 @@ func (c *captureViewer) clearVideos() {
 	c.videos = nil
 }
 
+// blackTag is the first byte of a broadcast-black program frame (Y=16).
+const blackTag = 0x10
+
+// rawFrame returns a 320x240 YUV420 frame whose every byte is tag, so the
+// first byte of the program frame made from it names its source.
+func rawFrame(tag byte) *switcher.ProcessingFrame {
+	return &switcher.ProcessingFrame{
+		Data:  bytes.Repeat([]byte{tag}, 320*240*3/2),
+		Width: 320, Height: 240,
+	}
+}
+
+// feedLive ingests a frame tagged tag every program frame period, as a
+// live source delivers them, until the returned stop func is called.
+func feedLive(sw *switcher.Switcher, key string, tag byte) (stop func()) {
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tk := time.NewTicker(sw.PipelineFormat().FrameDuration())
+		defer tk.Stop()
+		for {
+			sw.IngestRawVideo(key, rawFrame(tag))
+			select {
+			case <-done:
+				return
+			case <-tk.C:
+			}
+		}
+	}()
+	return func() { close(done); wg.Wait() }
+}
+
+// tagOf returns the source tag a program frame carries: the first byte of
+// a raw (encoder-less) broadcast, the last of a tagEncoder's output.
+type tagOf func(v *media.VideoFrame) byte
+
+func rawTag(v *media.VideoFrame) byte { return v.WireData[0] }
+func encTag(v *media.VideoFrame) byte { return v.WireData[len(v.WireData)-1] }
+
+// waitForTag waits until the program shows a frame tagged tag and returns
+// the index of the first one.
+func waitForTag(t *testing.T, c *captureViewer, tag byte, of tagOf) int {
+	t.Helper()
+	idx := -1
+	require.Eventually(t, func() bool {
+		for i, v := range c.videosCopy() {
+			if len(v.WireData) > 0 && of(v) == tag {
+				idx = i
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 5*time.Millisecond, "no program frame tagged 0x%02X", tag)
+	return idx
+}
+
+// tagEncoder is a mock encoder whose output ends with the first luma byte
+// of the frame it encoded, so an encoded program frame names its source.
+type tagEncoder struct{}
+
+func (tagEncoder) Encode(yuv []byte, _ int64, _ bool) ([]byte, bool, error) {
+	return []byte{0x00, 0x00, 0x00, 0x01, 0x65, yuv[0]}, true, nil
+}
+func (tagEncoder) Close() {}
+
 // ==========================================================================
 // 1. TestCutNoIntermediateFrames
 //
@@ -96,9 +165,8 @@ func (c *captureViewer) clearVideos() {
 // After Cut from A to B, the program relay output must transition
 // instantly: no blended/intermediate frames between A and B content.
 //
-// Uses the H.264 passthrough path (no pipeline/encoder) which is the
-// simplest way to verify cut correctness — frames pass directly from
-// the program source's relay through the Switcher to the program relay.
+// Uses the raw broadcast path (no pipeline/encoder), so each program
+// frame carries its source's tag. Both sources deliver live throughout.
 // ==========================================================================
 
 func TestCutNoIntermediateFrames(t *testing.T) {
@@ -111,70 +179,37 @@ func TestCutNoIntermediateFrames(t *testing.T) {
 	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
-	camARelay := distribution.NewRelay()
-	camBRelay := distribution.NewRelay()
-	sw.RegisterSource("camA", camARelay)
-	sw.RegisterSource("camB", camBRelay)
+	sw.RegisterSource("camA", distribution.NewRelay())
+	sw.RegisterSource("camB", distribution.NewRelay())
+	defer feedLive(sw, "camA", 0xAA)()
+	defer feedLive(sw, "camB", 0xBB)()
 
-	// Cut to A.
+	// Cut to A and wait for it on program.
 	require.NoError(t, sw.Cut(context.Background(), "camA"))
+	waitForTag(t, capture, 0xAA, rawTag)
 
-	// Send several frames from A (all tagged 0xAA in WireData).
-	for i := 0; i < 5; i++ {
-		camARelay.BroadcastVideo(&media.VideoFrame{
-			PTS:        int64(1000 + i*3003),
-			IsKeyframe: i == 0,
-			WireData:   []byte{0xAA},
-		})
-	}
-
-	// Verify we got 5 frames from A.
-	require.Equal(t, 5, capture.videoCount(), "should have 5 frames from camA")
-
-	// Cut to B.
+	// Cut to B and wait for some frames of it.
 	require.NoError(t, sw.Cut(context.Background(), "camB"))
+	firstB := waitForTag(t, capture, 0xBB, rawTag)
+	require.Eventually(t, func() bool { return capture.videoCount() > firstB+5 },
+		5*time.Second, 5*time.Millisecond)
 
-	// Send several frames from B (all tagged 0xBB).
-	for i := 0; i < 5; i++ {
-		camBRelay.BroadcastVideo(&media.VideoFrame{
-			PTS:        int64(2000 + i*3003),
-			IsKeyframe: i == 0,
-			WireData:   []byte{0xBB},
-		})
-	}
-
-	// Also send some frames from A (should NOT appear on program).
-	for i := 0; i < 3; i++ {
-		camARelay.BroadcastVideo(&media.VideoFrame{
-			PTS:        int64(3000 + i*3003),
-			IsKeyframe: i == 0,
-			WireData:   []byte{0xAA},
-		})
-	}
-
+	// The critical invariant: NO intermediate frames. Black only before
+	// camA's first frame, then camA, then camB, and nothing else.
 	videos := capture.videosCopy()
-	require.Equal(t, 10, len(videos), "should have 5+5 = 10 frames total")
-
-	// First 5 frames must be from A (tag 0xAA).
-	for i := 0; i < 5; i++ {
-		require.Equal(t, byte(0xAA), videos[i].WireData[0],
-			"frame %d should be from camA", i)
+	seq := []byte{blackTag, 0xAA, 0xBB}
+	at := 0
+	for i, v := range videos {
+		tag := rawTag(v)
+		for at < len(seq) && seq[at] != tag {
+			at++
+		}
+		require.Less(t, at, len(seq), "frame %d tag 0x%02X out of order (want black*, 0xAA+, 0xBB+)", i, tag)
 	}
+	require.Equal(t, byte(0xAA), rawTag(videos[firstB-1]), "frame before the first camB frame")
 
-	// Last 5 frames must be from B (tag 0xBB).
-	for i := 5; i < 10; i++ {
-		require.Equal(t, byte(0xBB), videos[i].WireData[0],
-			"frame %d should be from camB", i)
-	}
-
-	// The critical invariant: NO intermediate/blended frames.
-	// Frame 4 (last A) is 0xAA, frame 5 (first B) is 0xBB.
-	// There must be zero frames between these with any other tag.
-	require.Equal(t, byte(0xAA), videos[4].WireData[0], "last A frame tag")
-	require.Equal(t, byte(0xBB), videos[5].WireData[0], "first B frame tag")
-
-	t.Logf("Cut transition verified: frame[4]=0x%02X -> frame[5]=0x%02X (no intermediate frames)",
-		videos[4].WireData[0], videos[5].WireData[0])
+	t.Logf("Cut transition verified: frame[%d]=0x%02X -> frame[%d]=0x%02X (no intermediate frames)",
+		firstB-1, rawTag(videos[firstB-1]), firstB, rawTag(videos[firstB]))
 }
 
 // ==========================================================================
@@ -427,21 +462,16 @@ func TestRapidCutsNoDroppedFrames(t *testing.T) {
 	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
-	// Create 3 sources.
-	relays := make(map[string]*distribution.Relay)
+	// Create 3 live sources.
+	tags := map[string]byte{"cam1": 0x01, "cam2": 0x02, "cam3": 0x03}
 	for _, name := range []string{"cam1", "cam2", "cam3"} {
-		r := distribution.NewRelay()
-		sw.RegisterSource(name, r)
-		relays[name] = r
+		sw.RegisterSource(name, distribution.NewRelay())
+		defer feedLive(sw, name, tags[name])()
 	}
 
-	// Cut to cam1 first.
+	// Cut to cam1 first and wait for it on program.
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
-
-	// Clear IDR gate with initial keyframe.
-	relays["cam1"].BroadcastVideo(&media.VideoFrame{
-		PTS: 100, IsKeyframe: true, WireData: []byte{0x01},
-	})
+	waitForTag(t, capture, 0x01, rawTag)
 
 	// Perform 10 rapid cuts cycling through sources.
 	sources := []string{"cam2", "cam3", "cam1", "cam2", "cam3", "cam1", "cam2", "cam3", "cam1", "cam2"}
@@ -449,48 +479,23 @@ func TestRapidCutsNoDroppedFrames(t *testing.T) {
 		require.NoError(t, sw.Cut(context.Background(), src),
 			"cut %d to %s should not error", i, src)
 	}
+	capture.clearVideos()
 
 	// Final source should be cam2.
 	state := sw.State()
 	require.Equal(t, "cam2", state.ProgramSource,
 		"after 10 rapid cuts, program should be cam2")
 
-	// Send frames from the final program source.
-	for i := 0; i < 5; i++ {
-		relays["cam2"].BroadcastVideo(&media.VideoFrame{
-			PTS:        int64(5000 + i*3003),
-			IsKeyframe: i == 0,
-			WireData:   []byte{0x02},
-		})
-	}
-
-	// Also send frames from non-program sources (should be dropped).
-	relays["cam1"].BroadcastVideo(&media.VideoFrame{
-		PTS: 6000, IsKeyframe: true, WireData: []byte{0x01},
-	})
-	relays["cam3"].BroadcastVideo(&media.VideoFrame{
-		PTS: 7000, IsKeyframe: true, WireData: []byte{0x03},
-	})
-
+	// The final program source shows, and nothing else once it does.
+	first := waitForTag(t, capture, 0x02, rawTag)
+	require.Eventually(t, func() bool { return capture.videoCount() > first+5 },
+		5*time.Second, 5*time.Millisecond)
 	videos := capture.videosCopy()
-
-	// Count frames from each source by WireData tag.
 	tagCount := make(map[byte]int)
-	for _, v := range videos {
-		if len(v.WireData) > 0 {
-			tagCount[v.WireData[0]]++
-		}
+	for i, v := range videos[first:] {
+		tagCount[rawTag(v)]++
+		require.Equal(t, byte(0x02), rawTag(v), "frame %d after cam2 showed is not cam2", first+i)
 	}
-
-	// All post-cut frames should be from cam2 (tag 0x02).
-	// We may have some from cam1 (the initial cut) too.
-	require.Greater(t, tagCount[0x02], 0,
-		"should have frames from cam2 (final program source)")
-
-	// cam3 frames sent after the final cut should NOT appear.
-	// (cam3 is not on program after the last cut to cam2)
-	// Note: We can't guarantee zero cam3 frames due to race timing,
-	// but the final 5 frames from cam2 should all be present.
 	t.Logf("Frame tag distribution: %v (total: %d frames)", tagCount, len(videos))
 	t.Logf("Final state: program=%s, preview=%s", state.ProgramSource, state.PreviewSource)
 
@@ -664,7 +669,6 @@ func TestAudioCutViaSwitcher(t *testing.T) {
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
 	})
 	defer func() { _ = mixer.Close() }()
 
@@ -672,6 +676,11 @@ func TestAudioCutViaSwitcher(t *testing.T) {
 	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
 		mixer.IngestFrame(sourceKey, frame)
 	})
+	// The sync loop drives the mixer, and with it the crossfade ramp.
+	sw.SetAACBuffer(clock.NewAACFrameBuffer(2, 48000, func([]float32) ([]byte, error) {
+		return []byte{0}, nil
+	}))
+	sw.SetSyncMixer(mixer)
 
 	// Register sources with AFV.
 	camARelay := distribution.NewRelay()
@@ -700,35 +709,29 @@ func TestAudioCutViaSwitcher(t *testing.T) {
 	require.True(t, mixer.IsChannelActive("camB"),
 		"camB should be active after cut to camB")
 
-	// Wait for the cut crossfade ramp to complete. The mixer ticker
-	// advances the ramp state even without an encoder, at ~21.3ms intervals.
-	// 4 ticks = ~85ms; wait 150ms for margin.
-	time.Sleep(150 * time.Millisecond)
-	require.False(t, mixer.IsChannelActive("camA"),
+	// Wait for the cut crossfade ramp to complete. Each tick of the
+	// reference clock advances it; 4 ticks = ~133ms.
+	require.Eventually(t, func() bool { return !mixer.IsChannelActive("camA") },
+		2*time.Second, 5*time.Millisecond,
 		"camA should be inactive after cut crossfade completes")
 
 	t.Log("Audio AFV channel activation verified through cut operations")
 }
 
 // ==========================================================================
-// 8. TestCutWithRawPipelinePTSIdentity
+// 8. TestCutWithRawPipelineSourceIdentity
 //
-// Feed distinct-PTS YUV frames from two sources through the raw pipeline.
-// After a cut, verify the program output contains frames from the correct
-// source by inspecting PTS values — camA PTS are in [1000,2000) range,
-// camB PTS are in [5000,6000) range.
+// Two live sources with distinct luma through the raw pipeline and an
+// encoder whose output names the luma it encoded. After a cut, verify the
+// program output switches from camA to camB with no camA frame leaking
+// after camB started.
 //
 // This verifies the pipeline correctly routes only the program source's
 // frames through encode after a cut, with no stale-source frames leaking.
 // ==========================================================================
 
-func TestCutWithRawPipelinePTSIdentity(t *testing.T) {
+func TestCutWithRawPipelineSourceIdentity(t *testing.T) {
 	t.Parallel()
-
-	const (
-		width  = 320
-		height = 240
-	)
 
 	programRelay := distribution.NewRelay()
 	capture := newCaptureViewer("capture")
@@ -737,99 +740,31 @@ func TestCutWithRawPipelinePTSIdentity(t *testing.T) {
 	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
-	// Use mock encoder — preserves PTS through the pipeline.
 	sw.SetPipelineCodecs(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-		return transition.NewMockEncoder(), nil
+		return tagEncoder{}, nil
 	})
 	require.NoError(t, sw.BuildPipeline())
 
-	camARelay := distribution.NewRelay()
-	camBRelay := distribution.NewRelay()
-	sw.RegisterSource("camA", camARelay)
-	sw.RegisterSource("camB", camBRelay)
+	sw.RegisterSource("camA", distribution.NewRelay())
+	sw.RegisterSource("camB", distribution.NewRelay())
+	defer feedLive(sw, "camA", 100)()
+	defer feedLive(sw, "camB", 200)()
 
-	// Cut to A.
 	require.NoError(t, sw.Cut(context.Background(), "camA"))
+	waitForTag(t, capture, 100, encTag)
 
-	// Feed frames from A with PTS in [1000, 1000+5*3003).
-	yuvA := testutil.GenerateSolidYUV420(width, height, 100, 128, 128)
-	for i := 0; i < 5; i++ {
-		pf := &switcher.ProcessingFrame{
-			Data:       copyBytes(yuvA),
-			Width:      width,
-			Height:     height,
-			PTS:        int64(1000 + i*3003),
-			IsKeyframe: i == 0,
-		}
-		sw.IngestRawVideo("camA", pf)
-	}
-
-	time.Sleep(100 * time.Millisecond)
-
-	preCount := capture.videoCount()
-	require.Greater(t, preCount, 0, "should have frames from camA")
-
-	// Cut to B.
 	require.NoError(t, sw.Cut(context.Background(), "camB"))
-
-	// Feed frames from B with PTS in [50000, 50000+5*3003).
-	yuvB := testutil.GenerateSolidYUV420(width, height, 200, 128, 128)
-	for i := 0; i < 5; i++ {
-		pf := &switcher.ProcessingFrame{
-			Data:       copyBytes(yuvB),
-			Width:      width,
-			Height:     height,
-			PTS:        int64(50000 + i*3003),
-			IsKeyframe: i == 0,
-		}
-		sw.IngestRawVideo("camB", pf)
-	}
-
-	// Also inject frames from A (no longer on program — should be filtered).
-	for i := 0; i < 3; i++ {
-		pf := &switcher.ProcessingFrame{
-			Data:       copyBytes(yuvA),
-			Width:      width,
-			Height:     height,
-			PTS:        int64(90000 + i*3003),
-			IsKeyframe: i == 0,
-		}
-		sw.IngestRawVideo("camA", pf)
-	}
-
-	time.Sleep(200 * time.Millisecond)
+	firstB := waitForTag(t, capture, 200, encTag)
+	require.Eventually(t, func() bool { return capture.videoCount() > firstB+5 },
+		5*time.Second, 5*time.Millisecond)
 
 	videos := capture.videosCopy()
-	require.Greater(t, len(videos), preCount, "should have additional frames from camB")
-
-	// Classify output frames by PTS range.
-	// The pipeline may rewrite PTS (monotonic enforcement), but the
-	// ordering and source should be preserved. Check that:
-	// 1. Frames transition from camA-PTS region to camB-PTS region
-	// 2. No camA-PTS frames appear after camB-PTS frames start (no leaks)
-	foundA := false
-	foundB := false
-	bStarted := false
-	for i, v := range videos {
-		// camA PTS < 20000, camB PTS >= 40000. The pipeline's monotonic
-		// PTS enforcement means actual output PTS may differ, but the
-		// transition should still be ordered.
-		if v.PTS < 40000 {
-			foundA = true
-			if bStarted {
-				t.Errorf("frame %d: camA-range PTS %d appeared after camB frames started",
-					i, v.PTS)
-			}
-		} else {
-			foundB = true
-			bStarted = true
-		}
+	for i, v := range videos[firstB:] {
+		require.Equal(t, byte(200), encTag(v),
+			"frame %d: not camB after camB frames started", firstB+i)
 	}
 
-	require.True(t, foundA, "should have frames from camA (PTS < 40000)")
-	require.True(t, foundB, "should have frames from camB (PTS >= 40000)")
-
-	t.Logf("Raw pipeline cut verified: %d total frames, camA→camB PTS transition clean",
+	t.Logf("Raw pipeline cut verified: %d total frames, camA->camB transition clean",
 		len(videos))
 }
 
@@ -855,31 +790,27 @@ func TestPreviewDoesNotAffectProgram(t *testing.T) {
 	sw.RegisterSource("camA", camARelay)
 	sw.RegisterSource("camB", camBRelay)
 	sw.RegisterSource("camC", camCRelay)
+	defer feedLive(sw, "camA", 0xAA)()
+	defer feedLive(sw, "camB", 0xBB)()
+	defer feedLive(sw, "camC", 0xCC)()
 
 	// Cut to A.
 	require.NoError(t, sw.Cut(context.Background(), "camA"))
+	waitForTag(t, capture, 0xAA, rawTag)
+	capture.clearVideos()
 
-	// Change preview repeatedly — should not affect program.
+	// Change preview repeatedly -- should not affect program.
 	require.NoError(t, sw.SetPreview(context.Background(), "camB"))
 	require.NoError(t, sw.SetPreview(context.Background(), "camC"))
 	require.NoError(t, sw.SetPreview(context.Background(), "camB"))
 
-	// Send frames from all sources.
-	camARelay.BroadcastVideo(&media.VideoFrame{
-		PTS: 1000, IsKeyframe: true, WireData: []byte{0xAA},
-	})
-	camBRelay.BroadcastVideo(&media.VideoFrame{
-		PTS: 2000, IsKeyframe: true, WireData: []byte{0xBB},
-	})
-	camCRelay.BroadcastVideo(&media.VideoFrame{
-		PTS: 3000, IsKeyframe: true, WireData: []byte{0xCC},
-	})
-
-	// Only program source (A) should appear in output.
-	videos := capture.videosCopy()
-	require.Equal(t, 1, len(videos), "only program source should produce output")
-	require.Equal(t, byte(0xAA), videos[0].WireData[0],
-		"output should be from camA, not preview sources")
+	// Only the program source (A) appears in output.
+	require.Eventually(t, func() bool { return capture.videoCount() >= 10 },
+		5*time.Second, 5*time.Millisecond)
+	for i, v := range capture.videosCopy() {
+		require.Equal(t, byte(0xAA), rawTag(v),
+			"frame %d should be from camA, not preview sources", i)
+	}
 
 	// Verify state is consistent.
 	state := sw.State()

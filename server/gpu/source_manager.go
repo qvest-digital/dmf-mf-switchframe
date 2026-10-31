@@ -105,6 +105,31 @@ type gpuSourceEntry struct {
 	scaleBuf []byte
 
 	width, height int
+
+	// recent holds the last published frames, oldest first, each with a
+	// reference of its own, guarded by curMu. The program is read behind
+	// the newest frame (clock.ReaderDelayGrains), so the frame a tick shows
+	// is usually one of these rather than current (refAt).
+	recent [recentFrames]*GPUFrame
+}
+
+// recentFrames is how many published frames each source keeps for refAt:
+// the reader delay plus a frame of slack.
+const recentFrames = 4
+
+// refAt returns the entry's frame with the given PTS, with an extra
+// reference the caller must Release, or nil when none of the recent frames
+// has it.
+func refAt(entry *gpuSourceEntry, pts int64) *GPUFrame {
+	entry.curMu.Lock()
+	defer entry.curMu.Unlock()
+	for i := len(entry.recent) - 1; i >= 0; i-- {
+		if f := entry.recent[i]; f != nil && f.PTS == pts {
+			f.Ref()
+			return f
+		}
+	}
+	return nil
 }
 
 // refCurrent returns the entry's current frame with an extra reference taken
@@ -129,9 +154,28 @@ func refCurrent(entry *gpuSourceEntry) *GPUFrame {
 func publishCurrent(entry *gpuSourceEntry, frame *GPUFrame) {
 	entry.curMu.Lock()
 	old := entry.current.Swap(frame)
+	var evicted []*GPUFrame
+	if frame == nil {
+		for i, f := range entry.recent {
+			if f != nil {
+				evicted = append(evicted, f)
+				entry.recent[i] = nil
+			}
+		}
+	} else {
+		if f := entry.recent[0]; f != nil {
+			evicted = append(evicted, f)
+		}
+		copy(entry.recent[:], entry.recent[1:])
+		frame.Ref()
+		entry.recent[len(entry.recent)-1] = frame
+	}
 	entry.curMu.Unlock()
 	if old != nil {
 		old.Release()
+	}
+	for _, f := range evicted {
+		f.Release()
 	}
 }
 
@@ -849,6 +893,18 @@ func (m *GPUSourceManager) GetFrame(sourceKey string) *GPUFrame {
 	}
 
 	return refCurrent(entry)
+}
+
+// GetFrameAt returns the source's recent frame with the given PTS, with a
+// reference the caller must Release, or nil if it is no longer cached.
+func (m *GPUSourceManager) GetFrameAt(sourceKey string, pts int64) *GPUFrame {
+	m.mu.RLock()
+	entry, exists := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if !exists {
+		return nil
+	}
+	return refAt(entry, pts)
 }
 
 // Close removes all sources and releases all GPU resources.

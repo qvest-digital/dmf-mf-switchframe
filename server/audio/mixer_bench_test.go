@@ -11,11 +11,9 @@ import (
 // active source at 0 dB bypasses decode/mix/encode entirely. This is the
 // hot path during normal single-source operation.
 func BenchmarkMixerPassthrough(b *testing.B) {
-	var outputCount int
 	mixer := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) { outputCount++ },
 	})
 	defer func() { _ = mixer.Close() }()
 

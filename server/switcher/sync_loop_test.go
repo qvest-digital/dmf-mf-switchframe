@@ -33,7 +33,7 @@ func newMockSyncMixer(channels int) *mockSyncMixer {
 	return &mockSyncMixer{channels: channels}
 }
 
-func (m *mockSyncMixer) ProduceSamples(sampleCount int) []float32 {
+func (m *mockSyncMixer) ProduceSamples(start uint64, sampleCount int, pts int64) []float32 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.produceCalls++
@@ -75,9 +75,9 @@ func mockAACEncode(pcm []float32) ([]byte, error) {
 	return []byte{0xAA, 0xC0, 0x00, byte(len(pcm) & 0xFF)}, nil
 }
 
-// newSyncTestSwitcher creates a Switcher configured for synchronous loop testing.
-// It creates a non-realtime reference clock, sets up the frame sync with a
-// raw video callback wired to handleRawVideoFrame, and builds a minimal pipeline.
+// newSyncTestSwitcher creates a Switcher configured for synchronous loop
+// testing on a non-realtime reference clock at 30 fps from PTS 0: tick n
+// shows frames with PTS up to n*3000.
 func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
@@ -90,11 +90,10 @@ func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
 	}
 
 	s := &Switcher{
-		log:           testSyncLogger(),
-		programRelay:  programRelay,
-		health:        newHealthMonitor(),
-		videoProcCh:   make(chan videoProcWork, 8),
-		videoProcDone: make(chan struct{}),
+		log:          testSyncLogger(),
+		programRelay: programRelay,
+		health:       newHealthMonitor(),
+		frameSync:    NewFrameSynchronizer(),
 	}
 	s.framePool.Store(NewFramePool(8, 320, 240, ColorYUV420_8bit))
 	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
@@ -104,39 +103,8 @@ func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
 	s.initAtomicSlots()
 	s.registerBuiltinSourcesLocked()
 
-	// Create non-realtime reference clock at 30fps.
-	// Must be set BEFORE starting videoProcessingLoop so useRefClock is
-	// visible to the goroutine (avoids data race on the bool field).
 	rc := clock.NewReferenceClock(30, 1, 48000, 0, false)
 	s.SetReferenceClock(rc)
-
-	// Start the async video processing loop (needed so Close() can drain
-	// videoProcCh without blocking). In ref clock mode, this loop only
-	// drains without processing.
-	go s.videoProcessingLoop()
-
-	// Wire frame sync with onRawVideo callback (clock-driven mode).
-	fs := NewFrameSynchronizer(
-		testFmt.FrameDuration(),
-		func(sourceKey string, frame media.VideoFrame) {},
-		func(sourceKey string, frame media.AudioFrame) {},
-	)
-	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
-		s.handleRawVideoFrame(sourceKey, pf)
-	}
-	fs.framePool = s.framePool.Load()
-	fs.SetClockDriven(true)
-
-	s.configMu.Lock()
-	s.frameSync = fs
-	s.frameSyncActive = true
-	db := s.delayBuffer
-	s.updateFrameSyncBundle(func(fsb *frameSyncBundle) {
-		fsb.sync = fs
-		fsb.delayBuffer = db
-		fsb.active = true
-	})
-	s.configMu.Unlock()
 
 	return s, rc
 }
@@ -477,9 +445,6 @@ func TestExistingPathStillWorks(t *testing.T) {
 	s := newTestSwitcher(t, programRelay)
 	defer s.Close()
 
-	// Verify useRefClock is false.
-	require.False(t, s.useRefClock.Load(), "default switcher should not use reference clock")
-
 	// Basic operations should work.
 	cam1Relay := distribution.NewRelay()
 	s.RegisterSource("cam1", cam1Relay)
@@ -541,6 +506,7 @@ func TestSyncLoopProcessTickDirect(t *testing.T) {
 	tick := clock.Tick{
 		Number:        0,
 		VideoPTS:      0,
+		ReadPTS:       0,
 		AudioSamples:  1600, // 48000/30
 		FrameDuration: 33333 * time.Microsecond,
 	}
@@ -609,6 +575,7 @@ func TestSyncLoopTicksBehindDecrement(t *testing.T) {
 	tick := clock.Tick{
 		Number:        0,
 		VideoPTS:      0,
+		ReadPTS:       0,
 		AudioSamples:  1600,
 		FrameDuration: 33333 * time.Microsecond,
 	}
@@ -741,6 +708,7 @@ func TestSyncLoopVideoFramesGetRefClockPTS(t *testing.T) {
 	tick := clock.Tick{
 		Number:        0,
 		VideoPTS:      12345, // reference clock PTS
+		ReadPTS:       99999, // the source frame is due
 		AudioSamples:  1600,
 		FrameDuration: 33333 * time.Microsecond,
 	}
@@ -765,73 +733,6 @@ func (n *capturePTSNode) Close() error                          { return nil }
 func (n *capturePTSNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
 	n.capturedPTS.Store(src.PTS)
 	return src
-}
-
-func TestWallClockPTSNoOpWithRefClock(t *testing.T) {
-	s, _ := newSyncTestSwitcher(t) // sets useRefClock=true via SetReferenceClock
-	defer s.Close()
-
-	require.True(t, s.useRefClock.Load(), "test switcher should use reference clock")
-
-	// wallClockVideoPTS should be an identity function when ref clock is active.
-	got := s.wallClockVideoPTS(12345)
-	require.Equal(t, int64(12345), got, "wallClockVideoPTS should return PTS unchanged with ref clock")
-
-	// Even with wallClockVideoEnabled forced on, ref clock should still win.
-	s.wallClockVideoEnabled = true
-	got = s.wallClockVideoPTS(67890)
-	require.Equal(t, int64(67890), got, "wallClockVideoPTS should return PTS unchanged even if wallClockVideoEnabled is set")
-}
-
-func TestEnableWallClockNoOpWithRefClock(t *testing.T) {
-	s, _ := newSyncTestSwitcher(t) // sets useRefClock=true
-	defer s.Close()
-
-	require.True(t, s.useRefClock.Load())
-	require.False(t, s.wallClockVideoEnabled, "wallClockVideoEnabled should start false")
-
-	// EnableWallClockVideoPTS should be a no-op when ref clock is active.
-	s.EnableWallClockVideoPTS()
-	require.False(t, s.wallClockVideoEnabled, "wallClockVideoEnabled should remain false with ref clock")
-}
-
-func TestSetOnFirstVideoPTSNoOpWithRefClock(t *testing.T) {
-	s, _ := newSyncTestSwitcher(t) // sets useRefClock=true
-	defer s.Close()
-
-	require.True(t, s.useRefClock.Load())
-	require.Nil(t, s.onFirstVideoPTS, "onFirstVideoPTS should start nil")
-
-	// SetOnFirstVideoPTS should be a no-op when ref clock is active.
-	called := false
-	s.SetOnFirstVideoPTS(func(pts int64) { called = true })
-	require.Nil(t, s.onFirstVideoPTS, "onFirstVideoPTS should remain nil with ref clock")
-	require.False(t, called, "callback should not have been invoked")
-}
-
-func TestWallClockPTSStillWorksWithoutRefClock(t *testing.T) {
-	// Verify the old path still works when useRefClock is false.
-	programRelay := distribution.NewRelay()
-	s := newTestSwitcher(t, programRelay)
-	defer s.Close()
-
-	require.False(t, s.useRefClock.Load())
-
-	// EnableWallClockVideoPTS should work normally.
-	s.EnableWallClockVideoPTS()
-	require.True(t, s.wallClockVideoEnabled)
-
-	// SetOnFirstVideoPTS should store the callback.
-	called := false
-	s.SetOnFirstVideoPTS(func(pts int64) { called = true })
-	require.NotNil(t, s.onFirstVideoPTS)
-
-	// Invoke it to verify it was stored.
-	s.configMu.Lock()
-	fn := s.onFirstVideoPTS
-	s.configMu.Unlock()
-	fn(0)
-	require.True(t, called)
 }
 
 // === Task 13: Overload Protection Tests ===
@@ -859,6 +760,7 @@ func TestSyncLoopOverloadProducesBlackOnStartup(t *testing.T) {
 	tick := clock.Tick{
 		Number:        0,
 		VideoPTS:      0,
+		ReadPTS:       0,
 		AudioSamples:  1600,
 		FrameDuration: 33333 * time.Microsecond,
 	}
@@ -887,6 +789,7 @@ func TestSyncLoopOverloadCounterIncrements(t *testing.T) {
 	tick := clock.Tick{
 		Number:        0,
 		VideoPTS:      0,
+		ReadPTS:       0,
 		AudioSamples:  1600,
 		FrameDuration: 33333 * time.Microsecond,
 	}
@@ -944,6 +847,7 @@ func TestSyncLoopSourceLossFreeze(t *testing.T) {
 		tick := clock.Tick{
 			Number:        int64(i),
 			VideoPTS:      int64(i) * 3000,
+			ReadPTS:       int64(i) * 3000,
 			AudioSamples:  1600,
 			FrameDuration: 33333 * time.Microsecond,
 		}
@@ -960,6 +864,7 @@ func TestSyncLoopSourceLossFreeze(t *testing.T) {
 		tick := clock.Tick{
 			Number:        int64(i),
 			VideoPTS:      int64(i) * 3000,
+			ReadPTS:       int64(i) * 3000,
 			AudioSamples:  1600,
 			FrameDuration: 33333 * time.Microsecond,
 		}
@@ -1019,6 +924,7 @@ func TestSyncLoopSourceLossToBlack(t *testing.T) {
 	tick := clock.Tick{
 		Number:        0,
 		VideoPTS:      0,
+		ReadPTS:       0,
 		AudioSamples:  1600,
 		FrameDuration: 33333 * time.Microsecond,
 	}
@@ -1028,6 +934,7 @@ func TestSyncLoopSourceLossToBlack(t *testing.T) {
 	// The first tick without fresh frames sets sourceLostAt.
 	tick.Number = 1
 	tick.VideoPTS = 3000
+	tick.ReadPTS = 3000
 	s.processVideoTick(tick) // This sets sourceLostAt
 
 	// Fake sourceLostAt to be 6 seconds ago to exceed the 5s timeout.
@@ -1042,6 +949,7 @@ func TestSyncLoopSourceLossToBlack(t *testing.T) {
 	// Process another tick — should get broadcast black.
 	tick.Number = 2
 	tick.VideoPTS = 6000
+	tick.ReadPTS = 6000
 	s.processVideoTick(tick)
 
 	frames := viewer.VideoFrames()
@@ -1088,6 +996,7 @@ func TestSyncLoopSourceRecovery(t *testing.T) {
 	tick := clock.Tick{
 		Number:        0,
 		VideoPTS:      0,
+		ReadPTS:       0,
 		AudioSamples:  1600,
 		FrameDuration: 33333 * time.Microsecond,
 	}
@@ -1096,6 +1005,7 @@ func TestSyncLoopSourceRecovery(t *testing.T) {
 	// Trigger source loss (no fresh frames).
 	tick.Number = 1
 	tick.VideoPTS = 3000
+	tick.ReadPTS = 3000
 	s.processVideoTick(tick)
 
 	require.NotNil(t, s.sourceLostAt.Load(), "sourceLostAt should be set after loss")
@@ -1124,6 +1034,7 @@ func TestSyncLoopSourceRecovery(t *testing.T) {
 
 	tick.Number = 2
 	tick.VideoPTS = 6000
+	tick.ReadPTS = 6000
 	s.processVideoTick(tick)
 
 	require.Nil(t, s.sourceLostAt.Load(), "sourceLostAt should be cleared after recovery")
@@ -1205,6 +1116,7 @@ func TestSyncLoopTransitionDissolve(t *testing.T) {
 		tick := clock.Tick{
 			Number:        int64(i),
 			VideoPTS:      int64(i) * 3000,
+			ReadPTS:       int64(i) * 3000,
 			AudioSamples:  1600,
 			FrameDuration: 33333 * time.Microsecond,
 		}
@@ -1283,6 +1195,7 @@ func TestSyncLoopTransitionComplete(t *testing.T) {
 		tick := clock.Tick{
 			Number:        int64(i),
 			VideoPTS:      int64(i) * 3000,
+			ReadPTS:       int64(i) * 3000,
 			AudioSamples:  1600,
 			FrameDuration: 33333 * time.Microsecond,
 		}
@@ -1368,6 +1281,7 @@ func TestSyncLoopTransitionTypeNoRace(t *testing.T) {
 			s.processVideoTick(clock.Tick{
 				Number:        int64(i),
 				VideoPTS:      int64(i) * 3000,
+				ReadPTS:       int64(i) * 3000,
 				AudioSamples:  1600,
 				FrameDuration: 33333 * time.Microsecond,
 			})
@@ -1567,6 +1481,7 @@ func TestFTBTransitionCallsCorrectHandler(t *testing.T) {
 		tick := clock.Tick{
 			Number:        int64(i),
 			VideoPTS:      int64(i) * 3000,
+			ReadPTS:       int64(i) * 3000,
 			AudioSamples:  1600,
 			FrameDuration: 33333 * time.Microsecond,
 		}
@@ -1639,12 +1554,9 @@ func TestStartSyncLoopDoubleStartGuard(t *testing.T) {
 		"should have produced frames with single goroutine")
 }
 
-// === Bug 1: videoProcessingLoop races with sync loop ===
-
-func TestSyncLoopNoRaceWithAsyncPath(t *testing.T) {
-	// When ref clock is active, BOTH the async videoProcessingLoop goroutine
-	// AND the sync loop could process frames from the same source. The async
-	// loop must drain videoProcCh without processing to prevent double-processing.
+func TestSyncLoopRunsPipelineOncePerTick(t *testing.T) {
+	// The sync loop is the only path that runs the pipeline: one run per
+	// tick, however many frames arrived.
 	s, _ := newSyncTestSwitcher(t)
 	defer s.Close()
 
@@ -1672,10 +1584,7 @@ func TestSyncLoopNoRaceWithAsyncPath(t *testing.T) {
 	pool := s.framePool.Load()
 	yuvSize := 320 * 240 * 3 / 2
 
-	// Feed frames into the frame sync buffer AND trigger handleRawVideoFrame
-	// (which enqueues to videoProcCh for the async path). We call both
-	// IngestRawVideo (for the sync loop to pop) and handleRawVideoFrame
-	// (to simulate source decoder delivery that enqueues to videoProcCh).
+	// Feed frames into the frame sync buffer.
 	for i := 0; i < 10; i++ {
 		buf := pool.Acquire()[:yuvSize]
 		for j := range buf {
@@ -1687,9 +1596,8 @@ func TestSyncLoopNoRaceWithAsyncPath(t *testing.T) {
 			PTS:  int64(i) * 3000,
 			pool: pool,
 		}
-		pf.SetRefs(2) // one ref for frame sync, one for handleRawVideoFrame
+		pf.SetRefs(1)
 		s.frameSync.IngestRawVideo("cam1", pf)
-		s.handleRawVideoFrame("cam1", pf)
 	}
 
 	// Process ticks via the sync loop (directly, deterministic).
@@ -1697,26 +1605,16 @@ func TestSyncLoopNoRaceWithAsyncPath(t *testing.T) {
 		tick := clock.Tick{
 			Number:        int64(i),
 			VideoPTS:      int64(i) * 3000,
+			ReadPTS:       int64(i) * 3000,
 			AudioSamples:  1600,
 			FrameDuration: 33333 * time.Microsecond,
 		}
 		s.processVideoTick(tick)
 	}
 
-	// Give the async loop time to process any items it might have.
-	time.Sleep(100 * time.Millisecond)
-
-	// The sync loop processed 10 ticks. Each tick runs the pipeline once = 10 calls.
-	// The async loop should NOT also be processing those frames through the pipeline.
-	// With the bug, the async loop would also run them through pipeline.Run(),
-	// leading to > 10 pipeline invocations.
 	syncProcessed := pipelineProcessCount.Load()
 	require.Equal(t, int64(10), syncProcessed,
-		"pipeline should be invoked exactly 10 times (once per tick), got %d (async double-processing?)", syncProcessed)
-
-	// Verify videoProcCh is not accumulating (drained by async loop).
-	require.Equal(t, 0, len(s.videoProcCh),
-		"videoProcCh should be drained, got %d items", len(s.videoProcCh))
+		"pipeline should be invoked exactly 10 times (once per tick), got %d", syncProcessed)
 }
 
 // countingPipelineNode counts how many times Process is called.
@@ -1793,6 +1691,7 @@ func TestSyncLoopChecksGPURunner(t *testing.T) {
 		tick := clock.Tick{
 			Number:        int64(i),
 			VideoPTS:      int64(i) * 3000,
+			ReadPTS:       int64(i) * 3000,
 			AudioSamples:  1600,
 			FrameDuration: 33333 * time.Microsecond,
 		}
@@ -1869,6 +1768,7 @@ func TestSyncLoopGPUFallbackToCPU(t *testing.T) {
 		tick := clock.Tick{
 			Number:        int64(i),
 			VideoPTS:      int64(i) * 3000,
+			ReadPTS:       int64(i) * 3000,
 			AudioSamples:  1600,
 			FrameDuration: 33333 * time.Microsecond,
 		}
@@ -1894,7 +1794,7 @@ type syncLoopGPUMock struct {
 	onRunWithUpload func(yuv []byte, w, h int, pts int64) error
 }
 
-func (m *syncLoopGPUMock) RunFromCache(sourceKey string, pts int64) error {
+func (m *syncLoopGPUMock) RunFromCache(sourceKey string, srcPTS, pts int64) error {
 	if m.onRunFromCache != nil {
 		return m.onRunFromCache(sourceKey, pts)
 	}
@@ -1922,138 +1822,11 @@ func (m *syncLoopGPUMock) Snapshot() map[string]any {
 	return map[string]any{"gpu": true, "backend": "sync-loop-mock"}
 }
 
-// newSyncTestSwitcherBufferOnly creates a test switcher using buffer-only
-// FrameSync mode, mirroring the production ref clock path where the
-// FrameSync provides ring buffers but does NOT run its tickLoop timer.
-func newSyncTestSwitcherBufferOnly(t *testing.T) (*Switcher, *clock.ReferenceClock) {
-	t.Helper()
-	programRelay := distribution.NewRelay()
-	testFmt := PipelineFormat{
-		Name:   "test",
-		Width:  320,
-		Height: 240,
-		FPSNum: 30,
-		FPSDen: 1,
-	}
-
-	s := &Switcher{
-		log:           testSyncLogger(),
-		programRelay:  programRelay,
-		health:        newHealthMonitor(),
-		videoProcCh:   make(chan videoProcWork, 8),
-		videoProcDone: make(chan struct{}),
-	}
-	s.framePool.Store(NewFramePool(8, 320, 240, ColorYUV420_8bit))
-	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
-	s.pipelineFormat.Store(&testFmt)
-	s.recentCmdErrors = newRecentErrors(8)
-	s.delayBuffer = NewDelayBuffer(s)
-	s.initAtomicSlots()
-	s.registerBuiltinSourcesLocked()
-
-	rc := clock.NewReferenceClock(30, 1, 48000, 0, false)
-	s.SetReferenceClock(rc)
-	go s.videoProcessingLoop()
-
-	// Create FrameSync in buffer-only mode (production ref clock path).
-	fs := NewFrameSynchronizer(
-		testFmt.FrameDuration(),
-		func(sourceKey string, frame media.VideoFrame) {},
-		func(sourceKey string, frame media.AudioFrame) {},
-	)
-	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
-		s.handleRawVideoFrame(sourceKey, pf)
-	}
-	fs.framePool = s.framePool.Load()
-	fs.SetClockDriven(true)
-	fs.SetBufferOnly(true)
-	fs.Start() // should NOT launch tickLoop
-
-	s.configMu.Lock()
-	s.frameSync = fs
-	s.frameSyncActive = true
-	db := s.delayBuffer
-	s.updateFrameSyncBundle(func(fsb *frameSyncBundle) {
-		fsb.sync = fs
-		fsb.delayBuffer = db
-		fsb.active = true
-	})
-	s.configMu.Unlock()
-
-	return s, rc
-}
-
-// TestSyncLoopWithBufferOnlyFrameSync verifies that the sync loop works
-// correctly when the FrameSync is in buffer-only mode. Frames are pushed
-// to the ring buffer via IngestRawVideo, the sync loop pops them, and
-// output arrives on the program relay.
-func TestSyncLoopWithBufferOnlyFrameSync(t *testing.T) {
-	s, rc := newSyncTestSwitcherBufferOnly(t)
-	defer s.Close()
-
-	// Register and cut to a source.
-	cam1Relay := distribution.NewRelay()
-	s.RegisterSource("cam1", cam1Relay)
-	s.configMu.Lock()
-	s.frameSync.AddSource("cam1")
-	s.configMu.Unlock()
-	require.NoError(t, s.Cut(context.Background(), "cam1"))
-
-	// Capture program output.
-	viewer := newMockProgramViewer("test-viewer")
-	s.programRelay.AddViewer(viewer)
-
-	// Feed frames into the frame sync ring buffer.
-	pool := s.framePool.Load()
-	yuvSize := 320 * 240 * 3 / 2
-	for i := 0; i < 5; i++ {
-		buf := pool.Acquire()[:yuvSize]
-		for j := range buf {
-			buf[j] = byte(i + 1)
-		}
-		pf := &ProcessingFrame{
-			Data:  buf,
-			Width: 320, Height: 240,
-			PTS:  int64(i) * 3000,
-			pool: pool,
-		}
-		pf.SetRefs(1)
-		s.frameSync.IngestRawVideo("cam1", pf)
-	}
-
-	// Start clock and sync loop.
-	rc.Start()
-	s.StartSyncLoop()
-
-	// Wait for video frames to arrive.
-	require.Eventually(t, func() bool {
-		return len(viewer.VideoFrames()) >= 3
-	}, 2*time.Second, 10*time.Millisecond, "expected video frames on program relay")
-
-	rc.Stop()
-	s.syncLoopWg.Wait()
-
-	frames := viewer.VideoFrames()
-	require.GreaterOrEqual(t, len(frames), 3, "should have produced at least 3 video frames")
-
-	// Verify PTS monotonicity.
-	for i := 1; i < len(frames); i++ {
-		require.Greater(t, frames[i].PTS, frames[i-1].PTS,
-			"PTS should be monotonically increasing")
-	}
-
-	// Verify the FrameSync timer never fired (no timer-driven releases).
-	require.Equal(t, int64(0), s.frameSync.timerDrivenReleases.Load(),
-		"timer should not have fired in buffer-only mode")
-	require.Equal(t, int64(0), s.frameSync.programDrivenReleases.Load(),
-		"program-driven releases should be zero in buffer-only mode")
-}
-
-// TestSyncLoopBufferOnlyNoTimerRace verifies there is no data race between
-// the sync loop popping frames and the FrameSync timer (which should not
-// be running). This test is primarily useful with -race.
-func TestSyncLoopBufferOnlyNoTimerRace(t *testing.T) {
-	s, rc := newSyncTestSwitcherBufferOnly(t)
+// TestSyncLoopConcurrentIngestNoRace verifies there is no data race between
+// the sync loop popping frames and a producer ingesting them. This test is
+// primarily useful with -race.
+func TestSyncLoopConcurrentIngestNoRace(t *testing.T) {
+	s, rc := newSyncTestSwitcher(t)
 	defer s.Close()
 
 	cam1Relay := distribution.NewRelay()
@@ -2156,6 +1929,7 @@ func TestSyncLoopProcessTickDrainsCommandQueue(t *testing.T) {
 	tick := clock.Tick{
 		Number:        0,
 		VideoPTS:      0,
+		ReadPTS:       0,
 		AudioSamples:  1600,
 		FrameDuration: 33333 * time.Microsecond,
 	}
@@ -2327,4 +2101,83 @@ func TestFeedSourceSubsystems_SkipsGPUWhenManagerPresent(t *testing.T) {
 	require.Empty(t, tracker.calls(),
 		"feedSourceSubsystems must not call GPU IngestYUV when a manager is registered; "+
 			"the producer's IngestRawVideo is the sole writer to entry.current")
+}
+
+// A cut away from a source never shows its last picture again: a new
+// program source that has not delivered shows black, then its own frames.
+func TestSyncLoopCutNeverShowsOldProgramPicture(t *testing.T) {
+	s := tickSwitcher(t)
+	node := recordPipeline(t, s)
+	onProgram(t, s, "mxl:cam1")
+	s.RegisterMXLSource("mxl:cam2")
+
+	g := grainNow(s)
+	n := g + clock.ReaderDelayGrains
+	for i := uint64(0); i < 3; i++ {
+		s.IngestRawVideo("mxl:cam1", mxlFrame(s, g+i, 200))
+		s.processVideoTick(tickAt(s, n+i))
+	}
+	require.Equal(t, byte(200), node.lastLuma(t))
+
+	require.NoError(t, s.Cut(t.Context(), "mxl:cam2"))
+	for i := uint64(3); i < 6; i++ {
+		s.IngestRawVideo("mxl:cam1", mxlFrame(s, g+i, 200))
+		s.processVideoTick(tickAt(s, n+i))
+		require.Equal(t, byte(16), node.lastLuma(t), "tick %d after the cut to an undelivered source", i)
+	}
+	s.IngestRawVideo("mxl:cam2", mxlFrame(s, g+6, 90))
+	s.processVideoTick(tickAt(s, n+6))
+	require.Equal(t, byte(90), node.lastLuma(t))
+}
+
+// A mix to a source that never delivers runs to black and completes.
+func TestSyncLoopMixToUndeliveredSourceCompletes(t *testing.T) {
+	s := tickSwitcher(t)
+	node := recordPipeline(t, s)
+	onProgram(t, s, "mxl:cam1")
+	s.RegisterMXLSource("mxl:cam2")
+	s.SetTransitionConfig(TransitionConfig{})
+	require.NoError(t, s.StartTransition(t.Context(), "mxl:cam2", "mix", 300, ""))
+
+	g := grainNow(s)
+	n := g + clock.ReaderDelayGrains
+	for i := uint64(0); i < 20; i++ { // 300 ms is 9 ticks at 29.97
+		s.IngestRawVideo("mxl:cam1", mxlFrame(s, g+i, 200))
+		s.processVideoTick(tickAt(s, n+i))
+	}
+	require.Equal(t, "mxl:cam2", s.ProgramSource())
+	require.False(t, s.hotState.Load().state.isInTransition(), "mix did not complete")
+	require.Equal(t, byte(16), node.lastLuma(t), "black for the undelivered new source")
+}
+
+// A T-bar parked part way holds the transition there: the ticks do not
+// advance a manually positioned transition.
+func TestSyncLoopTBarHoldsPosition(t *testing.T) {
+	s := tickSwitcher(t)
+	recordPipeline(t, s)
+	s.SetTransitionConfig(TransitionConfig{})
+	onProgram(t, s, "mxl:cam1")
+	s.RegisterMXLSource("mxl:cam2")
+	require.NoError(t, s.StartTransition(t.Context(), "mxl:cam2", "mix", 1000, ""))
+	defer s.AbortTransition()
+	require.NoError(t, s.SetTransitionPosition(t.Context(), 0.5))
+
+	g := grainNow(s)
+	for i := uint64(0); i < 60; i++ { // two seconds of ticks, twice the duration
+		s.processVideoTick(tickAt(s, g+i))
+	}
+	require.True(t, s.hotState.Load().state.isInTransition(), "a parked T-bar transition completed by itself")
+	require.Equal(t, "mxl:cam1", s.ProgramSource())
+}
+
+// A built-in source on program shows its own picture, not black.
+func TestSyncLoopShowsBuiltinSource(t *testing.T) {
+	s := NewTestSwitcher(t, distribution.NewRelay())
+	node := recordPipeline(t, s)
+	require.NoError(t, s.Cut(t.Context(), BuiltinSourceKeyColorbars))
+	require.Eventually(t, func() bool {
+		node.mu.Lock()
+		defer node.mu.Unlock()
+		return len(node.luma) > 0 && node.luma[len(node.luma)-1] != 16
+	}, 2*time.Second, 10*time.Millisecond, "colorbars on program never showed a non-black picture")
 }
