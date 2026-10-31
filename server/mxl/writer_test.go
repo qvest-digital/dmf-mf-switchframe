@@ -101,7 +101,7 @@ func TestWriter_WritesVideoGrain(t *testing.T) {
 
 	// Start the ticker so grains actually get written.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer func() { cancel(); _ = w.Close() }()
 	w.Start(ctx)
 
 	// Create a minimal YUV420p frame (12x2 = 12*2 + 6*1 + 6*1 = 36 bytes).
@@ -180,6 +180,7 @@ func TestWriter_StopsOnContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	w.Start(ctx)
+	defer func() { _ = w.Close() }() // joins the goroutine the cancel stops
 
 	// Write a video frame and wait for the ticker to pick it up.
 	yuv := make([]byte, video.YUV420FrameSize(12, 2))
@@ -268,7 +269,7 @@ func TestWriter_SkipsMismatchedResolution(t *testing.T) {
 	w.SetVideoWriter(mock, Rational{30, 1})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer func() { cancel(); _ = w.Close() }()
 	w.Start(ctx)
 
 	// Write a frame at wrong resolution — should be silently skipped.
@@ -472,7 +473,7 @@ func TestWriter_SteadyRateMultipleFrames(t *testing.T) {
 	w.SetVideoWriter(mock, Rational{100, 1})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer func() { cancel(); _ = w.Close() }()
 	w.Start(ctx)
 
 	// Write a frame.
@@ -550,7 +551,7 @@ func TestMXLWriter_TripleBufferOverrunCorrupts(t *testing.T) {
 	w.SetVideoWriter(mock, Rational{tickFPS, 1})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer func() { cancel(); _ = w.Close() }()
 	w.Start(ctx)
 
 	yuvSize := video.YUV420FrameSize(width, height)

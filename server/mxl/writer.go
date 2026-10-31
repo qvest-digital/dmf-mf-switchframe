@@ -34,6 +34,8 @@ type v210Frame struct {
 	data []byte
 	slot int
 	seq  uint64 // producer's frame count; the writer repeats a frame it has written
+	// index is the grain the frame's PTS stands for.
+	index uint64
 }
 
 // videoWriterRef wraps a DiscreteWriter and its grain rate for atomic access.
@@ -53,15 +55,15 @@ type dataWriterRef struct {
 // Writer writes processed video and audio to MXL flows.
 //
 // Video: WriteVideo converts and buffers the latest frame and wakes the video
-// goroutine, which commits it to the next grain index at once, within one
-// grain of the wall-clock index (see videoIndexFor). A grain nothing new
-// arrived for is filled with the last frame shortly after its period ends.
-// A producer at the grain rate therefore gets one grain per frame whatever
-// the phase between its clock and the grain grid, and a stalled one still
-// gets a grain per period.
+// goroutine, which commits it at once to the grain index of its PTS. A frame
+// whose index is not after the last one written is dropped and counted
+// (VideoIndexDrops). A grain nothing new arrived for is filled with the last
+// frame at the next index shortly after its period ends, on the wall clock
+// (see videoIndexFor), so a stalled producer still gets a grain per period.
 //
-// Audio uses wall-clock indices with monotonic enforcement for contiguous
-// sample delivery.
+// Audio is written at the sample indices of its PTS; a batch overlapping
+// the last write is dropped and counted (AudioOverlaps). The program video
+// and audio flows therefore carry the same index for the same tick.
 type Writer struct {
 	config WriterConfig
 	log    *slog.Logger
@@ -96,6 +98,9 @@ type Writer struct {
 
 	// audioOverlaps counts batches dropped for overlapping the last write.
 	audioOverlaps atomic.Int64
+	// videoIndexDrops counts frames dropped because the grain of their
+	// PTS was not after the last one written.
+	videoIndexDrops atomic.Int64
 
 	// Last written audio index (exclusive end) for monotonic enforcement.
 	// Only accessed from the single mixer output goroutine.
@@ -151,6 +156,12 @@ func NewWriter(config WriterConfig) *Writer {
 // MXL shared-memory backpressure); steady-state should be 0.
 func (w *Writer) VideoDrops() int64 {
 	return w.v210Drops.Load()
+}
+
+// VideoIndexDrops returns how many frames were dropped because the grain
+// index of their PTS was not after the last grain written.
+func (w *Writer) VideoIndexDrops() int64 {
+	return w.videoIndexDrops.Load()
 }
 
 // SetVideoWriter sets the discrete writer for video output.
@@ -242,14 +253,18 @@ func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
 		return
 	}
 
-	w.publishV210(buf, nextIdx)
+	w.publishV210(buf, nextIdx, pts)
 }
 
-// publishV210 makes a converted frame the latest and wakes the video
-// goroutine to write it.
-func (w *Writer) publishV210(buf []byte, slot int) {
+// publishV210 makes a converted frame the latest, at the grain index of its
+// PTS, and wakes the video goroutine to write it.
+func (w *Writer) publishV210(buf []byte, slot int, pts int64) {
+	var index uint64
+	if ref := w.videoRef.Load(); ref != nil {
+		index = clock.PTSIndex(clock.Rate{Num: ref.rate.Numerator, Den: ref.rate.Denominator}, pts)
+	}
 	w.videoSeq++
-	w.latestV210.Store(&v210Frame{data: buf, slot: slot, seq: w.videoSeq})
+	w.latestV210.Store(&v210Frame{data: buf, slot: slot, seq: w.videoSeq, index: index})
 	w.v210BufIdx = slot
 	select {
 	case w.videoKick <- struct{}{}:
@@ -323,15 +338,15 @@ func (w *Writer) WriteVideo10bit(yuv []byte, width, height int, pts int64) {
 		return
 	}
 
-	w.publishV210(buf, nextIdx)
+	w.publishV210(buf, nextIdx, pts)
 }
 
 // stallRepeats is how many grains in a row repeat a frame before the source
 // counts as stalled and repeats stop waiting for a late frame.
 const stallRepeats = 2
 
-// videoTickLoop writes each new frame to MXL as it arrives and fills a
-// grain nothing new arrived for with the last frame.
+// videoTickLoop writes each new frame to MXL as it arrives, at the grain of
+// its PTS, and fills a grain nothing new arrived for with the last frame.
 func (w *Writer) videoTickLoop(ctx context.Context) {
 	ref := w.videoRef.Load()
 	if ref == nil || ref.rate.Numerator <= 0 || ref.rate.Denominator <= 0 {
@@ -372,7 +387,21 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 
 		writeFailed := false
 		if frame != nil {
-			if index, ok := videoIndexFor(now, last, haveLast, frame.seq != writtenSeq, repeats >= stallRepeats); ok {
+			var index uint64
+			ok := false
+			switch {
+			case frame.seq == writtenSeq:
+				index, ok = videoIndexFor(now, last, repeats >= stallRepeats)
+			case haveLast && frame.index <= last:
+				// Its grain is already written, by a repeat when the
+				// frame came late; the frame now stands for the last
+				// one and is what a repeat writes.
+				w.videoIndexDrops.Add(1)
+				writtenSeq = frame.seq
+			default:
+				index, ok = frame.index, true
+			}
+			if ok {
 				// Claim-then-confirm: publish the ring slot we intend to read
 				// so WriteVideo will drop rather than overwrite it, THEN
 				// re-load latest and confirm the slot is unchanged before the
@@ -409,15 +438,11 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 			}
 		}
 
-		// Wake for the next decision: when a held frame may be written,
-		// or when the next grain falls due for a fill.
+		// Wake when the next grain falls due for a fill; a new frame
+		// wakes the loop through videoKick.
 		wait := period
 		if haveLast && NsUntilIndex != nil {
-			if f := w.latestV210.Load(); f != nil && f.seq != writtenSeq {
-				// A frame newer than the last write is held because the
-				// writer is a grain ahead; write it once the clock moves.
-				wait = time.Duration(NsUntilIndex(last, ref.rate))
-			} else if repeats >= stallRepeats {
+			if repeats >= stallRepeats {
 				// Stalled: repeat on the grain grid, as a frame that is
 				// merely late is no longer expected.
 				wait = time.Duration(NsUntilIndex(last+1, ref.rate))
@@ -442,32 +467,20 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 	}
 }
 
-// videoIndexFor picks the grain index for the latest frame, or reports that
-// nothing is written now. now is the wall-clock grain index, last the index
-// committed before.
+// videoIndexFor reports whether the frame already written is repeated now,
+// and at which grain: the one after last, the grain written before. now is
+// the wall-clock grain index; it decides when a repeat is due, never the
+// index of a new frame, which is its PTS.
 //
-// A new frame goes to the grain after the last one at once, as long as that
-// is no more than one grain ahead of the clock; further ahead it is held
-// until the clock moves on, and a newer frame replaces it meanwhile. This
-// lets a frame arrive up to a period early or late without being lost or
-// shown twice: a producer at the grain rate whose clock beats against the
-// grain grid keeps one grain per frame. A frame already written is
-// repeated only once the clock has passed the grain after the last one, so
-// a frame that is merely late still takes that grain; once the source has
-// stalled (stalled, see stallRepeats), each further repeat takes its grain
-// when the grain starts. Behind by more than a grain, the
-// writer resumes at the grain before the clock; libmxl leaves the indices
-// in between invalid.
-func videoIndexFor(now, last uint64, haveLast, fresh, stalled bool) (index uint64, ok bool) {
-	if !haveLast {
-		return now, true
-	}
+// A frame is repeated only once the clock has passed the grain after the
+// last one, so a frame that is merely late still takes that grain; once the
+// source has stalled (stalled, see stallRepeats), each further repeat takes
+// its grain when the grain starts. Behind by more than a grain, the repeat
+// resumes at the grain before the clock; libmxl leaves the indices in
+// between invalid.
+func videoIndexFor(now, last uint64, stalled bool) (index uint64, ok bool) {
 	next := last + 1
 	switch {
-	case fresh:
-		if next > now+1 {
-			return 0, false
-		}
 	case stalled:
 		if now < next {
 			return 0, false
