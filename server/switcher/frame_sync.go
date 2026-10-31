@@ -31,6 +31,9 @@ type syncSource struct {
 	ring []*ProcessingFrame
 	// lastRawVideo is the frame the last tick took, kept for repeats.
 	lastRawVideo *ProcessingFrame
+	// lostAt is when a tick first found nothing new from the source since
+	// it last delivered; zero while it delivers.
+	lostAt time.Time
 	// delay is the source's extra delay in 90 kHz ticks (SetSourceDelay).
 	delay atomic.Int64
 	// capacity is syncRingSize plus the frames the delay holds back; 0

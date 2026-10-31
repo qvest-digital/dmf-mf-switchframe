@@ -80,7 +80,7 @@ func (s *Switcher) flushAACBuffer() {
 // then video (may be skipped under overload to maintain audio continuity).
 func (s *Switcher) processTick(tick clock.Tick) {
 	// Drain PTP-timed commands before any processing so timed commands
-	// execute at frame boundaries with the same accuracy as the async path.
+	// take effect at the frame boundary of this tick.
 	s.drainCommandQueue()
 
 	frameStart := time.Now()
@@ -168,13 +168,10 @@ func (s *Switcher) processAudioTick(tick clock.Tick) {
 // processVideoTick pops the latest frame from the frame sync buffer,
 // runs the pipeline (compositor, keying, encode), and broadcasts.
 //
-// In the sync loop, video output follows a simpler path than the async
-// videoProcessingLoop. The pipeline runs synchronously, then the loop
-// broadcasts the result to the program relay. When a pipeline with an
-// encode node is configured, the encode node's onEncoded callback handles
-// broadcasting (same as the async path). When no pipeline is configured,
-// the sync loop broadcasts the raw frame data directly — useful for tests
-// and configurations without an H.264 encoder.
+// The pipeline runs on the sync-loop goroutine. When it has an encode
+// node, that node's onEncoded callback broadcasts the result; without a
+// pipeline the loop broadcasts the raw frame data itself, for tests and
+// configurations without an encoder.
 func (s *Switcher) processVideoTick(tick clock.Tick) {
 	hs := s.hotState.Load()
 	fs := s.frameSync
@@ -536,16 +533,15 @@ func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick,
 // newest one whose media time is at or before tick.ReadPTS (less the
 // source's delay), as a counted reference the caller releases. fresh is
 // false for a repeat of the source's last frame, which turns to black once
-// the source has delivered nothing for sourceLossTimeout, and for black
-// when it has never delivered. Frames newer than the read point stay
-// buffered for later ticks.
+// that source has delivered nothing for sourceLossTimeout, and for black
+// when it has never delivered. Each source keeps its own loss time, so a
+// cut never inherits another source's. Frames newer than the read point
+// stay buffered for later ticks.
 func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, tick clock.Tick) (pf *ProcessingFrame, fresh bool) {
 	ss := fs.source(sourceKey)
 	if ss == nil {
 		return nil, false
 	}
-	isProgram := sourceKey == s.programSourceAtomic()
-
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
@@ -554,11 +550,11 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, tick
 			ss.lastRawVideo.ReleaseYUV()
 		}
 		ss.lastRawVideo = newest
-		if lost := s.sourceLostAt.Load(); lost != nil && isProgram {
-			if time.Since(*lost) > 100*time.Millisecond {
-				s.log.Info("source recovered", "source", sourceKey, "gap", time.Since(*lost))
+		if !ss.lostAt.IsZero() {
+			if gap := time.Since(ss.lostAt); gap > 100*time.Millisecond {
+				s.log.Info("source recovered", "source", sourceKey, "gap", gap)
 			}
-			s.sourceLostAt.Store(nil)
+			ss.lostAt = time.Time{}
 		}
 		if newest.ArrivalNano > 0 {
 			s.lastSyncWaitNs.Store(time.Now().UnixNano() - newest.ArrivalNano)
@@ -574,12 +570,11 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, tick
 	}
 	// Nothing new. A source slower than the program rate repeats its frame
 	// on the ticks in between; it is lost only after sourceLossTimeout.
-	if isProgram && s.sourceLostAt.Load() == nil {
-		now := time.Now()
-		s.sourceLostAt.Store(&now)
+	if ss.lostAt.IsZero() {
+		ss.lostAt = time.Now()
 	}
-	if lost := s.sourceLostAt.Load(); isProgram && lost != nil && time.Since(*lost) > sourceLossTimeout {
-		s.logSourceLostOnce(sourceKey, time.Since(*lost))
+	if gap := time.Since(ss.lostAt); gap > sourceLossTimeout {
+		s.logSourceLostOnce(sourceKey, gap)
 		return s.makeBroadcastBlack(w, h, tick.VideoPTS), false
 	}
 	return borrowRawVideoRef(ss.lastRawVideo), false
@@ -640,11 +635,6 @@ func borrowRawVideoRef(src *ProcessingFrame) *ProcessingFrame {
 	}
 	cp.Ref()
 	return &cp
-}
-
-// programSourceAtomic reads the program source lock-free via hotState.
-func (s *Switcher) programSourceAtomic() string {
-	return s.hotState.Load().programSource
 }
 
 // makeBroadcastBlack returns a broadcast-standard black frame (BT.709
@@ -733,9 +723,8 @@ func (s *Switcher) repeatLastVideoFrame(pts int64) {
 }
 
 // feedSourceSubsystems updates the CPU fill paths (key bridge, layout/DVE
-// compositor) with a decoded YUV frame. In ref-clock mode the FrameSync
-// tickLoop does not run, so handleRawVideoFrame never fires — this
-// method supplies the equivalent feed for the sync loop.
+// compositor) with the program frame a tick shows, the frame-sync choice
+// at the tick's read point. It does nothing with a GPU source manager.
 //
 // The GPU source manager is deliberately not updated here: it is already
 // fed by the producer goroutine via IngestRawVideo (switcher.go writes

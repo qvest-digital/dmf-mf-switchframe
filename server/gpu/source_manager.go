@@ -17,9 +17,10 @@ import (
 // reads from the pipeline goroutine) and optionally a preview encoder that
 // runs in a dedicated goroutine.
 //
-// IngestYUV is called from the switcher's handleRawVideoFrame goroutine
-// (single-threaded per source, but multiple sources call concurrently).
-// GetFrame is called from the pipeline goroutine (videoProcessingLoop).
+// IngestYUV is called from the switcher's IngestRawVideo, on each source's
+// producer goroutine (one per source, several sources concurrently).
+// GetFrame is called from the sync loop, the one goroutine running the
+// pipeline.
 // The atomic.Pointer[GPUFrame] on current ensures these never block each other.
 type GPUSourceManager struct {
 	ctx    *Context
@@ -354,7 +355,7 @@ func (m *GPUSourceManager) cleanupEntry(entry *gpuSourceEntry) {
 func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts int64) {
 	// Nil YUV is a no-op — this happens when the NVDEC zero-copy path
 	// already ingested the frame via IngestGPUFrame and the switcher's
-	// handleRawVideoFrame calls IngestYUV again for the same source.
+	// IngestRawVideo calls IngestYUV again for the same source.
 	if len(yuv) == 0 {
 		return
 	}

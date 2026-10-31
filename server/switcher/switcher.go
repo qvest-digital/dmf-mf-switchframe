@@ -646,7 +646,6 @@ type Switcher struct {
 	lastBroadcastVFrame atomic.Pointer[media.VideoFrame] // last broadcast H.264 frame (for overload repeat)
 	lastOverloadLog     time.Time                        // rate-limit overload logging to 1/sec
 	lastGPUErrorLog     time.Time                        // rate-limit GPU error logging to 1/sec
-	sourceLostAt        atomic.Pointer[time.Time]        // when program source stopped providing frames (sync loop goroutine only)
 
 	// Sync loop audio output callbacks (used in ref clock mode).
 	// outputAudioCallback delivers AAC frames to the program relay (browser).
@@ -1548,8 +1547,7 @@ func (s *Switcher) measureTransSeam() {
 }
 
 // broadcastToProgram sends a video frame to the program relay with a
-// monotonically increasing GroupID. When wall-clock video PTS is enabled,
-// rewrites PTS to stay aligned with the mixer's wall-clock audio PTS.
+// monotonically increasing GroupID, keeping its PTS: the tick's.
 func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	f := *frame // shallow struct copy — avoids mutating shared frame
 	f.DTS = f.PTS
@@ -1578,8 +1576,7 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 }
 
 // broadcastOwnedToProgram sends an owned frame (safe to mutate) to the
-// program relay with a monotonically increasing GroupID. Rewrites PTS
-// to wall-clock time.
+// program relay with a monotonically increasing GroupID, keeping its PTS.
 func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	frame.DTS = frame.PTS
 	if frame.IsKeyframe {

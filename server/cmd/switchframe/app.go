@@ -257,13 +257,9 @@ type App struct {
 	srtSourcesMu sync.Mutex
 	srtCtx       context.Context
 
-	// Source A/V PTS tracking: broadcast encoders often set audio PTS ahead
-	// of video PTS by several hundred ms. Our system discards source PTS
-	// and assigns wall-clock PTS, destroying this relationship. We track
-	// the source PTS gap and add it to the lip-sync offset to compensate.
-
-	// Reference clock (when --ref-clock is active)
-	refClockEncoder audio.Encoder // AAC encoder for ref clock path (needs Close on shutdown)
+	// refClockEncoder encodes the sync loop's program audio; closed on
+	// shutdown.
+	refClockEncoder audio.Encoder
 
 	// MXL integration
 	mxlInstance *mxl.Instance
