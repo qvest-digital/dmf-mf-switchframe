@@ -463,6 +463,10 @@ type Switcher struct {
 	// use-after-close on the encoder by still-draining old pipelines.
 	drainWg sync.WaitGroup
 
+	// swapMu orders pipeline swaps, so each new encode node is handed
+	// the one it replaces before a later swap can retire it.
+	swapMu sync.Mutex
+
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
 
@@ -939,7 +943,10 @@ func (s *Switcher) Close() {
 			fp.Close()
 		}
 		// Swap pipeline to nil and synchronously drain + close.
-		if p := s.pipeline.Swap(nil); p != nil {
+		s.swapMu.Lock()
+		p := s.pipeline.Swap(nil)
+		s.swapMu.Unlock()
+		if p != nil {
 			p.Wait()
 			_ = p.Close()
 		}
@@ -1234,6 +1241,7 @@ func newAsyncEncodeNode(s *Switcher) *encodeNode {
 		onEncoded:       s.broadcastWithCaptions,
 		onRepeat:        s.emitRepeat,
 		encoder10bit:    is10bit,
+		pred:            make(chan *encodeNode, 1),
 	}
 	enc.start()
 	return enc
@@ -1273,15 +1281,33 @@ func (s *Switcher) BuildPipeline() error {
 		"total_latency", p.TotalLatency(),
 		"lip_sync_hint", p.TotalLatency()-aacFrameDuration,
 	)
-	s.pipeline.Store(p)
+	s.swapPipeline(p)
 	return nil
 }
 
 // swapPipeline atomically replaces the current pipeline with newPipeline.
 // The old pipeline drains in-flight frames via WaitGroup, then closes all
 // nodes in a background goroutine. This is the primitive all rebuild triggers use.
+//
+// Both pipelines share the one encoder and feed the one program, and the
+// old encode queue still holds earlier frames and repeats. The new encode
+// node therefore sends nothing until the old one has drained; its queue
+// takes the ticks meanwhile and drops, counted, what does not fit. A
+// single encode node kept across rebuilds would order the program too,
+// but it would outlive the pipelines that close their nodes and carry
+// their per-format state over a format change.
 func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
-	old := s.pipeline.Swap(newPipeline)
+	s.swapMu.Lock()
+	old := s.pipeline.Load()
+	if enc := newPipeline.asyncEncoder(); enc != nil {
+		var prev *encodeNode
+		if old != nil {
+			prev = old.asyncEncoder()
+		}
+		enc.follow(prev)
+	}
+	s.pipeline.Store(newPipeline)
+	s.swapMu.Unlock()
 	if old == nil {
 		return
 	}
