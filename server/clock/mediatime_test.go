@@ -1,6 +1,7 @@
 package clock
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -116,5 +117,42 @@ func TestTickAudioRangesTileTheSampleTimeline(t *testing.T) {
 		if total != end-start {
 			t.Fatalf("%v: %d samples over 30000 ticks, want %d", fr, total, end-start)
 		}
+	}
+}
+
+// A tick that starts late but still within its own grain is delivered: only
+// a grain that has passed completely is dropped. Rounding the current time
+// to the nearest grain dropped every tick that woke more than half a frame
+// late.
+func TestRealtimeTickDropsOnlyPassedGrains(t *testing.T) {
+	r := Rate{Num: 50, Den: 1}
+	k := uint64(90_000_000_000)
+	period := IndexToTimestamp(r, k+1) - IndexToTimestamp(r, k)
+	Epoch() // set before the scripted clock, which it would consume
+	var mu sync.Mutex
+	calls := 0
+	SetTAISource(func() int64 {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if calls == 1 { // the clock starts just before grain k
+			return IndexToTimestamp(r, k) - period/10
+		}
+		return IndexToTimestamp(r, k+1) + period*6/10 // wakes 0.6 frame late
+	})
+	c := NewReferenceClock(50, 1, 48000, PTSBase, true)
+	t.Cleanup(func() {
+		c.Stop()
+		SetTAISource(func() int64 { return time.Now().UnixNano() })
+	})
+	c.Start()
+	select {
+	case tk := <-c.Ticks():
+		if tk.Index != k+1 || c.DroppedTicks() != 0 {
+			t.Fatalf("first tick is grain k+%d with %d dropped; want k+1, none dropped: "+
+				"a tick 0.6 frame late is still within its grain", tk.Index-k, c.DroppedTicks())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no tick")
 	}
 }
