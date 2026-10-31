@@ -1469,6 +1469,8 @@ func (e *mockAudioEncoder) Encode(pcm []float32) ([]byte, error) {
 	return make([]byte, 64), nil
 }
 
+func (e *mockAudioEncoder) Delay() int { return 0 }
+
 func (e *mockAudioEncoder) Close() error { return nil }
 
 func TestReplayPlayer_WSOLAPreStretch(t *testing.T) {
