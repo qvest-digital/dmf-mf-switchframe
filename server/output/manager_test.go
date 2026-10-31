@@ -964,18 +964,6 @@ func TestManager_SRTStats_NilManagerSafe(t *testing.T) {
 	require.NoError(t, mgr.StopSRTOutput())
 }
 
-func lipSyncTestFrame(pts int64) *media.VideoFrame {
-	return &media.VideoFrame{
-		PTS:        pts,
-		DTS:        pts,
-		IsKeyframe: true,
-		SPS:        []byte{0x67, 0x42, 0xC0, 0x1E},
-		PPS:        []byte{0x68, 0xCE, 0x38, 0x80},
-		WireData:   []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
-		Codec:      "h264",
-	}
-}
-
 // TestManager_StartDestinationDialDoesNotBlockControlPlane verifies that the
 // SRT dial performed by StartDestination (which can block up to the 5s SRT
 // ConnTimeout against an unreachable endpoint) does not run while holding

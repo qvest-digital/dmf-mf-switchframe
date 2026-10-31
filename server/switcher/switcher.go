@@ -638,9 +638,6 @@ type Switcher struct {
 	// programRepeats counts ticks that showed a frame again because the
 	// program source had nothing new, or black after a loss.
 	programRepeats atomic.Int64
-	// lastEnqueueNano is when a frame other than a fill was last queued for
-	// the pipeline: it arrived then, however long the pipeline takes.
-	lastEnqueueNano atomic.Int64
 	// transitionBlendBuf is the persistent dst for engine.BlendRawInto on
 	// the sync-loop transition path. Grown on first tick and reused every
 	// tick thereafter — kills the ~3 MB/frame result allocation that

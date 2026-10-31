@@ -95,6 +95,10 @@ type Writer struct {
 	latestV210 atomic.Pointer[v210Frame]
 	videoKick  chan struct{} // buffered(1)
 	videoSeq   uint64        // frames stored; producer goroutine only
+	// videoLoaded, when set, runs on the video goroutine right after it
+	// loads the latest frame, before it claims the frame's ring slot.
+	// Tests use it to publish frames inside that window.
+	videoLoaded func()
 
 	// audioOverlaps counts batches dropped for overlapping the last write.
 	audioOverlaps atomic.Int64
@@ -376,6 +380,9 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 		}
 
 		frame := w.latestV210.Load()
+		if w.videoLoaded != nil {
+			w.videoLoaded()
+		}
 		ref = w.videoRef.Load()
 		if ref == nil || ref.writer == nil {
 			return
@@ -387,40 +394,48 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 
 		writeFailed := false
 		if frame != nil {
-			var index uint64
-			ok := false
-			switch {
-			case frame.seq == writtenSeq:
-				index, ok = videoIndexFor(now, last, repeats >= stallRepeats)
-			case haveLast && frame.index <= last:
-				// Its grain is already written, by a repeat when the
-				// frame came late; the frame now stands for the last
-				// one and is what a repeat writes.
-				w.videoIndexDrops.Add(1)
-				writtenSeq = frame.seq
-			default:
-				index, ok = frame.index, true
+			// decide picks the grain to write f at, or drops f when its
+			// grain is already written, by a repeat when the frame came
+			// late; f then stands for the last frame and is what a
+			// repeat writes.
+			decide := func(f *v210Frame) (uint64, bool) {
+				switch {
+				case f.seq == writtenSeq:
+					return videoIndexFor(now, last, repeats >= stallRepeats)
+				case haveLast && f.index <= last:
+					w.videoIndexDrops.Add(1)
+					writtenSeq = f.seq
+					return 0, false
+				}
+				return f.index, true
+			}
+			index, ok := decide(frame)
+			// Claim-then-confirm: publish the ring slot we intend to read
+			// so WriteVideo will drop rather than overwrite it, THEN
+			// re-load latest and confirm the slot is unchanged before the
+			// cgo copy. If a producer published a newer frame (and thus a
+			// different slot) between our load and our claim, retry
+			// against the new frame, deciding its grain anew, instead of
+			// memcpying a slot whose protection the producer never
+			// observed. slot < 0 denotes a standalone (non-ring) buffer
+			// needing no claim.
+			claimed := false
+			for ok && frame.slot >= 0 {
+				w.v210InFlight.Store(int64(frame.slot))
+				claimed = true
+				latest := w.latestV210.Load()
+				if latest == frame {
+					break
+				}
+				frame = latest
+				index, ok = decide(frame)
+			}
+			if !ok && claimed {
+				w.v210InFlight.Store(-1)
 			}
 			if ok {
-				// Claim-then-confirm: publish the ring slot we intend to read
-				// so WriteVideo will drop rather than overwrite it, THEN
-				// re-load latest and confirm the slot is unchanged before the
-				// cgo copy. If a producer published a newer frame (and thus a
-				// different slot) between our load and our claim, retry
-				// against the new frame instead of memcpying a slot whose
-				// protection the producer never observed. slot < 0 denotes a
-				// standalone (non-ring) buffer needing no claim.
-				for frame.slot >= 0 {
-					w.v210InFlight.Store(int64(frame.slot))
-					latest := w.latestV210.Load()
-					if latest == frame {
-						break
-					}
-					frame = latest
-				}
-
 				err := ref.writer.WriteGrain(index, frame.data)
-				if frame.slot >= 0 {
+				if claimed {
 					w.v210InFlight.Store(-1)
 				}
 				if err != nil {
