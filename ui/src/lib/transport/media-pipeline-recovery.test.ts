@@ -39,18 +39,32 @@ vi.mock('$lib/prism/moq-transport', () => ({
 	},
 }));
 
-import { createMediaPipeline, RECONNECT_MAX_MS, STALL_THRESHOLD_MS, type MediaPipeline } from './media-pipeline';
+import {
+	createMediaPipeline, CLOSE_CATALOG_CHANGED, RECONNECT_MAX_MS, STALL_REDIAL_MS, STALL_THRESHOLD_MS, type MediaPipeline,
+} from './media-pipeline';
 import { clearAllStalls, isSourceStalled } from './source-errors.svelte';
 
 const KEY = 'mxl:mxl-1';
 const desc = new Uint8Array([1, 0x64, 0, 0x28]);
+const catalog = [{ type: 'video', codec: 'avc1.640028', width: 854, height: 480 } as never];
+/** Dials whose catalog was delivered. */
+let answered = 0;
 
 /** The newest dial delivers its catalog and starts sending frames. */
 function up(p: MediaPipeline): Dial {
 	const d = dials[dials.length - 1];
-	d.cb.onTrackInfo([{ type: 'video', codec: 'avc1.640028', width: 854, height: 480 } as never]);
+	d.cb.onTrackInfo(catalog);
+	answered = dials.length;
 	p.feedVideoFrame(KEY, new Uint8Array([1]), true, 0, desc);
 	return d;
+}
+
+/** Let ms pass with every dial delivering its catalog and no frames. */
+function silent(ms: number): void {
+	for (let t = 0; t < ms; t += 100) {
+		while (answered < dials.length) dials[answered++].cb.onTrackInfo(catalog);
+		vi.advanceTimersByTime(100);
+	}
 }
 
 /** Feed frames on the current transport for ms milliseconds. */
@@ -66,6 +80,7 @@ describe('preview recovery per disconnect class', () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		dials.length = 0;
+		answered = 0;
 		clearAllStalls();
 		p = createMediaPipeline();
 		p.addSource(KEY);
@@ -77,6 +92,7 @@ describe('preview recovery per disconnect class', () => {
 	afterEach(() => {
 		p.destroy();
 		vi.useRealTimers();
+		vi.restoreAllMocks();
 	});
 
 	// Server restart, engine pod replaced, network blip long enough for
@@ -112,18 +128,64 @@ describe('preview recovery per disconnect class', () => {
 		expect(dials[0].close).toHaveBeenCalled();
 		expect(dials.length).toBeGreaterThan(1);
 	});
+
+	// Idle playout, a paused clip, an input unwired on the engine: the
+	// session stays open and rightly carries nothing. It is replaced once,
+	// in case the session is the fault, and then left alone.
+	it('redials a source that goes silent once, not periodically', () => {
+		silent(10 * 60_000);
+		expect(dials.length, 'dials in 10 min of silence').toBe(2);
+	});
+
+	// Once the input is wired again the engine closes the session, as its
+	// catalog went stale. Video must follow at once, not after a backoff
+	// built up while the input was silent.
+	it('shows video promptly when a silent input is rewired', () => {
+		silent(5 * 60_000);
+		expect(dials.length, 'dials while silent').toBe(2);
+		dials[1].cb.onClose(CLOSE_CATALOG_CHANGED);
+		vi.advanceTimersByTime(1000);
+		expect(dials.length, 'dials within 1 s of the close').toBe(3);
+		up(p);
+		frames(p, 500);
+		expect(isSourceStalled(KEY)).toBe(false);
+	});
+
+	// The same close, landing while the stall redial's backoff still counts:
+	// the source has media again, so the backoff starts afresh.
+	it('dials promptly when the engine closes the session just after a stall redial', () => {
+		vi.spyOn(Math, 'random').mockReturnValue(0.999); // the longest jitter
+		silent(STALL_REDIAL_MS + 2000);
+		expect(dials.length, 'stall redial').toBe(2);
+		silent(2000);
+		dials[1].cb.onClose(CLOSE_CATALOG_CHANGED);
+		vi.advanceTimersByTime(1000);
+		expect(dials.length, 'dials within 1 s of the close').toBe(3);
+	});
+
+	// A hidden tab's timers are throttled and nobody sees its previews.
+	it('does not redial while the tab is hidden', () => {
+		const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+		document.dispatchEvent(new Event('visibilitychange'));
+		silent(2 * 60_000);
+		expect(dials.length, 'dials while hidden').toBe(1);
+		hidden.mockReturnValue(false);
+		document.dispatchEvent(new Event('visibilitychange'));
+		silent(STALL_REDIAL_MS + 2000);
+		expect(dials.length, 'dials once visible').toBe(2);
+	});
 });
 
 // An input wired to nothing on the engine: the catalog never came for
 // 30 s, the browser abandoned each dial at its 4 s connect timeout and
 // dialled again after a backoff capped at 4 s, one dial every ~8 s for as
 // long as the page was open. Once the engine answers the catalog at once,
-// the session is up but carries no frames, and its replacement must back
-// off just as far.
+// the session is up but carries no frames, and it is kept.
 describe('dial rate of a source that delivers no video', () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		dials.length = 0;
+		answered = 0;
 		clearAllStalls();
 	});
 	afterEach(() => vi.useRealTimers());
@@ -146,17 +208,19 @@ describe('dial rate of a source that delivers no video', () => {
 		return times;
 	}
 
-	for (const [name, answer] of [['whose catalog never arrives', false], ['whose catalog arrives without frames', true]] as const) {
-		it(`backs off to RECONNECT_MAX_MS for a source ${name}`, () => {
-			const times = dialTimes(answer);
-			const gaps = times.slice(1).map((t, i) => t - times[i]);
-			const steady = Math.min(...gaps.slice(-10));
-			expect(steady, `steady dial gap ${steady} ms`).toBeGreaterThanOrEqual(0.75 * RECONNECT_MAX_MS);
-			// Still redialled, in case the session is the fault.
-			expect(times.length, `${times.length} dials in 35 min`).toBeGreaterThan(10);
-			expect(times.length, `${times.length} dials in 35 min`).toBeLessThan(90);
-		});
-	}
+	it('backs off to RECONNECT_MAX_MS for a source whose catalog never arrives', () => {
+		const times = dialTimes(false);
+		const gaps = times.slice(1).map((t, i) => t - times[i]);
+		const steady = Math.min(...gaps.slice(-10));
+		expect(steady, `steady dial gap ${steady} ms`).toBeGreaterThanOrEqual(0.75 * RECONNECT_MAX_MS);
+		// Still redialled, in case the session is the fault.
+		expect(times.length, `${times.length} dials in 35 min`).toBeGreaterThan(10);
+		expect(times.length, `${times.length} dials in 35 min`).toBeLessThan(90);
+	});
+
+	it('keeps the one session of a source whose catalog arrives without frames', () => {
+		expect(dialTimes(true)).toHaveLength(1);
+	});
 
 	// The engine closes the session of an input once it is wired, as its
 	// catalog went stale. The page must take that close as the cue to dial

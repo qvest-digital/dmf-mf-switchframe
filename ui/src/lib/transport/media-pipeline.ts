@@ -156,13 +156,16 @@ export const RECONNECT_STABLE_MS = 10_000;
 /** Least time between two early dials of the sources waiting to
  * reconnect, set off by another source of the pipeline coming up. */
 export const DIAL_WAITING_MIN_MS = 1000;
-/** How long a connected source may go without a video frame before its
- * transport is replaced. An open session that stopped carrying frames is
- * otherwise never noticed: nothing closes it. The replacement waits out
- * the reconnect backoff with the old transport still open, so an input
- * wired to nothing is dialled at most once per RECONNECT_MAX_MS, and the
- * engine closing that session once the input is wired still reaches it. */
+/** How long a transport that delivered video may go without a frame
+ * before it is replaced. An open session that stopped carrying frames is
+ * otherwise never noticed: nothing closes it. A transport that has not
+ * delivered a frame is left open, so a source wired to nothing or idle
+ * keeps one session, which the engine closes once its catalog changes. */
 export const STALL_REDIAL_MS = 3000;
+/** WebTransport close code of a session whose catalog went stale: the
+ * engine's wtErrCatalogChanged. The source has media again, so it is
+ * dialled at once whatever backoff it built up. */
+export const CLOSE_CATALOG_CHANGED = 6;
 
 /**
  * Whether the page has had a user gesture, which a browser requires before
@@ -205,8 +208,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	const upSince = new Map<string, number>();
 	/** When waiting sources were last dialled early. */
 	let lastDialWaiting = -Infinity;
-	/** Last video frame, or catalog, of each source's current transport
-	 * (performance.now()). */
+	/** Last video frame of each source's current transport
+	 * (performance.now()); none until it delivers one. */
 	const lastMedia = new Map<string, number>();
 	/** Pending replacement of each source's stalled transport. */
 	const stallRedials = new Map<string, ReturnType<typeof setTimeout>>();
@@ -349,7 +352,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				// has stayed up: see transportLost.
 				clearConnectDeadline(key);
 				upSince.set(key, Date.now());
-				lastMedia.set(key, performance.now());
 				dialWaiting();
 
 				// Notify once that MoQ is active (catalog received = WebTransport
@@ -467,8 +469,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				}
 			},
 
-			onClose() {
-				if (current()) transportLost(key);
+			onClose(closeCode?: number) {
+				if (current()) transportLost(key, closeCode === CLOSE_CATALOG_CHANGED);
 			},
 
 			onError(err: string) {
@@ -485,11 +487,13 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	 * transport rather than decoding its deltas against old references, and
 	 * no backlog of the old stream is left in the render buffers. A
 	 * reconnect of the new relay session starts its group IDs afresh.
+	 * A source that has media again, or whose transport stayed up, starts
+	 * its backoff afresh.
 	 */
-	function transportLost(key: string): void {
+	function transportLost(key: string, mediaAgain = false): void {
 		if (!sources.get(key)?.transport) return;
 		const up = dropTransport(key);
-		if (up !== undefined && Date.now() - up >= RECONNECT_STABLE_MS) {
+		if (mediaAgain || (up !== undefined && Date.now() - up >= RECONNECT_STABLE_MS)) {
 			const r = reconnects.get(key);
 			if (r) r.attempts = 0;
 		}
@@ -554,14 +558,28 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		stallRedials.delete(key);
 	}
 
+	/** Watch for stalled transports while sources are wanted and the tab
+	 * is visible; a hidden tab's timers are throttled and nobody sees its
+	 * previews. */
+	function startStallRedials(): void {
+		if (stallRedialInterval === null && !document.hidden) {
+			stallRedialInterval = setInterval(checkStalledTransports, STALL_CHECK_INTERVAL_MS);
+		}
+	}
+
+	function stopStallRedials(): void {
+		if (stallRedialInterval !== null) clearInterval(stallRedialInterval);
+		stallRedialInterval = null;
+		for (const key of Array.from(stallRedials.keys())) clearStallRedial(key);
+	}
+
 	/** Replace, after the reconnect backoff, the transport of every source
-	 * that delivered its catalog and then no video frame for
-	 * STALL_REDIAL_MS. A source delivering frames on a transport that has
-	 * been up for RECONNECT_STABLE_MS starts its backoff afresh. */
+	 * that delivered a video frame and then none for STALL_REDIAL_MS. A
+	 * source delivering frames on a transport that has been up for
+	 * RECONNECT_STABLE_MS starts its backoff afresh. */
 	function checkStalledTransports(): void {
 		if (wanted.size === 0) {
-			if (stallRedialInterval !== null) clearInterval(stallRedialInterval);
-			stallRedialInterval = null;
+			stopStallRedials();
 			return;
 		}
 		const now = performance.now();
@@ -768,7 +786,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	}
 
 	function openTransport(key: string, source: SourceMedia): void {
-		if (stallRedialInterval === null) stallRedialInterval = setInterval(checkStalledTransports, STALL_CHECK_INTERVAL_MS);
+		startStallRedials();
 		const current = () => sources.get(key) === source && source.transport === transport;
 		// program-preview gets high priority (16) so QUIC schedules it
 		// ahead of multiview tiles (96) during bandwidth contention.
@@ -918,8 +936,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		window.removeEventListener("online", handleOnline);
 		for (const key of Array.from(reconnects.keys())) cancelReconnect(key);
 		for (const key of Array.from(connectDeadlines.keys())) clearConnectDeadline(key);
-		if (stallRedialInterval !== null) clearInterval(stallRedialInterval);
-		stallRedialInterval = null;
+		stopStallRedials();
 		upSince.clear();
 		lastMedia.clear();
 		wanted.clear();
@@ -957,12 +974,15 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				clearInterval(stallCheckInterval);
 				stallCheckInterval = null;
 			}
+			stopStallRedials();
 		} else {
 			// Reset frame arrival times so resumed sources aren't immediately stalled
 			const now = performance.now();
 			for (const key of lastFrameTime.keys()) {
 				lastFrameTime.set(key, now);
 			}
+			for (const key of lastMedia.keys()) lastMedia.set(key, now);
+			if (wanted.size > 0) startStallRedials();
 			// Clear any stalls that were set just before the tab was hidden
 			clearAllStalls();
 			// Restart stall detection
