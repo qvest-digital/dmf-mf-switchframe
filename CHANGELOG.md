@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.43](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.42...mxl-v1.0.0-rc.43) (2026-11-01)
+
+
+### Bug Fixes
+
+* **gpu:** open a source's preview encoder off its registration ([ba8676c](https://github.com/qvest-digital/dmf-mf-switchframe/commit/ba8676c673d414953937a8dcda1d207691e91c2e))
+
 ## [1.0.0-rc.42](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.41...mxl-v1.0.0-rc.42) (2026-11-01)
 
 
