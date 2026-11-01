@@ -973,6 +973,17 @@ func TestSwitcher_SetCodecInfo(t *testing.T) {
 	require.Equal(t, true, codecInfo["hw_accel"])
 }
 
+func TestSwitcher_DebugSnapshotEncoderThreads(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+	defer sw.Close()
+
+	_, ok := sw.DebugSnapshot()["codec"].(map[string]any)["threads"]
+	require.False(t, ok, "no encoder options, no thread count")
+
+	sw.SetEncoderOpts(&codec.EncoderOptions{Threads: 16})
+	require.Equal(t, 16, sw.DebugSnapshot()["codec"].(map[string]any)["threads"])
+}
+
 func TestDebugSnapshot_PerSourceDecoderStats(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(t, programRelay)

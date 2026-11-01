@@ -44,7 +44,8 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
                       int fps_num, int fps_den,
                       int gop_secs, void* hwDeviceCtx,
                       int pix_fmt_10bit,
-                      const char* preset_override) {
+                      const char* preset_override,
+                      int threads) {
 	memset(h, 0, sizeof(ffenc_t));
 	h->pix_fmt_10bit = pix_fmt_10bit;
 
@@ -96,9 +97,13 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	// each (8.4 macroblock rows) — negligible quality impact.
 	// Must be high enough to sustain real-time encode when CPU is shared
 	// with per-source decoder goroutines (3×60fps + 1×30fps = 210 decodes/sec).
-	int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
-	if (ncpu < 2) ncpu = 2;
-	if (ncpu > 8) ncpu = 8;
+	// threads > 0 is the caller's count; otherwise the host's CPUs, 2 to 8.
+	int ncpu = threads;
+	if (ncpu <= 0) {
+		ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
+		if (ncpu < 2) ncpu = 2;
+		if (ncpu > 8) ncpu = 8;
+	}
 	h->ctx->thread_count = ncpu;
 
 	// Set explicit levels for downstream decoder compatibility.
@@ -579,7 +584,7 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, 
 	rc := C.ffenc_open(&e.handle, cName,
 		C.int(width), C.int(height), C.int(bitrate),
 		C.int(fpsNum), C.int(fpsDen),
-		C.int(gopSecs), hwDeviceCtx, C.int(0), cPreset)
+		C.int(gopSecs), hwDeviceCtx, C.int(0), cPreset, C.int(encOpts.threads()))
 	FFmpegOpenMu.Unlock()
 	if rc != 0 {
 		desc := map[int]string{
@@ -653,7 +658,7 @@ func NewFFmpegEncoder10bit(codecName string, width, height, bitrate, fpsNum, fps
 	rc := C.ffenc_open(&e.handle, cName,
 		C.int(width), C.int(height), C.int(bitrate),
 		C.int(fpsNum), C.int(fpsDen),
-		C.int(gopSecs), hwDeviceCtx, C.int(1), cPreset)
+		C.int(gopSecs), hwDeviceCtx, C.int(1), cPreset, C.int(encOpts.threads()))
 	FFmpegOpenMu.Unlock()
 	if rc != 0 {
 		desc := map[int]string{
