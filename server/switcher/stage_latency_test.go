@@ -30,9 +30,10 @@ func TestStageLatencyGaugesDescribeARawSourceOnTheGPUPath(t *testing.T) {
 		Data: make([]byte, 320*240*3/2), Width: 320, Height: 240, PTS: pts, DTS: pts,
 	})
 	time.Sleep(5 * time.Millisecond)
-	// The tick's grain started 7 ms ago.
+	// The tick's grain started 7 ms ago, to the 90 kHz tick its PTS
+	// rounds to.
 	s.processVideoTick(clock.Tick{
-		VideoPTS:      clock.NowPTS() - 630,
+		VideoPTS:      clock.PTS(clock.TAINow() - 7_000_000),
 		ReadPTS:       pts,
 		AudioSamples:  1600,
 		FrameDuration: 33333 * time.Microsecond,
@@ -40,6 +41,6 @@ func TestStageLatencyGaugesDescribeARawSourceOnTheGPUPath(t *testing.T) {
 
 	got := values(gather(t, NewMetricsCollector(s))["switchframe_pipeline_stage_latency_seconds"])
 	require.GreaterOrEqual(t, got["sync_wait"], 0.005, "sync_wait %v", got)
-	require.GreaterOrEqual(t, got["tick"], 0.007, "tick %v", got)
+	require.GreaterOrEqual(t, got["tick"], 0.007-0.00002, "tick %v", got)
 	require.GreaterOrEqual(t, got["total"], 0.005, "total %v", got)
 }
