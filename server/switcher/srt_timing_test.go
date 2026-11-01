@@ -18,7 +18,7 @@ type srcPTSGPUMock struct {
 	srcPTS []int64
 }
 
-func (m *srcPTSGPUMock) RunFromCache(sourceKey string, srcPTS, pts int64) error {
+func (m *srcPTSGPUMock) RunFromCache(sourceKey string, srcPTS, pts int64, nearest bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.srcPTS = append(m.srcPTS, srcPTS)

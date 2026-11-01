@@ -61,6 +61,26 @@ func (r *recentFrames[F]) at(pts int64) (F, bool) {
 	return zero, false
 }
 
+// near returns, with a reference the caller must Release, the frame kept
+// under pts, else the newest kept under an earlier PTS, else the oldest
+// kept; false when the store is empty. It stands in for a frame that is no
+// longer kept, for a frame without pixels of its own to upload.
+func (r *recentFrames[F]) near(pts int64) (F, bool) {
+	for i := len(r.frames) - 1; i >= 0; i-- {
+		if e := r.frames[i]; e.pts <= pts {
+			e.f.Ref()
+			return e.f, true
+		}
+	}
+	if len(r.frames) > 0 {
+		e := r.frames[0]
+		e.f.Ref()
+		return e.f, true
+	}
+	var zero F
+	return zero, false
+}
+
 // drain returns every kept frame and keeps none.
 func (r *recentFrames[F]) drain() []F {
 	out := make([]F, 0, len(r.frames))

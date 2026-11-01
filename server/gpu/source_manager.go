@@ -887,6 +887,22 @@ func (m *GPUSourceManager) GetFrameAt(sourceKey string, pts int64) *GPUFrame {
 	return refAt(entry, pts)
 }
 
+// GetFrameNear returns the source's recent frame with the given PTS, else
+// the newest one before it, else its oldest, with a reference the caller
+// must Release, or nil if it has none.
+func (m *GPUSourceManager) GetFrameNear(sourceKey string, pts int64) *GPUFrame {
+	m.mu.RLock()
+	entry, exists := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if !exists {
+		return nil
+	}
+	entry.curMu.Lock()
+	defer entry.curMu.Unlock()
+	f, _ := entry.recent.near(pts)
+	return f
+}
+
 // Close removes all sources and releases all GPU resources.
 func (m *GPUSourceManager) Close() {
 	m.mu.Lock()

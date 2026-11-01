@@ -462,7 +462,7 @@ func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick,
 	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
 		// Try zero-upload path first: use pre-cached GPU frame from source manager.
 		if sourceKey != "" {
-			if err := h.runner.RunFromCache(sourceKey, srcPTS, pf.PTS); err == nil {
+			if err := h.runner.RunFromCache(sourceKey, srcPTS, pf.PTS, false); err == nil {
 				gpuUsed = true
 				s.gpuFramesProcessed.Add(1)
 			} else {

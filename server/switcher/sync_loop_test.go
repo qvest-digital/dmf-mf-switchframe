@@ -1805,7 +1805,7 @@ type syncLoopGPUMock struct {
 	onRunWithUpload func(yuv []byte, w, h int, pts int64) error
 }
 
-func (m *syncLoopGPUMock) RunFromCache(sourceKey string, srcPTS, pts int64) error {
+func (m *syncLoopGPUMock) RunFromCache(sourceKey string, srcPTS, pts int64, nearest bool) error {
 	if m.onRunFromCache != nil {
 		return m.onRunFromCache(sourceKey, pts)
 	}
