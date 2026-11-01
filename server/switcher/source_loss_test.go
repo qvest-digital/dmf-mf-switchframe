@@ -10,7 +10,7 @@ import (
 )
 
 // A source turns to black once it has delivered nothing for
-// sourceLossTimeout; until then it holds its last frame. The time a
+// SourceLossTimeout; until then it holds its last frame. The time a
 // source has been lost is its own: cutting away from a lost source to
 // one that holds a frame does not carry the lost source's timer over.
 func TestCutDoesNotInheritAnotherSourceLossTimer(t *testing.T) {
