@@ -876,12 +876,13 @@ func TestDebugSnapshot_PipelineStageTiming(t *testing.T) {
 	// Send a raw YUV frame through the pipeline.
 	sendRawFrame(sw, "cam1", 100, true)
 
-	// Wait for async video processing to complete.
+	// Run counts a run after its last node, and the encode node
+	// broadcasts before that, so a frame at the viewer does not yet mean
+	// run_count has moved: wait for the count itself.
 	require.Eventually(t, func() bool {
-		viewer.mu.Lock()
-		defer viewer.mu.Unlock()
-		return len(viewer.videos) >= 1
-	}, 200*time.Millisecond, 5*time.Millisecond)
+		ps, ok := sw.DebugSnapshot()["pipeline"].(map[string]any)
+		return ok && ps["run_count"].(int64) > 0
+	}, 2*time.Second, 5*time.Millisecond, "run_count should be > 0 after processing a frame")
 
 	snap := sw.DebugSnapshot()
 
