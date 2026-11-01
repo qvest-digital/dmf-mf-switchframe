@@ -1,5 +1,7 @@
 package gpu
 
+import "github.com/zsiec/switchframe/server/clock"
+
 // refCounted is a frame a store keeps a reference of its own to.
 type refCounted interface {
 	Ref()
@@ -10,9 +12,13 @@ type refCounted interface {
 // under the PTS a tick looks it up by and with a reference of its own. The
 // program is read behind a source's newest frame (clock.ReaderDelayGrains),
 // so the frame a tick shows is usually one of these rather than the newest.
-// It is not safe for concurrent use.
+// A source placed ahead of its arrival, such as an SRT stream by its
+// clock.TrackingAnchor, is read further behind its newest frame, and the
+// store keeps the frames that arrive in that hold as well. It is not safe
+// for concurrent use.
 type recentFrames[F refCounted] struct {
 	frames []recentFrame[F]
+	hold   clock.SourceHold
 }
 
 type recentFrame[F refCounted] struct {
@@ -20,8 +26,9 @@ type recentFrame[F refCounted] struct {
 	pts int64
 }
 
-// recentFramesDepth is how many frames a source's store keeps: the reader
-// delay plus a frame of slack.
+// recentFramesDepth is how many frames a source's store keeps for a frame
+// due on arrival: the reader delay plus a frame of slack. The source's hold
+// adds the frames it holds back.
 const recentFramesDepth = 4
 
 // push keeps f under pts, taking a reference of its own, and returns the
@@ -30,7 +37,7 @@ const recentFramesDepth = 4
 func (r *recentFrames[F]) push(f F, pts int64) (evicted []F) {
 	f.Ref()
 	r.frames = append(r.frames, recentFrame[F]{f: f, pts: pts})
-	if n := len(r.frames) - recentFramesDepth; n > 0 {
+	if n := len(r.frames) - recentFramesDepth - r.hold.Frames(pts); n > 0 {
 		for _, e := range r.frames[:n] {
 			evicted = append(evicted, e.f)
 		}
