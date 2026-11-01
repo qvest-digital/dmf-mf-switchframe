@@ -14,6 +14,7 @@ import (
 	"github.com/zsiec/prism/moq"
 	srtgo "github.com/zsiec/srtgo"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/gpu"
@@ -82,6 +83,9 @@ type srtRelayContext struct {
 	// using the snapshot their registrations were made against, not whatever
 	// state a later format-change rebuild installs.
 	gpu *gpuState
+
+	// anchor places the connection's timestamps on the engine timeline.
+	anchor *clock.TrackingAnchor
 
 	// Channels connecting decode callbacks to goroutines.
 	relayVideoCh  chan srtVideoJob
@@ -278,14 +282,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		oldState.source.Stop() // triggers OnStopped which closes channels → goroutines clean up
 	}
 
-	// Unregister old source from switcher (safe even if not registered).
-	a.sw.UnregisterSource(key)
-	a.mixer.RemoveChannel(key)
-
-	// Register with switcher and mixer.
-	a.sw.RegisterSRTSource(key)
-	a.mixer.AddChannel(key)
-	_ = a.mixer.SetAFV(key, true)
+	anchor := a.bindSRTSource(key)
 
 	// Create browser relay for MoQ viewing.
 	relay := a.server.RegisterStream(key)
@@ -365,7 +362,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	ptsLin := srt.NewPTSLinearizer()
 
 	// --- Goroutine 1: Pipeline ingest (program path) ---
-	a.startSRTPipelineIngest(key, pipelineCh, framePool)
+	a.startSRTPipelineIngest(key, anchor, pipelineCh, framePool)
 
 	// --- Preview proxy encoder (replaces full-quality relay encode) ---
 	var previewEnc *preview.Encoder
@@ -452,6 +449,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		framePool:     framePool,
 		pf:            pf,
 		gpu:           gs,
+		anchor:        anchor,
 		relayVideoCh:  relayVideoCh,
 		replayVideoCh: replayVideoCh,
 		audioCh:       audioCh,
@@ -639,7 +637,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 
 			// The frame is cached and synchronized under one engine-timeline
 			// PTS: the tick that shows it looks the cached frame up by it.
-			mediaPTS := sourceAnchor(sourceKey).PTS(pts)
+			mediaPTS := anchor.PTS(pts)
 			srcMgr.IngestGPUFrame(sourceKey, frame, mediaPTS)
 
 			// Notify the switcher so health monitoring and frame sync see this
@@ -694,29 +692,11 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			close(replayGPUCh)
 		}
 
-		// Remove from active sources map.
-		a.srtSourcesMu.Lock()
-		delete(a.srtSources, sourceKey)
-		a.srtSourcesMu.Unlock()
-
-		// Release listener slot so new connections can be accepted
-		// when MaxSources is set.
-		if cfg.Mode == srt.ModeListener && a.srtListener != nil {
-			a.srtListener.ReleaseSource()
-		}
-
-		// Remove replay viewer from the source relay.
-		if a.replayMgr != nil {
-			a.replayMgr.RemoveSource(sourceKey)
-		}
-
-		// Remove from GPU source manager (releases GPU frames and preview
-		// encoder). Use the wire-time snapshot: the registration was made on
-		// that manager, and after a format-change rebuild the current manager
-		// has no entry for this source.
+		var gpuSources gpuSourceRemover
 		if gs != nil && gs.sourceManager != nil {
-			gs.sourceManager.RemoveSource(sourceKey)
+			gpuSources = gs.sourceManager
 		}
+		a.releaseSRTConnection(sourceKey, cfg.Mode, gpuSources)
 
 		// Don't unregister from switcher -- leave as "no_signal" for reconnect.
 		// The health monitor will mark it stale/no_signal automatically.
@@ -747,13 +727,63 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	return src
 }
 
+// bindSRTSource registers key with the switcher and the mixer for a new
+// connection and returns the anchor that places the connection's
+// timestamps on the engine timeline.
+func (a *App) bindSRTSource(key string) *clock.TrackingAnchor {
+	// Unregister old source from switcher (safe even if not registered).
+	a.sw.UnregisterSource(key)
+	a.mixer.RemoveChannel(key)
+
+	// Register with switcher and mixer.
+	a.sw.RegisterSRTSource(key)
+	a.mixer.AddChannel(key)
+	_ = a.mixer.SetAFV(key, true)
+	return sourceAnchor(key)
+}
+
+// gpuSourceRemover is the part of the GPU source manager a stopped SRT
+// connection's cleanup reaches.
+type gpuSourceRemover interface {
+	RemoveSource(sourceKey string)
+}
+
+// releaseSRTConnection releases what a stopped SRT connection held: its
+// entry in the active sources, its listener slot, its replay viewer and its
+// GPU source entry.
+func (a *App) releaseSRTConnection(sourceKey string, mode string, gpuSources gpuSourceRemover) {
+	// Remove from active sources map.
+	a.srtSourcesMu.Lock()
+	delete(a.srtSources, sourceKey)
+	a.srtSourcesMu.Unlock()
+
+	// Release listener slot so new connections can be accepted
+	// when MaxSources is set.
+	if mode == srt.ModeListener && a.srtListener != nil {
+		a.srtListener.ReleaseSource()
+	}
+
+	// Remove replay viewer from the source relay.
+	if a.replayMgr != nil {
+		a.replayMgr.RemoveSource(sourceKey)
+	}
+
+	// Remove from GPU source manager (releases GPU frames and preview
+	// encoder). Use the wire-time snapshot: the registration was made on
+	// that manager, and after a format-change rebuild the current manager
+	// has no entry for this source.
+	if gpuSources != nil {
+		gpuSources.RemoveSource(sourceKey)
+	}
+}
+
 // startSRTPipelineIngest starts a goroutine that reads decoded YUV frames from
 // pipelineCh and delivers them to the switcher's IngestRawVideo path. Each frame
 // is wrapped in a ProcessingFrame with pool-aware lifecycle.
-func (a *App) startSRTPipelineIngest(key string, pipelineCh <-chan srtVideoJob, framePool *switcher.FramePool) {
+func (a *App) startSRTPipelineIngest(key string, anchor *clock.TrackingAnchor, pipelineCh <-chan srtVideoJob, framePool *switcher.FramePool) {
 	go func() {
 		for job := range pipelineCh {
-			job.pts = sourceAnchor(key).PTS(job.pts)
+			job.pts = anchor.PTS(job.pts)
 			a.sw.IngestRawVideo(key, newSRTPipelineFrame(job, framePool))
 		}
 	}()
@@ -1140,8 +1170,8 @@ func (a *App) startSRTReplayCPUEncode(rc *srtRelayContext) {
 // stream's own PTS, placed on the timeline by the tracking anchor its video
 // shares, keep the audio continuous however the decoder bunches it; the
 // anchor follows a sender clock that drifts.
-func (a *App) ingestSRTAudio(key string, job srtAudioJob) {
-	a.mixer.IngestPCM(key, job.pcm, sourceAnchor(key).PTS(job.pts), job.channels)
+func (a *App) ingestSRTAudio(key string, anchor *clock.TrackingAnchor, job srtAudioJob) {
+	a.mixer.IngestPCM(key, job.pcm, anchor.PTS(job.pts), job.channels)
 }
 
 // startSRTAudioRelay starts a goroutine that delivers decoded PCM audio to the
@@ -1155,7 +1185,7 @@ func (a *App) startSRTAudioRelay(rc *srtRelayContext) {
 	)
 	go func() {
 		for job := range rc.audioCh {
-			a.ingestSRTAudio(rc.key, job)
+			a.ingestSRTAudio(rc.key, rc.anchor, job)
 
 			// Encode for relay.
 			if rc.relay == nil {
