@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,14 +44,39 @@ func (r *programLumaRecorder) Stats() distribution.ViewerStats {
 }
 
 // gpuRemovals is a GPU source manager that records the sources removed
-// from it.
+// from it and, in order, what was done to its sources: "ingest <key>",
+// "stop-preview <key>" and "remove <key>", a run of one entry noted once.
 type gpuRemovals struct {
 	mu      sync.Mutex
 	removed []string
+	log     []string
 }
 
-func (g *gpuRemovals) IngestYUV(string, []byte, int, int, int64) {}
+func (g *gpuRemovals) note(e string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if n := len(g.log); n == 0 || g.log[n-1] != e {
+		g.log = append(g.log, e)
+	}
+}
+
+// logged returns the log's entries for key.
+func (g *gpuRemovals) logged(key string) []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var out []string
+	for _, e := range g.log {
+		if strings.HasSuffix(e, " "+key) && (len(out) == 0 || out[len(out)-1] != e) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func (g *gpuRemovals) IngestYUV(key string, _ []byte, _, _ int, _ int64) { g.note("ingest " + key) }
+func (g *gpuRemovals) StopPreview(key string)                            { g.note("stop-preview " + key) }
 func (g *gpuRemovals) RemoveSource(key string) {
+	g.note("remove " + key)
 	g.mu.Lock()
 	g.removed = append(g.removed, key)
 	g.mu.Unlock()
