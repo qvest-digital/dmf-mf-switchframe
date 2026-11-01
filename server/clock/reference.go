@@ -200,11 +200,14 @@ func frameDuration(fpsNum, fpsDen int) time.Duration {
 // runRealtime delivers one tick at the TAI start of each program grain.
 // A consumer that falls behind gets the ticks it missed in order, as fast
 // as it takes them, up to MaxTickCatchUp; after a longer stall the clock
-// resumes at the current grain. A tick's PTS is always its grain's.
+// resumes at the current grain, the ticks it left waiting included (send).
+// A tick's PTS is always its grain's.
 func (c *ReferenceClock) runRealtime() {
 	defer c.wg.Done()
 
 	n := TimestampToIndex(c.rate, TAINow()) + 1
+	var sent uint64 // grain of the last tick sent, while hasSent
+	hasSent := false
 	for {
 		if wait := IndexToTimestamp(c.rate, n) - TAINow(); wait > 0 {
 			select {
@@ -219,12 +222,53 @@ func (c *ReferenceClock) runRealtime() {
 		default:
 		}
 		n = c.catchUp(n, TAINow())
-		select {
-		case c.ticks <- c.tickAt(n):
-		case <-c.stop:
+		var ok bool
+		if n, ok = c.send(n, sent, hasSent); !ok {
 			return
 		}
+		sent, hasSent = n, true
 		n++
+	}
+}
+
+// send hands the consumer grain n's tick, sent being the grain of the tick
+// sent before it, which may still wait in the channel's buffer. While the
+// consumer holds that one, the wait ends at the catch-up bound of the
+// oldest tick still owed to it: a buffered tick past its bound is taken
+// back, and a waiting tick past its bound is replaced by the current
+// grain's, all counted as dropped, so a consumer that takes a tick never
+// gets one older than MaxTickCatchUp plus the time to take it. It returns
+// the grain whose tick was sent, false once the clock stops.
+func (c *ReferenceClock) send(n, sent uint64, hasSent bool) (uint64, bool) {
+	tk := c.tickAt(n)
+	for {
+		oldest := n
+		if hasSent && len(c.ticks) > 0 {
+			oldest = sent
+		}
+		left := IndexToTimestamp(c.rate, oldest) + int64(MaxTickCatchUp) - TAINow()
+		timer := time.NewTimer(time.Duration(max(left, 0)))
+		select {
+		case c.ticks <- tk:
+			timer.Stop()
+			return n, true
+		case <-c.stop:
+			timer.Stop()
+			return n, false
+		case <-timer.C:
+		}
+		now := TAINow()
+		if hasSent && now-IndexToTimestamp(c.rate, sent) >= int64(MaxTickCatchUp) {
+			select {
+			case <-c.ticks:
+				c.droppedTicks.Add(1)
+			default:
+			}
+		}
+		if m := c.catchUp(n, now); m != n {
+			c.tickCount.Add(-1) // tk was never delivered; its replacement takes its number
+			n, tk = m, c.tickAt(m)
+		}
 	}
 }
 

@@ -3641,9 +3641,12 @@ func TestTickClock_MakesUpBlockedTicks(t *testing.T) {
 	k := tickClock{period: p, next: start.Add(p), stats: &stats}
 	at := func(periods float64) time.Time { return start.Add(time.Duration(periods * float64(p))) }
 
-	ticks := k.due(at(1)) + k.due(at(2))
+	n1, _ := k.due(at(1))
+	n2, _ := k.due(at(2))
+	ticks := n1 + n2
 	require.Equal(t, 2, ticks)
-	require.Zero(t, k.due(at(2.5)), "no tick before the next is due")
+	n, _ := k.due(at(2.5))
+	require.Zero(t, n, "no tick before the next is due")
 
 	// The tick at 2 blocks until 9.1: the ticker hands over its one buffered
 	// fire at once, then fires on its grid.
@@ -3652,12 +3655,14 @@ func TestTickClock_MakesUpBlockedTicks(t *testing.T) {
 		fires = append(fires, float64(f))
 	}
 	for _, f := range fires {
-		n := k.due(at(f))
+		n, skipped := k.due(at(f))
+		require.Zero(t, skipped)
 		require.LessOrEqual(t, n, 2, "made-up ticks go out one extra per period, not as a burst")
 		ticks += n
 	}
 	require.Equal(t, 20, ticks, "every frame period from 1 to 20 gets its tick")
-	require.Zero(t, k.due(at(20.5)), "caught up")
+	n, _ = k.due(at(20.5))
+	require.Zero(t, n, "caught up")
 	// Periods 3 to 20 got their 18 ticks from 12 fires.
 	require.Equal(t, uint64(6), stats.madeUp.Load())
 	require.Zero(t, stats.skipped.Load())
@@ -3670,7 +3675,9 @@ func TestTickClock_SkipsAheadPastMaxBacklog(t *testing.T) {
 	var stats tickStats
 	k := tickClock{period: p, next: start.Add(p), stats: &stats}
 	now := start.Add(p + maxTickBacklog)
-	require.Equal(t, 1, k.due(now))
+	run, skipped := k.due(now)
+	require.Equal(t, 1, run)
+	require.Equal(t, 50, skipped)
 	require.Equal(t, now.Add(p), k.next)
 	// 51 ticks were due, from p to p+1s; one ran.
 	require.Equal(t, uint64(50), stats.skipped.Load())

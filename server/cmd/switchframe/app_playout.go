@@ -265,6 +265,13 @@ func (a *App) initPlayout() error {
 		// The channel's continuous output PTS, placed on the timeline by the
 		// anchor its audio shares.
 		pts = playoutAnchor(key).PTS(pts)
+		if len(yuv) == 0 {
+			// The aliased VRAM frame carries the live source's PTS; the
+			// tick looks it up under the channel's.
+			if gs := a.gpu(); gs != nil && gs.sourceManager != nil {
+				gs.sourceManager.KeepCurrentAs(key, pts)
+			}
+		}
 		frame := &switcher.ProcessingFrame{
 			Data:       outYUV,
 			Width:      outW,
