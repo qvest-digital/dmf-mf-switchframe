@@ -11,9 +11,9 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
-// sourceLossTimeout is the duration after which a lost source transitions
+// SourceLossTimeout is the duration after which a lost source transitions
 // from freeze (last frame) to broadcast black.
-const sourceLossTimeout = 5 * time.Second
+const SourceLossTimeout = 5 * time.Second
 
 // synchronousProcessingLoop drives both video and audio from the reference clock.
 // Each tick produces exactly one video frame and a precise number of audio samples,
@@ -525,7 +525,7 @@ func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick,
 // newest one whose media time is at or before tick.ReadPTS (less the
 // source's delay), as a counted reference the caller releases. fresh is
 // false for a repeat of the source's last frame, which turns to black once
-// that source has delivered nothing for sourceLossTimeout, and for black
+// that source has delivered nothing for SourceLossTimeout, and for black
 // when it has never delivered or is not registered (no program source). Each source keeps its own loss time, so a
 // cut never inherits another source's. Frames newer than the read point
 // stay buffered for later ticks.
@@ -569,11 +569,11 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, tick
 		return s.makeBroadcastBlack(w, h, tick.VideoPTS), false
 	}
 	// Nothing new. A source slower than the program rate repeats its frame
-	// on the ticks in between; it is lost only after sourceLossTimeout.
+	// on the ticks in between; it is lost only after SourceLossTimeout.
 	if ss.lostAt.IsZero() {
 		ss.lostAt = time.Now()
 	}
-	if gap := time.Since(ss.lostAt); gap > sourceLossTimeout {
+	if gap := time.Since(ss.lostAt); gap > SourceLossTimeout {
 		s.logSourceLostOnce(sourceKey, gap)
 		return s.makeBroadcastBlack(w, h, tick.VideoPTS), false
 	}

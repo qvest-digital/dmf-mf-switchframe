@@ -76,11 +76,16 @@ type gpuSourceEntry struct {
 	// no freed GPU resource is recreated or reused.
 	closed atomic.Bool
 
-	// Preview encoder (nil if no preview configured).
+	// Preview encoder (nil if no preview configured). previewLoop owns and
+	// closes it.
 	prevEnc   *PreviewEncoder
 	onPreview func(data []byte, isIDR bool, pts int64)
 	prevCh    chan any      // platform-specific frame type (capacity 1, newest-wins)
 	prevDone  chan struct{} // closed when preview goroutine exits
+	// prevStopped is set under useMu before prevCh closes, so an ingest
+	// queues no preview frame after it; prevStop closes prevCh once.
+	prevStopped atomic.Bool
+	prevStop    sync.Once
 
 	// Per-source ST map state.
 	stmap     *GPUSTMap
@@ -191,9 +196,13 @@ func (m *GPUSourceManager) SetSourceColorGrade(provider SourceColorGradeProvider
 }
 
 // RegisterSource creates a GPU source entry. If preview is non-nil, a preview
-// encoder and its dedicated goroutine are started. Allocates a stmapTmp frame
-// for potential ST map warp operations.
+// encoder and its dedicated goroutine are started, after the preview encoder
+// of an entry it replaces is closed: a card has a limited number of encode
+// sessions. Allocates a stmapTmp frame for potential ST map warp operations.
 func (m *GPUSourceManager) RegisterSource(sourceKey string, w, h int, preview *PreviewConfig) {
+	if preview != nil && preview.OnPreview != nil {
+		m.StopPreview(sourceKey)
+	}
 	entry := &gpuSourceEntry{
 		width:  w,
 		height: h,
@@ -272,6 +281,30 @@ func (m *GPUSourceManager) RemoveSource(sourceKey string) {
 	slog.Info("gpu: source manager: removed source", "source", sourceKey)
 }
 
+// StopPreview closes a source's preview encoder and keeps its frames.
+func (m *GPUSourceManager) StopPreview(sourceKey string) {
+	m.mu.RLock()
+	entry := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if entry != nil {
+		m.stopPreview(entry)
+	}
+}
+
+// stopPreview stops entry's preview goroutine, which closes the encoder,
+// and waits for it to exit. Ingest queues preview frames under useMu, so
+// none is queued once prevStopped is set under it.
+func (m *GPUSourceManager) stopPreview(entry *gpuSourceEntry) {
+	if entry.prevCh == nil {
+		return
+	}
+	entry.useMu.Lock()
+	entry.prevStopped.Store(true)
+	entry.useMu.Unlock()
+	entry.prevStop.Do(func() { close(entry.prevCh) })
+	<-entry.prevDone
+}
+
 // cleanupEntry releases all resources owned by a source entry. It runs
 // WITHOUT m.mu held (closing the preview goroutine under m.mu would stall
 // all sources and can deadlock on re-entrant preview callbacks). The entry
@@ -288,16 +321,7 @@ func (m *GPUSourceManager) cleanupEntry(entry *gpuSourceEntry) {
 	entry.closed.Store(true)
 	entry.useMu.Unlock()
 
-	// Stop preview goroutine first.
-	if entry.prevCh != nil {
-		close(entry.prevCh)
-		<-entry.prevDone // wait for goroutine to exit
-	}
-
-	if entry.prevEnc != nil {
-		entry.prevEnc.Close()
-		entry.prevEnc = nil
-	}
+	m.stopPreview(entry)
 
 	// Release current frame.
 	publishCurrent(entry, nil)
@@ -983,7 +1007,7 @@ func (m *GPUSourceManager) Snapshot() map[string]any {
 			"width":          entry.width,
 			"height":         entry.height,
 			"has_frame":      entry.current.Load() != nil,
-			"has_preview":    entry.prevEnc != nil,
+			"has_preview":    entry.prevEnc != nil && !entry.prevStopped.Load(),
 			"has_stmap":      entry.stmap != nil,
 			"has_colorgrade": entry.colorLUTDev != 0,
 		}

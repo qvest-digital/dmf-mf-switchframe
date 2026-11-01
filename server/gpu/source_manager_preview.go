@@ -17,7 +17,7 @@ type previewGPUFrame struct {
 // unified memory memcpy on Metal), then the preview goroutine does GPU
 // scale + encode entirely in VRAM.
 func (m *GPUSourceManager) queuePreviewFrame(entry *gpuSourceEntry, _ []byte, _ int, _ int, pts int64) {
-	if entry.prevCh == nil {
+	if entry.prevCh == nil || entry.prevStopped.Load() {
 		return
 	}
 	// Guard against send-on-closed-channel when source is being removed
@@ -76,6 +76,7 @@ func (m *GPUSourceManager) queuePreviewFrame(entry *gpuSourceEntry, _ []byte, _ 
 // concurrent GPU execution with the program pipeline.
 func (m *GPUSourceManager) previewLoop(sourceKey string, entry *gpuSourceEntry) {
 	defer close(entry.prevDone)
+	defer entry.prevEnc.Close()
 
 	forceIDR := true
 	for item := range entry.prevCh {

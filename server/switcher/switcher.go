@@ -3037,6 +3037,35 @@ func (s *Switcher) HasSource(key string) bool {
 	return ok
 }
 
+// ReleaseSourceFrames releases the frames a source keeps to show its last
+// one: its buffered and last frames and its GPU entry. It stays registered
+// with its selection and delay and shows black, as a source does once it
+// has delivered nothing for SourceLossTimeout, until it delivers again.
+func (s *Switcher) ReleaseSourceFrames(key string) {
+	if s.frameSync != nil {
+		s.frameSync.ReleaseFrames(key)
+	}
+	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil {
+		h.mgr.RemoveSource(key)
+	}
+}
+
+// previewGPU is a GPU source manager that encodes a preview per source
+// (gpu.GPUSourceManager).
+type previewGPU interface {
+	StopPreview(sourceKey string)
+}
+
+// StopSourcePreview closes a source's GPU preview encoder and keeps its
+// frames.
+func (s *Switcher) StopSourcePreview(key string) {
+	if h := s.gpuSourceMgr.Load(); h != nil {
+		if p, ok := h.mgr.(previewGPU); ok {
+			p.StopPreview(key)
+		}
+	}
+}
+
 // UnregisterSource removes a source from the switcher and detaches its
 // viewer from the source Relay. If the removed source was on program or
 // preview, those fields are cleared. Its delay stays with its key.
