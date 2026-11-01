@@ -533,8 +533,8 @@ func TestSyncLoopAudioWithoutVideo(t *testing.T) {
 	aacBuf := clock.NewAACFrameBuffer(2, 48000, mockAACEncode)
 	s.SetAACBuffer(aacBuf)
 
-	// No source registered — video tick will return early.
-	// But audio should still work.
+	// No source registered: the video tick runs black, and the audio
+	// runs as with a source.
 
 	viewer := newMockProgramViewer("audio-only")
 	s.programRelay.AddViewer(viewer)
@@ -554,7 +554,7 @@ func TestSyncLoopAudioWithoutVideo(t *testing.T) {
 	require.GreaterOrEqual(t, mixer.getProduceCalls(), 2,
 		"mixer should be called even without video")
 	viewer.mu.Lock()
-	require.Empty(t, viewer.videos, "no video should be produced without a source")
+	require.NotEmpty(t, viewer.videos, "the program must run black video without a source")
 	viewer.mu.Unlock()
 }
 

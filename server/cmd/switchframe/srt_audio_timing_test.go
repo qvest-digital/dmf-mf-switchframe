@@ -39,6 +39,7 @@ func TestSRTAudioBurstsStayOnTheReadPoint(t *testing.T) {
 	m.AddChannel(key)
 	m.SetActive(key, true)
 	a := &App{mixer: m}
+	var anchor clock.TrackingAnchor
 
 	rate := clock.Rate{Num: 48000, Den: 1}
 	start := now.Load()
@@ -53,7 +54,7 @@ func TestSRTAudioBurstsStayOnTheReadPoint(t *testing.T) {
 				for j := range pcm {
 					pcm[j] = 0.1
 				}
-				a.ingestSRTAudio(key, srtAudioJob{pcm: pcm, pts: srcPTS, sampleRate: 48000, channels: 2})
+				a.ingestSRTAudio(key, &anchor, srtAudioJob{pcm: pcm, pts: srcPTS, sampleRate: 48000, channels: 2})
 				srcPTS += 1800
 			}
 		}

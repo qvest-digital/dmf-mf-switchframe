@@ -282,6 +282,79 @@ func TestSourceDelayReachesTheGPUSourceManager(t *testing.T) {
 		"SetSourceDelay does not reach the GPU source manager")
 }
 
+// delayMixer is a sync mixer that records the source delays it is told.
+type delayMixer struct {
+	*mockSyncMixer
+	delays map[string]int
+}
+
+func (m *delayMixer) SetSourceDelay(key string, ms int) { m.delays[key] = ms }
+
+// A source's delay is the switcher's, by source key: a source removed and
+// registered again, as an SRT source was on every reconnect, keeps it in
+// the frame sync, the mixer and the GPU source manager alike. A delay kept
+// by some of them only delays its audio and not its video.
+func TestSourceDelaySurvivesReRegistration(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+	mixer := &delayMixer{mockSyncMixer: newMockSyncMixer(2), delays: map[string]int{}}
+	sw.SetSyncMixer(mixer)
+	gpuDelays := map[string]int{}
+	sw.SetGPUSourceManager(&mockGPUSourceManager{onDelay: func(k string, ms int) { gpuDelays[k] = ms }})
+	sw.RegisterSRTSource("srt:cam")
+	require.NoError(t, sw.SetSourceDelay("srt:cam", 200))
+
+	sw.UnregisterSource("srt:cam")
+	clear(mixer.delays)
+	clear(gpuDelays)
+	sw.RegisterSRTSource("srt:cam")
+
+	require.Equal(t, 200, sw.GetSourceDelay("srt:cam"), "the switcher forgot the source's delay")
+	snap := sw.frameSync.DebugSnapshot()["sources"].(map[string]any)["srt:cam"].(map[string]any)
+	require.Equal(t, int64(200*90), snap["delay_90k"], "the frame sync reads the source undelayed")
+	require.Equal(t, map[string]int{"srt:cam": 200}, mixer.delays, "the mixer is not given the source's delay")
+	require.Equal(t, map[string]int{"srt:cam": 200}, gpuDelays, "the GPU source manager is not given the source's delay")
+}
+
+// A delay set while a GPU source manager is swapped in, as at a GPU
+// rebuild, reaches the manager that ends up installed: one set between
+// the new manager taking the delays and its installation reached neither
+// manager, and the store kept too few frames until the next change. The
+// delay here is set while the new manager is being given the delays.
+func TestSourceDelaySetDuringGPUSwapReachesTheNewManager(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+	sw.RegisterSRTSource("srt:cam")
+	require.NoError(t, sw.SetSourceDelay("srt:cam", 120))
+
+	var mu sync.Mutex
+	got := 0
+	set := make(chan struct{})
+	var once sync.Once
+	mgr := &mockGPUSourceManager{onDelay: func(_ string, ms int) {
+		mu.Lock()
+		got = ms
+		mu.Unlock()
+		once.Do(func() {
+			go func() {
+				_ = sw.SetSourceDelay("srt:cam", 300)
+				close(set)
+			}()
+			// Give the concurrent SetSourceDelay the chance to run inside
+			// the swap; a swap that holds it off until it is done is right.
+			select {
+			case <-set:
+			case <-time.After(50 * time.Millisecond):
+			}
+		})
+	}}
+	sw.SetGPUSourceManager(mgr)
+	<-set
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 300, sw.GetSourceDelay("srt:cam"))
+	require.Equal(t, 300, got, "a delay set during the GPU swap did not reach the installed manager")
+}
+
 // mockGPUSourceManager implements GPUSourceManagerIface for testing.
 type mockGPUSourceManager struct {
 	onRemove func(key string)

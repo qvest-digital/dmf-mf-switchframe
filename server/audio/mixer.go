@@ -113,7 +113,7 @@ type Channel struct {
 	downmixBuf []float32 // reused by downmixChannels to avoid per-call allocation
 
 	// surroundWarned is set the first time a source delivers more channels
-	// than the mixer supports. Reset on source reconnect via RemoveChannel.
+	// than the mixer supports. Reset on source reconnect (ResetChannelInput).
 	surroundWarned bool
 }
 
@@ -487,6 +487,33 @@ func (ch *Channel) noteRealign(off bool) {
 		ch.realigns++
 	}
 	ch.realigned = off
+}
+
+// ResetChannelInput drops what a channel holds from its source's previous
+// connection, for a source that reconnects under the same key: buffered
+// audio and its placement, decoder and resampler. Fader, processing,
+// AFV, program state and delays stay. False when there is no channel.
+func (m *Mixer) ResetChannelInput(sourceKey string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		return false
+	}
+	if ch.decoder != nil {
+		_ = ch.decoder.Close()
+		ch.decoder = nil
+	}
+	ch.decoderOnce = sync.Once{}
+	ch.primingSkipCount, ch.primingOffsetApplied = 0, false
+	ch.isPCM, ch.surroundWarned, ch.sampleRateWarned = false, false, false
+	ch.resampler, ch.resamplerSrcRate = nil, 0
+	ch.ringBuf = m.newChannelRingBuf(m.delaySamples(ch))
+	ch.ringEnd, ch.placed, ch.realigned = 0, false, false
+	if ch.active {
+		m.initChannelDecoder(ch)
+	}
+	return true
 }
 
 // RemoveChannel unregisters a source.

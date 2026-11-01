@@ -181,7 +181,8 @@ func (s *Switcher) processAudioTick(tick clock.Tick) {
 // The pipeline runs on the sync-loop goroutine. When it has an encode
 // node, that node's onEncoded callback broadcasts the result; without a
 // pipeline the loop broadcasts the raw frame data itself, for tests and
-// configurations without an encoder.
+// configurations without an encoder. Every tick runs a frame: with no
+// program source it is black, as during an FTB hold.
 func (s *Switcher) processVideoTick(tick clock.Tick) {
 	hs := s.hotState.Load()
 	fs := s.frameSync
@@ -189,10 +190,6 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 	previewSource := hs.previewSource
 	engine := hs.transEngine
 	inTrans := hs.state.isInTransition()
-
-	if fs == nil || programSource == "" {
-		return
-	}
 
 	// === TRANSITION PATH ===
 	if inTrans && engine != nil {
@@ -214,10 +211,6 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 	// The newest program frame due at this tick: media time at or before
 	// tick.ReadPTS, or the last one again, or black.
 	pf, fresh := s.popProgramFrame(fs, programSource, tick)
-	if pf == nil {
-		s.repeatLastVideoFrame(tick.VideoPTS)
-		return
-	}
 	if !fresh {
 		s.programRepeats.Add(1)
 	}
@@ -228,7 +221,9 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 
 	// Feed the CPU key bridge / layout compositor with the program frame
 	// this tick shows.
-	s.feedSourceSubsystems(programSource, pf)
+	if programSource != "" {
+		s.feedSourceSubsystems(programSource, pf)
+	}
 
 	s.runPipelineAndBroadcast(pf, tick, programSource, srcPTS)
 }
@@ -257,25 +252,11 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 	fromSource := engine.FromSource()
 	toSource := engine.ToSource()
 
-	// Pop frames from both sources.
+	// Pop frames from both sources; a source without one gives black.
 	fromFrame, _ := s.popProgramFrame(fs, fromSource, tick)
 	var toFrame *ProcessingFrame
 	if toSource != "" {
 		toFrame, _ = s.popProgramFrame(fs, toSource, tick)
-	}
-
-	// Use broadcast black for missing frames.
-	pf := s.pipelineFormat.Load()
-	w, h := 320, 240
-	if pf != nil {
-		w, h = pf.Width, pf.Height
-	}
-
-	if fromFrame == nil {
-		fromFrame = s.makeBroadcastBlack(w, h, tick.VideoPTS)
-	}
-	if toFrame == nil && toSource != "" {
-		toFrame = s.makeBroadcastBlack(w, h, tick.VideoPTS)
 	}
 
 	// Health is recorded in IngestRawVideo for all sources.
@@ -334,6 +315,7 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 	// CPU fallback: blend on CPU and upload to GPU pipeline.
 	{
 		// Guard against nil/empty Data — can happen if the source is flapping.
+		w, h := s.pipelineSize()
 		if len(fromFrame.Data) == 0 {
 			fromFrame = s.makeBroadcastBlack(w, h, tick.VideoPTS)
 		}
@@ -544,13 +526,15 @@ func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick,
 // source's delay), as a counted reference the caller releases. fresh is
 // false for a repeat of the source's last frame, which turns to black once
 // that source has delivered nothing for sourceLossTimeout, and for black
-// when it has never delivered. Each source keeps its own loss time, so a
+// when it has never delivered or is not registered (no program source). Each source keeps its own loss time, so a
 // cut never inherits another source's. Frames newer than the read point
 // stay buffered for later ticks.
 func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, tick clock.Tick) (pf *ProcessingFrame, fresh bool) {
 	ss := fs.source(sourceKey)
 	if ss == nil {
-		return nil, false
+		// No source on program, or one without frames of its own.
+		w, h := s.pipelineSize()
+		return s.makeBroadcastBlack(w, h, tick.VideoPTS), false
 	}
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
