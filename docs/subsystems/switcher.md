@@ -12,7 +12,7 @@ If you asked a broadcast engineer what a switcher "is," they'd say: the buttons 
 
 The `switcher/` package was designed around two constraints that pulled in opposite directions. First, a live switcher has sub-millisecond operations: the moment an operator hits CUT, every millisecond of latency until program changes is visible to the viewer. Second, a live switcher has global state: "which source is on program" is shared between the frame handler, the state broadcaster, every Svelte client, the recording output, and a dozen subsystems that want to know when program changes. The naive resolution — one mutex protects everything — would serialize frame delivery behind state changes and ruin the first constraint.
 
-The compromise the code arrives at is: **writers serialize on a plain mutex, readers load through `atomic.Pointer` bundles, frame handlers hold no lock**. The `Switcher` struct has a `sync.Mutex` (`configMu`) that serializes writers of cold-path state (subsystem wiring like mixer/cmdQueue/captionMgr, encoder config, state-change callback lists). Hot-path state — program/preview keys, transition engine, audio and graphics handlers, the sources map, per-source labels and positions — lives in `atomic.Pointer` bundles plus scalar atomics, published copy-on-write. Any operation that touches hot state — Cut, SetPreview, RegisterSource, StartTransition, SetLabel — takes `configMu` to serialize with peer writers, copies the affected bundle, mutates the copy, and `Store`s the new pointer. The per-frame hot path (`handleRawVideoFrame` → `videoProcessingLoop`) loads those bundle pointers, the *pipeline pointer*, the *GPU runner*, the *raw sinks*, the *program epoch*, and similar live references via atomics, and never acquires `configMu` at all. Rebuilding the pipeline takes the lock to capture the new node list, then drops the lock and does an atomic swap. The swap itself is a pointer store; per-frame reads see either the old pipeline or the new one, never a half-built chain.
+The compromise the code arrives at is: **writers serialize on a plain mutex, readers load through `atomic.Pointer` bundles, frame handlers hold no lock**. The `Switcher` struct has a `sync.Mutex` (`configMu`) that serializes writers of cold-path state (subsystem wiring like mixer/cmdQueue/captionMgr, encoder config, state-change callback lists). Hot-path state - program/preview keys, transition engine, audio and graphics handlers, the sources map, per-source labels and positions - lives in `atomic.Pointer` bundles plus scalar atomics, published copy-on-write. Any operation that touches hot state - Cut, SetPreview, RegisterSource, StartTransition, SetLabel - takes `configMu` to serialize with peer writers, copies the affected bundle, mutates the copy, and `Store`s the new pointer. The per-frame hot path (`IngestRawVideo` and the sync loop) loads those bundle pointers, the *pipeline pointer*, the *GPU runner*, the *raw sinks*, the *program epoch*, and similar live references via atomics, and never acquires `configMu` at all. Rebuilding the pipeline takes the lock to capture the new node list, then drops the lock and does an atomic swap. The swap itself is a pointer store; per-frame reads see either the old pipeline or the new one, never a half-built chain.
 
 This document walks that architecture file by file, then collects the invariants that keep it deadlock-free and frame-safe.
 
@@ -26,15 +26,14 @@ This document walks that architecture file by file, then collects the invariants
 |---|---|---|
 | Identity | `log`, `configMu`, `programRelay`, built-in sources | `configMu` for lifecycle; relay is set at New |
 | Sources | `sourcesAtomic` (primary) + per-source `labelAtomic`, `positionAtomic` | `atomic.Pointer[map]` CoW under `configMu`; per-field atomics for label/position |
-| Hot state | `programSource`, `previewSource`, `state`, `transEngine`, `transTypeOrig`, `transitionMaxForward`, `wallClockVideoEnabled`, `onFirstVideoPTS` | `hotState atomic.Pointer[hotState]` CoW bundle |
+| Hot state | `programSource`, `previewSource`, `state`, `transEngine`, `transTypeOrig`, `transitionMaxForward` | `hotState atomic.Pointer[hotState]` CoW bundle |
 | Graphics | `keyBridge`, `dveCompositor` | `graphicsHandlers atomic.Pointer` CoW bundle |
 | Audio hot | `audioHandler`, `audioTransition` | `audioHandlers atomic.Pointer` CoW bundle |
-| Frame sync | `frameSync`, `delayBuffer`, `frameSyncActive` | `frameSyncBundle atomic.Pointer` CoW bundle |
+| Frame sync | `frameSync`, `delayBuffer` | set at New, never replaced |
 | Scalar hot | `ftbDurationMs`, `transitionAbortThreshold` | `atomic.Int64` / bit-packed `atomic.Uint64` |
 | Audio wiring | `mixer`, `audioCut` | `configMu` (set via `SetMixer` / `SetAudioCut`) |
-| Sync + timing cold | `refClock`, `clockRecovery`, `aacBuffer`, `useRefClock` | `configMu` + per-field atomics |
-| Wall-clock PTS | `videoPTSStart`, `videoPTSEpoch`, `videoPTS`, `videoPTSInited`, `firstVideoPTSSeeded` | only touched in `videoProcessingLoop` (single-writer) |
-| GPU | `gpuRunner`, `gpuSourceMgr`, `gpuSourceActive`, `gpuTransActive` | `atomic.Pointer` / `atomic.Bool` |
+| Sync + timing cold | `refClock`, `aacBuffer`, `syncMixer` | `configMu` + per-field atomics |
+| GPU | `gpuRunner`, `gpuSourceMgr`, `gpuSourceActive` | `atomic.Pointer` / `atomic.Bool` |
 | Pipeline | `pipeline`, `pipelineFormat`, `pipelineEpoch`, `pipeCodecsAtomic`, `framePool`, `pipeCodecs`, `drainWg` | `atomic.Pointer` for pipeline/format/pipeCodecs; `configMu` for framePool/pipeCodecs lifecycle |
 | Callbacks | `onFormatChange`, `onCommandExecuted`, `onKeyframeBroadcast`, `onCaptionBroadcast`, `outputVideoCallback`, `outputAudioCallback`, `outputAudioCallbackDirect` | `atomic.Pointer` |
 | Sinks | `rawVideoSink`, `rawPreviewSink` | `atomic.Pointer` |
@@ -65,11 +64,9 @@ A declarative `validTransitions` map documents the allowed edges; `transitionSta
 1. Looks up the target source and returns `ErrSourceNotFound` if absent.
 2. If a transition is currently active, captures the engine and audio handler pointers and sets state to idle so the transition's `OnComplete` callback won't overwrite the new program source.
 3. Swaps `programSource`.
-4. If frame sync is active, calls `SetProgramSource(sourceKey)` to update the early-release target and demote/promote FRC quality appropriately.
-5. Bumps `programEpoch` so in-flight `videoProcWork` items from the old source get dropped.
-6. Sets `forceNextIDR` so the next encoded frame is a keyframe (downstream decoders sync immediately).
-7. Increments `cutsTotal` and `seq`.
-8. Builds a state snapshot under the lock, drops the lock, runs aborts and audio callbacks outside the lock, and notifies state change.
+4. Sets `forceNextIDR` so the next encoded frame is a keyframe (downstream decoders sync immediately).
+5. Increments `cutsTotal` and `seq`.
+6. Builds a state snapshot under the lock, drops the lock, runs aborts and audio callbacks outside the lock, and notifies state change.
 
 A cut is therefore sub-millisecond on the write side. The visible effect lands at the next frame boundary, guaranteed by the epoch mechanism.
 
@@ -122,17 +119,9 @@ Key design points:
 
 The callback at the end of `decodeLoop` is the one built by [`Switcher.makeDecoderCallback`](../../server/switcher/switcher.go), routing through frame sync or delay buffer to the handler.
 
-### handleRawVideoFrame and the switch statement
+### IngestRawVideo and the sync loop
 
-[`Switcher.handleRawVideoFrame`](../../server/switcher/switcher.go) is the routing brain. See [the media-path doc](../concepts/media-path.md#stage-3-the-switcher-handler) for the flow chart. Beyond the routing, the handler also:
-
-- Updates per-source `rawFrameCount` and `lastGroupID` for stats and state broadcast.
-- Feeds the `pipeCodecs.updateSourceStats(avgSize, avgFPS)` path, which derives encoder bitrate and resolution-appropriate defaults from the program source's observed stream.
-- Ingests YUV into graphics key bridges and DVE compositor source caches when a GPU source manager is NOT attached. When the GPU source manager IS attached, it uploads to GPU and the CPU fill paths are bypassed.
-- Seeds the audio PTS epoch on the first program video frame via `onFirstVideoPTS`, ensuring audio and video start from the same wall-clock moment.
-- Routes to the [`transition.Engine`](../../server/transition/engine.go) via `IngestRawFrame` when a transition is active.
-
-The design choice that makes `handleRawVideoFrame` fast on the hot path is to snapshot all needed state under a single `RLock` and drop it before doing any work. The read lock scales to many frame deliveries per second; writers (Cut, StartTransition) are rare enough that they don't starve.
+[`Switcher.IngestRawVideo`](../../server/switcher/switcher.go) is the one entry point for decoded video. It stamps media time for sources whose producer does not, and updates per-source `rawFrameCount` and `lastGroupID`. It feeds `pipeCodecs.updateSourceStats(avgSize, avgFPS)` from the program source's decoder. It ingests the YUV into the GPU source manager, or, without one, into the key bridge and DVE caches of every source. Then it buffers the frame in the frame synchronizer. Everything that decides what goes on air happens on the sync loop's tick ([`sync_loop.go`](../../server/switcher/sync_loop.go)); see [frame-sync-and-timing](../concepts/frame-sync-and-timing.md).
 
 ### health.go: tally and alarms
 
@@ -144,7 +133,7 @@ The subtle part is **hysteresis**. Raw status changes would cause tally flicker 
 
 ### delay_buffer.go: zero-goroutine delay
 
-[`delay_buffer.go`](../../server/switcher/delay_buffer.go) — see [frame-sync-and-timing.md](../concepts/frame-sync-and-timing.md#delay-buffers). Worth calling out the `time.AfterFunc` design: scheduling each delayed frame individually instead of running a polling goroutine means zero goroutines when all delays are zero (the common case). A generation counter on `sourceDelay` invalidates still-scheduled callbacks from a removed source. A `stopped` flag covers full shutdown. The buffer is mutually exclusive with the frame synchronizer — `SetFrameSync` re-wires viewers between them.
+[`delay_buffer.go`](../../server/switcher/delay_buffer.go) - delays a source's audio and captions; its video is delayed in the frame synchronizer (`SetSourceDelay`). Worth calling out the `time.AfterFunc` design: scheduling each delayed frame individually instead of running a polling goroutine means zero goroutines when all delays are zero (the common case). A generation counter on `sourceDelay` invalidates still-scheduled callbacks from a removed source. A `stopped` flag covers full shutdown. The buffer is mutually exclusive with the frame synchronizer - `SetFrameSync` re-wires viewers between them.
 
 ### pipeline and node_* files
 
@@ -170,20 +159,15 @@ Node files in the default chain:
 
 [`pipeline_codecs.go`](../../server/switcher/pipeline_codecs.go) encapsulates the program encoder. It holds an `encoderFactory` and lazily creates the encoder on first encode — which is where resolution and FPS are finally known. The `invalidateEncoder()` method (called from `SetPipelineFormat`, `SetEncoder`, and encode panic recovery) tears down the existing encoder so the next frame recreates it. Default bitrate scales with resolution: 2 Mbps at 480p, 6 at 720p, 10 at 1080p, 20 at 4K.
 
-### frame_sync.go, frc*.go, mcfi_*.go
+### frame_sync.go, sync_loop.go, mcfi_*.go
 
 See the [frame-sync-and-timing doc](../concepts/frame-sync-and-timing.md). In summary:
 
-- [`frame_sync.go`](../../server/switcher/frame_sync.go) is the `FrameSynchronizer` with the per-source ring buffers and tick loop.
-- [`frc.go`](../../server/switcher/frc.go) is the `frcSource` per-source interpolation state and quality dispatch.
-- [`frc_me.go`](../../server/switcher/frc_me.go) is motion estimation (SIMD SAD + diamond search).
-- [`mcfi_interpolate.go`](../../server/switcher/mcfi_interpolate.go) is the standalone MCFI used by replay.
+- [`frame_sync.go`](../../server/switcher/frame_sync.go) is `FrameSynchronizer`, the per-source rings ordered by media time.
+- [`sync_loop.go`](../../server/switcher/sync_loop.go) is the reference-clock tick: audio, then the program frame or transition, then the pipeline.
+- [`frc_me.go`](../../server/switcher/frc_me.go) is motion estimation (SIMD SAD + diamond search), and [`mcfi_interpolate.go`](../../server/switcher/mcfi_interpolate.go) the MCFI used by replay.
 - [`mcfi_warp_fast.go`](../../server/switcher/mcfi_warp_fast.go) is the 16.16 fixed-point row-parallel warp.
 - [`frcasm/`](../../server/switcher/frcasm/) has amd64 and arm64 assembly kernels for SAD and downsample.
-
-### Reference clock mode
-
-An advanced operating mode enabled via `SetReferenceClock`: instead of the frame sync's timer driving output, a single `sync_loop` goroutine pops frames directly from the ring buffers and drives both video pipeline and audio mixer from one clock source. Used in multi-region active-active where two regions must stay phase-locked. See [`sync_loop.go`](../../server/switcher/sync_loop.go) for the implementation. In this mode, `videoProcessingLoop` becomes a no-op drain — it only frees pool buffers — because the sync loop is the sole frame processor.
 
 ## Key types and entry points
 
@@ -196,17 +180,15 @@ An advanced operating mode enabled via `SetReferenceClock`: instead of the frame
 - Pipeline: [`server/switcher/pipeline_node.go`](../../server/switcher/pipeline_node.go), [`pipeline_loop.go`](../../server/switcher/pipeline_loop.go), [`pipeline_codecs.go`](../../server/switcher/pipeline_codecs.go).
 - Nodes: [`node_upstream_key.go`](../../server/switcher/node_upstream_key.go), [`node_dve_compositor.go`](../../server/switcher/node_dve_compositor.go), [`node_compositor.go`](../../server/switcher/node_compositor.go), [`node_raw_sink.go`](../../server/switcher/node_raw_sink.go), [`node_encode.go`](../../server/switcher/node_encode.go).
 - Health: [`server/switcher/health.go`](../../server/switcher/health.go) → `healthMonitor`.
-- Processing goroutine: [`server/switcher/switcher.go`](../../server/switcher/switcher.go) → `videoProcessingLoop`, `enqueueVideoWork`, `broadcastProcessedFromPF`.
+- Tick processing: [`server/switcher/sync_loop.go`](../../server/switcher/sync_loop.go) -> `processTick`, `processVideoTick`, `processTransitionTick`, `popProgramFrame`.
 
-State protection: the switcher publishes per-frame-hot state through five `atomic.Pointer` bundles — [`hotState`](../../server/switcher/hotstate.go) (program/preview keys, transition state, wall-clock-PTS flag, `onFirstVideoPTS` callback), [`graphicsHandlers`](../../server/switcher/handlers.go) (`keyBridge`, `dveCompositor`), [`audioHandlers`](../../server/switcher/handlers.go) (`audioHandler`, `audioTransition`), [`frameSyncBundle`](../../server/switcher/handlers.go) (`frameSync`, `delayBuffer`, `active`), and `sourcesAtomic atomic.Pointer[map[string]*sourceState]` plus scalar atomics (`ftbDurationMsAtomic`, `transitionAbortThresholdAtomic`, `pipeCodecsAtomic`) and per-source atomic mirrors (`labelAtomic`, `positionAtomic`). Hot-path handlers (`handleRawVideoFrame`, `handleVideoFrame`, `handleAudioFrame`) take **no** switcher lock — they load the bundles via `atomic.Pointer.Load()` and proceed. Writers hold `configMu` (a plain `sync.Mutex`) only long enough to copy-on-write a new snapshot and `Store` it; the lock is never held across a cgo call, a callback, or a frame decode. Cold-path subsystem pointers (`mixer`, `cmdQueue`, `captionMgr`, `stmapRegistry`, `compositorRef`, and the encoder wiring) still live on the struct — they are mutated rarely (via public setters such as `SetMixer`, `SetCommandQueue`, `SetCaptionManager`) and read under `configMu` on non-hot paths (state broadcast, debug snapshot, pipeline rebuild). Per-source diagnostic counters on `sourceState` are atomic.
+State protection: the switcher publishes per-frame-hot state through four `atomic.Pointer` bundles - [`hotState`](../../server/switcher/hotstate.go) (program/preview keys, transition state), [`graphicsHandlers`](../../server/switcher/handlers.go) (`keyBridge`, `dveCompositor`), [`audioHandlers`](../../server/switcher/handlers.go) (`audioHandler`, `audioTransition`), and `sourcesAtomic atomic.Pointer[map[string]*sourceState]` plus scalar atomics (`ftbDurationMsAtomic`, `transitionAbortThresholdAtomic`, `pipeCodecsAtomic`) and per-source atomic mirrors (`labelAtomic`, `positionAtomic`). Hot-path handlers (`handleRawVideoFrame`, `handleVideoFrame`, `handleAudioFrame`) take **no** switcher lock - they load the bundles via `atomic.Pointer.Load()` and proceed. Writers hold `configMu` (a plain `sync.Mutex`) only long enough to copy-on-write a new snapshot and `Store` it; the lock is never held across a cgo call, a callback, or a frame decode. Cold-path subsystem pointers (`mixer`, `cmdQueue`, `captionMgr`, `stmapRegistry`, `compositorRef`, and the encoder wiring) still live on the struct - they are mutated rarely (via public setters such as `SetMixer`, `SetCommandQueue`, `SetCaptionManager`) and read under `configMu` on non-hot paths (state broadcast, debug snapshot, pipeline rebuild). Per-source diagnostic counters on `sourceState` are atomic.
 
 ## Gotchas and invariants
 
 **Lock order.** Acquire `Switcher.configMu` before any subsystem lock (mixer, compositor, DVE). Within the frame sync, acquire `fs.mu` before `ss.mu`. See [locking-and-concurrency](../concepts/locking-and-concurrency.md) for the full ordering.
 
 **Drop the Switcher lock before calling mixer/audio callbacks.** `Cut` captures the handler bundle via `audioHandlers.Load()` and invokes it outside `configMu`; `handleAudioFrame` takes no switcher lock at all. Holding `configMu` while calling into the mixer would create a lock cycle with the mixer's own mutex.
-
-**The `programEpoch` is how Cut races are made safe.** Frames from the old program source may already be in `videoProcCh` when Cut bumps the epoch. `videoProcessingLoop` drops them at the top of the loop. Epoch=0 means "always process" and is used by transition/FRC output where the source key is legitimately empty.
 
 **Direct output callback runs on the encode goroutine.** `outputVideoCallback` is invoked synchronously from `broadcastToProgram` / `broadcastOwnedToProgram`, which are called from the encode goroutine. The callback must not block long or it'll stall the encoder. It must not recurse into the switcher's lock.
 

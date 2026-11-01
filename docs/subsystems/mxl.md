@@ -4,7 +4,7 @@
 > **Read this first:** [architecture.md](../architecture.md)
 > **See also:** [output.md](output.md) · [srt-ingest.md](srt-ingest.md) · [codec.md](codec.md) · [gpu.md](../concepts/gpu.md) · [captions.md](captions.md) · [scte35.md](./scte35.md)
 
-**TL;DR** MXL is the path for uncompressed, broadcast-grade media: V210 10-bit 4:2:2 video and float32 PCM flowing through POSIX shared memory with wall-clock indexing. When Switchframe runs alongside another MXL application (a baseband ingest, an SDI capture, a graphics engine), sources and outputs appear as files in a domain directory (typically `/dev/shm/mxl`), NMOS IS-04 JSON flow definitions describe their format, and the MXL SDK gives everyone ring-buffered zero-copy access. Our [`Reader`](#reader-lifecycle) drains video, audio, and optional data flows into Go channels; our [`Writer`](#writer-lifecycle) publishes the program output at a steady tick rate with latest-frame-wins semantics; our [`Source`](#source-fan-out) and [`Output`](#output-program-to-shared-memory) wire those to the switcher, mixer, browser relay, and SCTE-104 data grains. All of it lives behind the `mxl` build tag — without it, the package is a stub that returns `ErrMXLNotAvailable` so dev builds stay portable.
+**TL;DR** MXL is the path for uncompressed, broadcast-grade media: V210 10-bit 4:2:2 video and float32 PCM flowing through POSIX shared memory indexed by TAI. When Switchframe runs alongside another MXL application (a baseband ingest, an SDI capture, a graphics engine), sources and outputs appear as files in a domain directory (typically `/dev/shm/mxl`), NMOS IS-04 JSON flow definitions describe their format, and the MXL SDK gives everyone ring-buffered zero-copy access. Our [`Reader`](#reader-lifecycle) drains video, audio, and optional data flows into Go channels; our [`Writer`](#writer-lifecycle) publishes the program output at a steady tick rate with latest-frame-wins semantics; our [`Source`](#source-fan-out) and [`Output`](#output-program-to-shared-memory) wire those to the switcher, mixer, browser relay, and SCTE-104 data grains. All of it lives behind the `mxl` build tag - without it, the package is a stub that returns `ErrMXLNotAvailable` so dev builds stay portable.
 
 ## The story
 
@@ -34,7 +34,7 @@ Three failure modes matter, and all three are distinguished by [sentinel errors]
 
 For audio, the read timeout is deliberately short (5 ms). The MXL SDK's internal polling grain is coarse, so a long C-side timeout holds the cgo thread hostage and starves concurrent flow readers. A 5 ms budget keeps the thread bouncing between Go and C so multiple audio streams can share cgo capacity.
 
-PTS is derived from a monotonic counter inside each reader, starting at 0 and incrementing per grain (per-frame for video/data, per-batch for audio). Both loops capture `time.Now()` as `ReadTime` on the grain; downstream code (`processVideoGrain`, `processAudioGrain`) computes a shared wall-clock-based PTS off a `startTime` that's set by whichever flow produces the first grain. That gives video and audio a common epoch even if they start independently — if video arrives 200 ms after audio, the video PTS reflects that offset.
+PTS is the TAI of the grain index on the engine timeline (`clock.IndexPTS`). A grain carries `Index` and `PTS`. An audio read ending at index `i` covers `[i-n, i)` (the exclusive end of `mxlFlowReaderGetSamples`) and carries `Start = i-n` and its PTS. A resync, a skip of a lagging consumer or an invalid grain moves the PTS by exactly the indices skipped, and video and audio of a flow, or two flows, at the same TAI carry the same PTS. `processVideoGrain` and `processAudioGrain` pass the grain PTS on.
 
 ### The grain model vs the sample model
 
@@ -66,7 +66,7 @@ The mechanism is a latest-wins buffer: `WriteVideo(yuv, w, h, pts)` converts YUV
 
 `WriteVideo10bit` is the professional-mode path that avoids the 10-bit→8-bit→10-bit round-trip. It takes YUV422P10LE input (preserves all 10 bits per sample and full 4:2:2 chroma) and converts losslessly to V210. Select this by setting `Lossless10bit: true` on the source config and running the pipeline in 10-bit 4:2:2 mode.
 
-Audio uses a different model: wall-clock indexing with monotonic enforcement. `WriteAudio` de-interleaves incoming PCM into reusable per-channel buffers, computes the target index from `CurrentIndex(audioRate)`, and if that index is behind the previous write's end-of-batch, nudges forward to `lastAudioIndex + samplesPerCh`. This guarantees no overlap and no gap even when the wall clock disagrees with the sample count. The mixer produces audio on a 21.3 ms ticker, and this enforcement hides any minor drift at the edge.
+Audio is written at the sample indices of each batch's own PTS, the program tick's output time: `OpenSamples(index, n)` writes `[index-n, index)`, so a batch starting at sample `s` goes to index `s+n`. A batch overlapping what was written is dropped and counted (`AudioOverlaps`) instead of moved later, which keeps the program audio flow aligned with the program video flow.
 
 `WriteDataGrain(data)` publishes SCTE-104 or other ancillary payloads. It's event-driven (called from the [`scte35` injector's sink](../../server/scte35/)), not ticker-driven: the current wall-clock index is computed fresh per call and the grain is written once. [`SetDataWriter`](../../server/mxl/writer.go) binds the data flow to the video frame rate so index domains align with video frame timing (matches how SCTE-104 in SDI is embedded in the VANC region of video frames).
 
@@ -129,7 +129,7 @@ flowchart TB
 
     subgraph outp ["Output (program)"]
         WV["videoTickLoop<br/>(latest-wins, steady rate)"]
-        WA["WriteAudio<br/>(monotonic wall-clock)"]
+        WA["WriteAudio<br/>(at the batch PTS)"]
         WD["WriteDataGrain<br/>(event-driven)"]
     end
 
@@ -174,7 +174,7 @@ flowchart TB
 - `Writer.videoTickLoop` publishes at exactly one grain per tick. Do NOT call `WriteVideo` from multiple goroutines expecting all calls to land in MXL — only the latest wins between ticks. The pipeline deliberately produces at-most-one frame per tick so this is never an issue.
 - Audio `WriteSamples` indices must be monotonic. The writer clamps `index` to `lastAudioIndex + samplesPerCh` to prevent overlap, but a caller providing indices going backwards still confuses readers. `CurrentIndex(rate)` is the right source.
 - `ErrTooLate` vs `ErrTooEarly` both indicate "reader out of sync with writer" but require different recovery. Too-late: re-sync forward (`HeadIndex() - 2`). Too-early: wait. Never spin on either without backoff — the SDK's return timing is not guaranteed.
-- MXL PTS starts monotonic-from-zero per flow. Video and audio PTS are independent domains. The `Source` orchestrator establishes a shared wall-clock epoch (`startTime` set by the first grain of either stream) to compute downstream PTS that aligns video and audio on the same 90 kHz clock.
+- MXL PTS is the index's TAI: video and audio, and every flow an engine reads, share one timeline.
 - `Output.Stop()` must return before `Instance.Close()` is called. The output writer holds C flow handles; the instance owns the domain. Out-of-order shutdown causes use-after-free in the SDK. `Stop` is synchronous precisely to make this correct by default.
 - The triple-buffered V210 output in `Writer` is sized 3× `V210BufSize(width, height)` — at 1080p that's ~3 × 5.5 MiB = ~16.5 MiB per writer. Multiple writers in the same process multiply this. Plan accordingly on small-memory hosts.
 

@@ -111,7 +111,7 @@ sequenceDiagram
   participant SV as sourceViewer
   participant SD as sourceDecoder
   participant FS as FrameSynchronizer
-  participant SW as Switcher<br/>videoProcessingLoop
+  participant SW as Switcher<br/>sync loop
   participant PL as Pipeline nodes
   participant Enc as encode (async)
   participant Rel as program Relay
@@ -162,7 +162,7 @@ The state-broadcast reference is [reference/state-broadcast.md](reference/state-
 
 ## Audio
 
-Audio takes a deliberately separate lane from video. Source AAC frames arrive at ~47 fps (1024 samples at 48 kHz) — almost incommensurate with the 30 fps video tick — so forcing audio through the frame synchronizer would produce bursty output that browser `AudioContext` cannot absorb. Instead, each source's ingest path decodes, applies the per-channel DSP chain (trim, phase, HPF, gate, EQ, compressor, balance, delay), and pushes processed PCM into a per-source ring buffer. A single [`outputTicker`](../server/audio/mixer_ticker.go) goroutine wakes every ~21.3 ms, reads 1024 samples from each active ring, sums them, applies master processing (master gain, BS.1770-4 LUFS, brickwall limiter), and encodes one AAC frame. The full story lives in [subsystems/audio.md](subsystems/audio.md).
+Audio takes a deliberately separate lane from video. Source AAC frames arrive at ~47 fps (1024 samples at 48 kHz) - almost incommensurate with the 30 fps video tick - so forcing audio through the frame synchronizer would produce bursty output that browser `AudioContext` cannot absorb. Instead, each source's ingest path decodes, applies the per-channel DSP chain (trim, phase, HPF, gate, EQ, compressor, balance, delay), and pushes processed PCM into a per-source ring buffer. Each ring is stamped with the media time of its newest samples. On every tick of the reference clock, the sync loop pulls each active ring's samples at the tick's read point (the media time the tick's video shows), sums them, applies master processing (master gain, BS.1770-4 LUFS, brickwall limiter), and encodes them with the tick's output PTS. The full story lives in [subsystems/audio.md](subsystems/audio.md).
 
 A small `ptsCorrectionDelta` atomic bridges the two lanes: the frame sync tracks how far it has rewritten video PTS, publishes the delta, and the audio handler reads it before passing each audio frame to the mixer — so A/V stays aligned across video freezes. See [concepts/frame-sync-and-timing.md](concepts/frame-sync-and-timing.md).
 

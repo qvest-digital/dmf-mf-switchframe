@@ -61,8 +61,9 @@ func (n *gpuEncodeNode) ProcessGPU(frame *GPUFrame) error {
 
 // --- gpuRawSinkNode: download to CPU only when sinks are active ---
 
-// RawSinkFunc is a callback that receives decoded YUV420p on the CPU.
-type RawSinkFunc func(yuv []byte, width, height int)
+// RawSinkFunc is a callback that receives decoded YUV420p on the CPU,
+// with the PTS of the program frame it holds.
+type RawSinkFunc func(yuv []byte, width, height int, pts int64)
 
 type gpuRawSinkNode struct {
 	ctx    *Context
@@ -123,7 +124,7 @@ func (n *gpuRawSinkNode) ProcessGPU(frame *GPUFrame) error {
 	if err := GPUDownloadDispatch(n.ctx, frame, buf, n.width, n.height); err != nil {
 		return err
 	}
-	(*fn)(buf, n.width, n.height)
+	(*fn)(buf, n.width, n.height, frame.PTS)
 	return nil
 }
 

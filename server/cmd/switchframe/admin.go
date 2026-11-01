@@ -76,6 +76,11 @@ func (a *App) registerSubsystemCollectors() {
 	// initMXL has run: the configured inputs do not change after start.
 	sources := a.mxlSources
 	cs = append(cs, &mxlReaderCollector{sources: func() []*mxl.Source { return sources }})
+	var writer *mxl.Writer
+	if a.mxlOutput != nil {
+		writer = a.mxlOutput.Writer()
+	}
+	cs = append(cs, &mxlWriterCollector{writer: writer})
 	registerCollectors(metrics.GetRegistry(), cs...)
 }
 
