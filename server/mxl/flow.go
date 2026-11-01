@@ -14,12 +14,15 @@ import "C"
 
 import (
 	"fmt"
+
+	"github.com/zsiec/switchframe/server/clock"
 	"sync"
 	"time"
 	"unsafe"
 )
 
 func init() {
+	clock.SetTAISource(func() int64 { return int64(C.mxlGetTime()) })
 	// Wire CurrentIndex to the real MXL time function.
 	CurrentIndex = func(rate Rational) uint64 {
 		if rate.Denominator == 0 || rate.Numerator == 0 {

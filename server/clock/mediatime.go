@@ -1,0 +1,125 @@
+package clock
+
+import (
+	"math/bits"
+	"sync"
+	"time"
+)
+
+// Media time is TAI, as libmxl counts it: nanoseconds since the SMPTE ST
+// 2059 epoch, and an index i of a flow at rate R is the edit unit whose
+// timestamp is nearest to i*R.den/R.num seconds. Every timestamp this
+// server emits is derived from it, never from when something was read or
+// processed, so a skipped grain costs exactly its own time and two
+// essences, or two inputs, at the same TAI carry the same PTS.
+
+// Rate is an edit rate, in edit units per second, as num/den.
+type Rate struct {
+	Num, Den int64
+}
+
+// TimestampToIndex returns the index of the edit unit at TAI timestamp ts,
+// rounded to the nearest one as mxlTimestampToIndex does.
+func TimestampToIndex(r Rate, ts int64) uint64 {
+	if ts < 0 || r.Num <= 0 || r.Den <= 0 {
+		return 0
+	}
+	hi, lo := bits.Mul64(uint64(ts), uint64(r.Num))
+	lo, carry := bits.Add64(lo, 500_000_000*uint64(r.Den), 0)
+	hi += carry
+	q, _ := bits.Div64(hi, lo, 1_000_000_000*uint64(r.Den))
+	return q
+}
+
+// IndexToTimestamp returns the TAI timestamp of index i, rounded to the
+// nearest nanosecond as mxlIndexToTimestamp does.
+func IndexToTimestamp(r Rate, i uint64) int64 {
+	if r.Num <= 0 || r.Den <= 0 {
+		return 0
+	}
+	hi, lo := bits.Mul64(i, uint64(r.Den)*1_000_000_000)
+	lo, carry := bits.Add64(lo, uint64(r.Num)/2, 0)
+	hi += carry
+	q, _ := bits.Div64(hi, lo, uint64(r.Num))
+	return int64(q)
+}
+
+// PTSBase is the PTS of the engine epoch. PTS 0 is left unused: several
+// consumers take a zero PTS for "none yet".
+const PTSBase = 90000
+
+// ReaderDelayGrains is how far behind the clock every input is read, in
+// program frame periods: a tick at TAI t takes the newest frame of each
+// source whose media time is at or before t - ReaderDelayGrains frames.
+// It is the budget for a producer committing a grain up to its period
+// late, mirror transit to this node and the mirror's grain pacing. A
+// grain that arrives later than that is shown one tick late, so the
+// choice of frame does not flip between two grains from tick to tick.
+const ReaderDelayGrains = 2
+
+var (
+	taiNowMu sync.RWMutex
+	taiNow   = func() int64 { return time.Now().UnixNano() }
+
+	epochOnce sync.Once
+	epochNs   int64
+)
+
+// SetTAISource replaces the TAI clock. The mxl package installs libmxl's
+// mxlGetTime; without it, the system clock stands in, which differs from
+// TAI by a constant only.
+func SetTAISource(now func() int64) {
+	taiNowMu.Lock()
+	taiNow = now
+	taiNowMu.Unlock()
+}
+
+// TAINow returns the current TAI time in nanoseconds.
+func TAINow() int64 {
+	taiNowMu.RLock()
+	now := taiNow
+	taiNowMu.RUnlock()
+	return now()
+}
+
+// Epoch returns the TAI timestamp that PTSBase stands for: the first time
+// anything in this process asked, so PTS starts near PTSBase and stays
+// within 33 bits for a day.
+func Epoch() int64 {
+	epochOnce.Do(func() { epochNs = TAINow() })
+	return epochNs
+}
+
+// PTS converts a TAI timestamp to a 90 kHz PTS on the engine timeline,
+// rounded to the nearest tick so that a sample or grain index survives the
+// round trip through PTS.
+func PTS(ts int64) int64 {
+	return roundDiv((ts-Epoch())*9, 100_000) + PTSBase
+}
+
+// TimestampOf converts a 90 kHz PTS on the engine timeline back to TAI.
+func TimestampOf(pts int64) int64 {
+	return Epoch() + roundDiv((pts-PTSBase)*100_000, 9)
+}
+
+// IndexPTS returns the PTS of index i of a flow at rate r.
+func IndexPTS(r Rate, i uint64) int64 {
+	return PTS(IndexToTimestamp(r, i))
+}
+
+// PTSIndex returns the index of a flow at rate r that pts stands for.
+func PTSIndex(r Rate, pts int64) uint64 {
+	return TimestampToIndex(r, TimestampOf(pts))
+}
+
+// NowPTS returns the PTS of the current TAI time.
+func NowPTS() int64 {
+	return PTS(TAINow())
+}
+
+func roundDiv(a, b int64) int64 {
+	if a >= 0 {
+		return (a + b/2) / b
+	}
+	return -((-a + b/2) / b)
+}

@@ -5,26 +5,24 @@ package mxl
 import (
 	"log/slog"
 	"time"
+
+	"github.com/zsiec/switchframe/server/clock"
 )
 
 func init() {
 	slog.Debug("mxl: MXL not available (built without mxl tag)")
 
-	// Provide a stub CurrentIndex using monotonic clock.
-	// Uses float64 to avoid uint64 overflow with large denominators.
+	// Without libmxl, the system clock stands in for TAI, with libmxl's
+	// rounding.
 	CurrentIndex = func(rate Rational) uint64 {
-		if rate.Denominator == 0 || rate.Numerator == 0 {
-			return 0
-		}
-		ns := float64(time.Now().UnixNano())
-		return uint64(ns * float64(rate.Numerator) / (float64(rate.Denominator) * 1e9))
+		return clock.TimestampToIndex(clock.Rate{Num: rate.Numerator, Den: rate.Denominator}, clock.TAINow())
 	}
 	NsUntilIndex = func(index uint64, rate Rational) uint64 {
-		if rate.Denominator == 0 || rate.Numerator == 0 {
+		r := clock.Rate{Num: rate.Numerator, Den: rate.Denominator}
+		if r.Num <= 0 || r.Den <= 0 {
 			return 0
 		}
-		start := float64(index) * float64(rate.Denominator) * 1e9 / float64(rate.Numerator)
-		if d := start - float64(time.Now().UnixNano()); d > 0 {
+		if d := clock.IndexToTimestamp(r, index) - clock.TAINow(); d > 0 {
 			return uint64(d)
 		}
 		return 0

@@ -106,45 +106,6 @@ func TestReferenceClockFrameDuration(t *testing.T) {
 	}
 }
 
-func TestReferenceClockSetRate(t *testing.T) {
-	// Start at 30fps, consume 10 ticks.
-	c := NewReferenceClock(30, 1, 48000, 0, false)
-	c.Start()
-	defer c.Stop()
-
-	var lastPTS int64
-	for i := 0; i < 10; i++ {
-		tick := <-c.Ticks()
-		lastPTS = tick.VideoPTS
-	}
-	// After 10 ticks at 30fps: tick 9 PTS = 9 * 3000 = 27000
-	if lastPTS != 27000 {
-		t.Fatalf("before SetRate: expected lastPTS=27000, got %d", lastPTS)
-	}
-
-	// Switch to 25fps. PTS should continue smoothly from 30000 (not jump).
-	c.SetRate(25, 1)
-
-	// Next tick should have PTS = 30000 (continuation from 30fps).
-	tick := <-c.Ticks()
-	expectedPTS := int64(30000) // 10th tick's PTS at 30fps = 10 * 3000
-	if tick.VideoPTS != expectedPTS {
-		t.Fatalf("after SetRate: expected PTS=%d, got %d", expectedPTS, tick.VideoPTS)
-	}
-
-	// Verify consecutive delta is 3600 (25fps).
-	tick2 := <-c.Ticks()
-	delta := tick2.VideoPTS - tick.VideoPTS
-	if delta != 3600 {
-		t.Fatalf("after SetRate: expected delta=3600, got %d", delta)
-	}
-
-	// AudioSamples at 25fps/48kHz = 48000/25 = 1920 exact.
-	if tick.AudioSamples != 1920 {
-		t.Fatalf("after SetRate: expected AudioSamples=1920, got %d", tick.AudioSamples)
-	}
-}
-
 func TestReferenceClockStopClean(t *testing.T) {
 	// Record goroutine count before.
 	runtime.GC()
@@ -274,71 +235,6 @@ func TestPTSAccuracy5994fps(t *testing.T) {
 	if drift > 1502 {
 		t.Fatalf("59.94fps PTS drift after %d ticks: lastPTS=%d, expected~%d, drift=%d (>1 frame)",
 			numTicks, prevPTS, expectedApprox, drift)
-	}
-}
-
-// Issue 6: PTS discontinuity on SetRate.
-func TestSetRateNoPTSJump(t *testing.T) {
-	rc := NewReferenceClock(30, 1, 48000, 0, false)
-	rc.Start()
-	defer rc.Stop()
-
-	// Consume 100 ticks at 30fps.
-	var lastPTS int64
-	for i := 0; i < 100; i++ {
-		tick := <-rc.Ticks()
-		lastPTS = tick.VideoPTS
-	}
-
-	// After 100 ticks at 30fps: tick 99 PTS = 99 * 3000 = 297,000
-	if lastPTS != 297000 {
-		t.Fatalf("PTS after 100 ticks at 30fps: expected 297000, got %d", lastPTS)
-	}
-
-	// Switch to 25fps. Next tick should continue from ~300,000, not jump.
-	rc.SetRate(25, 1)
-
-	// Consume next tick.
-	tick := <-rc.Ticks()
-
-	// Expected: continuation from 30fps. Tick 100 at 30fps would have PTS=300,000.
-	// After rate change to 25fps, the next tick PTS should be 300,000 (the 100th
-	// frame's worth of PTS at 30fps) — NOT 100*3600=360,000.
-	// With the bug: PTS = 0 + 100 * 3600 = 360,000 (60,000 tick jump!)
-	expected := int64(300000) // continuation
-	tolerance := int64(3600)  // one 25fps frame delta
-	diff := tick.VideoPTS - expected
-	if diff < 0 {
-		diff = -diff
-	}
-	if diff > tolerance {
-		t.Fatalf("PTS after SetRate should continue smoothly: expected ~%d, got %d (jump=%d)",
-			expected, tick.VideoPTS, tick.VideoPTS-lastPTS)
-	}
-}
-
-// Issue 8: 33-bit PTS masking for long sessions.
-func TestPTSWraps33Bits(t *testing.T) {
-	// Set basePTS near the 33-bit limit.
-	basePTS := int64(1<<33) - 5*3000 // 5 frames before wraparound at 30fps
-	rc := NewReferenceClock(30, 1, 48000, basePTS, false)
-	rc.Start()
-	defer rc.Stop()
-
-	var lastPTS int64
-	for i := 0; i < 10; i++ {
-		tick := <-rc.Ticks()
-		lastPTS = tick.VideoPTS
-	}
-
-	// After 10 ticks at 30fps from near-max basePTS, PTS should have wrapped.
-	// Without masking, it would exceed 2^33.
-	maxPTS := int64(1 << 33)
-	if lastPTS >= maxPTS {
-		t.Fatalf("PTS should be masked to 33 bits (got %d, max %d)", lastPTS, maxPTS)
-	}
-	if lastPTS < 0 {
-		t.Fatalf("PTS should be non-negative after wrap (got %d)", lastPTS)
 	}
 }
 

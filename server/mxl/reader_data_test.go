@@ -3,6 +3,7 @@ package mxl
 import (
 	"context"
 	"fmt"
+	"github.com/zsiec/switchframe/server/clock"
 	"testing"
 	"time"
 )
@@ -41,16 +42,7 @@ func TestReader_DeliversDataGrains(t *testing.T) {
 		t.Fatalf("expected 3 data grains, got %d", len(received))
 	}
 
-	// PTS should be monotonic counter starting at 1.
-	if received[0].PTS != 1 {
-		t.Fatalf("expected PTS=1, got %d", received[0].PTS)
-	}
-	if received[1].PTS != 2 {
-		t.Fatalf("expected PTS=2, got %d", received[1].PTS)
-	}
-	if received[2].PTS != 3 {
-		t.Fatalf("expected PTS=3, got %d", received[2].PTS)
-	}
+	requireDataIndexPTS(t, flow, received...)
 
 	// Verify payload data is correct.
 	if len(received[0].Data) != 2 || received[0].Data[0] != 0xAA || received[0].Data[1] != 0xBB {
@@ -94,9 +86,7 @@ func TestReader_DataSkipsInvalidGrains(t *testing.T) {
 	if len(received) != 1 {
 		t.Fatalf("expected 1 valid grain (invalid skipped), got %d", len(received))
 	}
-	if received[0].PTS != 1 {
-		t.Fatalf("expected PTS=1 (monotonic, invalid grain skipped), got %d", received[0].PTS)
-	}
+	requireDataIndexPTS(t, flow, received...)
 	if received[0].Data[0] != 0x02 {
 		t.Fatalf("expected data byte 0x02, got 0x%02X", received[0].Data[0])
 	}
@@ -137,13 +127,7 @@ func TestReader_DataTooLateRecovery(t *testing.T) {
 		t.Fatalf("expected 3 grains (1 before too-late, 2 after re-sync), got %d", len(received))
 	}
 
-	// PTS should be monotonic from 1.
-	for i, g := range received {
-		expectedPTS := int64(i + 1)
-		if g.PTS != expectedPTS {
-			t.Fatalf("grain[%d]: expected PTS=%d, got %d", i, expectedPTS, g.PTS)
-		}
-	}
+	requireDataIndexPTS(t, flow, received...)
 }
 
 func TestReader_DataStopsOnContextCancel(t *testing.T) {
@@ -250,12 +234,7 @@ func TestReader_DataPTSMonotonic(t *testing.T) {
 		t.Fatalf("expected 3 grains, got %d", len(received))
 	}
 
-	for i, g := range received {
-		expectedPTS := int64(i + 1)
-		if g.PTS != expectedPTS {
-			t.Fatalf("grain[%d]: expected PTS=%d (monotonic), got %d", i, expectedPTS, g.PTS)
-		}
-	}
+	requireDataIndexPTS(t, flow, received...)
 }
 
 func TestReader_DataHeadIndexError(t *testing.T) {
@@ -295,3 +274,16 @@ func (r *headIndexErrorReader) HeadIndex() (uint64, error) {
 	return 0, fmt.Errorf("head index unavailable")
 }
 func (r *headIndexErrorReader) Close() error { return nil }
+
+// requireDataIndexPTS checks that each data grain carries its own index's
+// PTS.
+func requireDataIndexPTS(t *testing.T, flow DiscreteReader, grains ...DataGrain) {
+	t.Helper()
+	r := flow.ConfigInfo().GrainRate
+	cr := clock.Rate{Num: r.Numerator, Den: r.Denominator}
+	for i, g := range grains {
+		if want := clock.IndexPTS(cr, g.Index); g.PTS != want {
+			t.Fatalf("grain %d (index %d): PTS %d, want %d", i, g.Index, g.PTS, want)
+		}
+	}
+}

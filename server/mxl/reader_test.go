@@ -141,9 +141,7 @@ func TestReader_DeliversVideoGrains(t *testing.T) {
 	if len(received) != 3 {
 		t.Fatalf("expected 3 grains, got %d", len(received))
 	}
-	if received[0].PTS != 1 {
-		t.Fatalf("expected PTS=1 (monotonic counter), got %d", received[0].PTS)
-	}
+	requireIndexPTS(t, flow, received...)
 	if received[0].Width != 1920 || received[0].Height != 1080 {
 		t.Fatalf("expected 1920x1080, got %dx%d", received[0].Width, received[0].Height)
 	}
@@ -312,9 +310,7 @@ func TestReader_SkipsInvalidGrains(t *testing.T) {
 	if len(received) != 1 {
 		t.Fatalf("expected 1 valid grain (invalid skipped), got %d", len(received))
 	}
-	if received[0].PTS != 1 {
-		t.Fatalf("expected PTS=1 (monotonic counter, invalid grain skipped), got %d", received[0].PTS)
-	}
+	requireIndexPTS(t, flow, received...)
 }
 
 func TestReader_DetectsTimestampDiscontinuity(t *testing.T) {
@@ -350,13 +346,11 @@ func TestReader_DetectsTimestampDiscontinuity(t *testing.T) {
 	}
 	reader.Wait()
 
-	// Both grains delivered; PTS is monotonic counter (1, 2).
+	// Both grains delivered, each with its own index's PTS.
 	if len(received) != 2 {
 		t.Fatalf("expected 2 grains, got %d", len(received))
 	}
-	if received[0].PTS != 1 || received[1].PTS != 2 {
-		t.Fatalf("expected PTS 1,2 (monotonic); got %d,%d", received[0].PTS, received[1].PTS)
-	}
+	requireIndexPTS(t, flow, received...)
 }
 
 func TestMXLReaderPTSMonotonic(t *testing.T) {
@@ -400,14 +394,7 @@ func TestMXLReaderPTSMonotonic(t *testing.T) {
 		t.Fatalf("expected 5 grains, got %d", len(received))
 	}
 
-	// PTS should start at 1 and increment by 1 (monotonic counter domain).
-	for i, g := range received {
-		expectedPTS := int64(i + 1)
-		if g.PTS != expectedPTS {
-			t.Fatalf("grain[%d]: expected PTS=%d (monotonic), got %d (MXL index would be %d)",
-				i, expectedPTS, g.PTS, 50000+i)
-		}
-	}
+	requireIndexPTS(t, flow, received...)
 }
 
 func TestReader_VideoChannelNilForAudio(t *testing.T) {
@@ -461,13 +448,7 @@ func TestVideoReaderTooLateRecovery(t *testing.T) {
 		t.Fatalf("expected 3 grains (1 before too-late, 2 after re-sync), got %d", len(received))
 	}
 
-	// PTS should be monotonic from 1 (using counter, not MXL index).
-	for i, g := range received {
-		expectedPTS := int64(i + 1)
-		if g.PTS != expectedPTS {
-			t.Fatalf("grain[%d]: expected PTS=%d, got %d", i, expectedPTS, g.PTS)
-		}
-	}
+	requireIndexPTS(t, flow, received...)
 }
 
 // tooLateDiscreteReader returns a "too late" error on the Nth ReadGrain call,

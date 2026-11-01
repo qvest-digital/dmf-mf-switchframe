@@ -2,7 +2,6 @@ package mxl
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -84,11 +83,10 @@ func TestProcessVideoGrain_Lossless10bit_NoPerFrameAllocation(t *testing.T) {
 	})
 
 	grain := VideoGrain{
-		V210:     makeV210Frame10bit(w, h),
-		Width:    w,
-		Height:   h,
-		PTS:      1,
-		ReadTime: time.Now(),
+		V210:   makeV210Frame10bit(w, h),
+		Width:  w,
+		Height: h,
+		PTS:    1,
 	}
 
 	// Warm up: allocates the pooled conversion buffer and sets the epoch.

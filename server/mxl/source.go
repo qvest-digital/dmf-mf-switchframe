@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/zsiec/prism/media"
 
@@ -151,13 +150,6 @@ type Source struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	stopOnce sync.Once
-
-	// Shared wall-clock epoch for AV sync. The first grain (video or audio)
-	// to arrive sets the epoch; all subsequent PTS values are computed as
-	// wall-clock offset from this shared reference. This ensures that if
-	// video starts 200ms after audio, the video PTS reflects that delay.
-	startTime time.Time
-	startOnce sync.Once
 
 	// Running encoder for video relay path.
 	videoEncoder  transition.VideoEncoder
@@ -414,11 +406,7 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 		yuv = s.v210Bufs.yuvOut
 	}
 
-	// Use wall-clock time for PTS to maintain AV sync across independently-
-	// started video and audio flows. Both share the same epoch (set by
-	// whichever flow produces the first grain).
-	s.startOnce.Do(func() { s.startTime = grain.ReadTime })
-	pts := int64(grain.ReadTime.Sub(s.startTime).Seconds() * 90000)
+	pts := grain.PTS
 
 	// 2. Deliver raw YUV to switcher pipeline.
 	// Allocate a fresh copy because the pooled conversion buffer
@@ -598,9 +586,7 @@ func (s *Source) processAudioGrain(grain AudioGrain) {
 	// Reuse s.interleaveBuf to avoid per-call allocation.
 	interleaved := interleaveChannelsInto(&s.interleaveBuf, grain.PCM)
 
-	// Use wall-clock time for PTS (shared epoch with video for AV sync).
-	s.startOnce.Do(func() { s.startTime = grain.ReadTime })
-	pts := int64(grain.ReadTime.Sub(s.startTime).Seconds() * 90000)
+	pts := grain.PTS
 
 	// 1. Deliver raw PCM to mixer.
 	if s.config.OnRawAudio != nil {

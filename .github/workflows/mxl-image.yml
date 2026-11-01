@@ -1,8 +1,8 @@
 name: MXL image
 
 # Builds the MXL images from Dockerfile.mxl and runs the tests that need
-# libmxl, which the upstream workflows skip. Pull requests build and test
-# without publishing; main, mxl-v* tags and manual runs publish.
+# libmxl, which the upstream workflows skip. Pull requests, to any base,
+# build and test without publishing; main, mxl-v* tags and manual runs publish.
 
 on:
   push:
@@ -10,9 +10,8 @@ on:
       - main
     tags:
       - "mxl-v*"
+  # Every pull request, including one stacked on another's branch.
   pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:

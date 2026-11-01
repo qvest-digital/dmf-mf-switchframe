@@ -7,15 +7,17 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/clock"
 )
 
 // VideoGrain carries a raw V210 video frame read from an MXL flow.
 type VideoGrain struct {
-	V210     []byte // V210 packed pixel data
-	Width    int
-	Height   int
-	PTS      int64     // Monotonic frame counter (1, 2, 3, ...)
-	ReadTime time.Time // Wall-clock time when grain was read (for AV sync)
+	V210   []byte // V210 packed pixel data
+	Width  int
+	Height int
+	Index  uint64 // grain index on TAI
+	PTS    int64  // 90 kHz PTS of the index's TAI on the engine timeline
 }
 
 // AudioGrain carries raw float32 PCM audio read from an MXL flow.
@@ -23,14 +25,15 @@ type AudioGrain struct {
 	PCM        [][]float32 // De-interleaved channels
 	SampleRate int
 	Channels   int
-	PTS        int64     // Monotonic sample counter from 0
-	ReadTime   time.Time // Wall-clock time when grain was read (for AV sync)
+	Start      uint64 // index of the first sample on TAI
+	PTS        int64  // 90 kHz PTS of Start's TAI on the engine timeline
 }
 
 // DataGrain carries raw metadata/ancillary data read from an MXL flow.
 type DataGrain struct {
-	Data []byte // Raw payload data
-	PTS  int64  // Monotonic grain counter (1, 2, 3, ...)
+	Data  []byte // Raw payload data
+	Index uint64 // grain index on TAI
+	PTS   int64  // 90 kHz PTS of the index's TAI on the engine timeline
 }
 
 // ReaderConfig configures an MXL flow reader.
@@ -207,11 +210,9 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 		return
 	}
 
-	// Monotonic PTS counter starting from 0, incremented by 1 per grain.
-	// Both video and audio PTS use their own monotonic counter domains
-	// (frame number for video, sample count for audio). The downstream
-	// PTS conversion handles scaling to 90 kHz MPEG-TS clock.
-	var videoPTSCounter int64
+	// PTS is the index's TAI: a skipped or invalid grain costs its time.
+	rate := flow.ConfigInfo().GrainRate
+	cr := clock.Rate{Num: rate.Numerator, Den: rate.Denominator}
 
 	consecutiveErrors := 0
 	const maxConsecutiveErrors = 50
@@ -220,7 +221,7 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 	// The consumer is behind when a send waits longer than a grain period;
 	// a shorter wait is it being scheduled, as when a burst fills videoCh.
 	period := 20 * time.Millisecond
-	if rate := flow.ConfigInfo().GrainRate; rate.Numerator > 0 && rate.Denominator > 0 {
+	if rate.Numerator > 0 && rate.Denominator > 0 {
 		period = time.Duration(int64(time.Second) * rate.Denominator / rate.Numerator)
 	}
 	waited := false // the last send waited longer than period
@@ -293,16 +294,12 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 			continue
 		}
 
-		videoPTSCounter++
-		pts := videoPTSCounter
-		readTime := time.Now()
-
 		grain := VideoGrain{
-			V210:     data,
-			Width:    r.config.Width,
-			Height:   r.config.Height,
-			PTS:      pts,
-			ReadTime: readTime,
+			V210:   data,
+			Width:  r.config.Width,
+			Height: r.config.Height,
+			Index:  index,
+			PTS:    clock.IndexPTS(cr, index),
 		}
 
 		select {
@@ -354,9 +351,13 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 		index = CurrentIndex(config.GrainRate)
 		log.Warn("mxl audio reader: HeadIndex unavailable, using wall-clock", "error", err)
 	}
-	// PTS counter: monotonic from 0, independent of read position.
-	// This ensures audio PTS aligns with video PTS (both start near 0).
-	var ptsCounter int64
+	// A read ending at index holds [index-samplesPerRead, index); its PTS
+	// is the TAI of the first of them, so a resync moves it by exactly the
+	// samples skipped.
+	cr := clock.Rate{Num: config.GrainRate.Numerator, Den: config.GrainRate.Denominator}
+	if index < uint64(samplesPerRead) {
+		index = uint64(samplesPerRead)
+	}
 
 	fatalErrors := 0
 	const maxFatalErrors = 50
@@ -373,7 +374,7 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 			// On "too late" errors, re-sync to the current write head
 			// instead of dying. The ring buffer moved past our position.
 			if errors.Is(err, ErrTooLate) {
-				if head, hErr := flow.HeadIndex(); hErr == nil {
+				if head, hErr := flow.HeadIndex(); hErr == nil && head >= uint64(samplesPerRead) {
 					index = head
 					r.resyncs.Add(1)
 					fatalErrors = 0
@@ -405,8 +406,8 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 			PCM:        pcm,
 			SampleRate: sampleRate,
 			Channels:   channels,
-			PTS:        ptsCounter,
-			ReadTime:   time.Now(),
+			Start:      index - uint64(samplesPerRead),
+			PTS:        clock.IndexPTS(cr, index-uint64(samplesPerRead)),
 		}
 
 		select {
@@ -416,7 +417,6 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 		}
 
 		index += uint64(samplesPerRead)
-		ptsCounter += int64(samplesPerRead)
 	}
 }
 
@@ -437,8 +437,8 @@ func (r *Reader) dataLoop(ctx context.Context, flow DiscreteReader) {
 		return
 	}
 
-	// Monotonic PTS counter starting from 0, incremented by 1 per grain.
-	var dataPTSCounter int64
+	drate := flow.ConfigInfo().GrainRate
+	dcr := clock.Rate{Num: drate.Numerator, Den: drate.Denominator}
 
 	consecutiveErrors := 0
 	const maxConsecutiveErrors = 50
@@ -493,12 +493,10 @@ func (r *Reader) dataLoop(ctx context.Context, flow DiscreteReader) {
 			continue
 		}
 
-		dataPTSCounter++
-		pts := dataPTSCounter
-
 		grain := DataGrain{
-			Data: data,
-			PTS:  pts,
+			Data:  data,
+			Index: index,
+			PTS:   clock.IndexPTS(dcr, index),
 		}
 
 		select {

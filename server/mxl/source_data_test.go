@@ -83,9 +83,9 @@ func TestSource_FansOutDataGrains(t *testing.T) {
 		t.Fatalf("unexpected data in grain 1: %v", received.grains[1].data)
 	}
 
-	// Verify PTS is monotonic from the reader.
-	if received.grains[0].pts != 1 || received.grains[1].pts != 2 {
-		t.Fatalf("expected PTS 1,2; got %d,%d", received.grains[0].pts, received.grains[1].pts)
+	// Each grain carries its index's PTS: consecutive grains one period apart.
+	if received.grains[1].pts <= received.grains[0].pts {
+		t.Fatalf("data PTS %d after %d", received.grains[1].pts, received.grains[0].pts)
 	}
 }
 
