@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-rc.42](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.41...mxl-v1.0.0-rc.42) (2026-11-01)
+
+
+### Features
+
+* **codec:** size the program x264 encode's threads by the CPU limit ([91d5b0a](https://github.com/qvest-digital/dmf-mf-switchframe/commit/91d5b0ab5d900b626427d6e7ab12f771c480accd))
+
+
+### Bug Fixes
+
+* **clock:** show a reconnected SRT source within a hold, not after black ([5156ad6](https://github.com/qvest-digital/dmf-mf-switchframe/commit/5156ad61b9d0ccf2fe3e97a031b51ec99e03f9f1))
+
 ## [1.0.0-rc.41](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.40...mxl-v1.0.0-rc.41) (2026-11-01)
 
 
