@@ -347,6 +347,14 @@ type Switcher struct {
 	delayBuffer          *DelayBuffer
 	frameSync            *FrameSynchronizer
 
+	// sourceDelays is each source's delay (SetSourceDelay) in ms by key,
+	// kept across removal and registration. The switcher owns it and hands
+	// it to the delay buffer, the frame sync, the mixer and the GPU source
+	// manager. delayMu serializes a change with its delivery and with a GPU
+	// source manager swap; configMu is never taken while it is held.
+	delayMu      sync.Mutex
+	sourceDelays map[string]int
+
 	// DSK graphics compositor — applies overlay in YUV420 domain.
 	compositorRef *graphics.Compositor
 
@@ -1148,15 +1156,15 @@ type gpuSourceMgrHolder struct {
 // set. Pass nil to disable.
 func (s *Switcher) SetGPUSourceManager(mgr GPUSourceManagerIface) {
 	if mgr != nil {
-		if d, ok := mgr.(sourceDelayGPU); ok {
-			for key := range *s.sourcesAtomic.Load() {
-				if ms := s.GetSourceDelay(key); ms > 0 {
-					d.SetSourceDelay(key, ms)
-				}
-			}
-		}
+		s.delayMu.Lock()
 		s.gpuSourceMgr.Store(&gpuSourceMgrHolder{mgr: mgr})
 		s.gpuSourceActive.Store(true)
+		if d, ok := mgr.(sourceDelayGPU); ok {
+			for key, ms := range s.sourceDelays {
+				d.SetSourceDelay(key, ms)
+			}
+		}
+		s.delayMu.Unlock()
 	} else {
 		s.gpuSourceMgr.Store(nil)
 		s.gpuSourceActive.Store(false)
@@ -2833,6 +2841,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	})
 	s.health.registerSource(key)
 	s.configMu.Unlock()
+	s.reapplySourceDelay(key)
 
 	s.log.Info("source registered", "source_key", key, "raw_pipeline", useRaw)
 
@@ -2901,6 +2910,7 @@ func (s *Switcher) registerRawSource(key, label string, mxl bool) {
 	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
+	s.reapplySourceDelay(key)
 	s.log.Info("raw source registered", "source_key", key, "mxl", mxl)
 	s.notifyStateChange(snapshot)
 }
@@ -2968,6 +2978,7 @@ func (s *Switcher) registerReplaySource(key string, mediaTimed bool) {
 	s.seq.Add(1)
 	snapshot := s.buildStateLocked()
 	s.configMu.Unlock()
+	s.reapplySourceDelay(key)
 	s.log.Info("replay source registered", "source_key", key)
 	s.notifyStateChange(snapshot)
 }
@@ -3045,9 +3056,15 @@ func (s *Switcher) noteRawVideo(ss *sourceState, sourceKey string, pf *Processin
 	}
 }
 
+// HasSource reports whether key is a registered source.
+func (s *Switcher) HasSource(key string) bool {
+	_, ok := (*s.sourcesAtomic.Load())[key]
+	return ok
+}
+
 // UnregisterSource removes a source from the switcher and detaches its
 // viewer from the source Relay. If the removed source was on program or
-// preview, those fields are cleared.
+// preview, those fields are cleared. Its delay stays with its key.
 func (s *Switcher) UnregisterSource(key string) {
 	s.configMu.Lock()
 	current := *s.sourcesAtomic.Load()
@@ -3288,22 +3305,18 @@ func (s *Switcher) SetSourceDelay(sourceKey string, delayMs int) error {
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 
-	// Video and audio are each delayed once, as a read offset in media
-	// time: the frame sync reads the source's frames, the mixer its audio,
-	// that much earlier. The delay buffer holds back captions.
-	s.delayBuffer.SetDelay(sourceKey, time.Duration(delayMs)*time.Millisecond)
-	s.frameSync.SetSourceDelay(sourceKey, delayMs, s.pipelineFormat.Load().FrameDuration())
-	s.configMu.Lock()
-	m, _ := s.syncMixer.(sourceDelayMixer)
-	s.configMu.Unlock()
-	if m != nil {
-		m.SetSourceDelay(sourceKey, delayMs)
-	}
-	if h := s.gpuSourceMgr.Load(); h != nil {
-		if d, ok := h.mgr.(sourceDelayGPU); ok {
-			d.SetSourceDelay(sourceKey, delayMs)
+	m := s.delayMixer()
+	s.delayMu.Lock()
+	if delayMs == 0 {
+		delete(s.sourceDelays, sourceKey)
+	} else {
+		if s.sourceDelays == nil {
+			s.sourceDelays = make(map[string]int)
 		}
+		s.sourceDelays[sourceKey] = delayMs
 	}
+	s.applySourceDelayLocked(sourceKey, delayMs, m)
+	s.delayMu.Unlock()
 
 	s.log.Info("source delay set", "source_key", sourceKey, "delay_ms", delayMs)
 
@@ -3319,7 +3332,47 @@ func (s *Switcher) SetSourceDelay(sourceKey string, delayMs int) error {
 // GetSourceDelay returns the configured input delay in milliseconds for a
 // source, or 0 if the source has no delay configured.
 func (s *Switcher) GetSourceDelay(sourceKey string) int {
-	return int(s.delayBuffer.GetDelay(sourceKey) / time.Millisecond)
+	s.delayMu.Lock()
+	defer s.delayMu.Unlock()
+	return s.sourceDelays[sourceKey]
+}
+
+// delayMixer returns the sync mixer when it takes source delays.
+func (s *Switcher) delayMixer() sourceDelayMixer {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	m, _ := s.syncMixer.(sourceDelayMixer)
+	return m
+}
+
+// applySourceDelayLocked hands a source's delay to everything that applies
+// it. Video and audio are each delayed once, as a read offset in media
+// time: the frame sync reads the source's frames, the mixer its audio,
+// that much earlier; the GPU source manager keeps the frames that wait
+// that much longer. The delay buffer holds back captions. Caller holds
+// delayMu.
+func (s *Switcher) applySourceDelayLocked(key string, ms int, m sourceDelayMixer) {
+	s.delayBuffer.SetDelay(key, time.Duration(ms)*time.Millisecond)
+	s.frameSync.SetSourceDelay(key, ms, s.pipelineFormat.Load().FrameDuration())
+	if m != nil {
+		m.SetSourceDelay(key, ms)
+	}
+	if h := s.gpuSourceMgr.Load(); h != nil {
+		if d, ok := h.mgr.(sourceDelayGPU); ok {
+			d.SetSourceDelay(key, ms)
+		}
+	}
+}
+
+// reapplySourceDelay gives a source registered again the delay it was
+// given under its key before.
+func (s *Switcher) reapplySourceDelay(key string) {
+	m := s.delayMixer()
+	s.delayMu.Lock()
+	defer s.delayMu.Unlock()
+	if ms := s.sourceDelays[key]; ms > 0 {
+		s.applySourceDelayLocked(key, ms, m)
+	}
 }
 
 // StartHealthMonitor begins periodic health checking at the given interval.

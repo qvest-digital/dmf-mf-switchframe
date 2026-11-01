@@ -519,8 +519,8 @@ func (a *App) updateGPURawVideoSink() {
 		a.gpuRawVideoSink.Store(nil)
 		return
 	}
-	fn := gpu.RawSinkFunc(func(yuv []byte, w, h int) {
-		cpuSink(&switcher.ProcessingFrame{Data: yuv, Width: w, Height: h})
+	fn := gpu.RawSinkFunc(func(yuv []byte, w, h int, pts int64) {
+		cpuSink(&switcher.ProcessingFrame{Data: yuv, Width: w, Height: h, PTS: pts, DTS: pts})
 	})
 	a.gpuRawVideoSink.Store(&fn)
 }
