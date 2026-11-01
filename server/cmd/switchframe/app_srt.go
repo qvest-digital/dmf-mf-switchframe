@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/prism/moq"
@@ -37,6 +38,9 @@ type srtSourceState struct {
 	// Relay path drop counters (incremented in decode callbacks).
 	relayVideoDrops *atomic.Int64
 	relayAudioDrops *atomic.Int64
+
+	// anchor places the connection's timestamps on the engine timeline.
+	anchor *clock.TrackingAnchor
 
 	// oversizeLogged gates a one-time warning when a decoded frame exceeds the
 	// frame pool's buffer size, which forces per-frame heap fallback allocations
@@ -124,6 +128,10 @@ func (a *App) initSRT() error {
 		registerCollectors(metrics.GetRegistry(), srt.NewMetricsCollector(statsMgr))
 	}
 	a.debugCollector.Register("relay_drops", &relayDropProvider{app: a})
+	a.debugCollector.Register("srt_anchors", srtAnchorProvider{app: a})
+	if a.appMetrics != nil {
+		registerCollectors(metrics.GetRegistry(), srtAnchorCollector{app: a})
+	}
 
 	// Wire stats manager into output manager so SRT output adapters
 	// get ConnStats entries for monitoring via /debug/snapshot.
@@ -323,6 +331,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		relay:           relay,
 		relayVideoDrops: &relayVideoDrops,
 		relayAudioDrops: &relayAudioDrops,
+		anchor:          anchor,
 	}
 
 	// === FULLY ASYNC ARCHITECTURE ===
@@ -1455,5 +1464,69 @@ func (p *relayDropProvider) DebugSnapshot() map[string]any {
 	}
 	return map[string]any{
 		"sources": sources,
+	}
+}
+
+// srtAnchorStats returns the placement statistics of each connected SRT
+// source's TrackingAnchor. They belong to the connection: a reconnect
+// starts them afresh.
+func (a *App) srtAnchorStats() map[string]clock.TrackingStats {
+	a.srtSourcesMu.Lock()
+	defer a.srtSourcesMu.Unlock()
+	out := make(map[string]clock.TrackingStats, len(a.srtSources))
+	for key, state := range a.srtSources {
+		if state.anchor != nil {
+			out[key] = state.anchor.Stats()
+		}
+	}
+	return out
+}
+
+// srtAnchorProvider exposes each connected SRT source's anchor offset
+// change since its connection was placed, in ms, and the times it was
+// raised, via debug snapshots.
+type srtAnchorProvider struct {
+	app *App
+}
+
+func (p srtAnchorProvider) DebugSnapshot() map[string]any {
+	stats := p.app.srtAnchorStats()
+	sources := make(map[string]any, len(stats))
+	for key, s := range stats {
+		sources[key] = map[string]any{
+			"offset_ms": float64(s.Offset) / 90,
+			"raises":    s.Raises,
+			"moves":     s.Moves,
+		}
+	}
+	return map[string]any{"sources": sources}
+}
+
+var (
+	descSRTAnchorOffset = prometheus.NewDesc("switchframe_srt_anchor_offset_seconds",
+		"How far a connected SRT source's TrackingAnchor offset moved since the connection was placed: up when its timestamps arrived later than before, down when a window forgot a lateness. Starts at 0 on every connection.",
+		[]string{"source"}, nil)
+	descSRTAnchorRaises = prometheus.NewDesc("switchframe_srt_anchor_offset_raises_total",
+		"Timestamps of a connected SRT source that raised its TrackingAnchor offset, each moving its later frames that much later. Starts at 0 on every connection.",
+		[]string{"source"}, nil)
+)
+
+// srtAnchorCollector exposes the SRT anchors' statistics at scrape time.
+type srtAnchorCollector struct {
+	app *App
+}
+
+// Describe implements prometheus.Collector.
+func (c srtAnchorCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- descSRTAnchorOffset
+	ch <- descSRTAnchorRaises
+}
+
+// Collect implements prometheus.Collector.
+func (c srtAnchorCollector) Collect(ch chan<- prometheus.Metric) {
+	for key, s := range c.app.srtAnchorStats() {
+		source := metrics.SourceLabel(key)
+		ch <- prometheus.MustNewConstMetric(descSRTAnchorOffset, prometheus.GaugeValue, float64(s.Offset)/90000, source)
+		ch <- prometheus.MustNewConstMetric(descSRTAnchorRaises, prometheus.CounterValue, float64(s.Raises), source)
 	}
 }

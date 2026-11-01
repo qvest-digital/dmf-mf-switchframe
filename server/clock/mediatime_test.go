@@ -428,3 +428,43 @@ func TestRealtimeDropsTheTicksAStalledConsumerLeftWaiting(t *testing.T) {
 		t.Fatalf("%d ticks dropped, want the 9 of grains k+2 to k+10", d)
 	}
 }
+
+// A TrackingAnchor counts the timestamps that raised its offset, and
+// reports how far the offset moved since the source was placed: a frame
+// that arrives late raises it once, by its excess lateness, and two
+// windows later the offset is back where it was. Neither the first
+// placement nor a placement after a jump is a raise.
+func TestTrackingAnchorCountsItsRaises(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	var a TrackingAnchor
+	src := int64(1_000_000)
+	frame := func(lateNs int64) {
+		now += 20_000_000
+		src += 1800
+		now += lateNs
+		a.PTS(src)
+		now -= lateNs
+	}
+	for range 50 {
+		frame(0)
+	}
+	if s := a.Stats(); s != (TrackingStats{}) {
+		t.Fatalf("a source arriving in time: %+v, want no raise and no offset change", s)
+	}
+	frame(15_000_000) // 15 ms late
+	if s := a.Stats(); s.Raises != 1 || s.Offset != 1350 {
+		t.Fatalf("after one frame 15 ms late: %+v, want 1 raise and an offset 1350 ticks up", s)
+	}
+	for range 2*TrackingWindow/1800 + 1 {
+		frame(0)
+	}
+	if s := a.Stats(); s.Raises != 1 || s.Offset != 0 {
+		t.Fatalf("two windows later: %+v, want the 1 raise and the offset back at 0", s)
+	}
+	src += 10 * 90000 // the source restarts 10 s on
+	frame(0)
+	if s := a.Stats(); s.Raises != 1 || s.Offset != 0 || s.Moves != 1 {
+		t.Fatalf("after a jump: %+v, want 1 move, no new raise and an offset of 0 from the new placement", s)
+	}
+}
