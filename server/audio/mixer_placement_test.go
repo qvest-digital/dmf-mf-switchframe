@@ -46,3 +46,38 @@ func TestMixer_RingAheadOfTheReadPointIsReadOnItsStamps(t *testing.T) {
 	}
 	require.Zero(t, m.ChannelRealigns()["src"])
 }
+
+// A source that runs dry for a read, its next audio then arriving at its
+// stamps, is read on those stamps again: the read that found too little
+// must not leave the ring a period behind the read point, played that much
+// late from then on and spliced whenever its stamps jitter by a sample.
+func TestMixer_RingThatRanDryIsReadOnItsStampsAgain(t *testing.T) {
+	const n = 960
+	m := newProduceTestMixer(t)
+	m.AddChannel("src")
+	m.SetActive("src", true)
+	tl := newTimeline()
+
+	level := func(k int) float32 { return 0.05 * float32(k%10+1) }
+	push := func(k int) {
+		pcm := make([]float32, n*2)
+		for i := range pcm {
+			pcm[i] = level(k)
+		}
+		tl.push(m, "src", pcm, k*n)
+	}
+	// Periods 0 and 1 arrive in time; period 2 arrives only after its read.
+	push(0)
+	push(1)
+	tl.produce(m, n)
+	tl.produce(m, n)
+	tl.produce(m, n) // period 2: nothing there yet
+	for k := 2; k < 8; k++ {
+		push(k)
+	}
+	for k := 3; k < 8; k++ {
+		out := tl.produce(m, n)
+		require.InDelta(t, level(k), out[0], 0.001,
+			"period %d after the source ran dry reads %v, period %d's audio", k, out[0], k)
+	}
+}

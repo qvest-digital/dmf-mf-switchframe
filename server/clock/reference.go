@@ -24,6 +24,15 @@ type Tick struct {
 // ticks are the grains of the program rate on TAI (ReaderDelayGrains
 // behind is what each tick reads); otherwise they are produced on demand
 // from index 0, for deterministic tests.
+//
+// Overload: a consumer that takes a tick late is never handed a later grain
+// in its place. Ticks wait for it in grain order and are delivered as fast
+// as it takes them, so every grain's tick, and with it the grain's audio,
+// reaches the consumer, up to MaxTickCatchUp (25 grains at 50 fps). A
+// consumer further behind resumes at the current grain, and the grains in
+// between are counted in DroppedTicks. Shedding the video of a late tick
+// is the consumer's choice (the switcher's sync loop sheds the video of a
+// tick taken after its grain ended and keeps its audio).
 type ReferenceClock struct {
 	rate         Rate
 	sampleRate   Rate

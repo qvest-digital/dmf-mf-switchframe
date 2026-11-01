@@ -1136,6 +1136,14 @@ func (a *App) startSRTReplayCPUEncode(rc *srtRelayContext) {
 	}()
 }
 
+// ingestSRTAudio hands an SRT source's decoded audio to the mixer. The
+// stream's own PTS, placed on the timeline by the tracking anchor its video
+// shares, keep the audio continuous however the decoder bunches it; the
+// anchor follows a sender clock that drifts.
+func (a *App) ingestSRTAudio(key string, job srtAudioJob) {
+	a.mixer.IngestPCM(key, job.pcm, sourceAnchor(key).PTS(job.pts), job.channels)
+}
+
 // startSRTAudioRelay starts a goroutine that delivers decoded PCM audio to the
 // mixer and encodes it as AAC for the browser relay and replay system.
 func (a *App) startSRTAudioRelay(rc *srtRelayContext) {
@@ -1147,11 +1155,7 @@ func (a *App) startSRTAudioRelay(rc *srtRelayContext) {
 	)
 	go func() {
 		for job := range rc.audioCh {
-			// The stream's own PTS, placed on the timeline by the anchor its
-			// video shares, keep the audio continuous however the decoder
-			// bunches it. A sender clock that drifts is moved back onto the
-			// read point by the mixer once it is a frame period off.
-			a.mixer.IngestPCM(rc.key, job.pcm, sourceAnchor(rc.key).PTS(job.pts), job.channels)
+			a.ingestSRTAudio(rc.key, job)
 
 			// Encode for relay.
 			if rc.relay == nil {

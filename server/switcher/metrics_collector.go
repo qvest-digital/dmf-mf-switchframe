@@ -35,7 +35,7 @@ var (
 	descQueueDepth = prometheus.NewDesc("switchframe_pipeline_queue_depth",
 		"Frames waiting for the processing pipeline.", nil, nil)
 	descStageLatency = prometheus.NewDesc("switchframe_pipeline_stage_latency_seconds",
-		"Latency of the most recent program frame in each stage, and end to end (stage total).",
+		"Latency of the most recent program frame in each stage: decode_queue and decode (relay sources), sync_wait (arrival to the tick showing it), tick (grain start to the end of the pipeline run, raw sinks included), total (arrival to the end of the pipeline run).",
 		[]string{"stage"}, nil)
 	descPTSStepErrors = prometheus.NewDesc("switchframe_program_pts_step_errors_total",
 		"Encoded program video packets, from the CPU or the GPU encoder, whose PTS step from the packet before is not one program frame period, within one tick.", nil, nil)
@@ -127,7 +127,7 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	gauge(descStageLatency, seconds(perf.DecodeQueueNs), "decode_queue")
 	gauge(descStageLatency, seconds(perf.DecodeNs), "decode")
 	gauge(descStageLatency, seconds(perf.SyncWaitNs), "sync_wait")
-	gauge(descStageLatency, seconds(perf.ProcQueueNs), "proc_queue")
+	gauge(descStageLatency, seconds(perf.TickLagNs), "tick")
 	gauge(descStageLatency, seconds(perf.E2ELastNs), "total")
 	if last := s.lastBroadcastNano.Load(); last != 0 {
 		gauge(descLastProgramFrameAge, time.Since(time.Unix(0, last)).Seconds())

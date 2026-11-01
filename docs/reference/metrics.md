@@ -156,7 +156,7 @@ Read by [`switcher.MetricsCollector`](../../server/switcher/metrics_collector.go
 | `switchframe_pipeline_deadline_violations_total` | counter | - | Program frames whose processing took longer than the frame budget. |
 | `switchframe_pipeline_frame_budget_seconds` | gauge | - | Time the pipeline has per frame at the program rate. |
 | `switchframe_pipeline_queue_depth` | gauge | - | Frames waiting for the processing pipeline. |
-| `switchframe_pipeline_stage_latency_seconds` | gauge | `stage` | Latency of the most recent program frame in each stage, and end to end (stage total). |
+| `switchframe_pipeline_stage_latency_seconds` | gauge | `stage` | Latency of the most recent program frame per stage: `decode_queue` and `decode` (relay sources decoded from H.264), `sync_wait` (arrival to the tick that shows it), `tick` (start of the tick's grain to the end of its pipeline run, by which the raw sinks and the MXL writer have the frame), `total` (arrival to the end of the pipeline run). |
 | `switchframe_gpu_fallback_frames_total` | counter | - | Frames the GPU pipeline handed back to the CPU pipeline. |
 | `switchframe_program_last_frame_age_seconds` | gauge | - | Time since the last program frame was sent. |
 | `switchframe_source_info` | gauge | `source`, `type`, `label` | 1 per source, with its type and display label. |
