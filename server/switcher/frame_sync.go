@@ -5,14 +5,18 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/clock"
 )
 
-// syncRingSize is how many frames each source buffers beyond its delay.
-// A tick reads clock.ReaderDelayGrains behind the clock, so a source at
-// k times the program rate needs k*(ReaderDelayGrains+1) frames for one to
-// be due; 16 covers five times the program rate and a reader's burst.
-// Frames older than the due one are released on every tick, so a source at
-// the program rate holds about ReaderDelayGrains+1 of them.
+// syncRingSize is how many frames each source buffers beyond its delay and
+// its hold. A tick reads clock.ReaderDelayGrains behind the clock, so a
+// source at k times the program rate needs k*(ReaderDelayGrains+1) frames
+// for one to be due; 16 covers five times the program rate and a reader's
+// burst. Frames older than the due one are released on every tick, so a
+// source at the program rate holds about ReaderDelayGrains+1 of them. A
+// source placed ahead of its arrival, as an SRT stream is by its
+// clock.TrackingAnchor, holds the frames that arrive in its hold as well.
 const syncRingSize = 16
 
 // FrameSynchronizer buffers each source's decoded frames by media time.
@@ -39,6 +43,9 @@ type syncSource struct {
 	// capacity is syncRingSize plus the frames the delay holds back; 0
 	// means syncRingSize.
 	capacity int
+	// hold adds the frames the source's placement ahead of its arrival
+	// holds back.
+	hold clock.SourceHold
 
 	overflows atomic.Int64 // frames released unread because the ring was full
 	reordered atomic.Int64 // frames whose PTS did not follow the newest buffered
@@ -122,7 +129,7 @@ func (fs *FrameSynchronizer) SetSourceDelay(sourceKey string, delayMs int, frame
 // push inserts pf in PTS order. A frame not after the newest buffered one
 // means the source's timeline stepped back, as when its producer
 // restarted: what was buffered from the old timeline is dropped. A full
-// ring drops its oldest frame.
+// ring, at its capacity plus the source's hold, drops its oldest frame.
 func (ss *syncSource) push(pf *ProcessingFrame) {
 	if n := len(ss.ring); n > 0 && pf.PTS <= ss.ring[n-1].PTS {
 		ss.reordered.Add(1)
@@ -135,6 +142,7 @@ func (ss *syncSource) push(pf *ProcessingFrame) {
 	if limit == 0 {
 		limit = syncRingSize
 	}
+	limit += ss.hold.Frames(pf.PTS)
 	for len(ss.ring) >= limit {
 		ss.ring[0].ReleaseYUV()
 		n := copy(ss.ring, ss.ring[1:])

@@ -107,16 +107,10 @@ type gpuSourceEntry struct {
 
 	width, height int
 
-	// recent holds the last published frames, oldest first, each with a
-	// reference of its own, guarded by curMu. The program is read behind
-	// the newest frame (clock.ReaderDelayGrains), so the frame a tick shows
-	// is usually one of these rather than current (refAt).
-	recent [recentFrames]*GPUFrame
+	// recent holds the last published frames, guarded by curMu: the frame
+	// a tick shows is usually one of these rather than current (refAt).
+	recent recentFrames[*GPUFrame]
 }
-
-// recentFrames is how many published frames each source keeps for refAt:
-// the reader delay plus a frame of slack.
-const recentFrames = 4
 
 // refAt returns the entry's frame with the given PTS, with an extra
 // reference the caller must Release, or nil when none of the recent frames
@@ -124,13 +118,8 @@ const recentFrames = 4
 func refAt(entry *gpuSourceEntry, pts int64) *GPUFrame {
 	entry.curMu.Lock()
 	defer entry.curMu.Unlock()
-	for i := len(entry.recent) - 1; i >= 0; i-- {
-		if f := entry.recent[i]; f != nil && f.PTS == pts {
-			f.Ref()
-			return f
-		}
-	}
-	return nil
+	f, _ := entry.recent.at(pts)
+	return f
 }
 
 // refCurrent returns the entry's current frame with an extra reference taken
@@ -157,19 +146,9 @@ func publishCurrent(entry *gpuSourceEntry, frame *GPUFrame) {
 	old := entry.current.Swap(frame)
 	var evicted []*GPUFrame
 	if frame == nil {
-		for i, f := range entry.recent {
-			if f != nil {
-				evicted = append(evicted, f)
-				entry.recent[i] = nil
-			}
-		}
+		evicted = entry.recent.drain()
 	} else {
-		if f := entry.recent[0]; f != nil {
-			evicted = append(evicted, f)
-		}
-		copy(entry.recent[:], entry.recent[1:])
-		frame.Ref()
-		entry.recent[len(entry.recent)-1] = frame
+		evicted = entry.recent.push(frame, frame.PTS)
 	}
 	entry.curMu.Unlock()
 	if old != nil {
@@ -906,6 +885,45 @@ func (m *GPUSourceManager) GetFrameAt(sourceKey string, pts int64) *GPUFrame {
 		return nil
 	}
 	return refAt(entry, pts)
+}
+
+// GetFrameNear returns the source's recent frame with the given PTS, else
+// the newest one before it, else its oldest, with a reference the caller
+// must Release, or nil if it has none.
+func (m *GPUSourceManager) GetFrameNear(sourceKey string, pts int64) *GPUFrame {
+	m.mu.RLock()
+	entry, exists := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if !exists {
+		return nil
+	}
+	entry.curMu.Lock()
+	defer entry.curMu.Unlock()
+	f, _ := entry.recent.near(pts)
+	return f
+}
+
+// KeepCurrentAs keeps the source's current frame among its recent frames
+// under pts. AliasSource publishes another source's frame, which carries
+// that source's PTS, as the destination's current frame only; a tick looks
+// the destination's frame up under the PTS of the destination's own
+// timeline, which this keeps it under.
+func (m *GPUSourceManager) KeepCurrentAs(sourceKey string, pts int64) {
+	m.mu.RLock()
+	entry, exists := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if !exists {
+		return
+	}
+	entry.curMu.Lock()
+	var evicted []*GPUFrame
+	if f := entry.current.Load(); f != nil && !entry.closed.Load() {
+		evicted = entry.recent.push(f, pts)
+	}
+	entry.curMu.Unlock()
+	for _, f := range evicted {
+		f.Release()
+	}
 }
 
 // Close removes all sources and releases all GPU resources.

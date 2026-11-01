@@ -28,10 +28,11 @@ type GPUPipelineRunner interface {
 
 	// RunFromCache retrieves a pre-uploaded GPU frame from the source cache
 	// (GPUSourceManager), copies it to a pipeline frame, and runs the GPU
-	// pipeline — skipping the CPU→GPU upload entirely. Returns an error if
-	// the source has no cached frame, in which case the caller should fall
-	// back to RunWithUpload.
-	RunFromCache(sourceKey string, srcPTS, pts int64) error
+	// pipeline, skipping the CPU->GPU upload entirely. The frame is the one
+	// cached under srcPTS; with nearest, the cached frame nearest to it when
+	// that one is gone. Returns an error if there is no such frame, in which
+	// case the caller should fall back to RunWithUpload.
+	RunFromCache(sourceKey string, srcPTS, pts int64, nearest bool) error
 
 	// RunTransition blends two source frames on GPU and runs the result
 	// through the rest of the GPU pipeline (key → layout → compositor →
