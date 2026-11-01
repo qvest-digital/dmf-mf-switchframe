@@ -190,6 +190,9 @@ func (a *Anchor) Moves() int64 {
 // before it is due. A burst whose first frame is later than that ahead
 // of the rest, as the backlog a connection's socket built before it was
 // first read, raises the offset only as far as each later frame allows.
+// The bound applies to each essence on its own: a source whose video
+// arrives more than MaxSourceHold later than its audio of the same time
+// has its audio placed earlier than its video by the excess.
 type TrackingAnchor struct {
 	mu        sync.Mutex
 	set       bool
