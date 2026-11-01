@@ -99,8 +99,8 @@ func TestPreviewWorkerDoesNotWaitForItsEncoderToOpen(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		w.queue(i)
 	}
-	if w.active() {
-		t.Fatal("active before the encoder opened")
+	if w.active() || !w.accepting() {
+		t.Fatalf("active %v, accepting %v before the encoder opened; want false, true", w.active(), w.accepting())
 	}
 	close(gate)
 	waitFor(t, "frame 3 encoded", func() bool { e, _, _, _, _ := l.snapshot(); return len(e) == 1 })
@@ -118,8 +118,9 @@ func TestPreviewWorkerDoesNotWaitForItsEncoderToOpen(t *testing.T) {
 	if len(released) != 2 || released[0] != 1 || released[1] != 2 {
 		t.Fatalf("released %v, want the replaced [1 2]", released)
 	}
-	if !closed || w.active() {
-		t.Fatalf("encoder closed %v, active %v after stop", closed, w.active())
+	if !closed || w.active() || w.accepting() {
+		t.Fatalf("encoder closed %v, active %v, accepting %v after stop; want true, false, false",
+			closed, w.active(), w.accepting())
 	}
 }
 
@@ -176,7 +177,7 @@ func TestPreviewWorkerWhoseEncoderFailsReleasesItsFrames(t *testing.T) {
 		t.Fatalf("encoded %v, closed %v, released %v; want nothing encoded or closed and [1 2] released",
 			encoded, closed, released)
 	}
-	if w.active() {
-		t.Fatal("active without an encoder")
+	if w.active() || w.accepting() {
+		t.Fatalf("active %v, accepting %v without an encoder; want false, false", w.active(), w.accepting())
 	}
 }
