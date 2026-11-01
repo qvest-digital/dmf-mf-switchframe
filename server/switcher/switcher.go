@@ -493,6 +493,12 @@ type Switcher struct {
 	videoProcMaxNano    atomic.Int64 // max video processing time (ns)
 	videoProcLastNano   atomic.Int64 // last video processing time (ns)
 	videoBroadcastCount atomic.Int64 // frames sent to program relay
+	// ptsStepErrors counts encoded program packets whose PTS step from the
+	// packet before is not one program frame period; lastEncodedPTS is
+	// that packet's PTS, 0 before the first. Written by the encoder output
+	// only (broadcastOwnedToProgram).
+	ptsStepErrors  atomic.Int64
+	lastEncodedPTS atomic.Int64
 
 	// Command queue for PTP-timed command execution (multi-region redundancy).
 	cmdQueue          *cmdqueue.Queue
@@ -1635,6 +1641,7 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 // program relay with a monotonically increasing GroupID, keeping its PTS.
 func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	frame.DTS = frame.PTS
+	s.checkPTSStep(frame.PTS)
 	if frame.IsKeyframe {
 		frame.GroupID = s.programGroupID.Add(1)
 		// Notify app layer that a keyframe has been broadcast (used to
@@ -1658,6 +1665,24 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	// Kept for repeats on a tick with no new frame or under overload.
 	stored := *frame
 	s.lastBroadcastVFrame.Store(&stored)
+}
+
+// checkPTSStep counts an encoded program packet whose PTS step from the
+// packet before is not one program frame period, within one tick either
+// way for a period that is no whole number of ticks, as at NTSC rates.
+// Both encoders' output, CPU (encodeNode via broadcastWithCaptions) and
+// GPU (BroadcastToProgramFunc), reaches the program here.
+func (s *Switcher) checkPTSStep(pts int64) {
+	prev := s.lastEncodedPTS.Swap(pts)
+	f := s.PipelineFormat()
+	if prev == 0 || f.FPSNum <= 0 || f.FPSDen <= 0 {
+		return
+	}
+	// |step - 90000*den/num| > 1 tick, in integers.
+	num := int64(f.FPSNum)
+	if d := (pts-prev)*num - 90000*int64(f.FPSDen); d > num || d < -num {
+		s.ptsStepErrors.Add(1)
+	}
 }
 
 // ProgramRelay returns the program relay for external broadcast (e.g. authored captions).

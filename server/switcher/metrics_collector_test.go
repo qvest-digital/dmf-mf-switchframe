@@ -11,6 +11,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
@@ -167,4 +168,23 @@ func TestMetricsCollector_HidesSRTStreamIDs(t *testing.T) {
 	}
 	require.Equal(t, map[string]float64{metrics.SourceLabel(key): 1},
 		values(gather(t, NewMetricsCollector(sw))["switchframe_program_source_info"]))
+}
+
+// An encoded program packet whose PTS steps from the one before by other
+// than one program frame period is counted, whichever encoder made it: a
+// step of one and a half periods is one error, and the 1501/1502 tick
+// steps of 59.94 fps are none.
+func TestMetricsCollector_ProgramPTSStepErrors(t *testing.T) {
+	sw := NewTestSwitcher(t, distribution.NewRelay())
+	f := sw.PipelineFormat()
+	f.FPSNum, f.FPSDen = 60000, 1001 // 1501.5 ticks per frame
+	sw.pipelineFormat.Store(&f)
+
+	pts := int64(900000)
+	for i, step := range []int64{0, 1501, 1502, 1501, 2252, 1502, 1501} {
+		pts += step
+		sw.broadcastOwnedToProgram(&media.VideoFrame{PTS: pts, IsKeyframe: i == 0, WireData: []byte{0, 0, 0, 1, 0x65}})
+	}
+	require.Equal(t, map[string]float64{"": 1},
+		values(gather(t, NewMetricsCollector(sw))["switchframe_program_pts_step_errors_total"]))
 }

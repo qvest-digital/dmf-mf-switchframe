@@ -20,7 +20,6 @@ import (
 	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
-	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/sidecar"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition/wipemap"
@@ -281,21 +280,8 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	var gpuVPS, gpuSPS, gpuPPS []byte
 	// pic_timing frame counter for the GPU encode path.
 	var gpuPicTimingFrame int64
-	// PTS delta diagnostic: detect jitter introduced by GPU encode.
-	var gpuLastEncodedPTS int64
+	// pts is the encoded packet's own, the PTS of the frame it encodes.
 	gpuOnEncoded := func(data []byte, isIDR bool, pts int64) {
-		// Diagnostic: verify GPU-encoded PTS deltas match a supported
-		// frame-rate grid. IsNominalPTSDelta covers integer rates
-		// (24/25/30/50/60) plus their NTSC variants with ±1 tick
-		// tolerance, so non-NTSC pipelines don't produce false warnings.
-		if prev := gpuLastEncodedPTS; prev != 0 {
-			delta := pts - prev
-			if !video.IsNominalPTSDelta(delta) {
-				slog.Warn("gpuOnEncoded: non-nominal PTS delta",
-					"delta", delta, "pts", pts, "prevPts", prev)
-			}
-		}
-		gpuLastEncodedPTS = pts
 		// Convert Annex B to wire format (4-byte length prefix).
 		// AVC1 and HVC1 use the same wire encoding.
 		wire := codec.AnnexBToWireInto(data, nil)

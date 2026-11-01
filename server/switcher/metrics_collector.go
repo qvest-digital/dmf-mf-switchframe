@@ -37,6 +37,8 @@ var (
 	descStageLatency = prometheus.NewDesc("switchframe_pipeline_stage_latency_seconds",
 		"Latency of the most recent program frame in each stage: decode_queue and decode (relay sources), sync_wait (arrival to the tick showing it), tick (grain start to the end of the pipeline run, raw sinks included), total (arrival to the end of the pipeline run).",
 		[]string{"stage"}, nil)
+	descPTSStepErrors = prometheus.NewDesc("switchframe_program_pts_step_errors_total",
+		"Encoded program video packets, from the CPU or the GPU encoder, whose PTS step from the packet before is not one program frame period, within one tick.", nil, nil)
 	descGPUFallback = prometheus.NewDesc("switchframe_gpu_fallback_frames_total",
 		"Frames the GPU pipeline handed back to the CPU pipeline.", nil, nil)
 	descLastProgramFrameAge = prometheus.NewDesc("switchframe_program_last_frame_age_seconds",
@@ -75,7 +77,7 @@ func NewMetricsCollector(s *Switcher) *MetricsCollector {
 func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		descProgramSource, descPreviewSource, descTransitionActive, descFTBActive,
-		descProgramFrames, descProgramRepeated, descProgramDropped, descDeadlineViolations,
+		descProgramFrames, descProgramRepeated, descPTSStepErrors, descProgramDropped, descDeadlineViolations,
 		descFrameBudget, descQueueDepth, descStageLatency, descGPUFallback, descLastProgramFrameAge,
 		descSourceInfo, descSourceHealth, descSourceLastFrameAge, descSourceFrames,
 		descSourceDecodeFPS, descSourceDecodeDrops, descSourceDecodeLatency,
@@ -115,6 +117,7 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 
 	counter(descProgramFrames, s.videoBroadcastCount.Load())
 	counter(descProgramRepeated, s.programRepeats.Load())
+	counter(descPTSStepErrors, s.ptsStepErrors.Load())
 	counter(descProgramDropped, s.overloadDrops.Load(), "proc")
 	counter(descProgramDropped, s.pipeEncodeDrop.Load(), "encode")
 	counter(descDeadlineViolations, s.deadlineViolations.Load())
