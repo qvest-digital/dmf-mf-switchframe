@@ -437,7 +437,10 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 	off := int64(start) - (int64(end) - int64(have)) // >0: ring holds older audio
 	tol := int64(n)
 	if !ch.placed && have > 0 {
-		ch.placed, tol = true, 0
+		// Placed only by a read that reaches the ring's audio: a ring a
+		// period or more ahead is read as silence and placed again next
+		// time, rather than read from then on up to a period early.
+		ch.placed, tol = off > -int64(n), 0
 	} else if off > tol || off < -tol {
 		ch.noteRealign(true)
 	} else {
