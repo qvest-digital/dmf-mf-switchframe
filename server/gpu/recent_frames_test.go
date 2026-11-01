@@ -165,14 +165,14 @@ func TestRecentFramesHoldTheFrameAnAnchoredSRTTickShows(t *testing.T) {
 	}
 }
 
-// The store keeps a source's frames for its hold, counted in the source's
-// frame period. A TrackingAnchor that lowers its offset at a window
-// rollover places one frame closer to its predecessor than a frame period:
-// one late PES packet does that two windows later. Counting the hold in
-// that distance would keep a hundred frames and more, about 3 MB of VRAM
-// each at 1080p, for two windows, and free them in one push. Network
-// jitter moves the offset in many such steps. The store stays within the
-// frames its hold takes and still holds every frame a tick shows.
+// The store keeps the frames that wait in a source's hold. A
+// TrackingAnchor that lowers its offset at a window rollover places one
+// frame closer to its predecessor than a frame period: one late PES packet
+// does that two windows later. A hold counted in that distance would keep
+// a hundred frames and more, about 3 MB of VRAM each at 1080p, for two
+// windows, and free them in one push. Network jitter moves the offset in
+// many such steps. The store stays within the frames its hold takes and
+// still holds every frame a tick shows.
 func TestRecentFramesStayWithinTheHoldAcrossLatePackets(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -280,6 +280,52 @@ func TestRecentFramesAdoptKeepsTheHeldFrame(t *testing.T) {
 		}
 	}
 	for _, f := range renewed.drain() {
+		f.Release()
+	}
+}
+
+// A connection's backlog burst is placed by its TrackingAnchor at arrival
+// plus clock.MaxSourceHold from the frame on that would wait longer: those
+// frames arrive a decode apart and wait as close together. The store keeps
+// every frame that still waits, also once frames arrive a period apart
+// again and the source's period is its own again: a store sized by the
+// hold in frame periods evicted the oldest waiting frames, the next due,
+// and a source without pixels on the CPU ran from a later frame instead.
+func TestRecentFramesKeepABacklogBurstPlacedAhead(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	clock.Epoch()
+	clock.SetTAISource(func() int64 { return now })
+	t.Cleanup(func() { clock.SetTAISource(nil) })
+	var store recentFrames[*countedFrame]
+	var placed []int64
+	push := func(stepNs int64) {
+		now += stepNs
+		pts := clock.NowPTS() + clock.MaxSourceHold
+		placed = append(placed, pts)
+		f := &countedFrame{refs: 1}
+		for _, e := range store.push(f, pts) {
+			e.Release()
+		}
+		f.Release()
+		for _, p := range placed {
+			if p <= clock.NowPTS() {
+				continue
+			}
+			if f, ok := store.at(p); ok {
+				f.Release()
+				continue
+			}
+			t.Fatalf("frame %d: a frame placed %d ticks ahead is gone while it waits (%d kept)",
+				len(placed), p-clock.NowPTS(), len(store.frames))
+		}
+	}
+	for range 40 { // the burst's tail, a frame per 4 ms decode
+		push(4_000_000)
+	}
+	for range 50 { // real time, a frame per 20 ms
+		push(20_000_000)
+	}
+	for _, f := range store.drain() {
 		f.Release()
 	}
 }

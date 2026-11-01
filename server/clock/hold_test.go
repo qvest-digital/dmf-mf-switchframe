@@ -2,12 +2,12 @@ package clock
 
 import "testing"
 
-// A source's hold adds the frames that arrive while one waits for the read
-// point: none for frames due on arrival, the hold in the source's own frame
-// periods otherwise, never more than MaxSourceHold, and a raised hold is
-// kept over the current and the previous window, as a TrackingAnchor keeps
-// the offset that caused it. The source steps its PTS by its own period;
-// the offset it is placed under moves as an anchor's does.
+// A source's hold adds the frames that wait for the read point: none for
+// frames due on arrival, the frames placed after the current time
+// otherwise, never more than MaxSourceHold/minFramePeriod, and once the
+// offset comes down, the frames placed under the raised one among its last
+// MaxSourceHold/minFramePeriod frames. The source steps its PTS by its own period; the offset it is
+// placed under moves as an anchor's does.
 func TestSourceHoldCountsTheFramesAHoldKeeps(t *testing.T) {
 	now := int64(1_798_000_000_000_000_000)
 	fixedTAI(t, &now)
@@ -20,34 +20,36 @@ func TestSourceHoldCountsTheFramesAHoldKeeps(t *testing.T) {
 		src += frame
 		return h.Frames(src + off)
 	}
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		step()
 	}
 	if n := step(); n != 0 {
 		t.Fatalf("a frame due on arrival adds %d frames, want none", n)
 	}
 	off += 3600 + 15_300 // now placed 170 ms after its arrival
+	for range 20 {
+		step()
+	}
 	if n := step(); n != 9 {
 		t.Fatalf("a 170 ms hold at 20 ms frames adds %d frames, want 9", n)
 	}
 	off += 5 * 90000
-	if n := step(); n != MaxSourceHold/frame {
-		t.Fatalf("a 5 s hold adds %d frames, want the bound's %d", n, MaxSourceHold/frame)
+	for range 100 {
+		step()
 	}
-	// The offset comes down again; the raised hold is kept for one to two
-	// windows.
+	if n := step(); n != maxHoldFrames {
+		t.Fatalf("a 5 s hold adds %d frames, want the bound's %d", n, maxHoldFrames)
+	}
+	// The offset comes down again: the frames placed under the raised one
+	// count until as many new ones have come, then none do.
 	off -= 5*90000 + 15_300
-	kept := 0
-	for i := 0; i < 5*50; i++ {
-		if step() == MaxSourceHold/frame {
-			kept++
+	for i := range maxHoldFrames - 1 {
+		if n := step(); n != maxHoldFrames-1-i {
+			t.Fatalf("frame %d after the hold came down: %d frames added, want the %d placed under it", i, n, maxHoldFrames-1-i)
 		}
 	}
-	if lo, hi := int(TrackingWindow/frame), int(2*TrackingWindow/frame); kept < lo || kept > hi {
-		t.Fatalf("a raised hold kept for %d frames, want one to two windows (%d to %d)", kept, lo, hi)
-	}
 	if n := step(); n != 0 {
-		t.Fatalf("%d frames added once the hold came down, want none", n)
+		t.Fatalf("%d frames added once the frames placed under the hold were replaced, want none", n)
 	}
 }
 
@@ -72,5 +74,41 @@ func TestSourceHoldCountsInTheFramePeriodAcrossAnOffsetDrop(t *testing.T) {
 	}
 	if want := (15_300 + frame - 1) / frame; most > want {
 		t.Fatalf("a 170 ms hold at 20 ms frames adds up to %d frames after one 90-tick step, want at most %d", most, want)
+	}
+}
+
+// A TrackingAnchor places the tail of a burst, the backlog a connection's
+// socket built before it was first read, at arrival plus MaxSourceHold:
+// frames that arrive a few milliseconds apart wait in the store as close
+// together. Once frames arrive a period apart again, the source's period
+// is its own again while those frames still wait. The hold adds every
+// frame that waits, not the hold in frame periods, or the store drops the
+// oldest of them, the next ones due, and the program freezes until the
+// read point reaches the rest.
+func TestSourceHoldKeepsABurstPlacedAheadWhole(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	var h SourceHold
+	var placed []int64
+	push := func(stepNs int64) int {
+		now += stepNs
+		pts := NowPTS() + MaxSourceHold
+		placed = append(placed, pts)
+		return h.Frames(pts)
+	}
+	for range 40 { // the burst, decoded a frame per 4 ms
+		push(4_000_000)
+	}
+	for range 20 { // real time, a frame per 20 ms
+		n := push(20_000_000)
+		waiting := 0
+		for _, p := range placed {
+			if p > NowPTS() {
+				waiting++
+			}
+		}
+		if n < waiting {
+			t.Fatalf("frame %d: the hold adds %d frames while %d wait", len(placed), n, waiting)
+		}
 	}
 }
