@@ -70,7 +70,7 @@ All flags are defined in [`parseConfig`](../../server/cmd/switchframe/main.go). 
 | `--output-gop-secs` | int | `0` | GOP / keyframe interval in seconds (1, 2, or 4; 0 = 2) |
 | `--output-preset` | string | `""` | Encoder preset: `low-latency`, `balanced`, `quality` |
 | `--output-timecode` | bool | `false` | Enable SMPTE 12M timecode insertion |
-| `--x264-threads` | int | `0` (env `SWITCHFRAME_X264_THREADS`) | Threads of the program's x264 encode, which with the zerolatency tune are its slices per frame (x264 allows at most 17 at 1080p). 0: two per core of the CPU limit, 2 to 16, the limit read from the cgroup v2 `cpu.max`, else env `SWITCHFRAME_CPU_LIMIT` in whole cores, else the CPUs the process may run on. The chosen count and its source are logged at start and exported as `switchframe_program_encoder_threads` |
+| `--x264-threads` | int | `0` (env `SWITCHFRAME_X264_THREADS`) | Threads of the program's x264 encode, which with the zerolatency tune are its slices per frame (x264 allows at most 17 at 1080p). 0: two per core of the CPU limit, 2 to 16, the limit read from the process's own cgroup v2 `cpu.max` (a quota set only on a parent cgroup is not seen), else env `SWITCHFRAME_CPU_LIMIT` in whole cores, else the CPUs the process may run on. The chosen count and its source are logged at start and exported as `switchframe_program_encoder_threads` |
 
 ### SCTE-35 signaling
 
