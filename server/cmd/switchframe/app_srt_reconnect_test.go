@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,14 +44,39 @@ func (r *programLumaRecorder) Stats() distribution.ViewerStats {
 }
 
 // gpuRemovals is a GPU source manager that records the sources removed
-// from it.
+// from it and, in order, what was done to its sources: "ingest <key>",
+// "stop-preview <key>" and "remove <key>", a run of one entry noted once.
 type gpuRemovals struct {
 	mu      sync.Mutex
 	removed []string
+	log     []string
 }
 
-func (g *gpuRemovals) IngestYUV(string, []byte, int, int, int64) {}
+func (g *gpuRemovals) note(e string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if n := len(g.log); n == 0 || g.log[n-1] != e {
+		g.log = append(g.log, e)
+	}
+}
+
+// logged returns the log's entries for key.
+func (g *gpuRemovals) logged(key string) []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var out []string
+	for _, e := range g.log {
+		if strings.HasSuffix(e, " "+key) && (len(out) == 0 || out[len(out)-1] != e) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func (g *gpuRemovals) IngestYUV(key string, _ []byte, _, _ int, _ int64) { g.note("ingest " + key) }
+func (g *gpuRemovals) StopPreview(key string)                            { g.note("stop-preview " + key) }
 func (g *gpuRemovals) RemoveSource(key string) {
+	g.note("remove " + key)
 	g.mu.Lock()
 	g.removed = append(g.removed, key)
 	g.mu.Unlock()
@@ -87,11 +113,18 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 	}
 
 	// The mixer is read on the clock, two periods behind, as the sync loop
-	// reads it; loud records whether a read carried the source's audio.
+	// reads it; loud records whether a read carried the source's audio. A
+	// host that cannot keep the reads within half a second of the clock
+	// cannot run the test: catching up from further behind takes it longer
+	// than the clock moves, and the reads fall behind without end.
 	rate := clock.Rate{Num: 48000, Den: 1}
 	next := clock.TimestampToIndex(rate, clock.TAINow()) - 3*samples
 	read := func() (loud bool) {
-		for target := clock.TimestampToIndex(rate, clock.TAINow()) - 2*samples; next+samples <= target; next += samples {
+		target := clock.TimestampToIndex(rate, clock.TAINow()) - 2*samples
+		if lag := target - min(next, target); lag > 24000 {
+			t.Fatalf("mixer reads fell %d samples behind the clock, want at most 24000: host too slow", lag)
+		}
+		for ; next+samples <= target; next += samples {
 			for _, v := range m.ProduceSamples(next, samples, 0) {
 				if math.Abs(float64(v)) > 0.01 {
 					loud = true
@@ -120,6 +153,17 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 		})
 		return c
 	}
+	hangUp := func(c *conn) {
+		close(c.video)
+		close(c.audio)
+		drained := make(chan struct{})
+		go func() { c.done.Wait(); close(drained) }()
+		select {
+		case <-drained:
+		case <-time.After(2 * time.Second):
+			t.Fatal("audio ingest did not drain within 2s of the hang-up")
+		}
+	}
 	period := 1001 * time.Millisecond / 30
 	send := func(c *conn, n int, y byte, srcPTS int64) (heard time.Time) {
 		for i := range n {
@@ -127,12 +171,20 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 			for j := range yuv[:w*h] {
 				yuv[j] = y
 			}
-			c.video <- srtVideoJob{yuv: yuv, w: w, h: h, pts: srcPTS + int64(i)*3003}
+			select {
+			case c.video <- srtVideoJob{yuv: yuv, w: w, h: h, pts: srcPTS + int64(i)*3003}:
+			case <-time.After(time.Second):
+				t.Fatalf("video ingest took no frame for 1s at frame %d", i)
+			}
 			pcm := make([]float32, samples*2)
 			for j := range pcm {
 				pcm[j] = 0.1
 			}
-			c.audio <- srtAudioJob{pcm: pcm, pts: srcPTS + int64(i)*3003, sampleRate: 48000, channels: 2}
+			select {
+			case c.audio <- srtAudioJob{pcm: pcm, pts: srcPTS + int64(i)*3003, sampleRate: 48000, channels: 2}:
+			case <-time.After(time.Second):
+				t.Fatalf("audio ingest took no frame for 1s at frame %d", i)
+			}
 			time.Sleep(period)
 			if read() && heard.IsZero() {
 				heard = time.Now()
@@ -147,15 +199,16 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 	if send(c1, 15, 50, srcPTS).IsZero() {
 		t.Fatal("the source's audio never reached the program before the drop")
 	}
-	// Realigns the harness's own scheduling jitter causes on a loaded
-	// host; the reconnect must add no more than one to them.
+	// The reconnect may cost one realign, and one more on a host whose
+	// scheduling jitter realigned the first connection too. No more: a
+	// first connection noisy enough to realign many times must not lift
+	// the bound over a storm of them.
 	jitter := m.ChannelRealigns()[key]
+	allowed := 1 + min(jitter, 1)
 	srcPTS += 15 * 3003
 
 	// The connection drops: OnStopped's cleanup, then 300 ms with nothing.
-	close(c1.video)
-	close(c1.audio)
-	c1.done.Wait()
+	hangUp(c1)
 	a.releaseSRTConnection(key, srt.ModeListener)
 	for end := time.Now().Add(300 * time.Millisecond); time.Now().Before(end); time.Sleep(period) {
 		read()
@@ -173,9 +226,7 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 	c2 := open(anchor)
 	reconnected := time.Now()
 	heard := send(c2, 15, 90, srcPTS+135000)
-	close(c2.video)
-	close(c2.audio)
-	c2.done.Wait()
+	hangUp(c2)
 
 	if got := sw.ProgramSource(); got != key {
 		t.Fatalf("program is %q after the new connection's frames, want %q", got, key)
@@ -187,9 +238,9 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 		t.Fatalf("the new connection's audio reached the program %v after it started, want within 400ms",
 			heard.Sub(reconnected))
 	}
-	if n := m.ChannelRealigns()[key] - before; n > jitter+1 {
+	if n := m.ChannelRealigns()[key] - before; n > allowed {
 		t.Fatalf("the source's audio was realigned %d times after the reconnect, %d before it, want at most %d",
-			n, jitter, jitter+1)
+			n, jitter, allowed)
 	}
 	gpuSources.mu.Lock()
 	removed := gpuSources.removed

@@ -19,6 +19,9 @@ func (m *GPUSourceManager) SetSourceColorGrade(provider SourceColorGradeProvider
 // RegisterSource is a no-op on non-GPU builds.
 func (m *GPUSourceManager) RegisterSource(sourceKey string, w, h int, preview *PreviewConfig) {}
 
+// StopPreview is a no-op on non-GPU builds.
+func (m *GPUSourceManager) StopPreview(sourceKey string) {}
+
 // RemoveSource is a no-op on non-GPU builds.
 func (m *GPUSourceManager) RemoveSource(sourceKey string) {}
 
