@@ -408,8 +408,9 @@ func TestSyncLoopOverload(t *testing.T) {
 	rc2.Start()
 	s.StartSyncLoop()
 
-	// Let a few ticks run.
-	time.Sleep(200 * time.Millisecond)
+	// Let ticks run until the loop, 7 ms behind per 40 ms tick, takes
+	// ticks after their grain has ended.
+	time.Sleep(600 * time.Millisecond)
 
 	rc2.Stop()
 	s.syncLoopWg.Wait()

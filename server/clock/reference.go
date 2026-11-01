@@ -144,11 +144,17 @@ func (c *ReferenceClock) Rate() (fpsNum, fpsDen int) {
 	return int(c.rate.Num), int(c.rate.Den)
 }
 
-// catchUp returns the grain to deliver at TAI now when grain n is next:
-// n itself while now is still within it, otherwise the grain now is in,
-// counting the grains that passed undelivered.
+// MaxTickCatchUp is how far behind the clock a consumer may fall and still
+// get every tick, in order: each tick carries its grain's audio, so a
+// dropped tick is a gap in the program audio. Past it the clock resumes at
+// the current grain.
+const MaxTickCatchUp = 500 * time.Millisecond
+
+// catchUp returns the grain to deliver at TAI now when grain n is next: n
+// itself while it started less than MaxTickCatchUp ago, otherwise the grain
+// now is in, counting the grains that passed undelivered.
 func (c *ReferenceClock) catchUp(n uint64, now int64) uint64 {
-	if now < IndexToTimestamp(c.rate, n+1) {
+	if now-IndexToTimestamp(c.rate, n) < int64(MaxTickCatchUp) {
 		return n
 	}
 	cur := n + 1
@@ -183,9 +189,9 @@ func frameDuration(fpsNum, fpsDen int) time.Duration {
 }
 
 // runRealtime delivers one tick at the TAI start of each program grain.
-// A tick the consumer has not taken by the next one is dropped; after a
-// stall the clock resumes at the current grain, so a tick's PTS is always
-// its grain's.
+// A consumer that falls behind gets the ticks it missed in order, as fast
+// as it takes them, up to MaxTickCatchUp; after a longer stall the clock
+// resumes at the current grain. A tick's PTS is always its grain's.
 func (c *ReferenceClock) runRealtime() {
 	defer c.wg.Done()
 
@@ -206,8 +212,8 @@ func (c *ReferenceClock) runRealtime() {
 		n = c.catchUp(n, TAINow())
 		select {
 		case c.ticks <- c.tickAt(n):
-		default:
-			c.droppedTicks.Add(1)
+		case <-c.stop:
+			return
 		}
 		n++
 	}

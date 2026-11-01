@@ -25,7 +25,7 @@ func TestProduceSamplesBasic(t *testing.T) {
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
 
-	// 1kHz sine, within the ring's capacity of 10*1024 samples
+	// 1kHz sine, within the ring's capacity
 	sine := generateSine(1000, 48000, 8192)
 
 	tl := newTimeline()

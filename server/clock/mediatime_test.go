@@ -178,3 +178,150 @@ func TestAnchorKeepsSourceDistances(t *testing.T) {
 		t.Fatalf("a jump far from the clock was not placed at arrival (PTS %d, moves %d)", j, a.Moves())
 	}
 }
+
+// A source whose audio arrives in bursts is placed at its latest arrival:
+// every timestamp is placed no earlier than it arrived, and the bursts that
+// follow keep the source's own distances.
+func TestTrackingAnchorPlacesBurstsAtTheirLatestArrival(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	var a TrackingAnchor
+	const frame = 1800 // 20 ms
+	src := int64(1_000_000)
+	var last int64
+	for b := 0; b < 20; b++ {
+		// Nine frames arrive together once the last of them has passed.
+		now += 9 * 20_000_000
+		for k := 0; k < 9; k++ {
+			pts := a.PTS(src)
+			if pts < PTS(now) {
+				t.Fatalf("burst %d frame %d placed %d ticks before it arrived", b, k, PTS(now)-pts)
+			}
+			if b > 0 && pts-last != frame {
+				t.Fatalf("burst %d frame %d steps %d ticks, want the source's %d", b, k, pts-last, frame)
+			}
+			last = pts
+			src += frame
+		}
+	}
+	if a.Moves() != 0 {
+		t.Fatalf("%d moves for a source that never jumped", a.Moves())
+	}
+}
+
+// A source whose sender clock runs fast is followed: its timestamps stay
+// within a window's drift of their arrival rather than running ahead
+// without bound.
+func TestTrackingAnchorFollowsAFastSender(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	var a TrackingAnchor
+	const ppm = 1000
+	src := int64(1_000_000)
+	for i := 0; i < 360*50; i++ { // 6 minutes of 20 ms frames
+		now += 20_000_000
+		src += 1800 + 1800*ppm/1_000_000
+		ahead := a.PTS(src) - PTS(now)
+		if ahead < 0 {
+			t.Fatalf("frame %d placed %d ticks before it arrived", i, -ahead)
+		}
+		// Two windows of drift at 1000 ppm: 4 ms.
+		if ahead > 2*TrackingWindow*ppm/1_000_000+1 {
+			t.Fatalf("frame %d placed %d ticks after it arrived: the anchor does not follow the sender", i, ahead)
+		}
+	}
+}
+
+// scriptedTAI makes TAINow return *now, guarded by mu, from after the
+// epoch is set, and counts the reads in *reads.
+func scriptedTAI(t *testing.T, mu *sync.Mutex, now *int64, reads *int) {
+	t.Helper()
+	Epoch()
+	SetTAISource(func() int64 {
+		mu.Lock()
+		defer mu.Unlock()
+		*reads++
+		return *now
+	})
+	t.Cleanup(func() { SetTAISource(func() int64 { return time.Now().UnixNano() }) })
+}
+
+// advanceAfterReads sets *now to to once the clock has read the time
+// twice: for its first grain and for the wait until it.
+func advanceAfterReads(t *testing.T, mu *sync.Mutex, now *int64, reads *int, to int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		if *reads >= 2 {
+			*now = to
+			mu.Unlock()
+			return
+		}
+		mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("clock never read the time")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// A consumer that falls behind by a few grains, as a sync loop does on a
+// tick that takes several periods, still gets every grain's tick, in
+// order: each tick carries its grain's audio, so a dropped tick is a gap
+// in the program audio.
+func TestRealtimeDeliversTicksAConsumerFellBehindOn(t *testing.T) {
+	r := Rate{Num: 10, Den: 1}
+	k := uint64(17_980_000_000)
+	period := IndexToTimestamp(r, k+1) - IndexToTimestamp(r, k)
+	var mu sync.Mutex
+	reads := 0
+	now := IndexToTimestamp(r, k) + period/10 // the first tick is grain k+1
+	scriptedTAI(t, &mu, &now, &reads)
+	c := NewReferenceClock(10, 1, 48000, PTSBase, true)
+	t.Cleanup(c.Stop)
+	c.Start()
+	// The consumer is busy until three grains later.
+	advanceAfterReads(t, &mu, &now, &reads, IndexToTimestamp(r, k+4)+period/10)
+
+	for want := k + 1; want <= k+4; want++ {
+		select {
+		case tk := <-c.Ticks():
+			if tk.Index != want {
+				t.Fatalf("tick for grain k+%d, want k+%d (%d dropped)", tk.Index-k, want-k, c.DroppedTicks())
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("no tick for grain k+%d", want-k)
+		}
+	}
+	if d := c.DroppedTicks(); d != 0 {
+		t.Fatalf("%d ticks dropped for a consumer %d grains behind", d, 3)
+	}
+}
+
+// A consumer further behind than the catch-up bound (0.5 s) resumes at the
+// current grain: the ticks in between are dropped and counted.
+func TestRealtimeResumesAtTheClockPastTheCatchUpBound(t *testing.T) {
+	r := Rate{Num: 10, Den: 1}
+	k := uint64(17_980_000_000)
+	period := IndexToTimestamp(r, k+1) - IndexToTimestamp(r, k)
+	const behind = 8 // 0.8 s at 10/1
+	var mu sync.Mutex
+	reads := 0
+	now := IndexToTimestamp(r, k) + period/10
+	scriptedTAI(t, &mu, &now, &reads)
+	c := NewReferenceClock(10, 1, 48000, PTSBase, true)
+	t.Cleanup(c.Stop)
+	c.Start()
+	advanceAfterReads(t, &mu, &now, &reads, IndexToTimestamp(r, k+1+behind)+period/10)
+
+	select {
+	case tk := <-c.Ticks():
+		if tk.Index != k+1+behind || c.DroppedTicks() != behind {
+			t.Fatalf("first tick grain k+%d with %d dropped, want k+%d with %d",
+				tk.Index-k, c.DroppedTicks(), 1+behind, behind)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no tick")
+	}
+}
