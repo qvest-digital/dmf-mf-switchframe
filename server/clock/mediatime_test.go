@@ -232,6 +232,28 @@ func TestTrackingAnchorFollowsAFastSender(t *testing.T) {
 	}
 }
 
+// A source whose sender clock runs slow arrives later with every frame.
+// The anchor raises its offset with each one, so every frame is placed at
+// its arrival: never before it, and never held behind it, however long the
+// drift runs.
+func TestTrackingAnchorFollowsASlowSender(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	var a TrackingAnchor
+	const ppm = 1000
+	src := int64(1_000_000)
+	for i := 0; i < 360*50; i++ { // 6 minutes of 20 ms frames
+		now += 20_000_000
+		src += 1800 - 1800*ppm/1_000_000
+		if ahead := a.PTS(src) - PTS(now); ahead != 0 {
+			t.Fatalf("frame %d placed %d ticks off its arrival", i, ahead)
+		}
+	}
+	if a.Moves() != 0 {
+		t.Fatalf("%d moves for a source that drifted 0.36 s and never jumped", a.Moves())
+	}
+}
+
 // scriptedTAI makes TAINow return *now, guarded by mu, from after the
 // epoch is set, and counts the reads in *reads.
 func scriptedTAI(t *testing.T, mu *sync.Mutex, now *int64, reads *int) {
