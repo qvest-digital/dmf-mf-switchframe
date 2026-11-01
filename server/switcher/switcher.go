@@ -3020,6 +3020,12 @@ func (s *Switcher) noteRawVideo(ss *sourceState, sourceKey string, pf *Processin
 	}
 }
 
+// HasSource reports whether key is a registered source.
+func (s *Switcher) HasSource(key string) bool {
+	_, ok := (*s.sourcesAtomic.Load())[key]
+	return ok
+}
+
 // UnregisterSource removes a source from the switcher and detaches its
 // viewer from the source Relay. If the removed source was on program or
 // preview, those fields are cleared.

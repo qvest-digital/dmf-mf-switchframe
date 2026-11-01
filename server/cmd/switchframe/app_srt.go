@@ -258,8 +258,8 @@ func failSRTSourceStart(src *srt.Source, key string) {
 //
 // Follows the same fan-out pattern as initMXL (app.go) and startMXLDemo (app_mxl_demo.go):
 //   - Clean up existing source if reconnecting (same streamID)
-//   - Register source with switcher (IngestRawVideo path, no relay viewer)
-//   - Register audio channel with mixer (IngestPCM path)
+//   - Keep a source already registered (bindSRTSource), else register it
+//     with the switcher (IngestRawVideo path) and the mixer (IngestPCM path)
 //   - Create browser relay for MoQ subscribers
 //   - Wire OnRawVideo -> ProcessingFrame -> IngestRawVideo + encode -> relay.BroadcastVideo
 //   - Wire OnRawAudio -> IngestPCM + encode -> relay.BroadcastAudio
@@ -692,11 +692,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			close(replayGPUCh)
 		}
 
-		var gpuSources gpuSourceRemover
-		if gs != nil && gs.sourceManager != nil {
-			gpuSources = gs.sourceManager
-		}
-		a.releaseSRTConnection(sourceKey, cfg.Mode, gpuSources)
+		a.releaseSRTConnection(sourceKey, cfg.Mode)
 
 		// Don't unregister from switcher -- leave as "no_signal" for reconnect.
 		// The health monitor will mark it stale/no_signal automatically.
@@ -727,31 +723,32 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	return src
 }
 
-// bindSRTSource registers key with the switcher and the mixer for a new
+// bindSRTSource makes key a source of the switcher and the mixer for a new
 // connection and returns the anchor that places the connection's
-// timestamps on the engine timeline.
+// timestamps on the engine timeline. A key already registered, by an
+// earlier connection or as a pre-registered caller, stays registered: a
+// reconnect is not a removal. The source keeps its program and preview
+// selection, its delay and position, its last frame, which the program
+// holds until the new connection's first, and its GPU entry. What belongs
+// to the connection starts afresh: the anchor, whose placement the new
+// timestamps would otherwise inherit, and the audio the mixer holds.
 func (a *App) bindSRTSource(key string) *clock.TrackingAnchor {
-	// Unregister old source from switcher (safe even if not registered).
-	a.sw.UnregisterSource(key)
-	a.mixer.RemoveChannel(key)
-
-	// Register with switcher and mixer.
-	a.sw.RegisterSRTSource(key)
-	a.mixer.AddChannel(key)
-	_ = a.mixer.SetAFV(key, true)
-	return sourceAnchor(key)
-}
-
-// gpuSourceRemover is the part of the GPU source manager a stopped SRT
-// connection's cleanup reaches.
-type gpuSourceRemover interface {
-	RemoveSource(sourceKey string)
+	if !a.sw.HasSource(key) {
+		a.sw.RegisterSRTSource(key)
+	}
+	if !a.mixer.ResetChannelInput(key) {
+		a.mixer.AddChannel(key)
+		_ = a.mixer.SetAFV(key, true)
+	}
+	return &clock.TrackingAnchor{}
 }
 
 // releaseSRTConnection releases what a stopped SRT connection held: its
-// entry in the active sources, its listener slot, its replay viewer and its
-// GPU source entry.
-func (a *App) releaseSRTConnection(sourceKey string, mode string, gpuSources gpuSourceRemover) {
+// entry in the active sources, its listener slot and its replay viewer.
+// The source stays registered, shown as no signal, with its GPU entry:
+// the program holds its last frame, which on the GPU path is that entry's,
+// until the source is removed or a new connection replaces the frame.
+func (a *App) releaseSRTConnection(sourceKey string, mode string) {
 	// Remove from active sources map.
 	a.srtSourcesMu.Lock()
 	delete(a.srtSources, sourceKey)
@@ -766,14 +763,6 @@ func (a *App) releaseSRTConnection(sourceKey string, mode string, gpuSources gpu
 	// Remove replay viewer from the source relay.
 	if a.replayMgr != nil {
 		a.replayMgr.RemoveSource(sourceKey)
-	}
-
-	// Remove from GPU source manager (releases GPU frames and preview
-	// encoder). Use the wire-time snapshot: the registration was made on
-	// that manager, and after a format-change rebuild the current manager
-	// has no entry for this source.
-	if gpuSources != nil {
-		gpuSources.RemoveSource(sourceKey)
 	}
 }
 

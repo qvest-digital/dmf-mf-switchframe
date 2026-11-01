@@ -156,7 +156,7 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 	close(c1.video)
 	close(c1.audio)
 	c1.done.Wait()
-	a.releaseSRTConnection(key, srt.ModeListener, gpuSources)
+	a.releaseSRTConnection(key, srt.ModeListener)
 	for end := time.Now().Add(300 * time.Millisecond); time.Now().Before(end); time.Sleep(period) {
 		read()
 	}
