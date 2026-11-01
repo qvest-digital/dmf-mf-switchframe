@@ -2124,6 +2124,7 @@ func (a *App) closeSubsystems() {
 
 	// SRT cleanup: stop all active sources first, then the listener.
 	a.stopSRTSources()
+	a.cancelSRTReleases()
 	if a.srtListener != nil {
 		_ = a.srtListener.Close()
 	}

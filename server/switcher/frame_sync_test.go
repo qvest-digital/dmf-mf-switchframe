@@ -77,6 +77,37 @@ func TestFrameSync_PTSStepBackFlushesRing(t *testing.T) {
 	got.ReleaseYUV()
 }
 
+// A source whose anchor lowers its offset steps back by less than its
+// buffer: the frames placed at or after the new one came before it and
+// are dropped, the ones placed before it stay due before it. Dropping
+// them all would leave no frame due until the new one is.
+func TestFrameSync_SmallPTSStepBackKeepsTheFramesBeforeIt(t *testing.T) {
+	pool := NewFramePool(6, 4, 4, ColorYUV420_8bit)
+	fs := NewFrameSynchronizer()
+	fs.AddSource("cam1")
+	f1, f2, f3, f4 := poolFrame(pool, 1800), poolFrame(pool, 3600), poolFrame(pool, 5400), poolFrame(pool, 7200)
+	for _, f := range []*ProcessingFrame{f1, f2, f3, f4} {
+		fs.IngestRawVideo("cam1", f)
+	}
+	stepped := poolFrame(pool, 4500)
+	fs.IngestRawVideo("cam1", stepped)
+
+	require.Nil(t, f3.Data, "frame placed after the stepped-back one kept")
+	require.Nil(t, f4.Data, "frame placed after the stepped-back one kept")
+	require.Equal(t, 3, fs.Buffered("cam1"))
+	require.Equal(t, int64(1), fs.source("cam1").reordered.Load())
+
+	ss := fs.source("cam1")
+	ss.mu.Lock()
+	got := ss.popAt(3600)
+	next := ss.popAt(4500)
+	ss.mu.Unlock()
+	require.Same(t, f2, got, "frame due before the stepped-back one not shown")
+	require.Same(t, stepped, next)
+	got.ReleaseYUV()
+	next.ReleaseYUV()
+}
+
 // popAt returns the newest frame at or before the limit, releases the
 // older ones and keeps the newer ones for later ticks.
 func TestFrameSync_PopAtReleasesOlderKeepsNewer(t *testing.T) {
