@@ -315,5 +315,5 @@ func NewGPUFrameFromDevPtr(devPtr uintptr, width, height, pitch int, pts int64, 
 	return f
 }
 
-// RawSinkFunc is a callback for raw YUV420p frames.
-type RawSinkFunc func(yuv []byte, width, height int)
+// RawSinkFunc is a callback for raw YUV420p frames and their PTS.
+type RawSinkFunc func(yuv []byte, width, height int, pts int64)

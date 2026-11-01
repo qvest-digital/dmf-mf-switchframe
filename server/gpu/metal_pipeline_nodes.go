@@ -205,7 +205,7 @@ func (n *gpuRawSinkNode) ProcessGPU(frame *GPUFrame) error {
 	if err := GPUDownloadDispatch(n.ctx, frame, buf, n.width, n.height); err != nil {
 		return err
 	}
-	(*fn)(buf, n.width, n.height)
+	(*fn)(buf, n.width, n.height, frame.PTS)
 	return nil
 }
 

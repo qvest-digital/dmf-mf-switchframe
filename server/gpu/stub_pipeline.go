@@ -65,8 +65,8 @@ type ThumbnailStore interface {
 // SetThumbnailStore is a no-op on non-GPU builds.
 func (p *GPUPipeline) SetThumbnailStore(store ThumbnailStore) {}
 
-// RawSinkFunc is a callback for raw YUV420p frames.
-type RawSinkFunc func(yuv []byte, width, height int)
+// RawSinkFunc is a callback for raw YUV420p frames and their PTS.
+type RawSinkFunc func(yuv []byte, width, height int, pts int64)
 
 // NewGPURawSinkNode returns nil on non-GPU builds.
 func NewGPURawSinkNode(ctx *Context, sink *atomic.Pointer[RawSinkFunc]) GPUPipelineNode {

@@ -85,7 +85,7 @@ func TestGPUPipelineWithRawSink(t *testing.T) {
 	// Raw sink that captures downloaded frames
 	var capturedYUV []byte
 	var capturedW, capturedH int
-	sinkFn := RawSinkFunc(func(yuv []byte, width, height int) {
+	sinkFn := RawSinkFunc(func(yuv []byte, width, height int, _ int64) {
 		capturedYUV = make([]byte, len(yuv))
 		copy(capturedYUV, yuv)
 		capturedW = width
