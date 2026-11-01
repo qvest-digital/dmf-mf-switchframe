@@ -213,3 +213,43 @@ func TestRecentFramesHoldTheFrameADelayedSourceShows(t *testing.T) {
 		}
 	}
 }
+
+// A frame without pixels of its own that is no longer kept is stood in for
+// by the kept frame nearest to it: the newest before it, else the oldest.
+func TestRecentFramesNearStandsInForAFrameNoLongerKept(t *testing.T) {
+	var store recentFrames[*countedFrame]
+	frames := map[int64]*countedFrame{}
+	for _, pts := range []int64{3000, 6000, 9000, 12000, 15000} {
+		f := &countedFrame{}
+		frames[pts] = f
+		for _, e := range store.push(f, pts) {
+			e.Release()
+		}
+	}
+	for _, c := range []struct{ want, got int64 }{
+		{6000, 6000},   // kept
+		{10000, 9000},  // between two kept frames
+		{20000, 15000}, // after the newest
+		{3000, 6000},   // evicted, older than every kept frame
+	} {
+		f, ok := store.near(c.want)
+		if !ok || f != frames[c.got] {
+			t.Fatalf("near(%d) is not the frame kept under %d", c.want, c.got)
+		}
+		f.Release()
+	}
+	if _, ok := store.at(3000); ok {
+		t.Fatal("the oldest frame is still kept; the case does not test eviction")
+	}
+	for _, f := range store.drain() {
+		f.Release()
+	}
+	if _, ok := store.near(9000); ok {
+		t.Fatal("an empty store stands in a frame")
+	}
+	for pts, f := range frames {
+		if f.refs != 0 {
+			t.Fatalf("frame %d holds %d references", pts, f.refs)
+		}
+	}
+}
