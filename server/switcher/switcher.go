@@ -1144,15 +1144,29 @@ type gpuSourceMgrHolder struct {
 // handleRawVideoFrame routes YUV through IngestYUV instead of CPU fill paths
 // (keyBridge.IngestFillYUV, dveCompositor.IngestSourceFrame). Also sets
 // gpuSourceActive so sourceDecoder skips redundant CPU ST map correction.
-// Pass nil to disable.
+// A manager that keeps frames for a source delay takes the delays already
+// set. Pass nil to disable.
 func (s *Switcher) SetGPUSourceManager(mgr GPUSourceManagerIface) {
 	if mgr != nil {
+		if d, ok := mgr.(sourceDelayGPU); ok {
+			for key := range *s.sourcesAtomic.Load() {
+				if ms := s.GetSourceDelay(key); ms > 0 {
+					d.SetSourceDelay(key, ms)
+				}
+			}
+		}
 		s.gpuSourceMgr.Store(&gpuSourceMgrHolder{mgr: mgr})
 		s.gpuSourceActive.Store(true)
 	} else {
 		s.gpuSourceMgr.Store(nil)
 		s.gpuSourceActive.Store(false)
 	}
+}
+
+// sourceDelayGPU is a GPU source manager whose recent frames keep a
+// source's frames for its source delay (gpu.GPUSourceManager).
+type sourceDelayGPU interface {
+	SetSourceDelay(sourceKey string, delayMs int)
 }
 
 // SetOnFormatChange registers a callback that fires after SetPipelineFormat
@@ -3284,6 +3298,11 @@ func (s *Switcher) SetSourceDelay(sourceKey string, delayMs int) error {
 	s.configMu.Unlock()
 	if m != nil {
 		m.SetSourceDelay(sourceKey, delayMs)
+	}
+	if h := s.gpuSourceMgr.Load(); h != nil {
+		if d, ok := h.mgr.(sourceDelayGPU); ok {
+			d.SetSourceDelay(sourceKey, delayMs)
+		}
 	}
 
 	s.log.Info("source delay set", "source_key", sourceKey, "delay_ms", delayMs)

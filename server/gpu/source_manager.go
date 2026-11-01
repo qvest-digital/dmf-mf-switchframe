@@ -29,6 +29,7 @@ type GPUSourceManager struct {
 
 	mu               sync.RWMutex
 	sources          map[string]*gpuSourceEntry
+	delays           map[string]int64         // SetSourceDelay in 90 kHz ticks, kept across RegisterSource
 	segEngine        Segmenter                // nil when AI segmentation is not configured
 	sourceColorGrade SourceColorGradeProvider // nil when per-source color grading is not configured
 }
@@ -167,6 +168,7 @@ func NewGPUSourceManager(ctx *Context, pool *FramePool, stmaps SourceSTMapProvid
 		pool:    pool,
 		stmaps:  stmaps,
 		sources: make(map[string]*gpuSourceEntry),
+		delays:  make(map[string]int64),
 	}
 }
 
@@ -230,6 +232,7 @@ func (m *GPUSourceManager) RegisterSource(sourceKey string, w, h int, preview *P
 	// duration of the join + encoder Close, and would deadlock if the preview
 	// callback ever re-entered the source manager. Mirror RemoveSource.
 	m.mu.Lock()
+	entry.recent.delay = m.delays[sourceKey]
 	old, hadOld := m.sources[sourceKey]
 	m.sources[sourceKey] = entry
 	m.mu.Unlock()
@@ -803,6 +806,7 @@ func (m *GPUSourceManager) autoRegister(sourceKey string, w, h int) *gpuSourceEn
 		entry.stmapTmp = tmpFrame
 	}
 
+	entry.recent.delay = m.delays[sourceKey]
 	m.sources[sourceKey] = entry
 	m.mu.Unlock()
 
@@ -901,6 +905,28 @@ func (m *GPUSourceManager) GetFrameNear(sourceKey string, pts int64) *GPUFrame {
 	defer entry.curMu.Unlock()
 	f, _ := entry.recent.near(pts)
 	return f
+}
+
+// SetSourceDelay records the source's delay in milliseconds: ticks read
+// the source that much further behind, and its recent frames keep the
+// frames that arrive in the delay. The delay is kept for a source
+// registered later.
+func (m *GPUSourceManager) SetSourceDelay(sourceKey string, delayMs int) {
+	ticks := int64(delayMs) * 90
+	m.mu.Lock()
+	if ticks > 0 {
+		m.delays[sourceKey] = ticks
+	} else {
+		delete(m.delays, sourceKey)
+	}
+	entry := m.sources[sourceKey]
+	m.mu.Unlock()
+	if entry == nil {
+		return
+	}
+	entry.curMu.Lock()
+	entry.recent.delay = ticks
+	entry.curMu.Unlock()
 }
 
 // KeepCurrentAs keeps the source's current frame among its recent frames

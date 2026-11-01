@@ -19,6 +19,10 @@ type refCounted interface {
 type recentFrames[F refCounted] struct {
 	frames []recentFrame[F]
 	hold   clock.SourceHold
+	// delay is the source's delay (SetSourceDelay) in 90 kHz ticks: ticks
+	// read the source that much further behind, so its frames wait that
+	// much longer.
+	delay int64
 }
 
 type recentFrame[F refCounted] struct {
@@ -28,7 +32,7 @@ type recentFrame[F refCounted] struct {
 
 // recentFramesDepth is how many frames a source's store keeps for a frame
 // due on arrival: the reader delay plus a frame of slack. The source's hold
-// adds the frames it holds back.
+// and its delay add the frames each holds back.
 const recentFramesDepth = 4
 
 // push keeps f under pts, taking a reference of its own, and returns the
@@ -37,7 +41,11 @@ const recentFramesDepth = 4
 func (r *recentFrames[F]) push(f F, pts int64) (evicted []F) {
 	f.Ref()
 	r.frames = append(r.frames, recentFrame[F]{f: f, pts: pts})
-	if n := len(r.frames) - recentFramesDepth - r.hold.Frames(pts); n > 0 {
+	depth := recentFramesDepth + r.hold.Frames(pts)
+	if p := r.hold.Period(); p > 0 {
+		depth += int((r.delay + p - 1) / p)
+	}
+	if n := len(r.frames) - depth; n > 0 {
 		for _, e := range r.frames[:n] {
 			evicted = append(evicted, e.f)
 		}
