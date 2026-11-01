@@ -171,3 +171,58 @@ func (a *Anchor) Moves() int64 {
 	defer a.mu.Unlock()
 	return a.moves
 }
+
+// TrackingAnchor maps the own 90 kHz timeline of a source whose clock is
+// not locked to the engine's, such as an SRT stream or a playout channel,
+// onto the engine timeline. A timestamp is placed no earlier than it
+// arrives: the offset is the largest lateness (arrival less source
+// timestamp) seen over the current and the previous TrackingWindow. A
+// source whose essences arrive in bursts, as an MPEG-TS stream's audio does
+// in PES packets of several frames, is placed at its latest arrival, so it
+// is on hand at every read; a sender clock that drifts is followed in steps
+// of the lateness change over a window; video and audio of the source share
+// the offset and keep their own relation. A jump of more than MaxAnchorSkew,
+// as on a source restart, places the source again.
+type TrackingAnchor struct {
+	mu        sync.Mutex
+	set       bool
+	offset    int64
+	cur, prev int64 // largest lateness in the current and previous window
+	windowEnd int64 // engine PTS at which the current window ends
+	moves     int64
+}
+
+// TrackingWindow is how long a TrackingAnchor remembers a lateness.
+const TrackingWindow = 2 * 90000
+
+// PTS maps the source timestamp src to the engine timeline.
+func (a *TrackingAnchor) PTS(src int64) int64 {
+	now := NowPTS()
+	late := now - src
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch {
+	case !a.set || late-a.offset > MaxAnchorSkew || a.offset-late > MaxAnchorSkew:
+		if a.set {
+			a.moves++
+		}
+		a.set = true
+		a.offset, a.cur, a.prev = late, late, late
+		a.windowEnd = now + TrackingWindow
+	case now >= a.windowEnd:
+		a.prev, a.cur = a.cur, late
+		a.offset = max(a.prev, a.cur)
+		a.windowEnd = now + TrackingWindow
+	default:
+		a.cur = max(a.cur, late)
+		a.offset = max(a.offset, late)
+	}
+	return src + a.offset
+}
+
+// Moves returns how often the source was placed again after a jump.
+func (a *TrackingAnchor) Moves() int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.moves
+}

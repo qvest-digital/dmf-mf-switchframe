@@ -120,7 +120,7 @@ func (a *App) initPlayout() error {
 	mgr.OnChannelLifecycle(
 		// onStart: register playout channel as a raw YUV switcher source + mixer channel.
 		func(channelID int, key string) {
-			a.sw.RegisterReplaySource(key)
+			a.sw.RegisterTimedReplaySource(key)
 			a.mixer.AddChannel(key)
 			_ = a.mixer.SetAFV(key, true)
 			a.mixer.OnProgramChange(a.sw.ProgramSource())
@@ -262,6 +262,9 @@ func (a *App) initPlayout() error {
 			outYUV, outW, outH = scaled, curPF.Width, curPF.Height
 		}
 
+		// The channel's continuous output PTS, placed on the timeline by the
+		// anchor its audio shares.
+		pts = playoutAnchor(key).PTS(pts)
 		frame := &switcher.ProcessingFrame{
 			Data:       outYUV,
 			Width:      outW,
@@ -282,7 +285,12 @@ func (a *App) initPlayout() error {
 			SampleRate: sampleRate,
 			Channels:   channels,
 		}
-		a.mixer.IngestFrame(key, frame)
+		// The channel hands over a video frame's AAC frames together, on its
+		// frame ticker: placed by their PTS rather than their arrival, they
+		// stay on the read point.
+		timed := *frame
+		timed.PTS = playoutAnchor(key).PTS(pts)
+		a.mixer.IngestTimedFrame(key, &timed)
 		// The relay carries the audio too, for the tile's meter.
 		if idx := playoutChannelIDFromKey(key) - 1; idx >= 0 && idx < playout.MaxChannels && a.playoutRelays[idx] != nil {
 			a.playoutRelays[idx].BroadcastAudio(frame)

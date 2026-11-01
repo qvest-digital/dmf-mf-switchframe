@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/zsiec/switchframe/server/clock"
 	"log/slog"
 	"strings"
 	"sync"
@@ -638,7 +637,10 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 				}
 			}
 
-			srcMgr.IngestGPUFrame(sourceKey, frame, pts)
+			// The frame is cached and synchronized under one engine-timeline
+			// PTS: the tick that shows it looks the cached frame up by it.
+			mediaPTS := sourceAnchor(sourceKey).PTS(pts)
+			srcMgr.IngestGPUFrame(sourceKey, frame, mediaPTS)
 
 			// Notify the switcher so health monitoring and frame sync see this
 			// source as alive. The ProcessingFrame has nil YUV — IngestYUV
@@ -647,8 +649,8 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			a.sw.IngestRawVideo(sourceKey, &switcher.ProcessingFrame{
 				Width:  w,
 				Height: h,
-				PTS:    pts,
-				DTS:    pts,
+				PTS:    mediaPTS,
+				DTS:    mediaPTS,
 			})
 
 			// Fan out to GPU replay encode (NVENC from VRAM).
@@ -751,6 +753,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 func (a *App) startSRTPipelineIngest(key string, pipelineCh <-chan srtVideoJob, framePool *switcher.FramePool) {
 	go func() {
 		for job := range pipelineCh {
+			job.pts = sourceAnchor(key).PTS(job.pts)
 			a.sw.IngestRawVideo(key, newSRTPipelineFrame(job, framePool))
 		}
 	}()
@@ -1144,11 +1147,11 @@ func (a *App) startSRTAudioRelay(rc *srtRelayContext) {
 	)
 	go func() {
 		for job := range rc.audioCh {
-			// An SRT stream has no media clock: its audio is placed on the
-			// timeline at its arrival, as its video is (Switcher.IngestRawVideo).
-			// A sender clock that drifts is moved back onto the read point by
-			// the mixer once it is a frame period off.
-			a.mixer.IngestPCM(rc.key, job.pcm, clock.ArrivalPTS(len(job.pcm)/max(job.channels, 1), job.sampleRate), job.channels)
+			// The stream's own PTS, placed on the timeline by the anchor its
+			// video shares, keep the audio continuous however the decoder
+			// bunches it. A sender clock that drifts is moved back onto the
+			// read point by the mixer once it is a frame period off.
+			a.mixer.IngestPCM(rc.key, job.pcm, sourceAnchor(rc.key).PTS(job.pts), job.channels)
 
 			// Encode for relay.
 			if rc.relay == nil {
