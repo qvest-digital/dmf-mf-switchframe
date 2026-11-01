@@ -20,6 +20,15 @@ const sourceLossTimeout = 5 * time.Second
 // guaranteeing lockstep A/V alignment. This replaces both the FrameSynchronizer's
 // timer-driven tick loop and the mixer's outputTicker.
 //
+// Overload: the clock hands over every grain's tick in order, also after a
+// tick that took longer than a period, up to clock.MaxTickCatchUp (25
+// grains at 50 fps). Every tick's audio is produced. A tick's video is shed
+// only when its grain has already ended as the loop takes it, and the tick
+// gets a repeat instead (repeatLastVideoFrame): the last keyframe again
+// under the tick's PTS, or nothing after a predicted frame, where decoders
+// hold the picture and the output has a gap of that tick. A tick that runs
+// long but leaves the next one in time costs no frame.
+//
 // The loop exits when the reference clock's Ticks channel is closed (via Stop).
 func (s *Switcher) synchronousProcessingLoop(rc *clock.ReferenceClock) {
 	runtime.LockOSThread()
