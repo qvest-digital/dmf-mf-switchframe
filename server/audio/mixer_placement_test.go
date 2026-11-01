@@ -81,3 +81,67 @@ func TestMixer_RingThatRanDryIsReadOnItsStampsAgain(t *testing.T) {
 			"period %d after the source ran dry reads %v, period %d's audio", k, out[0], k)
 	}
 }
+
+// A source that reconnects under the same key is read on its new
+// connection's stamps from the first read on: what the old connection left
+// in the ring is never played, and the new audio is placed exactly rather
+// than by a placement kept from the old stamps, which would read it up to a
+// period off for as long as it plays, or realign it when the old audio
+// ahead of it pushes it a period out. The operator's fader, AFV, delays
+// and on-air state are the source's, not the connection's, and stay.
+func TestMixer_ResetChannelInputPlacesTheNewConnectionOnItsStamps(t *testing.T) {
+	const n = 960
+	const delay = (10 + 5) * 48 // audio delay plus source delay, in samples
+	m := newProduceTestMixer(t)
+	m.AddChannel("src")
+	m.SetActive("src", true)
+	require.NoError(t, m.SetLevel("src", -6))
+	require.NoError(t, m.SetAFV("src", true))
+	require.NoError(t, m.SetAudioDelay("src", 10))
+	m.SetSourceDelay("src", 5)
+
+	period := func(v float32) []float32 {
+		pcm := make([]float32, n*2)
+		for i := range pcm {
+			pcm[i] = v
+		}
+		return pcm
+	}
+	tl := newTimeline()
+	tl.read = tl.base + delay
+	// The old connection: four periods, two of them read, which places
+	// the ring and leaves two periods of its audio buffered.
+	for k := 0; k < 4; k++ {
+		tl.push(m, "src", period(0.1), k*n)
+	}
+	tl.produce(m, n)
+	gain := tl.produce(m, n)[0] / 0.1
+	require.Greater(t, gain, float32(0.1), "the old connection's audio never reached the read")
+
+	require.True(t, m.ResetChannelInput("src"))
+	require.False(t, m.ResetChannelInput("absent"))
+
+	// The new connection's audio starts half a period after the next
+	// read's first sample.
+	for k := 0; k < 4; k++ {
+		tl.push(m, "src", period(0.3), 2*n+n/2+k*n)
+	}
+	for r := 0; r < 2; r++ {
+		out := tl.produce(m, n)
+		for j := 0; j < n; j++ {
+			want := 0.3 * gain
+			if r == 0 && j < n/2 {
+				want = 0
+			}
+			require.InDelta(t, want, out[2*j], 0.001,
+				"read %d sample %d after the reset (old connection's audio reads %v)", r, j, 0.1*gain)
+		}
+	}
+	require.Zero(t, m.ChannelRealigns()["src"], "the new connection's audio was realigned")
+
+	st := m.ChannelStates()["src"]
+	require.Equal(t, -6.0, st.Level)
+	require.True(t, st.AFV)
+	require.Equal(t, 10, st.AudioDelayMs)
+	require.True(t, m.IsChannelActive("src"))
+}
