@@ -5,11 +5,8 @@ import "slices"
 // MaxSourceHold bounds the hold a store sizes itself for (SourceHold), in
 // 90 kHz ticks (500 ms). A source placed further ahead of its arrival is
 // not kept whole: a tick that wants one of its oldest frames finds it gone.
-// A TrackingAnchor's offset has no such bound. A source placed more than
-// about 600 ms ahead of its arrival outruns both this hold and a mixer
-// channel's 640 ms ring: a tick of a source without pixels on the CPU runs
-// from the nearest frame its GPU store still keeps, and the audio the ring
-// discarded plays as a gap.
+// A TrackingAnchor places no timestamp further ahead of its arrival than
+// this, which a mixer channel's 640 ms ring holds as well.
 const MaxSourceHold = 45000
 
 // minFramePeriod is the shortest frame period SourceHold counts a hold in

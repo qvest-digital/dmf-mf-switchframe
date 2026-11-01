@@ -183,6 +183,13 @@ func (a *Anchor) Moves() int64 {
 // of the lateness change over a window; video and audio of the source share
 // the offset and keep their own relation. A jump of more than MaxAnchorSkew,
 // as on a source restart, places the source again.
+//
+// No timestamp is placed more than MaxSourceHold after its own arrival:
+// the stores that hold a source's frames and audio until they are due
+// keep no more than that, so a frame placed further ahead is dropped
+// before it is due. A burst whose first frame is later than that ahead
+// of the rest, as the backlog a connection's socket built before it was
+// first read, raises the offset only as far as each later frame allows.
 type TrackingAnchor struct {
 	mu        sync.Mutex
 	set       bool
@@ -217,6 +224,8 @@ func (a *TrackingAnchor) PTS(src int64) int64 {
 		a.cur = max(a.cur, late)
 		a.offset = max(a.offset, late)
 	}
+	ceil := late + MaxSourceHold
+	a.offset, a.cur, a.prev = min(a.offset, ceil), min(a.cur, ceil), min(a.prev, ceil)
 	return src + a.offset
 }
 
