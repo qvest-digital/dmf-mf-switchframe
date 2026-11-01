@@ -234,6 +234,14 @@ func (m *GPUSourceManager) RegisterSource(sourceKey string, w, h int, preview *P
 	m.mu.Lock()
 	entry.recent.delay = m.delays[sourceKey]
 	old, hadOld := m.sources[sourceKey]
+	if hadOld {
+		// A source registered again, as an SRT source is by a reconnect,
+		// keeps the frames a tick may still show until its new ones come.
+		old.curMu.Lock()
+		entry.current.Store(old.current.Swap(nil))
+		entry.recent.adopt(&old.recent)
+		old.curMu.Unlock()
+	}
 	m.sources[sourceKey] = entry
 	m.mu.Unlock()
 

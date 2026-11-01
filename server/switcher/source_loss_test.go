@@ -74,3 +74,37 @@ func TestCutDoesNotInheritAnotherSourceLossTimer(t *testing.T) {
 		t.Fatalf("B 2 s without a frame shows luma %d, want its last frame's 200: it took over A's loss timer", y)
 	}
 }
+
+// Removing the program source leaves the program black, not stopped: the
+// tick is the program clock, so every tick still runs a frame through the
+// pipeline and with it every output.
+func TestRemovedProgramSourceRunsBlackEveryTick(t *testing.T) {
+	s := tickSwitcher(t)
+	node := recordPipeline(t, s)
+	onProgram(t, s, "mxl:cam")
+
+	g := grainNow(s)
+	s.IngestRawVideo("mxl:cam", mxlFrame(s, g, 50))
+	s.processVideoTick(tickAt(s, g+clock.ReaderDelayGrains))
+	if y := node.lastLuma(t); y != 50 {
+		t.Fatalf("program shows luma %d, want the source's 50", y)
+	}
+
+	s.UnregisterSource("mxl:cam")
+	for i := uint64(1); i <= 5; i++ {
+		tick := tickAt(s, g+clock.ReaderDelayGrains+i)
+		node.mu.Lock()
+		before := len(node.pts)
+		node.mu.Unlock()
+		s.processVideoTick(tick)
+		node.mu.Lock()
+		n, pts, y := len(node.pts), node.pts[len(node.pts)-1], node.luma[len(node.luma)-1]
+		node.mu.Unlock()
+		if n != before+1 {
+			t.Fatalf("tick %d after the program source was removed ran %d frames, want 1", i, n-before)
+		}
+		if pts != tick.VideoPTS || y != 16 {
+			t.Fatalf("tick %d ran PTS %d luma %d, want black (16) at the tick's PTS %d", i, pts, y, tick.VideoPTS)
+		}
+	}
+}

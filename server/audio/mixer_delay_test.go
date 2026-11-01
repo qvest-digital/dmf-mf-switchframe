@@ -42,3 +42,21 @@ func TestAudioDelayReadsTheRingThatMuchEarlier(t *testing.T) {
 		}
 	}
 }
+
+// A source delay is kept for the source's key, not for the channel: a
+// source whose channel is removed and added again, as when it is removed
+// and registered again, is still delayed as its video is.
+func TestSourceDelaySurvivesChannelReAdd(t *testing.T) {
+	m := NewMixer(MixerConfig{SampleRate: 48000, Channels: 2})
+	defer func() { _ = m.Close() }()
+	m.AddChannel("srt:cam")
+	m.SetSourceDelay("srt:cam", 200)
+	m.RemoveChannel("srt:cam")
+	m.AddChannel("srt:cam")
+	m.mu.Lock()
+	got := m.channels["srt:cam"].sourceDelayMs
+	m.mu.Unlock()
+	if got != 200 {
+		t.Fatalf("channel source delay after re-adding %d ms, want the source's 200", got)
+	}
+}

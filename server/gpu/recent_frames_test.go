@@ -253,3 +253,33 @@ func TestRecentFramesNearStandsInForAFrameNoLongerKept(t *testing.T) {
 		}
 	}
 }
+
+// A source registered again under its key, as an SRT source is by a
+// reconnect, keeps serving the frame the program holds until its new
+// connection's frames come: the new store takes over the old one's frames
+// with their references, and a pixel-less repeat still finds its frame.
+func TestRecentFramesAdoptKeepsTheHeldFrame(t *testing.T) {
+	var old, renewed recentFrames[*countedFrame]
+	frames := []*countedFrame{{refs: 1}, {refs: 1}, {refs: 1}}
+	for i, f := range frames {
+		old.push(f, int64(1000+i*1800))
+	}
+	renewed.adopt(&old)
+
+	if len(old.frames) != 0 {
+		t.Fatalf("the old store still keeps %d frames", len(old.frames))
+	}
+	f, ok := renewed.near(1000 + 2*1800)
+	if !ok || f != frames[2] {
+		t.Fatal("the held frame is gone after the source was registered again")
+	}
+	f.Release()
+	for i, f := range frames {
+		if f.refs != 2 {
+			t.Fatalf("frame %d has %d references, want its own and the store's (2)", i, f.refs)
+		}
+	}
+	for _, f := range renewed.drain() {
+		f.Release()
+	}
+}
