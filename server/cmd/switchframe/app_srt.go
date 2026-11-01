@@ -1299,8 +1299,10 @@ func (a *App) startSRT(ctx context.Context) {
 	}
 }
 
-// stopSRTSources stops all active SRT sources and cleans up their encoders.
-// Called during graceful shutdown.
+// stopSRTSources stops all active SRT sources and cleans up their
+// encoders, on shutdown and before a GPU rebuild. Each stop ends a
+// connection, whose frames are released as for any other
+// (releaseSRTConnection) unless cancelSRTReleases cancels that.
 func (a *App) stopSRTSources() {
 	a.srtSourcesMu.Lock()
 	sources := make(map[string]*srtSourceState, len(a.srtSources))
@@ -1311,16 +1313,22 @@ func (a *App) stopSRTSources() {
 	a.srtSourcesMu.Unlock()
 
 	for key, state := range sources {
-		slog.Info("stopping SRT source on shutdown", "key", key)
+		slog.Info("stopping SRT source", "key", key)
 		state.source.Stop() // triggers OnStopped → closes channels → goroutines clean up encoders
 	}
+}
 
+// cancelSRTReleases stops the pending releases of gone sources' frames,
+// for shutdown. A GPU rebuild stops the sources but keeps these, those
+// its own stops armed among them: a listener whose caller never comes
+// back would otherwise keep its frames until the process exits.
+func (a *App) cancelSRTReleases() {
 	a.srtSourcesMu.Lock()
+	defer a.srtSourcesMu.Unlock()
 	for key, t := range a.srtGone {
 		t.Stop()
 		delete(a.srtGone, key)
 	}
-	a.srtSourcesMu.Unlock()
 }
 
 // srtManagerAdapter implements control.SRTManager for the API layer.

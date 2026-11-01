@@ -89,7 +89,10 @@ func TestSRTReconnectPlacesTheNewConnectionsAudioAfresh(t *testing.T) {
 	m := audio.NewMixer(audio.MixerConfig{SampleRate: 48000, Channels: 2})
 	t.Cleanup(func() { _ = m.Close() })
 	a := &App{sw: sw, mixer: m, srtSources: map[string]*srtSourceState{}}
-	t.Cleanup(a.stopSRTSources)
+	t.Cleanup(func() {
+		a.stopSRTSources()
+		a.cancelSRTReleases()
+	})
 
 	rate := clock.Rate{Num: 48000, Den: 1}
 	start := now.Load()
