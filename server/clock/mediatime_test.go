@@ -178,3 +178,56 @@ func TestAnchorKeepsSourceDistances(t *testing.T) {
 		t.Fatalf("a jump far from the clock was not placed at arrival (PTS %d, moves %d)", j, a.Moves())
 	}
 }
+
+// A source whose audio arrives in bursts is placed at its latest arrival:
+// every timestamp is placed no earlier than it arrived, and the bursts that
+// follow keep the source's own distances.
+func TestTrackingAnchorPlacesBurstsAtTheirLatestArrival(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	var a TrackingAnchor
+	const frame = 1800 // 20 ms
+	src := int64(1_000_000)
+	var last int64
+	for b := 0; b < 20; b++ {
+		// Nine frames arrive together once the last of them has passed.
+		now += 9 * 20_000_000
+		for k := 0; k < 9; k++ {
+			pts := a.PTS(src)
+			if pts < PTS(now) {
+				t.Fatalf("burst %d frame %d placed %d ticks before it arrived", b, k, PTS(now)-pts)
+			}
+			if b > 0 && pts-last != frame {
+				t.Fatalf("burst %d frame %d steps %d ticks, want the source's %d", b, k, pts-last, frame)
+			}
+			last = pts
+			src += frame
+		}
+	}
+	if a.Moves() != 0 {
+		t.Fatalf("%d moves for a source that never jumped", a.Moves())
+	}
+}
+
+// A source whose sender clock runs fast is followed: its timestamps stay
+// within a window's drift of their arrival rather than running ahead
+// without bound.
+func TestTrackingAnchorFollowsAFastSender(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	var a TrackingAnchor
+	const ppm = 1000
+	src := int64(1_000_000)
+	for i := 0; i < 360*50; i++ { // 6 minutes of 20 ms frames
+		now += 20_000_000
+		src += 1800 + 1800*ppm/1_000_000
+		ahead := a.PTS(src) - PTS(now)
+		if ahead < 0 {
+			t.Fatalf("frame %d placed %d ticks before it arrived", i, -ahead)
+		}
+		// Two windows of drift at 1000 ppm: 4 ms.
+		if ahead > 2*TrackingWindow*ppm/1_000_000+1 {
+			t.Fatalf("frame %d placed %d ticks after it arrived: the anchor does not follow the sender", i, ahead)
+		}
+	}
+}
