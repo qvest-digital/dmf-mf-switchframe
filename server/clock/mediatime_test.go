@@ -347,3 +347,58 @@ func TestRealtimeResumesAtTheClockPastTheCatchUpBound(t *testing.T) {
 		t.Fatal("no tick")
 	}
 }
+
+// A consumer that stalls past the catch-up bound while the clock holds a
+// tick in the channel's buffer and has the next one waiting to be sent
+// resumes at the current grain too: those two ticks are older than the
+// bound by the time it takes one, and are dropped and counted as well.
+func TestRealtimeDropsTheTicksAStalledConsumerLeftWaiting(t *testing.T) {
+	r := Rate{Num: 10, Den: 1}
+	k := uint64(17_980_000_000)
+	period := IndexToTimestamp(r, k+1) - IndexToTimestamp(r, k)
+	var mu sync.Mutex
+	reads := 0
+	now := IndexToTimestamp(r, k) + period/10
+	scriptedTAI(t, &mu, &now, &reads)
+	c := NewReferenceClock(10, 1, 48000, PTSBase, true)
+	t.Cleanup(c.Stop)
+	c.Start()
+	advanceAfterReads(t, &mu, &now, &reads, IndexToTimestamp(r, k+3)+period/10)
+
+	select {
+	case tk := <-c.Ticks():
+		if tk.Index != k+1 {
+			t.Fatalf("first tick grain k+%d, want k+1", tk.Index-k)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no tick")
+	}
+	// The consumer stalls: grain k+2's tick waits in the buffer.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(c.ticks) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the clock never buffered the next tick")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	mu.Lock()
+	now = IndexToTimestamp(r, k+11) + period/10 // 0.8 s later
+	mu.Unlock()
+	// The clock notices the stale ticks within the bound, in wall time.
+	deadline = time.Now().Add(2 * time.Second)
+	for c.DroppedTicks() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case tk := <-c.Ticks():
+		if tk.Index != k+11 {
+			t.Fatalf("after the stall the consumer got grain k+%d with %d dropped, want the current grain k+11",
+				tk.Index-k, c.DroppedTicks())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no tick after the stall")
+	}
+	if d := c.DroppedTicks(); d != 9 {
+		t.Fatalf("%d ticks dropped, want the 9 of grains k+2 to k+10", d)
+	}
+}
