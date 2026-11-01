@@ -146,16 +146,24 @@ func (fs *FrameSynchronizer) SetSourceDelay(sourceKey string, delayMs int, frame
 }
 
 // push inserts pf in PTS order. A frame not after the newest buffered one
-// means the source's timeline stepped back, as when its producer
-// restarted: what was buffered from the old timeline is dropped. A full
-// ring, at its capacity plus the source's hold, drops its oldest frame.
+// means the source's timeline stepped back: its producer restarted, or its
+// TrackingAnchor lowered its offset. The buffered frames placed at or after
+// pf came before it and are dropped, so the source's frames stay in their
+// own order; those placed before it are still shown before it, so a small
+// step costs the frames it skips and not a wait for pf. A full ring, at
+// its capacity plus the source's hold, drops its oldest frame.
 func (ss *syncSource) push(pf *ProcessingFrame) {
 	if n := len(ss.ring); n > 0 && pf.PTS <= ss.ring[n-1].PTS {
 		ss.reordered.Add(1)
-		for _, f := range ss.ring {
+		i := n
+		for i > 0 && ss.ring[i-1].PTS >= pf.PTS {
+			i--
+		}
+		for _, f := range ss.ring[i:] {
 			f.ReleaseYUV()
 		}
-		ss.ring = ss.ring[:0]
+		clear(ss.ring[i:])
+		ss.ring = ss.ring[:i]
 	}
 	limit := ss.capacity
 	if limit == 0 {
