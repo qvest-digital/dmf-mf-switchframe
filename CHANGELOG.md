@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.0.0-rc.41](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.40...mxl-v1.0.0-rc.41) (2026-11-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **output:** write program media time without a lip-sync offset
+* **switcher:** drive program video and audio from one clock
+* **clock:** put program and MXL timestamps on TAI
+
+### refactor
+
+* **output:** write program media time without a lip-sync offset ([84ea7e9](https://github.com/qvest-digital/dmf-mf-switchframe/commit/84ea7e929db76af7c437102bd109ac678e43588a))
+* **switcher:** drive program video and audio from one clock ([cd8be2f](https://github.com/qvest-digital/dmf-mf-switchframe/commit/cd8be2ffef6345d5bafab8e651cff1b924138c82))
+
+
+### Features
+
+* **clock:** put program and MXL timestamps on TAI ([a8d3e67](https://github.com/qvest-digital/dmf-mf-switchframe/commit/a8d3e673074d5db8a6f76bfdcc83126ab882bd19))
+
+
+### Bug Fixes
+
+* **codec:** stamp each encoded packet with the PTS of its own frame ([f9ebfbf](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f9ebfbf7a615386e54aca188a686db398ab1dc45))
+* **mxl:** index program audio by its PTS, not by the clock ([345c9ea](https://github.com/qvest-digital/dmf-mf-switchframe/commit/345c9ea56dbbe2a0d8b852a2f37a92601551847f))
+
 ## [1.0.0-rc.40](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.39...mxl-v1.0.0-rc.40) (2026-10-31)
 
 
