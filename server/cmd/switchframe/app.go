@@ -341,6 +341,7 @@ func (a *App) initInfra() error {
 	// Probe available video codecs at startup (cached for process lifetime).
 	encName, decName := codec.ProbeEncoders()
 	slog.Info("video codec selected", "encoder", encName, "decoder", decName)
+	logX264Threads(a.cfg.X264Threads)
 
 	// Register subsystem metrics on the shared Prometheus registry.
 	a.appMetrics = metrics.NewMetrics(metrics.GetRegistry())
@@ -928,15 +929,7 @@ func (a *App) initSubsystems() error {
 	// appropriate encoder: AVC 8-bit, HEVC 8-bit, or HEVC 10-bit 4:2:2.
 	pipelineColor := a.sw.PipelineFormat().Color
 	pipelineCodec := pipelineColor.Codec
-	var encOpts *codec.EncoderOptions
-	if a.cfg.OutputBitrate != 0 || a.cfg.OutputGOPSecs != 0 || a.cfg.OutputPreset != "" || a.cfg.OutputTimecode {
-		encOpts = &codec.EncoderOptions{
-			Bitrate:  a.cfg.OutputBitrate,
-			GOPSecs:  a.cfg.OutputGOPSecs,
-			Preset:   codec.OutputPreset(a.cfg.OutputPreset),
-			Timecode: a.cfg.OutputTimecode,
-		}
-	}
+	encOpts := programEncoderOpts(a.cfg)
 	a.sw.SetEncoderOpts(encOpts)
 	a.sw.SetPipelineCodecs(encoderFactoryForCodecWithOpts(pipelineCodec, encOpts, pipelineColor.ColorFormat), pipelineCodec)
 	a.sw.SetPipelineVideoInfoCallback(a.videoInfoCallback("pipeline"))
@@ -2131,6 +2124,7 @@ func (a *App) closeSubsystems() {
 
 	// SRT cleanup: stop all active sources first, then the listener.
 	a.stopSRTSources()
+	a.cancelSRTReleases()
 	if a.srtListener != nil {
 		_ = a.srtListener.Close()
 	}

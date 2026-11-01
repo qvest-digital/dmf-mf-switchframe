@@ -161,3 +161,84 @@ func TestSRTSourceGoneReleasesItsFramesAndPreviewEncoder(t *testing.T) {
 			n, releaseAfter)
 	}
 }
+
+// A GPU rebuild stops every SRT source, and each stop arms the release of
+// that source's frames as any ended connection does. A listener whose
+// caller never comes back must still have them released after the
+// freeze; only shutdown cancels the releases.
+func TestSRTSourcesStoppedForAGPURebuildStillReleaseTheirFrames(t *testing.T) {
+	const gone, down = "srt:gone", "srt:down"
+	const releaseAfter = 100 * time.Millisecond
+	saved := srtSourceReleaseAfter
+	srtSourceReleaseAfter = releaseAfter
+	t.Cleanup(func() { srtSourceReleaseAfter = saved })
+
+	sw := switcher.NewTestSwitcher(t, distribution.NewRelay())
+	m := audio.NewMixer(audio.MixerConfig{SampleRate: 48000, Channels: 2})
+	t.Cleanup(func() { _ = m.Close() })
+	sw.SetMixer(m)
+	gpuSources := &gpuRemovals{}
+	sw.SetGPUSourceManager(gpuSources)
+	a := &App{sw: sw, mixer: m, srtSources: map[string]*srtSourceState{}}
+	removed := func(key string) bool {
+		gpuSources.mu.Lock()
+		defer gpuSources.mu.Unlock()
+		return slices.Contains(gpuSources.removed, key)
+	}
+
+	// As rebuildGPUPipelineForFormat does: the connection ends, then the
+	// sources are stopped.
+	a.bindSRTSource(gone)
+	a.releaseSRTConnection(gone, srt.ModeListener)
+	a.stopSRTSources()
+	for end := time.Now().Add(releaseAfter + 2*time.Second); !removed(gone); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatalf("frames of %s not released %v after a rebuild stopped the sources, want after %v",
+				gone, releaseAfter+2*time.Second, releaseAfter)
+		}
+	}
+
+	// Shutdown cancels what is still pending.
+	a.bindSRTSource(down)
+	a.releaseSRTConnection(down, srt.ModeListener)
+	a.stopSRTSources()
+	a.cancelSRTReleases()
+	time.Sleep(3 * releaseAfter)
+	if removed(down) {
+		t.Fatalf("frames of %s released after shutdown cancelled the releases", down)
+	}
+}
+
+// previewOrder is a GPU source manager that records, at each preview
+// stop, whether the source's connection was still in srtSources.
+type previewOrder struct {
+	*gpuRemovals
+	a       *App
+	present []bool
+}
+
+func (p *previewOrder) StopPreview(key string) {
+	p.a.srtSourcesMu.Lock()
+	_, ok := p.a.srtSources[key]
+	p.a.srtSourcesMu.Unlock()
+	p.present = append(p.present, ok)
+}
+
+// An ended connection stops its preview encoder while it is still an
+// active source. A new connection under the key that finds it stops it
+// and waits for its release before opening a preview encoder of its own;
+// stopped after the entry is gone, the old preview stop could close the
+// new connection's encoder instead.
+func TestSRTReleaseStopsThePreviewBeforeTheConnectionIsGone(t *testing.T) {
+	const key = "srt:cam"
+	sw := switcher.NewTestSwitcher(t, distribution.NewRelay())
+	a := &App{sw: sw, srtSources: map[string]*srtSourceState{key: {}}}
+	t.Cleanup(a.cancelSRTReleases)
+	p := &previewOrder{gpuRemovals: &gpuRemovals{}, a: a}
+	sw.SetGPUSourceManager(p)
+
+	a.releaseSRTConnection(key, srt.ModeListener)
+	if !slices.Equal(p.present, []bool{true}) {
+		t.Fatalf("preview stops, each with whether the connection was still active: %v; want one, while active", p.present)
+	}
+}

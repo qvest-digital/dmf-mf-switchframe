@@ -209,6 +209,32 @@ func TestTrackingAnchorPlacesBurstsAtTheirLatestArrival(t *testing.T) {
 	}
 }
 
+// A connection whose first frames are a backlog, decoded faster than real
+// time, arrives each frame less late than the one before. Placed by the
+// first, the frames that follow in real time would sit that backlog ahead
+// of their arrival, longer than any store holds them. No frame is placed
+// more than MaxSourceHold after it arrived, nor before.
+func TestTrackingAnchorPlacesABacklogNoFurtherThanAHoldAhead(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	var a TrackingAnchor
+	const backlog = 1_500_000_000 // under MaxAnchorSkew: no move places it again
+	src := int64(1_000_000)
+	for i := 0; i < 6*50; i++ { // 6 s of 20 ms frames
+		if i >= backlog/20_000_000 {
+			now += 20_000_000 // in real time; the backlog arrives at once
+		}
+		ahead := a.PTS(src) - PTS(now)
+		if ahead < 0 || ahead > MaxSourceHold {
+			t.Fatalf("frame %d placed %d ticks after it arrived, want 0 to %d", i, ahead, MaxSourceHold)
+		}
+		src += 1800
+	}
+	if a.Moves() != 0 {
+		t.Fatalf("%d moves for a backlog under MaxAnchorSkew", a.Moves())
+	}
+}
+
 // A source whose sender clock runs fast is followed: its timestamps stay
 // within a window's drift of their arrival rather than running ahead
 // without bound.
