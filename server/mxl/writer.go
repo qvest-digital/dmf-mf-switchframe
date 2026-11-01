@@ -403,8 +403,12 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 				case f.seq == writtenSeq:
 					return videoIndexFor(now, last, repeats >= stallRepeats)
 				case haveLast && f.index <= last:
+					// A frame arrived, only late: the source is not
+					// stalled, so its next frame is waited for again
+					// rather than taken by a repeat at the grain's start.
 					w.videoIndexDrops.Add(1)
 					writtenSeq = f.seq
+					repeats = 0
 					return 0, false
 				}
 				return f.index, true
