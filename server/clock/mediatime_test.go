@@ -231,3 +231,97 @@ func TestTrackingAnchorFollowsAFastSender(t *testing.T) {
 		}
 	}
 }
+
+// scriptedTAI makes TAINow return *now, guarded by mu, from after the
+// epoch is set, and counts the reads in *reads.
+func scriptedTAI(t *testing.T, mu *sync.Mutex, now *int64, reads *int) {
+	t.Helper()
+	Epoch()
+	SetTAISource(func() int64 {
+		mu.Lock()
+		defer mu.Unlock()
+		*reads++
+		return *now
+	})
+	t.Cleanup(func() { SetTAISource(func() int64 { return time.Now().UnixNano() }) })
+}
+
+// advanceAfterReads sets *now to to once the clock has read the time
+// twice: for its first grain and for the wait until it.
+func advanceAfterReads(t *testing.T, mu *sync.Mutex, now *int64, reads *int, to int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		if *reads >= 2 {
+			*now = to
+			mu.Unlock()
+			return
+		}
+		mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("clock never read the time")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// A consumer that falls behind by a few grains, as a sync loop does on a
+// tick that takes several periods, still gets every grain's tick, in
+// order: each tick carries its grain's audio, so a dropped tick is a gap
+// in the program audio.
+func TestRealtimeDeliversTicksAConsumerFellBehindOn(t *testing.T) {
+	r := Rate{Num: 10, Den: 1}
+	k := uint64(17_980_000_000)
+	period := IndexToTimestamp(r, k+1) - IndexToTimestamp(r, k)
+	var mu sync.Mutex
+	reads := 0
+	now := IndexToTimestamp(r, k) + period/10 // the first tick is grain k+1
+	scriptedTAI(t, &mu, &now, &reads)
+	c := NewReferenceClock(10, 1, 48000, PTSBase, true)
+	t.Cleanup(c.Stop)
+	c.Start()
+	// The consumer is busy until three grains later.
+	advanceAfterReads(t, &mu, &now, &reads, IndexToTimestamp(r, k+4)+period/10)
+
+	for want := k + 1; want <= k+4; want++ {
+		select {
+		case tk := <-c.Ticks():
+			if tk.Index != want {
+				t.Fatalf("tick for grain k+%d, want k+%d (%d dropped)", tk.Index-k, want-k, c.DroppedTicks())
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("no tick for grain k+%d", want-k)
+		}
+	}
+	if d := c.DroppedTicks(); d != 0 {
+		t.Fatalf("%d ticks dropped for a consumer %d grains behind", d, 3)
+	}
+}
+
+// A consumer further behind than the catch-up bound (0.5 s) resumes at the
+// current grain: the ticks in between are dropped and counted.
+func TestRealtimeResumesAtTheClockPastTheCatchUpBound(t *testing.T) {
+	r := Rate{Num: 10, Den: 1}
+	k := uint64(17_980_000_000)
+	period := IndexToTimestamp(r, k+1) - IndexToTimestamp(r, k)
+	const behind = 8 // 0.8 s at 10/1
+	var mu sync.Mutex
+	reads := 0
+	now := IndexToTimestamp(r, k) + period/10
+	scriptedTAI(t, &mu, &now, &reads)
+	c := NewReferenceClock(10, 1, 48000, PTSBase, true)
+	t.Cleanup(c.Stop)
+	c.Start()
+	advanceAfterReads(t, &mu, &now, &reads, IndexToTimestamp(r, k+1+behind)+period/10)
+
+	select {
+	case tk := <-c.Ticks():
+		if tk.Index != k+1+behind || c.DroppedTicks() != behind {
+			t.Fatalf("first tick grain k+%d with %d dropped, want k+%d with %d",
+				tk.Index-k, c.DroppedTicks(), 1+behind, behind)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no tick")
+	}
+}
