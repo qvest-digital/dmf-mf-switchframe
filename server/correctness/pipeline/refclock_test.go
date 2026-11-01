@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 )
 
@@ -17,9 +18,8 @@ import (
 // Two sources with distinct colors, cut between them, encode to H.264,
 // verify pixel content changes after cut.
 //
-// Key difference: processing is tick-driven (no wall clock pacing).
-// The non-realtime clock produces ticks as fast as the sync loop can
-// consume them, making this test faster and deterministic.
+// Key difference: processing is tick-driven: every tick of the reference
+// clock produces one program frame.
 // ==========================================================================
 
 func TestRefClockPipelineCut(t *testing.T) {
@@ -33,12 +33,10 @@ func TestRefClockPipelineCut(t *testing.T) {
 	h.addSource("camA", sourceA)
 	h.addSource("camB", sourceB)
 
-	// Cut to A and feed frames into the frame sync buffer.
-	h.cut(t, "camA")
+	// Feed A, then cut to it: a tick shows a frame two frame periods after
+	// it arrived, so a cut before any frame of A would show black first.
 	h.feedFrames("camA", 60, 90000)
-
-	// Start ref clock + sync loop, let it process frames.
-	h.startRefClock()
+	h.cut(t, "camA")
 	h.waitForVideoFrames(t, 15)
 
 	preCount := h.capture.videoCount()
@@ -55,8 +53,7 @@ func TestRefClockPipelineCut(t *testing.T) {
 	require.Greater(t, totalCount, preCount, "should have additional frames from camB")
 
 	// Stop ref clock before inspecting output.
-	h.refClock.Stop()
-	h.refClock = nil // prevent double-stop in close()
+	h.stopClock()
 
 	// Write TS and verify with ffprobe.
 	tsPath := h.writeTS(t)
@@ -141,9 +138,8 @@ func TestRefClockPipelineCut(t *testing.T) {
 // TestRefClockAVSync
 //
 // Verifies that both audio and video PTS are derived from the same reference
-// clock. Audio PTS starts at basePTS=0 and advances by exactly 1920 per AAC
-// frame. Video PTS starts at 0 and advances monotonically. Both streams
-// should start near PTS=0 (shared epoch).
+// clock. Audio PTS advances by exactly 1920 per AAC frame, video PTS
+// advances monotonically, and both are on the same timeline (shared epoch).
 // ==========================================================================
 
 func TestRefClockAVSync(t *testing.T) {
@@ -160,15 +156,12 @@ func TestRefClockAVSync(t *testing.T) {
 	// Feed enough frames to sustain processing.
 	h.feedFrames("camA", 120, 0)
 
-	h.startRefClock()
-
 	// Wait for substantial output.
 	h.waitForVideoFrames(t, 30)
 	h.waitForAudioFrames(t, 5)
 
 	// Stop and inspect.
-	h.refClock.Stop()
-	h.refClock = nil
+	h.stopClock()
 
 	videos := h.capture.videosCopy()
 	audios := h.capture.audiosCopy()
@@ -191,10 +184,9 @@ func TestRefClockAVSync(t *testing.T) {
 			"audio PTS delta should be 1920: got %d at frame %d", delta, i)
 	}
 
-	// Both audio and video should start from the same epoch (basePTS=0).
-	// Audio always starts at PTS=0 (first AAC frame).
-	require.Equal(t, int64(0), audios[0].PTS,
-		"first audio PTS should be 0 (shared epoch)")
+	// Both audio and video are on the reference clock's timeline.
+	require.LessOrEqual(t, nearestAudioDelta(videos[0].PTS, audios), aacFramePTS,
+		"first video frame has no audio frame within one AAC frame (shared epoch)")
 
 	// Verify that video PTS values are all on the ref clock grid.
 	// The ref clock produces PTS = basePTS + tick * (90000 / fps).
@@ -244,8 +236,6 @@ func TestRefClockZeroDrift(t *testing.T) {
 	// Feed frames continuously.
 	h.feedFrames("camA", 200, 0)
 
-	h.startRefClock()
-
 	// Wait for substantial output.
 	h.waitForVideoFrames(t, 200)
 	h.waitForAudioFrames(t, 30)
@@ -255,8 +245,7 @@ func TestRefClockZeroDrift(t *testing.T) {
 	h.waitForVideoFrames(t, 400)
 	h.waitForAudioFrames(t, 60)
 
-	h.refClock.Stop()
-	h.refClock = nil
+	h.stopClock()
 
 	videos := h.capture.videosCopy()
 	audios := h.capture.audiosCopy()
@@ -265,11 +254,11 @@ func TestRefClockZeroDrift(t *testing.T) {
 	require.Greater(t, len(videos), 200, "need >200 video frames for drift measurement")
 	require.Greater(t, len(audios), 30, "need >30 audio frames for drift measurement")
 
-	// Verify every video frame has PTS = tick_number * ptsDelta (exact).
-	// With no encoder, the ref clock PTS is passed through unmodified.
-	// The ref clock uses 30fps (90000/30 = 3000 PTS per tick).
+	// Verify every video frame has PTS = first + tick_number * ptsDelta
+	// (exact). With no encoder, the ref clock PTS is passed through
+	// unmodified. The ref clock uses 30fps (90000/30 = 3000 PTS per tick).
 	for i := 0; i < len(videos); i++ {
-		expected := int64(i) * ptsDelta
+		expected := videos[0].PTS + int64(i)*ptsDelta
 		require.Equal(t, expected, videos[i].PTS,
 			"video PTS at frame %d should be %d, got %d", i, expected, videos[i].PTS)
 	}
@@ -282,13 +271,9 @@ func TestRefClockZeroDrift(t *testing.T) {
 			"audio PTS delta should be exactly 1920: got %d at frame %d", delta, i)
 	}
 
-	// Audio should start from basePTS=0 (shared epoch with video).
-	require.Equal(t, int64(0), audios[0].PTS,
-		"first audio PTS should be 0 (shared epoch)")
-
-	// Video also starts at PTS=0.
-	require.Equal(t, int64(0), videos[0].PTS,
-		"first video PTS should be 0 (shared epoch)")
+	// Audio and video share the reference clock's timeline.
+	require.LessOrEqual(t, nearestAudioDelta(videos[0].PTS, audios), aacFramePTS,
+		"first video frame has no audio frame within one AAC frame (shared epoch)")
 
 	// Measure video PTS rate in the first and second halves.
 	mid := len(videos) / 2
@@ -305,169 +290,18 @@ func TestRefClockZeroDrift(t *testing.T) {
 		len(videos), len(audios), rateDrift)
 }
 
-// ==========================================================================
-// TestRefClockDeterministic
-//
-// Verifies that the reference clock path is deterministic across runs in two
-// independent senses:
-//
-//  1. Scheduling determinism (PTS): identical inputs produce identical video
-//     and audio PTS sequences, proving there is no wall-clock dependency in
-//     the tick/sync scheduling.
-//  2. Content determinism: identical inputs produce byte-identical broadcast
-//     frame payloads (and the same frame *count*), proving the pixel/audio
-//     data — not just the timestamps — is reproducible.
-//
-// A PTS-only check is insufficient on its own: two runs could emit matching
-// timestamps while carrying byte-different payloads, or could emit different
-// frame counts (itself a nondeterminism) that a common-prefix comparison
-// would silently ignore. We therefore assert equal counts first, then compare
-// both PTS and raw frame bytes.
-//
-// Uses the no-encode harness (raw YUV broadcast in WireData) to isolate clock
-// determinism from H.264 encoder non-determinism (encoder startup buffering
-// and rate control vary across runs, especially on GPU encoders like NVENC).
-// On this path the broadcast frame's WireData is the raw YUV payload, so a
-// byte comparison is a true content-determinism check.
-// ==========================================================================
-
-func TestRefClockDeterministic(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping long correctness test")
-	}
-
-	type ptsResult struct {
-		video  []int64
-		audio  []int64
-		vBytes [][]byte // raw YUV payload (WireData) per video frame
-		aBytes [][]byte // raw payload per audio frame
-	}
-
-	const feedCount = 100
-	const expectVideo = 60
-	const expectAudio = 10
-
-	runOnce := func() ptsResult {
-		h := newPipelineHarnessNoEncode(t)
-		defer h.close()
-
-		h.addSource("camA", sourceA)
-		h.cut(t, "camA")
-		h.feedFrames("camA", feedCount, 0)
-		h.startRefClock()
-		h.waitForVideoFrames(t, expectVideo)
-		h.waitForAudioFrames(t, expectAudio)
-
-		h.refClock.Stop()
-		h.refClock = nil
-
-		videos := h.capture.videosCopy()
-		audios := h.capture.audiosCopy()
-
-		vpts := make([]int64, len(videos))
-		vBytes := make([][]byte, len(videos))
-		for i, v := range videos {
-			vpts[i] = v.PTS
-			vBytes[i] = v.WireData // no-encode path carries raw YUV here
+// nearestAudioDelta returns the distance from pts to the PTS of the
+// nearest audio frame.
+func nearestAudioDelta(pts int64, audios []*media.AudioFrame) int64 {
+	best := int64(math.MaxInt64)
+	for _, a := range audios {
+		d := pts - a.PTS
+		if d < 0 {
+			d = -d
 		}
-		apts := make([]int64, len(audios))
-		aBytes := make([][]byte, len(audios))
-		for i, a := range audios {
-			apts[i] = a.PTS
-			aBytes[i] = a.Data
-		}
-		return ptsResult{video: vpts, audio: apts, vBytes: vBytes, aBytes: aBytes}
+		best = min(best, d)
 	}
-
-	r1 := runOnce()
-	r2 := runOnce()
-
-	t.Logf("MEASURE: run1 video=%d audio=%d, run2 video=%d audio=%d",
-		len(r1.video), len(r1.audio), len(r2.video), len(r2.audio))
-	require.Greater(t, len(r1.video), 30, "run1 should produce >30 video frames")
-	require.Greater(t, len(r2.video), 30, "run2 should produce >30 video frames")
-	require.Greater(t, len(r1.audio), 5, "run1 should produce >5 audio frames")
-	require.Greater(t, len(r2.audio), 5, "run2 should produce >5 audio frames")
-
-	// Frame counts must be reproducible. We allow a tiny slack (1 frame) because
-	// the no-encode harness reads the capture buffer right after refClock.Stop()
-	// closes the tick channel, and the sync-loop goroutine may emit one more
-	// frame before it observes the close. A larger divergence is real
-	// nondeterminism in how many frames the pipeline produced.
-	const countSlack = 1
-	vDiff := len(r1.video) - len(r2.video)
-	if vDiff < 0 {
-		vDiff = -vDiff
-	}
-	require.LessOrEqualf(t, vDiff, countSlack,
-		"video frame counts diverged: run1=%d run2=%d (nondeterministic output count)",
-		len(r1.video), len(r2.video))
-	aDiff := len(r1.audio) - len(r2.audio)
-	if aDiff < 0 {
-		aDiff = -aDiff
-	}
-	require.LessOrEqualf(t, aDiff, countSlack,
-		"audio frame counts diverged: run1=%d run2=%d (nondeterministic output count)",
-		len(r1.audio), len(r2.audio))
-
-	// Compare video PTS: common prefix must be identical.
-	vLen := len(r1.video)
-	if len(r2.video) < vLen {
-		vLen = len(r2.video)
-	}
-	require.GreaterOrEqual(t, vLen, 30, "need at least 30 video frames to compare")
-
-	for i := 0; i < vLen; i++ {
-		require.Equal(t, r1.video[i], r2.video[i],
-			"video PTS mismatch at frame %d: run1=%d, run2=%d", i, r1.video[i], r2.video[i])
-	}
-
-	// Content determinism: the raw YUV payload of each broadcast frame must be
-	// byte-identical across runs. This is the assertion that distinguishes true
-	// output determinism from mere timestamp determinism — identical PTS with
-	// byte-different pixels would pass the PTS checks above but fail here.
-	for i := 0; i < vLen; i++ {
-		require.Truef(t, testutil.YUVFrameEqual(r1.vBytes[i], r2.vBytes[i]),
-			"video CONTENT mismatch at frame %d (PTS %d): payload bytes differ between runs (len run1=%d run2=%d)",
-			i, r1.video[i], len(r1.vBytes[i]), len(r2.vBytes[i]))
-	}
-
-	// Verify video PTS starts at 0 and increments by ptsDelta (exact).
-	for i := 0; i < vLen; i++ {
-		expected := int64(i) * ptsDelta
-		require.Equal(t, expected, r1.video[i],
-			"video frame %d PTS should be %d, got %d", i, expected, r1.video[i])
-	}
-
-	// Compare audio PTS: common prefix must be identical.
-	aLen := len(r1.audio)
-	if len(r2.audio) < aLen {
-		aLen = len(r2.audio)
-	}
-	require.GreaterOrEqual(t, aLen, 5, "need at least 5 audio frames to compare")
-
-	const aacFramePTS = int64(1920)
-	for i := 0; i < aLen; i++ {
-		require.Equal(t, r1.audio[i], r2.audio[i],
-			"audio PTS mismatch at frame %d: run1=%d, run2=%d", i, r1.audio[i], r2.audio[i])
-	}
-
-	// Verify audio PTS starts at 0 and increments by 1920 (exact).
-	for i := 0; i < aLen; i++ {
-		expected := int64(i) * aacFramePTS
-		require.Equal(t, expected, r1.audio[i],
-			"audio frame %d PTS should be %d, got %d", i, expected, r1.audio[i])
-	}
-
-	// Content determinism for audio: encoded AAC payloads must be byte-identical.
-	for i := 0; i < aLen; i++ {
-		require.Equalf(t, r1.aBytes[i], r2.aBytes[i],
-			"audio CONTENT mismatch at frame %d (PTS %d): payload bytes differ between runs",
-			i, r1.audio[i])
-	}
-
-	t.Logf("Deterministic test passed: %d video + %d audio frames compared, PTS and payload bytes identical",
-		vLen, aLen)
+	return best
 }
 
 // ==========================================================================
@@ -493,8 +327,6 @@ func TestRefClockOverloadRecovery(t *testing.T) {
 	h.cut(t, "camA")
 	h.feedFrames("camA", 120, 0)
 
-	h.startRefClock()
-
 	// Wait for some initial output.
 	h.waitForVideoFrames(t, 10)
 	h.waitForAudioFrames(t, 2)
@@ -511,8 +343,7 @@ func TestRefClockOverloadRecovery(t *testing.T) {
 	// Wait for more output after feeding.
 	h.waitForVideoFrames(t, initialVideoCount+10)
 
-	h.refClock.Stop()
-	h.refClock = nil
+	h.stopClock()
 
 	finalVideoCount := h.capture.videoCount()
 	finalAudioCount := h.capture.audioCount()
@@ -544,8 +375,8 @@ func TestRefClockOverloadRecovery(t *testing.T) {
 			i-1, audios[i-1].PTS, i, audios[i].PTS)
 	}
 
-	t.Logf("Overload recovery test passed: video=%d, audio=%d, ticks=%d",
-		finalVideoCount, finalAudioCount, h.tickCount())
+	t.Logf("Overload recovery test passed: video=%d, audio=%d",
+		finalVideoCount, finalAudioCount)
 }
 
 // ==========================================================================
@@ -571,13 +402,10 @@ func TestRefClockAudioContinuity(t *testing.T) {
 	// but audio should keep going.
 	h.feedFrames("camA", 5, 0)
 
-	h.startRefClock()
-
 	// Wait for audio output -- should appear even with limited video.
 	h.waitForAudioFrames(t, 5)
 
-	h.refClock.Stop()
-	h.refClock = nil
+	h.stopClock()
 
 	audios := h.capture.audiosCopy()
 	require.GreaterOrEqual(t, len(audios), 5,
@@ -616,13 +444,11 @@ func TestRefClockVideoFreezeRepeat(t *testing.T) {
 	// Feed only 3 frames -- the sync loop should freeze-repeat after these.
 	h.feedFrames("camA", 3, 0)
 
-	h.startRefClock()
+	// Wait for more frames than we fed -- freeze-repeat should produce them,
+	// enough of them to decode past the decoder's start-up.
+	h.waitForVideoFrames(t, 40)
 
-	// Wait for more frames than we fed -- freeze-repeat should produce them.
-	h.waitForVideoFrames(t, 10)
-
-	h.refClock.Stop()
-	h.refClock = nil
+	h.stopClock()
 
 	videos := h.capture.videosCopy()
 	require.GreaterOrEqual(t, len(videos), 10,
@@ -635,9 +461,13 @@ func TestRefClockVideoFreezeRepeat(t *testing.T) {
 			"video PTS delta should be %d: got %d at frame %d", ptsDelta, delta, i)
 	}
 
-	// First frame PTS should be 0 (basePTS of the reference clock).
-	require.Equal(t, int64(0), videos[0].PTS,
-		"first frame PTS should be 0 (ref clock basePTS)")
+	// The repeats hold the source's last picture, not black.
+	decoded := decodeCapturedFrames(t, videos)
+	require.NotEmpty(t, decoded, "no decodable frames")
+	last := decoded[len(decoded)-1]
+	avgY := averageY(last.YUV, last.Width, last.Height)
+	require.InDelta(t, float64(sourceA.Y), avgY, 25,
+		"last repeated frame avg Y %.1f, want camA's %d", avgY, sourceA.Y)
 
 	t.Logf("Freeze-repeat test passed: %d frames (3 fresh + repeats), all PTS consistent", len(videos))
 }

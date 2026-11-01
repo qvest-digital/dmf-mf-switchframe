@@ -3,6 +3,7 @@ package audio
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -46,7 +47,7 @@ func metricValue(m *dto.Metric) float64 {
 // Each strip reports its fader, mute and both channels' peaks, so an
 // operator sees which source is muted or silent without opening the UI.
 func TestMetricsCollector_Strips(t *testing.T) {
-	m, _ := newTickTestMixer(t)
+	m := newProduceTestMixer(t)
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
 	require.NoError(t, m.SetLevel("cam1", -6))
@@ -65,7 +66,7 @@ func TestMetricsCollector_Strips(t *testing.T) {
 // Program loudness carries all three R128 windows and the program peak
 // both channels.
 func TestMetricsCollector_Program(t *testing.T) {
-	m, _ := newTickTestMixer(t)
+	m := newProduceTestMixer(t)
 	c := NewMetricsCollector(m)
 	require.Empty(t, collectorValues(t, c, "switchframe_audio_loudness_lufs"),
 		"silence has no loudness, not a sentinel")
@@ -80,8 +81,46 @@ func TestMetricsCollector_Program(t *testing.T) {
 	require.Equal(t, map[string]float64{"": 3}, collectorValues(t, c, "switchframe_audio_decode_errors_total"))
 }
 
+// The frame gap is the longest time between two ProduceSamples calls, the
+// periods of program audio.
+func TestMetricsCollector_MaxFrameGap(t *testing.T) {
+	m := newProduceTestMixer(t)
+	c := NewMetricsCollector(m)
+	tl := newTimeline()
+	_ = tl.produce(m, 1024)
+	require.Equal(t, map[string]float64{"": 0}, collectorValues(t, c, "switchframe_audio_max_frame_gap_seconds"),
+		"one period has no gap")
+	time.Sleep(5 * time.Millisecond)
+	_ = tl.produce(m, 1024)
+	gap := collectorValues(t, c, "switchframe_audio_max_frame_gap_seconds")[""]
+	require.GreaterOrEqual(t, gap, 0.005)
+
+	m.ResetMaxInterFrameGap()
+	require.Equal(t, map[string]float64{"": 0}, collectorValues(t, c, "switchframe_audio_max_frame_gap_seconds"))
+}
+
+// A source read more than a period off the program read point counts one
+// realign per stretch it stays off.
+func TestMetricsCollector_Realigns(t *testing.T) {
+	m := mediaMixer(t)
+	c := NewMetricsCollector(m)
+	label := metrics.SourceLabel("mxl:a")
+	tl := newTimeline()
+	tl.push(m, "mxl:a", constPCM(1024, 0.25), 0)
+	_ = tl.produce(m, 1024)
+	require.Equal(t, map[string]float64{label: 0}, collectorValues(t, c, "switchframe_audio_source_realigns_total"),
+		"audio on the read point is not realigned")
+
+	// Audio stamped four periods ahead of the read point.
+	tl.push(m, "mxl:a", constPCM(1024, 0.25), 5*1024)
+	_ = tl.produce(m, 1024)
+	_ = tl.produce(m, 1024)
+	require.Equal(t, map[string]float64{label: 1}, collectorValues(t, c, "switchframe_audio_source_realigns_total"))
+	require.Equal(t, int64(1), m.DebugSnapshot()["channels"].(map[string]any)["mxl:a"].(map[string]any)["realigns"])
+}
+
 func TestMetricsCollector_Lint(t *testing.T) {
-	m, _ := newTickTestMixer(t)
+	m := newProduceTestMixer(t)
 	m.AddChannel("cam1")
 	problems, err := testutil.CollectAndLint(NewMetricsCollector(m))
 	require.NoError(t, err)
@@ -97,7 +136,7 @@ func keys(m map[string]float64) []string {
 }
 
 func TestMetricsCollector_HidesSRTStreamIDs(t *testing.T) {
-	m, _ := newTickTestMixer(t)
+	m := newProduceTestMixer(t)
 	m.AddChannel("srt:secret-stream-key")
 	levels := collectorValues(t, NewMetricsCollector(m), "switchframe_audio_source_level_db")
 	require.Equal(t, map[string]float64{metrics.SourceLabel("srt:secret-stream-key"): 0}, levels)

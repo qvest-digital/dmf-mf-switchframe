@@ -19,6 +19,9 @@ func (m *GPUSourceManager) SetSourceColorGrade(provider SourceColorGradeProvider
 // RegisterSource is a no-op on non-GPU builds.
 func (m *GPUSourceManager) RegisterSource(sourceKey string, w, h int, preview *PreviewConfig) {}
 
+// StopPreview is a no-op on non-GPU builds.
+func (m *GPUSourceManager) StopPreview(sourceKey string) {}
+
 // RemoveSource is a no-op on non-GPU builds.
 func (m *GPUSourceManager) RemoveSource(sourceKey string) {}
 
@@ -36,6 +39,18 @@ func (m *GPUSourceManager) CurrentFrame(sourceKey string) *GPUFrame { return nil
 
 // GetFrame returns nil on non-GPU builds.
 func (m *GPUSourceManager) GetFrame(sourceKey string) *GPUFrame { return nil }
+
+// GetFrameAt is a no-op stub.
+func (m *GPUSourceManager) GetFrameAt(sourceKey string, pts int64) *GPUFrame { return nil }
+
+// GetFrameNear is a no-op stub.
+func (m *GPUSourceManager) GetFrameNear(sourceKey string, pts int64) *GPUFrame { return nil }
+
+// SetSourceDelay is a no-op on non-GPU builds.
+func (m *GPUSourceManager) SetSourceDelay(sourceKey string, delayMs int) {}
+
+// KeepCurrentAs is a no-op on non-GPU builds.
+func (m *GPUSourceManager) KeepCurrentAs(sourceKey string, pts int64) {}
 
 // ReadCachedFrame returns nil on non-GPU builds.
 func (m *GPUSourceManager) ReadCachedFrame(sourceKey string) (yuv []byte, w, h int, pts int64) {

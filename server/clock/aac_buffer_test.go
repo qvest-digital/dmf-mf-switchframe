@@ -395,3 +395,24 @@ func TestAACBufferEmptyFeed(t *testing.T) {
 		t.Errorf("expected FrameCount=0, got %d", buf.FrameCount())
 	}
 }
+
+// A frame carries the audio the encoder delay before the PCM it is fed
+// for, so it is stamped that much earlier; the cadence is unchanged.
+func TestAACFrameBufferStampsFramesPastEncoderDelay(t *testing.T) {
+	enc := func([]float32) ([]byte, error) { return []byte{1}, nil }
+	b := NewAACFrameBuffer(2, 48000, enc)
+	b.SetEncoderDelay(2048)
+	b.SetBasePTS(900000)
+	frames, err := b.Feed(make([]float32, 3*1024*2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 3 {
+		t.Fatalf("%d frames, want 3", len(frames))
+	}
+	for i, f := range frames {
+		if want := int64(900000 - 3840 + i*1920); f.PTS != want {
+			t.Fatalf("frame %d PTS %d, want %d", i, f.PTS, want)
+		}
+	}
+}

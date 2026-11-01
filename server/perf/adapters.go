@@ -62,11 +62,9 @@ func (a *MixerAdapter) PerfSample() MixerSample {
 	return MixerSample{
 		Mode:               raw.Mode,
 		MixCycleLastNs:     raw.MixCycleLastNs,
-		FramesOutput:       raw.FramesOutput,
 		FramesMixed:        raw.FramesMixed,
 		MaxInterFrameGapNs: raw.MaxInterFrameGapNs,
 		DecodeErrors:       raw.DecodeErrors,
-		EncodeErrors:       raw.EncodeErrors,
 		MomentaryLUFS:      raw.MomentaryLUFS,
 		ShortTermLUFS:      raw.ShortTermLUFS,
 		IntegratedLUFS:     raw.IntegratedLUFS,

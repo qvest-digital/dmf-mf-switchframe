@@ -4,18 +4,15 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
 )
 
-// newCrossfadeStateMixer creates a clock-driven mixer (no background ticker)
-// so tests fully control crossfade advancement via AdvanceCrossfade().
+// newCrossfadeStateMixer creates a mixer whose tests control crossfade
+// advancement via AdvanceCrossfade().
 func newCrossfadeStateMixer(t *testing.T) *Mixer {
 	t.Helper()
 	m := NewMixer(MixerConfig{
-		SampleRate:  48000,
-		Channels:    2,
-		ClockDriven: true,
-		Output:      func(*media.AudioFrame) {},
+		SampleRate: 48000,
+		Channels:   2,
 	})
 	t.Cleanup(func() { _ = m.Close() })
 	return m
@@ -50,11 +47,10 @@ func TestOnTransitionAbort_DeactivatesIncomingChannel(t *testing.T) {
 	for i := range pcm {
 		pcm[i] = 0.5
 	}
-	m.mu.Lock()
-	m.channels["cam2"].ringBuf.Push(pcm)
-	m.mu.Unlock()
+	tl := newTimeline()
+	tl.push(m, "cam2", pcm, 0)
 
-	mixed := m.ProduceSamples(1024)
+	mixed := tl.produce(m, 1024)
 	for i, s := range mixed {
 		require.Equal(t, float32(0), s,
 			"sample %d: preview audio leaked into program after aborted transition", i)

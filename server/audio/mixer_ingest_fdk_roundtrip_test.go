@@ -39,14 +39,9 @@ func TestIngestFrame_FDKRoundTrip_ContentLengthPreserved(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: sampleRate,
 		Channels:   channels,
-		Output:     func(frame *media.AudioFrame) {},
 		DecoderFactory: func(sr, ch int) (Decoder, error) {
 			return NewFDKDecoder(sr, ch)
 		},
-		EncoderFactory: func(sr, ch int) (Encoder, error) {
-			return NewFDKEncoder(sr, ch)
-		},
-		ClockDriven: true,
 	})
 	defer func() { _ = m.Close() }()
 

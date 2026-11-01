@@ -259,9 +259,112 @@ func TestUnregisterSource_CleansUpGPUSourceManager(t *testing.T) {
 		"UnregisterSource should call GPUSourceManager.RemoveSource")
 }
 
+// A source delay reaches the GPU source manager, set before or after the
+// manager is: the GPU store keeps a delayed source's frames for the delay,
+// or a source decoded to the GPU shows its video ahead of its delayed audio.
+func TestSourceDelayReachesTheGPUSourceManager(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(t, programRelay)
+	sw.RegisterSource("camera1", newTestRelay())
+	sw.RegisterSource("camera2", newTestRelay())
+	require.NoError(t, sw.SetSourceDelay("camera1", 120))
+
+	delays := map[string]int{}
+	sw.SetGPUSourceManager(&mockGPUSourceManager{
+		onDelay: func(key string, ms int) { delays[key] = ms },
+	})
+	require.Equal(t, map[string]int{"camera1": 120}, delays,
+		"a delay set before the GPU source manager is not applied to it")
+
+	require.NoError(t, sw.SetSourceDelay("camera2", 300))
+	require.NoError(t, sw.SetSourceDelay("camera1", 0))
+	require.Equal(t, map[string]int{"camera1": 0, "camera2": 300}, delays,
+		"SetSourceDelay does not reach the GPU source manager")
+}
+
+// delayMixer is a sync mixer that records the source delays it is told.
+type delayMixer struct {
+	*mockSyncMixer
+	delays map[string]int
+}
+
+func (m *delayMixer) SetSourceDelay(key string, ms int) { m.delays[key] = ms }
+
+// A source's delay is the switcher's, by source key: a source removed and
+// registered again, as an SRT source was on every reconnect, keeps it in
+// the frame sync, the mixer and the GPU source manager alike. A delay kept
+// by some of them only delays its audio and not its video.
+func TestSourceDelaySurvivesReRegistration(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+	mixer := &delayMixer{mockSyncMixer: newMockSyncMixer(2), delays: map[string]int{}}
+	sw.SetSyncMixer(mixer)
+	gpuDelays := map[string]int{}
+	sw.SetGPUSourceManager(&mockGPUSourceManager{onDelay: func(k string, ms int) { gpuDelays[k] = ms }})
+	sw.RegisterSRTSource("srt:cam")
+	require.NoError(t, sw.SetSourceDelay("srt:cam", 200))
+
+	sw.UnregisterSource("srt:cam")
+	clear(mixer.delays)
+	clear(gpuDelays)
+	sw.RegisterSRTSource("srt:cam")
+
+	require.Equal(t, 200, sw.GetSourceDelay("srt:cam"), "the switcher forgot the source's delay")
+	snap := sw.frameSync.DebugSnapshot()["sources"].(map[string]any)["srt:cam"].(map[string]any)
+	require.Equal(t, int64(200*90), snap["delay_90k"], "the frame sync reads the source undelayed")
+	require.Equal(t, map[string]int{"srt:cam": 200}, mixer.delays, "the mixer is not given the source's delay")
+	require.Equal(t, map[string]int{"srt:cam": 200}, gpuDelays, "the GPU source manager is not given the source's delay")
+}
+
+// A delay set while a GPU source manager is swapped in, as at a GPU
+// rebuild, reaches the manager that ends up installed: one set between
+// the new manager taking the delays and its installation reached neither
+// manager, and the store kept too few frames until the next change. The
+// delay here is set while the new manager is being given the delays.
+func TestSourceDelaySetDuringGPUSwapReachesTheNewManager(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+	sw.RegisterSRTSource("srt:cam")
+	require.NoError(t, sw.SetSourceDelay("srt:cam", 120))
+
+	var mu sync.Mutex
+	got := 0
+	set := make(chan struct{})
+	var once sync.Once
+	mgr := &mockGPUSourceManager{onDelay: func(_ string, ms int) {
+		mu.Lock()
+		got = ms
+		mu.Unlock()
+		once.Do(func() {
+			go func() {
+				_ = sw.SetSourceDelay("srt:cam", 300)
+				close(set)
+			}()
+			// Give the concurrent SetSourceDelay the chance to run inside
+			// the swap; a swap that holds it off until it is done is right.
+			select {
+			case <-set:
+			case <-time.After(50 * time.Millisecond):
+			}
+		})
+	}}
+	sw.SetGPUSourceManager(mgr)
+	<-set
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 300, sw.GetSourceDelay("srt:cam"))
+	require.Equal(t, 300, got, "a delay set during the GPU swap did not reach the installed manager")
+}
+
 // mockGPUSourceManager implements GPUSourceManagerIface for testing.
 type mockGPUSourceManager struct {
 	onRemove func(key string)
+	onDelay  func(key string, delayMs int)
+}
+
+func (m *mockGPUSourceManager) SetSourceDelay(sourceKey string, delayMs int) {
+	if m.onDelay != nil {
+		m.onDelay(sourceKey, delayMs)
+	}
 }
 
 func (m *mockGPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts int64) {}
@@ -363,37 +466,6 @@ func TestSetPreviewMissingSourceErrors(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestFrameForwarding(t *testing.T) {
-	programRelay := newTestRelay()
-	sw := newTestSwitcher(t, programRelay)
-
-	// Attach a mock viewer to the program relay to capture output.
-	viewer := newMockProgramViewer("test-viewer")
-	programRelay.AddViewer(viewer)
-
-	cam1Relay := newTestRelay()
-	cam2Relay := newTestRelay()
-	sw.RegisterSource("camera1", cam1Relay)
-	sw.RegisterSource("camera2", cam2Relay)
-
-	// Cut to camera1.
-	require.NoError(t, sw.Cut(context.Background(), "camera1"))
-
-	// Broadcast a video frame on camera1's relay -- should reach the viewer.
-	cam1Frame := &media.VideoFrame{PTS: 1000, IsKeyframe: true}
-	cam1Relay.BroadcastVideo(cam1Frame)
-
-	// Broadcast a video frame on camera2's relay -- should NOT reach the viewer.
-	cam2Frame := &media.VideoFrame{PTS: 2000, IsKeyframe: true}
-	cam2Relay.BroadcastVideo(cam2Frame)
-
-	viewer.mu.Lock()
-	defer viewer.mu.Unlock()
-
-	require.Equal(t, 1, len(viewer.videos), "video frame count")
-	require.Equal(t, int64(1000), viewer.videos[0].PTS)
-}
-
 func TestAudioFrameForwarding(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(t, programRelay)
@@ -424,43 +496,6 @@ func TestAudioFrameForwarding(t *testing.T) {
 
 	require.Equal(t, 1, len(viewer.audios), "audio frame count")
 	require.Equal(t, int64(500), viewer.audios[0].PTS)
-}
-
-func TestCutForwardsAllFrames(t *testing.T) {
-	// In always-decode mode, there is no IDR gating — all frames from the
-	// program source are forwarded immediately after a cut.
-	programRelay := newTestRelay()
-	sw := newTestSwitcher(t, programRelay)
-
-	viewer := newMockProgramViewer("test-viewer")
-	programRelay.AddViewer(viewer)
-
-	cam1Relay := newTestRelay()
-	cam2Relay := newTestRelay()
-	sw.RegisterSource("camera1", cam1Relay)
-	sw.RegisterSource("camera2", cam2Relay)
-
-	// Cut to camera1, send a keyframe.
-	_ = sw.Cut(context.Background(), "camera1")
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})
-
-	// Cut to camera2.
-	_ = sw.Cut(context.Background(), "camera2")
-
-	// All frames from camera2 should be forwarded immediately (no IDR gate).
-	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 200, IsKeyframe: false})
-	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 300, IsKeyframe: true})
-	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 400, IsKeyframe: false})
-
-	viewer.mu.Lock()
-	defer viewer.mu.Unlock()
-
-	// Should have: cam1 keyframe(100) + all 3 cam2 frames = 4
-	require.Equal(t, 4, len(viewer.videos), "video frame count")
-	require.Equal(t, int64(100), viewer.videos[0].PTS)
-	require.Equal(t, int64(200), viewer.videos[1].PTS)
-	require.Equal(t, int64(300), viewer.videos[2].PTS)
-	require.Equal(t, int64(400), viewer.videos[3].PTS)
 }
 
 func TestCutAudioForwardedImmediately(t *testing.T) {
@@ -1136,33 +1171,27 @@ func TestCutGroupIDMonotonicity(t *testing.T) {
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
 	// Send frames with HIGH GroupID
-	cam1Relay.BroadcastVideo(&media.VideoFrame{
-		PTS: 100, IsKeyframe: true, GroupID: 50,
-		WireData: makeAVC1Frame([]byte{0x65, 0xAA}),
-		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
-		PPS:      []byte{0x68, 0xce, 0x38, 0x80},
-	})
-	cam1Relay.BroadcastVideo(&media.VideoFrame{
-		PTS: 200, IsKeyframe: false, GroupID: 50,
-		WireData: makeAVC1Frame([]byte{0x41, 0x01}),
-	})
+	send := func(key string, gid uint32, keyframe bool) {
+		sw.IngestRawVideo(key, &ProcessingFrame{
+			Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4,
+			IsKeyframe: keyframe, GroupID: gid, Codec: "h264",
+		})
+	}
+	send("cam1", 50, true)
+	send("cam1", 50, false)
+	waitFrames := func(n int) {
+		require.Eventually(t, func() bool { return len(viewer.VideoFrames()) >= n },
+			time.Second, 5*time.Millisecond)
+	}
+	waitFrames(clock.ReaderDelayGrains + 2)
 
 	// Cut to cam2 — has LOWER GroupID
 	require.NoError(t, sw.Cut(context.Background(), "cam2"))
 
 	// Keyframe with LOW GroupID
-	cam2Relay.BroadcastVideo(&media.VideoFrame{
-		PTS: 300, IsKeyframe: true, GroupID: 10,
-		WireData: makeAVC1Frame([]byte{0x65, 0xBB}),
-		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
-		PPS:      []byte{0x68, 0xce, 0x38, 0x80},
-	})
-	cam2Relay.BroadcastVideo(&media.VideoFrame{
-		PTS: 400, IsKeyframe: false, GroupID: 10,
-		WireData: makeAVC1Frame([]byte{0x41, 0x02}),
-	})
-
-	time.Sleep(10 * time.Millisecond)
+	send("cam2", 10, true)
+	send("cam2", 10, false)
+	waitFrames(len(viewer.VideoFrames()) + clock.ReaderDelayGrains + 2)
 
 	frames := viewer.VideoFrames()
 	require.NotEmpty(t, frames)
@@ -1177,41 +1206,25 @@ func TestCutGroupIDMonotonicity(t *testing.T) {
 }
 
 func TestSwitcher_LastBroadcastVideoPTS(t *testing.T) {
-	programRelay := newTestRelay()
-	sw := newTestSwitcher(t, programRelay)
-	cam1Relay := newTestRelay()
-	sw.RegisterSource("cam1", cam1Relay)
+	sw := tickSwitcher(t)
 
 	// Initially 0 — no frames broadcast yet.
 	require.Equal(t, int64(0), sw.LastBroadcastVideoPTS())
 
-	// Cut to cam1 and send frames.
-	_ = sw.Cut(context.Background(), "cam1")
-	viewer := (*sw.sourcesAtomic.Load())["cam1"].viewer
+	// Cut to cam1 and show frames.
+	onProgram(t, sw, "mxl:cam1")
+	g := grainNow(sw)
+	sw.IngestRawVideo("mxl:cam1", mxlFrame(sw, g, 50))
+	sw.processVideoTick(tickAt(sw, g+clock.ReaderDelayGrains))
+	require.Equal(t, grainPTS(sw, g+clock.ReaderDelayGrains), sw.LastBroadcastVideoPTS(),
+		"expected PTS to track broadcast")
 
-	// Send a keyframe, then non-keyframe with known PTS values.
-	viewer.SendVideo(&media.VideoFrame{
-		PTS:        100_000,
-		IsKeyframe: true,
-		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x88},
-	})
-	time.Sleep(50 * time.Millisecond) // Allow async processing
-
-	pts := sw.LastBroadcastVideoPTS()
-	require.Equal(t, int64(100_000), pts, "expected PTS to track broadcast")
-
-	viewer.SendVideo(&media.VideoFrame{
-		PTS:        103_003,
-		IsKeyframe: false,
-		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x41, 0x9A},
-	})
-	time.Sleep(50 * time.Millisecond)
-
-	pts = sw.LastBroadcastVideoPTS()
-	require.Equal(t, int64(103_003), pts, "expected PTS to update on each broadcast")
+	sw.processVideoTick(tickAt(sw, g+clock.ReaderDelayGrains+1))
+	require.Equal(t, grainPTS(sw, g+clock.ReaderDelayGrains+1), sw.LastBroadcastVideoPTS(),
+		"expected PTS to update on each broadcast")
 }
 
-func TestHandleRawVideoFrame_NilViewer(t *testing.T) {
+func TestIngestRawVideo_NilViewer(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
@@ -1228,7 +1241,7 @@ func TestHandleRawVideoFrame_NilViewer(t *testing.T) {
 		PTS: 90000, DTS: 90000,
 	}
 	require.NotPanics(t, func() {
-		sw.handleRawVideoFrame("mxl:cam1", pf)
+		sw.IngestRawVideo("mxl:cam1", pf)
 	})
 }
 
@@ -1242,7 +1255,7 @@ func TestSwitcher_E2ELatency(t *testing.T) {
 		return transition.NewMockDecoder(320, 240), nil
 	})
 
-	// Set up pipeline with mock encoder so frames flow through videoProcessingLoop.
+	// Set up pipeline with mock encoder so frames flow through the sync loop.
 	sw.SetPipelineCodecs(func(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 		return transition.NewMockEncoder(), nil
 	})
@@ -1252,9 +1265,9 @@ func TestSwitcher_E2ELatency(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	// Send a keyframe — it flows: relay → sourceViewer.SendVideo (stamps arrivalNano)
-	// → sourceDecoder → handleRawVideoFrame → broadcastProcessedFromPF →
-	// videoProcCh → videoProcessingLoop (measures E2E).
+	// Send a keyframe: relay -> sourceViewer.SendVideo (stamps arrivalNano)
+	// -> sourceDecoder -> IngestRawVideo -> frame sync -> sync loop tick
+	// (measures E2E).
 	cam1Relay.BroadcastVideo(&media.VideoFrame{
 		PTS:        90000,
 		IsKeyframe: true,
@@ -1325,17 +1338,16 @@ func TestIngestReplayVideo_RoutesToPipeline(t *testing.T) {
 		IsKeyframe: true,
 	}
 
-	// Should not panic — routes through handleRawVideoFrame.
+	// Should not panic: routes through IngestRawVideo.
 	require.NotPanics(t, func() {
 		sw.IngestReplayVideo("replay", pf)
 	})
 }
 
 func TestCloseWithFrameSyncActive(t *testing.T) {
-	// Bug 1: Close() closes videoProcCh before stopping the frame sync.
-	// If frame sync ticks in that window, enqueueVideoWork sends on a
-	// closed channel, causing a panic. This test enables frame sync with
-	// active sources and calls Close() repeatedly to trigger the race.
+	// Close() while the sync loop ticks over a source with buffered frames
+	// must not panic. Repeated to hit the window between the clock stopping
+	// and the frame sync releasing its frames.
 	//
 	// Reduced from 20 to 5 iterations: New() allocates a FramePool with
 	// 512 × 1080p buffers (~1.5 GB). With GOGC=400, 20 iterations can OOM
@@ -1349,9 +1361,6 @@ func TestCloseWithFrameSyncActive(t *testing.T) {
 		sw.RegisterSource("camera1", cam1Relay)
 		_ = sw.Cut(context.Background(), "camera1")
 
-		// Enable frame sync — creates a FrameSynchronizer with background ticker.
-		sw.SetFrameSync(true, 10*time.Millisecond)
-
 		// Feed some raw frames through the frame sync so it has data to tick.
 		for j := 0; j < 5; j++ {
 			pf := &ProcessingFrame{
@@ -1361,18 +1370,13 @@ func TestCloseWithFrameSyncActive(t *testing.T) {
 				PTS:        int64(j * 3000),
 				IsKeyframe: j == 0,
 			}
-			sw.configMu.Lock()
-			fs := sw.frameSync
-			sw.configMu.Unlock()
-			if fs != nil {
-				fs.IngestRawVideo("camera1", pf)
-			}
+			sw.IngestRawVideo("camera1", pf)
 		}
 
-		// Let the frame sync tick a few times.
+		// Let the sync loop tick a few times.
 		time.Sleep(30 * time.Millisecond)
 
-		// Close() must not panic even though frame sync is actively ticking.
+		// Close() must not panic even though the sync loop is ticking.
 		require.NotPanics(t, func() {
 			sw.Close()
 		}, "Close() panicked on iteration %d", i)
@@ -1380,212 +1384,6 @@ func TestCloseWithFrameSyncActive(t *testing.T) {
 		// Force GC to reclaim the ~1.5 GB frame pool before next iteration.
 		runtime.GC()
 	}
-}
-
-func TestEnqueueVideoWork_ReenqueueFailureReleasesNewBuffer(t *testing.T) {
-	// Bug A1: When the channel is full, enqueueVideoWork drops the oldest
-	// frame and tries to re-enqueue the new one. If re-enqueue also fails
-	// (race: another goroutine filled the slot), the new work item's pool
-	// buffer must be released. Also, videoProcDropped should only increment
-	// when a frame is actually lost (re-enqueue failure), not on every
-	// drop-oldest path.
-
-	// Create a switcher with a tiny channel capacity of 1.
-	pool := NewFramePool(8, 4, 4, ColorYUV420_8bit)
-	programRelay := newTestRelay()
-	sw := &Switcher{
-		programRelay: programRelay,
-		health:       newHealthMonitor(),
-		// Channel capacity 1 to make it easy to fill.
-		videoProcCh:   make(chan videoProcWork, 1),
-		videoProcDone: make(chan struct{}),
-	}
-	sw.framePool.Store(pool)
-	defaultFmt := DefaultFormat
-	sw.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
-	sw.pipelineFormat.Store(&defaultFmt)
-	sw.delayBuffer = NewDelayBuffer(sw)
-
-	// Don't start videoProcessingLoop — we want the channel to stay full.
-
-	// Fill the channel (capacity 1).
-	pf1 := &ProcessingFrame{
-		Data: pool.Acquire(), Width: 4, Height: 4,
-		PTS: 100, IsKeyframe: true, pool: pool,
-	}
-	sw.videoProcCh <- videoProcWork{yuvFrame: pf1}
-
-	// Now enqueue a second frame. This triggers the drop-oldest path.
-	// The oldest (pf1) will be drained and released, then the new frame
-	// will be enqueued into the now-empty slot. This is the success path.
-	pf2 := &ProcessingFrame{
-		Data: pool.Acquire(), Width: 4, Height: 4,
-		PTS: 200, IsKeyframe: false, pool: pool,
-	}
-	sw.enqueueVideoWork(videoProcWork{yuvFrame: pf2})
-
-	// pf1 was dropped and released. pf2 should be in the channel.
-	require.Len(t, sw.videoProcCh, 1, "channel should have the new frame")
-
-	// Now test the failure path: fill the channel again, then simulate
-	// a scenario where re-enqueue fails by filling it from outside first.
-	// We need to ensure that if both the channel-drain AND re-enqueue
-	// default branches fire, the new frame's buffer gets released.
-	//
-	// To test this deterministically, we fill the channel and then call
-	// enqueueVideoWork again — but this time we pre-fill from the outside
-	// after the drain so the re-enqueue default branch fires.
-	//
-	// Since we can't control goroutine scheduling, we test by verifying
-	// that after many enqueue attempts on a permanently full channel,
-	// all buffers are eventually returned to the pool.
-	//
-	// Strategy: acquire all buffers, enqueue them on a stopped channel,
-	// then check pool stats.
-	pool2 := NewFramePool(4, 4, 4, ColorYUV420_8bit)
-	sw2 := &Switcher{
-		programRelay:  programRelay,
-		health:        newHealthMonitor(),
-		videoProcCh:   make(chan videoProcWork, 1),
-		videoProcDone: make(chan struct{}),
-	}
-	sw2.framePool.Store(pool2)
-	sw2.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
-	sw2.pipelineFormat.Store(&defaultFmt)
-	sw2.delayBuffer = NewDelayBuffer(sw2)
-
-	// Acquire all 4 buffers from pool2.
-	bufs := make([][]byte, 4)
-	for i := range bufs {
-		bufs[i] = pool2.Acquire()
-	}
-	// Pool is now empty — all 4 buffers are out.
-	_, missesBefore := pool2.Stats()
-
-	// Put one in the channel to fill it.
-	sw2.videoProcCh <- videoProcWork{yuvFrame: &ProcessingFrame{
-		Data: bufs[0], Width: 4, Height: 4, PTS: 1, pool: pool2,
-	}}
-
-	// Enqueue the remaining 3 — each triggers drop-oldest + re-enqueue.
-	// One frame remains in the channel at the end, the rest should be released.
-	for i := 1; i < 4; i++ {
-		sw2.enqueueVideoWork(videoProcWork{yuvFrame: &ProcessingFrame{
-			Data: bufs[i], Width: 4, Height: 4, PTS: int64(i * 100), pool: pool2,
-		}})
-	}
-
-	// Drain the last frame from the channel.
-	remaining := <-sw2.videoProcCh
-	remaining.yuvFrame.ReleaseYUV()
-
-	// All 4 buffers should now be back in the pool.
-	hits, misses := pool2.Stats()
-	_ = missesBefore
-	// 4 acquires (hits) + 4 releases should mean all are back.
-	require.Equal(t, uint64(4), hits, "all 4 initial Acquires should be hits")
-	// Verify no extra misses happened (no buffer was leaked causing a fallback alloc).
-	require.Equal(t, misses, uint64(0), "no pool misses should occur — all buffers accounted for")
-
-	// Clean up: close channels to avoid goroutine leaks.
-	close(sw.videoProcCh)
-	close(sw2.videoProcCh)
-	sw.delayBuffer.Close()
-	sw2.delayBuffer.Close()
-	sw.health.stop()
-	sw2.health.stop()
-}
-
-func TestEnqueueVideoWork_DroppedCountOnlyOnActualLoss(t *testing.T) {
-	// Bug A1 (part 2): videoProcDropped should only increment when a frame
-	// is actually lost (re-enqueue failure), not on every drop-oldest path.
-	// When the oldest frame is dropped but the new one is successfully
-	// enqueued, there is no net frame loss — just a swap of old for new.
-	pool := NewFramePool(8, 4, 4, ColorYUV420_8bit)
-	programRelay := newTestRelay()
-	sw := &Switcher{
-		programRelay:  programRelay,
-		health:        newHealthMonitor(),
-		videoProcCh:   make(chan videoProcWork, 1),
-		videoProcDone: make(chan struct{}),
-	}
-	sw.framePool.Store(pool)
-	defaultFmt := DefaultFormat
-	sw.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
-	sw.pipelineFormat.Store(&defaultFmt)
-	sw.delayBuffer = NewDelayBuffer(sw)
-	defer func() {
-		close(sw.videoProcCh)
-		sw.delayBuffer.Close()
-		sw.health.stop()
-	}()
-
-	// Fill the channel.
-	pf1 := &ProcessingFrame{
-		Data: pool.Acquire(), Width: 4, Height: 4,
-		PTS: 100, IsKeyframe: true, pool: pool,
-	}
-	sw.videoProcCh <- videoProcWork{yuvFrame: pf1}
-
-	// Enqueue a new frame — should drop oldest and re-enqueue successfully.
-	pf2 := &ProcessingFrame{
-		Data: pool.Acquire(), Width: 4, Height: 4,
-		PTS: 200, IsKeyframe: false, pool: pool,
-	}
-	sw.enqueueVideoWork(videoProcWork{yuvFrame: pf2})
-
-	// The old frame was dropped, but the new one took its place.
-	// No net frame loss — videoProcDropped should be 0.
-	require.Equal(t, int64(0), sw.videoProcDropped.Load(),
-		"videoProcDropped should not increment when re-enqueue succeeds (no net loss)")
-}
-
-func TestBroadcastProcessed_ShortYUVDoesNotPanic(t *testing.T) {
-	// Bug A2: broadcastProcessed must check that len(yuv) >= expectedSize
-	// before copying into a pool buffer. A short slice would cause a panic
-	// on the copy(buf, yuv[:expectedSize]) line.
-	programRelay := newTestRelay()
-	sw := newTestSwitcher(t, programRelay)
-	sw.SetPipelineCodecs(
-		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
-	)
-	require.NoError(t, sw.BuildPipeline())
-	defer sw.Close()
-
-	// Create a short YUV buffer — smaller than ColorYUV420_8bit.FrameSize(320, 240) = 115200.
-	shortYUV := make([]byte, 100)
-
-	// Should not panic.
-	require.NotPanics(t, func() {
-		sw.broadcastProcessed(shortYUV, 320, 240, 90000, true)
-	})
-
-	// Verify no pool buffer was leaked (Acquire should not have been called
-	// since the bounds check should bail out before Acquire).
-	// Give a tiny window for any async work to complete.
-	time.Sleep(10 * time.Millisecond)
-}
-
-func TestBroadcastProcessed_EmptyYUVDoesNotPanic(t *testing.T) {
-	// Edge case: nil/empty YUV slice.
-	programRelay := newTestRelay()
-	sw := newTestSwitcher(t, programRelay)
-	sw.SetPipelineCodecs(
-		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
-	)
-	require.NoError(t, sw.BuildPipeline())
-	defer sw.Close()
-
-	require.NotPanics(t, func() {
-		sw.broadcastProcessed(nil, 320, 240, 90000, true)
-	})
-	require.NotPanics(t, func() {
-		sw.broadcastProcessed([]byte{}, 1920, 1080, 90000, true)
-	})
 }
 
 func TestUpdateFrameStats_90kHzPTS(t *testing.T) {

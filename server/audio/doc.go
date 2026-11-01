@@ -1,11 +1,11 @@
 // Package audio implements the server-side audio mixing engine.
 //
 // The [Mixer] decodes AAC audio from each source, applies per-channel
-// processing, mixes to a stereo master bus, and re-encodes to AAC for the
-// program output. A clock-driven output ticker produces one AAC frame per
-// ~21ms tick (1024 samples at 48kHz), reading from per-channel ring buffers
-// populated by the ingest path. This decouples output cadence from source
-// arrival timing.
+// processing and mixes to a stereo master bus. An external reference clock
+// calls [Mixer.ProduceSamples] once per period for the program audio at a
+// sample index of the media timeline; it reads per-channel ring buffers
+// that the ingest path fills and stamps with media time, and the caller
+// encodes the result. Output cadence is decoupled from source arrival.
 //
 // Per-channel processing pipeline (in order):
 //   - Trim (-20 to +20 dB input gain)
@@ -15,7 +15,6 @@
 //   - Mix (sum to stereo master)
 //   - Master fader
 //   - [Limiter]: Brickwall limiter at -1 dBFS
-//   - Encode (AAC output)
 //
 // Key types:
 //   - [Mixer]: Main mixer with per-channel decode/mix/encode

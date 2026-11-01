@@ -6,7 +6,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
 )
 
 // generateSine creates a stereo interleaved sine wave at the given frequency.
@@ -248,7 +247,6 @@ func TestMixer_SetHPF(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -403,6 +404,19 @@ func TestSwitcherThumbnailCachePassedToDecoders(t *testing.T) {
 	}
 }
 
+// showOnProgram makes an MXL source with frame pf the program and runs the
+// tick that shows it.
+func showOnProgram(t *testing.T, sw *Switcher, pf *ProcessingFrame) {
+	t.Helper()
+	sw.RegisterMXLSource("mxl:cam")
+	if err := sw.Cut(t.Context(), "mxl:cam"); err != nil {
+		t.Fatal(err)
+	}
+	pf.PTS = clock.NowPTS()
+	sw.IngestRawVideo("mxl:cam", pf)
+	sw.tickNow()
+}
+
 func TestProgramOutputThumbnailCapture(t *testing.T) {
 	relay := distribution.NewRelay()
 	sw := New(relay)
@@ -411,8 +425,7 @@ func TestProgramOutputThumbnailCapture(t *testing.T) {
 	tc := sw.ThumbnailCache()
 	tc.RequestCapture()
 
-	// Create a synthetic YUV420 frame and push it through the video processing
-	// channel to simulate the program output path.
+	// Create a synthetic YUV420 frame and show it on a program tick.
 	w, h := 320, 240
 	yuvSize := w * h * 3 / 2
 	yuv := make([]byte, yuvSize)
@@ -432,12 +445,7 @@ func TestProgramOutputThumbnailCapture(t *testing.T) {
 	}
 	pf.SetRefs(1)
 
-	// Enqueue to video processing channel
-	sw.videoProcCh <- videoProcWork{
-		yuvFrame:    pf,
-		epoch:       sw.programEpoch.Load(),
-		enqueueNano: time.Now().UnixNano(),
-	}
+	showOnProgram(t, sw, pf)
 
 	// Wait for the program output thumbnail to appear
 	deadline := time.After(3 * time.Second)
@@ -486,14 +494,7 @@ func TestProgramOutputThumbnailNotCapturedWhenNotRequested(t *testing.T) {
 	}
 	pf.SetRefs(1)
 
-	sw.videoProcCh <- videoProcWork{
-		yuvFrame:    pf,
-		epoch:       sw.programEpoch.Load(),
-		enqueueNano: time.Now().UnixNano(),
-	}
-
-	// Give the processing loop time to handle the frame
-	time.Sleep(100 * time.Millisecond)
+	showOnProgram(t, sw, pf)
 
 	_, ok := tc.Get("program_output")
 	if ok {

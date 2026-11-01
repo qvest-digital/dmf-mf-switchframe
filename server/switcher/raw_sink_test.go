@@ -9,12 +9,13 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
 func TestSetRawVideoSink_ReceivesFrames(t *testing.T) {
 	// In always-decode mode, frames arrive as raw YUV and flow through
-	// broadcastProcessedFromPF → pipeline (raw-sink node taps, then encode).
+	// the sync loop -> pipeline (raw-sink node taps, then encode).
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
@@ -62,10 +63,11 @@ func TestSetRawVideoSink_ReceivesFrames(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	got := received[0]
-	// The raw sink receives the frame as-is from handleRawVideoFrame.
-	// The frame dimensions depend on the pipeline format (320x240 in tests)
-	// because the frame pool allocates at pipeline resolution.
-	require.Equal(t, int64(12345), got.PTS)
+	// The raw sink receives each program frame stamped with its tick's PTS,
+	// on the program frame grid.
+	pf := sw.PipelineFormat()
+	r := clock.Rate{Num: int64(pf.FPSNum), Den: int64(pf.FPSDen)}
+	require.Equal(t, clock.IndexPTS(r, clock.PTSIndex(r, got.PTS)), got.PTS, "PTS off the program grid")
 	require.Greater(t, got.YUVLen, 0, "sink should receive non-empty YUV data")
 }
 

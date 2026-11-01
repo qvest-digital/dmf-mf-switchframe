@@ -58,8 +58,8 @@ func TestMixer_IngestFrame_DownmixSurroundToStereo(t *testing.T) {
 	const mixerChans = 2
 
 	cases := []struct {
-		name                     string
-		l, r, c, lfe, ls, rs     float32
+		name                 string
+		l, r, c, lfe, ls, rs float32
 	}{
 		{"C_only_phantom_center", 0, 0, 0.8, 0, 0, 0},
 		{"L_only_passes_through", 0.5, 0, 0, 0, 0, 0},
@@ -80,14 +80,9 @@ func TestMixer_IngestFrame_DownmixSurroundToStereo(t *testing.T) {
 			m := NewMixer(MixerConfig{
 				SampleRate: 48000,
 				Channels:   mixerChans,
-				Output:     func(*media.AudioFrame) {},
 				DecoderFactory: func(int, int) (Decoder, error) {
 					return dec, nil
 				},
-				EncoderFactory: func(int, int) (Encoder, error) {
-					return &mockEncoder{}, nil
-				},
-				ClockDriven: true,
 			})
 			defer func() { _ = m.Close() }()
 
@@ -145,14 +140,9 @@ func TestMixer_IngestPCM_DownmixSurroundToStereo(t *testing.T) {
 			m := NewMixer(MixerConfig{
 				SampleRate: 48000,
 				Channels:   mixerChans,
-				Output:     func(*media.AudioFrame) {},
 				DecoderFactory: func(int, int) (Decoder, error) {
 					return &mockDecoder{samples: make([]float32, frames*mixerChans)}, nil
 				},
-				EncoderFactory: func(int, int) (Encoder, error) {
-					return &mockEncoder{}, nil
-				},
-				ClockDriven: true,
 			})
 			defer func() { _ = m.Close() }()
 
@@ -193,14 +183,9 @@ func TestMixer_IngestPCM_DownmixReusesBuffer(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(*media.AudioFrame) {},
 		DecoderFactory: func(int, int) (Decoder, error) {
 			return &mockDecoder{samples: make([]float32, frames*2)}, nil
 		},
-		EncoderFactory: func(int, int) (Encoder, error) {
-			return &mockEncoder{}, nil
-		},
-		ClockDriven: true,
 	})
 	defer func() { _ = m.Close() }()
 
@@ -247,14 +232,9 @@ func TestMixer_IngestFrame_DownmixReusesBuffer(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(*media.AudioFrame) {},
 		DecoderFactory: func(int, int) (Decoder, error) {
 			return dec, nil
 		},
-		EncoderFactory: func(int, int) (Encoder, error) {
-			return &mockEncoder{}, nil
-		},
-		ClockDriven: true,
 	})
 	defer func() { _ = m.Close() }()
 
@@ -298,14 +278,9 @@ func TestMixer_IngestPCM_DownmixDisengagesWhenLayoutShrinks(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(*media.AudioFrame) {},
 		DecoderFactory: func(int, int) (Decoder, error) {
 			return &mockDecoder{samples: make([]float32, frames*2)}, nil
 		},
-		EncoderFactory: func(int, int) (Encoder, error) {
-			return &mockEncoder{}, nil
-		},
-		ClockDriven: true,
 	})
 	defer func() { _ = m.Close() }()
 
@@ -353,14 +328,9 @@ func TestMixer_IngestPCM_SurroundLogWarnsOncePerChannelLife(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(*media.AudioFrame) {},
 		DecoderFactory: func(int, int) (Decoder, error) {
 			return &mockDecoder{samples: make([]float32, frames*2)}, nil
 		},
-		EncoderFactory: func(int, int) (Encoder, error) {
-			return &mockEncoder{}, nil
-		},
-		ClockDriven: true,
 	})
 	defer func() { _ = m.Close() }()
 

@@ -23,13 +23,3 @@ type audioHandlers struct {
 	audioHandler    func(sourceKey string, frame *media.AudioFrame)
 	audioTransition audioTransitionHandler
 }
-
-// frameSyncBundle groups the reference-clock frame synchronizer and its
-// active flag plus the global delay buffer. The per-frame handler reads
-// `active` first and bails early before touching `sync`; grouping keeps
-// the two fields in a single atomic load.
-type frameSyncBundle struct {
-	sync        *FrameSynchronizer
-	delayBuffer *DelayBuffer
-	active      bool
-}

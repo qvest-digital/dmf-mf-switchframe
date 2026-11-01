@@ -28,28 +28,12 @@ import (
 	"github.com/zsiec/prism/distribution"
 
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/mxl"
 	"github.com/zsiec/switchframe/server/perf"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
-
-// audioTickCadenceNs is the outputTicker cadence for a 48 kHz mixer with
-// 1024-sample frames: 1024 / 48000 ≈ 21.333 ms.
-const audioTickCadenceNs int64 = 1024 * 1_000_000_000 / 48000
-
-// noopAudioEncoder is a zero-cost audio.Encoder so the mixer tick loop
-// runs recordAndOutput without pulling in the FDK cgo dependency. The
-// encoded output is immediately discarded; we only care that the mixer
-// updates its MaxInterFrameGapNs / FramesOutput counters.
-type noopAudioEncoder struct{}
-
-func (noopAudioEncoder) Encode(pcm []float32) ([]byte, error) { return []byte{}, nil }
-func (noopAudioEncoder) Close() error                          { return nil }
-
-func noopAudioEncoderFactory(sampleRate, channels int) (audio.Encoder, error) {
-	return noopAudioEncoder{}, nil
-}
 
 func mockVideoEncoderFactory(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 	return transition.NewMockEncoder(), nil
@@ -356,12 +340,16 @@ func buildEngine(ctx context.Context, cfg config) (*engineHandle, error) {
 	sw := switcher.New(relay)
 
 	mixer := audio.NewMixer(audio.MixerConfig{
-		SampleRate:     48000,
-		Channels:       2,
-		EncoderFactory: noopAudioEncoderFactory,
+		SampleRate: 48000,
+		Channels:   2,
 	})
 	sw.SetMixer(mixer)
-	sw.SetFrameSync(true, 0)
+	sw.SetSyncMixer(mixer)
+	// The sync loop encodes the program audio; a no-op encoder keeps the
+	// load test free of the FDK dependency.
+	sw.SetAACBuffer(clock.NewAACFrameBuffer(2, 48000, func([]float32) ([]byte, error) {
+		return []byte{0xff}, nil
+	}))
 
 	sw.SetPipelineCodecs(mockVideoEncoderFactory)
 	if err := sw.BuildPipeline(); err != nil {
@@ -369,6 +357,8 @@ func buildEngine(ctx context.Context, cfg config) (*engineHandle, error) {
 		_ = mixer.Close()
 		return nil, fmt.Errorf("build pipeline: %w", err)
 	}
+
+	sw.Start()
 
 	pf := sw.PipelineFormat()
 	h := &engineHandle{sw: sw, mixer: mixer}
@@ -496,12 +486,12 @@ func runLoop(ctx context.Context, cfg config, engine *engineHandle, enc *json.En
 				perSourceLast[key] = src.RawFrameCount
 			}
 
-			// Only compute slippage once the mixer has actually emitted frames.
-			// Before the first recordAndOutput the gap field is 0 and subtracting
-			// the expected cadence yields a phantom 21.33 ms.
+			// The mixer is pulled once per program frame. Only compute slippage
+			// once it has mixed twice: before that the gap field is 0.
 			var slippageMs float64
-			if mxSample.FramesOutput > 1 && mxSample.MaxInterFrameGapNs > 0 {
-				slippageMs = math.Abs(float64(mxSample.MaxInterFrameGapNs-audioTickCadenceNs)) / 1e6
+			if mxSample.FramesMixed > 1 && mxSample.MaxInterFrameGapNs > 0 {
+				cadence := engine.sw.PipelineFormat().FrameDuration().Nanoseconds()
+				slippageMs = math.Abs(float64(mxSample.MaxInterFrameGapNs-cadence)) / 1e6
 			}
 
 			ev := tickEvent{
@@ -518,7 +508,7 @@ func runLoop(ctx context.Context, cfg config, engine *engineHandle, enc *json.En
 				Mixer: mixerMetrics{
 					MaxInterFrameGapNs: mxSample.MaxInterFrameGapNs,
 					SlippageMs:         slippageMs,
-					FramesOutput:       mxSample.FramesOutput,
+					FramesOutput:       mxSample.FramesMixed,
 					MixCycleLastNs:     mxSample.MixCycleLastNs,
 				},
 				Runtime: runtimeMetrics{

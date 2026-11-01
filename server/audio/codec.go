@@ -19,13 +19,10 @@ type Decoder interface {
 type Encoder interface {
 	// Encode encodes interleaved float32 PCM into an AAC frame.
 	Encode(pcm []float32) ([]byte, error)
-	Close() error
-}
-
-// delayedEncoder is an Encoder whose frames carry audio from a number of
-// samples per channel before the PCM passed in for them.
-type delayedEncoder interface {
+	// Delay returns how many samples per channel the audio in an encoded
+	// frame lags the PCM passed in for it (0 when unknown).
 	Delay() int
+	Close() error
 }
 
 // DecoderFactory creates Decoders. Allows tests to inject mock factories.

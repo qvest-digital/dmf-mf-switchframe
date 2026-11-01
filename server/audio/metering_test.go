@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
 )
 
@@ -78,7 +77,6 @@ func TestMixerProgramPeak(t *testing.T) {
 	m := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	t.Cleanup(func() { _ = m.Close() })
 
@@ -93,7 +91,6 @@ func TestMixerChannelStates(t *testing.T) {
 	m := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	t.Cleanup(func() { _ = m.Close() })
 
@@ -114,7 +111,6 @@ func TestMixer_DebugSnapshot(t *testing.T) {
 	m := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	t.Cleanup(func() { _ = m.Close() })
 
@@ -128,7 +124,6 @@ func TestMixer_DebugSnapshot_PerChannelDetails(t *testing.T) {
 	m := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	t.Cleanup(func() { _ = m.Close() })
 
@@ -172,7 +167,6 @@ func TestMixer_DebugSnapshot_Loudness(t *testing.T) {
 	m := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	t.Cleanup(func() { _ = m.Close() })
 
@@ -197,7 +191,6 @@ func TestMixerMasterLevelGetter(t *testing.T) {
 	m := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	t.Cleanup(func() { _ = m.Close() })
 

@@ -116,7 +116,7 @@ func newTxRig(t *testing.T) *txRig {
 		t.Fatal(err)
 	}
 	r := &txRig{a: &App{sw: sw, mixer: audio.NewMixer(audio.MixerConfig{
-		SampleRate: 48000, Channels: 2, ClockDriven: true})}}
+		SampleRate: 48000, Channels: 2})}}
 	r.a.wireFormatChange(false)
 
 	store := nmos.NewResourceStore()

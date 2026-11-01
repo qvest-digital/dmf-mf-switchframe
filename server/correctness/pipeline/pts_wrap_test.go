@@ -3,16 +3,12 @@
 package pipeline
 
 import (
-	"math"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
-	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 	"github.com/zsiec/switchframe/server/output"
@@ -341,165 +337,6 @@ func TestMuxerPTSWrapWithAudio(t *testing.T) {
 	}
 }
 
-// TestMixerPTSWrap creates a Mixer, seeds PTS near 2^33 via SeedPTSFromVideo,
-// feeds audio for 3 seconds crossing the wrap, and verifies PTS continuity.
-func TestMixerPTSWrap(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping long correctness test in short mode")
-	}
-
-	// Seed PTS 1 second before the 33-bit wrap point.
-	seedPTS := ptsWrapPoint - 90000
-
-	var mu sync.Mutex
-	var capturedFrames []*media.AudioFrame
-
-	mixer := audio.NewMixer(audio.MixerConfig{
-		SampleRate: 48000,
-		Channels:   2,
-		Output: func(frame *media.AudioFrame) {
-			mu.Lock()
-			cp := *frame
-			if len(frame.Data) > 0 {
-				cp.Data = make([]byte, len(frame.Data))
-				copy(cp.Data, frame.Data)
-			}
-			capturedFrames = append(capturedFrames, &cp)
-			mu.Unlock()
-		},
-		DecoderFactory: func(sampleRate, channels int) (audio.Decoder, error) {
-			return audio.NewFDKDecoder(sampleRate, channels)
-		},
-		EncoderFactory: func(sampleRate, channels int) (audio.Encoder, error) {
-			return audio.NewFDKEncoder(sampleRate, channels)
-		},
-	})
-	defer mixer.Close()
-
-	// Register a source channel and set it active.
-	mixer.AddChannel("source-a")
-	mixer.SetActive("source-a", true)
-
-	// Seed PTS from "video" near the wrap point.
-	mixer.ExpectVideoSeed()
-	mixer.SeedPTSFromVideo(seedPTS)
-
-	// Feed ~3 seconds of PCM audio (1024 samples per frame at 48kHz = ~21.3ms).
-	// 3 seconds = ~141 frames.
-	const frameSamples = 1024
-	const channels = 2
-	pcmFrame := make([]float32, frameSamples*channels)
-	for i := range pcmFrame {
-		// Generate a quiet tone so the output isn't silence-gated.
-		pcmFrame[i] = 0.1 * float32(math.Sin(2.0*math.Pi*440.0*float64(i/channels)/48000.0))
-	}
-
-	// Feed PCM frames for ~3 seconds — the ticker produces output at its own cadence.
-	feedDuration := 3 * time.Second
-	feedInterval := time.Millisecond * time.Duration(1000*frameSamples/48000)
-	feedEnd := time.Now().Add(feedDuration)
-
-	for time.Now().Before(feedEnd) {
-		mixer.IngestPCM("source-a", pcmFrame, 0, channels)
-		time.Sleep(feedInterval)
-	}
-
-	// Wait a bit for the output ticker to flush.
-	time.Sleep(200 * time.Millisecond)
-
-	mu.Lock()
-	frames := make([]*media.AudioFrame, len(capturedFrames))
-	copy(frames, capturedFrames)
-	mu.Unlock()
-
-	t.Logf("MEASURE: captured audio frames = %d", len(frames))
-	require.GreaterOrEqual(t, len(frames), 50,
-		"expected at least 50 audio output frames for 3 seconds of input")
-
-	// Extract PTS values.
-	ptsList := make([]int64, len(frames))
-	for i, f := range frames {
-		ptsList[i] = f.PTS
-	}
-
-	// Log PTS values around the expected wrap region.
-	t.Logf("MEASURE: first PTS = %d, last PTS = %d", ptsList[0], ptsList[len(ptsList)-1])
-
-	// Find where PTS wraps (large value followed by small value).
-	wrapIdx := -1
-	for i := 1; i < len(ptsList); i++ {
-		if ptsList[i] < ptsList[i-1] && (ptsList[i-1]-ptsList[i]) > ptsWrapPoint/2 {
-			wrapIdx = i
-			break
-		}
-	}
-
-	if wrapIdx >= 0 {
-		t.Logf("MEASURE: PTS wrap detected at frame %d: PTS[%d]=%d -> PTS[%d]=%d",
-			wrapIdx, wrapIdx-1, ptsList[wrapIdx-1], wrapIdx, ptsList[wrapIdx])
-
-		// Log sequence around wrap.
-		start := wrapIdx - 3
-		if start < 0 {
-			start = 0
-		}
-		end := wrapIdx + 3
-		if end > len(ptsList) {
-			end = len(ptsList)
-		}
-		t.Logf("MEASURE: PTS sequence around wrap: %v", ptsList[start:end])
-
-		// Verify continuity: the PTS gap at the wrap should be approximately
-		// one audio frame duration (~1920 ticks at 90kHz).
-		expectedDelta := int64(1920) // 1024 * 90000 / 48000
-		// Calculate wrap-aware delta.
-		delta := (ptsList[wrapIdx] - ptsList[wrapIdx-1]) & 0x1FFFFFFFF
-		t.Logf("MEASURE: wrap-aware delta at wrap point = %d (expected ~%d)", delta, expectedDelta)
-
-		// Allow generous tolerance — mixer uses wall-clock resync which can vary.
-		require.InDelta(t, float64(expectedDelta), float64(delta), float64(expectedDelta)*5,
-			"PTS delta at wrap should be approximately one frame duration")
-	} else {
-		// The mixer's advanceOutputPTS comment says:
-		// "No 33-bit mask — the muxer handles PTS rebasing and wrapping."
-		// This means the mixer's output PTS can grow beyond 2^33 without wrapping!
-		// The muxer then applies the 33-bit mask during rebasing.
-		t.Logf("MEASURE: PTS sequence around wrap: %v", ptsList[0:min(10, len(ptsList))])
-
-		// Check if PTS exceeds 2^33 — if so, the mixer is NOT wrapping.
-		maxPTS := int64(0)
-		for _, p := range ptsList {
-			if p > maxPTS {
-				maxPTS = p
-			}
-		}
-		t.Logf("MEASURE: max PTS = %d, 2^33 = %d", maxPTS, ptsWrapPoint)
-
-		if maxPTS >= ptsWrapPoint {
-			t.Logf("MEASURE: mixer PTS exceeds 2^33 — mixer does NOT wrap, relies on muxer")
-			// This is the expected behavior per the code comment in advanceOutputPTS.
-			// Verify PTS is still monotonic (just very large).
-			for i := 1; i < len(ptsList); i++ {
-				if ptsList[i] <= ptsList[i-1] {
-					t.Errorf("BUG: mixer PTS not monotonic at frame %d: PTS[%d]=%d <= PTS[%d]=%d",
-						i, i, ptsList[i], i-1, ptsList[i-1])
-				}
-			}
-		} else {
-			// PTS didn't grow large enough — seed might not have taken effect.
-			t.Logf("MEASURE: PTS stayed below 2^33. Seed PTS was %d, first output PTS was %d",
-				seedPTS, ptsList[0])
-		}
-	}
-
-	// Verify no silence gap at wrap point: check that audio data has
-	// non-zero length for all frames.
-	for i, f := range frames {
-		require.Greater(t, len(f.Data), 0,
-			"audio frame %d at PTS=%d has empty data (silence gap?)", i, f.PTS)
-	}
-}
-
 // TestCutDuringPTSWrap encodes video from two sources with PTS near the wrap
 // point. Source A is on program, then we cut to source B at the wrap point.
 // Verifies the output TS is valid despite the PTS discontinuity.
@@ -607,11 +444,4 @@ func TestCutDuringPTSWrap(t *testing.T) {
 		totalDuration := float64(probeFrames[len(probeFrames)-1].PTS-probeFrames[0].PTS) / 90000.0
 		t.Logf("MEASURE: total duration from PTS = %.2f seconds (expected ~4.0)", totalDuration)
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

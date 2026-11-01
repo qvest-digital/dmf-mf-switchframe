@@ -14,7 +14,6 @@ import (
 // originating source key attached.
 type frameHandler interface {
 	handleVideoFrame(sourceKey string, frame *media.VideoFrame)
-	handleRawVideoFrame(sourceKey string, pf *ProcessingFrame)
 	handleAudioFrame(sourceKey string, frame *media.AudioFrame)
 	handleCaptionFrame(sourceKey string, frame *ccx.CaptionFrame)
 }
@@ -64,11 +63,10 @@ func (sv *sourceViewer) ID() string {
 	return sv.id
 }
 
-// SendVideo forwards a video frame to the handler tagged with the source key.
-// When a sourceDecoder is set (always-decode mode), the H.264 frame is sent
-// to the decoder goroutine; decoded YUV frames flow through frameSync/delay
-// buffer/handler via the sourceDecoder callback. Otherwise, the legacy H.264
-// path is used: frame sync → delay buffer → handler.
+// SendVideo forwards a video frame tagged with the source key. With a
+// sourceDecoder (always-decode mode) the frame goes to the decoder, whose
+// output enters Switcher.IngestRawVideo; otherwise only its statistics are
+// kept.
 func (sv *sourceViewer) SendVideo(frame *media.VideoFrame) {
 	arrivalNano := time.Now().UnixNano()
 	sv.videoSent.Add(1)
@@ -77,11 +75,7 @@ func (sv *sourceViewer) SendVideo(frame *media.VideoFrame) {
 		dec.Send(frame, arrivalNano)
 		return
 	}
-	// Legacy H.264 path
-	if fs := sv.frameSync.Load(); fs != nil {
-		fs.IngestVideo(sv.sourceKey, frame)
-		return
-	}
+	// No decoder: frame statistics only.
 	if db := sv.delayBuffer.Load(); db != nil {
 		db.handleVideoFrame(sv.sourceKey, frame)
 		return
@@ -95,13 +89,10 @@ func (sv *sourceViewer) SendVideo(frame *media.VideoFrame) {
 // video tick clock (30 fps). Routing audio through the frame sync batches
 // delivery to tick boundaries, causing bursty timing that downstream audio
 // schedulers (browser AudioContext) cannot absorb cleanly.
-// If a delay buffer is configured, frames route through it for lip-sync delay.
+// A source delay does not hold audio back here: the mixer reads the
+// source's audio that much earlier in media time.
 func (sv *sourceViewer) SendAudio(frame *media.AudioFrame) {
 	sv.audioSent.Add(1)
-	if db := sv.delayBuffer.Load(); db != nil {
-		db.handleAudioFrame(sv.sourceKey, frame)
-		return
-	}
 	sv.handler.handleAudioFrame(sv.sourceKey, frame)
 }
 

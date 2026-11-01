@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"image"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -66,8 +67,10 @@ type pipelineHarness struct {
 
 	sources map[string]sourceColor
 
-	// Reference clock fields (set when withReferenceClock option is used).
-	refClock    *clock.ReferenceClock
+	// cutAt is the capture count at the last cut (sinceCut).
+	cutAt int
+
+	// Set when withReferenceClock option is used.
 	aacBuffer   *clock.AACFrameBuffer
 	useRefClock bool
 }
@@ -144,67 +147,33 @@ func newPipelineHarness(t *testing.T, opts ...harnessOption) *pipelineHarness {
 		return codec.NewFFmpegEncoder("libx264", w, ht, bitrate, fpsNum, fpsDen, 2, nil)
 	})
 
-	// Reference clock path: set up frame sync + ref clock before mixer/pipeline.
+	// Reference clock path: program at testFPS and the sync loop's audio,
+	// set up before mixer/pipeline.
 	if cfg.useRefClock {
-		// Enable frame sync in clock-driven mode.
-		sw.SetFrameSync(true, 0)
-		sw.SetClockDrivenSync(true)
-
-		// Create non-realtime reference clock (deterministic, no wall clock).
-		rc := clock.NewReferenceClock(testFPS, 1, 48000, 0, false)
-		sw.SetReferenceClock(rc)
-		h.refClock = rc
+		setRefClockRate(t, sw, testFPS, 1)
 		h.useRefClock = true
-
-		// Create AAC frame buffer with real FDK encoder.
-		aacEnc, err := audio.NewFDKEncoder(48000, 2)
-		require.NoError(t, err)
-		t.Cleanup(func() { aacEnc.Close() })
-		aacBuf := clock.NewAACFrameBuffer(2, 48000, func(pcm []float32) ([]byte, error) {
-			return aacEnc.Encode(pcm)
-		})
-		sw.SetAACBuffer(aacBuf)
-		h.aacBuffer = aacBuf
+		h.aacBuffer = newSyncAACBuffer(t, sw)
 	}
 
-	// Optional: audio mixer.
+	// Optional: audio mixer. The sync loop drives it via ProduceSamples and
+	// encodes its output to AAC, as production wires it.
 	if cfg.withMixer {
-		mixerCfg := audio.MixerConfig{
+		mixer := audio.NewMixer(audio.MixerConfig{
 			SampleRate: 48000,
 			Channels:   2,
-			Output: func(frame *media.AudioFrame) {
-				programRelay.BroadcastAudio(frame)
-			},
 			DecoderFactory: func(sampleRate, channels int) (audio.Decoder, error) {
 				return audio.NewFDKDecoder(sampleRate, channels)
 			},
-			EncoderFactory: func(sampleRate, channels int) (audio.Encoder, error) {
-				return audio.NewFDKEncoder(sampleRate, channels)
-			},
-		}
-		if cfg.useRefClock {
-			mixerCfg.ClockDriven = true
-		}
-		mixer := audio.NewMixer(mixerCfg)
+		})
 		h.mixer = mixer
 		sw.SetMixer(mixer)
 		sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
 			mixer.IngestFrame(sourceKey, frame)
 		})
-
-		if cfg.useRefClock {
-			// In ref clock mode, the sync loop drives audio via ProduceSamples.
-			sw.SetSyncMixer(mixer)
-		} else {
-			// Mirror production wiring (app.go): seed audio PTS from video so
-			// both streams share the same PTS epoch. Without this, the mixer
-			// self-seeds from wall clock which diverges from synthetic video PTS.
-			mixer.ExpectVideoSeed()
-			sw.SetOnFirstVideoPTS(func(pts int64) {
-				mixer.SeedPTSFromVideo(pts)
-			})
-			sw.EnableWallClockVideoPTS()
+		if h.aacBuffer == nil {
+			h.aacBuffer = newSyncAACBuffer(t, sw)
 		}
+		sw.SetSyncMixer(mixer)
 	}
 
 	// Optional: graphics compositor.
@@ -260,37 +229,14 @@ func newPipelineHarnessNoEncode(t *testing.T) *pipelineHarness {
 	sw := switcher.NewTestSwitcher(t, programRelay)
 	h.sw = sw
 
-	// Enable frame sync in clock-driven mode.
-	sw.SetFrameSync(true, 0)
-	sw.SetClockDrivenSync(true)
-
-	// Create non-realtime reference clock.
-	rc := clock.NewReferenceClock(testFPS, 1, 48000, 0, false)
-	sw.SetReferenceClock(rc)
-	h.refClock = rc
+	setRefClockRate(t, sw, testFPS, 1)
 	h.useRefClock = true
+	h.aacBuffer = newSyncAACBuffer(t, sw)
 
-	// Create AAC frame buffer with real FDK encoder.
-	aacEnc, err := audio.NewFDKEncoder(48000, 2)
-	require.NoError(t, err)
-	t.Cleanup(func() { aacEnc.Close() })
-	aacBuf := clock.NewAACFrameBuffer(2, 48000, func(pcm []float32) ([]byte, error) {
-		return aacEnc.Encode(pcm)
-	})
-	sw.SetAACBuffer(aacBuf)
-	h.aacBuffer = aacBuf
-
-	// Create clock-driven mixer.
+	// Create the mixer the sync loop drives.
 	mixer := audio.NewMixer(audio.MixerConfig{
-		SampleRate:  48000,
-		Channels:    2,
-		ClockDriven: true,
-		Output: func(frame *media.AudioFrame) {
-			programRelay.BroadcastAudio(frame)
-		},
-		EncoderFactory: func(sampleRate, channels int) (audio.Encoder, error) {
-			return audio.NewFDKEncoder(sampleRate, channels)
-		},
+		SampleRate: 48000,
+		Channels:   2,
 	})
 	h.mixer = mixer
 	sw.SetMixer(mixer)
@@ -301,6 +247,30 @@ func newPipelineHarnessNoEncode(t *testing.T) *pipelineHarness {
 	return h
 }
 
+// setRefClockRate runs the program, and so the switcher's realtime
+// reference clock, at fpsNum/fpsDen.
+func setRefClockRate(t *testing.T, sw *switcher.Switcher, fpsNum, fpsDen int) {
+	t.Helper()
+	require.NoError(t, sw.SetPipelineFormat(switcher.PipelineFormat{
+		Name: "test", Width: testWidth, Height: testHeight, FPSNum: fpsNum, FPSDen: fpsDen,
+	}))
+}
+
+// newSyncAACBuffer gives the sync loop an AAC frame buffer with a real FDK
+// encoder, its PTS based as production bases it.
+func newSyncAACBuffer(t *testing.T, sw *switcher.Switcher) *clock.AACFrameBuffer {
+	t.Helper()
+	aacEnc, err := audio.NewFDKEncoder(48000, 2)
+	require.NoError(t, err)
+	t.Cleanup(func() { aacEnc.Close() })
+	aacBuf := clock.NewAACFrameBuffer(2, 48000, func(pcm []float32) ([]byte, error) {
+		return aacEnc.Encode(pcm)
+	})
+	aacBuf.SetBasePTS(clock.PTSBase)
+	sw.SetAACBuffer(aacBuf)
+	return aacBuf
+}
+
 // addSource registers a source with the switcher and records its color.
 func (h *pipelineHarness) addSource(key string, color sourceColor) {
 	relay := distribution.NewRelay()
@@ -309,9 +279,8 @@ func (h *pipelineHarness) addSource(key string, color sourceColor) {
 }
 
 // feedFrames feeds `count` solid-color YUV frames via IngestRawVideo.
-// In the old path, frames are paced at ~5ms intervals to avoid overwhelming
-// the async pipeline channel (depth 8, newest-wins drop policy).
-// In the ref clock path, no pacing is needed (tick-driven processing).
+// Frames are stamped with their arrival time, so they are paced at the
+// program frame rate, as a live source delivers them.
 func (h *pipelineHarness) feedFrames(sourceKey string, count int, startPTS int64) {
 	color := h.sources[sourceKey]
 	yuv := testutil.GenerateSolidYUV420(testWidth, testHeight, color.Y, color.Cb, color.Cr)
@@ -324,16 +293,14 @@ func (h *pipelineHarness) feedFrames(sourceKey string, count int, startPTS int64
 			PTS:        startPTS + int64(i)*ptsDelta,
 			IsKeyframe: i == 0,
 		}
+		pf.SetRefs(1) // managed, as IngestRawVideo requires of producers
 		h.sw.IngestRawVideo(sourceKey, pf)
-		if !h.useRefClock && i < count-1 {
-			time.Sleep(5 * time.Millisecond)
-		}
+		h.pace(i, count)
 	}
 }
 
-// feedFramesWithColor feeds `count` solid-color YUV frames with explicit color.
-// In the old path, paced at ~5ms intervals to avoid pipeline drops.
-// In the ref clock path, no pacing is needed.
+// feedFramesWithColor feeds `count` solid-color YUV frames with explicit
+// color, paced as feedFrames paces them.
 func (h *pipelineHarness) feedFramesWithColor(sourceKey string, count int, startPTS int64, y, cb, cr byte) {
 	yuv := testutil.GenerateSolidYUV420(testWidth, testHeight, y, cb, cr)
 
@@ -345,17 +312,50 @@ func (h *pipelineHarness) feedFramesWithColor(sourceKey string, count int, start
 			PTS:        startPTS + int64(i)*ptsDelta,
 			IsKeyframe: i == 0,
 		}
+		pf.SetRefs(1) // managed, as IngestRawVideo requires of producers
 		h.sw.IngestRawVideo(sourceKey, pf)
-		if !h.useRefClock && i < count-1 {
-			time.Sleep(5 * time.Millisecond)
-		}
+		h.pace(i, count)
 	}
+}
+
+// pace waits one program frame period after a frame is fed. The
+// synchronizer buffers a few frames per source and a tick shows a frame
+// two periods after its arrival, so frames fed faster than the program
+// rate are dropped unseen.
+func (h *pipelineHarness) pace(int, int) {
+	time.Sleep(h.sw.PipelineFormat().FrameDuration())
 }
 
 // cut performs a cut to the given source.
 func (h *pipelineHarness) cut(t *testing.T, sourceKey string) {
 	t.Helper()
+	h.cutAt = h.capture.videoCount()
 	require.NoError(t, h.sw.Cut(t.Context(), sourceKey))
+}
+
+// cutLeadIn bounds where the black lead-in of a cut can start: the frames
+// of the old source still in the encoder come out first.
+const cutLeadIn = 10
+
+// sinceCut returns the decoded frames broadcast since the last cut. After
+// the old source's frames still in flight, the program is black until the
+// new source's first frame is due, two frame periods after it arrived:
+// that run of black frames is left out.
+func (h *pipelineHarness) sinceCut(decoded []decodedFrame) []decodedFrame {
+	i := 0
+	for i < len(decoded) && decoded[i].Idx < h.cutAt {
+		i++
+	}
+	out := append([]decodedFrame(nil), decoded[i:]...)
+	b := 0
+	for b < len(out) && b < cutLeadIn && !isBroadcastBlack(out[b]) {
+		b++
+	}
+	e := b
+	for e < len(out) && isBroadcastBlack(out[e]) {
+		e++
+	}
+	return append(out[:b], out[e:]...)
 }
 
 // waitForPipeline waits for pipeline processing to complete.
@@ -389,14 +389,10 @@ func (h *pipelineHarness) tsLen() int {
 	return len(h.tsData)
 }
 
-// startRefClock starts the reference clock and sync loop. Must be called
-// after sources are added and before consuming ticks. No-op for old path.
-func (h *pipelineHarness) startRefClock() {
-	if !h.useRefClock || h.refClock == nil {
-		return
-	}
-	h.refClock.Start()
-	h.sw.StartSyncLoop()
+// stopClock stops the switcher's reference clock and sync loop, so the
+// captured output stops growing before it is inspected.
+func (h *pipelineHarness) stopClock() {
+	h.sw.Close()
 }
 
 // waitForVideoFrames waits until the capture viewer has at least n video frames.
@@ -418,19 +414,8 @@ func (h *pipelineHarness) waitForAudioFrames(t *testing.T, n int) {
 		"expected at least %d audio frames, got %d", n, h.capture.audioCount())
 }
 
-// tickCount returns the number of ticks produced by the reference clock.
-func (h *pipelineHarness) tickCount() int64 {
-	if h.refClock == nil {
-		return 0
-	}
-	return h.refClock.TickCount()
-}
-
 // close tears down all resources.
 func (h *pipelineHarness) close() {
-	if h.refClock != nil {
-		h.refClock.Stop()
-	}
 	if h.mixer != nil {
 		_ = h.mixer.Close()
 	}
@@ -546,6 +531,7 @@ type decodedFrame struct {
 	Width  int
 	Height int
 	PTS    int64
+	Idx    int // index of the captured frame it was decoded from
 }
 
 // maxDecodeFailureRatio bounds how many of the frames we actually attempt to
@@ -578,7 +564,7 @@ func decodeCapturedFrames(t *testing.T, videos []*media.VideoFrame) []decodedFra
 	var decoded []decodedFrame
 	attempts := 0 // frames that carried data we tried to decode
 	failures := 0 // attempted decodes the decoder rejected
-	for _, vf := range videos {
+	for idx, vf := range videos {
 		if len(vf.WireData) == 0 {
 			continue
 		}
@@ -594,6 +580,7 @@ func decodeCapturedFrames(t *testing.T, videos []*media.VideoFrame) []decodedFra
 			Width:  w,
 			Height: h,
 			PTS:    vf.PTS,
+			Idx:    idx,
 		})
 	}
 
@@ -608,7 +595,35 @@ func decodeCapturedFrames(t *testing.T, videos []*media.VideoFrame) []decodedFra
 			failures, attempts, 100*ratio, 100*maxDecodeFailureRatio)
 	}
 
-	return decoded
+	// The program is black from a cut until the source's first frame is
+	// due, two frame periods after it arrived. Leave that lead-in out.
+	lead := 0
+	for lead < len(decoded) && isBroadcastBlack(decoded[lead]) {
+		lead++
+	}
+	if lead > 0 {
+		t.Logf("MEASURE: %d leading black frames before the first source frame", lead)
+	}
+	return decoded[lead:]
+}
+
+// isBroadcastBlack reports whether a decoded YUV420 frame is broadcast
+// black (Y=16, Cb=Cr=128) within compression error.
+func isBroadcastBlack(df decodedFrame) bool {
+	n := df.Width * df.Height
+	if len(df.YUV) < n*3/2 {
+		return false
+	}
+	avg := func(p []byte) float64 {
+		var sum uint64
+		for _, v := range p {
+			sum += uint64(v)
+		}
+		return float64(sum) / float64(len(p))
+	}
+	near := func(v, want, tol float64) bool { return math.Abs(v-want) <= tol }
+	return near(avg(df.YUV[:n]), 16, 2) && near(avg(df.YUV[n:n+n/4]), 128, 4) &&
+		near(avg(df.YUV[n+n/4:n*3/2]), 128, 4)
 }
 
 // averageY computes the average Y value from a YUV420 frame's Y plane.

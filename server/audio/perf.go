@@ -6,11 +6,9 @@ package audio
 type PerfMixerSample struct {
 	Mode               string
 	MixCycleLastNs     int64
-	FramesOutput       int64
 	FramesMixed        int64
 	MaxInterFrameGapNs int64
 	DecodeErrors       int64
-	EncodeErrors       int64
 	MomentaryLUFS      float64
 	ShortTermLUFS      float64
 	IntegratedLUFS     float64
@@ -22,11 +20,9 @@ func (m *Mixer) PerfSample() PerfMixerSample {
 	return PerfMixerSample{
 		Mode:               "mixing",
 		MixCycleLastNs:     m.lastMixCycleNs.Load(),
-		FramesOutput:       m.outputFrameCount.Load(),
 		FramesMixed:        m.framesMixed.Load(),
 		MaxInterFrameGapNs: m.maxInterFrameNano.Load(),
 		DecodeErrors:       m.decodeErrors.Load(),
-		EncodeErrors:       m.encodeErrors.Load(),
 		MomentaryLUFS:      m.loudness.MomentaryLUFS(),
 		ShortTermLUFS:      m.loudness.ShortTermLUFS(),
 		IntegratedLUFS:     m.loudness.IntegratedLUFS(),

@@ -37,9 +37,6 @@ func init() {
 // AppConfig holds all configuration parsed from flags and environment.
 type AppConfig struct {
 	Demo             bool
-	FrameSync        bool
-	LowLatencySync   bool
-	FRCQuality       string
 	Format           string
 	ColorFormat      string // "standard", "standard-hevc", or "professional"
 	DemoVideoDir     string
@@ -203,7 +200,6 @@ type AppConfig struct {
 	InitialProgramSource string // --initial-program-source or SWITCHFRAME_INITIAL_PROGRAM_SOURCE
 
 	// Reference clock: single clock source drives synchronous A/V processing.
-	RefClock bool // --ref-clock (experimental)
 
 	// Cache warming (AMI build).
 	WarmCache bool // --warm-cache (generate caches and exit)
@@ -338,9 +334,6 @@ func parseConfig() (AppConfig, error) {
 	adminTokenFlag := flag.String("admin-token", "", "Bearer token for admin endpoints (/metrics, /debug); if empty, these endpoints are unprotected")
 	allowedOriginsFlag := flag.String("allowed-origins", "", "Comma-separated allowed CORS origins (e.g., https://switchframe.dev); empty = allow all")
 	apiTokenFlag := flag.String("api-token", "", "Bearer token for API authentication (env: SWITCHFRAME_API_TOKEN)")
-	frameSyncFlag := flag.Bool("frame-sync", false, "Enable freerun frame synchronizer (aligns sources to common frame boundary)")
-	lowLatencySyncFlag := flag.Bool("low-latency-sync", false, "Use source-driven frame sync (lower latency, less smooth output)")
-	frcQualityFlag := flag.String("frc-quality", "none", "Frame rate conversion: none, nearest, blend, mcfi")
 	formatFlag := flag.String("format", "1080p29.97", "Video standard (e.g. 1080p29.97, 1080p25, 720p59.94)")
 	colorFormatFlag := flag.String("color-format", "standard", "Pipeline color format profile (standard, standard-hevc, professional)")
 	replayBufferSecs := flag.Int("replay-buffer-secs", 300, "Per-source replay buffer duration in seconds (0 to disable, max 300)")
@@ -472,7 +465,6 @@ func parseConfig() (AppConfig, error) {
 	oidcDefaultRoleFlag := flag.String("oidc-default-role", "", "Role for a signed-in user with no mapped claim value; empty = refuse them (env: SWITCHFRAME_OIDC_DEFAULT_ROLE)")
 
 	// Reference clock (experimental).
-	refClockFlag := flag.Bool("ref-clock", false, "Use reference clock for synchronous A/V processing (experimental)")
 
 	// Cache warming (for AMI build).
 	warmCacheFlag := flag.Bool("warm-cache", false, "Pre-generate caches (ST map LUTs) for all resolutions and exit")
@@ -591,9 +583,6 @@ func parseConfig() (AppConfig, error) {
 
 	return AppConfig{
 		Demo:                 *demoFlag,
-		FrameSync:            *frameSyncFlag,
-		LowLatencySync:       *lowLatencySyncFlag,
-		FRCQuality:           *frcQualityFlag,
 		Format:               *formatFlag,
 		ColorFormat:          *colorFormatFlag,
 		DemoVideoDir:         *demoVideoDir,
@@ -689,7 +678,6 @@ func parseConfig() (AppConfig, error) {
 		EngineLabel:          resolveEnvOrFlag(*engineLabelFlag, "SWITCHFRAME_ENGINE_LABEL"),
 		ControlPlaneSecret:   resolveEnvOrFlag(*controlPlaneSecretFlag, "SWITCHFRAME_CONTROL_PLANE_SECRET"),
 		InitialProgramSource: resolveEnvOrFlag(*initialProgramSourceFlag, "SWITCHFRAME_INITIAL_PROGRAM_SOURCE"),
-		RefClock:             *refClockFlag,
 		WarmCache:            *warmCacheFlag,
 	}, nil
 }

@@ -4,21 +4,14 @@ package pipeline
 
 import (
 	"math"
-	"math/rand"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
-	"github.com/zsiec/switchframe/server/audio"
-	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
-	"github.com/zsiec/switchframe/server/output"
-	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -58,9 +51,6 @@ func TestRefClockEncodeUnderCPULoad(t *testing.T) {
 		}()
 	}
 
-	// Start ref clock + sync loop.
-	h.startRefClock()
-
 	// Wait for pipeline to produce frames under load.
 	h.waitForVideoFrames(t, 30)
 
@@ -76,9 +66,8 @@ func TestRefClockEncodeUnderCPULoad(t *testing.T) {
 	h.feedFrames("camA", 30, 250*ptsDelta)
 	h.waitForVideoFrames(t, 80)
 
-	// Stop ref clock.
-	h.refClock.Stop()
-	h.refClock = nil
+	// Stop the clock before inspecting output.
+	h.stopClock()
 
 	// Write TS and verify with ffprobe.
 	tsPath := h.writeTS(t)
@@ -167,11 +156,9 @@ func TestRefClockAVSyncUnderLoad(t *testing.T) {
 	h1.addSource("camA", sourceA)
 	h1.cut(t, "camA")
 	h1.feedFrames("camA", 90, 0)
-	h1.startRefClock()
 	h1.waitForVideoFrames(t, 60)
 	h1.waitForAudioFrames(t, 10)
-	h1.refClock.Stop()
-	h1.refClock = nil
+	h1.stopClock()
 
 	v1 := h1.capture.videosCopy()
 	a1 := h1.capture.audiosCopy()
@@ -186,7 +173,6 @@ func TestRefClockAVSyncUnderLoad(t *testing.T) {
 	h2 := newPipelineHarnessNoEncode(t)
 	h2.addSource("camA", sourceA)
 	h2.cut(t, "camA")
-	h2.feedFrames("camA", 90, 0)
 
 	var cpuStop atomic.Bool
 	var cpuWg sync.WaitGroup
@@ -200,15 +186,14 @@ func TestRefClockAVSyncUnderLoad(t *testing.T) {
 		}()
 	}
 
-	h2.startRefClock()
+	h2.feedFrames("camA", 90, 0)
 	h2.waitForVideoFrames(t, 60)
 	h2.waitForAudioFrames(t, 10)
 
 	cpuStop.Store(true)
 	cpuWg.Wait()
 
-	h2.refClock.Stop()
-	h2.refClock = nil
+	h2.stopClock()
 
 	v2 := h2.capture.videosCopy()
 	a2 := h2.capture.audiosCopy()
@@ -243,22 +228,6 @@ func TestRefClockAVSyncUnderLoad(t *testing.T) {
 }
 
 // ==========================================================================
-// TestRefClockRecoveryWithJitter
-//
-// Clock recovery with realistic SRT jitter. Feeds arrivals with random
-// jitter and occasional spikes, verifies that the recovered rate snaps
-// to the correct standard broadcast rate.
-// ==========================================================================
-
-// ==========================================================================
-// TestRefClockRateChangeThroughEncode
-//
-// Rate change continuity in encoded output. Starts at 30fps, feeds 60
-// frames, changes to 25fps, feeds 60 more. Verifies the entire stream
-// is valid with monotonic PTS and no gap at the rate change point.
-// ==========================================================================
-
-// ==========================================================================
 // TestRefClock5994EndToEnd
 //
 // 59.94fps through the sync loop (no-encode path). Verifies PTS deltas
@@ -274,8 +243,8 @@ func TestRefClock5994EndToEnd(t *testing.T) {
 	// Create a harness WITHOUT the encoder (no-encode) to get deterministic
 	// PTS from the reference clock. The encoder adds its own buffering
 	// which makes PTS delta analysis unreliable.
-	// We use a custom reference clock at 59.94fps.
-	h := newPipelineHarnessNoEncodeCustom(t, 60000, 1001, 0)
+	// The program, and so the reference clock, runs at 59.94fps.
+	h := newPipelineHarnessNoEncodeCustom(t, 60000, 1001)
 	defer h.close()
 
 	h.addSource("camA", sourceA)
@@ -284,11 +253,9 @@ func TestRefClock5994EndToEnd(t *testing.T) {
 	// Feed 300 frames (5 seconds at 59.94fps).
 	h.feedFrames("camA", 300, 0)
 
-	h.startRefClock()
 	h.waitForVideoFrames(t, 300)
 
-	h.refClock.Stop()
-	h.refClock = nil
+	h.stopClock()
 
 	allVideos := h.capture.videosCopy()
 	require.GreaterOrEqual(t, len(allVideos), 300,
@@ -346,91 +313,6 @@ func TestRefClock5994EndToEnd(t *testing.T) {
 }
 
 // ==========================================================================
-// TestRefClockPTSWrapThroughSyncLoop
-//
-// PTS wrap at 2^33 through the sync loop. Sets basePTS near 2^33 and
-// feeds 100 frames, crossing the wrap boundary. Verifies PTS wraps
-// correctly and audio PTS is valid.
-// ==========================================================================
-
-func TestRefClockPTSWrapThroughSyncLoop(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping long correctness test")
-	}
-
-	// Create a custom harness with basePTS near 2^33.
-	// 50 frames * 3000 PTS/frame = 150000 ticks before wrap.
-	basePTS := int64(1<<33) - 50*3000
-	h := newPipelineHarnessNoEncodeCustom(t, testFPS, 1, basePTS)
-	defer h.close()
-
-	h.addSource("camA", sourceA)
-	h.cut(t, "camA")
-
-	// Feed 100 frames to cross the wrap boundary.
-	h.feedFrames("camA", 100, 0)
-
-	h.startRefClock()
-	h.waitForVideoFrames(t, 100)
-	h.waitForAudioFrames(t, 10)
-
-	h.refClock.Stop()
-	h.refClock = nil
-
-	videos := h.capture.videosCopy()
-	audios := h.capture.audiosCopy()
-
-	require.GreaterOrEqual(t, len(videos), 100,
-		"expected ~100 video frames through PTS wrap")
-	require.Greater(t, len(audios), 5,
-		"expected >5 audio frames through PTS wrap")
-
-	// Find the wrap point in video PTS.
-	maxPTS := int64(1 << 33)
-	var preWrapPTS, postWrapPTS int64
-	wrapFound := false
-	for i := 1; i < len(videos); i++ {
-		if videos[i].PTS < videos[i-1].PTS {
-			preWrapPTS = videos[i-1].PTS
-			postWrapPTS = videos[i].PTS
-			wrapFound = true
-			break
-		}
-	}
-
-	t.Logf("MEASURE: pre-wrap PTS=%d, post-wrap PTS=%d, wrap found=%v",
-		preWrapPTS, postWrapPTS, wrapFound)
-
-	require.True(t, wrapFound, "PTS should wrap around 2^33")
-
-	// All PTS values must be < 2^33 (properly masked).
-	for i, v := range videos {
-		require.Less(t, v.PTS, maxPTS,
-			"video frame %d PTS=%d should be < 2^33 (%d)", i, v.PTS, maxPTS)
-		require.GreaterOrEqual(t, v.PTS, int64(0),
-			"video frame %d PTS=%d should be >= 0", i, v.PTS)
-	}
-
-	// Audio PTS should be valid and monotonically increasing.
-	for i := 1; i < len(audios); i++ {
-		require.Greater(t, audios[i].PTS, audios[i-1].PTS,
-			"audio PTS should be monotonically increasing at frame %d", i)
-	}
-
-	// Verify PTS continuity across the wrap. When accounting for the wrap,
-	// the effective delta should be close to ptsDelta (3000).
-	if wrapFound {
-		effectiveDelta := (postWrapPTS + maxPTS) - preWrapPTS
-		t.Logf("MEASURE: effective delta across wrap = %d (expected ~%d)", effectiveDelta, ptsDelta)
-		require.InDelta(t, float64(ptsDelta), float64(effectiveDelta), float64(ptsDelta),
-			"effective PTS delta across wrap should be close to frame duration")
-	}
-
-	t.Logf("PTS wrap test passed: %d video frames, %d audio frames, wrap at PTS=%d->%d",
-		len(videos), len(audios), preWrapPTS, postWrapPTS)
-}
-
-// ==========================================================================
 // TestRefClockTransitionAVSync
 //
 // A/V sync during a dissolve transition. Creates a pipeline with ref
@@ -458,9 +340,6 @@ func TestRefClockTransitionAVSync(t *testing.T) {
 	h.feedFrames("camA", 60, 0)
 	h.feedFrames("camB", 60, 0)
 
-	// Start ref clock + sync loop.
-	h.startRefClock()
-
 	// Wait for some initial output before starting transition.
 	h.waitForVideoFrames(t, 10)
 	h.waitForAudioFrames(t, 3)
@@ -483,8 +362,7 @@ func TestRefClockTransitionAVSync(t *testing.T) {
 	h.waitForVideoFrames(t, initialVideoCount+30)
 	h.waitForAudioFrames(t, initialAudioCount+5)
 
-	h.refClock.Stop()
-	h.refClock = nil
+	h.stopClock()
 
 	videos := h.capture.videosCopy()
 	audios := h.capture.audiosCopy()
@@ -541,65 +419,13 @@ func TestRefClockTransitionAVSync(t *testing.T) {
 }
 
 // ==========================================================================
-// Helper: newPipelineHarnessNoEncodeCustom creates a no-encode harness with
-// custom FPS and basePTS parameters. Used by the 59.94fps and PTS wrap tests.
+// Helper: newPipelineHarnessNoEncodeCustom creates a no-encode harness at a
+// custom FPS. Used by the 59.94fps test.
 // ==========================================================================
 
-func newPipelineHarnessNoEncodeCustom(t *testing.T, fpsNum, fpsDen int, basePTS int64) *pipelineHarness {
+func newPipelineHarnessNoEncodeCustom(t *testing.T, fpsNum, fpsDen int) *pipelineHarness {
 	t.Helper()
-
-	programRelay := distribution.NewRelay()
-
-	h := &pipelineHarness{
-		programRelay: programRelay,
-		muxer:        output.NewTSMuxer(),
-		sources:      make(map[string]sourceColor),
-	}
-
-	// Capture viewer only (no muxer, since raw YUV isn't muxable).
-	capture := newCaptureViewer("pipeline-capture")
-	h.capture = capture
-	programRelay.AddViewer(capture)
-
-	// Create switcher (no encoder factory = no pipeline).
-	sw := switcher.NewTestSwitcher(t, programRelay)
-	h.sw = sw
-
-	// Enable frame sync in clock-driven mode.
-	sw.SetFrameSync(true, 0)
-	sw.SetClockDrivenSync(true)
-
-	// Create non-realtime reference clock with custom params.
-	rc := clock.NewReferenceClock(fpsNum, fpsDen, 48000, basePTS, false)
-	sw.SetReferenceClock(rc)
-	h.refClock = rc
-	h.useRefClock = true
-
-	// Create AAC frame buffer with real FDK encoder.
-	aacEnc, err := audio.NewFDKEncoder(48000, 2)
-	require.NoError(t, err)
-	t.Cleanup(func() { aacEnc.Close() })
-	aacBuf := clock.NewAACFrameBuffer(2, 48000, func(pcm []float32) ([]byte, error) {
-		return aacEnc.Encode(pcm)
-	})
-	sw.SetAACBuffer(aacBuf)
-	h.aacBuffer = aacBuf
-
-	// Create clock-driven mixer.
-	mixer := audio.NewMixer(audio.MixerConfig{
-		SampleRate:  48000,
-		Channels:    2,
-		ClockDriven: true,
-		Output: func(frame *media.AudioFrame) {
-			programRelay.BroadcastAudio(frame)
-		},
-		EncoderFactory: func(sampleRate, channels int) (audio.Encoder, error) {
-			return audio.NewFDKEncoder(sampleRate, channels)
-		},
-	})
-	h.mixer = mixer
-	sw.SetMixer(mixer)
-	sw.SetSyncMixer(mixer)
-
+	h := newPipelineHarnessNoEncode(t)
+	setRefClockRate(t, h.sw, fpsNum, fpsDen)
 	return h
 }

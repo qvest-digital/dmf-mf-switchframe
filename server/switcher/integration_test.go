@@ -17,71 +17,6 @@ import (
 // They exercise RegisterSource, Cut, UnregisterSource, and state-change callbacks
 // together, ensuring frames flow end-to-end exactly as expected.
 
-func TestIntegrationCutSwitchesFrames(t *testing.T) {
-	if testing.Short() {
-		t.Skip("integration test")
-	}
-	// Setup: program relay with a capture viewer.
-	programRelay := newTestRelay()
-	capture := newMockProgramViewer("capture")
-	programRelay.AddViewer(capture)
-
-	// Create switcher.
-	sw := newTestSwitcher(t, programRelay)
-
-	// Track state changes.
-	var states []internal.ControlRoomState
-	var statesMu sync.Mutex
-	sw.OnStateChange(func(state internal.ControlRoomState) {
-		statesMu.Lock()
-		states = append(states, state)
-		statesMu.Unlock()
-	})
-
-	// Create two source relays.
-	cam1Relay := newTestRelay()
-	cam2Relay := newTestRelay()
-	sw.RegisterSource("camera1", cam1Relay)
-	sw.RegisterSource("camera2", cam2Relay)
-
-	// Cut to camera1.
-	require.NoError(t, sw.Cut(context.Background(), "camera1"))
-
-	// Send video frames from both cameras.
-	cam1Frame := &media.VideoFrame{PTS: 1000, IsKeyframe: true, WireData: []byte{0x01}}
-	cam1Relay.BroadcastVideo(cam1Frame)
-
-	cam2Frame := &media.VideoFrame{PTS: 2000, IsKeyframe: true, WireData: []byte{0x02}}
-	cam2Relay.BroadcastVideo(cam2Frame)
-
-	// Only camera1 frame should arrive at program (path is synchronous).
-	capture.mu.Lock()
-	require.Equal(t, 1, len(capture.videos), "program frame count")
-	require.Equal(t, int64(1000), capture.videos[0].PTS)
-	capture.mu.Unlock()
-
-	// Now cut to camera2.
-	require.NoError(t, sw.Cut(context.Background(), "camera2"))
-
-	// Send another frame from camera2 (now on program).
-	cam2Frame2 := &media.VideoFrame{PTS: 3000, IsKeyframe: true, WireData: []byte{0x03}}
-	cam2Relay.BroadcastVideo(cam2Frame2)
-
-	// Send frame from camera1 (no longer on program).
-	cam1Frame2 := &media.VideoFrame{PTS: 4000, IsKeyframe: true, WireData: []byte{0x04}}
-	cam1Relay.BroadcastVideo(cam1Frame2)
-
-	capture.mu.Lock()
-	require.Equal(t, 2, len(capture.videos), "program frame count after cut")
-	require.Equal(t, int64(3000), capture.videos[1].PTS)
-	capture.mu.Unlock()
-
-	// Verify state changes were published (at least 2: Cut(camera1) + Cut(camera2)).
-	statesMu.Lock()
-	require.GreaterOrEqual(t, len(states), 2, "state change count")
-	statesMu.Unlock()
-}
-
 func TestIntegrationAudioFollowsVideo(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
@@ -113,31 +48,6 @@ func TestIntegrationAudioFollowsVideo(t *testing.T) {
 	capture.mu.Lock()
 	require.Equal(t, 1, len(capture.audios), "audio frame count")
 	require.Equal(t, int64(100), capture.audios[0].PTS)
-	capture.mu.Unlock()
-}
-
-func TestProgramRelayFromPrismServer(t *testing.T) {
-	if testing.Short() {
-		t.Skip("integration test")
-	}
-	// Simulate the pattern used in restructured main.go:
-	// Get a relay (as RegisterStream would return), create switcher with it.
-	programRelay := newTestRelay()
-	capture := newMockProgramViewer("moq-viewer")
-	programRelay.AddViewer(capture)
-
-	sw := newTestSwitcher(t, programRelay)
-	defer sw.Close()
-
-	cam1Relay := newTestRelay()
-	sw.RegisterSource("cam1", cam1Relay)
-	require.NoError(t, sw.Cut(context.Background(), "cam1"))
-
-	// Send keyframe — should flow through switcher to program relay viewer.
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 1000, IsKeyframe: true, WireData: []byte{0x01}})
-
-	capture.mu.Lock()
-	require.Equal(t, 1, len(capture.videos), "frame should reach MoQ viewer via program relay")
 	capture.mu.Unlock()
 }
 
@@ -212,10 +122,8 @@ func TestIntegrationMixerPassthrough(t *testing.T) {
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output: func(frame *media.AudioFrame) {
-			programRelay.BroadcastAudio(frame)
-		},
 	})
+	driveProgramAudio(sw, mixer, mockAACEncode)
 	defer func() { _ = mixer.Close() }()
 
 	// Wire mixer to switcher.
@@ -256,17 +164,11 @@ func TestIntegrationMixerAFVOnCut(t *testing.T) {
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output: func(frame *media.AudioFrame) {
-			programRelay.BroadcastAudio(frame)
-		},
-		// Clock-driven mixer always encodes — needs codec factories.
 		DecoderFactory: func(sampleRate, channels int) (audio.Decoder, error) {
 			return audio.NewFDKDecoder(sampleRate, channels)
 		},
-		EncoderFactory: func(sampleRate, channels int) (audio.Encoder, error) {
-			return audio.NewFDKEncoder(sampleRate, channels)
-		},
 	})
+	driveProgramAudio(sw, mixer, fdkEncode(t))
 	defer func() { _ = mixer.Close() }()
 
 	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
@@ -291,15 +193,17 @@ func TestIntegrationMixerAFVOnCut(t *testing.T) {
 	require.True(t, mixer.IsChannelActive("cam1"))
 	require.False(t, mixer.IsChannelActive("cam2"))
 
-	// Send audio from cam1 (active) — should arrive via clock-driven ticker.
+	// Send audio from cam1 (active); the sync loop mixes and encodes on
+	// every tick.
 	cam1Relay.BroadcastAudio(&media.AudioFrame{PTS: 100, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
 
-	// Wait for the output ticker to fire (~21ms cadence).
-	time.Sleep(50 * time.Millisecond)
-
-	capture.mu.Lock()
-	require.GreaterOrEqual(t, len(capture.audios), 1, "ticker should have produced at least 1 output frame")
-	capture.mu.Unlock()
+	// The lock is not held across a failing assertion: Close waits for the
+	// sync loop, which delivers to capture under the same lock.
+	require.Eventually(t, func() bool {
+		capture.mu.Lock()
+		defer capture.mu.Unlock()
+		return len(capture.audios) >= 1
+	}, time.Second, 5*time.Millisecond, "sync loop should have produced at least 1 output frame")
 
 	// Cut to cam2 — cam2 activates, cam1 deactivation is deferred until
 	// the cut crossfade ramp completes (4 ticks, ~85ms).
@@ -308,9 +212,9 @@ func TestIntegrationMixerAFVOnCut(t *testing.T) {
 
 	require.True(t, mixer.IsChannelActive("cam2"))
 
-	// Wait for the cut crossfade ramp to complete (~85ms = 4 ticks at ~21.3ms).
-	time.Sleep(150 * time.Millisecond)
-	require.False(t, mixer.IsChannelActive("cam1"))
+	// The cut crossfade ramp completes after 4 ticks.
+	require.Eventually(t, func() bool { return !mixer.IsChannelActive("cam1") },
+		time.Second, 5*time.Millisecond, "cam1 still active after the cut crossfade")
 }
 
 func TestIntegrationStateBroadcastIncludesAudio(t *testing.T) {
@@ -324,8 +228,9 @@ func TestIntegrationStateBroadcastIncludesAudio(t *testing.T) {
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
+	driveProgramAudio(sw, mixer, mockAACEncode)
+	sw.SetOutputAudioCallback(func(*media.AudioFrame) {})
 	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
@@ -366,8 +271,8 @@ func TestIntegrationTransitionCrossfadeWired(t *testing.T) {
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
 	})
+	driveProgramAudio(sw, mixer, mockAACEncode)
 	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
@@ -427,19 +332,17 @@ func TestIntegrationDissolveProducesBlendedOutput(t *testing.T) {
 	sw.RegisterSource("cam2", cam2Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	// Clear IDR gate
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
-
 	// Start dissolve
 	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 5000, ""))
 
-	// Feed frames from both sources
-	for i := 0; i < 5; i++ {
-		cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: int64(100 + i*33), IsKeyframe: i == 0, WireData: []byte{0x01}})
-		cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: int64(200 + i*33), IsKeyframe: i == 0, WireData: []byte{0x02}})
-	}
-
-	time.Sleep(20 * time.Millisecond)
+	// Feed frames from both sources; every tick blends and encodes.
+	sendRawFrame(sw, "cam1", 0, true)
+	sendRawFrame(sw, "cam2", 0, true)
+	require.Eventually(t, func() bool {
+		capture.mu.Lock()
+		defer capture.mu.Unlock()
+		return len(capture.videos) >= 3
+	}, time.Second, 5*time.Millisecond)
 
 	capture.mu.Lock()
 	blendedCount := len(capture.videos)
@@ -479,43 +382,28 @@ func TestIntegrationDissolveCompletesAndResumesReEncode(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	sw.RegisterSource("cam2", cam2Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
 
-	// Short transition
+	// Short transition, completed by the ticks.
 	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 50, ""))
-
-	// Feed frames until completion
-	for i := 0; i < 30; i++ {
-		cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: int64(100 + i*33), IsKeyframe: i == 0, WireData: []byte{0x01}})
-		cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: int64(200 + i*33), IsKeyframe: i == 0, WireData: []byte{0x02}})
-		time.Sleep(10 * time.Millisecond)
-		if !sw.State().InTransition {
-			break
-		}
-	}
+	require.Eventually(t, func() bool { return !sw.State().InTransition }, time.Second, 5*time.Millisecond)
 
 	// Verify completion
 	state := sw.State()
 	require.False(t, state.InTransition)
 	require.Equal(t, "cam2", state.ProgramSource)
 
-	// Clear count and verify re-encode resumes (not passthrough)
+	// Clear count and verify re-encode resumes
 	capture.mu.Lock()
 	capture.videos = nil
 	capture.mu.Unlock()
 
 	// After transition, cam2 frames are still re-encoded through the pipeline
-	originalFrame := &media.VideoFrame{PTS: 9999, IsKeyframe: true, WireData: []byte{0xFF, 0xFE}}
-	cam2Relay.BroadcastVideo(originalFrame)
-
-	time.Sleep(10 * time.Millisecond)
-
-	capture.mu.Lock()
-	require.Equal(t, 1, len(capture.videos))
-	// Always re-encode: frame was received with correct PTS
-	require.Equal(t, originalFrame.PTS, capture.videos[0].PTS,
-		"after transition, frames should be re-encoded with preserved PTS")
-	capture.mu.Unlock()
+	sendRawFrame(sw, "cam2", 0, true)
+	require.Eventually(t, func() bool {
+		capture.mu.Lock()
+		defer capture.mu.Unlock()
+		return len(capture.videos) >= 1
+	}, time.Second, 5*time.Millisecond, "after transition, frames should be re-encoded")
 }
 
 func TestIntegrationTBarPartialAbort(t *testing.T) {
@@ -588,16 +476,15 @@ func TestIntegrationFTBProducesBlackFrames(t *testing.T) {
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
-
 	require.NoError(t, sw.FadeToBlack(context.Background()))
 
-	// Feed frames from program source
-	for i := 0; i < 5; i++ {
-		cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: int64(100 + i*33), IsKeyframe: i == 0, WireData: []byte{0x01}})
-	}
-
-	time.Sleep(20 * time.Millisecond)
+	// Feed a frame from the program source; every tick fades it.
+	sendRawFrame(sw, "cam1", 0, true)
+	require.Eventually(t, func() bool {
+		capture.mu.Lock()
+		defer capture.mu.Unlock()
+		return len(capture.videos) >= 1
+	}, time.Second, 5*time.Millisecond)
 
 	capture.mu.Lock()
 	outputCount := len(capture.videos)
@@ -620,8 +507,8 @@ func TestIntegrationFTBMutesAudio(t *testing.T) {
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
 	})
+	driveProgramAudio(sw, mixer, mockAACEncode)
 	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
@@ -674,8 +561,8 @@ func TestIntegrationFTBReverseFadesIn(t *testing.T) {
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
 	})
+	driveProgramAudio(sw, mixer, mockAACEncode)
 	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)

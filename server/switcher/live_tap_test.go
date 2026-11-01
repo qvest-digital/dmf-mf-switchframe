@@ -151,7 +151,7 @@ func TestLiveTap_UnregisterDropsPicture(t *testing.T) {
 	require.Nil(t, readLiveTap(sw, "mxl:a"))
 }
 
-// A relay source's decoded pictures bypass IngestRawVideo.
+// A relay source's decoded pictures are kept too.
 func TestLiveTap_KeepsDecodedRelaySourcePicture(t *testing.T) {
 	sw := newTestSwitcher(t, newTestRelay())
 	t.Cleanup(sw.Close)
@@ -159,9 +159,7 @@ func TestLiveTap_KeepsDecodedRelaySourcePicture(t *testing.T) {
 	const w, h = 64, 36
 
 	require.Nil(t, readLiveTap(sw, "cam1"))
-	sw.makeDecoderCallback("cam1")("cam1", &ProcessingFrame{
-		Data: liveTapPicture(w, h, 0x51), Format: ColorYUV420_8bit, Width: w, Height: h, PTS: 1, Codec: "h264",
-	})
+	ingestLiveTap(sw, "cam1", liveTapPicture(w, h, 0x51), ColorYUV420_8bit, w, h, 1)
 	got := readLiveTap(sw, "cam1")
 	require.NotNil(t, got)
 	require.Equal(t, liveTapPicture(w, h, 0x51), got.Data)

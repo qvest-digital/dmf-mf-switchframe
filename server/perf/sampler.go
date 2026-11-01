@@ -131,11 +131,9 @@ type MixerPerf interface {
 type MixerSample struct {
 	Mode               string
 	MixCycleLastNs     int64
-	FramesOutput       int64
 	FramesMixed        int64
 	MaxInterFrameGapNs int64
 	DecodeErrors       int64
-	EncodeErrors       int64
 	MomentaryLUFS      float64
 	ShortTermLUFS      float64
 	IntegratedLUFS     float64

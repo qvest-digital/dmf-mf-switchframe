@@ -17,9 +17,10 @@ import (
 // reads from the pipeline goroutine) and optionally a preview encoder that
 // runs in a dedicated goroutine.
 //
-// IngestYUV is called from the switcher's handleRawVideoFrame goroutine
-// (single-threaded per source, but multiple sources call concurrently).
-// GetFrame is called from the pipeline goroutine (videoProcessingLoop).
+// IngestYUV is called from the switcher's IngestRawVideo, on each source's
+// producer goroutine (one per source, several sources concurrently).
+// GetFrame is called from the sync loop, the one goroutine running the
+// pipeline.
 // The atomic.Pointer[GPUFrame] on current ensures these never block each other.
 type GPUSourceManager struct {
 	ctx    *Context
@@ -28,6 +29,7 @@ type GPUSourceManager struct {
 
 	mu               sync.RWMutex
 	sources          map[string]*gpuSourceEntry
+	delays           map[string]int64         // SetSourceDelay in 90 kHz ticks, kept across RegisterSource
 	segEngine        Segmenter                // nil when AI segmentation is not configured
 	sourceColorGrade SourceColorGradeProvider // nil when per-source color grading is not configured
 }
@@ -74,11 +76,16 @@ type gpuSourceEntry struct {
 	// no freed GPU resource is recreated or reused.
 	closed atomic.Bool
 
-	// Preview encoder (nil if no preview configured).
+	// Preview encoder (nil if no preview configured). previewLoop owns and
+	// closes it.
 	prevEnc   *PreviewEncoder
 	onPreview func(data []byte, isIDR bool, pts int64)
 	prevCh    chan any      // platform-specific frame type (capacity 1, newest-wins)
 	prevDone  chan struct{} // closed when preview goroutine exits
+	// prevStopped is set under useMu before prevCh closes, so an ingest
+	// queues no preview frame after it; prevStop closes prevCh once.
+	prevStopped atomic.Bool
+	prevStop    sync.Once
 
 	// Per-source ST map state.
 	stmap     *GPUSTMap
@@ -105,6 +112,20 @@ type gpuSourceEntry struct {
 	scaleBuf []byte
 
 	width, height int
+
+	// recent holds the last published frames, guarded by curMu: the frame
+	// a tick shows is usually one of these rather than current (refAt).
+	recent recentFrames[*GPUFrame]
+}
+
+// refAt returns the entry's frame with the given PTS, with an extra
+// reference the caller must Release, or nil when none of the recent frames
+// has it.
+func refAt(entry *gpuSourceEntry, pts int64) *GPUFrame {
+	entry.curMu.Lock()
+	defer entry.curMu.Unlock()
+	f, _ := entry.recent.at(pts)
+	return f
 }
 
 // refCurrent returns the entry's current frame with an extra reference taken
@@ -129,9 +150,18 @@ func refCurrent(entry *gpuSourceEntry) *GPUFrame {
 func publishCurrent(entry *gpuSourceEntry, frame *GPUFrame) {
 	entry.curMu.Lock()
 	old := entry.current.Swap(frame)
+	var evicted []*GPUFrame
+	if frame == nil {
+		evicted = entry.recent.drain()
+	} else {
+		evicted = entry.recent.push(frame, frame.PTS)
+	}
 	entry.curMu.Unlock()
 	if old != nil {
 		old.Release()
+	}
+	for _, f := range evicted {
+		f.Release()
 	}
 }
 
@@ -143,6 +173,7 @@ func NewGPUSourceManager(ctx *Context, pool *FramePool, stmaps SourceSTMapProvid
 		pool:    pool,
 		stmaps:  stmaps,
 		sources: make(map[string]*gpuSourceEntry),
+		delays:  make(map[string]int64),
 	}
 }
 
@@ -165,9 +196,13 @@ func (m *GPUSourceManager) SetSourceColorGrade(provider SourceColorGradeProvider
 }
 
 // RegisterSource creates a GPU source entry. If preview is non-nil, a preview
-// encoder and its dedicated goroutine are started. Allocates a stmapTmp frame
-// for potential ST map warp operations.
+// encoder and its dedicated goroutine are started, after the preview encoder
+// of an entry it replaces is closed: a card has a limited number of encode
+// sessions. Allocates a stmapTmp frame for potential ST map warp operations.
 func (m *GPUSourceManager) RegisterSource(sourceKey string, w, h int, preview *PreviewConfig) {
+	if preview != nil && preview.OnPreview != nil {
+		m.StopPreview(sourceKey)
+	}
 	entry := &gpuSourceEntry{
 		width:  w,
 		height: h,
@@ -206,7 +241,16 @@ func (m *GPUSourceManager) RegisterSource(sourceKey string, w, h int, preview *P
 	// duration of the join + encoder Close, and would deadlock if the preview
 	// callback ever re-entered the source manager. Mirror RemoveSource.
 	m.mu.Lock()
+	entry.recent.delay = m.delays[sourceKey]
 	old, hadOld := m.sources[sourceKey]
+	if hadOld {
+		// A source registered again, as an SRT source is by a reconnect,
+		// keeps the frames a tick may still show until its new ones come.
+		old.curMu.Lock()
+		entry.current.Store(old.current.Swap(nil))
+		entry.recent.adopt(&old.recent)
+		old.curMu.Unlock()
+	}
 	m.sources[sourceKey] = entry
 	m.mu.Unlock()
 
@@ -237,6 +281,30 @@ func (m *GPUSourceManager) RemoveSource(sourceKey string) {
 	slog.Info("gpu: source manager: removed source", "source", sourceKey)
 }
 
+// StopPreview closes a source's preview encoder and keeps its frames.
+func (m *GPUSourceManager) StopPreview(sourceKey string) {
+	m.mu.RLock()
+	entry := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if entry != nil {
+		m.stopPreview(entry)
+	}
+}
+
+// stopPreview stops entry's preview goroutine, which closes the encoder,
+// and waits for it to exit. Ingest queues preview frames under useMu, so
+// none is queued once prevStopped is set under it.
+func (m *GPUSourceManager) stopPreview(entry *gpuSourceEntry) {
+	if entry.prevCh == nil {
+		return
+	}
+	entry.useMu.Lock()
+	entry.prevStopped.Store(true)
+	entry.useMu.Unlock()
+	entry.prevStop.Do(func() { close(entry.prevCh) })
+	<-entry.prevDone
+}
+
 // cleanupEntry releases all resources owned by a source entry. It runs
 // WITHOUT m.mu held (closing the preview goroutine under m.mu would stall
 // all sources and can deadlock on re-entrant preview callbacks). The entry
@@ -253,16 +321,7 @@ func (m *GPUSourceManager) cleanupEntry(entry *gpuSourceEntry) {
 	entry.closed.Store(true)
 	entry.useMu.Unlock()
 
-	// Stop preview goroutine first.
-	if entry.prevCh != nil {
-		close(entry.prevCh)
-		<-entry.prevDone // wait for goroutine to exit
-	}
-
-	if entry.prevEnc != nil {
-		entry.prevEnc.Close()
-		entry.prevEnc = nil
-	}
+	m.stopPreview(entry)
 
 	// Release current frame.
 	publishCurrent(entry, nil)
@@ -310,7 +369,7 @@ func (m *GPUSourceManager) cleanupEntry(entry *gpuSourceEntry) {
 func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts int64) {
 	// Nil YUV is a no-op — this happens when the NVDEC zero-copy path
 	// already ingested the frame via IngestGPUFrame and the switcher's
-	// handleRawVideoFrame calls IngestYUV again for the same source.
+	// IngestRawVideo calls IngestYUV again for the same source.
 	if len(yuv) == 0 {
 		return
 	}
@@ -779,6 +838,7 @@ func (m *GPUSourceManager) autoRegister(sourceKey string, w, h int) *gpuSourceEn
 		entry.stmapTmp = tmpFrame
 	}
 
+	entry.recent.delay = m.delays[sourceKey]
 	m.sources[sourceKey] = entry
 	m.mu.Unlock()
 
@@ -851,6 +911,79 @@ func (m *GPUSourceManager) GetFrame(sourceKey string) *GPUFrame {
 	return refCurrent(entry)
 }
 
+// GetFrameAt returns the source's recent frame with the given PTS, with a
+// reference the caller must Release, or nil if it is no longer cached.
+func (m *GPUSourceManager) GetFrameAt(sourceKey string, pts int64) *GPUFrame {
+	m.mu.RLock()
+	entry, exists := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if !exists {
+		return nil
+	}
+	return refAt(entry, pts)
+}
+
+// GetFrameNear returns the source's recent frame with the given PTS, else
+// the newest one before it, else its oldest, with a reference the caller
+// must Release, or nil if it has none.
+func (m *GPUSourceManager) GetFrameNear(sourceKey string, pts int64) *GPUFrame {
+	m.mu.RLock()
+	entry, exists := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if !exists {
+		return nil
+	}
+	entry.curMu.Lock()
+	defer entry.curMu.Unlock()
+	f, _ := entry.recent.near(pts)
+	return f
+}
+
+// SetSourceDelay records the source's delay in milliseconds: ticks read
+// the source that much further behind, and its recent frames keep the
+// frames that arrive in the delay. The delay is kept for a source
+// registered later.
+func (m *GPUSourceManager) SetSourceDelay(sourceKey string, delayMs int) {
+	ticks := int64(delayMs) * 90
+	m.mu.Lock()
+	if ticks > 0 {
+		m.delays[sourceKey] = ticks
+	} else {
+		delete(m.delays, sourceKey)
+	}
+	entry := m.sources[sourceKey]
+	m.mu.Unlock()
+	if entry == nil {
+		return
+	}
+	entry.curMu.Lock()
+	entry.recent.delay = ticks
+	entry.curMu.Unlock()
+}
+
+// KeepCurrentAs keeps the source's current frame among its recent frames
+// under pts. AliasSource publishes another source's frame, which carries
+// that source's PTS, as the destination's current frame only; a tick looks
+// the destination's frame up under the PTS of the destination's own
+// timeline, which this keeps it under.
+func (m *GPUSourceManager) KeepCurrentAs(sourceKey string, pts int64) {
+	m.mu.RLock()
+	entry, exists := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if !exists {
+		return
+	}
+	entry.curMu.Lock()
+	var evicted []*GPUFrame
+	if f := entry.current.Load(); f != nil && !entry.closed.Load() {
+		evicted = entry.recent.push(f, pts)
+	}
+	entry.curMu.Unlock()
+	for _, f := range evicted {
+		f.Release()
+	}
+}
+
 // Close removes all sources and releases all GPU resources.
 func (m *GPUSourceManager) Close() {
 	m.mu.Lock()
@@ -874,7 +1007,7 @@ func (m *GPUSourceManager) Snapshot() map[string]any {
 			"width":          entry.width,
 			"height":         entry.height,
 			"has_frame":      entry.current.Load() != nil,
-			"has_preview":    entry.prevEnc != nil,
+			"has_preview":    entry.prevEnc != nil && !entry.prevStopped.Load(),
 			"has_stmap":      entry.stmap != nil,
 			"has_colorgrade": entry.colorLUTDev != 0,
 		}

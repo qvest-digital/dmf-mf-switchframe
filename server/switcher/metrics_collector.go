@@ -35,7 +35,7 @@ var (
 	descQueueDepth = prometheus.NewDesc("switchframe_pipeline_queue_depth",
 		"Frames waiting for the processing pipeline.", nil, nil)
 	descStageLatency = prometheus.NewDesc("switchframe_pipeline_stage_latency_seconds",
-		"Latency of the most recent program frame in each stage, and end to end (stage total).",
+		"Latency of the most recent program frame in each stage: decode_queue and decode (relay sources), sync_wait (arrival to the tick showing it), tick (grain start to the end of the pipeline run, raw sinks included), total (arrival to the end of the pipeline run).",
 		[]string{"stage"}, nil)
 	descGPUFallback = prometheus.NewDesc("switchframe_gpu_fallback_frames_total",
 		"Frames the GPU pipeline handed back to the CPU pipeline.", nil, nil)
@@ -56,8 +56,6 @@ var (
 		"Frames the source's decoder dropped.", []string{"source"}, nil)
 	descSourceDecodeLatency = prometheus.NewDesc("switchframe_source_decode_latency_seconds",
 		"Decode time of the source's most recent frame.", []string{"source"}, nil)
-	descSourceDrift = prometheus.NewDesc("switchframe_source_clock_drift_ppm",
-		"Estimated drift of the source's clock against the pipeline clock; positive is faster.", []string{"source"}, nil)
 )
 
 // MetricsCollector exposes the switcher's program and per-source state as
@@ -80,7 +78,7 @@ func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 		descProgramFrames, descProgramRepeated, descProgramDropped, descDeadlineViolations,
 		descFrameBudget, descQueueDepth, descStageLatency, descGPUFallback, descLastProgramFrameAge,
 		descSourceInfo, descSourceHealth, descSourceLastFrameAge, descSourceFrames,
-		descSourceDecodeFPS, descSourceDecodeDrops, descSourceDecodeLatency, descSourceDrift,
+		descSourceDecodeFPS, descSourceDecodeDrops, descSourceDecodeLatency,
 	} {
 		ch <- d
 	}
@@ -116,10 +114,9 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	gauge(descFTBActive, flag(state.FTBActive))
 
 	counter(descProgramFrames, s.videoBroadcastCount.Load())
-	counter(descProgramRepeated, s.stallFillFrames.Load())
-	counter(descProgramDropped, s.videoProcDropped.Load(), "proc")
+	counter(descProgramRepeated, s.programRepeats.Load())
+	counter(descProgramDropped, s.overloadDrops.Load(), "proc")
 	counter(descProgramDropped, s.pipeEncodeDrop.Load(), "encode")
-	counter(descProgramDropped, s.programEpochStale.Load(), "stale")
 	counter(descDeadlineViolations, s.deadlineViolations.Load())
 	counter(descGPUFallback, s.gpuFallbackFrames.Load())
 	gauge(descFrameBudget, seconds(perf.FrameBudgetNs))
@@ -127,7 +124,7 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	gauge(descStageLatency, seconds(perf.DecodeQueueNs), "decode_queue")
 	gauge(descStageLatency, seconds(perf.DecodeNs), "decode")
 	gauge(descStageLatency, seconds(perf.SyncWaitNs), "sync_wait")
-	gauge(descStageLatency, seconds(perf.ProcQueueNs), "proc_queue")
+	gauge(descStageLatency, seconds(perf.TickLagNs), "tick")
 	gauge(descStageLatency, seconds(perf.E2ELastNs), "total")
 	if last := s.lastBroadcastNano.Load(); last != 0 {
 		gauge(descLastProgramFrameAge, time.Since(time.Unix(0, last)).Seconds())
@@ -156,8 +153,5 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 		gauge(descSourceDecodeFPS, src.AvgFPS, source)
 		counter(descSourceDecodeDrops, src.DecodeDrops, source)
 		gauge(descSourceDecodeLatency, seconds(src.DecodeLastNs), source)
-		if src.DriftSamples > 0 {
-			gauge(descSourceDrift, float64(src.DriftPPM), source)
-		}
 	}
 }

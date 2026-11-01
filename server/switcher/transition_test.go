@@ -291,22 +291,17 @@ func TestSwitcherTransitionRoutesFramesToEngine(t *testing.T) {
 	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
 	require.NoError(t, err)
 
-	// Now send frames from both sources — they should go to the engine
-	// and produce blended output on the program relay.
-	// The engine needs frames from "from" source first, then "to" source triggers blend.
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0x01}})
-	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 101, IsKeyframe: true, WireData: []byte{0x02}})
-
-	// Give a moment for frames to flow through
-	time.Sleep(10 * time.Millisecond)
-
-	viewer.mu.Lock()
-	postTransitionCount := len(viewer.videos)
-	viewer.mu.Unlock()
+	// Now send frames from both sources: each tick blends them and puts
+	// the result on the program relay.
+	sendRawFrame(sw, "cam1", 0, true)
+	sendRawFrame(sw, "cam2", 0, true)
 
 	// Should have at least one new blended frame from the engine
-	require.Greater(t, postTransitionCount, preTransitionCount,
-		"transition engine should produce blended output frames")
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.videos) > preTransitionCount
+	}, time.Second, 5*time.Millisecond, "transition engine should produce blended output frames")
 }
 
 func TestSwitcherTransitionCompletion(t *testing.T) {
@@ -1049,7 +1044,7 @@ func (m *gpuTransitionMock) RunWithUpload(yuv []byte, width, height int, pts int
 	return nil
 }
 
-func (m *gpuTransitionMock) RunFromCache(sourceKey string, pts int64) error {
+func (m *gpuTransitionMock) RunFromCache(sourceKey string, srcPTS, pts int64, nearest bool) error {
 	if m.runFromCacheErr != nil {
 		return m.runFromCacheErr
 	}
@@ -1131,13 +1126,16 @@ func TestSwitcherGPUTransitionSkipsCPUBlend(t *testing.T) {
 
 	// Feed raw YUV frames to the switcher (always-decode path).
 	frame := make([]byte, ColorYUV420_8bit.FrameSize(4, 4))
-	sw.handleRawVideoFrame("cam1", &ProcessingFrame{Data: frame, Width: 4, Height: 4, PTS: 100})
-	sw.handleRawVideoFrame("cam2", &ProcessingFrame{Data: frame, Width: 4, Height: 4, PTS: 101})
-	time.Sleep(20 * time.Millisecond)
+	sw.IngestRawVideo("cam1", &ProcessingFrame{Data: frame, Width: 4, Height: 4})
+	sw.IngestRawVideo("cam2", &ProcessingFrame{Data: append([]byte(nil), frame...), Width: 4, Height: 4})
 
-	// GPU RunTransition should have been called (triggered by cam2, the TO source).
+	// GPU RunTransition should have been called on a transition tick.
+	require.Eventually(t, func() bool {
+		gpuMock.mu.Lock()
+		defer gpuMock.mu.Unlock()
+		return len(gpuMock.runTransCalls) > 0
+	}, time.Second, 5*time.Millisecond, "RunTransition should be called on GPU")
 	gpuMock.mu.Lock()
-	require.NotEmpty(t, gpuMock.runTransCalls, "RunTransition should be called on GPU")
 	call := gpuMock.runTransCalls[0]
 	require.Equal(t, "cam1", call.fromKey)
 	require.Equal(t, "cam2", call.toKey)
@@ -1180,11 +1178,14 @@ func TestSwitcherGPUTransitionFTB(t *testing.T) {
 
 	// FTB triggers on FROM source (cam1) frames.
 	frame := make([]byte, ColorYUV420_8bit.FrameSize(4, 4))
-	sw.handleRawVideoFrame("cam1", &ProcessingFrame{Data: frame, Width: 4, Height: 4, PTS: 200})
-	time.Sleep(20 * time.Millisecond)
+	sw.IngestRawVideo("cam1", &ProcessingFrame{Data: frame, Width: 4, Height: 4})
 
+	require.Eventually(t, func() bool {
+		gpuMock.mu.Lock()
+		defer gpuMock.mu.Unlock()
+		return len(gpuMock.runTransCalls) > 0
+	}, time.Second, 5*time.Millisecond, "RunTransition should be called for FTB")
 	gpuMock.mu.Lock()
-	require.NotEmpty(t, gpuMock.runTransCalls, "RunTransition should be called for FTB")
 	call := gpuMock.runTransCalls[0]
 	require.Equal(t, "cam1", call.fromKey)
 	require.Equal(t, "ftb", call.transType)

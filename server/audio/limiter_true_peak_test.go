@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
 )
 
 // measureTruePeakDBTP reconstructs the true-peak of a processed buffer
@@ -314,7 +313,6 @@ func TestMixer_LimiterSettings_JSONSafeAtColdStart(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(_ *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -332,7 +330,6 @@ func TestMixer_LimiterSettings_IncludesTruePeak(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(_ *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 

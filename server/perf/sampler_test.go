@@ -149,7 +149,6 @@ func TestSampler_Tick(t *testing.T) {
 	mx := &mockMixerPerf{sample: MixerSample{
 		Mode:           "mix",
 		MixCycleLastNs: 2000,
-		FramesOutput:   100,
 	}}
 	out := &mockOutputPerf{sample: OutputSample{
 		MuxerPTS: 90000,

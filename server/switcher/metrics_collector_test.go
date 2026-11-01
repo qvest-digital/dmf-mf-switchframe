@@ -94,17 +94,16 @@ func TestMetricsCollector_SourceHealthIsOneHot(t *testing.T) {
 func TestMetricsCollector_ProgramCounters(t *testing.T) {
 	sw := NewTestSwitcher(t, distribution.NewRelay())
 	sw.videoBroadcastCount.Store(500)
-	sw.stallFillFrames.Store(7)
-	sw.videoProcDropped.Store(1)
+	sw.programRepeats.Store(7)
+	sw.overloadDrops.Store(1)
 	sw.pipeEncodeDrop.Store(2)
-	sw.programEpochStale.Store(3)
 	sw.deadlineViolations.Store(4)
 	sw.frameBudgetNs.Store(int64(20 * time.Millisecond))
 
 	f := gather(t, NewMetricsCollector(sw))
 	require.Equal(t, map[string]float64{"": 500}, values(f["switchframe_program_frames_total"]))
 	require.Equal(t, map[string]float64{"": 7}, values(f["switchframe_program_repeated_frames_total"]))
-	require.Equal(t, map[string]float64{"proc": 1, "encode": 2, "stale": 3},
+	require.Equal(t, map[string]float64{"proc": 1, "encode": 2},
 		values(f["switchframe_program_dropped_frames_total"]))
 	require.Equal(t, map[string]float64{"": 4}, values(f["switchframe_pipeline_deadline_violations_total"]))
 	require.Equal(t, map[string]float64{"": 0.02}, values(f["switchframe_pipeline_frame_budget_seconds"]))

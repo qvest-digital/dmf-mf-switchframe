@@ -1487,6 +1487,10 @@ func (e *Engine) StartSync(from, to string, ttype Type, durationMs int) {
 func (e *Engine) AutoAdvancePosition(frameDurationMs float64) (float64, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// The T-bar holds the position; SetPosition completes or aborts.
+	if e.manualControl {
+		return e.manualPosition, false
+	}
 	if e.durationMs <= 0 {
 		e.state = StateIdle
 		return 1.0, true
@@ -1595,7 +1599,7 @@ func (e *Engine) BlendRawInto(
 
 	// Generate broadcast-standard black frame for FTB / missing source B
 	makeBlack := func() []byte {
-		return video.NewBlackFrame(video.YUV420_8bit, outW, outH)
+		return video.NewBlackFrame(cf, outW, outH)
 	}
 
 	// Guard against nil/empty fromYUV — can happen during source flapping
@@ -1613,6 +1617,18 @@ func (e *Engine) BlendRawInto(
 		if e.timedRender(ttype, dst, fromYUV, toYUV, outW, outH, cf, position) {
 			return dst, outW, outH
 		}
+	}
+
+	if cf == video.YUV422_10bit {
+		if toYUV == nil {
+			toYUV = makeBlack()
+		}
+		e.mu.Lock()
+		e.width, e.height = outW, outH
+		out := e.blend10bit(fromYUV, toYUV, position)
+		dst = append(dst[:0], out...)
+		e.mu.Unlock()
+		return dst, outW, outH
 	}
 
 	var blended []byte

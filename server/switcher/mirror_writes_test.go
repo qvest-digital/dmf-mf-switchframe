@@ -35,10 +35,6 @@ func TestMirrorWrites_HotState_StayInSyncWithLegacyFields(t *testing.T) {
 	hs = sw.hotState.Load()
 	require.Equal(t, sw.previewSource, hs.previewSource, "SetPreview: previewSource mirror divergence")
 
-	sw.EnableWallClockVideoPTS()
-	hs = sw.hotState.Load()
-	require.Equal(t, sw.wallClockVideoEnabled, hs.wallClockVideoEnabled, "EnableWallClockVideoPTS mirror divergence")
-
 	require.NoError(t, sw.SetFTBDuration(1234))
 	require.EqualValues(t, sw.ftbDurationMs, sw.ftbDurationMsAtomic.Load(), "SetFTBDuration mirror divergence")
 

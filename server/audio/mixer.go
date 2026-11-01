@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/metrics"
@@ -39,10 +39,7 @@ type RawAudioSink func(pcm []float32, pts int64, sampleRate, channels int)
 type MixerConfig struct {
 	SampleRate     int
 	Channels       int
-	Output         func(*media.AudioFrame)
 	DecoderFactory DecoderFactory // nil = no AAC decoding (PCM-only sources)
-	EncoderFactory EncoderFactory // nil = no AAC encoding (tick returns nil)
-	ClockDriven    bool           // when true, skip internal ticker (external clock drives output via ProduceSamples)
 }
 
 // CompressorState holds the current state of a channel's compressor.
@@ -90,12 +87,24 @@ type Channel struct {
 	balance              float64        // -1.0 (hard left) to +1.0 (hard right), 0.0 = center
 	balL                 float32        // cached left gain from BalanceGains()
 	balR                 float32        // cached right gain from BalanceGains()
-	audioDelay           *DelayBuffer   // per-source audio delay for lip-sync correction
+	delayMs              int            // audio-only lip-sync delay (SetAudioDelay)
+	sourceDelayMs        int            // the source's A/V delay (SetSourceDelay)
 	isPCM                bool           // true if this channel receives raw PCM (not AAC)
 	sampleRateWarned     bool           // true after first sample rate mismatch log (once per channel)
 	resampler            *Resampler     // nil when source rate matches mixer rate; lazy-init on mismatch
 	resamplerSrcRate     int            // source rate the resampler was created for (detect rate changes)
-	ringBuf              *PCMRingBuffer // processed PCM ring buffer for clock-driven output
+	ringBuf              *PCMRingBuffer // processed PCM, read by ProduceSamples
+	// ringEnd is the TAI time just after the newest sample in ringBuf, 0
+	// until the first push. With the buffered sample count it places the
+	// ring on the media timeline (popAt).
+	ringEnd int64
+	// placed is set once the ring was put exactly on the read point, at its
+	// first read after being empty or reset.
+	placed bool
+	// realigned is set while the ring's audio is off the read point by
+	// more than a period and was moved onto it; realigns counts entries.
+	realigned bool
+	realigns  int64
 
 	// Reusable work buffers (hot-path allocation elimination)
 	trimBuf    []float32
@@ -104,7 +113,7 @@ type Channel struct {
 	downmixBuf []float32 // reused by downmixChannels to avoid per-call allocation
 
 	// surroundWarned is set the first time a source delivers more channels
-	// than the mixer supports. Reset on source reconnect via RemoveChannel.
+	// than the mixer supports. Reset on source reconnect (ResetChannelInput).
 	surroundWarned bool
 }
 
@@ -117,31 +126,26 @@ type Mixer struct {
 	masterLinear float32 // cached linear gain from masterLevel
 	sampleRate   int
 	numChannels  int
-	encoder      Encoder
-	output       func(*media.AudioFrame)
 	config       MixerConfig
 
 	// Audio forwarding: when set, audio ingested for srcKey is also
 	// ingested for dstKey. Used by playout to route live source audio
 	// through the playout mixer channel.
 	audioForwards map[string]string // srcKey → dstKey
+	sourceDelays  map[string]int    // SetSourceDelay by source key, kept across AddChannel
 
-	// Reusable accumulator for mix output (used by tick())
+	// Reusable accumulator for mix output (used by produceSamplesLocked)
 	mixAccum []float32
 
-	// Background ticker for clock-driven output
-	stopTicker chan struct{}
-	tickerWg   sync.WaitGroup
-	closeOnce  sync.Once
+	closeOnce sync.Once
 
-	// closed is set true under m.mu before Close() frees the codecs. A
-	// straggler tick()/ingest that wins the lock after a shutdown-wait timeout
-	// checks this flag before (re)creating or using ch.decoder/m.encoder, so it
-	// cannot resurrect or touch codecs Close() is about to release.
+	// closed is set true under m.mu before Close() frees the decoders. An
+	// ingest that wins the lock afterwards checks this flag before creating
+	// ch.decoder, so it cannot resurrect a decoder Close() is releasing.
 	closed atomic.Bool
 
 	// Transition crossfade state: multi-frame crossfade synced with video transition.
-	// Also used for cut crossfade (2-tick ramp driven by cutFramesRemaining).
+	// Also used for cut crossfade (ramp driven by cutFramesRemaining).
 	transCrossfadeActive   bool
 	transCrossfadeFrom     string         // outgoing source key
 	transCrossfadeTo       string         // incoming source key
@@ -159,8 +163,8 @@ type Mixer struct {
 	// stays active because its source is now on program.
 	transAbortActivated string
 
-	// Cut crossfade state: driven by tick() frame counter.
-	// When cutFramesRemaining > 0, tick() auto-advances transCrossfadePosition.
+	// Cut crossfade state: driven by AdvanceCrossfade, once per period.
+	// When cutFramesRemaining > 0, each call advances transCrossfadePosition.
 	cutFramesRemaining int // >0 means cut crossfade in progress
 	cutTotalFrames     int // total frames in cut crossfade (usually 2)
 
@@ -188,15 +192,6 @@ type Mixer struct {
 	programMuted        bool
 	unmuteFadeRemaining int // samples remaining in unmute fade-in ramp (0 = inactive)
 
-	// Wall-clock-based output PTS: seeded from video pipeline's first frame
-	// PTS + wall time (SeedPTSFromVideo), then tracks elapsed wall clock.
-	// Both video and audio use wall clock, so they stay aligned during gaps.
-	outputPTS         int64
-	outputPTSInited   bool
-	outputPTSStart    int64     // source PTS at epoch
-	outputPTSEpoch    time.Time // wall-clock time at epoch
-	videoSeedExpected bool      // true when wall-clock mode expects SeedPTSFromVideo
-
 	// Program bus limiter (always active)
 	limiter *Limiter
 
@@ -216,71 +211,36 @@ type Mixer struct {
 	// Raw audio output tap for MXL (atomic, lock-free read)
 	rawAudioSink atomic.Pointer[RawAudioSink]
 
-	// Direct output callback — bypasses the relay for zero-latency
-	// delivery to the MPEG-TS muxer. Called from the output ticker goroutine.
-	outputAudioCallback atomic.Pointer[func(*media.AudioFrame)]
-
 	// Debug counters (atomic, no lock needed)
-	framesMixed  atomic.Int64
+	framesMixed  atomic.Int64 // ProduceSamples calls
 	decodeErrors atomic.Int64
-	encodeErrors atomic.Int64
 
-	// Output frames permanently dropped because a ticker stall exceeded the
-	// catch-up cap (each one is ~21.3ms of program audio lost).
-	tickerFramesDropped atomic.Int64
-
-	// Ring buffer latency: depth of the program source's ring buffer in
-	// samples at the moment each tick reads from it. Converted to 90kHz
-	// ticks for lip-sync offset. Updated every tick.
+	// Ring buffer latency: depth of the deepest active ring buffer in
+	// samples at the moment ProduceSamples reads it, in 90kHz ticks.
 	ringBufLatency90k atomic.Int64
 
 	// Audio timing diagnostics (atomic, lock-free)
-	outputFrameCount  atomic.Int64 // total frames output
-	lastOutputNano    atomic.Int64 // UnixNano of last output frame
-	maxInterFrameNano atomic.Int64 // max gap between consecutive output frames (ns)
+	lastOutputNano    atomic.Int64 // UnixNano of the last ProduceSamples
+	maxInterFrameNano atomic.Int64 // max gap between consecutive ProduceSamples calls (ns)
 	transCrossfades   atomic.Int64 // transition crossfade start count
 
-	// Mix cycle timing (atomic, lock-free)
+	// Duration of the last ProduceSamples mix, lock held (atomic, lock-free)
 	lastMixCycleNs atomic.Int64
 }
 
 // NewMixer creates a Mixer.
 func NewMixer(config MixerConfig) *Mixer {
-	// Default to a no-op output when the caller leaves it unset. recordAndOutput
-	// calls output unconditionally once the encoder factory produces a frame;
-	// an unguarded nil callback would panic.
-	output := config.Output
-	if output == nil {
-		output = func(*media.AudioFrame) {}
-	}
-	m := &Mixer{
+	return &Mixer{
 		log:          slog.With("component", "audio"),
 		channels:     make(map[string]*Channel),
+		sourceDelays: make(map[string]int),
 		masterLevel:  0.0,
 		masterLinear: 1.0, // 0 dB = unity
 		sampleRate:   config.SampleRate,
 		numChannels:  config.Channels,
-		output:       output,
 		config:       config,
 		limiter:      NewLimiter(config.SampleRate, config.Channels),
 		loudness:     NewLoudnessMeter(config.SampleRate, config.Channels),
-	}
-	if !config.ClockDriven {
-		m.stopTicker = make(chan struct{})
-		m.tickerWg.Add(1)
-		go m.outputTicker(time.Now())
-	}
-	return m
-}
-
-// SetOutputAudioCallback registers a direct audio output callback that
-// bypasses the relay for zero-latency delivery to the MPEG-TS muxer.
-// Called synchronously from the output ticker goroutine. Pass nil to clear.
-func (m *Mixer) SetOutputAudioCallback(fn func(*media.AudioFrame)) {
-	if fn != nil {
-		m.outputAudioCallback.Store(&fn)
-	} else {
-		m.outputAudioCallback.Store(nil)
 	}
 }
 
@@ -322,21 +282,32 @@ func (m *Mixer) RemoveAudioForward(srcKey string) {
 	delete(m.audioForwards, srcKey)
 }
 
-// ProduceSamples produces exactly sampleCount mixed PCM samples on demand.
-// This is the reference-clock-driven path — the caller (synchronous processing
-// loop) controls timing, not an internal ticker.
-// sampleCount is in SAMPLES (not samples*channels — the method handles channels).
-func (m *Mixer) ProduceSamples(sampleCount int) []float32 {
+// ProduceSamples produces exactly sampleCount mixed PCM samples, the program
+// audio from sample index start of the media timeline on. pts is the output
+// PTS of the first sample, passed to the raw audio sink. The caller (the
+// reference clock's processing loop) calls it once per period and encodes
+// the result. sampleCount is in SAMPLES (not samples*channels -- the method
+// handles channels). The returned slice is reused by the next call.
+func (m *Mixer) ProduceSamples(start uint64, sampleCount int, pts int64) []float32 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	totalValues := sampleCount * m.numChannels
-	mixed := m.produceSamplesLocked(totalValues)
-	// Apply master chain with PTS=0; the reference clock caller manages PTS externally.
-	m.applyMasterChain(mixed, 0)
+	begin := time.Now()
+	mixed := m.produceSamplesLocked(start, sampleCount*m.numChannels)
+	m.applyMasterChain(mixed, pts)
+
+	m.framesMixed.Add(1)
+	if m.promMetrics != nil {
+		m.promMetrics.FramesMixedTotal.Inc()
+	}
+	now := time.Now()
+	m.lastMixCycleNs.Store(int64(now.Sub(begin)))
+	if prev := m.lastOutputNano.Swap(now.UnixNano()); prev > 0 {
+		atomicutil.UpdateMax(&m.maxInterFrameNano, now.UnixNano()-prev)
+	}
 	return mixed
 }
 
-// AdvanceCrossfade advances the cut crossfade state machine by one tick.
+// AdvanceCrossfade advances the cut crossfade state machine by one period.
 // Called by the synchronous processing loop after ProduceSamples.
 func (m *Mixer) AdvanceCrossfade() {
 	m.mu.Lock()
@@ -344,30 +315,14 @@ func (m *Mixer) AdvanceCrossfade() {
 	m.advanceCutCrossfade()
 }
 
-// Close releases all codec resources and stops the background ticker.
-// It is safe to call multiple times.
-//
-// Returns a non-nil error if the background ticker goroutine did not exit
-// within the shutdown timeout. In that pathological case Close still proceeds
-// to free the codecs (leaking them forever would be worse), but it first sets
-// m.closed so a still-running tick()/ingest cannot recreate or reuse the
-// codecs it is about to release — see ensureEncoder/initChannelDecoder.
+// Close releases the channel decoders. It is safe to call multiple times
+// and always returns nil.
 func (m *Mixer) Close() error {
-	var closeErr error
 	m.closeOnce.Do(func() {
-		if m.stopTicker != nil {
-			close(m.stopTicker)
-			if !internal.WaitWithTimeout(&m.tickerWg, 5*time.Second) {
-				closeErr = errors.New("audio: mixer ticker shutdown timed out after 5s")
-				m.log.Error("mixer ticker shutdown timed out after 5s; freeing codecs anyway")
-			}
-		}
-
-		// Collect codecs under lock, then close outside lock to avoid
+		// Collect decoders under lock, then close outside lock to avoid
 		// holding mu during cgo calls (which may block). Set m.closed first
-		// (under the same lock) so any straggler tick()/ingest that acquires
-		// the lock after this point sees the mixer as closed and refuses to
-		// recreate or use the codecs we are about to free.
+		// (under the same lock) so an ingest that acquires the lock after
+		// this point refuses to recreate a decoder.
 		m.mu.Lock()
 		m.closed.Store(true)
 		var decoders []Decoder
@@ -377,18 +332,13 @@ func (m *Mixer) Close() error {
 				ch.decoder = nil
 			}
 		}
-		enc := m.encoder
-		m.encoder = nil
 		m.mu.Unlock()
 
 		for _, dec := range decoders {
 			_ = dec.Close()
 		}
-		if enc != nil {
-			_ = enc.Close()
-		}
 	})
-	return closeErr
+	return nil
 }
 
 // initChannelDecoder ensures the channel's AAC decoder is initialized exactly
@@ -414,150 +364,156 @@ func (m *Mixer) initChannelDecoder(ch *Channel) {
 	})
 }
 
-// ensureEncoder lazy-initializes the AAC encoder if needed and primes it
-// with a silent frame to avoid MDCT warmup artifacts. A cold encoder's first
-// output frame has different spectral characteristics than a primed one,
-// causing an audible pop at the passthrough→mixing boundary.
-// Caller must hold m.mu.
-func (m *Mixer) ensureEncoder() error {
-	if m.encoder != nil {
-		return nil
-	}
-	// Don't resurrect the encoder after Close() has begun freeing codecs. A
-	// straggler tick() that wins the lock post-timeout lands here; returning an
-	// error makes it produce no output instead of recreating a live encoder.
-	if m.closed.Load() {
-		return errors.New("audio: mixer is closed")
-	}
-	if m.config.EncoderFactory == nil {
-		return errors.New("no encoder factory")
-	}
-	enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
-	if err != nil {
-		return err
-	}
-	// Encode a silent frame to prime the encoder's internal MDCT buffers.
-	// The output is discarded — we just need the encoder state initialized.
-	silence := make([]float32, 1024*m.numChannels)
-	_, _ = enc.Encode(silence)
-	m.encoder = enc
-	return nil
-}
-
-// frameDuration90k returns the duration of one AAC frame (1024 samples) in 90 kHz PTS ticks.
-func (m *Mixer) frameDuration90k() int64 {
-	return int64(1024) * 90000 / int64(m.sampleRate)
-}
-
-// ExpectVideoSeed tells the mixer to wait for SeedPTSFromVideo before
-// self-seeding from audio input. Without this, the mixer seeds from the
-// first IngestPCM call which may use a different PTS timeline.
-// No-op when ClockDriven is true (PTS comes from the external clock).
-func (m *Mixer) ExpectVideoSeed() {
-	if m.config.ClockDriven {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.videoSeedExpected = true
-}
-
-// SeedPTSFromVideo sets the audio PTS epoch from the video pipeline's first
-// frame. Called by the switcher when the first program video frame is
-// processed, ensuring audio and video PTS share the same starting point.
-// Thread-safe — can be called from any goroutine.
-// No-op when ClockDriven is true (PTS comes from the external clock).
-func (m *Mixer) SeedPTSFromVideo(videoPTS int64) {
-	if m.config.ClockDriven {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	// Always override — audio may have already seeded via advanceOutputPTS
-	// (audio frames arrive before video during FFmpeg probe). The video seed
-	// is authoritative because it aligns with the frame sync's video PTS.
-	m.outputPTSStart = videoPTS
-	m.outputPTSEpoch = time.Now()
-	m.outputPTS = videoPTS
-	m.outputPTSInited = true
-}
-
-// advanceOutputPTS returns a hybrid PTS: frame-counter for regular spacing
-// (browser-friendly) with periodic wall-clock resync to prevent drift during
-// gaps. Seeded from the video pipeline's first frame (SeedPTSFromVideo).
-// Caller must hold m.mu.
-func (m *Mixer) advanceOutputPTS(inputPTS int64) int64 {
-	now := time.Now()
-	if !m.outputPTSInited {
-		if m.videoSeedExpected {
-			// Wall-clock mode: wait for SeedPTSFromVideo to align epoch.
-			// Use temp counter until seed arrives (overridden by seed).
-			m.outputPTS += m.frameDuration90k()
-			m.outputPTS &= 0x1FFFFFFFF
-			return m.outputPTS
-		}
-		if inputPTS > 0 {
-			// Legacy mode (no video seed): self-seed from first audio PTS.
-			m.outputPTSStart = inputPTS
-			m.outputPTSEpoch = now
-			m.outputPTS = inputPTS
-			m.outputPTSInited = true
-		} else {
-			m.outputPTS += m.frameDuration90k()
-			m.outputPTS &= 0x1FFFFFFFF
-			return m.outputPTS
-		}
-	} else {
-		// Frame counter: regular 1920-tick spacing (no inputPtsJumps).
-		m.outputPTS += m.frameDuration90k()
-
-		// Wall-clock resync: nudge toward wall clock to prevent drift
-		// during no-audio gaps. Gradual correction avoids PTS jumps.
-		wallPTS := m.outputPTSStart + int64(now.Sub(m.outputPTSEpoch).Seconds()*90000)
-		drift := wallPTS - m.outputPTS
-		if drift > m.frameDuration90k() {
-			// Behind wall clock — add half a frame to catch up gradually.
-			m.outputPTS += m.frameDuration90k() / 2
-		} else if drift < -m.frameDuration90k() {
-			// Ahead of wall clock — subtract half a frame to slow down.
-			m.outputPTS -= m.frameDuration90k() / 2
-		}
-	}
-	// No 33-bit mask — the muxer handles PTS rebasing and wrapping.
-	return m.outputPTS
-}
-
 // AddChannel registers a source with the mixer.
 func (m *Mixer) AddChannel(sourceKey string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.channels[sourceKey] = &Channel{
-		sourceKey:   sourceKey,
-		levelLinear: 1.0, // 0 dB = unity
-		trimLinear:  1.0, // 0 dB = unity
-		hpf:         NewHPF(m.sampleRate),
-		gate:        NewGate(m.sampleRate, m.numChannels),
-		eq:          NewEQ(m.sampleRate, m.numChannels),
-		compressor:  NewCompressor(m.sampleRate, m.numChannels),
-		balance:     0,
-		balL:        1.0,
-		balR:        1.0,
-		audioDelay:  NewDelayBuffer(0),
-		ringBuf:     m.newChannelRingBuf(),
+		sourceKey:     sourceKey,
+		levelLinear:   1.0, // 0 dB = unity
+		trimLinear:    1.0, // 0 dB = unity
+		hpf:           NewHPF(m.sampleRate),
+		gate:          NewGate(m.sampleRate, m.numChannels),
+		eq:            NewEQ(m.sampleRate, m.numChannels),
+		compressor:    NewCompressor(m.sampleRate, m.numChannels),
+		balance:       0,
+		balL:          1.0,
+		balR:          1.0,
+		sourceDelayMs: m.sourceDelays[sourceKey],
 	}
+	ch := m.channels[sourceKey]
+	ch.ringBuf = m.newChannelRingBuf(m.delaySamples(ch))
 }
 
-// newChannelRingBuf creates a PCM ring buffer for a mixer channel.
-func (m *Mixer) newChannelRingBuf() *PCMRingBuffer {
-	return NewPCMRingBufferWithChannels(10*1024*m.numChannels, m.numChannels)
+// maxAudioDelayMs bounds SetAudioDelay and SetSourceDelay each.
+const maxAudioDelayMs = 500
+
+// channelRingFrames is how many sample frames a channel's ring holds
+// beyond its delay, 640 ms at 48 kHz: a source's audio placed ahead of its
+// arrival for as long as the video stores keep a source's frames for
+// (clock.MaxSourceHold, 500 ms), as a TrackingAnchor raised by a late video
+// frame places it, plus the read delay at 24 fps and an AAC frame.
+const channelRingFrames = 30 * 1024
+
+// newChannelRingBuf creates a PCM ring buffer for a mixer channel that
+// holds delay samples beyond the read window.
+func (m *Mixer) newChannelRingBuf(delay int) *PCMRingBuffer {
+	return NewPCMRingBufferWithChannels((channelRingFrames+delay)*m.numChannels, m.numChannels)
 }
 
-// driftTarget returns the target ring buffer depth in total sample values
-// (samples × channels) for drift compensation. 2 AAC frames provides
-// enough jitter buffer for bursty SRT delivery while staying within
-// EBU R37 ±40ms imperceptible range.
-func (m *Mixer) driftTarget() int {
-	return 2 * 1024 * m.numChannels
+// delaySamples is how far behind the tick's read point ch is read.
+func (m *Mixer) delaySamples(ch *Channel) int {
+	return (ch.delayMs + ch.sourceDelayMs) * m.sampleRate / 1000
+}
+
+// resizeRing gives ch a ring large enough for its delay, keeping the
+// audio buffered so far. Caller holds m.mu.
+func (m *Mixer) resizeRing(ch *Channel) {
+	rb := m.newChannelRingBuf(m.delaySamples(ch))
+	if ch.ringBuf != nil {
+		rb.Push(ch.ringBuf.Pop(ch.ringBuf.Len()))
+	}
+	ch.ringBuf = rb
+}
+
+// clampDelayMs limits a delay to [0, maxAudioDelayMs].
+func clampDelayMs(ms int) int {
+	return max(0, min(ms, maxAudioDelayMs))
+}
+
+// stampRing records that ch's newest pushed samples, n of them, start at
+// the engine-timeline PTS pts.
+func (m *Mixer) stampRing(ch *Channel, pts int64, n int) {
+	ch.ringEnd = clock.TimestampOf(pts) + int64(n)*1_000_000_000/int64(m.sampleRate)
+}
+
+// popAt returns the n samples of ch starting at sample index start of the
+// media timeline less ch's delay, as interleaved values. Audio buffered before start is
+// dropped and a start before the buffered audio gets silence: exactly on
+// the first read of a ring, and afterwards only when the ring is more than
+// a period (n) off, so a source's own jitter never splices its audio. Nil
+// when ch has never been fed.
+func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
+	if ch.ringEnd == 0 {
+		return nil
+	}
+	start -= uint64(m.delaySamples(ch))
+	c := m.numChannels
+	have := ch.ringBuf.FrameCount()
+	end := clock.TimestampToIndex(clock.Rate{Num: int64(m.sampleRate), Den: 1}, ch.ringEnd)
+	off := int64(start) - (int64(end) - int64(have)) // >0: ring holds older audio
+	tol := int64(n)
+	if !ch.placed && have > 0 {
+		// Placed only by a read that reaches the ring's audio: a ring a
+		// period or more ahead is read as silence and placed again next
+		// time, rather than read from then on up to a period early.
+		ch.placed, tol = off > -int64(n), 0
+	} else if off > tol || off < -tol {
+		ch.noteRealign(true)
+	} else {
+		ch.noteRealign(false)
+	}
+	skip := 0 // leading silence before the ring's audio
+	switch {
+	case off > tol:
+		ch.ringBuf.Pop(int(min(off, int64(have))) * c)
+	case off < -tol:
+		skip = int(-off)
+		if skip >= n {
+			return make([]float32, n*c)
+		}
+	}
+	need := n - skip
+	if got := ch.ringBuf.FrameCount(); got < need {
+		// The source ran dry: what it has is read, the rest is silence,
+		// and the ring is placed again by the next read that reaches its
+		// audio. Left placed, it would lag the read point by the missing
+		// samples from then on, and splice whenever its stamps jitter.
+		out := make([]float32, n*c)
+		copy(out[skip*c:], ch.ringBuf.Pop(got*c))
+		ch.placed = false
+		return out
+	}
+	if skip == 0 {
+		return ch.ringBuf.Pop(n * c)
+	}
+	out := make([]float32, n*c)
+	copy(out[skip*c:], ch.ringBuf.Pop(need*c))
+	return out
+}
+
+func (ch *Channel) noteRealign(off bool) {
+	if off && !ch.realigned {
+		ch.realigns++
+	}
+	ch.realigned = off
+}
+
+// ResetChannelInput drops what a channel holds from its source's previous
+// connection, for a source that reconnects under the same key: buffered
+// audio and its placement, decoder and resampler. Fader, processing,
+// AFV, program state and delays stay. False when there is no channel.
+func (m *Mixer) ResetChannelInput(sourceKey string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		return false
+	}
+	if ch.decoder != nil {
+		_ = ch.decoder.Close()
+		ch.decoder = nil
+	}
+	ch.decoderOnce = sync.Once{}
+	ch.primingSkipCount, ch.primingOffsetApplied = 0, false
+	ch.isPCM, ch.surroundWarned, ch.sampleRateWarned = false, false, false
+	ch.resampler, ch.resamplerSrcRate = nil, 0
+	ch.ringBuf = m.newChannelRingBuf(m.delaySamples(ch))
+	ch.ringEnd, ch.placed, ch.realigned = 0, false, false
+	if ch.active {
+		m.initChannelDecoder(ch)
+	}
+	return true
 }
 
 // RemoveChannel unregisters a source.
@@ -819,7 +775,7 @@ func (m *Mixer) ChannelStates() map[string]internal.AudioChannel {
 			HPFEnabled:   ch.hpf.Enabled(),
 			PeakL:        LinearToDBFS(ch.peakL),
 			PeakR:        LinearToDBFS(ch.peakR),
-			AudioDelayMs: ch.audioDelay.DelayMs(),
+			AudioDelayMs: ch.delayMs,
 		}
 		// Include EQ band settings
 		if ch.eq != nil {
@@ -859,6 +815,18 @@ func (m *Mixer) ChannelStates() map[string]internal.AudioChannel {
 			ac.GateReduction = ch.gate.GainReduction()
 		}
 		result[key] = ac
+	}
+	return result
+}
+
+// ChannelRealigns returns, per source, how many times popAt moved the
+// source's audio onto the program read point.
+func (m *Mixer) ChannelRealigns() map[string]int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]int64, len(m.channels))
+	for key, ch := range m.channels {
+		result[key] = ch.realigns
 	}
 	return result
 }
@@ -925,8 +893,9 @@ func (m *Mixer) GetCompressor(sourceKey string) (CompressorState, error) {
 	}, nil
 }
 
-// SetAudioDelay sets the audio delay in milliseconds for a source channel.
-// Used for lip-sync correction in multi-camera setups.
+// SetAudioDelay sets the audio-only delay in milliseconds, clamped to
+// [0, 500], for a source channel, for lip-sync correction: the channel is
+// read that much earlier in media time than the tick's read point.
 func (m *Mixer) SetAudioDelay(sourceKey string, delayMs int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -934,8 +903,27 @@ func (m *Mixer) SetAudioDelay(sourceKey string, delayMs int) error {
 	if !ok {
 		return fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
-	ch.audioDelay.SetDelayMs(delayMs)
+	ch.delayMs = clampDelayMs(delayMs)
+	m.resizeRing(ch)
 	return nil
+}
+
+// SetSourceDelay sets the delay in milliseconds, clamped to [0, 500], of
+// a source whose video the frame sync delays by the same amount. It adds
+// to the audio delay and holds for a channel added later.
+func (m *Mixer) SetSourceDelay(sourceKey string, delayMs int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delayMs = clampDelayMs(delayMs)
+	if delayMs == 0 {
+		delete(m.sourceDelays, sourceKey)
+	} else {
+		m.sourceDelays[sourceKey] = delayMs
+	}
+	if ch, ok := m.channels[sourceKey]; ok {
+		ch.sourceDelayMs = delayMs
+		m.resizeRing(ch)
+	}
 }
 
 // AudioDelayMs returns the current audio delay in milliseconds for a source channel.
@@ -946,7 +934,7 @@ func (m *Mixer) AudioDelayMs(sourceKey string) int {
 	if !ok {
 		return 0
 	}
-	return ch.audioDelay.DelayMs()
+	return ch.delayMs
 }
 
 // GainReduction returns the current limiter gain reduction in dB.
@@ -1028,22 +1016,6 @@ func (m *Mixer) ResetLoudness() {
 	m.loudness.Reset()
 }
 
-// recordAndOutput tracks output timing diagnostics and delivers the frame.
-func (m *Mixer) recordAndOutput(frame *media.AudioFrame) {
-	now := time.Now().UnixNano()
-	prev := m.lastOutputNano.Swap(now)
-	m.outputFrameCount.Add(1)
-	if prev > 0 {
-		gap := now - prev
-		atomicutil.UpdateMax(&m.maxInterFrameNano, gap)
-	}
-	m.output(frame)
-	// Direct output path: zero-latency delivery to MPEG-TS muxer.
-	if cb := m.outputAudioCallback.Load(); cb != nil {
-		(*cb)(frame)
-	}
-}
-
 // RingBufferLatency90k returns the program source's ring buffer depth in
 // 90kHz ticks. Used by the muxer as a dynamic lip-sync offset — the ring
 // buffer adds FIFO latency to audio that the video path (newest-wins frame
@@ -1052,7 +1024,7 @@ func (m *Mixer) RingBufferLatency90k() int64 {
 	return m.ringBufLatency90k.Load()
 }
 
-// ResetMaxInterFrameGap resets the max inter-frame gap counter, allowing
+// ResetMaxInterFrameGap resets the max gap between ProduceSamples calls, allowing
 // fresh measurement after a transition or other event.
 func (m *Mixer) ResetMaxInterFrameGap() {
 	m.maxInterFrameNano.Store(0)

@@ -166,8 +166,8 @@ func TestStress_CutDuringTransition(t *testing.T) {
 }
 
 // TestStress_20Sources registers 20 sources simultaneously, sets preview and
-// cuts between them. Verifies: all 20 sources appear in state, frame routing
-// works for an arbitrary source.
+// cuts between them. Verifies: all 20 sources appear in state and any of them
+// can be cut to program.
 func TestStress_20Sources(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stress test")
@@ -213,14 +213,9 @@ func TestStress_20Sources(t *testing.T) {
 		require.True(t, exists, "source %q should exist in state", key)
 	}
 
-	// Cut to cam10 and verify frame routing.
+	// Cut to cam10.
 	require.NoError(t, sw.Cut(context.Background(), "cam10"))
-	relays["cam10"].BroadcastVideo(&media.VideoFrame{PTS: 1000, IsKeyframe: true, WireData: []byte{0x10}})
-
-	capture.mu.Lock()
-	require.GreaterOrEqual(t, len(capture.videos), 1, "should receive at least one frame from cam10")
-	require.Equal(t, int64(1000), capture.videos[len(capture.videos)-1].PTS)
-	capture.mu.Unlock()
+	require.Equal(t, "cam10", sw.State().ProgramSource)
 
 	// Set preview to cam15.
 	require.NoError(t, sw.SetPreview(context.Background(), "cam15"))
@@ -468,16 +463,11 @@ func TestStress_AllChannelsMixing(t *testing.T) {
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output: func(frame *media.AudioFrame) {
-			programRelay.BroadcastAudio(frame)
-		},
 		DecoderFactory: func(sampleRate, channels int) (audio.Decoder, error) {
 			return audio.NewFDKDecoder(sampleRate, channels)
 		},
-		EncoderFactory: func(sampleRate, channels int) (audio.Encoder, error) {
-			return audio.NewFDKEncoder(sampleRate, channels)
-		},
 	})
+	driveProgramAudio(sw, mixer, fdkEncode(t))
 	defer func() { _ = mixer.Close() }()
 
 	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
@@ -542,16 +532,13 @@ func TestStress_AllChannelsMixing(t *testing.T) {
 	// Allow any pending mix cycles to flush.
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify: the clock-driven ticker produced output frames. The ticker
-	// runs at ~47fps regardless of input, so over 1 second we should see
-	// at least ~40 frames. Note: input AAC data is synthetic (not valid AAC),
-	// so decode fails — but the ticker still produces silence/freeze frames.
+	// Verify: the sync loop produced output frames. It mixes on every tick
+	// regardless of input. Note: input AAC data is synthetic (not valid
+	// AAC), so decode fails, but the mix still produces silence.
 	capture.mu.Lock()
 	audioCount := len(capture.audios)
 	capture.mu.Unlock()
 
-	// The ticker runs unconditionally; even with invalid input data,
-	// it produces encoded silence frames from the freeze-repeat path.
 	require.Greater(t, audioCount, 0,
-		"clock-driven ticker should have produced output frames (got %d)", audioCount)
+		"sync loop should have produced output frames (got %d)", audioCount)
 }

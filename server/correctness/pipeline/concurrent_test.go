@@ -199,7 +199,7 @@ func TestMultiSourceConcurrentDecode(t *testing.T) {
 		wg.Add(1)
 		go func(key string, frames []preEncodedFrame) {
 			defer wg.Done()
-			broadcastFrames(relays[key], frames, 8*time.Millisecond)
+			broadcastFrames(relays[key], frames, sw.PipelineFormat().FrameDuration())
 		}(s.key, sourceFrames[s.key])
 	}
 
@@ -343,7 +343,7 @@ func TestMultiSourceRapidCutUnderLoad(t *testing.T) {
 					return
 				default:
 				}
-				broadcastFrames(relays[key], frames, 8*time.Millisecond)
+				broadcastFrames(relays[key], frames, sw.PipelineFormat().FrameDuration())
 			}
 		}(s.key, sourceFrames[s.key])
 	}
@@ -686,7 +686,7 @@ func TestMultiSourceDecodeResolutionMix(t *testing.T) {
 		wg.Add(1)
 		go func(key string, frames []preEncodedFrame) {
 			defer wg.Done()
-			broadcastFrames(relays[key], frames, 8*time.Millisecond)
+			broadcastFrames(relays[key], frames, sw.PipelineFormat().FrameDuration())
 		}(s.key, sourceFrames[s.key])
 	}
 

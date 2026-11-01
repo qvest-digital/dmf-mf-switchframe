@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -103,18 +104,15 @@ func TestCPUPipeline_GradingFollowsToggleWithoutRebuild(t *testing.T) {
 	epoch := sw.pipelineEpoch.Load()
 
 	ingest(sw, append([]byte(nil), src...), w, h, 1)
-	require.Eventually(t, func() bool { return len(got()) >= 1 }, time.Second, 5*time.Millisecond)
-	require.Equal(t, src, got()[0], "grading off: frame untouched")
+	requireShows(t, got, src, "grading off: frame untouched")
 
 	tg.g.Store(g)
 	ingest(sw, append([]byte(nil), src...), w, h, 2)
-	require.Eventually(t, func() bool { return len(got()) >= 2 }, time.Second, 5*time.Millisecond)
-	require.Equal(t, graded(t, g, src, w, h, 1), got()[1], "grading on: frame graded")
+	requireShows(t, got, graded(t, g, src, w, h, 1), "grading on: frame graded")
 
 	tg.g.Store(nil)
 	ingest(sw, append([]byte(nil), src...), w, h, 3)
-	require.Eventually(t, func() bool { return len(got()) >= 3 }, time.Second, 5*time.Millisecond)
-	require.Equal(t, src, got()[2], "grading off again: frame untouched")
+	requireShows(t, got, src, "grading off again: frame untouched")
 	require.Equal(t, epoch, sw.pipelineEpoch.Load(), "no rebuild")
 }
 
@@ -162,6 +160,16 @@ func gradeTestSwitcher(t *testing.T, program ProgramGrader, sources SourceGrader
 	}
 }
 
+// requireShows waits until the newest captured program frame is want: the
+// ticks before an ingested frame is due show black or the previous frame.
+func requireShows(t *testing.T, got func() [][]byte, want []byte, msg string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		g := got()
+		return len(g) > 0 && bytes.Equal(g[len(g)-1], want)
+	}, time.Second, 5*time.Millisecond, msg)
+}
+
 func ingest(sw *Switcher, data []byte, w, h int, pts int64) {
 	sw.IngestRawVideo("cam1", &ProcessingFrame{
 		Data: data, Format: ColorYUV420_8bit, Width: w, Height: h, PTS: pts, Codec: "h264",
@@ -178,9 +186,8 @@ func TestCPUPipeline_GradesProgram(t *testing.T) {
 	src := barsFrame(w, h)
 	ingest(sw, append([]byte(nil), src...), w, h, 1)
 
-	require.Eventually(t, func() bool { return len(got()) >= 1 }, time.Second, 5*time.Millisecond)
-	out := got()[0]
-	require.Equal(t, graded(t, g, src, w, h, 1), out, "program output must carry the look")
+	out := graded(t, g, src, w, h, 1)
+	requireShows(t, got, out, "program output must carry the look")
 	require.False(t, bytes.Equal(src, out), "noir must change saturated bars")
 }
 
@@ -193,15 +200,16 @@ func TestCPUPipeline_GradesSourceOnACopy(t *testing.T) {
 	in := append([]byte(nil), src...)
 	ingest(sw, in, w, h, 1)
 
-	require.Eventually(t, func() bool { return len(got()) >= 1 }, time.Second, 5*time.Millisecond)
-	require.Equal(t, graded(t, g, src, w, h, 1), got()[0], "program output must carry the source correction")
+	requireShows(t, got, graded(t, g, src, w, h, 1), "program output must carry the source correction")
 	// A replay producer hands the same buffer in again for a slow-motion
 	// repeat; grading it in place would grade the repeat twice.
 	require.Equal(t, src, in, "the producer's buffer must be left as it was")
 
+	n := len(got())
 	ingest(sw, in, w, h, 2)
-	require.Eventually(t, func() bool { return len(got()) >= 2 }, time.Second, 5*time.Millisecond)
-	require.Equal(t, got()[0], got()[1], "a repeated buffer must grade the same")
+	// Past the next frame's due time the repeat is on program.
+	require.Eventually(t, func() bool { return len(got()) >= n+clock.ReaderDelayGrains+2 }, time.Second, 5*time.Millisecond)
+	requireShows(t, got, graded(t, g, src, w, h, 1), "a repeated buffer must grade the same")
 }
 
 func TestCPUPipeline_UngradedSourcePassesThrough(t *testing.T) {
@@ -209,8 +217,7 @@ func TestCPUPipeline_UngradedSourcePassesThrough(t *testing.T) {
 	pf := sw.PipelineFormat()
 	src := barsFrame(pf.Width, pf.Height)
 	ingest(sw, append([]byte(nil), src...), pf.Width, pf.Height, 1)
-	require.Eventually(t, func() bool { return len(got()) >= 1 }, time.Second, 5*time.Millisecond)
-	require.Equal(t, src, got()[0])
+	requireShows(t, got, src, "an ungraded source passes through")
 }
 
 type failingSourceGrader struct{ g *colorgrade.Grader }

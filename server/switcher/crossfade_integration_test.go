@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -32,8 +33,8 @@ func TestIntegration_DissolveAudioMatchesVideo(t *testing.T) {
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
 	})
+	driveProgramAudio(sw, mixer, mockAACEncode)
 	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
@@ -127,13 +128,8 @@ func TestIntegration_CutCrossfadeDuration(t *testing.T) {
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output: func(frame *media.AudioFrame) {
-			programRelay.BroadcastAudio(frame)
-		},
-		EncoderFactory: func(sampleRate, channels int) (audio.Encoder, error) {
-			return &stubAudioEncoder{}, nil
-		},
 	})
+	driveProgramAudio(sw, mixer, mockAACEncode)
 	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
@@ -164,17 +160,15 @@ func TestIntegration_CutCrossfadeDuration(t *testing.T) {
 	require.False(t, mixer.IsInTransitionCrossfade(),
 		"should not be in transition crossfade before any dissolve")
 
-	// Cut to cam2 — this triggers OnCut (2-tick cut crossfade),
+	// Cut to cam2: this triggers OnCut (a cut crossfade of a few ticks),
 	// NOT OnTransitionStart (multi-frame dissolve crossfade).
 	require.NoError(t, sw.Cut(context.Background(), "cam2"))
+	require.True(t, mixer.IsInTransitionCrossfade(), "a cut starts a cut crossfade")
 
-	// In the clock-driven mixer, OnCut sets a 2-tick cut crossfade
-	// that auto-completes after ~42ms. Wait for it to complete.
-	time.Sleep(100 * time.Millisecond)
-
-	// After 2 ticks, the cut crossfade should have auto-completed.
-	require.False(t, mixer.IsInTransitionCrossfade(),
-		"cut crossfade should auto-complete after 2 ticks")
+	// The sync loop advances the cut crossfade once per tick; it completes
+	// on its own, without a transition driving it.
+	require.Eventually(t, func() bool { return !mixer.IsInTransitionCrossfade() },
+		time.Second, 5*time.Millisecond, "cut crossfade should auto-complete after its ticks")
 
 	// Verify the state after cut: cam2 is now on program, cam1 is preview.
 	state := sw.State()
@@ -198,8 +192,8 @@ func TestIntegration_DissolveCompletionClearsAudioTransition(t *testing.T) {
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
 	})
+	driveProgramAudio(sw, mixer, mockAACEncode)
 	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
@@ -271,8 +265,9 @@ func TestIntegration_DissolveAudioPositionMonotonic(t *testing.T) {
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) {},
 	})
+	driveProgramAudio(sw, mixer, mockAACEncode)
+	sw.SetOutputAudioCallback(func(*media.AudioFrame) {})
 	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
@@ -311,11 +306,18 @@ func TestIntegration_DissolveAudioPositionMonotonic(t *testing.T) {
 	sw.AbortTransition()
 }
 
-// stubAudioEncoder is a no-op encoder for integration tests that only need
-// the mixer ticker to run (not produce real AAC output).
-type stubAudioEncoder struct{}
-
-func (e *stubAudioEncoder) Encode(pcm []float32) ([]byte, error) {
-	return []byte{0xFF, 0xF1}, nil
+// driveProgramAudio makes the sync loop produce m's program audio on every
+// tick, encoded by encode, to the program relay.
+func driveProgramAudio(sw *Switcher, m *audio.Mixer, encode func([]float32) ([]byte, error)) {
+	sw.SetSyncMixer(m)
+	sw.SetAACBuffer(clock.NewAACFrameBuffer(2, 48000, encode))
 }
-func (e *stubAudioEncoder) Close() error { return nil }
+
+// fdkEncode returns the Encode of an FDK AAC encoder closed at test end.
+func fdkEncode(t *testing.T) func([]float32) ([]byte, error) {
+	t.Helper()
+	enc, err := audio.NewFDKEncoder(48000, 2)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = enc.Close() })
+	return enc.Encode
+}

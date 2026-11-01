@@ -120,7 +120,7 @@ func (a *App) initPlayout() error {
 	mgr.OnChannelLifecycle(
 		// onStart: register playout channel as a raw YUV switcher source + mixer channel.
 		func(channelID int, key string) {
-			a.sw.RegisterReplaySource(key)
+			a.sw.RegisterTimedReplaySource(key)
 			a.mixer.AddChannel(key)
 			_ = a.mixer.SetAFV(key, true)
 			a.mixer.OnProgramChange(a.sw.ProgramSource())
@@ -262,6 +262,16 @@ func (a *App) initPlayout() error {
 			outYUV, outW, outH = scaled, curPF.Width, curPF.Height
 		}
 
+		// The channel's continuous output PTS, placed on the timeline by the
+		// anchor its audio shares.
+		pts = playoutAnchor(key).PTS(pts)
+		if len(yuv) == 0 {
+			// The aliased VRAM frame carries the live source's PTS; the
+			// tick looks it up under the channel's.
+			if gs := a.gpu(); gs != nil && gs.sourceManager != nil {
+				gs.sourceManager.KeepCurrentAs(key, pts)
+			}
+		}
 		frame := &switcher.ProcessingFrame{
 			Data:       outYUV,
 			Width:      outW,
@@ -282,7 +292,7 @@ func (a *App) initPlayout() error {
 			SampleRate: sampleRate,
 			Channels:   channels,
 		}
-		a.mixer.IngestFrame(key, frame)
+		a.ingestPlayoutAudio(key, frame)
 		// The relay carries the audio too, for the tile's meter.
 		if idx := playoutChannelIDFromKey(key) - 1; idx >= 0 && idx < playout.MaxChannels && a.playoutRelays[idx] != nil {
 			a.playoutRelays[idx].BroadcastAudio(frame)
@@ -637,4 +647,15 @@ func buildPodCueMessage(isOut, autoReturn bool, durationMs int64) *scte35.CueMes
 		msg.BreakDuration = &d
 	}
 	return msg
+}
+
+// ingestPlayoutAudio hands a playout channel's AAC frame to the mixer. The
+// channel hands over a video frame's AAC frames together, on its frame
+// ticker, under continuous output PTS: placed by those PTS through the
+// channel's anchor rather than by their arrival, they stay on the read
+// point.
+func (a *App) ingestPlayoutAudio(key string, frame *media.AudioFrame) {
+	timed := *frame
+	timed.PTS = playoutAnchor(key).PTS(frame.PTS)
+	a.mixer.IngestTimedFrame(key, &timed)
 }

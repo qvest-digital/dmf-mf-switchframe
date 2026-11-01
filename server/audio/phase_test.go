@@ -13,7 +13,6 @@ func TestPhaseInvert_NegatesSamples(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -49,7 +48,6 @@ func TestPhaseInvert_ToggleOff_RestoresNormal(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -80,7 +78,6 @@ func TestPhaseInvert_UnknownSource_ReturnsError(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -95,7 +92,6 @@ func TestPhaseInvert_ChannelStates_IncludesField(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 
@@ -117,7 +113,6 @@ func TestPhaseInvert_IngestFrame_NegatesSamples(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			// Return known PCM values from the decoder
 			return &mockDecoder{samples: []float32{0.5, -0.3, 1.0, -1.0}}, nil
@@ -154,7 +149,6 @@ func TestPhaseInvert_DebugSnapshot_IncludesField(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(f *media.AudioFrame) {},
 	})
 	defer func() { _ = m.Close() }()
 

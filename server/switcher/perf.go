@@ -19,6 +19,7 @@ type PerfSwitcherSample struct {
 	DecodeNs           int64
 	SyncWaitNs         int64
 	ProcQueueNs        int64
+	TickLagNs          int64
 
 	// Frame synchronizer stats
 	FrameSyncReleaseFPS  float64
@@ -43,11 +44,6 @@ type PerfSourceSample struct {
 	// RawFrameCount is the monotonic raw video ingest counter.
 	// The perf sampler computes IngestFPS from deltas between ticks.
 	RawFrameCount int64
-
-	// DriftPPM is the estimated clock drift between the source's PTS clock
-	// and the pipeline wall clock. Positive = source clock faster.
-	DriftPPM     int64
-	DriftSamples int
 }
 
 // PerfSample returns a performance snapshot of the switcher's current state.
@@ -69,19 +65,11 @@ func (s *Switcher) PerfSample() PerfSwitcherSample {
 			}
 		}
 		sample.RawFrameCount = ss.rawFrameCount.Load()
-		if fs := s.frameSync; fs != nil {
-			sample.DriftPPM, sample.DriftSamples = fs.SourceDrift(key)
-		}
 		sources[key] = sample
 	}
 
-	// Frame sync stats
-	var frameSyncReleaseFPS float64
-	var frameSyncSourceCount int
-	if fs := s.frameSync; fs != nil {
-		frameSyncReleaseFPS = fs.ReleaseFPS()
-		frameSyncSourceCount = fs.SourceCount()
-	}
+	frameSyncSourceCount := s.frameSync.SourceCount()
+	queueLen := s.frameSync.Buffered(s.programSource)
 
 	s.configMu.Unlock()
 
@@ -105,18 +93,18 @@ func (s *Switcher) PerfSample() PerfSwitcherSample {
 		PipelineLastNs:       s.videoProcLastNano.Load(),
 		NodeTimings:          nodeTimings,
 		E2ELastNs:            s.lastE2ENs.Load(),
-		QueueLen:             len(s.videoProcCh),
+		QueueLen:             queueLen,
 		OutputFPS:            float64(s.outputFPSLastSecond.Load()),
 		BroadcastGapNs:       s.lastBroadcastIntervalNano.Load(),
 		VideoBroadcast:       s.videoBroadcastCount.Load(),
 		DeadlineViolations:   s.deadlineViolations.Load(),
 		FrameBudgetNs:        s.frameBudgetNs.Load(),
-		ProcDropped:          s.videoProcDropped.Load(),
+		ProcDropped:          s.overloadDrops.Load(),
 		DecodeQueueNs:        s.lastDecodeQueueNs.Load(),
 		DecodeNs:             s.lastDecodeNs.Load(),
 		SyncWaitNs:           s.lastSyncWaitNs.Load(),
-		ProcQueueNs:          s.lastProcQueueNs.Load(),
-		FrameSyncReleaseFPS:  frameSyncReleaseFPS,
+		TickLagNs:            s.lastTickLagNs.Load(),
+		FrameSyncReleaseFPS:  float64(s.outputFPSLastSecond.Load()),
 		FrameSyncSourceCount: frameSyncSourceCount,
 	}
 

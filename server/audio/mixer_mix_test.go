@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
 )
 
 // feedMasterChain runs sine-wave PCM through the master output chain for
@@ -40,10 +39,8 @@ func feedMasterChain(m *Mixer, seconds float64, amplitude float64) {
 func TestApplyMasterChain_ProgramMute_LoudnessMetersSilence(t *testing.T) {
 	t.Parallel()
 	m := NewMixer(MixerConfig{
-		SampleRate:  48000,
-		Channels:    2,
-		ClockDriven: true,
-		Output:      func(*media.AudioFrame) {},
+		SampleRate: 48000,
+		Channels:   2,
 	})
 	t.Cleanup(func() { _ = m.Close() })
 
@@ -69,10 +66,8 @@ func TestApplyMasterChain_ProgramMute_LoudnessMetersSilence(t *testing.T) {
 func TestApplyMasterChain_ProgramMute_RawSinkReceivesSilence(t *testing.T) {
 	t.Parallel()
 	m := NewMixer(MixerConfig{
-		SampleRate:  48000,
-		Channels:    2,
-		ClockDriven: true,
-		Output:      func(*media.AudioFrame) {},
+		SampleRate: 48000,
+		Channels:   2,
 	})
 	t.Cleanup(func() { _ = m.Close() })
 
@@ -96,10 +91,8 @@ func TestApplyMasterChain_ProgramMute_RawSinkReceivesSilence(t *testing.T) {
 func TestApplyMasterChain_Unmuted_LoudnessMetersSignal(t *testing.T) {
 	t.Parallel()
 	m := NewMixer(MixerConfig{
-		SampleRate:  48000,
-		Channels:    2,
-		ClockDriven: true,
-		Output:      func(*media.AudioFrame) {},
+		SampleRate: 48000,
+		Channels:   2,
 	})
 	t.Cleanup(func() { _ = m.Close() })
 

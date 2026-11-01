@@ -2,6 +2,7 @@ package audio
 
 import (
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 )
 
@@ -11,10 +12,24 @@ const aacPrimingSamples = 1024
 
 // IngestFrame processes an AAC audio frame from a source. Decodes to PCM,
 // applies the per-channel processing chain (trim -> EQ -> compressor), and
-// pushes the processed result into the channel's ring buffer for clock-driven
-// output. No immediate output is produced -- the outputTicker reads from ring
-// buffers at a fixed cadence.
+// pushes the processed result into the channel's ring buffer. The decoded
+// samples are stamped with the TAI of their arrival, as the video of the
+// sources that deliver AAC (relay, clip, replay) is: frame.PTS is
+// the source's own timeline, not the engine's. No immediate output is
+// produced -- ProduceSamples reads the ring buffers.
 func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
+	m.ingestFrame(sourceKey, frame, false)
+}
+
+// IngestTimedFrame is IngestFrame for a source whose producer places its
+// AAC on the engine timeline: frame.PTS is the engine-timeline PTS of the
+// frame's first sample, and the decoded audio is stamped with it rather
+// than with its arrival, so frames handed over in bunches stay continuous.
+func (m *Mixer) IngestTimedFrame(sourceKey string, frame *media.AudioFrame) {
+	m.ingestFrame(sourceKey, frame, true)
+}
+
+func (m *Mixer) ingestFrame(sourceKey string, frame *media.AudioFrame, timed bool) {
 	// Audio forwarding: if this source is being forwarded to another channel
 	// (e.g., live source → playout channel), ingest for the destination too.
 	// Use ingestFrameInner to avoid infinite recursion (forwards don't chain).
@@ -25,26 +40,13 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		fwdFrame := *frame
 		// Deep-copy Data to prevent aliasing — both paths decode/modify the slice.
 		fwdFrame.Data = append([]byte(nil), frame.Data...)
-		m.ingestFrameInner(fwdDst, &fwdFrame)
+		m.ingestFrameInner(fwdDst, &fwdFrame, timed)
 	}
 
-	m.ingestFrameInner(sourceKey, frame)
+	m.ingestFrameInner(sourceKey, frame, timed)
 }
 
-func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
-	// Apply per-source audio delay for lip-sync correction.
-	// Done before all processing so PFL monitoring reflects corrected timing.
-	m.mu.RLock()
-	if ch, ok := m.channels[sourceKey]; ok && ch.audioDelay != nil && ch.audioDelay.DelayMs() > 0 {
-		m.mu.RUnlock()
-		frame = ch.audioDelay.Ingest(frame)
-		if frame == nil {
-			return // still filling delay buffer
-		}
-	} else {
-		m.mu.RUnlock()
-	}
-
+func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame, timed bool) {
 	m.mu.Lock()
 
 	ch, ok := m.channels[sourceKey]
@@ -88,10 +90,7 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 	}
 	if ch.primingSkipCount > 0 && !ch.primingOffsetApplied {
 		ch.primingOffsetApplied = true
-		silencePerFrame := aacPrimingSamples
-		if frame.SampleRate != 0 && frame.SampleRate != m.sampleRate {
-			silencePerFrame = aacPrimingSamples * m.sampleRate / frame.SampleRate
-		}
+		silencePerFrame := int(m.primingSamples(frame.SampleRate))
 		ch.ringBuf.Push(make([]float32, silencePerFrame*m.numChannels*ch.primingSkipCount))
 	}
 
@@ -122,7 +121,7 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 	ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
 
 	// Pipeline order: Trim -> Phase -> HPF -> Gate -> EQ -> Compressor -> Balance -> [push to ring buffer]
-	// Fader gain and transition gain are applied by the ticker at read time.
+	// Fader gain and transition gain are applied by ProduceSamples at read time.
 
 	// Apply trim (input gain)
 	ch.trimBuf = growBuf(ch.trimBuf, len(pcm))
@@ -170,7 +169,16 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 	}
 
 	// Push processed PCM to ring buffer for clock-driven output.
+	n := len(trimmedPCM) / m.numChannels
 	ch.ringBuf.Push(trimmedPCM)
+	if timed {
+		// The decoder returns each frame's audio primingSkipCount frames
+		// after the frame that carried it.
+		delay := int64(ch.primingSkipCount) * m.primingSamples(frame.SampleRate)
+		m.stampRing(ch, frame.PTS-delay*90000/int64(m.sampleRate), n)
+	} else {
+		m.stampRing(ch, clock.ArrivalPTS(n, m.sampleRate), n)
+	}
 	m.mu.Unlock()
 }
 
@@ -242,7 +250,7 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 	pcm = m.resampleIfNeeded(ch, pcm, 0) // PCM sources don't carry sample rate in-band
 
 	// Pipeline order: Trim -> Phase -> HPF -> Gate -> EQ -> Compressor -> Balance -> [push to ring buffer]
-	// Fader gain and transition gain are applied by the ticker at read time.
+	// Fader gain and transition gain are applied by ProduceSamples at read time.
 
 	// Apply trim (input gain)
 	ch.trimBuf = growBuf(ch.trimBuf, len(pcm))
@@ -291,8 +299,18 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 
 	// Always push to ring buffer, even for inactive channels. This keeps the
 	// buffer primed so that when a channel activates via AFV, there is no
-	// silence gap from an empty ring buffer. The tick() loop only reads from
+	// silence gap from an empty ring buffer. ProduceSamples only reads from
 	// active channels, so inactive data won't be mixed into output.
 	ch.ringBuf.Push(trimmedPCM)
+	m.stampRing(ch, pts, len(trimmedPCM)/m.numChannels)
 	m.mu.Unlock()
+}
+
+// primingSamples is one AAC frame at the mixer rate, for a source at
+// sampleRate (0: the mixer rate).
+func (m *Mixer) primingSamples(sampleRate int) int64 {
+	if sampleRate != 0 && sampleRate != m.sampleRate {
+		return int64(aacPrimingSamples * m.sampleRate / sampleRate)
+	}
+	return aacPrimingSamples
 }

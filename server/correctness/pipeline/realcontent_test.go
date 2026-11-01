@@ -89,7 +89,7 @@ func TestPipelineWithMotionContent(t *testing.T) {
 		}
 		h.sw.IngestRawVideo("motion", pf)
 		if frame < numFrames-1 {
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(h.sw.PipelineFormat().FrameDuration())
 		}
 	}
 
@@ -128,22 +128,13 @@ func TestPipelineWithMotionContent(t *testing.T) {
 	)
 
 	// Match decoded frames to input frames using best-PSNR matching.
-	// The encoder introduces B-frame reordering, so PTS-based matching
-	// can be offset. For each decoded frame, find the input frame with
-	// the highest PSNR (best visual match) within a search window.
+	// Program frames are on the tick grid, not one per input frame: a tick
+	// with no new frame repeats the last one, so for each decoded frame,
+	// find the input frame with the highest PSNR (best visual match).
 	for i, df := range decoded {
-		// Search window: ±5 frames around the sequential index position.
 		bestPSNR := -1.0
-		bestIdx := i
-		searchStart := i - 5
-		if searchStart < 0 {
-			searchStart = 0
-		}
-		searchEnd := i + 5
-		if searchEnd > len(inputFrames) {
-			searchEnd = len(inputFrames)
-		}
-		for j := searchStart; j < searchEnd; j++ {
+		bestIdx := 0
+		for j := range inputFrames {
 			p := testutil.YUVFramePSNR(inputFrames[j], df.YUV, df.Width, df.Height)
 			if p > bestPSNR {
 				bestPSNR = p
@@ -261,7 +252,7 @@ func TestPipelineWithSceneChange(t *testing.T) {
 			}
 			h.sw.IngestRawVideo("scene", pf)
 			if frame < count-1 {
-				time.Sleep(5 * time.Millisecond)
+				time.Sleep(h.sw.PipelineFormat().FrameDuration())
 			}
 		}
 	}
@@ -406,9 +397,9 @@ func TestPipelineRateControl(t *testing.T) {
 		}
 		h.sw.IngestRawVideo("ratecontrol", pf)
 
-		// Pace slightly faster than real time to avoid test taking 10s.
+		// Pace at the program frame rate, as a live source delivers.
 		if frame < numFrames-1 {
-			time.Sleep(3 * time.Millisecond)
+			time.Sleep(h.sw.PipelineFormat().FrameDuration())
 		}
 	}
 
@@ -570,7 +561,7 @@ func TestPipelineCutBetweenRealContent(t *testing.T) {
 		}
 		h.sw.IngestRawVideo("patA", pf)
 		if frame < 29 {
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(h.sw.PipelineFormat().FrameDuration())
 		}
 	}
 	h.waitForPipeline(500 * time.Millisecond)
@@ -590,7 +581,7 @@ func TestPipelineCutBetweenRealContent(t *testing.T) {
 		}
 		h.sw.IngestRawVideo("patB", pf)
 		if frame < 29 {
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(h.sw.PipelineFormat().FrameDuration())
 		}
 	}
 	h.waitForPipeline(500 * time.Millisecond)
