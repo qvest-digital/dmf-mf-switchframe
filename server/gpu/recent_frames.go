@@ -89,6 +89,16 @@ func (r *recentFrames[F]) near(pts int64) (F, bool) {
 	return zero, false
 }
 
+// adopt takes over o's frames, references and all, for a source
+// registered again under its key: a tick may still show one of them
+// until the source's new frames replace them. o keeps none. The hold and
+// delay stay r's own.
+func (r *recentFrames[F]) adopt(o *recentFrames[F]) {
+	r.frames = append(r.frames, o.frames...)
+	clear(o.frames)
+	o.frames = o.frames[:0]
+}
+
 // drain returns every kept frame and keeps none.
 func (r *recentFrames[F]) drain() []F {
 	out := make([]F, 0, len(r.frames))
