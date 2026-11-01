@@ -129,6 +129,10 @@ type AppConfig struct {
 	// full-quality encode, the one the browser relay and replay take.
 	MXLSourcePreset codec.OutputPreset // --mxl-source-preset
 
+	// X264Threads is the program encoder's thread count and its source
+	// (--x264-threads, SWITCHFRAME_X264_THREADS or the CPU limit).
+	X264Threads x264Threads
+
 	// MXLGCInterval is how often the MXL instance collects the domain;
 	// zero or less never does.
 	MXLGCInterval time.Duration // --mxl-gc-interval
@@ -361,6 +365,7 @@ func parseConfig() (AppConfig, error) {
 	outputGOPSecsFlag := flag.Int("output-gop-secs", 0, "Program output GOP/keyframe interval in seconds (1, 2, or 4; 0 = default 2)")
 	outputPresetFlag := flag.String("output-preset", "", "Program output encoder preset (low-latency, balanced, quality; empty = balanced)")
 	outputTimecodeFlag := flag.Bool("output-timecode", false, "Enable SMPTE 12M timecode insertion in program output")
+	x264ThreadsFlag := flag.Int("x264-threads", 0, "threads, and so slices per frame, of the program's x264 encode; 0 = auto: two per core of the CPU limit, 2 to 16 (env: SWITCHFRAME_X264_THREADS)")
 
 	// SCTE-35 flags.
 	scte35Flag := flag.Bool("scte35", false, "Enable SCTE-35 insertion")
@@ -575,6 +580,11 @@ func parseConfig() (AppConfig, error) {
 		return AppConfig{}, fmt.Errorf("--mxl-source-preset %q: want low-latency, balanced, quality or fastest", *mxlSourcePresetFlag)
 	}
 
+	x264Threads, err := x264ThreadsFromEnvironment(*x264ThreadsFlag)
+	if err != nil {
+		return AppConfig{}, err
+	}
+
 	// Parse allowed origins for CORS.
 	var allowedOrigins []string
 	if *allowedOriginsFlag != "" {
@@ -640,6 +650,7 @@ func parseConfig() (AppConfig, error) {
 		MXLDomain:            *mxlDomain,
 		MXLGCInterval:        *mxlGCIntervalFlag,
 		MXLSourcePreset:      codec.OutputPreset(*mxlSourcePresetFlag),
+		X264Threads:          x264Threads,
 		MXLDiscover:          *mxlDiscover,
 		StateDir:             stateDir,
 		AISidecarBin:         *aiSidecarFlag,

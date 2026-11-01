@@ -81,6 +81,7 @@ func (a *App) registerSubsystemCollectors() {
 		writer = a.mxlOutput.Writer()
 	}
 	cs = append(cs, &mxlWriterCollector{writer: writer})
+	cs = append(cs, newX264ThreadsCollector(a.cfg.X264Threads))
 	registerCollectors(metrics.GetRegistry(), cs...)
 }
 

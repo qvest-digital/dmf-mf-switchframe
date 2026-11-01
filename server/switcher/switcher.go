@@ -3476,6 +3476,15 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 	// Estimate ~3MB per 1080p YUV420 decoder output buffer.
 	estimatedYUVMB := activeDecoders * 3
 
+	codecInfo := map[string]any{
+		"encoder":  s.codecEncoder,
+		"decoder":  s.codecDecoder,
+		"hw_accel": s.codecHWAccel,
+	}
+	if s.encoderOpts != nil {
+		// 0: the encoder's own default.
+		codecInfo["threads"] = s.encoderOpts.Threads
+	}
 	result := map[string]any{
 		"program_source": s.programSource,
 		"preview_source": s.previewSource,
@@ -3514,11 +3523,7 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 			"gpu_transition_frames": s.gpuTransitionFrames.Load(),
 			"gpu_fallback_frames":   s.gpuFallbackFrames.Load(),
 		},
-		"codec": map[string]any{
-			"encoder":  s.codecEncoder,
-			"decoder":  s.codecDecoder,
-			"hw_accel": s.codecHWAccel,
-		},
+		"codec": codecInfo,
 	}
 
 	if fp := s.framePool.Load(); fp != nil {
