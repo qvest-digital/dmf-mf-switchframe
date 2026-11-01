@@ -89,6 +89,25 @@ func (fs *FrameSynchronizer) RemoveSource(key string) {
 	}
 }
 
+// ReleaseFrames releases a source's buffered and last frames and keeps
+// it registered with its delay: it shows black until it delivers again.
+func (fs *FrameSynchronizer) ReleaseFrames(key string) {
+	ss := fs.source(key)
+	if ss == nil {
+		return
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	for _, f := range ss.ring {
+		f.ReleaseYUV()
+	}
+	ss.ring = ss.ring[:0]
+	if ss.lastRawVideo != nil {
+		ss.lastRawVideo.ReleaseYUV()
+		ss.lastRawVideo = nil
+	}
+}
+
 func (fs *FrameSynchronizer) source(key string) *syncSource {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()

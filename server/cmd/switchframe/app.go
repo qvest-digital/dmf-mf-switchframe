@@ -256,6 +256,9 @@ type App struct {
 	srtSources   map[string]*srtSourceState
 	srtSourcesMu sync.Mutex
 	srtCtx       context.Context
+	// srtGone holds, per source whose connection ended, the timer that
+	// releases its frames; guarded by srtSourcesMu.
+	srtGone map[string]*time.Timer
 
 	// refClockEncoder encodes the sync loop's program audio; closed on
 	// shutdown.
