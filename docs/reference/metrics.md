@@ -146,6 +146,7 @@ Read by [`switcher.MetricsCollector`](../../server/switcher/metrics_collector.go
 | Metric | Type | Labels | Description |
 |---|---|---|---|
 | `switchframe_program_source_info` | gauge | `source` | 1 for the source on program. |
+| `switchframe_program_encoder_threads` | gauge | `source` | Threads, and so slices per frame, of the program's x264 encode, by where the count came from: `flag`, `env`, `cgroup`, `downward-api` or `host`. |
 | `switchframe_preview_source_info` | gauge | `source` | 1 for the source on preview. |
 | `switchframe_transition_active` | gauge | - | 1 while a transition runs. |
 | `switchframe_ftb_active` | gauge | - | 1 while the program is faded to black. |

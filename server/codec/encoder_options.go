@@ -66,6 +66,17 @@ type EncoderOptions struct {
 	GOPSecs  int          // 0 means use default
 	Preset   OutputPreset // "" means use default
 	Timecode bool
+	// Threads is the encoder context's thread count; with libx264 and the
+	// zerolatency tune it is also the slice count per frame. 0 means the
+	// host's CPUs, 2 to 8.
+	Threads int
+}
+
+func (o *EncoderOptions) threads() int {
+	if o == nil {
+		return 0
+	}
+	return o.Threads
 }
 
 // Validate checks that all fields are within acceptable ranges.
