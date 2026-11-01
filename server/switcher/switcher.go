@@ -626,7 +626,7 @@ type Switcher struct {
 	aacBuffer        *clock.AACFrameBuffer
 	syncMixer        syncMixerInterface
 	syncLoopWg       sync.WaitGroup
-	ticksBehind      int
+	ticksBehind      int                             // ticks whose video the sync loop sheds; set for a tick taken after its grain ended
 	audioStamped     bool                            // sync-loop goroutine only
 	nextAudioStart   uint64                          // sync-loop goroutine only
 	syncLoopRunning  atomic.Bool                     // double-start guard (Issue 10)
