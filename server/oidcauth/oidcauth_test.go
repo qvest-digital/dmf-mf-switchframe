@@ -200,13 +200,19 @@ func TestAuthenticate_CachesVerifiedTokens(t *testing.T) {
 func TestAuthenticate_CacheEndsAtTokenExpiry(t *testing.T) {
 	p := oidctest.New(t)
 	a := newTestAuthenticator(t, p, nil)
-	token := p.Sign(p.Claims(map[string]any{"exp": time.Now().Add(time.Second).Unix()}))
+	// exp has one-second resolution. A whole second at least 2 s ahead
+	// keeps the token valid for the first call however late in a second
+	// it is signed; Now().Add(time.Second).Unix() truncates and can leave
+	// only milliseconds.
+	exp := time.Now().Add(3 * time.Second).Truncate(time.Second)
+	token := p.Sign(p.Claims(map[string]any{"exp": exp.Unix()}))
 	_, err := a.Authenticate(context.Background(), token)
 	require.NoError(t, err)
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(time.Until(exp) + 100*time.Millisecond)
 	_, err = a.Authenticate(context.Background(), token)
-	require.Error(t, err)
+	var expired *oidc.TokenExpiredError
+	require.ErrorAs(t, err, &expired)
 }
 
 // Discovery runs under a lock every sign-in and verification waits on, so a
