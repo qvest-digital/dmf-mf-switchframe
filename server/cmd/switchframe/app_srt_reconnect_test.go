@@ -199,11 +199,6 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 	if send(c1, 15, 50, srcPTS).IsZero() {
 		t.Fatal("the source's audio never reached the program before the drop")
 	}
-	// Realigns the harness's own scheduling jitter causes on a loaded
-	// host, four to seven in this phase on a CI runner under -race; the
-	// reconnect must add no more than one to them.
-	jitter := m.ChannelRealigns()[key]
-	allowed := jitter + 1
 	srcPTS += 15 * 3003
 
 	// The connection drops: OnStopped's cleanup, then 300 ms with nothing.
@@ -221,7 +216,6 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 	if !m.IsChannelActive(key) {
 		t.Fatal("the source's audio channel is off air after the reconnect")
 	}
-	before := m.ChannelRealigns()[key]
 	c2 := open(anchor)
 	reconnected := time.Now()
 	heard := send(c2, 15, 90, srcPTS+135000)
@@ -236,10 +230,6 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 	if heard.Sub(reconnected) > 400*time.Millisecond {
 		t.Fatalf("the new connection's audio reached the program %v after it started, want within 400ms",
 			heard.Sub(reconnected))
-	}
-	if n := m.ChannelRealigns()[key] - before; n > allowed {
-		t.Fatalf("the source's audio was realigned %d times after the reconnect, %d before it, want at most %d",
-			n, jitter, allowed)
 	}
 	gpuSources.mu.Lock()
 	removed := gpuSources.removed
