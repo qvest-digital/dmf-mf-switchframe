@@ -751,7 +751,7 @@ func (m *mockGPUPipelineRunner) RunWithUpload(yuv []byte, width, height int, pts
 	return nil
 }
 
-func (m *mockGPUPipelineRunner) RunFromCache(sourceKey string, srcPTS, pts int64) error {
+func (m *mockGPUPipelineRunner) RunFromCache(sourceKey string, srcPTS, pts int64, nearest bool) error {
 	// Mock always falls back to RunWithUpload.
 	return fmt.Errorf("mock: no cached GPU frame")
 }

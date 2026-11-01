@@ -1044,7 +1044,7 @@ func (m *gpuTransitionMock) RunWithUpload(yuv []byte, width, height int, pts int
 	return nil
 }
 
-func (m *gpuTransitionMock) RunFromCache(sourceKey string, srcPTS, pts int64) error {
+func (m *gpuTransitionMock) RunFromCache(sourceKey string, srcPTS, pts int64, nearest bool) error {
 	if m.runFromCacheErr != nil {
 		return m.runFromCacheErr
 	}

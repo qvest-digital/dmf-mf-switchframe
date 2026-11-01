@@ -727,12 +727,17 @@ func (r *gpuPipelineRunnerImpl) RunWithUpload(yuv []byte, width, height int, pts
 	return nil
 }
 
-func (r *gpuPipelineRunnerImpl) RunFromCache(sourceKey string, srcPTS, pts int64) error {
+func (r *gpuPipelineRunnerImpl) RunFromCache(sourceKey string, srcPTS, pts int64, nearest bool) error {
 	if r.sourceManager == nil {
 		return fmt.Errorf("no GPU source manager")
 	}
 	// The frame the tick popped, which is behind the source's newest.
-	cached := r.sourceManager.GetFrameAt(sourceKey, srcPTS)
+	var cached *gpu.GPUFrame
+	if nearest {
+		cached = r.sourceManager.GetFrameNear(sourceKey, srcPTS)
+	} else {
+		cached = r.sourceManager.GetFrameAt(sourceKey, srcPTS)
+	}
 	if cached == nil {
 		return fmt.Errorf("no cached GPU frame for source %s at PTS %d", sourceKey, srcPTS)
 	}
