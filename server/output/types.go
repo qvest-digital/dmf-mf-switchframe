@@ -36,6 +36,9 @@ type AdapterStatus struct {
 	// MediaTicks is the media time sent, in 90 kHz ticks, for an adapter
 	// that sends timed frames; zero for one that sends a byte stream.
 	MediaTicks int64
+	// TimelineRebases counts the program timeline restarts an adapter
+	// that sends timed frames carried over onto its connection timeline.
+	TimelineRebases int64
 	// VideoDropped and AudioDropped are the frames an adapter that sends
 	// timed frames dropped because the destination did not take them in
 	// time.

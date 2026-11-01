@@ -147,7 +147,7 @@ func TestRTMPDirect_WriteDropsDuringReconnect(t *testing.T) {
 
 	// Manually set state to reconnecting without actually starting.
 	r.state.Store(ptrTo(StateReconnecting))
-	r.videoCh = make(chan *media.VideoFrame, rtmpVideoChSize)
+	r.videoCh = make(chan offeredVideo, rtmpVideoChSize)
 	r.audioCh = make(chan *media.AudioFrame, rtmpAudioChSize)
 	r.stopCh = make(chan struct{})
 
@@ -307,7 +307,7 @@ func TestRTMPDirect_ChannelOverflowCountsDrops(t *testing.T) {
 	require.NoError(t, err)
 
 	// Set up channels and state manually (no writeLoop draining them).
-	r.videoCh = make(chan *media.VideoFrame, rtmpVideoChSize)
+	r.videoCh = make(chan offeredVideo, rtmpVideoChSize)
 	r.audioCh = make(chan *media.AudioFrame, rtmpAudioChSize)
 	r.stopCh = make(chan struct{})
 	r.state.Store(ptrTo(StateActive))
@@ -618,52 +618,9 @@ func TestRTMPDirect_FLVTimestampsInMilliseconds(t *testing.T) {
 	}
 }
 
-// A lip-sync offset that falls by 400 ms mid-stream must not drop an RTMP
-// output: FFmpeg's FLV muxer refuses a video timestamp that goes backwards,
-// and the failed write sent the adapter into a reconnect.
-func TestRTMPDirect_LipSyncFallKeepsConnection(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "out.flv")
-	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "file:" + path})
-	require.NoError(t, err)
-	require.NoError(t, r.Start(context.Background()))
-	m := NewManager()
-	defer func() { _ = m.Close() }()
-	raw := int64(36000)
-	m.SetLipSyncSource(func() int64 { return raw })
-	m.frameAdapters.Store(&[]FrameAdapter{r})
-
-	const base, step = int64(900000), int64(1800)
-	for i := int64(0); i < 60; i++ {
-		if i == 20 {
-			raw = 0
-		}
-		f := &media.VideoFrame{PTS: base + i*step, DTS: base + i*step,
-			WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x41, 0x9a, 0x02, 0x00}}
-		if i == 0 {
-			f = &media.VideoFrame{PTS: base, DTS: base, IsKeyframe: true,
-				SPS:      []byte{0x67, 0x42, 0xc0, 0x1e},
-				PPS:      []byte{0x68, 0xce, 0x38, 0x80},
-				WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x84, 0x00}}
-		}
-		m.DirectWriteVideo(f)
-		if i == 0 {
-			require.Eventually(t, r.initialized.Load, 2*time.Second, 5*time.Millisecond)
-		}
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(100 * time.Millisecond)
-	require.Equal(t, StateActive, *r.state.Load(), "error %q", *r.lastError.Load())
-	require.NoError(t, r.Close())
-
-	video := mediaTimestamps(readFLVTags(t, path), 9)
-	require.Len(t, video, 60)
-	for i := 1; i < len(video); i++ {
-		require.Greater(t, video[i], video[i-1], "video tag %d", i)
-	}
-}
-
-// A video timestamp that steps back, from any source, is written just after
-// the last one rather than failing the FLV write.
+// A program timeline that restarts behind the last frame continues the
+// connection's timeline one frame interval later, rather than failing the
+// FLV write or stacking frames 1 ms apart.
 func TestRTMPDirect_VideoTimestampStepBackKeepsConnection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "out.flv")
 	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "file:" + path})
@@ -684,7 +641,8 @@ func TestRTMPDirect_VideoTimestampStepBackKeepsConnection(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	require.Equal(t, StateActive, *r.state.Load(), "error %q", *r.lastError.Load())
 	require.NoError(t, r.Close())
-	require.Equal(t, []uint32{0, 20, 40, 41, 60}, mediaTimestamps(readFLVTags(t, path), 9))
+	require.Equal(t, []uint32{0, 20, 40, 60, 110}, mediaTimestamps(readFLVTags(t, path), 9))
+	require.Equal(t, int64(1), r.rebases.Load())
 }
 
 // After a reconnect, audio must wait for the keyframe that rebases the new
@@ -702,7 +660,7 @@ func TestRTMPDirect_AudioWaitsForRebaseAfterReconnect(t *testing.T) {
 	r.handleAudio(&media.AudioFrame{PTS: 180000, Data: []byte{0x21, 0x10}})
 	require.Zero(t, r.bytesWritten.Load(), "audio before the rebasing keyframe")
 
-	r.handleVideo(&media.VideoFrame{PTS: 270000, IsKeyframe: true, WireData: []byte{0x01}})
+	r.handleVideo(&media.VideoFrame{PTS: 270000, IsKeyframe: true, WireData: []byte{0x01}}, 0)
 	require.False(t, r.pendingIDR.Load())
 	r.handleAudio(&media.AudioFrame{PTS: 180000, Data: []byte{0x21, 0x10}})
 	require.Zero(t, r.bytesWritten.Load()-1, "audio from before the new base")
@@ -783,7 +741,7 @@ func rtmpForMediaTime(t *testing.T) *RTMPDirect {
 	r, err := NewRTMPDirect(RTMPCallerConfig{URL: "rtmp://example.com/live/key"})
 	require.NoError(t, err)
 	r.connectFn = func(string) error { return nil }
-	r.videoCh = make(chan *media.VideoFrame, 1)
+	r.videoCh = make(chan offeredVideo, 1)
 	r.state.Store(ptrTo(StateActive))
 	r.initialized.Store(true)
 	return r
@@ -791,63 +749,75 @@ func rtmpForMediaTime(t *testing.T) *RTMPDirect {
 
 func (r *RTMPDirect) testWrite() {
 	select {
-	case f := <-r.videoCh:
-		r.handleVideo(f)
+	case v := <-r.videoCh:
+		r.handleVideo(v.frame, v.step)
 	default:
 	}
 }
 
 const frameTicks50 = 1800 // 90 kHz ticks at 50 fps
 
-// The media time sent is one program frame interval per frame written:
-// a destination taking every frame sends one second per second.
+// The media time sent is the PTS span of the frames written: a
+// destination taking every frame sends one second per second, from the
+// first frame on.
 func TestRTMPDirect_CountsMediaTime(t *testing.T) {
 	t.Parallel()
 	r := rtmpForMediaTime(t)
 	pts := int64(90000)
-	// Three steps measure the interval; frames before that count nothing.
-	for i := 0; i < 4; i++ {
+	for i := 0; i <= 50; i++ {
 		require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, IsKeyframe: i == 0, WireData: []byte{0x01}}))
 		r.testWrite()
 		pts += frameTicks50
 	}
-	start := r.Status().MediaTicks
-	for i := 0; i < 50; i++ {
-		require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, WireData: []byte{0x01}}))
-		r.testWrite()
-		pts += frameTicks50
+	require.Equal(t, int64(90000), r.Status().MediaTicks, "one second of 50 fps frames")
+}
+
+// A program frame rate change is media time at the new rate from its
+// first frame: the span counts, not frames times an interval measured
+// before the change.
+func TestRTMPDirect_MediaTimeFollowsFrameRateChange(t *testing.T) {
+	t.Parallel()
+	r := rtmpForMediaTime(t)
+	pts := int64(90000)
+	send := func(n int, step int64) {
+		for i := 0; i < n; i++ {
+			pts += step
+			require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, WireData: []byte{0x01}}))
+			r.testWrite()
+		}
 	}
-	require.Equal(t, int64(90000), r.Status().MediaTicks-start, "one second of 50 fps frames")
+	require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, IsKeyframe: true, WireData: []byte{0x01}}))
+	r.testWrite()
+	send(50, frameTicks50) // 1 s at 50 fps
+	send(25, 3600)         // 1 s at 25 fps
+	require.Equal(t, int64(2*90000), r.Status().MediaTicks)
 }
 
 // Frames the destination does not take in time are not media sent: the
-// written frames' PTS steps span the dropped ones, so counting steps would
-// read a destination taking every other frame as keeping up.
+// written frames' PTS steps span the dropped ones, so counting steps
+// between written frames would read a destination taking every other
+// frame as keeping up.
 func TestRTMPDirect_MediaTimeFallsWithDroppedFrames(t *testing.T) {
 	t.Parallel()
 	r := rtmpForMediaTime(t)
 	pts := int64(90000)
-	for i := 0; i < 4; i++ {
-		require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, IsKeyframe: i == 0, WireData: []byte{0x01}}))
-		r.testWrite()
-		pts += frameTicks50
-	}
-	start := r.Status().MediaTicks
+	require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, IsKeyframe: true, WireData: []byte{0x01}}))
+	r.testWrite()
 	// Two seconds offered, every second frame finds the queue full.
 	for i := 0; i < 100; i++ {
+		pts += frameTicks50
 		require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, WireData: []byte{0x01}}))
 		if i%2 == 1 {
 			r.testWrite()
 		}
-		pts += frameTicks50
 	}
 	st := r.Status()
-	require.Equal(t, int64(90000), st.MediaTicks-start, "half of two seconds")
+	require.Equal(t, int64(90000), st.MediaTicks, "half of two seconds")
 	require.Equal(t, int64(50), st.VideoDropped)
 }
 
-// A source change can step the PTS forwards or backwards by any amount;
-// the frame written across it is one frame interval of media, not the step.
+// A source change can step the PTS a long way forwards or back; the
+// frame written across it is one frame interval of media, not the step.
 func TestRTMPDirect_MediaTimeIgnoresPTSJumps(t *testing.T) {
 	t.Parallel()
 	r := rtmpForMediaTime(t)
@@ -871,36 +841,39 @@ func TestRTMPDirect_MediaTimeIgnoresPTSJumps(t *testing.T) {
 		send(pts)
 		pts += frameTicks50
 	}
-	// A jump under a second still takes no more than one interval: the
-	// interval is the median of the last three steps.
-	pts += 45000
-	send(pts)
-	require.Equal(t, int64(7*frameTicks50), r.Status().MediaTicks-start, "seven frames written")
+	require.Equal(t, int64(6*frameTicks50), r.Status().MediaTicks-start, "six frames written")
 }
 
-// Program PTS steps can jitter around the frame interval, as with a fresh
-// source frame's own PTS; with every frame written the rate still reads
-// one, not the low side of the jitter.
-func TestRTMPDirect_MediaTimeAveragesJitter(t *testing.T) {
+// A program timeline restart behind the last frame is carried over one
+// frame interval after it, and that interval is the media it counts.
+func TestRTMPDirect_MediaTimeCountsARebaseAsOneInterval(t *testing.T) {
+	t.Parallel()
+	r := rtmpForMediaTime(t)
+	for i, pts := range []int64{90000, 91800, 93600, 90900, 92700} {
+		require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, IsKeyframe: i == 0, WireData: []byte{0x01}}))
+		r.testWrite()
+	}
+	require.Equal(t, int64(1), r.Status().TimelineRebases)
+	require.Equal(t, int64(4*frameTicks50), r.Status().MediaTicks)
+}
+
+// Program PTS steps can jitter around the frame interval; with every
+// frame written the media sent is the PTS span offered, not the low side
+// of the jitter.
+func TestRTMPDirect_MediaTimeFollowsJitter(t *testing.T) {
 	t.Parallel()
 	r := rtmpForMediaTime(t)
 	steps := []int64{1800, 1700, 1900, 1800, 1650, 1950} // +-8% around 50 fps
 	pts := int64(90000)
-	for i := 0; i < 4; i++ {
-		require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, IsKeyframe: i == 0, WireData: []byte{0x01}}))
-		r.testWrite()
-		pts += frameTicks50
-	}
-	start, startPTS := r.Status().MediaTicks, pts-frameTicks50
+	require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, IsKeyframe: true, WireData: []byte{0x01}}))
+	r.testWrite()
+	first := pts
 	for i := 0; i < 600; i++ { // 12 s
-		pts += steps[i%len(steps)] - frameTicks50
+		pts += steps[i%len(steps)]
 		require.NoError(t, r.WriteVideo(&media.VideoFrame{PTS: pts, WireData: []byte{0x01}}))
 		r.testWrite()
-		pts += frameTicks50
 	}
-	sent := float64(r.Status().MediaTicks - start)
-	offered := float64(pts - frameTicks50 - startPTS)
-	require.InDelta(t, 1.0, sent/offered, 0.01, "sent %.0f of %.0f ticks", sent, offered)
+	require.Equal(t, pts-first, r.Status().MediaTicks)
 }
 
 // Steps over a second are gaps, not intervals, even several in a row.
@@ -925,7 +898,8 @@ func TestRTMPDirect_MediaTimeIgnoresRepeatedGaps(t *testing.T) {
 }
 
 // The time a reconnect keeps the destination down is not media sent: the
-// frames before the first keyframe on the new connection are not written.
+// frames before the first keyframe on the new connection are not
+// written, and the span restarts at that keyframe.
 func TestRTMPDirect_MediaTimeSkipsAReconnect(t *testing.T) {
 	t.Parallel()
 	r := rtmpForMediaTime(t)
@@ -946,5 +920,5 @@ func TestRTMPDirect_MediaTimeSkipsAReconnect(t *testing.T) {
 	}
 	send(pts, true)
 	send(pts+frameTicks50, false)
-	require.Equal(t, int64(2*frameTicks50), r.Status().MediaTicks-start)
+	require.Equal(t, int64(frameTicks50), r.Status().MediaTicks-start)
 }
