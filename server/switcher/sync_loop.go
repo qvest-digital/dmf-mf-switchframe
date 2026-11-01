@@ -452,8 +452,10 @@ func (s *Switcher) runPipelineAndBroadcastTransition(pf *ProcessingFrame, tick c
 //
 // sourceKey and srcPTS name the source frame pf was made from: the GPU
 // path uses that source's cached GPU frame only when it is this frame,
-// and uploads pf otherwise (a repeat, black, or a newer frame cached).
-// An empty sourceKey always uploads.
+// and uploads pf otherwise (a repeat, black, or a newer frame cached). A
+// frame without pixels, from a source decoded to the GPU, has nothing to
+// upload: it runs from the cached frame nearest to it instead. An empty
+// sourceKey always uploads.
 func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick, sourceKey string, srcPTS int64) {
 	start := time.Now()
 
@@ -462,7 +464,7 @@ func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick,
 	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
 		// Try zero-upload path first: use pre-cached GPU frame from source manager.
 		if sourceKey != "" {
-			if err := h.runner.RunFromCache(sourceKey, srcPTS, pf.PTS, false); err == nil {
+			if err := h.runner.RunFromCache(sourceKey, srcPTS, pf.PTS, len(pf.Data) == 0); err == nil {
 				gpuUsed = true
 				s.gpuFramesProcessed.Add(1)
 			} else {
