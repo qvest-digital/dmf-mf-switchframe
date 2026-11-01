@@ -235,8 +235,8 @@ type sourceState struct {
 	isVirtual bool // true for virtual sources (replay, etc.)
 	isMXL     bool // true for MXL raw YUV sources (no H.264 decode/IDR gating)
 	// mediaTimed: the producer stamps frames with engine-timeline PTS (MXL
-	// grain index, or an anchored ST 2110 media clock). Other sources,
-	// SRT among them, are stamped at arrival.
+	// grain index, or an anchored ST 2110 or SRT timeline). Other sources
+	// are stamped at arrival.
 	mediaTimed     bool
 	useRawPipeline bool // true when source has a per-source decoder (always-decode mode)
 	position       int  // display order in the UI (1-based)
@@ -2851,7 +2851,7 @@ func (s *Switcher) registerRawSource(key, label string, mxl bool) {
 			label:      label,
 			position:   len(m) + 1,
 			isMXL:      mxl,
-			mediaTimed: mxl,
+			mediaTimed: true,
 		}
 		ss.initAtomicMirrors()
 		m[key] = ss
@@ -2880,6 +2880,9 @@ func (s *Switcher) RegisterMXLSourceLabeled(key, label string) {
 // RegisterSRTSource registers a source that provides raw YUV420p frames
 // via IngestRawVideo (same path as MXL). Used for SRT input sources that
 // are decoded by the srt.Source orchestrator before being fed to the switcher.
+// Their producer places the stream's own PTS on the engine timeline: a frame
+// decoded into VRAM is cached under that PTS, and the tick showing it looks
+// it up under the same one.
 func (s *Switcher) RegisterSRTSource(key string) {
 	s.registerRawSource(key, strings.TrimPrefix(key, "srt:"), false)
 }
@@ -2925,9 +2928,9 @@ func (s *Switcher) IngestReplayVideo(sourceKey string, pf *ProcessingFrame) {
 }
 
 // IngestRawVideo is the one entry point for decoded source video. It
-// consumes pf. An MXL or ST 2110 source's producer stamps its frames on the
-// engine timeline; any other source's frame is stamped with the TAI of its
-// arrival, so every frame in the synchronizer is on one timeline.
+// consumes pf. An MXL, ST 2110 or SRT source's producer stamps its frames
+// on the engine timeline; any other source's frame is stamped with the TAI
+// of its arrival, so every frame in the synchronizer is on one timeline.
 func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 	s.health.recordFrame(sourceKey, time.Now())
 	ss := (*s.sourcesAtomic.Load())[sourceKey]
