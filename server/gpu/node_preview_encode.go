@@ -16,7 +16,7 @@ import (
 // Encoding runs asynchronously in a background goroutine to avoid blocking
 // the pipeline. ProcessGPU refs the frame and sends it to a channel (newest-
 // wins, capacity 1). The background goroutine scales + encodes + broadcasts.
-// This mirrors the per-source previewLoop pattern.
+// This mirrors the per-source previewWorker pattern.
 type gpuPreviewEncodeNode struct {
 	ctx       *Context
 	enc       *PreviewEncoder
@@ -118,7 +118,7 @@ func (n *gpuPreviewEncodeNode) Err() error {
 
 // ProcessGPU refs the frame and dispatches it to the async encode goroutine.
 // Non-blocking: if the encode goroutine is busy, the old frame is dropped
-// (newest-wins policy, same as per-source previewLoop).
+// (newest-wins policy, same as per-source previewWorker).
 func (n *gpuPreviewEncodeNode) ProcessGPU(frame *GPUFrame) error {
 	if n.enc == nil || n.frameCh == nil {
 		return nil
