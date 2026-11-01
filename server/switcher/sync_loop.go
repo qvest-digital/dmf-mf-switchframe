@@ -41,6 +41,18 @@ func (s *Switcher) synchronousProcessingLoop(rc *clock.ReferenceClock) {
 			rc = next
 			continue
 		}
+		// A tick whose grain has already ended when the loop takes it, as
+		// the clock's catch-up delivers them after a long tick, sheds its
+		// video; its audio is still produced. Only with a frame to repeat:
+		// without one (first frame after a cut, GPU warmup) the late frame
+		// is better than a gap.
+		if rc.Realtime() && s.ticksBehind == 0 && s.lastBroadcastVFrame.Load() != nil {
+			fpsNum, fpsDen := rc.Rate()
+			end := clock.IndexToTimestamp(clock.Rate{Num: int64(fpsNum), Den: int64(fpsDen)}, tick.Index+1)
+			if clock.TAINow() >= end {
+				s.ticksBehind = 1
+			}
+		}
 		s.processTick(tick)
 	}
 }
@@ -77,13 +89,11 @@ func (s *Switcher) flushAACBuffer() {
 }
 
 // processTick handles one reference clock tick: audio first (never skipped),
-// then video (may be skipped under overload to maintain audio continuity).
+// then video, skipped while ticksBehind sheds late ticks.
 func (s *Switcher) processTick(tick clock.Tick) {
 	// Drain PTP-timed commands before any processing so timed commands
 	// take effect at the frame boundary of this tick.
 	s.drainCommandQueue()
-
-	frameStart := time.Now()
 
 	// === AUDIO FIRST (never skipped) ===
 	s.processAudioTick(tick)
@@ -98,15 +108,6 @@ func (s *Switcher) processTick(tick clock.Tick) {
 	}
 
 	s.processVideoTick(tick)
-
-	// === OVERLOAD CHECK ===
-	// Only declare overload if we have a last broadcast frame to repeat.
-	// Without one (e.g., first frame after cut, GPU warmup), skipping video
-	// would produce a gap — better to run the next frame even if late.
-	elapsed := time.Since(frameStart)
-	if elapsed > tick.FrameDuration && s.lastBroadcastVFrame.Load() != nil {
-		s.ticksBehind = int(elapsed / tick.FrameDuration)
-	}
 }
 
 // processAudioTick produces mixed PCM samples and feeds them to the AAC frame buffer.
@@ -425,10 +426,6 @@ func (s *Switcher) runPipelineAndBroadcastTransition(pf *ProcessingFrame, tick c
 	s.videoProcLastNano.Store(dur)
 	s.videoProcCount.Add(1)
 	atomicutil.UpdateMax(&s.videoProcMaxNano, dur)
-	elapsed := time.Duration(dur)
-	if elapsed > tick.FrameDuration && s.lastBroadcastVFrame.Load() != nil {
-		s.ticksBehind = int(elapsed / tick.FrameDuration)
-	}
 }
 
 // runPipelineAndBroadcast runs the processing pipeline on a frame and broadcasts

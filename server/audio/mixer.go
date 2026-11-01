@@ -388,10 +388,15 @@ func (m *Mixer) AddChannel(sourceKey string) {
 // maxAudioDelayMs bounds SetAudioDelay and SetSourceDelay each.
 const maxAudioDelayMs = 500
 
+// channelRingFrames is how many sample frames a channel's ring holds
+// beyond its delay: the read delay plus a source's audio placed ahead of
+// it, as an MPEG-TS stream's PES packets of about 180 ms are.
+const channelRingFrames = 20 * 1024
+
 // newChannelRingBuf creates a PCM ring buffer for a mixer channel that
 // holds delay samples beyond the read window.
 func (m *Mixer) newChannelRingBuf(delay int) *PCMRingBuffer {
-	return NewPCMRingBufferWithChannels((10*1024+delay)*m.numChannels, m.numChannels)
+	return NewPCMRingBufferWithChannels((channelRingFrames+delay)*m.numChannels, m.numChannels)
 }
 
 // delaySamples is how far behind the tick's read point ch is read.
@@ -437,7 +442,10 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 	off := int64(start) - (int64(end) - int64(have)) // >0: ring holds older audio
 	tol := int64(n)
 	if !ch.placed && have > 0 {
-		ch.placed, tol = true, 0
+		// Placed only by a read that reaches the ring's audio: a ring a
+		// period or more ahead is read as silence and placed again next
+		// time, rather than read from then on up to a period early.
+		ch.placed, tol = off > -int64(n), 0
 	} else if off > tol || off < -tol {
 		ch.noteRealign(true)
 	} else {

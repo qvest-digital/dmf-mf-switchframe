@@ -65,7 +65,7 @@ func TestDriftingSourceOverAnHour(t *testing.T) {
 	if underruns > 0 {
 		t.Errorf("%d ticks with silence from a source that never stopped", underruns)
 	}
-	if limit := 10 * 1024; maxDepth >= limit {
+	if limit := channelRingFrames; maxDepth >= limit {
 		t.Errorf("ring reached %d samples, its capacity is %d: overrun", maxDepth, limit)
 	}
 	moves := m.ChannelRealigns()["srt:cam"]
@@ -74,4 +74,81 @@ func TestDriftingSourceOverAnHour(t *testing.T) {
 			moves, ppm, period)
 	}
 	t.Logf("+%d ppm for 6 minutes: %d realigns, max ring depth %d samples", ppm, moves, maxDepth)
+}
+
+// The same hour of +100 ppm drift for a source placed by its own PTS
+// through a clock.TrackingAnchor, as an SRT stream is, its audio arriving
+// in 180 ms bursts as an MPEG-TS muxer's PES packets deliver it: the ring
+// never underruns or overruns, and the drift is moved back at most once per
+// period of it.
+func TestDriftingAnchoredSourceOverAnHour(t *testing.T) {
+	const (
+		fps      = 25
+		period   = 48000 / fps // samples per program frame
+		ppm      = 1000
+		ticks    = 360 * fps
+		perBurst = 9 // 20 ms batches in a 180 ms burst
+		batch    = 960
+	)
+	start := clock.TAINow()
+	now := start
+	clock.SetTAISource(func() int64 { return now })
+	t.Cleanup(func() { clock.SetTAISource(nil) })
+
+	m := NewMixer(MixerConfig{SampleRate: 48000, Channels: 2})
+	t.Cleanup(func() { _ = m.Close() })
+	m.AddChannel("srt:cam")
+	m.SetActive("srt:cam", true)
+
+	var anchor clock.TrackingAnchor
+	pcm := make([]float32, 2*batch)
+	for i := range pcm {
+		pcm[i] = 0.25
+	}
+	// The sender's clock runs ppm fast: its batches of 20 ms of its own
+	// time arrive every 20 ms less ppm, nine at a time.
+	senderBatch := int64(20_000_000) * 1_000_000 / (1_000_000 + ppm)
+	var srcPTS int64 = 1_000_000
+	var sent int64
+	underruns, maxDepth := 0, 0
+	for tick := 0; tick < ticks; tick++ {
+		now = start + int64(tick)*1_000_000_000/fps
+		for (sent+perBurst)*senderBatch <= now-start {
+			for k := 0; k < perBurst; k++ {
+				m.IngestPCM("srt:cam", pcm, anchor.PTS(srcPTS), 2)
+				srcPTS += 1800
+			}
+			sent += perBurst
+		}
+
+		read := clock.TimestampToIndex(rate48k, now) - 2*period
+		out := m.ProduceSamples(read, period, clock.IndexPTS(rate48k, read))
+		if tick > 25 {
+			for _, v := range out {
+				if v == 0 {
+					underruns++
+					break
+				}
+			}
+		}
+		m.mu.Lock()
+		if d := m.channels["srt:cam"].ringBuf.FrameCount(); d > maxDepth {
+			maxDepth = d
+		}
+		m.mu.Unlock()
+	}
+	if underruns > 0 {
+		t.Errorf("%d ticks with silence from a source that never stopped", underruns)
+	}
+	if limit := channelRingFrames; maxDepth >= limit {
+		t.Errorf("ring reached %d samples, its capacity is %d: overrun", maxDepth, limit)
+	}
+	moves := m.ChannelRealigns()["srt:cam"]
+	// Each move places the ring exactly, so the drift takes no more moves
+	// than placing every batch at its arrival does.
+	if moves < 1 || moves > 10 {
+		t.Errorf("%d realigns in 6 minutes at +%d ppm, want 1 to 10 (at most one per %d-sample period of drift)",
+			moves, ppm, period)
+	}
+	t.Logf("+%d ppm for 6 minutes in bursts: %d realigns, max ring depth %d samples", ppm, moves, maxDepth)
 }
