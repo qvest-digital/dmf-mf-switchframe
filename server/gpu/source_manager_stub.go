@@ -43,6 +43,9 @@ func (m *GPUSourceManager) GetFrameAt(sourceKey string, pts int64) *GPUFrame { r
 // GetFrameNear is a no-op stub.
 func (m *GPUSourceManager) GetFrameNear(sourceKey string, pts int64) *GPUFrame { return nil }
 
+// SetSourceDelay is a no-op on non-GPU builds.
+func (m *GPUSourceManager) SetSourceDelay(sourceKey string, delayMs int) {}
+
 // KeepCurrentAs is a no-op on non-GPU builds.
 func (m *GPUSourceManager) KeepCurrentAs(sourceKey string, pts int64) {}
 

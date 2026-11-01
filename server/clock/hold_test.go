@@ -50,3 +50,27 @@ func TestSourceHoldCountsTheFramesAHoldKeeps(t *testing.T) {
 		t.Fatalf("%d frames added once the hold came down, want none", n)
 	}
 }
+
+// A TrackingAnchor that lowers its offset at a window rollover places one
+// frame closer to its predecessor than the source's frame period. The hold
+// is still counted in the source's frame period, not in that distance.
+func TestSourceHoldCountsInTheFramePeriodAcrossAnOffsetDrop(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	var h SourceHold
+	const frame = 1800 // 20 ms
+	src := int64(1_000_000)
+	off := NowPTS() + 15_300 - src // placed 170 ms after its arrival
+	most := 0
+	for i := 0; i < 5*50; i++ {
+		now += 20_000_000
+		src += frame
+		if i == 50 {
+			off -= frame - 90 // one step of 90 ticks
+		}
+		most = max(most, h.Frames(src+off))
+	}
+	if want := (15_300 + frame - 1) / frame; most > want {
+		t.Fatalf("a 170 ms hold at 20 ms frames adds up to %d frames after one 90-tick step, want at most %d", most, want)
+	}
+}
