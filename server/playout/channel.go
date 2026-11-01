@@ -1000,17 +1000,26 @@ func (c *Channel) run(ctx context.Context) {
 			c.cleanup()
 			return
 		case <-ticker.C:
-			// Always tick at pipeline rate. Frame rate conversion for
-			// clips with a different native FPS is handled by timestamp-
-			// based frame selection in nextClipFrame().
-			for n := clock.due(time.Now()); n > 0; n-- {
-				if c.tick(time.Now()) {
-					c.cleanup()
-					return // playlist completed
-				}
+			if c.runDue(&clock, time.Now) {
+				c.cleanup()
+				return // playlist completed
 			}
 		}
 	}
+}
+
+// runDue runs the ticks clock has due at now(), each at the time it runs.
+// It reports whether the playlist completed.
+func (c *Channel) runDue(clock *tickClock, now func() time.Time) bool {
+	// Always tick at pipeline rate. Frame rate conversion for clips with a
+	// different native FPS is handled by timestamp-based frame selection
+	// in nextClipFrame().
+	for n := clock.due(now()); n > 0; n-- {
+		if c.tick(now()) {
+			return true
+		}
+	}
+	return false
 }
 
 // maxTickBacklog bounds how far behind the run loop makes up ticks. A loop
