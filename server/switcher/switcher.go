@@ -557,6 +557,7 @@ type Switcher struct {
 	lastDecodeQueueNs atomic.Int64 // T1 - T0: sourceDecoder channel wait
 	lastDecodeNs      atomic.Int64 // T2 - T1: H.264 decode duration
 	lastSyncWaitNs    atomic.Int64 // T3 - T2: frame_sync tick alignment wait
+	lastTickLagNs     atomic.Int64 // tick grain start to the end of its pipeline run
 
 	// Program epoch — monotonically increasing counter incremented on every
 	// program source change (Cut, transition complete). Frames stamped with
@@ -2956,6 +2957,9 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 		pf.PTS = clock.NowPTS()
 	}
 	pf.DTS = pf.PTS
+	if pf.ArrivalNano == 0 {
+		pf.ArrivalNano = time.Now().UnixNano()
+	}
 
 	// The GPU source manager is fed here, once per frame, and nowhere else.
 	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil && len(pf.Data) > 0 {

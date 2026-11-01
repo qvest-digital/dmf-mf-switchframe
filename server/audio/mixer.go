@@ -451,19 +451,33 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 	} else {
 		ch.noteRealign(false)
 	}
+	skip := 0 // leading silence before the ring's audio
 	switch {
 	case off > tol:
 		ch.ringBuf.Pop(int(min(off, int64(have))) * c)
 	case off < -tol:
-		lead := int(-off)
-		if lead >= n {
+		skip = int(-off)
+		if skip >= n {
 			return make([]float32, n*c)
 		}
+	}
+	need := n - skip
+	if got := ch.ringBuf.FrameCount(); got < need {
+		// The source ran dry: what it has is read, the rest is silence,
+		// and the ring is placed again by the next read that reaches its
+		// audio. Left placed, it would lag the read point by the missing
+		// samples from then on, and splice whenever its stamps jitter.
 		out := make([]float32, n*c)
-		copy(out[lead*c:], ch.ringBuf.Pop((n-lead)*c))
+		copy(out[skip*c:], ch.ringBuf.Pop(got*c))
+		ch.placed = false
 		return out
 	}
-	return ch.ringBuf.Pop(n * c)
+	if skip == 0 {
+		return ch.ringBuf.Pop(n * c)
+	}
+	out := make([]float32, n*c)
+	copy(out[skip*c:], ch.ringBuf.Pop(need*c))
+	return out
 }
 
 func (ch *Channel) noteRealign(off bool) {

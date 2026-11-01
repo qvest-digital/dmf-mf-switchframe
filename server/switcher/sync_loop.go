@@ -20,6 +20,15 @@ const sourceLossTimeout = 5 * time.Second
 // guaranteeing lockstep A/V alignment. This replaces both the FrameSynchronizer's
 // timer-driven tick loop and the mixer's outputTicker.
 //
+// Overload: the clock hands over every grain's tick in order, also after a
+// tick that took longer than a period, up to clock.MaxTickCatchUp (25
+// grains at 50 fps). Every tick's audio is produced. A tick's video is shed
+// only when its grain has already ended as the loop takes it, and the tick
+// gets a repeat instead (repeatLastVideoFrame): the last keyframe again
+// under the tick's PTS, or nothing after a predicted frame, where decoders
+// hold the picture and the output has a gap of that tick. A tick that runs
+// long but leaves the next one in time costs no frame.
+//
 // The loop exits when the reference clock's Ticks channel is closed (via Stop).
 func (s *Switcher) synchronousProcessingLoop(rc *clock.ReferenceClock) {
 	runtime.LockOSThread()
@@ -426,6 +435,7 @@ func (s *Switcher) runPipelineAndBroadcastTransition(pf *ProcessingFrame, tick c
 	s.videoProcLastNano.Store(dur)
 	s.videoProcCount.Add(1)
 	atomicutil.UpdateMax(&s.videoProcMaxNano, dur)
+	s.recordTickLag(tick)
 }
 
 // runPipelineAndBroadcast runs the processing pipeline on a frame and broadcasts
@@ -515,6 +525,7 @@ func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick,
 	if pf.ArrivalNano > 0 {
 		s.recordE2E(time.Now().UnixNano() - pf.ArrivalNano)
 	}
+	s.recordTickLag(tick)
 
 	// Store for freeze-repeat, taking ownership of the caller's reference.
 	// Release the previously stored frame — it held the reference from its
@@ -556,6 +567,12 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, tick
 		if newest.ArrivalNano > 0 {
 			s.lastSyncWaitNs.Store(time.Now().UnixNano() - newest.ArrivalNano)
 		}
+		if newest.ArrivalNano > 0 && newest.DecodeStartNano > 0 {
+			s.lastDecodeQueueNs.Store(newest.DecodeStartNano - newest.ArrivalNano)
+		}
+		if newest.DecodeStartNano > 0 && newest.DecodeEndNano > 0 {
+			s.lastDecodeNs.Store(newest.DecodeEndNano - newest.DecodeStartNano)
+		}
 		// A reference of its own, shared with lastRawVideo: a consumer that
 		// releases or writes to it cannot touch the retained frame.
 		return borrowRawVideoRef(newest), true
@@ -575,6 +592,13 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, tick
 		return s.makeBroadcastBlack(w, h, tick.VideoPTS), false
 	}
 	return borrowRawVideoRef(ss.lastRawVideo), false
+}
+
+// recordTickLag records how long after the start of its grain a tick's
+// pipeline run ended: by then the raw sinks, the MXL writer among them,
+// have the program frame.
+func (s *Switcher) recordTickLag(tick clock.Tick) {
+	s.lastTickLagNs.Store(clock.TAINow() - clock.TimestampOf(tick.VideoPTS))
 }
 
 // recordE2E records the time from a frame's arrival to its program output.
