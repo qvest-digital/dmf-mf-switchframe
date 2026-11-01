@@ -19,6 +19,8 @@ type refCounted interface {
 type recentFrames[F refCounted] struct {
 	frames []recentFrame[F]
 	hold   clock.SourceHold
+	// delay is the source's delay (SetSourceDelay) in 90 kHz ticks.
+	delay int64
 }
 
 type recentFrame[F refCounted] struct {

@@ -20,6 +20,7 @@ type srtRun struct {
 	hiccupMs int64 // one PES packet at 10 s arrives this much later
 	jitterMs int64 // every packet arrives up to this much later, at random
 	seed     int64
+	delay    int64 // the source's delay (SetSourceDelay), in 90 kHz ticks
 }
 
 type srtResult struct {
@@ -59,7 +60,7 @@ func (c srtRun) run(t *testing.T) srtResult {
 	var video, audio []packet
 	var lastV, lastA int64 // arrival of the previous packet, in order per essence
 	var anchor clock.TrackingAnchor
-	var store recentFrames[*countedFrame]
+	store := recentFrames[*countedFrame]{delay: c.delay}
 	type arrival struct {
 		f   *countedFrame
 		pts int64
@@ -121,7 +122,7 @@ func (c srtRun) run(t *testing.T) srtResult {
 			continue
 		}
 		// The tick shows the newest frame due at its read point.
-		read := clock.NowPTS() - readLag
+		read := clock.NowPTS() - readLag - c.delay
 		shown := -1
 		for i := len(arrived) - 1; i >= 0; i-- {
 			if arrived[i].pts <= read {
@@ -193,5 +194,22 @@ func TestRecentFramesStayWithinTheHoldAcrossLatePackets(t *testing.T) {
 				t.Errorf("%d of %d ticks found the frame they show gone (%d frames deep)", r.misses, r.ticks, r.depth)
 			}
 		})
+	}
+}
+
+// A source delay (SetSourceDelay) has ticks read the source that much
+// further behind, so its frames wait that much longer in the store. The
+// store keeps them, or a source without pixels on the CPU runs from the
+// oldest frame kept and shows its video early against its delayed audio.
+func TestRecentFramesHoldTheFrameADelayedSourceShows(t *testing.T) {
+	for _, delayMs := range []int64{100, 300, 500} {
+		r := srtRun{delay: delayMs * 90}.run(t)
+		if r.misses > 0 {
+			t.Errorf("delay %d ms: %d of %d ticks found the frame they show gone (%d frames deep)",
+				delayMs, r.misses, r.ticks, r.depth)
+		}
+		if bound := recentFramesDepth + int((r.hold+delayMs*90+1799)/1800) + 1; r.depth > bound {
+			t.Errorf("delay %d ms: the store kept %d frames, want at most %d", delayMs, r.depth, bound)
+		}
 	}
 }

@@ -259,9 +259,39 @@ func TestUnregisterSource_CleansUpGPUSourceManager(t *testing.T) {
 		"UnregisterSource should call GPUSourceManager.RemoveSource")
 }
 
+// A source delay reaches the GPU source manager, set before or after the
+// manager is: the GPU store keeps a delayed source's frames for the delay,
+// or a source decoded to the GPU shows its video ahead of its delayed audio.
+func TestSourceDelayReachesTheGPUSourceManager(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(t, programRelay)
+	sw.RegisterSource("camera1", newTestRelay())
+	sw.RegisterSource("camera2", newTestRelay())
+	require.NoError(t, sw.SetSourceDelay("camera1", 120))
+
+	delays := map[string]int{}
+	sw.SetGPUSourceManager(&mockGPUSourceManager{
+		onDelay: func(key string, ms int) { delays[key] = ms },
+	})
+	require.Equal(t, map[string]int{"camera1": 120}, delays,
+		"a delay set before the GPU source manager is not applied to it")
+
+	require.NoError(t, sw.SetSourceDelay("camera2", 300))
+	require.NoError(t, sw.SetSourceDelay("camera1", 0))
+	require.Equal(t, map[string]int{"camera1": 0, "camera2": 300}, delays,
+		"SetSourceDelay does not reach the GPU source manager")
+}
+
 // mockGPUSourceManager implements GPUSourceManagerIface for testing.
 type mockGPUSourceManager struct {
 	onRemove func(key string)
+	onDelay  func(key string, delayMs int)
+}
+
+func (m *mockGPUSourceManager) SetSourceDelay(sourceKey string, delayMs int) {
+	if m.onDelay != nil {
+		m.onDelay(sourceKey, delayMs)
+	}
 }
 
 func (m *mockGPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts int64) {}
