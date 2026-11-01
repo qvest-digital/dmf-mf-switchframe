@@ -17,17 +17,9 @@ type previewGPUFrame struct {
 // unified memory memcpy on Metal), then the preview goroutine does GPU
 // scale + encode entirely in VRAM.
 func (m *GPUSourceManager) queuePreviewFrame(entry *gpuSourceEntry, _ []byte, _ int, _ int, pts int64) {
-	if entry.prevCh == nil || entry.prevStopped.Load() {
+	if entry.prev == nil || !entry.prev.accepting() {
 		return
 	}
-	// Guard against send-on-closed-channel when source is being removed
-	// concurrently. The channel may be closed between our nil check and
-	// the send — recover gracefully instead of panicking.
-	defer func() {
-		if r := recover(); r != nil { //nolint:staticcheck // intentional: drop frame if channel closed during removal
-			_ = r
-		}
-	}()
 
 	// Get the current cached frame with a Ref (taken under the entry's
 	// curMu) to prevent it from being recycled while we copy. Without this,
@@ -51,49 +43,36 @@ func (m *GPUSourceManager) queuePreviewFrame(entry *gpuSourceEntry, _ []byte, _ 
 	cached.Release() // Done reading — safe to release our ref.
 	previewFrame.PTS = pts
 
-	pf := &previewGPUFrame{frame: previewFrame, pts: pts}
-	select {
-	case entry.prevCh <- any(pf):
-	default:
-		// Channel full — drop oldest, send newest.
-		select {
-		case dropped := <-entry.prevCh:
-			if gpf, ok := dropped.(*previewGPUFrame); ok {
-				gpf.frame.Release()
-			}
-		default:
-		}
-		select {
-		case entry.prevCh <- any(pf):
-		default:
-			previewFrame.Release()
-		}
-	}
+	// Newest wins; released instead once the preview is stopped.
+	entry.prev.queue(&previewGPUFrame{frame: previewFrame, pts: pts})
 }
 
-// previewLoop reads GPU frame copies and encodes via PreviewEncoder.Encode().
-// Scale + encode run on the preview encoder's dedicated work queue, enabling
+// startPreview starts the goroutine that opens a preview encoder for a
+// source of w x h and encodes the GPU frame copies queued to it. Scale +
+// encode run on the preview encoder's dedicated work queue, enabling
 // concurrent GPU execution with the program pipeline.
-func (m *GPUSourceManager) previewLoop(sourceKey string, entry *gpuSourceEntry) {
-	defer close(entry.prevDone)
-	defer entry.prevEnc.Close()
-
-	forceIDR := true
-	for item := range entry.prevCh {
-		pf := item.(*previewGPUFrame)
-		data, isIDR, err := entry.prevEnc.Encode(pf.frame, forceIDR)
-		pf.frame.Release()
-
+func (m *GPUSourceManager) startPreview(sourceKey string, w, h int, cfg PreviewConfig) *previewWorker[*previewGPUFrame] {
+	open := func() (previewEncodeFunc[*previewGPUFrame], func(), error) {
+		enc, err := NewPreviewEncoder(m.ctx, w, h, cfg.Width, cfg.Height, cfg.Bitrate, cfg.FPSNum, cfg.FPSDen)
 		if err != nil {
-			slog.Warn("gpu: source manager: preview encode failed",
-				"source", sourceKey, "error", err)
-			continue
+			return nil, nil, err
 		}
-		forceIDR = false
-		if len(data) > 0 && entry.onPreview != nil {
-			entry.onPreview(data, isIDR, pf.pts)
+		encode := func(pf *previewGPUFrame, forceIDR bool) bool {
+			data, isIDR, err := enc.Encode(pf.frame, forceIDR)
+			pf.frame.Release()
+			if err != nil {
+				slog.Warn("gpu: source manager: preview encode failed",
+					"source", sourceKey, "error", err)
+				return false
+			}
+			if len(data) > 0 {
+				cfg.OnPreview(data, isIDR, pf.pts)
+			}
+			return true
 		}
+		return encode, enc.Close, nil
 	}
+	return startPreviewWorker(sourceKey, open, func(pf *previewGPUFrame) { pf.frame.Release() })
 }
 
 // scaleYUV420pCPU scales YUV420p on CPU using nearest-neighbor.

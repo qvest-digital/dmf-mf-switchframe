@@ -308,7 +308,7 @@ func TestGPUSourceManager_PreviewEncode(t *testing.T) {
 	// Give the preview goroutine time to finish encoding the last queued frame.
 	time.Sleep(100 * time.Millisecond)
 
-	// RemoveSource closes prevCh and blocks until preview goroutine exits.
+	// RemoveSource stops the preview goroutine and waits for it.
 	mgr.RemoveSource("cam1")
 
 	count := previewFrames.Load()
@@ -671,7 +671,7 @@ func TestGPUSourceManager_ReRegisterWithReentrantPreview(t *testing.T) {
 	// stop the ingest loop. The callback keeps spinning (it only exits on
 	// stopCallback), so the preview goroutine is still inside the re-entrant
 	// callback for the join below. Stopping ingest first avoids entangling this
-	// test with the separate prevCh close/send interleaving on the old entry.
+	// test with the separate preview stop/queue interleaving on the old entry.
 	select {
 	case <-enteredCallback:
 	case <-time.After(10 * time.Second):

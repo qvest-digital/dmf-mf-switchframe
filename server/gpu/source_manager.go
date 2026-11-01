@@ -76,16 +76,9 @@ type gpuSourceEntry struct {
 	// no freed GPU resource is recreated or reused.
 	closed atomic.Bool
 
-	// Preview encoder (nil if no preview configured). previewLoop owns and
-	// closes it.
-	prevEnc   *PreviewEncoder
-	onPreview func(data []byte, isIDR bool, pts int64)
-	prevCh    chan any      // platform-specific frame type (capacity 1, newest-wins)
-	prevDone  chan struct{} // closed when preview goroutine exits
-	// prevStopped is set under useMu before prevCh closes, so an ingest
-	// queues no preview frame after it; prevStop closes prevCh once.
-	prevStopped atomic.Bool
-	prevStop    sync.Once
+	// Preview encoder and the goroutine that opens and feeds it (nil if no
+	// preview configured).
+	prev *previewWorker[*previewGPUFrame]
 
 	// Per-source ST map state.
 	stmap     *GPUSTMap
@@ -195,10 +188,12 @@ func (m *GPUSourceManager) SetSourceColorGrade(provider SourceColorGradeProvider
 	m.mu.Unlock()
 }
 
-// RegisterSource creates a GPU source entry. If preview is non-nil, a preview
-// encoder and its dedicated goroutine are started, after the preview encoder
+// RegisterSource creates a GPU source entry. If preview is non-nil, a
+// goroutine opens a preview encoder and feeds it, after the preview encoder
 // of an entry it replaces is closed: a card has a limited number of encode
-// sessions. Allocates a stmapTmp frame for potential ST map warp operations.
+// sessions. The open is not waited for: on a card at its session cap it
+// takes seconds, which the source's ingest would wait as well. Allocates a
+// stmapTmp frame for potential ST map warp operations.
 func (m *GPUSourceManager) RegisterSource(sourceKey string, w, h int, preview *PreviewConfig) {
 	if preview != nil && preview.OnPreview != nil {
 		m.StopPreview(sourceKey)
@@ -219,24 +214,12 @@ func (m *GPUSourceManager) RegisterSource(sourceKey string, w, h int, preview *P
 
 	// Set up preview encoder if configured.
 	if preview != nil && preview.OnPreview != nil {
-		enc, encErr := NewPreviewEncoder(m.ctx, w, h,
-			preview.Width, preview.Height,
-			preview.Bitrate, preview.FPSNum, preview.FPSDen)
-		if encErr != nil {
-			slog.Warn("gpu: source manager: preview encoder failed",
-				"source", sourceKey, "error", encErr)
-		} else {
-			entry.prevEnc = enc
-			entry.onPreview = preview.OnPreview
-			entry.prevCh = make(chan any, 1)
-			entry.prevDone = make(chan struct{})
-			go m.previewLoop(sourceKey, entry)
-		}
+		entry.prev = m.startPreview(sourceKey, w, h, *preview)
 	}
 
 	// Swap the new entry in under the lock, then clean up the old one OUTSIDE
-	// the lock. cleanupEntry closes prevCh and blocks on <-prevDone to
-	// join the preview goroutine; doing that under m.mu would stall every
+	// the lock. cleanupEntry stops the preview goroutine and waits for it;
+	// doing that under m.mu would stall every
 	// concurrent IngestYUV/GetFrame/CurrentFrame (all take m.mu.RLock) for the
 	// duration of the join + encoder Close, and would deadlock if the preview
 	// callback ever re-entered the source manager. Mirror RemoveSource.
@@ -292,17 +275,12 @@ func (m *GPUSourceManager) StopPreview(sourceKey string) {
 }
 
 // stopPreview stops entry's preview goroutine, which closes the encoder,
-// and waits for it to exit. Ingest queues preview frames under useMu, so
-// none is queued once prevStopped is set under it.
+// and waits for it to exit, for an open still under way as well. A frame
+// queued after it is released.
 func (m *GPUSourceManager) stopPreview(entry *gpuSourceEntry) {
-	if entry.prevCh == nil {
-		return
+	if entry.prev != nil {
+		entry.prev.stop()
 	}
-	entry.useMu.Lock()
-	entry.prevStopped.Store(true)
-	entry.useMu.Unlock()
-	entry.prevStop.Do(func() { close(entry.prevCh) })
-	<-entry.prevDone
 }
 
 // cleanupEntry releases all resources owned by a source entry. It runs
@@ -1007,7 +985,7 @@ func (m *GPUSourceManager) Snapshot() map[string]any {
 			"width":          entry.width,
 			"height":         entry.height,
 			"has_frame":      entry.current.Load() != nil,
-			"has_preview":    entry.prevEnc != nil && !entry.prevStopped.Load(),
+			"has_preview":    entry.prev != nil && entry.prev.active(),
 			"has_stmap":      entry.stmap != nil,
 			"has_colorgrade": entry.colorLUTDev != 0,
 		}
@@ -1253,5 +1231,5 @@ func (m *GPUSourceManager) AliasSource(dstKey, srcKey string) bool {
 	return true
 }
 
-// previewLoop, queuePreviewFrame, and scaleYUV420pCPU are defined in
+// startPreview, queuePreviewFrame, and scaleYUV420pCPU are defined in
 // source_manager_preview.go (unified GPU frame copy + ScaleBilinearOn + encode).
