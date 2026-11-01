@@ -764,6 +764,11 @@ var srtSourceReleaseAfter = switcher.SourceLossTimeout
 // registration, so sources come and go without holding frames or encode
 // sessions.
 func (a *App) releaseSRTConnection(sourceKey string, mode string) {
+	// Before the entry goes: a new connection under the key finds it,
+	// stops this one and waits for this release before it opens a preview
+	// encoder of its own, which a stop after the delete could close.
+	a.sw.StopSourcePreview(sourceKey)
+
 	a.srtSourcesMu.Lock()
 	delete(a.srtSources, sourceKey)
 	if a.srtGone == nil {
@@ -786,8 +791,6 @@ func (a *App) releaseSRTConnection(sourceKey string, mode string) {
 	})
 	a.srtGone[sourceKey] = gone
 	a.srtSourcesMu.Unlock()
-
-	a.sw.StopSourcePreview(sourceKey)
 
 	// Release listener slot so new connections can be accepted
 	// when MaxSources is set.

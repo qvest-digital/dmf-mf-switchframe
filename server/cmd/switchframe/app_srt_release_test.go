@@ -208,3 +208,37 @@ func TestSRTSourcesStoppedForAGPURebuildStillReleaseTheirFrames(t *testing.T) {
 		t.Fatalf("frames of %s released after shutdown cancelled the releases", down)
 	}
 }
+
+// previewOrder is a GPU source manager that records, at each preview
+// stop, whether the source's connection was still in srtSources.
+type previewOrder struct {
+	*gpuRemovals
+	a       *App
+	present []bool
+}
+
+func (p *previewOrder) StopPreview(key string) {
+	p.a.srtSourcesMu.Lock()
+	_, ok := p.a.srtSources[key]
+	p.a.srtSourcesMu.Unlock()
+	p.present = append(p.present, ok)
+}
+
+// An ended connection stops its preview encoder while it is still an
+// active source. A new connection under the key that finds it stops it
+// and waits for its release before opening a preview encoder of its own;
+// stopped after the entry is gone, the old preview stop could close the
+// new connection's encoder instead.
+func TestSRTReleaseStopsThePreviewBeforeTheConnectionIsGone(t *testing.T) {
+	const key = "srt:cam"
+	sw := switcher.NewTestSwitcher(t, distribution.NewRelay())
+	a := &App{sw: sw, srtSources: map[string]*srtSourceState{key: {}}}
+	t.Cleanup(a.cancelSRTReleases)
+	p := &previewOrder{gpuRemovals: &gpuRemovals{}, a: a}
+	sw.SetGPUSourceManager(p)
+
+	a.releaseSRTConnection(key, srt.ModeListener)
+	if !slices.Equal(p.present, []bool{true}) {
+		t.Fatalf("preview stops, each with whether the connection was still active: %v; want one, while active", p.present)
+	}
+}
