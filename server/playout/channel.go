@@ -1009,12 +1009,17 @@ func (c *Channel) run(ctx context.Context) {
 }
 
 // runDue runs the ticks clock has due at now(), each at the time it runs.
-// It reports whether the playlist completed.
+// It reports whether the playlist completed. The ticks the clock skips are
+// frames the output lost, and the channel's PTS skip them too: its anchor
+// placed it on the engine timeline once, so PTS that ran on without them
+// would lag the clock by the skip from then on.
 func (c *Channel) runDue(clock *tickClock, now func() time.Time) bool {
 	// Always tick at pipeline rate. Frame rate conversion for clips with a
 	// different native FPS is handled by timestamp-based frame selection
 	// in nextClipFrame().
-	for n := clock.due(now()); n > 0; n-- {
+	n, skipped := clock.due(now())
+	c.skipPTS(skipped)
+	for ; n > 0; n-- {
 		if c.tick(now()) {
 			return true
 		}
@@ -1045,19 +1050,22 @@ type tickStats struct {
 }
 
 // due returns how many ticks to run at now: none before the next tick is
-// due, one when on time, two while making up a backlog.
-func (k *tickClock) due(now time.Time) int {
+// due, one when on time, two while making up a backlog. Further behind
+// than maxTickBacklog it runs the latest tick due and skips the others,
+// returned as skipped; the next tick stays on the frame grid.
+func (k *tickClock) due(now time.Time) (run, skipped int) {
 	if now.Before(k.next) {
-		return 0
+		return 0, 0
 	}
 	behind := now.Sub(k.next)
 	if behind >= maxTickBacklog {
 		slog.Warn("playout: tick loop fell behind, skipping ahead", "behind", behind)
+		skipped = int(behind / k.period)
 		if k.stats != nil {
-			k.stats.skipped.Add(uint64(behind / k.period))
+			k.stats.skipped.Add(uint64(skipped))
 		}
-		k.next = now.Add(k.period)
-		return 1
+		k.next = k.next.Add(time.Duration(skipped+1) * k.period)
+		return 1, skipped
 	}
 	n := 1
 	if behind >= k.period {
@@ -1067,7 +1075,7 @@ func (k *tickClock) due(now time.Time) int {
 		}
 	}
 	k.next = k.next.Add(time.Duration(n) * k.period)
-	return n
+	return n, 0
 }
 
 // tick processes one frame period. Returns true when the playlist is done.
@@ -2112,22 +2120,39 @@ func advancePTS(pts, frac, stepInt, stepFrac int64) (newPTS, newFrac int64) {
 	return pts, frac
 }
 
-// emitFrame sends the frame to output callbacks and increments PTS.
-// When frame is the GPU-aliased sentinel, the GPU pipeline already has the
-// correct frame — skip CPU video output and splice coordinator (both need
-// CPU YUV data we don't have). Audio from live sources is handled by the
-// mixer's direct source path, not the playout channel.
-func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int, int64, bool), audioFn func([]byte, int64, int, int), sc *SpliceCoordinator) {
+// videoStep is the channel's video PTS step, in whole 90 kHz ticks and the
+// fraction emitFrame carries.
+func (c *Channel) videoStep() (stepInt, stepFrac int64) {
 	fps := c.config.FPS
 	if fps == 0 {
 		fps = 30.0
 	}
 	// Carry the dropped sub-tick fraction of 90000/fps so PTS stays exact over
 	// long broadcasts instead of drifting by ~0.5 tick/frame.
-	vStepInt, vStepFrac := ptsStep(90000.0 / fps)
-	if vStepInt == 0 && vStepFrac == 0 {
-		vStepInt = 3000
+	stepInt, stepFrac = ptsStep(90000.0 / fps)
+	if stepInt == 0 && stepFrac == 0 {
+		stepInt = 3000
 	}
+	return stepInt, stepFrac
+}
+
+// skipPTS advances the channel's video and audio PTS by n frame periods,
+// for n ticks the run loop skipped.
+func (c *Channel) skipPTS(n int) {
+	vStepInt, vStepFrac := c.videoStep()
+	for range n {
+		c.outputPTS, c.outputPTSFrac = advancePTS(c.outputPTS, c.outputPTSFrac, vStepInt, vStepFrac)
+		c.outputAudioPTS, c.outputAudioPTSFrac = advancePTS(c.outputAudioPTS, c.outputAudioPTSFrac, vStepInt, vStepFrac)
+	}
+}
+
+// emitFrame sends the frame to output callbacks and increments PTS.
+// When frame is the GPU-aliased sentinel, the GPU pipeline already has the
+// correct frame: skip CPU video output and splice coordinator (both need
+// CPU YUV data we don't have). Audio from live sources is handled by the
+// mixer's direct source path, not the playout channel.
+func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int, int64, bool), audioFn func([]byte, int64, int, int), sc *SpliceCoordinator) {
+	vStepInt, vStepFrac := c.videoStep()
 
 	pts := c.outputPTS
 
