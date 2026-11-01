@@ -733,6 +733,12 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 // to the connection starts afresh: the anchor, whose placement the new
 // timestamps would otherwise inherit, and the audio the mixer holds.
 func (a *App) bindSRTSource(key string) *clock.TrackingAnchor {
+	a.srtSourcesMu.Lock()
+	if t := a.srtGone[key]; t != nil {
+		t.Stop()
+		delete(a.srtGone, key)
+	}
+	a.srtSourcesMu.Unlock()
 	if !a.sw.HasSource(key) {
 		a.sw.RegisterSRTSource(key)
 	}
@@ -743,16 +749,45 @@ func (a *App) bindSRTSource(key string) *clock.TrackingAnchor {
 	return &clock.TrackingAnchor{}
 }
 
+// srtSourceReleaseAfter is how long after its connection ended a source
+// keeps its frames: as long as the program freezes on its last frame.
+var srtSourceReleaseAfter = switcher.SourceLossTimeout
+
 // releaseSRTConnection releases what a stopped SRT connection held: its
-// entry in the active sources, its listener slot and its replay viewer.
-// The source stays registered, shown as no signal, with its GPU entry:
-// the program holds its last frame, which on the GPU path is that entry's,
-// until the source is removed or a new connection replaces the frame.
+// entry in the active sources, its listener slot, its replay viewer and
+// its GPU preview encoder, which has nothing more to encode and would
+// otherwise still be open when a new connection opens its own. The source
+// stays registered, shown as no signal, and keeps its frames: the program
+// holds its last frame until a new connection replaces it, or for
+// srtSourceReleaseAfter, after which it shows black and the frames are
+// released. A source whose caller never comes back keeps only its
+// registration, so sources come and go without holding frames or encode
+// sessions.
 func (a *App) releaseSRTConnection(sourceKey string, mode string) {
-	// Remove from active sources map.
 	a.srtSourcesMu.Lock()
 	delete(a.srtSources, sourceKey)
+	if a.srtGone == nil {
+		a.srtGone = make(map[string]*time.Timer)
+	}
+	if t := a.srtGone[sourceKey]; t != nil {
+		t.Stop()
+	}
+	var gone *time.Timer
+	gone = time.AfterFunc(srtSourceReleaseAfter, func() {
+		// Held across the release, so a new connection binds the key
+		// only after its frames are gone, never in between.
+		a.srtSourcesMu.Lock()
+		defer a.srtSourcesMu.Unlock()
+		if a.srtGone[sourceKey] != gone {
+			return
+		}
+		delete(a.srtGone, sourceKey)
+		a.sw.ReleaseSourceFrames(sourceKey)
+	})
+	a.srtGone[sourceKey] = gone
 	a.srtSourcesMu.Unlock()
+
+	a.sw.StopSourcePreview(sourceKey)
 
 	// Release listener slot so new connections can be accepted
 	// when MaxSources is set.
@@ -1279,6 +1314,13 @@ func (a *App) stopSRTSources() {
 		slog.Info("stopping SRT source on shutdown", "key", key)
 		state.source.Stop() // triggers OnStopped → closes channels → goroutines clean up encoders
 	}
+
+	a.srtSourcesMu.Lock()
+	for key, t := range a.srtGone {
+		t.Stop()
+		delete(a.srtGone, key)
+	}
+	a.srtSourcesMu.Unlock()
 }
 
 // srtManagerAdapter implements control.SRTManager for the API layer.
