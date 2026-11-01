@@ -107,16 +107,10 @@ type gpuSourceEntry struct {
 
 	width, height int
 
-	// recent holds the last published frames, oldest first, each with a
-	// reference of its own, guarded by curMu. The program is read behind
-	// the newest frame (clock.ReaderDelayGrains), so the frame a tick shows
-	// is usually one of these rather than current (refAt).
-	recent [recentFrames]*GPUFrame
+	// recent holds the last published frames, guarded by curMu: the frame
+	// a tick shows is usually one of these rather than current (refAt).
+	recent recentFrames[*GPUFrame]
 }
-
-// recentFrames is how many published frames each source keeps for refAt:
-// the reader delay plus a frame of slack.
-const recentFrames = 4
 
 // refAt returns the entry's frame with the given PTS, with an extra
 // reference the caller must Release, or nil when none of the recent frames
@@ -124,13 +118,8 @@ const recentFrames = 4
 func refAt(entry *gpuSourceEntry, pts int64) *GPUFrame {
 	entry.curMu.Lock()
 	defer entry.curMu.Unlock()
-	for i := len(entry.recent) - 1; i >= 0; i-- {
-		if f := entry.recent[i]; f != nil && f.PTS == pts {
-			f.Ref()
-			return f
-		}
-	}
-	return nil
+	f, _ := entry.recent.at(pts)
+	return f
 }
 
 // refCurrent returns the entry's current frame with an extra reference taken
@@ -157,19 +146,9 @@ func publishCurrent(entry *gpuSourceEntry, frame *GPUFrame) {
 	old := entry.current.Swap(frame)
 	var evicted []*GPUFrame
 	if frame == nil {
-		for i, f := range entry.recent {
-			if f != nil {
-				evicted = append(evicted, f)
-				entry.recent[i] = nil
-			}
-		}
+		evicted = entry.recent.drain()
 	} else {
-		if f := entry.recent[0]; f != nil {
-			evicted = append(evicted, f)
-		}
-		copy(entry.recent[:], entry.recent[1:])
-		frame.Ref()
-		entry.recent[len(entry.recent)-1] = frame
+		evicted = entry.recent.push(frame, frame.PTS)
 	}
 	entry.curMu.Unlock()
 	if old != nil {
