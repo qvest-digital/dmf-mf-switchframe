@@ -1,92 +1,78 @@
-//go:build cgo && !noffmpeg
+//go:build cgo
 
 package main
 
 import (
-	"os"
-	"path/filepath"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/certs"
-	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/prism/media"
 
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/clock"
-	"github.com/zsiec/switchframe/server/playout"
-	"github.com/zsiec/switchframe/server/switcher"
 )
 
-// A playout channel hands each video frame's AAC frames over with it, on
-// the channel's frame ticker, under PTS that run on without a gap. Placed on
-// the timeline by those PTS, the channel's audio stays on the program read
-// point; each AAC frame placed at its arrival lands up to a frame period
-// off it and the mixer keeps splicing the channel back.
+// A playout channel hands each clip frame's AAC frames over with it, on
+// the channel's frame ticker, under PTS that run on without a gap: a 24 fps
+// clip shown at 50 fps hands over a clip frame's 41.7 ms of audio when that
+// frame is first shown, on every second or third tick. Placed on the
+// timeline by those PTS, the channel's audio stays on the program read
+// point, two periods behind the clock, over a long playout and through a
+// ticker that jitters by up to 8 ms; each AAC frame placed at its arrival
+// lands up to a period off the read point and the mixer keeps splicing the
+// channel back.
 func TestPlayoutAudioStaysOnTheReadPoint(t *testing.T) {
-	stateDir := t.TempDir()
-	cert, err := certs.Generate(time.Hour)
+	const n = 960 // one 20 ms period at 48 kHz
+	const period = int64(20_000_000)
+	const ticks = 3 * 60 * 50 // three minutes
+	var now atomic.Int64
+	scriptTAI(t, &now)
+	m := audio.NewMixer(audio.MixerConfig{
+		SampleRate: 48000, Channels: 2, DecoderFactory: audioDecoderFactory(),
+	})
+	defer func() { _ = m.Close() }()
+	key := "playout:timing"
+	m.AddChannel(key)
+	m.SetActive(key, true)
+	a := &App{mixer: m}
+	enc, err := audio.NewFDKEncoder(48000, 2)
 	require.NoError(t, err)
-	srv, err := distribution.NewServer(distribution.ServerConfig{Addr: ":0", Cert: cert})
-	require.NoError(t, err)
-	a := &App{
-		cfg: AppConfig{
-			StateDir:          stateDir,
-			PlayoutCacheMaxGB: 1,
-			PreviewResolution: "360p",
-			PreviewBitrate:    300000,
-		},
-		sw:     switcher.New(distribution.NewRelay()),
-		server: srv,
-		mixer: audio.NewMixer(audio.MixerConfig{
-			SampleRate:     48000,
-			Channels:       2,
-			DecoderFactory: audioDecoderFactory(),
-		}),
-	}
-	require.NoError(t, a.initPlayout())
-	defer a.playoutMgr.Close()
-	a.playoutMgr.SetOnStateChange(func() {})
+	defer func() { _ = enc.Close() }()
 
-	clipDir := filepath.Join(stateDir, "clips")
-	require.NoError(t, os.MkdirAll(clipDir, 0o755))
-	fixture, err := os.ReadFile("../../output/testdata/fixture.ts")
-	require.NoError(t, err)
-	asset := filepath.Join(clipDir, "fixture.ts")
-	require.NoError(t, os.WriteFile(asset, fixture, 0o644))
-	require.NoError(t, a.playoutMgr.LoadPlaylist(1, &playout.Playlist{ID: "pl", Name: "pl", Items: []playout.PlaylistItem{
-		{ID: "c", Type: playout.ItemClip, AssetURI: asset, Title: "c", Loop: true},
-	}}))
-	require.NoError(t, a.playoutMgr.Start(1))
-	defer func() { _ = a.playoutMgr.Stop(1) }()
-	a.mixer.SetActive("playout:1", true)
-
-	// Ticks read contiguous periods, as the program does, with slack for
-	// a loaded host, from the channel's first audio on. The first ticks
-	// place the channel's ring on the read point. The fixture's audio runs
-	// 0.7% longer than its video, which the channel stamps from one start,
-	// so the window stays short of that drift reaching a period.
-	const n = 960
-	const warmup, ticks = 10, 60
 	rate := clock.Rate{Num: 48000, Den: 1}
-	deadline := time.Now().Add(15 * time.Second)
-	read := clock.TimestampToIndex(rate, clock.TAINow()) - 5*n
-	start := time.Now()
-	heard, placed := -1, int64(0)
-	for i := 0; heard < 0 || i < heard+warmup+ticks; i++ {
-		require.False(t, time.Now().After(deadline), "playout channel delivered no audio")
-		if heard >= 0 && i == heard+warmup {
-			placed = a.mixer.ChannelRealigns()["playout:1"]
+	pcm := make([]float32, 1024*2)
+	for j := range pcm {
+		pcm[j] = 0.1
+	}
+	start := now.Load()
+	audioPTS := int64(1_000_000)
+	samples := int64(0) // channel audio handed over so far
+	const warmup = 50
+	var placed int64
+	for i := 1; i <= ticks; i++ {
+		// The channel's ticker fires for tick i, up to 8 ms late, and hands
+		// over the AAC frames that start within the clip frame it shows.
+		jitter := int64((i*37)%9) * 1_000_000
+		now.Store(start + int64(i)*period + jitter)
+		clipFrame := int64(i) * 24 / 50
+		for samples < (clipFrame+1)*48000/24 {
+			aac, err := enc.Encode(pcm)
+			require.NoError(t, err)
+			samples += 1024
+			if len(aac) == 0 {
+				continue
+			}
+			a.ingestPlayoutAudio(key, &media.AudioFrame{Data: aac, PTS: audioPTS, SampleRate: 48000, Channels: 2})
+			audioPTS += 1920
 		}
-		time.Sleep(time.Until(start.Add(time.Duration(i) * 20 * time.Millisecond)))
-		if len(a.mixer.ProduceSamples(read, n, 0)) > 0 && heard < 0 {
-			heard = i
+		now.Store(start + int64(i)*period)
+		if i == warmup {
+			placed = m.ChannelRealigns()[key]
 		}
-		read += n
+		m.ProduceSamples(clock.TimestampToIndex(rate, now.Load())-2*n, n, 0)
 	}
 
-	// A host scheduling stall that makes the channel's ticker skip a frame
-	// can still cost one.
-	require.LessOrEqual(t, a.mixer.ChannelRealigns()["playout:1"]-placed, int64(1),
+	require.Zero(t, m.ChannelRealigns()[key]-placed,
 		"playout audio with continuous PTS must not be spliced back onto the read point")
 }

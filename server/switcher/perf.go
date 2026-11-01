@@ -19,6 +19,7 @@ type PerfSwitcherSample struct {
 	DecodeNs           int64
 	SyncWaitNs         int64
 	ProcQueueNs        int64
+	TickLagNs          int64
 
 	// Frame synchronizer stats
 	FrameSyncReleaseFPS  float64
@@ -102,6 +103,7 @@ func (s *Switcher) PerfSample() PerfSwitcherSample {
 		DecodeQueueNs:        s.lastDecodeQueueNs.Load(),
 		DecodeNs:             s.lastDecodeNs.Load(),
 		SyncWaitNs:           s.lastSyncWaitNs.Load(),
+		TickLagNs:            s.lastTickLagNs.Load(),
 		FrameSyncReleaseFPS:  float64(s.outputFPSLastSecond.Load()),
 		FrameSyncSourceCount: frameSyncSourceCount,
 	}

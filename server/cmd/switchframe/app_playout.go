@@ -285,12 +285,7 @@ func (a *App) initPlayout() error {
 			SampleRate: sampleRate,
 			Channels:   channels,
 		}
-		// The channel hands over a video frame's AAC frames together, on its
-		// frame ticker: placed by their PTS rather than their arrival, they
-		// stay on the read point.
-		timed := *frame
-		timed.PTS = playoutAnchor(key).PTS(pts)
-		a.mixer.IngestTimedFrame(key, &timed)
+		a.ingestPlayoutAudio(key, frame)
 		// The relay carries the audio too, for the tile's meter.
 		if idx := playoutChannelIDFromKey(key) - 1; idx >= 0 && idx < playout.MaxChannels && a.playoutRelays[idx] != nil {
 			a.playoutRelays[idx].BroadcastAudio(frame)
@@ -645,4 +640,15 @@ func buildPodCueMessage(isOut, autoReturn bool, durationMs int64) *scte35.CueMes
 		msg.BreakDuration = &d
 	}
 	return msg
+}
+
+// ingestPlayoutAudio hands a playout channel's AAC frame to the mixer. The
+// channel hands over a video frame's AAC frames together, on its frame
+// ticker, under continuous output PTS: placed by those PTS through the
+// channel's anchor rather than by their arrival, they stay on the read
+// point.
+func (a *App) ingestPlayoutAudio(key string, frame *media.AudioFrame) {
+	timed := *frame
+	timed.PTS = playoutAnchor(key).PTS(frame.PTS)
+	a.mixer.IngestTimedFrame(key, &timed)
 }
