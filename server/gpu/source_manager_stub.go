@@ -43,6 +43,9 @@ func (m *GPUSourceManager) GetFrameAt(sourceKey string, pts int64) *GPUFrame { r
 // GetFrameNear is a no-op stub.
 func (m *GPUSourceManager) GetFrameNear(sourceKey string, pts int64) *GPUFrame { return nil }
 
+// KeepCurrentAs is a no-op on non-GPU builds.
+func (m *GPUSourceManager) KeepCurrentAs(sourceKey string, pts int64) {}
+
 // ReadCachedFrame returns nil on non-GPU builds.
 func (m *GPUSourceManager) ReadCachedFrame(sourceKey string) (yuv []byte, w, h int, pts int64) {
 	return nil, 0, 0, 0

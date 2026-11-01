@@ -903,6 +903,29 @@ func (m *GPUSourceManager) GetFrameNear(sourceKey string, pts int64) *GPUFrame {
 	return f
 }
 
+// KeepCurrentAs keeps the source's current frame among its recent frames
+// under pts. AliasSource publishes another source's frame, which carries
+// that source's PTS, as the destination's current frame only; a tick looks
+// the destination's frame up under the PTS of the destination's own
+// timeline, which this keeps it under.
+func (m *GPUSourceManager) KeepCurrentAs(sourceKey string, pts int64) {
+	m.mu.RLock()
+	entry, exists := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if !exists {
+		return
+	}
+	entry.curMu.Lock()
+	var evicted []*GPUFrame
+	if f := entry.current.Load(); f != nil && !entry.closed.Load() {
+		evicted = entry.recent.push(f, pts)
+	}
+	entry.curMu.Unlock()
+	for _, f := range evicted {
+		f.Release()
+	}
+}
+
 // Close removes all sources and releases all GPU resources.
 func (m *GPUSourceManager) Close() {
 	m.mu.Lock()
