@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-rc.44](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.43...mxl-v1.0.0-rc.44) (2026-11-02)
+
+
+### Features
+
+* **srt:** report each SRT source's anchor offset and its raises ([816006e](https://github.com/qvest-digital/dmf-mf-switchframe/commit/816006e4dbbd31ae71cb75a394e25f54845f8300))
+
+
+### Bug Fixes
+
+* **clock:** keep every frame a tick has not read yet ([816006e](https://github.com/qvest-digital/dmf-mf-switchframe/commit/816006e4dbbd31ae71cb75a394e25f54845f8300))
+
 ## [1.0.0-rc.43](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.42...mxl-v1.0.0-rc.43) (2026-11-01)
 
 
