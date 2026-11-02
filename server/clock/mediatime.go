@@ -197,9 +197,11 @@ type TrackingAnchor struct {
 	mu        sync.Mutex
 	set       bool
 	offset    int64
+	placedAt  int64 // offset the source was last placed at
 	cur, prev int64 // largest lateness in the current and previous window
 	windowEnd int64 // engine PTS at which the current window ends
 	moves     int64
+	raises    int64
 }
 
 // TrackingWindow is how long a TrackingAnchor remembers a lateness.
@@ -211,6 +213,7 @@ func (a *TrackingAnchor) PTS(src int64) int64 {
 	late := now - src
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	was, placed := a.offset, false
 	switch {
 	case !a.set || late-a.offset > MaxAnchorSkew || a.offset-late > MaxAnchorSkew:
 		if a.set {
@@ -219,6 +222,7 @@ func (a *TrackingAnchor) PTS(src int64) int64 {
 		a.set = true
 		a.offset, a.cur, a.prev = late, late, late
 		a.windowEnd = now + TrackingWindow
+		placed = true
 	case now >= a.windowEnd:
 		a.prev, a.cur = a.cur, late
 		a.offset = max(a.prev, a.cur)
@@ -229,6 +233,11 @@ func (a *TrackingAnchor) PTS(src int64) int64 {
 	}
 	ceil := late + MaxSourceHold
 	a.offset, a.cur, a.prev = min(a.offset, ceil), min(a.cur, ceil), min(a.prev, ceil)
+	if placed {
+		a.placedAt = a.offset
+	} else if a.offset > was {
+		a.raises++
+	}
 	return src + a.offset
 }
 
@@ -237,4 +246,23 @@ func (a *TrackingAnchor) Moves() int64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.moves
+}
+
+// TrackingStats reports how a TrackingAnchor has placed its source.
+type TrackingStats struct {
+	// Offset is how far the offset moved since the source was last
+	// placed, in 90 kHz ticks: up when its timestamps arrived later, down
+	// when a window forgot a lateness.
+	Offset int64
+	// Raises counts the timestamps that raised the offset: each moved the
+	// source's later timestamps that much later on the engine timeline.
+	Raises int64
+	Moves  int64 // placements again after a jump
+}
+
+// Stats returns the anchor's placement statistics.
+func (a *TrackingAnchor) Stats() TrackingStats {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return TrackingStats{Offset: a.offset - a.placedAt, Raises: a.raises, Moves: a.moves}
 }

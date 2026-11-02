@@ -116,6 +116,7 @@ func (c *ReferenceClock) Start() {
 	}
 	c.wg.Add(1)
 	if c.realtime {
+		SetProgramRate(c.rate)
 		go c.runRealtime()
 	} else {
 		go c.runNonRealtime()

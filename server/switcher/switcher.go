@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	maxDelayMs = 500 // maximum source delay for lip-sync correction
+	maxDelayMs = clock.MaxSourceDelay / 90 // maximum source delay for lip-sync correction
 
 	minFTBDurationMs     = 100
 	maxFTBDurationMs     = 5000

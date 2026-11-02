@@ -30,10 +30,10 @@ type recentFrame[F refCounted] struct {
 	pts int64
 }
 
-// recentFramesDepth is how many frames a source's store keeps for a frame
-// due on arrival: the reader delay plus a frame of slack. The source's hold
-// and its delay add the frames each holds back.
-const recentFramesDepth = 4
+// recentFramesDepth is how many frames a source's store keeps beyond those
+// a tick has not read yet (clock.SourceHold), which include the reader
+// delay's: the frame the last tick read, which its GPU upload looks up.
+const recentFramesDepth = 1
 
 // push keeps f under pts, taking a reference of its own, and returns the
 // frames it no longer keeps. The caller releases those, outside any lock a
@@ -41,10 +41,7 @@ const recentFramesDepth = 4
 func (r *recentFrames[F]) push(f F, pts int64) (evicted []F) {
 	f.Ref()
 	r.frames = append(r.frames, recentFrame[F]{f: f, pts: pts})
-	depth := recentFramesDepth + r.hold.Frames(pts)
-	if p := r.hold.Period(); p > 0 {
-		depth += int((r.delay + p - 1) / p)
-	}
+	depth := recentFramesDepth + r.hold.Frames(pts, r.delay)
 	if n := len(r.frames) - depth; n > 0 {
 		for _, e := range r.frames[:n] {
 			evicted = append(evicted, e.f)
