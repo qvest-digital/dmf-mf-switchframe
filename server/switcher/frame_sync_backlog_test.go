@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"testing"
+	"time"
 
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/clock"
@@ -16,6 +17,8 @@ import (
 // video around it.
 type backlogRun struct {
 	backlog int64 // ns sent before the connection was read
+	delayMs int   // the source's delay (SetSourceDelay)
+	decode  int64 // ns a backlog frame's decode takes; 0: 4 ms
 }
 
 type backlogResult struct {
@@ -24,6 +27,9 @@ type backlogResult struct {
 	// Ticks from the first frame shown on that found no frame due, and
 	// the most consecutive ones.
 	emptyAfterFirst, longestEmpty int
+	// Ticks from the first frame shown on that showed another frame, or
+	// none, than a ring without a bound would have.
+	missed int
 	// After the first real-time frame was shown: ticks without a frame
 	// due, ticks showing one older than staleBound, ring drops, realigns.
 	empty, stale     int
@@ -46,15 +52,21 @@ func (c backlogRun) run(t *testing.T) backlogResult {
 	clock.Epoch()
 	clock.SetTAISource(func() int64 { return now })
 	t.Cleanup(func() { clock.SetTAISource(nil) })
+	clock.SetProgramRate(clock.Rate{Num: 50, Den: 1})
 
 	const (
-		key      = "srt:cam"
-		lateV    = int64(30_000_000) // transport and decode, in real time
-		aacNs    = int64(1024) * 1_000_000_000 / 48000
-		perPES   = 17
-		decodeNs = int64(4_000_000) // a backlog frame's decode
-		n        = 960              // samples in a period
+		key    = "srt:cam"
+		lateV  = int64(30_000_000) // transport and decode, in real time
+		aacNs  = int64(1024) * 1_000_000_000 / 48000
+		perPES = 17
+		n      = 960 // samples in a period
 	)
+	decodeNs := c.decode
+	if decodeNs == 0 {
+		decodeNs = 4_000_000
+	}
+	delay := int64(c.delayMs) * 90
+	stale := staleBound + int64(c.delayMs)*1_000_000
 	rate48k := clock.Rate{Num: 48000, Den: 1}
 	var anchor clock.TrackingAnchor
 	fs := NewFrameSynchronizer()
@@ -64,6 +76,8 @@ func (c backlogRun) run(t *testing.T) backlogResult {
 	t.Cleanup(func() { _ = m.Close() })
 	m.AddChannel(key)
 	m.SetActive(key, true)
+	fs.SetSourceDelay(key, c.delayMs, time.Duration(backlogPeriod))
+	m.SetSourceDelay(key, c.delayMs)
 	pcm := make([]float32, 2*1024)
 	for i := range pcm {
 		pcm[i] = 0.25
@@ -79,6 +93,9 @@ func (c backlogRun) run(t *testing.T) backlogResult {
 	realtime := map[int64]bool{}
 	nextV, nextA := int64(0), int64(0)
 	readyV := int64(0) // when the decoder is free for the next frame
+	// sent is what a ring without a bound would hold: the frames pushed
+	// and not yet read, in the order the ring keeps them.
+	var sent []int64
 	r := backlogResult{firstRT: -1, shownRT: -1, firstShown: -1}
 	var reordered0, realigns0 int64
 	run := 0
@@ -96,6 +113,10 @@ func (c backlogRun) run(t *testing.T) backlogResult {
 			if due == natural && r.firstRT < 0 {
 				r.firstRT = due
 			}
+			for len(sent) > 0 && sent[len(sent)-1] >= pts {
+				sent = sent[:len(sent)-1]
+			}
+			sent = append(sent, pts)
 			fs.IngestRawVideo(key, &ProcessingFrame{PTS: pts})
 			readyV = due + decodeNs
 			nextV += backlogPeriod
@@ -112,8 +133,20 @@ func (c backlogRun) run(t *testing.T) backlogResult {
 		read := clock.TimestampToIndex(rate48k, now) - 2*n
 		m.ProduceSamples(read, n, clock.IndexPTS(rate48k, read))
 		ss.mu.Lock()
-		pf := ss.popAt(clock.NowPTS() - backlogReadLag)
+		limit := clock.NowPTS() - backlogReadLag - delay
+		pf := ss.popAt(limit)
 		ss.mu.Unlock()
+		due := int64(-1)
+		for len(sent) > 0 && sent[0] <= limit {
+			due, sent = sent[0], sent[1:]
+		}
+		shown := int64(-1)
+		if pf != nil {
+			shown = pf.PTS
+		}
+		if r.firstShown >= 0 && shown != due {
+			r.missed++
+		}
 		if r.firstShown >= 0 {
 			if pf == nil {
 				r.emptyAfterFirst++
@@ -136,7 +169,7 @@ func (c backlogRun) run(t *testing.T) backlogResult {
 			r.empty++
 			continue
 		}
-		if at-arrival[pf.PTS] > staleBound {
+		if at-arrival[pf.PTS] > stale {
 			r.stale++
 		}
 	}
@@ -205,6 +238,31 @@ func TestFrameSyncKeepsABacklogTailPlacedAhead(t *testing.T) {
 		if r.overflows > 0 || int64(r.longestEmpty)*backlogPeriod > 100_000_000 {
 			t.Errorf("backlog %d ms: %d frames dropped unread, %d ticks without a frame due after the first was shown, %d in a row; want none dropped and no run over 100 ms",
 				backlogMs, r.overflows, r.emptyAfterFirst, r.longestEmpty)
+		}
+	}
+}
+
+// A source delay (SetSourceDelay) has ticks read a reconnected source
+// that much further behind, and a faster decoder packs its backlog closer
+// together: more of the burst is placed behind the current time and is
+// still unread. The ring keeps every frame not yet read, not only those
+// placed after the current time: a ring that counted only those dropped
+// the oldest unread frames, the next ones due, and a 200 ms delay froze a
+// reconnect a second time for 240 ms. From the first frame shown on, every
+// tick shows the frame a ring without a bound would.
+func TestFrameSyncKeepsEveryUnreadBacklogFrame(t *testing.T) {
+	for _, delayMs := range []int{0, 200} {
+		for _, decodeMs := range []int64{2, 4} {
+			for _, backlogMs := range []int64{200, 400, 600, 800, 1_000, 1_200} {
+				r := backlogRun{backlog: backlogMs * 1_000_000, delayMs: delayMs, decode: decodeMs * 1_000_000}.run(t)
+				if r.firstShown < 0 {
+					t.Fatalf("delay %d ms, decode %d ms, backlog %d ms: the connection was never shown", delayMs, decodeMs, backlogMs)
+				}
+				if r.overflows > 0 || r.missed > 0 {
+					t.Errorf("delay %d ms, decode %d ms, backlog %d ms: %d frames dropped unread, %d ticks after the first frame shown without the frame due; want none",
+						delayMs, decodeMs, backlogMs, r.overflows, r.missed)
+				}
+			}
 		}
 	}
 }

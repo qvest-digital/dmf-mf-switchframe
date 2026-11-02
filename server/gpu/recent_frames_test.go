@@ -12,6 +12,11 @@ type countedFrame struct{ refs int }
 func (f *countedFrame) Ref()     { f.refs++ }
 func (f *countedFrame) Release() { f.refs-- }
 
+// dueDepth is how many frames a store keeps at 50 fps for a source whose
+// frames are due on arrival: the reader delay's, the frame the next tick
+// reads and the one the last tick read.
+const dueDepth = recentFramesDepth + clock.ReaderDelayGrains + 1
+
 // srtRun is an SRT source muxed as MPEG-TS: a video frame every 20 ms and
 // its AAC in PES packets of eight frames, 171 ms at 48 kHz, every packet
 // 30 ms late. One TrackingAnchor places both essences, each delivered in
@@ -38,6 +43,7 @@ func (c srtRun) run(t *testing.T) srtResult {
 	clock.Epoch()
 	clock.SetTAISource(func() int64 { return now })
 	t.Cleanup(func() { clock.SetTAISource(nil) })
+	clock.SetProgramRate(clock.Rate{Num: 50, Den: 1})
 
 	const (
 		period  = int64(20_000_000)
@@ -186,7 +192,7 @@ func TestRecentFramesStayWithinTheHoldAcrossLatePackets(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := c.run.run(t)
-			bound := recentFramesDepth + int((r.hold+1799)/1800) + 1
+			bound := dueDepth + int((r.hold+1799)/1800) + 1
 			if r.depth > bound {
 				t.Errorf("the store kept %d frames for a hold of %d ticks, want at most %d", r.depth, r.hold, bound)
 			}
@@ -208,7 +214,7 @@ func TestRecentFramesHoldTheFrameADelayedSourceShows(t *testing.T) {
 			t.Errorf("delay %d ms: %d of %d ticks found the frame they show gone (%d frames deep)",
 				delayMs, r.misses, r.ticks, r.depth)
 		}
-		if bound := recentFramesDepth + int((r.hold+delayMs*90+1799)/1800) + 1; r.depth > bound {
+		if bound := dueDepth + int((r.hold+delayMs*90+1799)/1800) + 1; r.depth > bound {
 			t.Errorf("delay %d ms: the store kept %d frames, want at most %d", delayMs, r.depth, bound)
 		}
 	}
@@ -217,6 +223,12 @@ func TestRecentFramesHoldTheFrameADelayedSourceShows(t *testing.T) {
 // A frame without pixels of its own that is no longer kept is stood in for
 // by the kept frame nearest to it: the newest before it, else the oldest.
 func TestRecentFramesNearStandsInForAFrameNoLongerKept(t *testing.T) {
+	// A 50 fps tick reads up to 5400 ticks behind: at PTS 12400 the frames
+	// from 9000 on are not yet read, and the one before them is kept too.
+	now := clock.TimestampOf(12_400)
+	clock.SetTAISource(func() int64 { return now })
+	t.Cleanup(func() { clock.SetTAISource(nil) })
+	clock.SetProgramRate(clock.Rate{Num: 50, Den: 1})
 	var store recentFrames[*countedFrame]
 	frames := map[int64]*countedFrame{}
 	for _, pts := range []int64{3000, 6000, 9000, 12000, 15000} {
@@ -287,45 +299,53 @@ func TestRecentFramesAdoptKeepsTheHeldFrame(t *testing.T) {
 // A connection's backlog burst is placed by its TrackingAnchor at arrival
 // plus clock.MaxSourceHold from the frame on that would wait longer: those
 // frames arrive a decode apart and wait as close together. The store keeps
-// every frame that still waits, also once frames arrive a period apart
-// again and the source's period is its own again: a store sized by the
-// hold in frame periods evicted the oldest waiting frames, the next due,
-// and a source without pixels on the CPU ran from a later frame instead.
-func TestRecentFramesKeepABacklogBurstPlacedAhead(t *testing.T) {
-	now := int64(1_798_000_000_000_000_000)
-	clock.Epoch()
-	clock.SetTAISource(func() int64 { return now })
-	t.Cleanup(func() { clock.SetTAISource(nil) })
-	var store recentFrames[*countedFrame]
-	var placed []int64
-	push := func(stepNs int64) {
-		now += stepNs
-		pts := clock.NowPTS() + clock.MaxSourceHold
-		placed = append(placed, pts)
-		f := &countedFrame{refs: 1}
-		for _, e := range store.push(f, pts) {
-			e.Release()
-		}
-		f.Release()
-		for _, p := range placed {
-			if p <= clock.NowPTS() {
-				continue
-			}
-			if f, ok := store.at(p); ok {
+// every frame a tick has not read yet, also once frames arrive a period
+// apart again, and also those already behind the current time that a tick
+// reading the program's reader delay and the source's delay behind has
+// not reached: a store that kept only the frames placed after the current
+// time evicted the oldest unread ones, the next due, and a source without
+// pixels on the CPU ran from a later frame instead.
+func TestRecentFramesKeepABacklogBurstUntilItIsRead(t *testing.T) {
+	const readLag = clock.ReaderDelayGrains * 1800 // a 50 fps tick's read point
+	for _, delay := range []int64{0, 18000} {
+		for _, decodeNs := range []int64{2_000_000, 4_000_000} {
+			now := int64(1_798_000_000_000_000_000)
+			clock.Epoch()
+			clock.SetTAISource(func() int64 { return now })
+			t.Cleanup(func() { clock.SetTAISource(nil) })
+			clock.SetProgramRate(clock.Rate{Num: 50, Den: 1})
+			store := recentFrames[*countedFrame]{delay: delay}
+			var placed []int64
+			push := func(stepNs int64) {
+				now += stepNs
+				pts := clock.NowPTS() + clock.MaxSourceHold
+				placed = append(placed, pts)
+				f := &countedFrame{refs: 1}
+				for _, e := range store.push(f, pts) {
+					e.Release()
+				}
 				f.Release()
-				continue
+				for _, p := range placed {
+					if p <= clock.NowPTS()-readLag-delay {
+						continue
+					}
+					if f, ok := store.at(p); ok {
+						f.Release()
+						continue
+					}
+					t.Fatalf("delay %d, decode %d ns, frame %d: a frame placed %d ticks after the read point is gone while it waits (%d kept)",
+						delay, decodeNs, len(placed), p-(clock.NowPTS()-readLag-delay), len(store.frames))
+				}
 			}
-			t.Fatalf("frame %d: a frame placed %d ticks ahead is gone while it waits (%d kept)",
-				len(placed), p-clock.NowPTS(), len(store.frames))
+			for range 25 { // the burst's tail, a frame per decode
+				push(decodeNs)
+			}
+			for range 50 { // real time, a frame per 20 ms
+				push(20_000_000)
+			}
+			for _, f := range store.drain() {
+				f.Release()
+			}
 		}
-	}
-	for range 40 { // the burst's tail, a frame per 4 ms decode
-		push(4_000_000)
-	}
-	for range 50 { // real time, a frame per 20 ms
-		push(20_000_000)
-	}
-	for _, f := range store.drain() {
-		f.Release()
 	}
 }
