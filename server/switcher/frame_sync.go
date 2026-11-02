@@ -43,8 +43,8 @@ type syncSource struct {
 	// capacity is syncRingSize plus the frames the delay holds back; 0
 	// means syncRingSize.
 	capacity int
-	// hold adds the frames the source's placement ahead of its arrival
-	// holds back.
+	// hold adds the frames not yet read: those the source's delay and its
+	// placement ahead of its arrival hold back.
 	hold clock.SourceHold
 
 	overflows atomic.Int64 // frames released unread because the ring was full
@@ -169,7 +169,7 @@ func (ss *syncSource) push(pf *ProcessingFrame) {
 	if limit == 0 {
 		limit = syncRingSize
 	}
-	limit += ss.hold.Frames(pf.PTS)
+	limit += ss.hold.Frames(pf.PTS, ss.delay.Load())
 	for len(ss.ring) >= limit {
 		ss.ring[0].ReleaseYUV()
 		n := copy(ss.ring, ss.ring[1:])
