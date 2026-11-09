@@ -120,7 +120,9 @@ jobs:
   smoke:
     if: github.repository == 'qvest-digital/dmf-mf-switchframe'
     needs: image
-    runs-on: ubuntu-latest
+    # On ubuntu-latest (26.04) the refusal probe's https page fails with
+    # ERR_CERT_AUTHORITY_INVALID.
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
