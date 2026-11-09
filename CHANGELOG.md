@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-rc.45](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.44...mxl-v1.0.0-rc.45) (2026-11-09)
+
+
+### Dependencies
+
+* **mxl:** move onto go-mxl 1.1.0-rc.14 ([#200](https://github.com/qvest-digital/dmf-mf-switchframe/issues/200)) ([8a0d969](https://github.com/qvest-digital/dmf-mf-switchframe/commit/8a0d969bfb8f043673c2d50145ca100868689e6f))
+
+
+### Continuous Integration
+
+* run test-ui and smoke on ubuntu-24.04 ([#201](https://github.com/qvest-digital/dmf-mf-switchframe/issues/201)) ([b563259](https://github.com/qvest-digital/dmf-mf-switchframe/commit/b563259fd3f1295a852103788dead415fa1ab261))
+
 ## [1.0.0-rc.44](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.43...mxl-v1.0.0-rc.44) (2026-11-02)
 
 
