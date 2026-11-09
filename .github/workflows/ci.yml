@@ -76,7 +76,8 @@ jobs:
         run: cd server && CGO_ENABLED=0 go test ./... -short -timeout=15m
 
   test-ui:
-    runs-on: ubuntu-latest
+    # Playwright has no chromium build for ubuntu-latest's 26.04 image.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
