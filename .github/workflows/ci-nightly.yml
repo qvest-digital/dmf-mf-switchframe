@@ -47,9 +47,10 @@ jobs:
             ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           fi
 
-          # Clone and build MXL
-          git clone https://github.com/dmf-mxl/mxl.git ~/mxl-src
+          # Clone and build MXL at the commit the go-mxl images carry
+          git clone https://github.com/qvest-digital/mxl.git ~/mxl-src
           cd ~/mxl-src
+          git checkout --detach "$(cat "$GITHUB_WORKSPACE/.github/mxl-sdk-version.txt")"
           cmake --preset Linux-GCC-Release \
             -DCMAKE_INSTALL_PREFIX=$HOME/mxl-sdk \
             -DCMAKE_TOOLCHAIN_FILE=$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake
