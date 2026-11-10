@@ -115,3 +115,29 @@ func TestInitCommandQueue_DVEPresetRecallAnimates(t *testing.T) {
 	bad, _ := json.Marshal(map[string]any{"_path_id": "pip-bottom-right", "durationMs": 500, "easing": "bounce"})
 	require.Error(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_preset_recall", Payload: bad}))
 }
+
+func TestInitCommandQueue_DVESlotUpdateAnimates(t *testing.T) {
+	relay := distribution.NewRelay()
+	sw := switcher.New(relay)
+	defer sw.Close()
+
+	dc := dve.NewCompositor(1920, 1080)
+	dc.SetLayout(&dve.Layout{Name: "pip", Slots: []dve.Slot{
+		{SourceKey: "cam1", Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true},
+	}})
+
+	app := &App{sw: sw, dveCompositor: dc}
+	require.NoError(t, app.initCommandQueue())
+
+	payload, _ := json.Marshal(map[string]any{
+		"_path_id":   "0",
+		"transform":  map[string]any{"positionX": 1200, "positionY": 600, "width": 480, "height": 270},
+		"durationMs": 60000,
+	})
+	require.NoError(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_slot_update", Payload: payload}))
+
+	require.Equal(t, 1200.0, dc.GetLayout().Slots[0].Transform.PositionX)
+	snaps := dc.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Less(t, snaps[0].RectX, 100, "timed slot update with durationMs must glide")
+}

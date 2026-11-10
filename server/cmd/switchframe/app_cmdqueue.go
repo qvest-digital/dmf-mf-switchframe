@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strconv"
 
 	"github.com/zsiec/switchframe/server/clock"
@@ -549,6 +550,8 @@ func (a *App) registerDVEActions(d *cmdqueue.Dispatcher) {
 			Enabled    *bool          `json:"enabled,omitempty"`
 			ScaleMode  *string        `json:"scaleMode,omitempty"`
 			CropAnchor *[2]float64    `json:"cropAnchor,omitempty"`
+			DurationMs int            `json:"durationMs,omitempty"`
+			Easing     string         `json:"easing,omitempty"`
 		}
 		if err := json.Unmarshal(payload, &req); err != nil {
 			return err
@@ -557,7 +560,7 @@ func (a *App) registerDVEActions(d *cmdqueue.Dispatcher) {
 		if err != nil {
 			return fmt.Errorf("invalid slot id: %w", err)
 		}
-		a.dveCompositor.UpdateSlot(id, func(s *dve.Slot) {
+		apply := func(s *dve.Slot) {
 			if req.SourceKey != nil {
 				s.SourceKey = *req.SourceKey
 			}
@@ -576,7 +579,18 @@ func (a *App) registerDVEActions(d *cmdqueue.Dispatcher) {
 			if req.CropAnchor != nil {
 				s.Transform.CropAnchor = *req.CropAnchor
 			}
-		})
+		}
+		if l := a.dveCompositor.GetLayout(); req.DurationMs > 0 && l != nil && id >= 0 && id < len(l.Slots) {
+			ease, err := transition.ParseEasing(req.Easing)
+			if err != nil {
+				return err
+			}
+			target := &dve.Layout{Name: l.Name, Slots: slices.Clone(l.Slots)}
+			apply(&target.Slots[id])
+			a.dveCompositor.RecallLayout(target, req.DurationMs, ease.Ease)
+			return nil
+		}
+		a.dveCompositor.UpdateSlot(id, apply)
 		return nil
 	})
 
