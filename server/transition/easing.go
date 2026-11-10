@@ -3,6 +3,8 @@ package transition
 import (
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 )
 
 // EasingType identifies the easing curve used for transition timing.
@@ -73,6 +75,37 @@ func NewCustomEasingCurve(x1, y1, x2, y2 float64) (*EasingCurve, error) {
 		X1:   x1, Y1: y1,
 		X2: x2, Y2: y2,
 	}, nil
+}
+
+// ParseEasing parses the CSS-style easing strings clients send: a preset
+// name such as "ease-in-out" or "cubic-bezier(x1, y1, x2, y2)". An empty
+// string is linear.
+func ParseEasing(s string) (*EasingCurve, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return NewEasingCurve(EasingLinear), nil
+	}
+	if args, ok := strings.CutPrefix(s, "cubic-bezier("); ok {
+		args, ok = strings.CutSuffix(args, ")")
+		parts := strings.Split(args, ",")
+		if !ok || len(parts) != 4 {
+			return nil, fmt.Errorf("easing: %q is not cubic-bezier(x1, y1, x2, y2)", s)
+		}
+		var v [4]float64
+		for i, p := range parts {
+			f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+			if err != nil {
+				return nil, fmt.Errorf("easing: %q: %w", s, err)
+			}
+			v[i] = f
+		}
+		return NewCustomEasingCurve(v[0], v[1], v[2], v[3])
+	}
+	// "custom" names no curve without its control points.
+	if et := EasingType(s); ValidEasingTypes[et] && et != EasingCustom {
+		return NewEasingCurve(et), nil
+	}
+	return nil, fmt.Errorf("easing: unknown easing %q", s)
 }
 
 // Ease maps a linear time value t in [0,1] to an eased position.

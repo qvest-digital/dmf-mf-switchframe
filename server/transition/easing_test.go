@@ -372,3 +372,39 @@ func TestEasingSubNormalInputs(t *testing.T) {
 		})
 	}
 }
+
+func TestParseEasing(t *testing.T) {
+	cases := []struct {
+		in   string
+		want *EasingCurve
+	}{
+		{"", NewEasingCurve(EasingLinear)},
+		{"ease-in-out", NewEasingCurve(EasingEaseInOut)},
+		{"smoothstep", NewEasingCurve(EasingSmoothstep)},
+		{"cubic-bezier(0,0,0.580,0.750)", &EasingCurve{Type: EasingCustom, X2: 0.58, Y2: 0.75}},
+		{" cubic-bezier( 0.1, -0.5, 0.9, 1.5 ) ", &EasingCurve{Type: EasingCustom, X1: 0.1, Y1: -0.5, X2: 0.9, Y2: 1.5}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := ParseEasing(tc.in)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestParseEasing_Rejects(t *testing.T) {
+	for _, in := range []string{
+		"bounce",
+		"custom", // no control points
+		"cubic-bezier(0,0,1)",
+		"cubic-bezier(0,0,1,1",
+		"cubic-bezier(a,0,1,1)",
+		"cubic-bezier(1.5,0,1,1)", // x outside [0, 1]
+	} {
+		t.Run(in, func(t *testing.T) {
+			_, err := ParseEasing(in)
+			require.Error(t, err)
+		})
+	}
+}
