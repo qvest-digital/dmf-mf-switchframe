@@ -1,6 +1,7 @@
 package control
 
 import (
+	"cmp"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/dve"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 type dveLayoutRequest struct {
@@ -313,18 +315,16 @@ func (a *API) handleRecallDVEPresetInner(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	targetLayout := dveLayoutFromPreset(preset)
+	ease, err := transition.ParseEasing(cmp.Or(req.Easing, preset.Easing))
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
-	// Animated preset recall requires a compositor animation ticker (not yet implemented).
-	// For now, presets apply instantly. The durationMs/easing fields are accepted in the
-	// request for forward compatibility but have no effect until the animation system
-	// is wired up.
-
-	// Apply target layout immediately.
-	a.dveCompositor.SetLayout(targetLayout)
+	a.dveCompositor.RecallLayout(dveLayoutFromPreset(preset), req.DurationMs, ease.Ease)
 	a.broadcast()
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(targetLayout)
+	_ = json.NewEncoder(w).Encode(a.dveCompositor.GetLayout())
 }
 
 func (a *API) handleDeleteDVEPreset(w http.ResponseWriter, r *http.Request) {

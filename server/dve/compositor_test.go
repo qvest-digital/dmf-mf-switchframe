@@ -1132,3 +1132,205 @@ func TestComputeCropRect_MatchingAspect(t *testing.T) {
 	require.Equal(t, 8, cropW)
 	require.Equal(t, 4, cropH)
 }
+
+// --- Layout recall morph ---
+
+// fakeClock returns a clock hook and a function that advances it.
+func fakeClock() (func() time.Time, func(time.Duration)) {
+	now := time.Unix(1000, 0)
+	return func() time.Time { return now }, func(d time.Duration) { now = now.Add(d) }
+}
+
+func pipLayout(src string, x, y float64) *Layout {
+	return &Layout{Name: "pip", Slots: []Slot{
+		{SourceKey: src, Transform: DefaultTransform(x, y, 16, 16), ZOrder: 1, Enabled: true},
+	}}
+}
+
+func TestRecallLayout_MidpointRect(t *testing.T) {
+	c := NewCompositor(64, 64)
+	clock, advance := fakeClock()
+	c.now = clock
+	c.SetLayout(pipLayout("cam1", 0, 0))
+	c.IngestSourceFrame("cam1", makeYUV420(16, 16, 235, 128, 128), 16, 16, 1)
+
+	// Target carries no source, like a built-in preset.
+	c.RecallLayout(pipLayout("", 32, 32), 1000, nil)
+
+	// State reports the target at once, source kept.
+	got := c.GetLayout()
+	require.Equal(t, 32.0, got.Slots[0].Transform.PositionX)
+	require.Equal(t, "cam1", got.Slots[0].SourceKey)
+
+	advance(500 * time.Millisecond)
+	snaps := c.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Equal(t, 16, snaps[0].RectX)
+	require.Equal(t, 16, snaps[0].RectY)
+	require.NotNil(t, snaps[0].FillYUV, "source fill must survive the recall")
+
+	frame := c.ProcessFrame(makeYUV420(64, 64, 16, 128, 128), 64, 64)
+	require.Equal(t, byte(235), frame[16*64+16], "slot drawn at the midpoint")
+	require.Equal(t, byte(16), frame[0], "slot left its start")
+	require.Equal(t, byte(16), frame[40*64+40], "slot not yet at its target")
+}
+
+func TestRecallLayout_ZeroDurationIsInstant(t *testing.T) {
+	c := NewCompositor(64, 64)
+	c.SetLayout(pipLayout("cam1", 0, 0))
+	c.RecallLayout(pipLayout("cam1", 32, 32), 0, nil)
+
+	snaps := c.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Equal(t, 32, snaps[0].RectX)
+}
+
+func TestRecallLayout_EasingWarpsTime(t *testing.T) {
+	c := NewCompositor(64, 64)
+	clock, advance := fakeClock()
+	c.now = clock
+	c.SetLayout(pipLayout("cam1", 0, 0))
+
+	ease, err := transition.ParseEasing("ease-in")
+	require.NoError(t, err)
+	c.RecallLayout(pipLayout("cam1", 32, 0), 1000, ease.Ease)
+
+	advance(500 * time.Millisecond)
+	snaps := c.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Less(t, snaps[0].RectX, 16, "ease-in lags linear at the midpoint")
+	require.Greater(t, snaps[0].RectX, 0)
+}
+
+func TestRecallLayout_FadeEdgesDoNotFlash(t *testing.T) {
+	c := NewCompositor(64, 64)
+	clock, advance := fakeClock()
+	c.now = clock
+	c.IngestSourceFrame("cam1", makeYUV420(16, 16, 235, 128, 128), 16, 16, 1)
+
+	// Fade in from nothing: the slot is not drawn opaque at t=0.
+	c.RecallLayout(pipLayout("cam1", 0, 0), 1000, nil)
+	require.Empty(t, c.SnapshotSlots(), "slot invisible at the start of a fade in")
+	frame := c.ProcessFrame(makeYUV420(64, 64, 16, 128, 128), 64, 64)
+	require.Equal(t, byte(16), frame[0], "no opaque flash at the start of a fade in")
+
+	advance(500 * time.Millisecond)
+	snaps := c.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.InDelta(t, 0.5, snaps[0].Alpha, 0.01)
+
+	// Fade out to an empty layout: alpha approaches 0, never jumps to 1.
+	advance(500 * time.Millisecond)
+	require.Len(t, c.SnapshotSlots(), 1, "fade in completed")
+	c.RecallLayout(&Layout{Name: "empty"}, 1000, nil)
+	advance(999 * time.Millisecond)
+	for _, s := range c.SnapshotSlots() {
+		require.Less(t, s.Alpha, float32(0.01), "no opaque flash at the end of a fade out")
+	}
+	frame = c.ProcessFrame(makeYUV420(64, 64, 16, 128, 128), 64, 64)
+	require.Equal(t, byte(16), frame[0])
+}
+
+func TestRecallLayout_KeepsOutgoingSourceUntilDone(t *testing.T) {
+	c := NewCompositor(64, 64)
+	clock, advance := fakeClock()
+	c.now = clock
+	c.SetLayout(&Layout{Name: "two", Slots: []Slot{
+		{SourceKey: "cam1", Transform: DefaultTransform(0, 0, 16, 16), Enabled: true},
+		{SourceKey: "cam2", Transform: DefaultTransform(32, 0, 16, 16), Enabled: true},
+	}})
+	c.IngestSourceFrame("cam1", makeYUV420(16, 16, 200, 128, 128), 16, 16, 1)
+	c.IngestSourceFrame("cam2", makeYUV420(16, 16, 100, 128, 128), 16, 16, 1)
+
+	c.RecallLayout(pipLayout("cam1", 0, 0), 1000, nil)
+	require.True(t, c.NeedsSource("cam2"), "outgoing slot still shows cam2")
+	require.True(t, c.HasFrame("cam2"), "outgoing fill not pruned during the morph")
+
+	advance(500 * time.Millisecond)
+	snaps := c.SnapshotSlots()
+	require.Len(t, snaps, 2)
+	for _, s := range snaps {
+		require.NotNil(t, s.FillYUV, "slot %d (%s) must not go grey", s.Index, s.SourceKey)
+	}
+
+	advance(500 * time.Millisecond)
+	require.Len(t, c.SnapshotSlots(), 1)
+	require.False(t, c.NeedsSource("cam2"))
+	require.False(t, c.HasFrame("cam2"), "fill pruned once the morph completes")
+}
+
+func TestRecallLayout_ActiveDuringFadeToEmpty(t *testing.T) {
+	c := NewCompositor(64, 64)
+	clock, advance := fakeClock()
+	c.now = clock
+	c.SetLayout(pipLayout("cam1", 0, 0))
+
+	var changes atomic.Int32
+	c.OnActiveChange = func() { changes.Add(1) }
+
+	c.RecallLayout(&Layout{Name: "empty"}, 1000, nil)
+	require.True(t, c.Active(), "fading out keeps the node active")
+	require.Zero(t, changes.Load())
+
+	advance(500 * time.Millisecond)
+	c.SnapshotSlots()
+	require.True(t, c.Active())
+
+	advance(500 * time.Millisecond)
+	c.SnapshotSlots()
+	require.False(t, c.Active(), "inactive once the fade completes")
+	require.Equal(t, int32(1), changes.Load())
+}
+
+func TestRecallLayout_RectModeBuiltinPresets(t *testing.T) {
+	c := NewCompositor(1920, 1080)
+	clock, advance := fakeClock()
+	c.now = clock
+	from := ResolveBuiltinPreset("pip-top-left", 1920, 1080)
+	to := ResolveBuiltinPreset("pip-bottom-right", 1920, 1080)
+	c.SetLayout(&Layout{Name: from.Name, Slots: from.Slots})
+
+	c.RecallLayout(&Layout{Name: to.Name, Slots: to.Slots}, 1000, nil)
+	advance(500 * time.Millisecond)
+	snaps := c.SnapshotSlots()
+	require.Len(t, snaps, 1)
+
+	fr, tr := from.Slots[0].Transform.OutputRect, to.Slots[0].Transform.OutputRect
+	require.InDelta(t, (fr.X+tr.X)/2, float64(snaps[0].RectX), 2)
+	require.InDelta(t, (fr.Y+tr.Y)/2, float64(snaps[0].RectY), 2)
+}
+
+func TestRecallLayout_RetargetFromInFlight(t *testing.T) {
+	c := NewCompositor(64, 64)
+	clock, advance := fakeClock()
+	c.now = clock
+	c.SetLayout(pipLayout("cam1", 0, 0))
+
+	c.RecallLayout(pipLayout("cam1", 32, 0), 1000, nil)
+	advance(500 * time.Millisecond)
+
+	c.RecallLayout(pipLayout("cam1", 16, 32), 1000, nil)
+	snaps := c.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Equal(t, 16, snaps[0].RectX, "retarget starts where the slot is")
+	require.Equal(t, 0, snaps[0].RectY)
+
+	advance(500 * time.Millisecond)
+	snaps = c.SnapshotSlots()
+	require.Equal(t, 16, snaps[0].RectX)
+	require.Equal(t, 16, snaps[0].RectY)
+}
+
+func TestSetLayout_CancelsMorph(t *testing.T) {
+	c := NewCompositor(64, 64)
+	clock, _ := fakeClock()
+	c.now = clock
+	c.SetLayout(pipLayout("cam1", 0, 0))
+	c.RecallLayout(pipLayout("cam1", 32, 0), 1000, nil)
+
+	c.SetLayout(pipLayout("cam1", 0, 32))
+	snaps := c.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Equal(t, 0, snaps[0].RectX)
+	require.Equal(t, 32, snaps[0].RectY)
+}

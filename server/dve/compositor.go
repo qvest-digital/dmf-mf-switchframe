@@ -175,6 +175,12 @@ type Compositor struct {
 	// Active animations
 	animations []*slotAnimation
 
+	// Layout recall in flight; nil when none. Read lock-free by Active and
+	// NeedsSource, written under mu.
+	morph atomic.Pointer[layoutMorph]
+
+	now func() time.Time // test hook; nil means time.Now
+
 	// Slot-level transition configs (indexed by slot)
 	slotTransitions []SlotTransition
 
@@ -204,30 +210,36 @@ func NewCompositor(frameW, frameH int) *Compositor {
 // haven't been prepared yet.
 func (c *Compositor) SetLayout(l *Layout) {
 	c.mu.Lock()
-	wasBefore := c.hasEnabledSlots(c.layout.Load())
+	wasBefore := c.Active()
 	if l != nil {
 		c.allocateBuffers(l)
-		// Prune fills for sources not in the new layout.
-		needed := make(map[string]bool, len(l.Slots))
-		for _, slot := range l.Slots {
-			if slot.SourceKey != "" {
-				needed[slot.SourceKey] = true
-			}
-		}
-		for key := range c.fills {
-			if !needed[key] {
-				delete(c.fills, key)
-			}
-		}
+		c.pruneFills(l.Slots)
 	} else {
 		// Layout cleared -- drop all fills.
 		c.fills = make(map[string]*fillEntry)
 	}
+	c.morph.Store(nil)
 	c.layout.Store(l)
-	wasAfter := c.hasEnabledSlots(l)
+	wasAfter := c.Active()
 	c.mu.Unlock()
 	if wasBefore != wasAfter && c.OnActiveChange != nil {
 		c.OnActiveChange()
+	}
+}
+
+// pruneFills drops fills for sources no slot in slots needs.
+// Must be called with c.mu held.
+func (c *Compositor) pruneFills(slots []Slot) {
+	needed := make(map[string]bool, len(slots))
+	for _, slot := range slots {
+		if slot.SourceKey != "" {
+			needed[slot.SourceKey] = true
+		}
+	}
+	for key := range c.fills {
+		if !needed[key] {
+			delete(c.fills, key)
+		}
 	}
 }
 
@@ -275,9 +287,10 @@ func makeGrayFrame(w, h int) []byte {
 // FrameSize returns the compositor's configured frame dimensions.
 func (c *Compositor) FrameSize() (int, int) { return c.frameW, c.frameH }
 
-// Active returns true if a layout is configured with at least one enabled slot.
+// Active returns true if a layout is configured with at least one enabled
+// slot, or a layout recall is still morphing, a fade to no slots included.
 func (c *Compositor) Active() bool {
-	return c.hasEnabledSlots(c.layout.Load())
+	return c.morph.Load() != nil || c.hasEnabledSlots(c.layout.Load())
 }
 
 // hasEnabledSlots checks if a layout has at least one enabled slot.
@@ -293,8 +306,16 @@ func (c *Compositor) hasEnabledSlots(l *Layout) bool {
 	return false
 }
 
-// NeedsSource returns true if the source is assigned to any slot in the current layout.
+// NeedsSource returns true if the source is assigned to any slot in the
+// current layout or, while a recall morphs, to a slot still on screen.
 func (c *Compositor) NeedsSource(sourceKey string) bool {
+	if m := c.morph.Load(); m != nil {
+		for _, slot := range m.slots {
+			if slot.SourceKey == sourceKey {
+				return true
+			}
+		}
+	}
 	l := c.layout.Load()
 	if l == nil {
 		return false
@@ -404,20 +425,20 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 	c.mu.Lock()
 	deactivated := c.tickAnimations()
 
-	sortedSlots := c.sortedSlots
+	slots, sortedSlots := c.frameSlots(l)
 	if len(sortedSlots) == 0 {
-		sortedSlots = make([]int, len(l.Slots))
-		for i := range l.Slots {
+		sortedSlots = make([]int, len(slots))
+		for i := range slots {
 			sortedSlots[i] = i
 		}
 	}
 
 	c.snapCache = c.snapCache[:0]
 	for _, idx := range sortedSlots {
-		if idx >= len(l.Slots) {
+		if idx >= len(slots) {
 			continue
 		}
-		slot := l.Slots[idx]
+		slot := slots[idx]
 		if !slot.Enabled && !c.isAnimating(idx) {
 			continue
 		}
@@ -500,21 +521,22 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			if entry.scaledCache != nil {
 				snap.cachedScaled = entry.scaledCache[idx]
 			}
-		} else if idx < len(c.grayBufs) {
-			snap.srcYUV = c.grayBufs[idx]
-			// Use the actual gray buffer dimensions from the slot transform rect.
+		} else {
+			// Size the gray buffer to the slot transform rect; a layout morph
+			// changes it per frame and draws slots beyond the layout.
 			grayRect := slot.Transform.ToRect()
 			grayW := grayRect.Dx()
 			grayH := grayRect.Dy()
-			if len(snap.srcYUV) == video.YUV420FrameSize(grayW, grayH) {
-				snap.srcW = grayW
-				snap.srcH = grayH
-			} else {
-				continue
+			for len(c.grayBufs) <= idx {
+				c.grayBufs = append(c.grayBufs, nil)
 			}
+			if len(c.grayBufs[idx]) != video.YUV420FrameSize(grayW, grayH) {
+				c.grayBufs[idx] = makeGrayFrame(grayW, grayH)
+			}
+			snap.srcYUV = c.grayBufs[idx]
+			snap.srcW = grayW
+			snap.srcH = grayH
 			snap.hasGray = true
-		} else {
-			continue
 		}
 
 		// Grab the scale buffer reference (pre-allocated).
@@ -734,11 +756,12 @@ func (c *Compositor) SnapshotSlots() []SlotSnap {
 	deactivated = c.tickAnimations()
 
 	var result []SlotSnap
-	for _, idx := range c.sortedSlots {
-		if idx >= len(l.Slots) {
+	slots, sortedSlots := c.frameSlots(l)
+	for _, idx := range sortedSlots {
+		if idx >= len(slots) {
 			continue
 		}
-		slot := l.Slots[idx]
+		slot := slots[idx]
 		if !slot.Enabled && !c.isAnimating(idx) {
 			continue
 		}
@@ -867,13 +890,21 @@ func (c *Compositor) tickAnimations() (deactivated bool) {
 	// the active state lazily, right before the first completion callback runs.
 	wasActive := false
 	capturedActive := false
+	if m := c.morph.Load(); m != nil && m.progress(c.clock()) >= 1.0 {
+		capturedActive = true
+		wasActive = true
+		c.morph.Store(nil)
+		if l := c.layout.Load(); l != nil {
+			c.pruneFills(l.Slots)
+		}
+	}
 	remaining := c.animations[:0]
 	for _, anim := range c.animations {
 		if anim.Progress() >= 1.0 {
 			if anim.OnComplete != nil {
 				if !capturedActive {
 					capturedActive = true
-					wasActive = c.hasEnabledSlots(c.layout.Load())
+					wasActive = c.Active()
 				}
 				anim.OnComplete()
 			}
@@ -883,7 +914,7 @@ func (c *Compositor) tickAnimations() (deactivated bool) {
 	}
 	c.animations = remaining
 
-	return wasActive && !c.hasEnabledSlots(c.layout.Load())
+	return wasActive && !c.Active()
 }
 
 // UpdateFormat updates the frame dimensions (called on pipeline format change).

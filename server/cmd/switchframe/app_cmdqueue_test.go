@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/cmdqueue"
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -88,4 +89,29 @@ func TestInitCommandQueue_WithWAL(t *testing.T) {
 
 	assert.NotNil(t, app.cmdQueue, "cmdQueue should be non-nil")
 	assert.NotNil(t, app.cmdQueueWAL, "cmdQueueWAL should be non-nil when StateDir is set")
+}
+
+func TestInitCommandQueue_DVEPresetRecallAnimates(t *testing.T) {
+	relay := distribution.NewRelay()
+	sw := switcher.New(relay)
+	defer sw.Close()
+
+	format := sw.PipelineFormat()
+	dc := dve.NewCompositor(format.Width, format.Height)
+	from := dve.ResolveBuiltinPreset("pip-top-left", format.Width, format.Height)
+	dc.SetLayout(&dve.Layout{Name: from.Name, Slots: from.Slots})
+
+	app := &App{sw: sw, dveCompositor: dc}
+	require.NoError(t, app.initCommandQueue())
+
+	payload, _ := json.Marshal(map[string]any{"_path_id": "pip-bottom-right", "durationMs": 60000, "easing": "ease-in-out"})
+	require.NoError(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_preset_recall", Payload: payload}))
+
+	require.Greater(t, dc.GetLayout().Slots[0].Transform.OutputRect.X, float64(format.Width)/2, "state reports the target")
+	snaps := dc.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Less(t, snaps[0].RectX, format.Width/2, "timed recall with durationMs must animate, not cut")
+
+	bad, _ := json.Marshal(map[string]any{"_path_id": "pip-bottom-right", "durationMs": 500, "easing": "bounce"})
+	require.Error(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_preset_recall", Payload: bad}))
 }
