@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -620,7 +621,9 @@ func (a *App) registerDVEActions(d *cmdqueue.Dispatcher) {
 			return nil
 		}
 		var req struct {
-			PathID string `json:"_path_id"`
+			PathID     string `json:"_path_id"`
+			DurationMs int    `json:"durationMs,omitempty"`
+			Easing     string `json:"easing,omitempty"`
 		}
 		if err := json.Unmarshal(payload, &req); err != nil {
 			return err
@@ -636,7 +639,11 @@ func (a *App) registerDVEActions(d *cmdqueue.Dispatcher) {
 		if preset == nil {
 			return fmt.Errorf("preset not found: %s", req.PathID)
 		}
-		a.dveCompositor.SetLayout(dveLayoutFromPreset(preset))
+		ease, err := transition.ParseEasing(cmp.Or(req.Easing, preset.Easing))
+		if err != nil {
+			return err
+		}
+		a.dveCompositor.RecallLayout(dveLayoutFromPreset(preset), req.DurationMs, ease.Ease)
 		return nil
 	})
 }

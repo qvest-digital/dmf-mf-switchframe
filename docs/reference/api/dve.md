@@ -110,14 +110,14 @@ Any field may be omitted. Convenience fields: `scaleMode` and `cropAnchor` map t
 
 ### `PUT /api/dve/presets/{id}/recall`
 
-**Purpose:** recall a preset. The body accepts animated-recall fields for forward compatibility; currently presets apply instantly.
+**Purpose:** recall a preset, cutting to it or, with `durationMs` > 0, morphing every slot from what is on screen to the preset.
 **Handler:** `(*API).handleRecallDVEPresetInner` (`timedHandlerWithPath`).
 
-**Request body** (`control.dvePresetRecallRequest`): `{ "durationMs": 800, "easing": "ease-in-out" }` (both optional, currently unused).
+**Request body** (`control.dvePresetRecallRequest`): `{ "durationMs": 800, "easing": "ease-in-out" }`, both optional. `easing` is `linear`, `ease`, `ease-in`, `ease-out`, `ease-in-out`, `smoothstep` or `cubic-bezier(x1, y1, x2, y2)`, and defaults to the preset's own easing. Slots of the preset without a `sourceKey`, such as every built-in, keep the source the slot shows when the recall morphs.
 
-**Response 200:** resulting `dve.Layout`.
+**Response 200:** resulting `dve.Layout`, the target even while the morph runs.
 
-**Errors:** 404 (preset not found).
+**Errors:** 400 (unknown easing), 404 (preset not found).
 
 ---
 

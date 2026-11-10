@@ -543,3 +543,55 @@ func TestSanitizePresetID(t *testing.T) {
 		})
 	}
 }
+
+// recallBuiltin sets pip-top-left with a source, then recalls pip-bottom-right
+// with the given request body.
+func recallBuiltin(t *testing.T, body string) (*dve.Compositor, *httptest.ResponseRecorder) {
+	t.Helper()
+	_, sw := setupTestAPI(t)
+	format := sw.PipelineFormat()
+	dc := dve.NewCompositor(format.Width, format.Height)
+	api := NewAPI(sw, WithDVECompositor(dc))
+
+	from := dve.ResolveBuiltinPreset("pip-top-left", format.Width, format.Height)
+	from.Slots[0].SourceKey = "cam1"
+	dc.SetLayout(&dve.Layout{Name: from.Name, Slots: from.Slots})
+
+	req := httptest.NewRequest("PUT", "/api/dve/presets/pip-bottom-right/recall", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	return dc, rec
+}
+
+func TestDVEPresetRecall_Animated(t *testing.T) {
+	dc, rec := recallBuiltin(t, `{"durationMs":60000,"easing":"cubic-bezier(0,0,0.580,0.750)"}`)
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	// State and response report the target, with the slot's source kept.
+	var resp dve.Layout
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.Equal(t, "cam1", resp.Slots[0].SourceKey)
+	frameW, _ := dc.FrameSize()
+	require.Greater(t, dc.GetLayout().Slots[0].Transform.OutputRect.X, float64(frameW)/2)
+
+	// The drawn slot is still near its start a minute before the morph ends.
+	snaps := dc.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Less(t, snaps[0].RectX, frameW/2, "recall with durationMs must animate, not cut")
+}
+
+func TestDVEPresetRecall_NoDurationCuts(t *testing.T) {
+	dc, rec := recallBuiltin(t, `{}`)
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	frameW, _ := dc.FrameSize()
+	snaps := dc.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Greater(t, snaps[0].RectX, frameW/2)
+}
+
+func TestDVEPresetRecall_RejectsBadEasing(t *testing.T) {
+	_, rec := recallBuiltin(t, `{"durationMs":500,"easing":"bounce"}`)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
