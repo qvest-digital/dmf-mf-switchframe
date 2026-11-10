@@ -595,3 +595,24 @@ func TestDVEPresetRecall_RejectsBadEasing(t *testing.T) {
 	_, rec := recallBuiltin(t, `{"durationMs":500,"easing":"bounce"}`)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
+
+func TestDVESlotUpdate_Animated(t *testing.T) {
+	_, sw := setupTestAPI(t)
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
+	dc.SetLayout(&dve.Layout{Name: "pip", Slots: []dve.Slot{
+		{SourceKey: "cam1", Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true},
+	}})
+
+	body := `{"transform":{"positionX":1200,"positionY":600,"width":480,"height":270},"durationMs":60000}`
+	req := httptest.NewRequest("PUT", "/api/dve/slots/0", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, "body: %s", rec.Body.String())
+
+	require.Equal(t, 1200.0, dc.GetLayout().Slots[0].Transform.PositionX)
+	snaps := dc.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Less(t, snaps[0].RectX, 100, "slot glides instead of jumping")
+}

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -28,6 +29,10 @@ type dveSlotUpdateRequest struct {
 	// without sending the full transform object.
 	ScaleMode  *string     `json:"scaleMode,omitempty"`
 	CropAnchor *[2]float64 `json:"cropAnchor,omitempty"`
+
+	// Animate the change instead of applying it at once.
+	DurationMs int    `json:"durationMs,omitempty"`
+	Easing     string `json:"easing,omitempty"`
 }
 
 type dvePresetSaveRequest struct {
@@ -204,6 +209,20 @@ func (a *API) handleDVESlotUpdateInner(w http.ResponseWriter, r *http.Request, b
 	}
 	if err := dve.ValidateSlot(candidate); err != nil {
 		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if req.DurationMs > 0 {
+		ease, err := transition.ParseEasing(req.Easing)
+		if err != nil {
+			httperr.Write(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		target := &dve.Layout{Name: dl.Name, Slots: slices.Clone(dl.Slots)}
+		target.Slots[id] = candidate
+		a.dveCompositor.RecallLayout(target, req.DurationMs, ease.Ease)
+		a.broadcast()
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 

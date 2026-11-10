@@ -62,9 +62,9 @@ Preset lookup: built-in presets first (`dve.ResolveBuiltinPreset` with the curre
 { "sourceKey": "cam2", "transform": { "positionX": 0.7, "positionY": 0.3, "width": 0.4, "height": 0.4 }, "zOrder": 1, "enabled": true }
 ```
 
-Any field may be omitted. Convenience fields: `scaleMode` and `cropAnchor` map to `transform.scaleMode` / `transform.cropAnchor`.
+Any field may be omitted. Convenience fields: `scaleMode` and `cropAnchor` map to `transform.scaleMode` / `transform.cropAnchor`. With `durationMs` > 0 the slot animates to the result instead of jumping, timed by an optional `easing` as for preset recall.
 
-**Errors:** 400 (invalid id/JSON/slot range, `dve.ValidateSlot` failure), 404 (layout changed).
+**Errors:** 400 (invalid id/JSON/slot range, `dve.ValidateSlot` failure, unknown easing), 404 (layout changed).
 
 ---
 
