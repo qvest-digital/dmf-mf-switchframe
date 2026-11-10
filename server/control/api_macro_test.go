@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/zsiec/switchframe/server/clip"
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/macro"
 )
@@ -669,4 +670,29 @@ func TestHandleDismissMacro_RunningMacroNotResurrected(t *testing.T) {
 		defer api.macroMu.Unlock()
 		return api.macroState == nil || !api.macroState.Running
 	}, 5*time.Second, 50*time.Millisecond)
+}
+
+func TestMacroLayoutPreset_DurationAnimates(t *testing.T) {
+	newTarget := func() (*apiMacroTarget, *dve.Compositor) {
+		dc := dve.NewCompositor(1920, 1080)
+		from := dve.ResolveBuiltinPreset("pip-top-left", 1920, 1080)
+		dc.SetLayout(&dve.Layout{Name: from.Name, Slots: from.Slots})
+		return &apiMacroTarget{dveCompositor: dc}, dc
+	}
+	run := func(target *apiMacroTarget, params map[string]any) {
+		m := macro.Macro{Name: "layout", Steps: []macro.Step{{Action: macro.ActionLayoutPreset, Params: params}}}
+		require.NoError(t, macro.Run(context.Background(), m, target, nil))
+	}
+
+	target, dc := newTarget()
+	run(target, map[string]any{"preset": "pip-bottom-right", "durationMs": float64(60000), "easing": "ease-out"})
+	snaps := dc.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Less(t, snaps[0].RectX, 100, "durationMs must animate the recall")
+
+	target, dc = newTarget()
+	run(target, map[string]any{"preset": "pip-bottom-right"})
+	snaps = dc.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Greater(t, snaps[0].RectX, 1000, "no durationMs cuts")
 }

@@ -1,6 +1,7 @@
 package control
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -28,6 +29,7 @@ import (
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // registerMacroRoutes registers macro-related API routes on the given mux.
@@ -1479,7 +1481,19 @@ func (t *apiMacroTarget) execLayoutPreset(params map[string]any) error {
 	if p == nil {
 		return fmt.Errorf("layout preset %q not found", preset)
 	}
-	t.dveCompositor.SetLayout(dveLayoutFromPreset(p))
+	durationMs, err := intParam(params, "durationMs", 0)
+	if err != nil {
+		return err
+	}
+	easing, err := stringParam(params, "easing")
+	if err != nil {
+		return err
+	}
+	ease, err := transition.ParseEasing(cmp.Or(easing, p.Easing))
+	if err != nil {
+		return err
+	}
+	t.dveCompositor.RecallLayout(dveLayoutFromPreset(p), durationMs, ease.Ease)
 	return nil
 }
 

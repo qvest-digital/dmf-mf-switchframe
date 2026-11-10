@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import MacroStepEditor from './MacroStepEditor.svelte';
 import type { MacroStep } from '$lib/api/types';
 
@@ -252,5 +252,32 @@ describe('MacroStepEditor', () => {
 		const { container } = renderEditor({ action: 'graphics_add_layer', params: {} });
 		const inputs = container.querySelectorAll('.field-input');
 		expect(inputs.length).toBe(0);
+	});
+
+	it('shows layout picker and duration for layout_preset', () => {
+		const { container } = renderEditor({ action: 'layout_preset', params: { preset: 'quad' } });
+		const presetSelect = container.querySelector('.layout-preset-select') as HTMLSelectElement;
+		expect(presetSelect.value).toBe('quad');
+		const duration = container.querySelector('.layout-duration-input') as HTMLInputElement;
+		expect(duration.value).toBe('0');
+		// A cut has no easing to choose.
+		expect(container.querySelector('.layout-easing-select')).toBeFalsy();
+	});
+
+	it('shows easing for an animated layout_preset and reports changes', async () => {
+		const onupdate = vi.fn();
+		const { container } = renderEditor(
+			{ action: 'layout_preset', params: { preset: 'quad', durationMs: 500, easing: 'ease-out' } },
+			{ onupdate },
+		);
+		const easing = container.querySelector('.layout-easing-select') as HTMLSelectElement;
+		expect(easing.value).toBe('ease-out');
+
+		await fireEvent.change(easing, { target: { value: 'linear' } });
+		expect(onupdate).toHaveBeenCalledWith('easing', 'linear');
+
+		const duration = container.querySelector('.layout-duration-input') as HTMLInputElement;
+		await fireEvent.input(duration, { target: { value: '800' } });
+		expect(onupdate).toHaveBeenCalledWith('durationMs', 800);
 	});
 });
