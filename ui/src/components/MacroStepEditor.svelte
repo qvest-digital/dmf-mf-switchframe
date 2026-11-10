@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { MacroAction, MacroStep } from '$lib/api/types';
-	import { ACTION_META, CATEGORIES, SOURCE_ACTIONS, WIPE_DIRECTIONS, GRAPHICS_LAYER_ACTIONS, FLY_DIRECTIONS } from './macro-actions';
+	import { ACTION_META, CATEGORIES, SOURCE_ACTIONS, WIPE_DIRECTIONS, GRAPHICS_LAYER_ACTIONS, FLY_DIRECTIONS, LAYOUT_PRESETS, EASINGS } from './macro-actions';
 	import { templateList } from '$lib/graphics/templates';
 
 	interface Props {
@@ -480,6 +480,53 @@
 				{/each}
 			</select>
 		</div>
+	{/if}
+
+	<!-- layout_preset -->
+	{#if step.action === 'layout_preset'}
+		<div class="field-row">
+			<span class="field-label">Layout</span>
+			<select
+				class="field-select layout-preset-select"
+				value={step.params.preset as string || ''}
+				onchange={(e) => onupdate('preset', (e.target as HTMLSelectElement).value)}
+			>
+				<option value="" disabled>Select layout...</option>
+				{#each LAYOUT_PRESETS as p}
+					<option value={p.value}>{p.label}</option>
+				{/each}
+			</select>
+		</div>
+		<div class="field-row">
+			<span class="field-label">Duration</span>
+			<div class="field-with-unit">
+				<input
+					class="field-input layout-duration-input"
+					type="number"
+					min="0"
+					max="5000"
+					step="100"
+					value={step.params.durationMs as number || 0}
+					oninput={(e) => onupdate('durationMs', parseInt((e.target as HTMLInputElement).value) || 0)}
+				/>
+				<span class="field-unit">ms</span>
+			</div>
+		</div>
+		{#if (step.params.durationMs as number) > 0}
+			<div class="field-row">
+				<span class="field-label">Easing</span>
+				<select
+					class="field-select layout-easing-select"
+					value={step.params.easing as string || ''}
+					onchange={(e) => onupdate('easing', (e.target as HTMLSelectElement).value)}
+				>
+					<option value="">Preset default</option>
+					{#each EASINGS as easing}
+						<option value={easing}>{easing}</option>
+					{/each}
+				</select>
+			</div>
+		{/if}
 	{/if}
 
 	<!-- replay_play -->

@@ -1,6 +1,10 @@
 package macro
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/zsiec/switchframe/server/transition"
+)
 
 // ValidationError represents a validation failure for a specific macro step.
 type ValidationError struct {
@@ -116,12 +120,7 @@ func validateStep(i int, step Step, result *ValidationResult) {
 	case ActionSCTE35Cue:
 		validateSCTE35Cue(i, step, result)
 	case ActionLayoutPreset:
-		if !hasStringParam(step.Params, "preset") {
-			result.Errors = append(result.Errors, ValidationError{
-				Step:    i,
-				Message: "layout_preset requires 'preset' param",
-			})
-		}
+		validateLayoutPreset(i, step, result)
 	case ActionCaptionMode:
 		mode, _ := step.Params["mode"].(string)
 		if mode != "off" && mode != "passthrough" && mode != "author" {
@@ -240,6 +239,34 @@ func validateTransition(i int, step Step, result *ValidationResult) {
 			result.Errors = append(result.Errors, ValidationError{
 				Step:    i,
 				Message: fmt.Sprintf("durationMs must be between 100 and 5000, got %.0f", d),
+			})
+		}
+	}
+}
+
+// validateLayoutPreset checks the preset name and the optional recall
+// durationMs (0 cuts) and easing.
+func validateLayoutPreset(i int, step Step, result *ValidationResult) {
+	if !hasStringParam(step.Params, "preset") {
+		result.Errors = append(result.Errors, ValidationError{
+			Step:    i,
+			Message: "layout_preset requires 'preset' param",
+		})
+	}
+	if v, ok := step.Params["durationMs"]; ok {
+		if d, isNum := v.(float64); !isNum || d < 0 || d > 5000 {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: fmt.Sprintf("layout_preset durationMs must be a number between 0 and 5000, got %v", v),
+			})
+		}
+	}
+	if v, ok := step.Params["easing"]; ok {
+		s, isStr := v.(string)
+		if _, err := transition.ParseEasing(s); !isStr || err != nil {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: fmt.Sprintf("layout_preset easing must be a preset name or cubic-bezier(x1, y1, x2, y2), got %v", v),
 			})
 		}
 	}

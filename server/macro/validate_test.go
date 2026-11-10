@@ -758,3 +758,30 @@ func TestValidateSteps_CaptionTextNoParams(t *testing.T) {
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors())
 }
+
+func TestValidateSteps_LayoutPresetRecallParams(t *testing.T) {
+	t.Parallel()
+	ok := []map[string]any{
+		{"preset": "quad"},
+		{"preset": "quad", "durationMs": float64(0)},
+		{"preset": "quad", "durationMs": float64(500), "easing": "ease-in-out"},
+		{"preset": "quad", "durationMs": float64(500), "easing": "cubic-bezier(0,0,0.58,1)"},
+	}
+	for _, p := range ok {
+		result := ValidateSteps([]Step{{Action: ActionLayoutPreset, Params: p}})
+		require.False(t, result.HasErrors(), "params %v: %v", p, result.Errors)
+	}
+
+	bad := []map[string]any{
+		{"preset": "quad", "durationMs": float64(-1)},
+		{"preset": "quad", "durationMs": float64(6000)},
+		{"preset": "quad", "durationMs": "500"},
+		{"preset": "quad", "easing": "bounce"},
+		{"preset": "quad", "easing": float64(1)},
+	}
+	for _, p := range bad {
+		result := ValidateSteps([]Step{{Action: ActionLayoutPreset, Params: p}})
+		require.True(t, result.HasErrors(), "params %v should be rejected", p)
+		require.Contains(t, result.Errors[0].Message, "layout_preset")
+	}
+}

@@ -134,6 +134,20 @@ export const FLY_DIRECTIONS = [
 	{ value: 'bottom', label: 'Bottom' },
 ];
 
+/** Built-in DVE layout presets (server/dve/preset.go). */
+export const LAYOUT_PRESETS = [
+	{ value: 'pip-top-right', label: 'PIP Top Right' },
+	{ value: 'pip-top-left', label: 'PIP Top Left' },
+	{ value: 'pip-bottom-right', label: 'PIP Bottom Right' },
+	{ value: 'pip-bottom-left', label: 'PIP Bottom Left' },
+	{ value: 'side-by-side', label: 'Side by Side' },
+	{ value: 'quad', label: 'Quad' },
+	{ value: 'three-box', label: 'Three Box' },
+	{ value: 'over-shoulder', label: 'Over Shoulder' },
+];
+
+export const EASINGS = ['linear', 'ease', 'ease-in', 'ease-out', 'ease-in-out', 'smoothstep'];
+
 export const WIPE_DIRECTIONS = [
 	{ value: 'h-left', label: 'Left' },
 	{ value: 'h-right', label: 'Right' },
