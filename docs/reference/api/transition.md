@@ -100,7 +100,7 @@
 |---|---|
 | 409 | `transition.ErrActive` — a non-FTB transition is running |
 
-**Emits:** state broadcast with updated `FTBActive`. Amber tally applied to all sources during FTB. The fade duration is set with `PUT /api/switch/ftb-duration`.
+**Emits:** state broadcast with updated `FTBActive`; tally is unchanged. The fade duration is set with `PUT /api/switch/ftb-duration`.
 
 **Related:** [subsystems/transition.md](../../subsystems/transition.md)
 

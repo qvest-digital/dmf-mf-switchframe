@@ -59,7 +59,7 @@ The full schema is defined in [`server/internal/types.go`](../../server/internal
 | `transitionEasing` | string | easing type used |
 | `inTransition` | bool | true while a transition is mid-flight |
 | `ftbActive` | bool | true when Fade-to-Black is engaged |
-| `tallyState` | `map[string]string` | per-source tally: `red` (program), `green` (preview), `amber` (FTB) |
+| `tallyState` | `map[string]string` | per-source tally: `program`, `preview`, `key_fill`, `key_alpha` or `idle`, with precedence program > key_fill > preview > key_alpha > idle. `program` also covers a transition's destination and a squeezeback background on air; `key_fill` marks the source an enabled upstream key composites and the fill of a live graphics layer that is on, `key_alpha` that layer's key. FTB does not change tally |
 | `pipelineFormat` | `PipelineFormatInfo?` | current resolution / fps / codec |
 | `encoder` | `EncoderState?` | active encoder + list of available alternatives |
 
