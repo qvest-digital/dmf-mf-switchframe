@@ -1350,3 +1350,75 @@ func TestRecallLayout_ClampsDuration(t *testing.T) {
 	require.Equal(t, 32, snaps[0].RectX, "morph ends at the cap")
 	require.Nil(t, c.morph.Load())
 }
+
+// Direct slot edits draw on the next frame; a morph in flight must not hide
+// them until it ends.
+func TestSlotEdits_EndMorph(t *testing.T) {
+	edits := map[string]func(c *Compositor){
+		"UpdateSlot": func(c *Compositor) {
+			c.UpdateSlot(0, func(s *Slot) { s.Transform.PositionX, s.Transform.PositionY = 0, 32 })
+		},
+		"UpdateSlotTransform": func(c *Compositor) {
+			c.UpdateSlotTransform(0, func(tr *Transform) { tr.PositionX, tr.PositionY = 0, 32 })
+		},
+		"UpdateSlotRect": func(c *Compositor) {
+			require.NoError(t, c.UpdateSlotRect(0, image.Rect(0, 32, 16, 48)))
+		},
+	}
+	for name, edit := range edits {
+		t.Run(name, func(t *testing.T) {
+			c := NewCompositor(64, 64)
+			clock, advance := fakeClock()
+			c.now = clock
+			c.SetLayout(pipLayout("cam1", 0, 0))
+			c.RecallLayout(pipLayout("cam1", 32, 0), 1000, nil)
+			advance(500 * time.Millisecond)
+
+			edit(c)
+			snaps := c.SnapshotSlots()
+			require.Len(t, snaps, 1)
+			require.Equal(t, 0, snaps[0].RectX)
+			require.Equal(t, 32, snaps[0].RectY)
+		})
+	}
+}
+
+func TestSlotOff_EndsMorph(t *testing.T) {
+	c := NewCompositor(64, 64)
+	clock, advance := fakeClock()
+	c.now = clock
+	c.SetLayout(pipLayout("cam1", 0, 0))
+	var changes atomic.Int32
+	c.OnActiveChange = func() { changes.Add(1) }
+
+	c.RecallLayout(pipLayout("cam1", 32, 0), 1000, nil)
+	advance(500 * time.Millisecond)
+	c.SlotOff(0)
+
+	require.Empty(t, c.SnapshotSlots(), "slot cut off mid-morph is not drawn")
+	require.False(t, c.Active())
+	require.Equal(t, int32(1), changes.Load())
+}
+
+// While a fade to a layout without enabled slots runs, the node is already
+// active; enabling a slot must not report an activation.
+func TestSlotOn_DuringMorphKeepsActive(t *testing.T) {
+	c := NewCompositor(64, 64)
+	clock, advance := fakeClock()
+	c.now = clock
+	c.SetLayout(pipLayout("cam1", 0, 0))
+	off := pipLayout("cam1", 0, 0)
+	off.Slots[0].Enabled = false
+	c.RecallLayout(off, 1000, nil)
+	advance(500 * time.Millisecond)
+
+	var changes atomic.Int32
+	c.OnActiveChange = func() { changes.Add(1) }
+	c.SlotOn(0)
+
+	require.True(t, c.Active())
+	require.Zero(t, changes.Load())
+	snaps := c.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Equal(t, float32(1), snaps[0].Alpha, "slot on at once, not mid-fade")
+}

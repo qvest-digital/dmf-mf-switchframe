@@ -123,6 +123,17 @@ func (c *Compositor) RecallLayout(target *Layout, durationMs int, ease func(floa
 	}
 }
 
+// stopMorph ends a recall in flight, so the layout is drawn as stored.
+// Must be called with c.mu held.
+func (c *Compositor) stopMorph() {
+	if c.morph.Swap(nil) == nil {
+		return
+	}
+	if l := c.layout.Load(); l != nil {
+		c.pruneFills(l.Slots)
+	}
+}
+
 // morphTransform resolves RectMode and makes opacity explicit, so tracks
 // between two slots interpolate what is drawn rather than stored fields
 // ProcessFrame would recompute or read as opaque.
