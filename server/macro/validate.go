@@ -122,6 +122,10 @@ func validateStep(i int, step Step, result *ValidationResult) {
 		validateSCTE35Cue(i, step, result)
 	case ActionLayoutPreset:
 		validateLayoutPreset(i, step, result)
+	case ActionSqueezebackSet:
+		validateSqueezebackSet(i, step, result)
+	case ActionSqueezebackOn, ActionSqueezebackOff:
+		validateMoveParams(i, step, result)
 	case ActionCaptionMode:
 		mode, _ := step.Params["mode"].(string)
 		if mode != "off" && mode != "passthrough" && mode != "author" {
@@ -254,11 +258,17 @@ func validateLayoutPreset(i int, step Step, result *ValidationResult) {
 			Message: "layout_preset requires 'preset' param",
 		})
 	}
+	validateMoveParams(i, step, result)
+}
+
+// validateMoveParams checks an optional animation durationMs (0 cuts) and
+// easing.
+func validateMoveParams(i int, step Step, result *ValidationResult) {
 	if v, ok := step.Params["durationMs"]; ok {
 		if d, isNum := v.(float64); !isNum || d < 0 || d > dve.MaxMorphDurationMs {
 			result.Errors = append(result.Errors, ValidationError{
 				Step:    i,
-				Message: fmt.Sprintf("layout_preset durationMs must be a number between 0 and %d, got %v", dve.MaxMorphDurationMs, v),
+				Message: fmt.Sprintf("%s durationMs must be a number between 0 and %d, got %v", step.Action, dve.MaxMorphDurationMs, v),
 			})
 		}
 	}
@@ -267,10 +277,34 @@ func validateLayoutPreset(i int, step Step, result *ValidationResult) {
 		if _, err := transition.ParseEasing(s); !isStr || err != nil {
 			result.Errors = append(result.Errors, ValidationError{
 				Step:    i,
-				Message: fmt.Sprintf("layout_preset easing must be a preset name or cubic-bezier(x1, y1, x2, y2), got %v", v),
+				Message: fmt.Sprintf("%s easing must be a preset name or cubic-bezier(x1, y1, x2, y2), got %v", step.Action, v),
 			})
 		}
 	}
+}
+
+// validateSqueezebackSet checks the rect, even pixels with a positive size,
+// and the optional background, durationMs and easing. Whether the rect fits
+// the frame and the background exists is known only when the step runs.
+func validateSqueezebackSet(i int, step Step, result *ValidationResult) {
+	for _, key := range []string{"x", "y", "w", "h"} {
+		v, isNum := step.Params[key].(float64)
+		if !isNum || v < 0 || v != float64(int(v)) || int(v)%2 != 0 || ((key == "w" || key == "h") && v == 0) {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: fmt.Sprintf("squeezeback_set requires '%s' as an even number of pixels, got %v", key, step.Params[key]),
+			})
+		}
+	}
+	if v, ok := step.Params["background"]; ok {
+		if _, isStr := v.(string); !isStr {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: fmt.Sprintf("squeezeback_set background must be a source key, got %v", v),
+			})
+		}
+	}
+	validateMoveParams(i, step, result)
 }
 
 // validateWait checks that ms > 0.

@@ -477,6 +477,7 @@ func TestNodeCategory(t *testing.T) {
 		{"raw-sink-mxl", "output"},
 		{"program_output", "output"},
 		{"dve-compositor", "gpu"},
+		{"squeezeback", "gpu"},
 		{"compositor", "gpu"},
 	}
 
