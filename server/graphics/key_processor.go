@@ -36,7 +36,7 @@ type KeyConfig struct {
 	Softness float32 `json:"softness"`
 
 	// FillSource names a source to provide the fill layer. It is stored
-	// but not composited yet: the keyed source is both fill and key.
+	// but not composited: the keyed source is both fill and key.
 	FillSource string `json:"fillSource,omitempty"`
 }
 
