@@ -26,7 +26,7 @@
 }
 ```
 
-Valid types: `chroma`, `luma`, `neural`. See `graphics.KeyConfig` for all fields.
+Valid types: `chroma`, `luma`, `neural`. See `graphics.KeyConfig` for all fields. `fillSource` is stored but not composited: the keyed source is both fill and key.
 
 **Response 200:** the accepted `graphics.KeyConfig`.
 

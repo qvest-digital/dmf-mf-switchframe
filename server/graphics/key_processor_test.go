@@ -725,10 +725,11 @@ func TestKeyProcessor_KeyFillsSelfFill(t *testing.T) {
 	kp.SetKey("cam1", KeyConfig{Type: KeyTypeChroma, Enabled: true})
 
 	require.ElementsMatch(t, []string{"cam1"}, kp.KeyFills())
-	require.Empty(t, kp.KeyAlphas())
 }
 
-func TestKeyProcessor_KeyFillsExplicitFillSource(t *testing.T) {
+// FillSource is not composited: the keyed source is what goes on air, so
+// tally must not mark the named fill instead.
+func TestKeyProcessor_KeyFillsIgnoresUncompositedFillSource(t *testing.T) {
 	kp := NewKeyProcessor()
 	kp.SetKey("cam1", KeyConfig{
 		Type:       KeyTypeChroma,
@@ -736,8 +737,7 @@ func TestKeyProcessor_KeyFillsExplicitFillSource(t *testing.T) {
 		FillSource: "cam3",
 	})
 
-	require.ElementsMatch(t, []string{"cam3"}, kp.KeyFills())
-	require.ElementsMatch(t, []string{"cam1"}, kp.KeyAlphas())
+	require.ElementsMatch(t, []string{"cam1"}, kp.KeyFills())
 }
 
 func TestKeyProcessor_KeyFillsDisabledKeyIgnored(t *testing.T) {
@@ -749,10 +749,9 @@ func TestKeyProcessor_KeyFillsDisabledKeyIgnored(t *testing.T) {
 	})
 
 	require.Empty(t, kp.KeyFills())
-	require.Empty(t, kp.KeyAlphas())
 }
 
-func TestKeyProcessor_KeyFillsMultipleKeysDeduplicated(t *testing.T) {
+func TestKeyProcessor_KeyFillsMultipleKeys(t *testing.T) {
 	kp := NewKeyProcessor()
 	kp.SetKey("cam1", KeyConfig{Type: KeyTypeChroma, Enabled: true})
 	kp.SetKey("cam2", KeyConfig{
@@ -766,6 +765,5 @@ func TestKeyProcessor_KeyFillsMultipleKeysDeduplicated(t *testing.T) {
 		FillSource: "cam3",
 	})
 
-	require.ElementsMatch(t, []string{"cam1", "cam3"}, kp.KeyFills())
-	require.ElementsMatch(t, []string{"cam2", "cam4"}, kp.KeyAlphas())
+	require.ElementsMatch(t, []string{"cam1", "cam2", "cam4"}, kp.KeyFills())
 }

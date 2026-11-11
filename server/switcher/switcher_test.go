@@ -1656,10 +1656,10 @@ func TestState_KeyFillTally(t *testing.T) {
 
 	state := sw.State()
 	require.Equal(t, string(TallyProgram), state.TallyState["cam1"],
-		"cam1 is on program; program must take precedence over key_alpha")
+		"cam1 is on program; program must take precedence over key_fill")
 	require.Equal(t, string(TallyPreview), state.TallyState["cam2"])
-	require.Equal(t, string(TallyKeyFill), state.TallyState["cam3"],
-		"cam3 is fill for enabled key, must be tallied as key_fill (RED)")
+	require.Equal(t, string(TallyIdle), state.TallyState["cam3"],
+		"cam3 is named FillSource but not composited, so it is not on air")
 }
 
 func TestState_KeyFillSelfFillSourceTallied(t *testing.T) {
@@ -1702,10 +1702,9 @@ func TestState_KeyFillOnPreviewIsRedNotGreen(t *testing.T) {
 	bridge := graphics.NewKeyProcessorBridge(kp)
 	sw.SetKeyBridge(bridge)
 
-	kp.SetKey("cam2", graphics.KeyConfig{
-		Type:       graphics.KeyTypeChroma,
-		Enabled:    true,
-		FillSource: "cam3",
+	kp.SetKey("cam3", graphics.KeyConfig{
+		Type:    graphics.KeyTypeChroma,
+		Enabled: true,
 	})
 
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
@@ -1716,7 +1715,9 @@ func TestState_KeyFillOnPreviewIsRedNotGreen(t *testing.T) {
 		"cam3 is both on preview and a key fill; key_fill must win (RED not GREEN) because it's visibly on-air via the enabled key")
 }
 
-func TestState_KeyAlphaTallied(t *testing.T) {
+// A key's FillSource is stored but not composited: the keyed source is
+// the fill on air, and the named fill source is not tallied.
+func TestState_KeyFillSourceNotTallied(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
@@ -1741,9 +1742,9 @@ func TestState_KeyAlphaTallied(t *testing.T) {
 	require.NoError(t, sw.Cut(context.Background(), "cam2"))
 
 	state := sw.State()
-	require.Equal(t, string(TallyKeyAlpha), state.TallyState["cam1"],
-		"cam1 is the alpha input of an enabled key, must be tallied as key_alpha (amber)")
-	require.Equal(t, string(TallyKeyFill), state.TallyState["cam3"])
+	require.Equal(t, string(TallyKeyFill), state.TallyState["cam1"],
+		"cam1 is keyed and composited as its own fill")
+	require.Equal(t, string(TallyIdle), state.TallyState["cam3"])
 }
 
 // TestSwitcher_SetInitialCommandSeq_SeedsTracker verifies that the startup

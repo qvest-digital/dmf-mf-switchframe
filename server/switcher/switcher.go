@@ -3777,11 +3777,6 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	if s.keyBridge != nil {
 		kp := s.keyBridge.KeyProcessor()
 		if kp != nil {
-			for _, src := range kp.KeyAlphas() {
-				if _, ok := srcMap[src]; ok {
-					tally[src] = string(TallyKeyAlpha)
-				}
-			}
 			for _, src := range kp.KeyFills() {
 				if _, ok := srcMap[src]; ok {
 					tally[src] = string(TallyKeyFill)

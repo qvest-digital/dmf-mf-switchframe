@@ -73,7 +73,7 @@ For GPU pipelines, `Compositor.SnapshotVisibleLayers()` returns a deep-copied `[
 
 Upstream keying is orchestrated by two cooperating types: [`graphics.KeyProcessor`](../../server/graphics/key_processor.go) holds the per-source `KeyConfig`s (chroma, luma, or neural), and [`graphics.KeyProcessorBridge`](../../server/graphics/key_processor_bridge.go) caches the most recent YUV420 fill frame for each source with an enabled key.
 
-Configuration lives in `KeyConfig`: key type, enabled flag, key color in YCbCr (for chroma), similarity/smoothness/spill-suppression (for chroma), low/high clip and softness (for luma), and an optional `FillSource` pointing at a different source to supply the fill layer. If `FillSource` is empty, the keyed source is both fill and alpha input (classic "self-fill" green-screen shot). When it's populated, the source-key acts as an alpha signal only — think of a broadcast switcher's "key + fill" pair where one input carries the matte and another carries the picture. This split is exposed as `KeyProcessor.KeyFills()` (tally RED — appears on air) and `KeyProcessor.KeyAlphas()` (tally AMBER — auxiliary contribution).
+Configuration lives in `KeyConfig`: key type, enabled flag, key color in YCbCr (for chroma), similarity/smoothness/spill-suppression (for chroma), low/high clip and softness (for luma), and an optional `FillSource` naming a different source to supply the fill layer. `FillSource` is stored but not composited: the keyed source is both fill and alpha input (classic "self-fill" green-screen shot) on the CPU and GPU paths alike, so `KeyProcessor.KeyFills()` reports the keyed sources, which tally RED as on air.
 
 Per-frame flow (CPU path, `KeyProcessorBridge.ProcessYUV`):
 
@@ -189,7 +189,7 @@ All crop and position values are even-aligned (`EvenAlign(v int) int { return v 
 - State: `KeyProcessor.keys` (source → `KeyConfig`), `KeyProcessor.sortedKeys` (deterministic order), guarded by `KeyProcessor.mu`
 - Fill cache: `KeyProcessorBridge.fills` / `fills10` (per source), guarded by `KeyProcessorBridge.mu`
 - Hot path: `ChromaKeyWithSpillColorInto()`, `LumaKeyInto()` in [`keyer.go`](../../server/graphics/keyer.go); `blendMaskY`, `downsampleMask2x2` in [`key_processor.go`](../../server/graphics/key_processor.go)
-- Tally: `KeyProcessor.KeyFills()` (RED/on-air), `KeyProcessor.KeyAlphas()` (AMBER/auxiliary)
+- Tally: `KeyProcessor.KeyFills()` (RED/on-air)
 - GPU bridge: `KeyProcessorBridge.SnapshotEnabledKeys()` returning `[]EnabledKeySnap`
 - Pipeline node: [`switcher/node_upstream_key.go`](../../server/switcher/node_upstream_key.go) → `upstreamKeyNode.Process()`
 
@@ -231,7 +231,7 @@ All crop and position values are even-aligned (`EvenAlign(v int) int { return v 
 - **3D CPU path is a stub.** The CPU DVE warp path supports 2D transforms only (rotation, perspective). 3D (`Mode3D == "3d"`) requires GPU dispatch. On CPU-only builds, 3D transitions effectively become 2D passthrough with 3D metadata ignored — safe but visually uninteresting.
 - **Singular matrices fall back to identity.** Both `Matrix3x3.Invert` and `Invert4` compare the determinant to a small epsilon (1e-12 and 1e-10 respectively) and return `false`. `ComputeInverseTransform` catches the false and substitutes `Identity()`, so an extreme animation (89.99° rotation with near-zero scale) degrades gracefully instead of producing NaN pixels.
 - **Compositor layer count is bounded.** `AddLayer` returns `ErrTooManyLayers` once 8 layers exist. The compositor doesn't garbage-collect layers; `RemoveLayer` is the only way to free a slot. This keeps z-ordering stable across operator sessions.
-- **Fill-source tally split is load-bearing.** If you build a new tally sink, make sure it respects the fact that a key's fill (`KeyProcessor.KeyFills()`) is RED (on-air) and its alpha-only source (`KeyProcessor.KeyAlphas()`) is AMBER (auxiliary). Mixing them up would make talent see their self-shot go red mid-take — confusing and wrong.
+- **Tally reports what is composited.** A key's source is RED (`KeyProcessor.KeyFills()`) because it is on air; a `FillSource` it names is not composited and not tallied. A live DSK layer's fill is RED and its key AMBER (`Compositor.LiveOnAir()`), the key shaping the program without being seen.
 
 ## Related docs
 

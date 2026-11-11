@@ -35,8 +35,8 @@ type KeyConfig struct {
 	HighClip float32 `json:"highClip"`
 	Softness float32 `json:"softness"`
 
-	// FillSource specifies which source provides the fill layer.
-	// If empty, the source itself is used as both fill and key.
+	// FillSource names a source to provide the fill layer. It is stored
+	// but not composited yet: the keyed source is both fill and key.
 	FillSource string `json:"fillSource,omitempty"`
 }
 
@@ -143,53 +143,17 @@ func (kp *KeyProcessor) EnabledSources() map[string]KeyConfig {
 	return result
 }
 
-// KeyFills returns the deduplicated set of source IDs acting as fill inputs
-// for any enabled key. A key's fill is cfg.FillSource when non-empty, otherwise
-// the source-key itself (self-fill). Used by the tally publisher to mark these
-// sources RED: an enabled USK puts the fill on air once composited, so the
-// operator must see the fill as live.
+// KeyFills returns the sources of the enabled keys, each the fill its key
+// composites: FillSource is not composited, so the keyed source is the
+// one on air. Used by the tally publisher to mark these sources RED.
 func (kp *KeyProcessor) KeyFills() []string {
 	kp.mu.RLock()
 	defer kp.mu.RUnlock()
-	seen := make(map[string]struct{}, len(kp.keys))
 	out := make([]string, 0, len(kp.keys))
 	for source, cfg := range kp.keys {
-		if !cfg.Enabled {
-			continue
+		if cfg.Enabled {
+			out = append(out, source)
 		}
-		fill := cfg.FillSource
-		if fill == "" {
-			fill = source
-		}
-		if _, dup := seen[fill]; dup {
-			continue
-		}
-		seen[fill] = struct{}{}
-		out = append(out, fill)
-	}
-	return out
-}
-
-// KeyAlphas returns the deduplicated set of source IDs acting as alpha/cut
-// inputs for any enabled key. An alpha is reported only when cfg.FillSource is
-// non-empty — without an explicit fill, the source-key is both fill and alpha
-// and is reported via KeyFills instead. Used by the tally publisher to mark
-// these sources AMBER (auxiliary): alpha signals do not appear on air but are
-// actively contributing to the program composite.
-func (kp *KeyProcessor) KeyAlphas() []string {
-	kp.mu.RLock()
-	defer kp.mu.RUnlock()
-	seen := make(map[string]struct{}, len(kp.keys))
-	out := make([]string, 0, len(kp.keys))
-	for source, cfg := range kp.keys {
-		if !cfg.Enabled || cfg.FillSource == "" {
-			continue
-		}
-		if _, dup := seen[source]; dup {
-			continue
-		}
-		seen[source] = struct{}{}
-		out = append(out, source)
 	}
 	return out
 }

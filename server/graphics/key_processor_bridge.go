@@ -170,7 +170,7 @@ func (b *KeyProcessorBridge) HasEnabledKeys() bool {
 }
 
 // KeyProcessor returns the underlying key processor. Intended for read-only
-// access to key-role metadata (KeyFills/KeyAlphas) — callers must not mutate
+// access to key-role metadata (KeyFills) — callers must not mutate
 // key configurations through this handle outside of the normal SetKey path.
 func (b *KeyProcessorBridge) KeyProcessor() *KeyProcessor {
 	return b.kp
