@@ -370,6 +370,7 @@
 		// GPU pipeline nodes
 		'gpu_key':           { display: 'GPU Key',            short: 'KEY',  color: 'rgba(56, 189, 248, 0.7)' },
 		'gpu_layout':        { display: 'GPU Layout',         short: 'LAY',  color: 'rgba(99, 102, 241, 0.7)' },
+		'gpu_squeezeback':   { display: 'GPU Squeezeback',    short: 'SQZ',  color: 'rgba(129, 140, 248, 0.7)' },
 		'gpu_dsk':           { display: 'GPU DSK',            short: 'DSK',  color: 'rgba(14, 165, 233, 0.7)' },
 		'gpu_stmap':         { display: 'GPU ST Map',         short: 'MAP',  color: 'rgba(168, 85, 247, 0.7)' },
 		'gpu_raw_sink':      { display: 'GPU Raw Sink',       short: 'SNK',  color: 'rgba(234, 179, 8, 0.7)' },

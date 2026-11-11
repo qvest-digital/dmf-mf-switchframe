@@ -6,6 +6,7 @@
 	import SlotList from './SlotList.svelte';
 	import SlotInspector from './SlotInspector.svelte';
 	import TransitionEditor from './TransitionEditor.svelte';
+	import SqueezebackEditor from './SqueezebackEditor.svelte';
 	import {
 		setDVELayout, deleteDVELayout,
 		updateDVESlot, dveSlotOn, dveSlotOff,
@@ -182,6 +183,9 @@
 		{presets}
 		onRecallPreset={handleTransitionRecall}
 	/>
+
+	<!-- Zone 4: Squeezeback (L-frame) over the whole composite -->
+	<SqueezebackEditor state={crState} />
 </div>
 
 <style>

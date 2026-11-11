@@ -255,6 +255,23 @@ export interface LayoutState {
 	dveAnimating?: boolean;
 }
 
+/** Squeeze-back (L-frame): the program shrunk into rect over a background. */
+export interface SqueezebackState {
+	rect: SqueezebackRect;
+	background?: string; // source key; absent is black
+	durationMs?: number;
+	easing?: string;
+	on: boolean; // the state an on or off moves to
+	animating: boolean;
+}
+
+export interface SqueezebackRect {
+	x: number;
+	y: number;
+	w: number;
+	h: number;
+}
+
 export interface LayoutSlotState {
 	id: number;
 	sourceKey: string;
@@ -413,6 +430,7 @@ export type MacroAction =
 	| 'stmap_assign_source' | 'stmap_remove_source' | 'stmap_assign_program' | 'stmap_remove_program'
 	// Layout
 	| 'layout_preset' | 'layout_slot_on' | 'layout_slot_off' | 'layout_slot_source' | 'layout_clear'
+	| 'squeezeback_set' | 'squeezeback_on' | 'squeezeback_off'
 	// Color Grade
 	| 'colorgrade_set' | 'colorgrade_off'
 	| 'corrector_set' | 'corrector_reset' | 'colorgrade_save'
@@ -771,6 +789,7 @@ export interface ControlRoomState {
 	destinations?: DestinationInfo[];
 	graphics?: GraphicsState;
 	layout?: LayoutState;
+	squeezeback?: SqueezebackState;
 	replay?: ReplayState;
 	operators?: OperatorInfo[];
 	locks?: Record<string, LockInfo>;
