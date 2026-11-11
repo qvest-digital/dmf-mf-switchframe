@@ -47,6 +47,8 @@ const (
 	ActionGraphicsTextAnimateStop Action = "graphics_text_animate_stop"
 	ActionGraphicsTickerStart     Action = "graphics_ticker_start"
 	ActionGraphicsTickerStop      Action = "graphics_ticker_stop"
+	ActionGraphicsLiveSet         Action = "graphics_live_set"
+	ActionGraphicsLiveClear       Action = "graphics_live_clear"
 
 	// Recording actions.
 	ActionRecordingStart Action = "recording_start"
@@ -157,6 +159,8 @@ var allActions = map[Action]bool{
 	ActionGraphicsTextAnimateStop: true,
 	ActionGraphicsTickerStart:     true,
 	ActionGraphicsTickerStop:      true,
+	ActionGraphicsLiveSet:         true,
+	ActionGraphicsLiveClear:       true,
 	ActionRecordingStart:          true,
 	ActionRecordingStop:           true,
 	ActionPresetRecall:            true,
@@ -321,6 +325,10 @@ var stepSummaryMap = map[Action]stepSummaryFunc{
 		return fmt.Sprintf("Graphics Animate %s (layer %s)", mode, fmtLayerID(s.Params))
 	},
 	ActionGraphicsAnimateStop: layerSummary("Graphics Animate Stop"),
+	ActionGraphicsLiveSet: func(s Step) string {
+		return fmt.Sprintf("Graphics Live %s / %s (layer %s)", paramStr(s, "fill"), paramStr(s, "key"), fmtLayerID(s.Params))
+	},
+	ActionGraphicsLiveClear: layerSummary("Graphics Live Clear"),
 	ActionGraphicsUploadFrame: func(s Step) string {
 		tmpl, _ := s.Params["template"].(string)
 		return fmt.Sprintf("Graphics Upload %s (layer %s)", tmpl, fmtLayerID(s.Params))

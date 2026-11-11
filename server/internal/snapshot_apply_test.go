@@ -1653,3 +1653,41 @@ func TestApplyFullSnapshot_GraphicsLayerSettings(t *testing.T) {
 		t.Fatalf("settings not applied: %v %v", target.names, target.configs)
 	}
 }
+
+type mockLiveApplyTarget struct {
+	*mockApplyTarget
+}
+
+func (m *mockLiveApplyTarget) SetGraphicsLayerLive(id int, fill, key string, premultiplied bool) error {
+	return m.record("SetGraphicsLayerLive", id, fill, key, premultiplied)
+}
+
+// A live layer's sources reach the peer before its on state: without an
+// overlay the layer can go on only once it is live.
+func TestApplyFullSnapshot_GraphicsLayerLiveBeforeActive(t *testing.T) {
+	target := &mockLiveApplyTarget{mockApplyTarget: newMockApplyTarget()}
+	snap := FullStateSnapshot{
+		Version: "1",
+		Graphics: []GraphicsLayerSnapshot{
+			{ID: 2, Active: true, LiveFill: "gfx-fill", LiveKey: "gfx-key", Premultiplied: true},
+		},
+	}
+	if w := ApplyFullSnapshot(context.Background(), snap, target); len(w) > 0 {
+		t.Fatalf("warnings: %v", w)
+	}
+	live, active := -1, -1
+	for i, c := range target.calls {
+		switch c.Method {
+		case "SetGraphicsLayerLive":
+			live = i
+			if c.Args[1] != "gfx-fill" || c.Args[2] != "gfx-key" || c.Args[3] != true {
+				t.Fatalf("live args: %v", c.Args)
+			}
+		case "SetGraphicsLayerActive":
+			active = i
+		}
+	}
+	if live < 0 || active < 0 || live > active {
+		t.Fatalf("live sources at call %d, active at %d: want live first", live, active)
+	}
+}

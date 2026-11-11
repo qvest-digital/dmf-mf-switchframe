@@ -415,6 +415,10 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 			return err
 		}
 		return t.execGraphicsUploadFrame(id, params)
+	case macro.ActionGraphicsLiveSet:
+		return t.execGraphicsLiveSet(params)
+	case macro.ActionGraphicsLiveClear:
+		return t.execGraphicsLayerOp(params, func(c *graphics.Compositor, id int) error { return c.ClearLive(id) })
 
 	// Output
 	case macro.ActionRecordingStart:
@@ -842,6 +846,33 @@ func (t *apiMacroTarget) execGraphicsFly(params map[string]any, op func(*graphic
 		return err
 	}
 	return t.execGraphics(func(c *graphics.Compositor) error { return op(c, id, dir, dur) })
+}
+
+func (t *apiMacroTarget) execGraphicsLiveSet(params map[string]any) error {
+	id, err := intParam(params, "layerId", 0)
+	if err != nil {
+		return err
+	}
+	fill, err := stringParam(params, "fill")
+	if err != nil {
+		return err
+	}
+	key, err := stringParam(params, "key")
+	if err != nil {
+		return err
+	}
+	premultiplied, err := boolParam(params, "premultiplied", false)
+	if err != nil {
+		return err
+	}
+	for _, src := range []string{fill, key} {
+		if src != "" && !t.switcher.HasSource(src) {
+			return fmt.Errorf("unknown source: %s", src)
+		}
+	}
+	return t.execGraphics(func(c *graphics.Compositor) error {
+		return c.SetLive(id, fill, key, graphics.LiveOptions{Premultiplied: premultiplied})
+	})
 }
 
 func (t *apiMacroTarget) execGraphicsSetRect(params map[string]any) error {

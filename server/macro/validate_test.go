@@ -828,3 +828,29 @@ func TestValidateSteps_SqueezebackParams(t *testing.T) {
 		require.Contains(t, result.Errors[0].Message, string(s.Action))
 	}
 }
+
+func TestValidateSteps_GraphicsLiveParams(t *testing.T) {
+	t.Parallel()
+	ok := []Step{
+		{Action: ActionGraphicsLiveSet, Params: map[string]any{"layerId": float64(1), "fill": "gfx-fill", "key": "gfx-key"}},
+		{Action: ActionGraphicsLiveSet, Params: map[string]any{"layerId": float64(1), "fill": "gfx-fill", "key": "gfx-key", "premultiplied": true}},
+		{Action: ActionGraphicsLiveClear, Params: map[string]any{"layerId": float64(1)}},
+	}
+	for _, s := range ok {
+		result := ValidateSteps([]Step{s})
+		require.False(t, result.HasErrors(), "%s %v: %v", s.Action, s.Params, result.Errors)
+		require.Empty(t, result.Warnings)
+	}
+	bad := []map[string]any{
+		{"layerId": float64(1), "fill": "gfx-fill"},
+		{"layerId": float64(1), "fill": "same", "key": "same"},
+		{"layerId": float64(1), "fill": "gfx-fill", "key": "gfx-key", "premultiplied": "yes"},
+	}
+	for _, p := range bad {
+		result := ValidateSteps([]Step{{Action: ActionGraphicsLiveSet, Params: p}})
+		require.True(t, result.HasErrors(), "%v", p)
+	}
+	result := ValidateSteps([]Step{{Action: ActionGraphicsLiveClear, Params: map[string]any{}}})
+	require.Len(t, result.Warnings, 1, "layerId defaults to 0 with a warning")
+	require.Equal(t, "Graphics Live gfx-fill / gfx-key (layer 1)", StepSummary(ok[0]))
+}

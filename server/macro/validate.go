@@ -185,7 +185,8 @@ func validateStep(i int, step Step, result *ValidationResult) {
 	case ActionGraphicsOn, ActionGraphicsOff, ActionGraphicsAutoOn, ActionGraphicsAutoOff,
 		ActionGraphicsRemoveLayer, ActionGraphicsSetRect, ActionGraphicsSetZOrder,
 		ActionGraphicsFlyIn, ActionGraphicsFlyOut, ActionGraphicsSlide,
-		ActionGraphicsAnimate, ActionGraphicsAnimateStop, ActionGraphicsUploadFrame:
+		ActionGraphicsAnimate, ActionGraphicsAnimateStop, ActionGraphicsUploadFrame,
+		ActionGraphicsLiveSet, ActionGraphicsLiveClear:
 		// layerId defaults to 0 for backward compat, so it's a warning not an error.
 		if _, ok := step.Params["layerId"].(float64); !ok {
 			result.Warnings = append(result.Warnings, ValidationWarning{
@@ -391,6 +392,23 @@ func validateGraphicsStep(i int, step Step, result *ValidationResult) {
 					Message: fmt.Sprintf("graphics_slide requires '%s' param (number)", key),
 				})
 				break
+			}
+		}
+	case ActionGraphicsLiveSet:
+		fill, _ := step.Params["fill"].(string)
+		key, _ := step.Params["key"].(string)
+		if fill == "" || key == "" || fill == key {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: "graphics_live_set requires different 'fill' and 'key' sources",
+			})
+		}
+		if v, ok := step.Params["premultiplied"]; ok {
+			if _, isBool := v.(bool); !isBool {
+				result.Errors = append(result.Errors, ValidationError{
+					Step:    i,
+					Message: fmt.Sprintf("graphics_live_set premultiplied must be true or false, got %v", v),
+				})
 			}
 		}
 	case ActionGraphicsUploadFrame:

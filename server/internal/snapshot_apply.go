@@ -140,6 +140,12 @@ type SnapshotGraphicsSettingsApplier interface {
 	SetGraphicsLayerSettings(id int, name string, config json.RawMessage) error
 }
 
+// SnapshotGraphicsLiveApplier is optionally implemented to carry a layer's
+// live fill and key sources; empty sources return it to its overlay.
+type SnapshotGraphicsLiveApplier interface {
+	SetGraphicsLayerLive(id int, fill, key string, premultiplied bool) error
+}
+
 // SnapshotGraphicsHTML5Applier is optionally implemented for HTML5 graphics overlay reload.
 type SnapshotGraphicsHTML5Applier interface {
 	LoadGraphicsHTML5(layerID int, url string) error
@@ -246,6 +252,14 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 
 	// 7. Graphics layers
 	for _, layer := range snap.Graphics {
+		// Before the on state: a live layer without an overlay goes on
+		// only once it has its sources.
+		if applier, ok := target.(SnapshotGraphicsLiveApplier); ok {
+			if err := applier.SetGraphicsLayerLive(layer.ID, layer.LiveFill, layer.LiveKey, layer.Premultiplied); err != nil {
+				slog.Warn("snapshot apply: graphics layer live sources failed", "id", layer.ID, "error", err)
+				warnings = append(warnings, fmt.Sprintf("graphics layer %d live sources: %v", layer.ID, err))
+			}
+		}
 		if err := target.SetGraphicsLayerActive(layer.ID, layer.Active); err != nil {
 			slog.Warn("snapshot apply: graphics layer active failed", "id", layer.ID, "error", err)
 			warnings = append(warnings, fmt.Sprintf("graphics layer %d active: %v", layer.ID, err))

@@ -165,6 +165,10 @@ type GraphicsLayerSnapshot struct {
 	HTML5URL  string          `json:"html5Url,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Config    json.RawMessage `json:"config,omitempty"`
+
+	LiveFill      string `json:"liveFill,omitempty"`
+	LiveKey       string `json:"liveKey,omitempty"`
+	Premultiplied bool   `json:"premultiplied,omitempty"`
 }
 
 // LayoutSnapshot captures the full DVE layout configuration.

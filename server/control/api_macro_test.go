@@ -16,6 +16,7 @@ import (
 
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/dve"
+	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/macro"
 )
@@ -725,4 +726,36 @@ func TestMacroSqueezeback(t *testing.T) {
 		"x": float64(0), "y": float64(0), "w": float64(960), "h": float64(540), "background": "nope",
 	}})
 	require.ErrorContains(t, err, "unknown background source")
+}
+
+func TestMacroGraphicsLive(t *testing.T) {
+	_, sw := setupTestAPI(t)
+	comp := graphics.NewCompositor()
+	t.Cleanup(comp.Close)
+	id, err := comp.AddLayer()
+	require.NoError(t, err)
+	target := &apiMacroTarget{switcher: sw, compositor: comp}
+	run := func(steps ...macro.Step) error {
+		return macro.Run(context.Background(), macro.Macro{Name: "live", Steps: steps}, target, nil)
+	}
+
+	require.NoError(t, run(
+		macro.Step{Action: macro.ActionGraphicsLiveSet, Params: map[string]any{
+			"layerId": float64(id), "fill": "camera1", "key": "camera2", "premultiplied": true,
+		}},
+		macro.Step{Action: macro.ActionGraphicsOn, Params: map[string]any{"layerId": float64(id)}},
+	))
+	st := comp.Status().Layers[0]
+	require.Equal(t, "camera1", st.LiveFill)
+	require.Equal(t, "camera2", st.LiveKey)
+	require.True(t, st.Premultiplied)
+	require.True(t, st.Active)
+
+	require.NoError(t, run(macro.Step{Action: macro.ActionGraphicsLiveClear, Params: map[string]any{"layerId": float64(id)}}))
+	require.Empty(t, comp.Status().Layers[0].LiveFill)
+
+	err = run(macro.Step{Action: macro.ActionGraphicsLiveSet, Params: map[string]any{
+		"layerId": float64(id), "fill": "nope", "key": "camera2",
+	}})
+	require.ErrorContains(t, err, "unknown source")
 }

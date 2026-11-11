@@ -46,6 +46,7 @@ var _ internal.SnapshotPlayoutApplier = (*App)(nil)
 var _ internal.SnapshotSCTE35Applier = (*App)(nil)
 var _ internal.SnapshotMacroApplier = (*App)(nil)
 var _ internal.SnapshotEncoderApplier = (*App)(nil)
+var _ internal.SnapshotGraphicsLiveApplier = (*App)(nil)
 
 // --- SnapshotApplyTarget implementation ---
 
@@ -176,6 +177,18 @@ func (a *App) SetGraphicsLayerSettings(id int, name string, config json.RawMessa
 		config = json.RawMessage("null")
 	}
 	return a.compositor.SetLayerSettings(id, &name, config)
+}
+
+// SetGraphicsLayerLive carries a layer's live fill and key sources from
+// the peer engine.
+func (a *App) SetGraphicsLayerLive(id int, fill, key string, premultiplied bool) error {
+	if a.compositor == nil {
+		return nil
+	}
+	if fill == "" && key == "" {
+		return a.compositor.ClearLive(id)
+	}
+	return a.compositor.SetLive(id, fill, key, graphics.LiveOptions{Premultiplied: premultiplied})
 }
 
 func (a *App) SetGraphicsLayerRect(id int, x, y, width, height int) error {

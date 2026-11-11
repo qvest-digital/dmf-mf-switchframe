@@ -195,6 +195,9 @@ type GraphicsLayerState struct {
 	SequenceProcessing bool            `json:"sequenceProcessing,omitempty"`
 	SequenceProgress   float64         `json:"sequenceProgress,omitempty"`
 	SequenceSpeed      float64         `json:"sequenceSpeed,omitempty"`
+	LiveFill           string          `json:"liveFill,omitempty"`
+	LiveKey            string          `json:"liveKey,omitempty"`
+	Premultiplied      bool            `json:"premultiplied,omitempty"`
 }
 
 // ReplayState is the JSON-serializable state for the instant replay system,

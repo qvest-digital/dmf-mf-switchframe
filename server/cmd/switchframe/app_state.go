@@ -204,6 +204,9 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 				SequenceProcessing: l.SequenceProcessing,
 				SequenceProgress:   l.SequenceProgress,
 				SequenceSpeed:      l.SequenceSpeed,
+				LiveFill:           l.LiveFill,
+				LiveKey:            l.LiveKey,
+				Premultiplied:      l.Premultiplied,
 			})
 		}
 		if a.htmlGfxMgr != nil {
@@ -918,6 +921,10 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 			ImageName: l.ImageName,
 			Name:      l.Name,
 			Config:    l.Config,
+
+			LiveFill:      l.LiveFill,
+			LiveKey:       l.LiveKey,
+			Premultiplied: l.Premultiplied,
 		})
 	}
 

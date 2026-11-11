@@ -1056,3 +1056,68 @@ func TestGraphicsMutations_CrossOrigin(t *testing.T) {
 		}
 	}
 }
+
+func setupGraphicsLiveAPI(t *testing.T) (*API, *graphics.Compositor, int) {
+	t.Helper()
+	_, sw := setupTestAPI(t)
+	comp := graphics.NewCompositor()
+	t.Cleanup(comp.Close)
+	api := NewAPI(sw, WithCompositor(comp))
+	return api, comp, addLayerViaAPI(t, api)
+}
+
+func TestGraphicsLiveSetAndClear(t *testing.T) {
+	api, comp, id := setupGraphicsLiveAPI(t)
+	path := fmt.Sprintf("/api/graphics/%d/live", id)
+
+	rec := serve(t, api, "PUT", path, `{"fill":"camera1","key":"camera2","premultiplied":true}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var st graphics.State
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&st))
+	require.Equal(t, "camera1", st.Layers[0].LiveFill)
+	require.Equal(t, "camera2", st.Layers[0].LiveKey)
+	require.True(t, st.Layers[0].Premultiplied)
+
+	// A live layer goes on without an uploaded overlay.
+	rec = serve(t, api, "POST", fmt.Sprintf("/api/graphics/%d/on", id), "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	rec = serve(t, api, "PUT", fmt.Sprintf("/api/graphics/%d/rect", id), `{"x":0,"y":0,"width":100,"height":100}`)
+	require.Equal(t, http.StatusConflict, rec.Code, "a live layer is full frame")
+
+	rec = serve(t, api, "DELETE", path, "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Empty(t, comp.Status().Layers[0].LiveFill)
+	require.False(t, comp.Status().Layers[0].Active, "nothing left to show")
+}
+
+func TestGraphicsLiveSetRejects(t *testing.T) {
+	api, comp, id := setupGraphicsLiveAPI(t)
+	path := fmt.Sprintf("/api/graphics/%d/live", id)
+	for name, tc := range map[string]struct {
+		body string
+		code int
+	}{
+		"unknown fill":  {`{"fill":"nope","key":"camera2"}`, http.StatusBadRequest},
+		"unknown key":   {`{"fill":"camera1","key":"nope"}`, http.StatusBadRequest},
+		"same source":   {`{"fill":"camera1","key":"camera1"}`, http.StatusBadRequest},
+		"missing key":   {`{"fill":"camera1"}`, http.StatusBadRequest},
+		"invalid json":  {`{`, http.StatusBadRequest},
+		"unknown layer": {`{"fill":"camera1","key":"camera2"}`, http.StatusNotFound},
+	} {
+		p := path
+		if name == "unknown layer" {
+			p = "/api/graphics/99/live"
+		}
+		rec := serve(t, api, "PUT", p, tc.body)
+		require.Equal(t, tc.code, rec.Code, "%s: %s", name, rec.Body.String())
+	}
+	require.Empty(t, comp.Status().Layers[0].LiveFill, "nothing stored")
+
+	comp.SetLiveGuard(func(graphics.LiveOptions) error {
+		return fmt.Errorf("%w: test pipeline", graphics.ErrLiveUnsupported)
+	})
+	rec := serve(t, api, "PUT", path, `{"fill":"camera1","key":"camera2"}`)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "test pipeline")
+}

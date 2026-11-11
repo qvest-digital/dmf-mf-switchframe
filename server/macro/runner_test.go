@@ -827,6 +827,7 @@ func TestRunner_AllActionsMapComplete(t *testing.T) {
 		ActionGraphicsSlide, ActionGraphicsAnimate, ActionGraphicsAnimateStop,
 		ActionGraphicsUploadFrame, ActionGraphicsTextAnimate, ActionGraphicsTextAnimateStop,
 		ActionGraphicsTickerStart, ActionGraphicsTickerStop,
+		ActionGraphicsLiveSet, ActionGraphicsLiveClear,
 		ActionRecordingStart, ActionRecordingStop,
 		ActionPresetRecall,
 		ActionKeySet, ActionKeyDelete,

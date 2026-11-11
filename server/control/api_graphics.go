@@ -55,6 +55,8 @@ func (a *API) registerGraphicsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/graphics/{id}/animate/stop", a.handleGraphicsAnimateStop)
 	mux.HandleFunc("PUT /api/graphics/{id}/rect", a.handleGraphicsLayerRect)
 	mux.HandleFunc("PUT /api/graphics/{id}/zorder", a.handleGraphicsLayerZOrder)
+	mux.HandleFunc("PUT /api/graphics/{id}/live", a.handleGraphicsLiveSet)
+	mux.HandleFunc("DELETE /api/graphics/{id}/live", a.handleGraphicsLiveClear)
 	mux.HandleFunc("POST /api/graphics/{id}/fly-in", a.handleGraphicsFlyIn)
 	mux.HandleFunc("POST /api/graphics/{id}/fly-out", a.handleGraphicsFlyOut)
 	mux.HandleFunc("POST /api/graphics/{id}/fly-on", a.handleGraphicsFlyOn)
@@ -488,6 +490,58 @@ func (a *API) handleGraphicsLayerZOrder(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := a.compositor.SetLayerZOrder(id, req.ZOrder); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// graphicsLiveRequest is the JSON body of PUT /api/graphics/{id}/live.
+type graphicsLiveRequest struct {
+	Fill          string `json:"fill"`
+	Key           string `json:"key"`
+	Premultiplied bool   `json:"premultiplied"`
+}
+
+// handleGraphicsLiveSet makes a layer show a live fill source keyed by a
+// live key source.
+func (a *API) handleGraphicsLiveSet(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	var req graphicsLiveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	for _, src := range []string{req.Fill, req.Key} {
+		if src != "" && !a.switcher.HasSource(src) {
+			httperr.Write(w, http.StatusBadRequest, "unknown source: "+src)
+			return
+		}
+	}
+	if err := a.compositor.SetLive(id, req.Fill, req.Key, graphics.LiveOptions{Premultiplied: req.Premultiplied}); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsLiveClear returns a layer from its live sources to its
+// overlay.
+func (a *API) handleGraphicsLiveClear(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	if err := a.compositor.ClearLive(id); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
