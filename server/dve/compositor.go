@@ -424,6 +424,9 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 	// Phase 1: Under lock -- tick animations, snapshot source data, release lock.
 	c.mu.Lock()
 	deactivated := c.tickAnimations()
+	// A morph resizes slots every frame; caching its scaled output would
+	// only allocate and copy entries no later frame matches.
+	morphing := c.morph.Load() != nil
 
 	slots, sortedSlots := c.frameSlots(l)
 	if len(sortedSlots) == 0 {
@@ -522,8 +525,12 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 				snap.cachedScaled = entry.scaledCache[idx]
 			}
 		} else {
-			// Size the gray buffer to the slot transform rect; a layout morph
-			// changes it per frame and draws slots beyond the layout.
+			snap.hasGray = true
+		}
+		// An opaque gray slot is filled black directly; only a blend reads
+		// the gray buffer. Size it to the slot transform rect, which a layout
+		// morph changes per frame, so it is reallocated only while blending.
+		if snap.hasGray && alpha < 1.0 {
 			grayRect := slot.Transform.ToRect()
 			grayW := grayRect.Dx()
 			grayH := grayRect.Dy()
@@ -536,7 +543,6 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			snap.srcYUV = c.grayBufs[idx]
 			snap.srcW = grayW
 			snap.srcH = grayH
-			snap.hasGray = true
 		}
 
 		// Grab the scale buffer reference (pre-allocated).
@@ -643,7 +649,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			scaled = snap.scaleBuf
 
 			// Write scaled result back to cache (under lock since fillEntry is shared).
-			if snap.hasFill && snap.cropBuf == nil {
+			if snap.hasFill && snap.cropBuf == nil && !morphing {
 				c.mu.Lock()
 				if entry, ok := c.fills[snap.fillKey]; ok {
 					if entry.scaledCache == nil {
