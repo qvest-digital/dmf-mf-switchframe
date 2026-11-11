@@ -1463,3 +1463,39 @@ func TestRecallLayout_NothingOnScreenSkipsMorph(t *testing.T) {
 	require.Zero(t, changes.Load(), "no pipeline rebuild")
 	require.Equal(t, 32.0, c.GetLayout().Slots[0].Transform.PositionX)
 }
+
+func TestProcessFrame_MorphSkipsScaledCache(t *testing.T) {
+	c := NewCompositor(64, 64)
+	clock, advance := fakeClock()
+	c.now = clock
+	c.SetLayout(pipLayout("cam1", 0, 0))
+	c.IngestSourceFrame("cam1", makeYUV420(16, 16, 235, 128, 128), 16, 16, 1)
+
+	big := pipLayout("cam1", 0, 0)
+	big.Slots[0].Transform.Width, big.Slots[0].Transform.Height = 32, 32
+	c.RecallLayout(big, 1000, nil)
+	advance(500 * time.Millisecond)
+	c.ProcessFrame(makeYUV420(64, 64, 16, 128, 128), 64, 64)
+	require.Empty(t, c.fills["cam1"].scaledCache, "no cache entry for a per-frame morph size")
+
+	advance(500 * time.Millisecond)
+	c.ProcessFrame(makeYUV420(64, 64, 16, 128, 128), 64, 64)
+	require.NotNil(t, c.fills["cam1"].scaledCache[0], "cached again once the morph ends")
+}
+
+// A no-signal slot resized past its preallocated gray buffer is drawn; an
+// opaque one needs no buffer at all, a translucent one one of the new size.
+func TestProcessFrame_GraySlotResized(t *testing.T) {
+	c := NewCompositor(64, 64)
+	c.SetLayout(pipLayout("", 0, 0))
+	require.NoError(t, c.UpdateSlotRect(0, image.Rect(32, 32, 64, 64)))
+
+	frame := c.ProcessFrame(makeYUV420(64, 64, 100, 128, 128), 64, 64)
+	require.Equal(t, byte(16), frame[40*64+40], "opaque gray slot drawn black at its new rect")
+	require.Equal(t, video.YUV420FrameSize(16, 16), len(c.grayBufs[0]), "opaque gray slot allocates no buffer")
+
+	c.UpdateSlotTransform(0, func(tr *Transform) { tr.Opacity = 0.5 })
+	frame = c.ProcessFrame(makeYUV420(64, 64, 100, 128, 128), 64, 64)
+	require.InDelta(t, 58, int(frame[40*64+40]), 2, "translucent gray slot blended")
+	require.Equal(t, video.YUV420FrameSize(32, 32), len(c.grayBufs[0]))
+}
