@@ -201,3 +201,36 @@ func TestInitCommandQueue_DVESlotUpdateKeepsConcurrentEdits(t *testing.T) {
 		t.Fatalf("edit to slot 1 rolled back to %v", got)
 	}
 }
+
+// A timed squeeze-back replays what the REST call would have done.
+func TestInitCommandQueue_Squeezeback(t *testing.T) {
+	relay := distribution.NewRelay()
+	sw := switcher.New(relay)
+	defer sw.Close()
+	sw.RegisterSource("cam2", distribution.NewRelay())
+
+	sq := dve.NewSqueeze(1920, 1080)
+	app := &App{sw: sw, squeeze: sq}
+	require.NoError(t, app.initCommandQueue())
+
+	dispatch := func(action string, body map[string]any) error {
+		payload, _ := json.Marshal(body)
+		return app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: action, Payload: payload})
+	}
+	require.NoError(t, dispatch("squeezeback_set", map[string]any{
+		"rect": map[string]any{"x": 480, "y": 0, "w": 1440, "h": 810}, "background": "cam2", "durationMs": 60000,
+		"executeAt": 1,
+	}))
+	require.NoError(t, dispatch("squeezeback_on", map[string]any{"executeAt": 1}))
+	st := sq.Snapshot()
+	require.True(t, st.On)
+	require.True(t, st.Animating, "on takes the configured duration")
+	require.Equal(t, "cam2", sq.BackgroundOnAir())
+
+	require.NoError(t, dispatch("squeezeback_off", map[string]any{"durationMs": 0}))
+	require.False(t, sq.Active())
+
+	require.Error(t, dispatch("squeezeback_set", map[string]any{
+		"rect": map[string]any{"x": 0, "y": 0, "w": 960, "h": 540}, "background": "nope",
+	}))
+}

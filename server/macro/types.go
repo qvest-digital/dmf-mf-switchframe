@@ -87,6 +87,11 @@ const (
 	ActionLayoutSlotSource Action = "layout_slot_source"
 	ActionLayoutClear      Action = "layout_clear"
 
+	// Squeeze-back (L-frame) actions.
+	ActionSqueezebackSet Action = "squeezeback_set"
+	ActionSqueezebackOn  Action = "squeezeback_on"
+	ActionSqueezebackOff Action = "squeezeback_off"
+
 	// Caption actions.
 	ActionCaptionMode  Action = "caption_mode"
 	ActionCaptionText  Action = "caption_text"
@@ -179,6 +184,9 @@ var allActions = map[Action]bool{
 	ActionLayoutSlotOff:           true,
 	ActionLayoutSlotSource:        true,
 	ActionLayoutClear:             true,
+	ActionSqueezebackSet:          true,
+	ActionSqueezebackOn:           true,
+	ActionSqueezebackOff:          true,
 	ActionCaptionMode:             true,
 	ActionCaptionText:             true,
 	ActionCaptionClear:            true,
@@ -358,6 +366,9 @@ var stepSummaryMap = map[Action]stepSummaryFunc{
 	ActionLayoutSlotOff:    sourceSummary("Layout Slot Off"),
 	ActionLayoutSlotSource: sourceSummary("Layout Slot Source"),
 	ActionLayoutClear:      staticSummary("Layout Clear"),
+	ActionSqueezebackSet:   staticSummary("Squeezeback Set"),
+	ActionSqueezebackOn:    staticSummary("Squeezeback On"),
+	ActionSqueezebackOff:   staticSummary("Squeezeback Off"),
 	ActionCaptionMode: func(s Step) string {
 		mode, _ := s.Params["mode"].(string)
 		return fmt.Sprintf("Caption Mode %s", mode)

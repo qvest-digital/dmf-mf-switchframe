@@ -835,6 +835,7 @@ func TestRunner_AllActionsMapComplete(t *testing.T) {
 		ActionReplayQuickClip, ActionReplayPlayLast, ActionReplayPlayClip,
 		ActionLayoutPreset, ActionLayoutSlotOn, ActionLayoutSlotOff,
 		ActionLayoutSlotSource, ActionLayoutClear,
+		ActionSqueezebackSet, ActionSqueezebackOn, ActionSqueezebackOff,
 		ActionCaptionMode, ActionCaptionText, ActionCaptionClear,
 		ActionClipLoad, ActionClipPlay, ActionClipPause, ActionClipStop, ActionClipEject, ActionClipSeek,
 		ActionColorGradeSet, ActionColorGradeOff, ActionColorGradeSave,

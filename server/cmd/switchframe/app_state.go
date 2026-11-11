@@ -343,6 +343,19 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		}
 	}
 
+	if a.squeeze != nil {
+		if st := a.squeeze.Snapshot(); st.Configured {
+			state.Squeezeback = &internal.SqueezebackState{
+				Rect:       internal.SqueezebackRect{X: st.Rect.X, Y: st.Rect.Y, W: st.Rect.W, H: st.Rect.H},
+				Background: st.Background,
+				DurationMs: st.DurationMs,
+				Easing:     st.Easing,
+				On:         st.On,
+				Animating:  st.Animating,
+			}
+		}
+	}
+
 	// ST map state (per-source + program assignments).
 	if a.stmapRegistry != nil {
 		stmapState := a.stmapRegistry.State()

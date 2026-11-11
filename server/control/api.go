@@ -276,6 +276,11 @@ func WithDVECompositor(c *dve.Compositor) APIOption {
 	return func(a *API) { a.dveCompositor = c }
 }
 
+// WithSqueeze attaches a squeeze-back stage to the API.
+func WithSqueeze(sq *dve.Squeeze) APIOption {
+	return func(a *API) { a.squeeze = sq }
+}
+
 // WithDVEPresetStore attaches a DVE preset store to the API.
 func WithDVEPresetStore(s *dve.PresetStore) APIOption {
 	return func(a *API) { a.dvePresetStore = s }
@@ -572,6 +577,7 @@ type API struct {
 	scte35Rules        SCTE35RulesAPI
 	dveCompositor      *dve.Compositor
 	dvePresetStore     *dve.PresetStore
+	squeeze            *dve.Squeeze
 	wipeStore          *wipemap.WipeMapStore
 	captionMgr         CaptionManagerAPI
 	perf               PerfAPI
@@ -766,6 +772,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerSCTE35Routes(mux)
 	a.registerCaptionRoutes(mux)
 	a.registerDVERoutes(mux)
+	a.registerSqueezeRoutes(mux)
 	a.registerWipeRoutes(mux)
 	a.registerClipRoutes(mux)
 	a.registerPlayoutRoutes(mux)
