@@ -49,3 +49,12 @@ func TestGPUStateSwapConcurrentWithReaders(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// The GPU pipeline runs every node on every frame, so the squeezeback
+// adapter must pass frames through when the app has no squeezeback.
+func TestSqueezeStateAdapter_NilSqueeze(t *testing.T) {
+	a := &squeezeStateAdapter{}
+	if _, _, ok := a.Squeeze(1920, 1080); ok {
+		t.Fatal("no squeezeback must leave the frame alone")
+	}
+}
