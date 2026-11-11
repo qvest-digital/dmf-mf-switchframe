@@ -206,6 +206,19 @@ func TestSqueeze_BackgroundFedOnlyWhileShown(t *testing.T) {
 	require.Equal(t, byte(16), out[0], "not the frame from the last On")
 }
 
+func TestSqueeze_RemovedBackgroundShowsBlack(t *testing.T) {
+	s, _ := newTestSqueeze(t, "cam2")
+	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
+	s.IngestSourceFrame("cam2", makeYUV420(64, 64, 50, 128, 128), 64, 64)
+	s.RemoveSource("cam1")
+	out := s.ProcessFrame(makeYUV420(64, 64, 235, 128, 128), 64, 64)
+	require.Equal(t, byte(50), out[0], "another source leaving changes nothing")
+
+	s.RemoveSource("cam2")
+	out = s.ProcessFrame(makeYUV420(64, 64, 235, 128, 128), 64, 64)
+	require.Equal(t, byte(16), out[0], "black, not the last frame frozen")
+}
+
 // State reports animating until the move arrives, so an On arrival has
 // to be reported as much as an Off one.
 func TestSqueeze_OnArrivalReported(t *testing.T) {
