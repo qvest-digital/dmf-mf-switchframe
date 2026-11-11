@@ -1430,6 +1430,23 @@ export function graphicsSetZOrder(layerId: number, zOrder: number): Promise<Grap
 	});
 }
 
+/** Makes a layer show a live fill source keyed by a live key source. */
+export function graphicsSetLive(
+	layerId: number,
+	live: { fill: string; key: string; premultiplied: boolean },
+): Promise<GraphicsState> {
+	return request(`/api/graphics/${layerId}/live`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(live),
+	});
+}
+
+/** Returns a layer from its live sources to its overlay. */
+export function graphicsClearLive(layerId: number): Promise<GraphicsState> {
+	return request(`/api/graphics/${layerId}/live`, { method: 'DELETE' });
+}
+
 export function graphicsUploadFrame(
 	layerId: number,
 	rgba: Uint8Array,

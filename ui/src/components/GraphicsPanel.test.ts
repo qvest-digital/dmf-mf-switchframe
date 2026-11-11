@@ -325,20 +325,35 @@ describe('GraphicsPanel', () => {
 		expect(selected).toBeTruthy();
 	});
 
-	it('should have 5 source mode buttons (TPL, IMG, SEQ, TICK, H5)', () => {
+	it('should have 6 source mode buttons (TPL, IMG, SEQ, TICK, H5, LIVE)', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
 		const modeBtns = container.querySelectorAll('.mode-seg');
-		expect(modeBtns.length).toBe(5);
+		expect(modeBtns.length).toBe(6);
 		const labels = Array.from(modeBtns).map(b => b.textContent?.trim());
+		expect(labels.some(l => l?.includes('LIVE'))).toBe(true);
 		expect(labels.some(l => l?.includes('TPL'))).toBe(true);
 		expect(labels.some(l => l?.includes('IMG'))).toBe(true);
 		expect(labels.some(l => l?.includes('SEQ'))).toBe(true);
 		expect(labels.some(l => l?.includes('TICK'))).toBe(true);
 		expect(labels.some(l => l?.includes('H5'))).toBe(true);
+	});
+
+	it('should offer the sources as live fill and key after clicking LIVE mode', async () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const liveBtn = Array.from(container.querySelectorAll('.mode-seg')).find(b => b.textContent?.includes('LIVE'));
+		await fireEvent.click(liveBtn!);
+		const fill = container.querySelector('.live-fill') as HTMLSelectElement;
+		expect(fill).toBeTruthy();
+		const options = Array.from(fill.options).map(o => o.value);
+		expect(options).toEqual(expect.arrayContaining(Object.keys(baseState.sources)));
 	});
 
 	it('should show image upload button after clicking IMG mode', async () => {

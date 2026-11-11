@@ -227,6 +227,34 @@
 		</div>
 	{/if}
 
+	<!-- Graphics: live fill+key -->
+	{#if step.action === 'graphics_live_set'}
+		{#each [['fill', 'Fill'], ['key', 'Key']] as [param, label] (param)}
+			<div class="field-row">
+				<span class="field-label">{label}</span>
+				<select
+					class="field-select live-{param}-select"
+					value={step.params[param] as string || ''}
+					onchange={(e) => onupdate(param, (e.target as HTMLSelectElement).value)}
+				>
+					<option value="">--</option>
+					{#each sourceKeys as key}
+						<option value={key}>{sourceLabel(key)}</option>
+					{/each}
+				</select>
+			</div>
+		{/each}
+		<div class="field-row">
+			<span class="field-label">Premultiplied</span>
+			<input
+				class="field-checkbox live-premultiplied-input"
+				type="checkbox"
+				checked={step.params.premultiplied === true}
+				onchange={(e) => onupdate('premultiplied', (e.target as HTMLInputElement).checked)}
+			/>
+		</div>
+	{/if}
+
 	<!-- Transition fields -->
 	{#if step.action === 'transition'}
 		<div class="field-row">

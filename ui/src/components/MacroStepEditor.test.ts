@@ -308,4 +308,20 @@ describe('MacroStepEditor', () => {
 		await fireEvent.input(duration, { target: { value: '' } });
 		expect(onupdate).toHaveBeenLastCalledWith('durationMs', undefined);
 	});
+
+	it('edits the graphics_live_set fill, key and shape on a layer', async () => {
+		const onupdate = vi.fn();
+		const { container } = renderEditor(
+			{ action: 'graphics_live_set', params: { layerId: 1, fill: 'cam1' } },
+			{ onupdate },
+		);
+		const labels = [...container.querySelectorAll('.field-label')].map((l) => l.textContent);
+		expect(labels).toContain('Layer');
+		const fill = container.querySelector('.live-fill-select') as HTMLSelectElement;
+		expect(fill.value).toBe('cam1');
+		await fireEvent.change(container.querySelector('.live-key-select')!, { target: { value: 'cam2' } });
+		expect(onupdate).toHaveBeenCalledWith('key', 'cam2');
+		await fireEvent.click(container.querySelector('.live-premultiplied-input')!);
+		expect(onupdate).toHaveBeenCalledWith('premultiplied', true);
+	});
 });

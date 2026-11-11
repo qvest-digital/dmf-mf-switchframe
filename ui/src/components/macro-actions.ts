@@ -41,6 +41,8 @@ export const ACTION_META: Record<MacroAction, ActionMeta> = {
 	graphics_ticker_stop: { label: 'Stop Ticker', category: 'Graphics', description: 'Stop scrolling ticker on layer' },
 	graphics_text_animate: { label: 'Text Animate', category: 'Graphics', description: 'Start text animation (typewriter/fade-word)' },
 	graphics_text_animate_stop: { label: 'Stop Text Anim', category: 'Graphics', description: 'Stop text animation on layer' },
+	graphics_live_set: { label: 'Live Fill+Key', category: 'Graphics', description: 'Key a live fill source by a live key source' },
+	graphics_live_clear: { label: 'Clear Live', category: 'Graphics', description: 'Return layer to its overlay' },
 	// Output
 	recording_start: { label: 'Start Recording', category: 'Output', description: 'Start recording' },
 	recording_stop: { label: 'Stop Recording', category: 'Output', description: 'Stop recording' },
@@ -128,6 +130,7 @@ export const GRAPHICS_LAYER_ACTIONS: MacroAction[] = [
 	'graphics_animate', 'graphics_animate_stop', 'graphics_upload_frame',
 	'graphics_ticker_start', 'graphics_ticker_stop',
 	'graphics_text_animate', 'graphics_text_animate_stop',
+	'graphics_live_set', 'graphics_live_clear',
 ];
 
 export const FLY_DIRECTIONS = [

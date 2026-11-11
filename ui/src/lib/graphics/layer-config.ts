@@ -1,6 +1,6 @@
 import type { GraphicsLayerState } from '$lib/api/types';
 
-export type SourceMode = 'template' | 'image' | 'ticker' | 'html5' | 'sequence';
+export type SourceMode = 'template' | 'image' | 'ticker' | 'html5' | 'sequence' | 'live';
 
 export interface AnimConfig {
 	mode: string;

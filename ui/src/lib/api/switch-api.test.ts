@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, checkFragmentToken, getAuthToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency, setDualTimestampProvider, graphicsOn, graphicsOff, recallPreset, dveSlotOn, clipPlayerPlay, clipPlayerStop, listRecordingsDualEngine, listRecordingsFromEngine, importRecordingFromEngine, graphicsSequenceUpload, runMacro, setSourceKey, setFormat, setEncoderBackend, resetCircuitBreakers, engineFetch, authHeaders } from './switch-api';
 import { setSqueezeback, squeezebackOn, squeezebackOff } from './switch-api';
+import { graphicsSetLive, graphicsClearLive } from './switch-api';
 import { setEngineUrls } from './base-url';
 import * as notifications from '$lib/state/notifications.svelte';
 import type { SRTOutputConfig, SCTE35CueRequest, CreateSRTSourceConfig } from './types';
@@ -211,6 +212,34 @@ describe('Transition API', () => {
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({}),
 		});
+	});
+});
+
+describe('Graphics live key API', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	function stubFetch() {
+		const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+		vi.stubGlobal('fetch', mockFetch);
+		return mockFetch;
+	}
+
+	it('graphicsSetLive PUTs the fill, key and shape', async () => {
+		const mockFetch = stubFetch();
+		await graphicsSetLive(3, { fill: 'gfx-fill', key: 'gfx-key', premultiplied: true });
+		expect(mockFetch).toHaveBeenCalledWith('/api/graphics/3/live', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ fill: 'gfx-fill', key: 'gfx-key', premultiplied: true }),
+		});
+	});
+
+	it('graphicsClearLive DELETEs the live setup', async () => {
+		const mockFetch = stubFetch();
+		await graphicsClearLive(3);
+		expect(mockFetch).toHaveBeenCalledWith('/api/graphics/3/live', { method: 'DELETE', headers: {} });
 	});
 });
 

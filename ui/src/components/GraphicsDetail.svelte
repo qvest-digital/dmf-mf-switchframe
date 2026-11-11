@@ -1,5 +1,6 @@
 <script lang="ts">
-	import type { GraphicsLayerState } from '$lib/api/types';
+	import type { GraphicsLayerState, SourceInfo } from '$lib/api/types';
+	import GraphicsLiveKey from './GraphicsLiveKey.svelte';
 	import type { GraphicsPublisher } from '$lib/graphics/publisher';
 	import { templateList, builtinTemplates } from '$lib/graphics/templates';
 	import { graphicsListHTML5Templates, type HTML5TemplateInfo } from '$lib/api/switch-api';
@@ -8,7 +9,7 @@
 		type AnimConfig, type FlyConfig, type TickerConfig, type SourceMode, DEFAULT_TICKER,
 	} from '$lib/graphics/layer-config';
 	import {
-		ICON_LAYERS, ICON_TEXT, ICON_IMAGE, ICON_TICKER, ICON_CODE, ICON_FILM,
+		ICON_LAYERS, ICON_TEXT, ICON_IMAGE, ICON_TICKER, ICON_CODE, ICON_FILM, ICON_EYE,
 		ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_UPLOAD, ICON_TRASH,
 		renderIcon,
 	} from '$lib/icons';
@@ -92,6 +93,7 @@
 		onSequenceUpload?: (file: File, fps: number) => void;
 		onSequenceDelete?: () => void;
 		onSequenceSpeed?: (speed: number) => void;
+		sources?: Record<string, SourceInfo>;
 	}
 
 	let {
@@ -105,6 +107,7 @@
 		onHTML5Load, onHTML5UpdateData, onHTML5Play, onHTML5Stop, onHTML5Next, onHTML5Unload,
 		onHTML5Custom,
 		onSequenceUpload, onSequenceDelete, onSequenceSpeed,
+		sources = {},
 	}: Props = $props();
 
 	let previewCanvas = $state<HTMLCanvasElement | null>(null);
@@ -232,6 +235,7 @@
 		{ id: 'ticker', label: 'TICK', icon: ICON_TICKER },
 		{ id: 'html5', label: 'H5', icon: ICON_CODE },
 		{ id: 'sequence', label: 'SEQ', icon: ICON_FILM },
+		{ id: 'live', label: 'LIVE', icon: ICON_EYE },
 	];
 
 	function html5FormatColor(format?: string): string {
@@ -338,6 +342,8 @@
 					<span class="mode-dot processing"></span>
 				{:else if m.id === 'sequence' && layer.sequenceLoaded}
 					<span class="mode-dot loaded"></span>
+				{:else if m.id === 'live' && layer.liveFill}
+					<span class="mode-dot live"></span>
 				{/if}
 			</button>
 		{/each}
@@ -555,6 +561,9 @@
 						</p>
 					{/if}
 				</div>
+
+			{:else if sourceMode === 'live'}
+				<GraphicsLiveKey {layer} {sources} />
 
 			<!-- ═══ HTML5 MODE ═══ -->
 			{:else if sourceMode === 'html5'}

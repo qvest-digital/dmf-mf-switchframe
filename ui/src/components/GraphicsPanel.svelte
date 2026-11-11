@@ -614,6 +614,7 @@
 			{#key selectedLayer.id}
 				<GraphicsDetail
 					layer={selectedLayer}
+					sources={crState.sources}
 					sourceMode={getLayerMode(selectedLayer.id)}
 					templateId={getLayerTemplate(selectedLayer.id)}
 					fields={getLayerFields(selectedLayer.id)}

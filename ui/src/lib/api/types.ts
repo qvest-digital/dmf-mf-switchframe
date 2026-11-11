@@ -238,6 +238,11 @@ export interface GraphicsLayerState {
 	sequenceProcessing?: boolean;
 	sequenceProgress?: number;     // 0.0-1.0 processing progress
 	sequenceSpeed?: number;        // playback rate: 1.0 = normal, 0.5 = half, 2.0 = double
+	/** Live fill source; the layer keys it by liveKey's luma instead of showing its overlay. */
+	liveFill?: string;
+	liveKey?: string;
+	/** The live fill is shaped (already multiplied by its key). */
+	premultiplied?: boolean;
 }
 
 export interface GraphicsState {
@@ -403,6 +408,7 @@ export type MacroAction =
 	| 'graphics_animate' | 'graphics_animate_stop'
 	| 'graphics_upload_frame'
 	| 'graphics_ticker_start' | 'graphics_ticker_stop'
+	| 'graphics_live_set' | 'graphics_live_clear'
 	| 'graphics_text_animate' | 'graphics_text_animate_stop'
 	// Output
 	| 'recording_start' | 'recording_stop'
