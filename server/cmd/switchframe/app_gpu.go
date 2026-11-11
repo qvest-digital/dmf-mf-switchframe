@@ -1279,15 +1279,17 @@ func (a *compositorStateAdapter) SnapshotVisibleLayers() []gpu.VisibleLayerSnaps
 	return result
 }
 
-// dveLayoutStateAdapter adapts dve.Compositor to gpu.LayoutState.
 // squeezeStateAdapter adapts dve.Squeeze to gpu.SqueezeState; the
 // background comes from the GPU source cache.
 type squeezeStateAdapter struct {
-	squeeze   *dve.Squeeze
+	squeeze   *dve.Squeeze // nil without a squeezeback: the node passes frames through
 	sourceMgr *gpu.GPUSourceManager
 }
 
 func (a *squeezeStateAdapter) Squeeze(width, height int) (gpu.Rect, string, bool) {
+	if a.squeeze == nil {
+		return gpu.Rect{}, "", false
+	}
 	r, ok := a.squeeze.Frame(width, height)
 	if !ok {
 		return gpu.Rect{}, "", false
@@ -1302,6 +1304,7 @@ func (a *squeezeStateAdapter) GPUFill(sourceKey string) *gpu.GPUFrame {
 	return a.sourceMgr.GetFrame(sourceKey)
 }
 
+// dveLayoutStateAdapter adapts dve.Compositor to gpu.LayoutState.
 type dveLayoutStateAdapter struct {
 	dveComp   *dve.Compositor
 	sourceMgr *gpu.GPUSourceManager // nil until source manager is ready
