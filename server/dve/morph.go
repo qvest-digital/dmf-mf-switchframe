@@ -106,6 +106,15 @@ func (c *Compositor) morphTo(target *Layout, durationMs int, ease func(float64) 
 	}
 
 	final := c.cloneLayout(target)
+	if !c.hasEnabledSlots(&Layout{Slots: cur}) && !c.hasEnabledSlots(final) {
+		// Nothing drawn on either side: a morph would only make the node
+		// active and inactive again, rebuilding the pipeline twice.
+		c.allocateBuffers(final)
+		c.pruneFills(final.Slots)
+		c.morph.Store(nil)
+		c.layout.Store(final)
+		return
+	}
 	n := max(len(cur), len(final.Slots))
 	from := &Layout{Slots: make([]Slot, n)}
 	to := &Layout{Slots: make([]Slot, n)}
