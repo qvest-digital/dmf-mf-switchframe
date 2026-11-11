@@ -54,10 +54,48 @@ func (c *Compositor) RecallLayout(target *Layout, durationMs int, ease func(floa
 		c.SetLayout(target)
 		return
 	}
-	durationMs = min(durationMs, MaxMorphDurationMs)
 
 	c.mu.Lock()
 	wasBefore := c.Active()
+	c.morphTo(target, durationMs, ease)
+	wasAfter := c.Active()
+	c.mu.Unlock()
+	if wasBefore != wasAfter && c.OnActiveChange != nil {
+		c.OnActiveChange()
+	}
+}
+
+// AnimateSlot applies fn to slot slotIdx and morphs to the result over
+// durationMs, as RecallLayout. fn runs on the layout current under the
+// lock, so a concurrent edit to another slot is kept. durationMs <= 0 is
+// UpdateSlot.
+func (c *Compositor) AnimateSlot(slotIdx int, fn func(*Slot), durationMs int, ease func(float64) float64) {
+	if durationMs <= 0 {
+		c.UpdateSlot(slotIdx, fn)
+		return
+	}
+
+	c.mu.Lock()
+	l := c.layout.Load()
+	if l == nil || slotIdx < 0 || slotIdx >= len(l.Slots) {
+		c.mu.Unlock()
+		return
+	}
+	wasBefore := c.Active()
+	target := c.cloneLayout(l)
+	fn(&target.Slots[slotIdx])
+	c.morphTo(target, durationMs, ease)
+	wasAfter := c.Active()
+	c.mu.Unlock()
+	if wasBefore != wasAfter && c.OnActiveChange != nil {
+		c.OnActiveChange()
+	}
+}
+
+// morphTo stores target and morphs to it from what is on screen.
+// Must be called with c.mu held.
+func (c *Compositor) morphTo(target *Layout, durationMs int, ease func(float64) float64) {
+	durationMs = min(durationMs, MaxMorphDurationMs)
 	now := c.clock()
 
 	var cur []Slot
@@ -116,11 +154,6 @@ func (c *Compositor) RecallLayout(target *Layout, durationMs int, ease func(floa
 		anim:     RecallPreset(from, to, durationMs),
 	})
 	c.layout.Store(final)
-	wasAfter := c.Active()
-	c.mu.Unlock()
-	if wasBefore != wasAfter && c.OnActiveChange != nil {
-		c.OnActiveChange()
-	}
 }
 
 // stopMorph ends a recall in flight, so the layout is drawn as stored.

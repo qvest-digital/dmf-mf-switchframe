@@ -152,3 +152,52 @@ func TestInitCommandQueue_DVESlotUpdateAnimates(t *testing.T) {
 	require.Error(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_slot_update", Payload: long}))
 	require.Equal(t, 1200.0, dc.GetLayout().Slots[0].Transform.PositionX, "rejected update not applied")
 }
+
+// An animated slot update applies its edit to the layout current under the
+// compositor lock; an edit to another slot landing meanwhile is kept.
+func TestInitCommandQueue_DVESlotUpdateKeepsConcurrentEdits(t *testing.T) {
+	relay := distribution.NewRelay()
+	sw := switcher.New(relay)
+	defer sw.Close()
+
+	dc := dve.NewCompositor(1920, 1080)
+	dc.SetLayout(&dve.Layout{Name: "two", Slots: []dve.Slot{
+		{SourceKey: "cam1", Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true},
+		{SourceKey: "cam2", Transform: dve.DefaultTransform(0, 540, 480, 270), Enabled: true},
+	}})
+	app := &App{sw: sw, dveCompositor: dc}
+	require.NoError(t, app.initCommandQueue())
+
+	payload, _ := json.Marshal(map[string]any{
+		"_path_id":   "0",
+		"transform":  map[string]any{"positionX": 1200, "positionY": 0, "width": 480, "height": 270},
+		"durationMs": 100,
+	})
+	// A writer keeps editing slot 1 while updates to slot 0 dispatch; an
+	// update that stored a stale copy of slot 1 rolls its value back.
+	stop := make(chan struct{})
+	lost := make(chan float64, 1)
+	go func() {
+		defer close(lost)
+		for i := 1.0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			var got float64
+			dc.UpdateSlot(1, func(s *dve.Slot) { got, s.Transform.PositionX = s.Transform.PositionX, i })
+			if got != i-1 && i > 1 {
+				lost <- got
+				return
+			}
+		}
+	}()
+	for range 500 {
+		require.NoError(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_slot_update", Payload: payload}))
+	}
+	close(stop)
+	if got, ok := <-lost; ok {
+		t.Fatalf("edit to slot 1 rolled back to %v", got)
+	}
+}
