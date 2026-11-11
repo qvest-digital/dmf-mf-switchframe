@@ -156,11 +156,11 @@ The background is any registered source (`clip:N`, `playout:N`, an MXL source, .
 { "rect": { "x": 480, "y": 0, "w": 1440, "h": 810 }, "background": "clip:1", "durationMs": 800, "easing": "ease-in-out" }
 ```
 
-`rect` is in pixels of the program frame, every value an even whole number, with a positive size, inside the frame. `background` is a source key; omitted or `""` is black. `durationMs` and `easing` are the defaults of on and off; `easing` takes the values of [preset recall](#put-apidvepresetsidrecall).
+`rect` is in pixels of the program frame, every value an even whole number, with a positive size, inside the frame. `background` is a source key; omitted or `""` is black. `durationMs` and `easing` are the defaults of on and off; `durationMs` is at most 5000 (`dve.MaxMorphDurationMs`) and `easing` takes the values of [preset recall](#put-apidvepresetsidrecall).
 
 **Response 200:** `dve.SqueezeState`.
 
-**Errors:** 400 (invalid JSON, odd or out-of-frame rect, unknown background source, unknown easing).
+**Errors:** 400 (invalid JSON, odd or out-of-frame rect, unknown background source, `durationMs` outside 0..5000, unknown easing).
 
 ---
 
@@ -171,7 +171,7 @@ The background is any registered source (`clip:N`, `playout:N`, an MXL source, .
 
 **Request body** (`dve.SqueezeMove`), optional: `{ "durationMs": 800, "easing": "ease-out" }`. Each field left out takes the configured one; `durationMs` 0 cuts.
 
-**Response 204.** **Errors:** 400 (not configured, invalid JSON, negative duration, unknown easing).
+**Response 204.** **Errors:** 400 (not configured, invalid JSON, `durationMs` outside 0..5000, unknown easing).
 
 ---
 
@@ -182,7 +182,7 @@ The background is any registered source (`clip:N`, `playout:N`, an MXL source, .
 
 **Request body:** as for on.
 
-**Response 204.** **Errors:** 400 (invalid JSON, negative duration, unknown easing).
+**Response 204.** **Errors:** 400 (invalid JSON, `durationMs` outside 0..5000, unknown easing).
 
 ## Related docs
 

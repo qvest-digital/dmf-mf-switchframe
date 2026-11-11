@@ -708,7 +708,7 @@ func TestMacroSqueezeback(t *testing.T) {
 	require.NoError(t, run(
 		macro.Step{Action: macro.ActionSqueezebackSet, Params: map[string]any{
 			"x": float64(480), "y": float64(0), "w": float64(1440), "h": float64(810),
-			"background": "camera2", "durationMs": float64(60000),
+			"background": "camera2", "durationMs": float64(dve.MaxMorphDurationMs),
 		}},
 		macro.Step{Action: macro.ActionSqueezebackOn, Params: map[string]any{}},
 	))

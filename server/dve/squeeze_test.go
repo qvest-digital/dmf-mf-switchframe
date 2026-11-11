@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"image"
+	"math"
 	"testing"
 	"time"
 
@@ -245,4 +246,15 @@ func TestSqueeze_Validation(t *testing.T) {
 	require.Error(t, s.Set(SqueezeConfig{Rect: Rect{W: 32, H: 32}, DurationMs: -1}))
 	require.NoError(t, s.Set(SqueezeConfig{Rect: Rect{W: 64, H: 64}}), "the full frame is a valid rect")
 	require.Error(t, s.On(SqueezeMove{DurationMs: ms(-1)}))
+}
+
+func TestSqueeze_DurationCapped(t *testing.T) {
+	s, _ := newTestSqueeze(t, "")
+	full := Rect{W: 64, H: 64}
+	require.NoError(t, s.Set(SqueezeConfig{Rect: full, DurationMs: MaxMorphDurationMs}))
+	require.Error(t, s.Set(SqueezeConfig{Rect: full, DurationMs: MaxMorphDurationMs + 1}))
+	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(MaxMorphDurationMs)}))
+	require.Error(t, s.On(SqueezeMove{DurationMs: ms(MaxMorphDurationMs + 1)}))
+	// Past the cap, time.Duration overflows and the move never arrives.
+	require.Error(t, s.Off(SqueezeMove{DurationMs: ms(math.MaxInt)}))
 }
