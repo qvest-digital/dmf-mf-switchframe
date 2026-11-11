@@ -33,6 +33,9 @@ type EnabledKeySnapshot struct {
 type CompositorState interface {
 	HasActiveLayers() bool
 	SnapshotVisibleLayers() []VisibleLayerSnapshot
+	// LiveDrawn reports whether a live layer was drawn, err saying why
+	// not, so a layer that draws nothing is not tallied as on air.
+	LiveDrawn(id int, err error)
 }
 
 // VisibleLayerSnapshot is a deep-copied snapshot of one visible layer's state.

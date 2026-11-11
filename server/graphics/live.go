@@ -50,9 +50,9 @@ type liveFeed struct {
 	// frames (SetLiveFrames) and cleared before it releases them.
 	fillPic, keyPic LivePicture
 
-	// mismatchLogged keeps a format mismatch to one log line per SetLive;
-	// it is set under the read lock.
-	mismatchLogged atomic.Bool
+	// failed is set while the layer draws nothing for a reason a tick
+	// does not fix by itself (liveDrawn); it is set under the read lock.
+	failed atomic.Bool
 }
 
 // liveScratch holds the mask buffers of the live blend.
@@ -76,6 +76,15 @@ func (c *Compositor) SetLiveGuard(fn func(LiveOptions) error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.liveGuard = fn
+}
+
+// SetOnLiveTally sets fn to be called when a live layer stops or starts
+// drawing, which changes tally (LiveOnAir). It is called on the frame
+// path, under the compositor's read lock, and must not block.
+func (c *Compositor) SetOnLiveTally(fn func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onLiveTally = fn
 }
 
 // SetLive makes a layer show the fill source keyed by the key source's
@@ -175,12 +184,13 @@ func (c *Compositor) LiveSources() []LiveSource {
 }
 
 // LiveOnAir returns the fill and key sources of the live layers that are
-// on, for tally.
+// on, for tally. A layer that draws nothing (liveDrawn) is left out: its
+// fill is not on air.
 func (c *Compositor) LiveOnAir() (fills, keys []string) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, layer := range c.layers {
-		if layer.live == nil || !layer.active {
+		if layer.live == nil || !layer.active || layer.live.failed.Load() {
 			continue
 		}
 		fills = append(fills, layer.live.fill)
@@ -215,27 +225,80 @@ func (c *Compositor) ClearLiveFrames() {
 	}
 }
 
+// errLiveNoPixels: a GPU-decoded source hands the switcher frames without
+// CPU pixels, and the live key reads both pictures on the CPU.
+const errLiveNoPixels = "fill and key need CPU pixels; a GPU-decoded source has none"
+
+// liveFed reports whether the tick handed the layer a fill and key with
+// pixels, marking it as drawing nothing when they have none. Caller holds
+// c.mu.
+func (c *Compositor) liveFed(layer *graphicsLayer) bool {
+	lf := layer.live
+	if lf.fillPic.Width == 0 || lf.keyPic.Width == 0 {
+		return false // nothing this tick: the layer keeps its last state
+	}
+	if lf.fillPic.Data == nil || lf.keyPic.Data == nil {
+		c.liveDrawn(layer, errLiveNoPixels)
+		return false
+	}
+	return true
+}
+
+// liveDrawn records whether a live layer drew this frame, why being the
+// reason when it did not. A change is logged and reported to the tally
+// callback, so a layer drawing nothing is logged once and not tallied as
+// on air. Caller holds c.mu.
+func (c *Compositor) liveDrawn(layer *graphicsLayer, why string, attrs ...any) {
+	lf := layer.live
+	if lf.failed.Swap(why != "") == (why != "") {
+		return
+	}
+	if why != "" {
+		c.log.Warn("live layer draws nothing: "+why,
+			append([]any{"layer", layer.id, "fill", lf.fill, "key", lf.key}, attrs...)...)
+	} else {
+		c.log.Info("live layer draws again", "layer", layer.id, "fill", lf.fill, "key", lf.key)
+	}
+	if c.onLiveTally != nil {
+		c.onLiveTally()
+	}
+}
+
+// LiveDrawn records whether the GPU pipeline drew live layer id, err
+// saying why it did not (liveDrawn).
+func (c *Compositor) LiveDrawn(id int, err error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	layer, ok := c.layers[id]
+	if !ok || layer.live == nil {
+		return
+	}
+	why := ""
+	if err != nil {
+		why = err.Error()
+	}
+	c.liveDrawn(layer, why)
+}
+
 // livePictures returns the layer's pictures when both are there and match
 // the program frame. Caller holds c.mu.
 func (c *Compositor) livePictures(layer *graphicsLayer, width, height int, tenBit bool) (fill, key []byte, ok bool) {
-	lf := layer.live
-	if lf.fillPic.Data == nil || lf.keyPic.Data == nil {
+	if !c.liveFed(layer) {
 		return nil, nil, false
 	}
+	lf := layer.live
 	size := video.YUV420FrameSize(width, height)
 	if tenBit {
 		size = video.YUV422_10bitFrameSize(width, height)
 	}
 	for _, p := range []LivePicture{lf.fillPic, lf.keyPic} {
 		if p.Width != width || p.Height != height || p.TenBit != tenBit || len(p.Data) < size {
-			if !lf.mismatchLogged.Swap(true) {
-				c.log.Warn("live layer skipped: fill and key must match the program size and format",
-					"layer", layer.id, "fill", lf.fill, "key", lf.key,
-					"width", p.Width, "height", p.Height, "program_width", width, "program_height", height)
-			}
+			c.liveDrawn(layer, "fill and key must match the program size and format",
+				"width", p.Width, "height", p.Height, "program_width", width, "program_height", height)
 			return nil, nil, false
 		}
 	}
+	c.liveDrawn(layer, "")
 	return lf.fillPic.Data, lf.keyPic.Data, true
 }
 

@@ -30,6 +30,7 @@ type mockCompositorState struct {
 
 func (m *mockCompositorState) HasActiveLayers() bool                         { return m.active }
 func (m *mockCompositorState) SnapshotVisibleLayers() []VisibleLayerSnapshot { return m.layers }
+func (m *mockCompositorState) LiveDrawn(int, error)                          {}
 
 type mockLayoutState struct {
 	active bool

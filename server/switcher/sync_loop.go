@@ -813,8 +813,10 @@ func (s *Switcher) feedLiveLayers(fs *FrameSynchronizer, tick clock.Tick) func()
 	var held []*ProcessingFrame
 	for _, l := range layers {
 		fill, key := alignedLivePair(fs, l.Fill, l.Key, tick.ReadPTS)
-		if fill == nil || key == nil || len(fill.Data) == 0 || len(key.Data) == 0 {
-			// Nothing to key without both; the layer skips this tick.
+		if fill == nil || key == nil {
+			// Nothing to key without both; the layer skips this tick. A
+			// frame without CPU pixels is handed over for the compositor
+			// to report.
 			for _, f := range []*ProcessingFrame{fill, key} {
 				if f != nil {
 					f.ReleaseYUV()

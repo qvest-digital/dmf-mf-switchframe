@@ -194,6 +194,64 @@ func TestLiveMismatchSkipped(t *testing.T) {
 	want10 := append([]byte(nil), bg10...)
 	c.ProcessYUV10(bg10, w, h)
 	require.Equal(t, want10, bg10)
+	fills, _ := c.LiveOnAir()
+	require.Empty(t, fills, "a layer that draws nothing is not on air")
+}
+
+// A GPU-decoded source hands over frames without CPU pixels. The layer
+// draws nothing then, so it is not tallied, and the change is reported
+// once each way.
+func TestLiveNoPixelsNotOnAir(t *testing.T) {
+	const w, h = 4, 4
+	c := NewCompositor()
+	reports := 0
+	c.SetOnLiveTally(func() { reports++ })
+	id, _ := c.AddLayer()
+	require.NoError(t, c.SetLive(id, "f", "k", LiveOptions{}))
+	require.NoError(t, c.On(id))
+	src := LiveSource{ID: id, Fill: "f", Key: "k"}
+	onAir := func() bool { fills, _ := c.LiveOnAir(); return len(fills) == 1 }
+	require.True(t, onAir())
+
+	gpuDecoded := LivePicture{Width: w, Height: h}
+	pixels := LivePicture{Data: yuv420(w, h, 235, 128, 128), Width: w, Height: h}
+	for range 2 {
+		c.SetLiveFrames(src, gpuDecoded, pixels)
+		c.ProcessYUV(yuv420(w, h, 16, 128, 128), w, h, nil, nil)
+		c.ClearLiveFrames()
+	}
+	require.False(t, onAir())
+	require.Equal(t, 1, reports)
+
+	c.ClearLiveFrames()
+	c.ProcessYUV(yuv420(w, h, 16, 128, 128), w, h, nil, nil)
+	require.False(t, onAir(), "a tick without frames changes nothing")
+
+	c.SetLiveFrames(src, pixels, pixels)
+	c.ProcessYUV(yuv420(w, h, 16, 128, 128), w, h, nil, nil)
+	require.True(t, onAir())
+	require.Equal(t, 2, reports)
+
+	// The GPU pipeline sees the same through the snapshot it draws from.
+	c.SetLiveFrames(src, gpuDecoded, pixels)
+	require.Empty(t, c.SnapshotVisibleLayers())
+	require.False(t, onAir())
+}
+
+// The GPU pipeline reports what it could not draw, such as a 10-bit
+// program on CUDA after the layer was set on an 8-bit one.
+func TestLiveDrawnByGPU(t *testing.T) {
+	c := NewCompositor()
+	id, _ := c.AddLayer()
+	require.NoError(t, c.SetLive(id, "f", "k", LiveOptions{}))
+	require.NoError(t, c.On(id))
+	c.LiveDrawn(id, errors.New("no P210 luma key"))
+	fills, _ := c.LiveOnAir()
+	require.Empty(t, fills)
+	c.LiveDrawn(id, nil)
+	fills, _ = c.LiveOnAir()
+	require.Equal(t, []string{"f"}, fills)
+	c.LiveDrawn(id+1, nil) // unknown layer: ignored
 }
 
 // Frames read for the sources a layer showed before a SetLive are not

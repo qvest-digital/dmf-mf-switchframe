@@ -1259,6 +1259,10 @@ func (a *compositorStateAdapter) HasActiveLayers() bool {
 	return a.compositor.HasActiveLayers()
 }
 
+func (a *compositorStateAdapter) LiveDrawn(id int, err error) {
+	a.compositor.LiveDrawn(id, err)
+}
+
 func (a *compositorStateAdapter) SnapshotVisibleLayers() []gpu.VisibleLayerSnapshot {
 	snaps := a.compositor.SnapshotVisibleLayers()
 	if len(snaps) == 0 {

@@ -785,6 +785,9 @@ func (a *App) initSubsystems() error {
 		return vi.Width, vi.Height
 	})
 	a.compositor.SetLiveGuard(a.liveLayerGuard)
+	// Tally follows a live layer that stops or starts drawing; called on
+	// the frame path, so the state is built and sent off it.
+	a.compositor.SetOnLiveTally(func() { go a.broadcastState(nil) })
 	pf := a.sw.PipelineFormat()
 	a.compositor.SetPipelineFPS(pf.FPSNum, pf.FPSDen)
 	a.sw.SetCompositor(a.compositor)

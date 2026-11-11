@@ -21,7 +21,6 @@ type gpuCompositorNode struct {
 	overlays   map[int]*GPUOverlay // per-layer cached RGBA on GPU
 	overlayGen map[int]uint64      // per-layer generation for invalidation
 	visibleSet map[int]bool        // reusable set for cache eviction (avoids per-frame alloc)
-	liveWarned map[int]bool        // live layers whose failure was logged
 	lastErr    atomic.Value
 }
 
@@ -34,7 +33,6 @@ func NewGPUCompositorNode(ctx *Context, compositor CompositorState) GPUPipelineN
 		overlays:   make(map[int]*GPUOverlay),
 		overlayGen: make(map[int]uint64),
 		visibleSet: make(map[int]bool, 8),
-		liveWarned: make(map[int]bool),
 	}
 }
 
@@ -81,15 +79,13 @@ func (n *gpuCompositorNode) ProcessGPU(frame *GPUFrame) error {
 	for i := range layers {
 		layer := &layers[i]
 		if layer.LiveFill != nil {
-			if err := n.compositeLive(frame, layer); err != nil {
+			// The compositor logs a failure once and leaves the layer out
+			// of tally, however the pipeline format changed since SetLive.
+			err := n.compositeLive(frame, layer)
+			if err != nil {
 				n.lastErr.Store(err)
-				if !n.liveWarned[layer.ID] {
-					n.liveWarned[layer.ID] = true
-					slog.Warn("gpu_dsk: live layer skipped", "layer", layer.ID, "error", err)
-				}
-			} else {
-				delete(n.liveWarned, layer.ID)
 			}
+			n.compositor.LiveDrawn(layer.ID, err)
 			continue
 		}
 		n.visibleSet[layer.ID] = true

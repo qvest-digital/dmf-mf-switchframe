@@ -223,6 +223,8 @@ type Compositor struct {
 
 	// liveGuard refuses a live layer the pipeline cannot draw.
 	liveGuard func(LiveOptions) error
+	// onLiveTally is called when a live layer stops or starts drawing.
+	onLiveTally func()
 	// liveMu guards liveScratch, used under the read lock.
 	liveMu      sync.Mutex
 	liveScratch liveScratch
@@ -1256,7 +1258,7 @@ func (c *Compositor) SnapshotVisibleLayers() []VisibleLayerSnap {
 			continue
 		}
 		if lf := layer.live; lf != nil {
-			if lf.fillPic.Data == nil || lf.keyPic.Data == nil {
+			if !c.liveFed(layer) {
 				continue
 			}
 			fill, key := lf.fillPic, lf.keyPic

@@ -101,3 +101,20 @@ func TestLiveLayerTally(t *testing.T) {
 	require.Equal(t, string(TallyIdle), tally()["mxl:fill"])
 	require.Equal(t, string(TallyIdle), tally()["mxl:key"])
 }
+
+// A source decoded on the GPU has no CPU pixels to key: the live layer
+// draws nothing, and its fill is not tallied as on air.
+func TestLiveLayerGPUDecodedSourceNotTallied(t *testing.T) {
+	s, comp, id := liveTestSwitcher(t, nil)
+	require.NoError(t, comp.On(id))
+	require.Equal(t, string(TallyKeyFill), s.State().TallyState["mxl:fill"])
+
+	const read = 900000
+	s.IngestRawVideo("mxl:fill", &ProcessingFrame{Width: 320, Height: 240, PTS: read})
+	ingestAt(s, "mxl:key", read, 235)
+	s.processVideoTick(clock.Tick{VideoPTS: read + 6006, ReadPTS: read, FrameDuration: 33366666})
+
+	tally := s.State().TallyState
+	require.Equal(t, string(TallyIdle), tally["mxl:fill"])
+	require.Equal(t, string(TallyIdle), tally["mxl:key"])
+}

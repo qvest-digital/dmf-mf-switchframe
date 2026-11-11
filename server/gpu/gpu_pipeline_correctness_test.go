@@ -31,6 +31,7 @@ type corrCompositorState struct {
 
 func (m *corrCompositorState) HasActiveLayers() bool                         { return m.active }
 func (m *corrCompositorState) SnapshotVisibleLayers() []VisibleLayerSnapshot { return m.layers }
+func (m *corrCompositorState) LiveDrawn(int, error)                          {}
 
 type corrLayoutState struct {
 	active bool
