@@ -36,6 +36,8 @@ func TestCompositorStateAdapterLiveLayer(t *testing.T) {
 
 	comp.SetLiveFrames(src, pic(4, 4), pic(8, 8))
 	require.Empty(t, a.SnapshotVisibleLayers())
+	fills, _ := comp.LiveOnAir()
+	require.Empty(t, fills, "a dropped pair is reported, not silently skipped")
 }
 
 // With the GPU pipeline on, a shaped fill is refused rather than keyed

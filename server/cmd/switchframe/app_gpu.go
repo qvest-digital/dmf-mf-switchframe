@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1250,6 +1251,8 @@ func (a *keyBridgeAdapter) SnapshotEnabledKeys() []gpu.EnabledKeySnapshot {
 	return result
 }
 
+var errLiveFillKeyMismatch = errors.New("live fill and key differ in size or format")
+
 // compositorStateAdapter adapts graphics.Compositor to gpu.CompositorState.
 type compositorStateAdapter struct {
 	compositor *graphics.Compositor
@@ -1281,7 +1284,10 @@ func (a *compositorStateAdapter) SnapshotVisibleLayers() []gpu.VisibleLayerSnaps
 		}
 		if f, k := s.LiveFill, s.LiveKey; f != nil && k != nil {
 			if f.Width != k.Width || f.Height != k.Height || f.TenBit != k.TenBit {
-				continue // fill and key of different formats cannot key
+				// Fill and key of different formats cannot key: logged once,
+				// and out of tally, like any live layer that draws nothing.
+				a.compositor.LiveDrawn(s.ID, errLiveFillKeyMismatch)
+				continue
 			}
 			l.LiveFill, l.LiveKey = f.Data, k.Data
 			l.LiveW, l.LiveH, l.LiveTenBit = f.Width, f.Height, f.TenBit
