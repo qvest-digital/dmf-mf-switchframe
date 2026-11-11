@@ -4,11 +4,11 @@
 > **Read this first:** [architecture.md](../architecture.md)
 > **See also:** [state-broadcast.md](state-broadcast.md) · [fast-control.md](../reference/fast-control.md) · [subsystems/control-plane.md](../subsystems/control-plane.md)
 
-**TL;DR** The Switchframe REST API exposes the full state and command surface of the switcher over HTTP/3 (with HTTP/1.1 fallback). Every UI button, macro action, and automation hook ultimately lands on one of the 291 endpoints documented here (plus one `/api/v1/` wildcard compatibility route). Endpoints are grouped by subsystem — switching, audio, transition, graphics, DVE, clips, playout, replay, SCTE-35, operator, captions, comms, ST map, color grade, AI segmentation, ASR, output, peer, sync, pipeline, and debug — and share a common auth, error, and state-broadcast model. This is the biggest doc in the project; drill into the per-section files below rather than reading end-to-end.
+**TL;DR** The Switchframe REST API exposes the full state and command surface of the switcher over HTTP/3 (with HTTP/1.1 fallback). Every UI button, macro action, and automation hook ultimately lands on one of the 305 endpoints documented here (plus one `/api/v1/` wildcard compatibility route). Endpoints are grouped by subsystem — switching, audio, transition, graphics, DVE, clips, playout, replay, SCTE-35, operator, captions, comms, ST map, color grade, AI segmentation, ASR, output, peer, sync, pipeline, and debug — and share a common auth, error, and state-broadcast model. This is the biggest doc in the project; drill into the per-section files below rather than reading end-to-end.
 
 ## Table of contents
 
-The API has 291 real endpoints split across the files below. Each sub-file follows the same per-endpoint format (Purpose, Auth, Handler, Request, Response, Errors, Emits, Related) and opens with a short narrative explaining the subsystem.
+The API has 305 real endpoints split across the files below. Each sub-file follows the same per-endpoint format (Purpose, Auth, Handler, Request, Response, Errors, Emits, Related) and opens with a short narrative explaining the subsystem.
 
 ### Core
 
