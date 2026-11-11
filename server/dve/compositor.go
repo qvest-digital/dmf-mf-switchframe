@@ -187,7 +187,7 @@ type Compositor struct {
 	// Frame dimensions
 	frameW, frameH int
 
-	// OnActiveChange is called when SetLayout changes the Active() state.
+	// OnActiveChange is called when a layout change alters the Active() state.
 	// Used by the switcher to trigger pipeline rebuilds.
 	OnActiveChange func()
 }
@@ -893,10 +893,7 @@ func (c *Compositor) tickAnimations() (deactivated bool) {
 	if m := c.morph.Load(); m != nil && m.progress(c.clock()) >= 1.0 {
 		capturedActive = true
 		wasActive = true
-		c.morph.Store(nil)
-		if l := c.layout.Load(); l != nil {
-			c.pruneFills(l.Slots)
-		}
+		c.stopMorph()
 	}
 	remaining := c.animations[:0]
 	for _, anim := range c.animations {
@@ -929,17 +926,25 @@ func (c *Compositor) UpdateFormat(frameW, frameH int) {
 }
 
 // UpdateSlot modifies a slot in-place using the given function, then atomically swaps the layout.
+// A layout recall in flight ends, so the edit is drawn at once.
 func (c *Compositor) UpdateSlot(slotIdx int, fn func(*Slot)) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	l := c.layout.Load()
 	if l == nil || slotIdx < 0 || slotIdx >= len(l.Slots) {
+		c.mu.Unlock()
 		return
 	}
+	wasBefore := c.Active()
+	c.stopMorph()
 	updated := c.cloneLayout(l)
 	fn(&updated.Slots[slotIdx])
 	c.computeSortedSlots(updated)
 	c.layout.Store(updated)
+	wasAfter := c.Active()
+	c.mu.Unlock()
+	if wasBefore != wasAfter && c.OnActiveChange != nil {
+		c.OnActiveChange()
+	}
 }
 
 // UpdateSlotTransform applies a mutation function to a slot's Transform in the
@@ -948,18 +953,24 @@ func (c *Compositor) UpdateSlot(slotIdx int, fn func(*Slot)) {
 // triggers broadcasts separately.
 func (c *Compositor) UpdateSlotTransform(slotIdx int, fn func(*Transform)) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	l := c.layout.Load()
 	if l == nil || slotIdx < 0 || slotIdx >= len(l.Slots) {
+		c.mu.Unlock()
 		return
 	}
+	wasBefore := c.Active()
+	c.stopMorph()
 
 	// Deep-copy the layout so concurrent readers see a consistent snapshot.
 	updated := c.cloneLayout(l)
 	fn(&updated.Slots[slotIdx].Transform)
 	c.computeSortedSlots(updated)
 	c.layout.Store(updated)
+	wasAfter := c.Active()
+	c.mu.Unlock()
+	if wasBefore != wasAfter && c.OnActiveChange != nil {
+		c.OnActiveChange()
+	}
 }
 
 // UpdateSlotRect updates only the position and size of a slot via the transform.
@@ -968,9 +979,9 @@ func (c *Compositor) UpdateSlotTransform(slotIdx int, fn func(*Transform)) {
 // without flooding the control channel.
 func (c *Compositor) UpdateSlotRect(slotIdx int, rect image.Rectangle) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	l := c.layout.Load()
 	if l == nil || slotIdx < 0 || slotIdx >= len(l.Slots) {
+		c.mu.Unlock()
 		return fmt.Errorf("slot %d: no layout or out of range", slotIdx)
 	}
 	// Snap to even alignment for YUV420 compatibility.
@@ -979,8 +990,11 @@ func (c *Compositor) UpdateSlotRect(slotIdx int, rect image.Rectangle) error {
 	rect.Max.X = (rect.Max.X + 1) &^ 1
 	rect.Max.Y = (rect.Max.Y + 1) &^ 1
 	if rect.Min.X < 0 || rect.Min.Y < 0 || rect.Max.X > c.frameW || rect.Max.Y > c.frameH {
+		c.mu.Unlock()
 		return fmt.Errorf("rect %v exceeds frame bounds %dx%d", rect, c.frameW, c.frameH)
 	}
+	wasBefore := c.Active()
+	c.stopMorph()
 	updated := c.cloneLayout(l)
 	updated.Slots[slotIdx].Transform.PositionX = float64(rect.Min.X)
 	updated.Slots[slotIdx].Transform.PositionY = float64(rect.Min.Y)
@@ -988,6 +1002,11 @@ func (c *Compositor) UpdateSlotRect(slotIdx int, rect image.Rectangle) error {
 	updated.Slots[slotIdx].Transform.Height = float64(rect.Dy())
 	c.computeSortedSlots(updated)
 	c.layout.Store(updated)
+	wasAfter := c.Active()
+	c.mu.Unlock()
+	if wasBefore != wasAfter && c.OnActiveChange != nil {
+		c.OnActiveChange()
+	}
 	return nil
 }
 
@@ -1001,7 +1020,9 @@ func (c *Compositor) SlotOn(slotIdx int) {
 		return
 	}
 
-	wasBefore := c.hasEnabledSlots(l)
+	// A morph in flight keeps the node active; compare what Active reports.
+	wasBefore := c.Active()
+	c.stopMorph()
 
 	// Clone layout and enable the slot
 	updated := c.cloneLayout(l)
@@ -1009,7 +1030,7 @@ func (c *Compositor) SlotOn(slotIdx int) {
 	slot.Enabled = true
 	c.layout.Store(updated)
 
-	wasAfter := c.hasEnabledSlots(updated)
+	wasAfter := c.Active()
 
 	// Get the slot rect for animation.
 	slotRect := slot.Transform.ToRect()
@@ -1063,7 +1084,8 @@ func (c *Compositor) SlotOff(slotIdx int) {
 		return
 	}
 
-	wasBefore := c.hasEnabledSlots(l)
+	wasBefore := c.Active()
+	c.stopMorph()
 
 	slot := l.Slots[slotIdx]
 	slotRect := slot.Transform.ToRect()
@@ -1076,7 +1098,6 @@ func (c *Compositor) SlotOff(slotIdx int) {
 		transDuration = c.slotTransitions[slotIdx].TransitionDuration()
 	}
 
-	var wasAfter bool
 	switch transType {
 	case "dissolve":
 		c.animations = append(c.animations, &slotAnimation{
@@ -1097,7 +1118,6 @@ func (c *Compositor) SlotOff(slotIdx int) {
 				}
 			},
 		})
-		wasAfter = wasBefore
 	case "fly":
 		dest := flyInOrigin(slotRect, c.frameW, c.frameH)
 		c.animations = append(c.animations, &slotAnimation{
@@ -1118,13 +1138,12 @@ func (c *Compositor) SlotOff(slotIdx int) {
 				}
 			},
 		})
-		wasAfter = wasBefore
 	default: // "cut"
 		updated := c.cloneLayout(l)
 		updated.Slots[slotIdx].Enabled = false
 		c.layout.Store(updated)
-		wasAfter = c.hasEnabledSlots(updated)
 	}
+	wasAfter := c.Active()
 	c.mu.Unlock()
 
 	if wasBefore != wasAfter && c.OnActiveChange != nil {
