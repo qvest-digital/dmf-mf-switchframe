@@ -9,11 +9,13 @@ import (
 
 // graphicsHandlers groups graphics hot-path handlers published together as
 // one atomic pointer. Grouping reduces Switcher field count and co-locates
-// mutations that the per-frame handler reads together (keyBridge + DVE).
+// mutations that the per-frame handler reads together (keyBridge, DVE and
+// squeeze-back).
 // Published via atomic.Pointer[graphicsHandlers] using copy-on-write.
 type graphicsHandlers struct {
 	keyBridge     *graphics.KeyProcessorBridge
 	dveCompositor *dve.Compositor
+	squeeze       *dve.Squeeze
 }
 
 // audioHandlers groups the per-frame audio callbacks. audioTransition is
