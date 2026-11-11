@@ -219,6 +219,20 @@ func TestSqueeze_RemovedBackgroundShowsBlack(t *testing.T) {
 	require.Equal(t, byte(16), out[0], "black, not the last frame frozen")
 }
 
+// A full-frame rect draws no background, so it must not tally.
+func TestSqueeze_FullFrameRectNotOnAir(t *testing.T) {
+	s, advance := newTestSqueeze(t, "cam2")
+	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
+	require.Equal(t, "cam2", s.BackgroundOnAir())
+
+	require.NoError(t, s.Set(SqueezeConfig{Rect: Rect{W: 64, H: 64}, Background: "cam2", DurationMs: 1000}))
+	require.Equal(t, "cam2", s.BackgroundOnAir(), "on air while growing to full frame")
+	advance(time.Second)
+	s.Frame(64, 64)
+	require.True(t, s.Active(), "still on")
+	require.Empty(t, s.BackgroundOnAir(), "full frame: nothing of the background shows")
+}
+
 // State reports animating until the move arrives, so an On arrival has
 // to be reported as much as an Off one.
 func TestSqueeze_OnArrivalReported(t *testing.T) {
