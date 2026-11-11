@@ -53,6 +53,16 @@ type LayoutState interface {
 	GPUFill(sourceKey string) *GPUFrame // returns ref'd frame from GPU cache, or nil
 }
 
+// SqueezeState provides the squeeze-back to the GPU squeeze-back node.
+// Implemented by an adapter wrapping dve.Squeeze.
+type SqueezeState interface {
+	// Squeeze returns where the program goes in a width x height frame
+	// and the background source, "" for black, or false while the program
+	// fills the frame. It advances the animation, once per frame.
+	Squeeze(width, height int) (rect Rect, background string, ok bool)
+	GPUFill(sourceKey string) *GPUFrame // returns ref'd frame from GPU cache, or nil
+}
+
 // SlotSnapshot is a deep-copied snapshot of one layout slot's state.
 type SlotSnapshot struct {
 	Index        int
