@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"slices"
 	"strconv"
 
 	"github.com/zsiec/switchframe/server/clock"
@@ -583,17 +582,11 @@ func (a *App) registerDVEActions(d *cmdqueue.Dispatcher) {
 		if req.DurationMs > dve.MaxMorphDurationMs {
 			return fmt.Errorf("durationMs must be at most %d", dve.MaxMorphDurationMs)
 		}
-		if l := a.dveCompositor.GetLayout(); req.DurationMs > 0 && l != nil && id >= 0 && id < len(l.Slots) {
-			ease, err := transition.ParseEasing(req.Easing)
-			if err != nil {
-				return err
-			}
-			target := &dve.Layout{Name: l.Name, Slots: slices.Clone(l.Slots)}
-			apply(&target.Slots[id])
-			a.dveCompositor.RecallLayout(target, req.DurationMs, ease.Ease)
-			return nil
+		ease, err := transition.ParseEasing(req.Easing)
+		if err != nil {
+			return err
 		}
-		a.dveCompositor.UpdateSlot(id, apply)
+		a.dveCompositor.AnimateSlot(id, apply, req.DurationMs, ease.Ease)
 		return nil
 	})
 

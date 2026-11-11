@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -217,21 +216,13 @@ func (a *API) handleDVESlotUpdateInner(w http.ResponseWriter, r *http.Request, b
 		httperr.Write(w, http.StatusBadRequest, fmt.Sprintf("durationMs must be at most %d", dve.MaxMorphDurationMs))
 		return
 	}
-	if req.DurationMs > 0 {
-		ease, err := transition.ParseEasing(req.Easing)
-		if err != nil {
-			httperr.Write(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		target := &dve.Layout{Name: dl.Name, Slots: slices.Clone(dl.Slots)}
-		target.Slots[id] = candidate
-		a.dveCompositor.RecallLayout(target, req.DurationMs, ease.Ease)
-		a.broadcast()
-		w.WriteHeader(http.StatusNoContent)
+	ease, err := transition.ParseEasing(req.Easing)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	a.dveCompositor.UpdateSlot(id, func(s *dve.Slot) {
+	a.dveCompositor.AnimateSlot(id, func(s *dve.Slot) {
 		if req.SourceKey != nil {
 			s.SourceKey = *req.SourceKey
 		}
@@ -250,7 +241,7 @@ func (a *API) handleDVESlotUpdateInner(w http.ResponseWriter, r *http.Request, b
 		if req.CropAnchor != nil {
 			s.Transform.CropAnchor = *req.CropAnchor
 		}
-	})
+	}, req.DurationMs, ease.Ease)
 	a.broadcast()
 	w.WriteHeader(http.StatusNoContent)
 }

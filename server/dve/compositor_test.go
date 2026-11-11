@@ -1422,3 +1422,25 @@ func TestSlotOn_DuringMorphKeepsActive(t *testing.T) {
 	require.Len(t, snaps, 1)
 	require.Equal(t, float32(1), snaps[0].Alpha, "slot on at once, not mid-fade")
 }
+
+func TestAnimateSlot(t *testing.T) {
+	c := NewCompositor(64, 64)
+	clock, advance := fakeClock()
+	c.now = clock
+	c.SetLayout(pipLayout("cam1", 0, 0))
+	move := func(s *Slot) { s.Transform.PositionX = 32 }
+
+	c.AnimateSlot(0, move, 1000, nil)
+	require.Equal(t, 32.0, c.GetLayout().Slots[0].Transform.PositionX, "state reports the target")
+	advance(500 * time.Millisecond)
+	snaps := c.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Equal(t, 16, snaps[0].RectX, "slot glides")
+
+	c.AnimateSlot(0, func(s *Slot) { s.Transform.PositionX = 0 }, 0, nil)
+	snaps = c.SnapshotSlots()
+	require.Equal(t, 0, snaps[0].RectX, "durationMs 0 applies at once")
+
+	c.AnimateSlot(1, move, 1000, nil)
+	require.Nil(t, c.morph.Load(), "slot out of range is a no-op")
+}

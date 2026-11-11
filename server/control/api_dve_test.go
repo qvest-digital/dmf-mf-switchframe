@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -639,4 +640,34 @@ func TestDVESlotUpdate_RejectsLongDuration(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.Equal(t, 0.0, dc.GetLayout().Slots[0].Transform.PositionX, "rejected update not applied")
+}
+
+// An animated slot update applies its edit to the layout current under the
+// compositor lock; an edit to another slot landing meanwhile is kept.
+func TestDVESlotUpdate_AnimatedKeepsConcurrentEdits(t *testing.T) {
+	_, sw := setupTestAPI(t)
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
+	dc.SetLayout(&dve.Layout{Name: "two", Slots: []dve.Slot{
+		{SourceKey: "cam1", Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true},
+		{SourceKey: "cam2", Transform: dve.DefaultTransform(0, 540, 480, 270), Enabled: true},
+	}})
+	body := `{"transform":{"positionX":1200,"positionY":0,"width":480,"height":270},"durationMs":100}`
+
+	for i := range 1000 {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("PUT", "/api/dve/slots/0", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			api.Mux().ServeHTTP(httptest.NewRecorder(), req)
+		}()
+		go func() {
+			defer wg.Done()
+			dc.UpdateSlot(1, func(s *dve.Slot) { s.Transform.PositionX = float64(i) })
+		}()
+		wg.Wait()
+		require.Equal(t, float64(i), dc.GetLayout().Slots[1].Transform.PositionX, "iteration %d lost the edit to slot 1", i)
+	}
 }
