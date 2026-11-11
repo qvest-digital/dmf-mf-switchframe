@@ -96,8 +96,8 @@ func (s *Squeeze) Set(cfg SqueezeConfig) error {
 	if _, err := transition.ParseEasing(cfg.Easing); err != nil {
 		return err
 	}
-	if cfg.DurationMs < 0 {
-		return fmt.Errorf("durationMs must be >= 0, got %d", cfg.DurationMs)
+	if err := validateSqueezeDuration(cfg.DurationMs); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -112,6 +112,15 @@ func (s *Squeeze) Set(cfg SqueezeConfig) error {
 	if s.on {
 		ease, _ := transition.ParseEasing(cfg.Easing)
 		s.startLocked(from, squeezeTarget(cfg.Rect), cfg.DurationMs, ease.Ease)
+	}
+	return nil
+}
+
+// validateSqueezeDuration caps a move as a layout morph is capped: an
+// unbounded value overflows time.Duration and the move never arrives.
+func validateSqueezeDuration(ms int) error {
+	if ms < 0 || ms > MaxMorphDurationMs {
+		return fmt.Errorf("durationMs must be between 0 and %d, got %d", MaxMorphDurationMs, ms)
 	}
 	return nil
 }
@@ -162,8 +171,8 @@ func (s *Squeeze) move(on bool, m SqueezeMove) error {
 	if m.DurationMs != nil {
 		durMs = *m.DurationMs
 	}
-	if durMs < 0 {
-		return fmt.Errorf("durationMs must be >= 0, got %d", durMs)
+	if err := validateSqueezeDuration(durMs); err != nil {
+		return err
 	}
 	ease, err := transition.ParseEasing(cmp.Or(m.Easing, cfg.Easing))
 	if err != nil {

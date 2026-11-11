@@ -237,8 +237,11 @@ func TestInitCommandQueue_Squeezeback(t *testing.T) {
 		payload, _ := json.Marshal(body)
 		return app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: action, Payload: payload})
 	}
+	require.Error(t, dispatch("squeezeback_set", map[string]any{
+		"rect": map[string]any{"x": 480, "y": 0, "w": 1440, "h": 810}, "durationMs": dve.MaxMorphDurationMs + 1,
+	}), "durationMs above the cap")
 	require.NoError(t, dispatch("squeezeback_set", map[string]any{
-		"rect": map[string]any{"x": 480, "y": 0, "w": 1440, "h": 810}, "background": "cam2", "durationMs": 60000,
+		"rect": map[string]any{"x": 480, "y": 0, "w": 1440, "h": 810}, "background": "cam2", "durationMs": dve.MaxMorphDurationMs,
 		"executeAt": 1,
 	}))
 	require.NoError(t, dispatch("squeezeback_on", map[string]any{"executeAt": 1}))
