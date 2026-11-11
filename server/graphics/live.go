@@ -189,13 +189,16 @@ func (c *Compositor) LiveOnAir() (fills, keys []string) {
 	return fills, keys
 }
 
-// SetLiveFrames hands a live layer this tick's fill and key pictures. The
-// compositor reads them, without copying, until ClearLiveFrames: the
-// caller keeps the frames alive until then.
-func (c *Compositor) SetLiveFrames(id int, fill, key LivePicture) {
+// SetLiveFrames hands a live layer this tick's fill and key pictures,
+// read for src (LiveSources). The compositor reads them, without copying,
+// until ClearLiveFrames: the caller keeps the frames alive until then.
+// Pictures read for sources the layer no longer shows are dropped, so a
+// SetLive between the read and this call shows no old source.
+func (c *Compositor) SetLiveFrames(src LiveSource, fill, key LivePicture) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if layer, ok := c.layers[id]; ok && layer.live != nil {
+	if layer, ok := c.layers[src.ID]; ok && layer.live != nil &&
+		layer.live.fill == src.Fill && layer.live.key == src.Key {
 		layer.live.fillPic, layer.live.keyPic = fill, key
 	}
 }

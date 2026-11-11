@@ -53,7 +53,7 @@ func liveLayer(t *testing.T, fill, key []byte, w, h int, tenBit, premultiplied b
 	require.NoError(t, err)
 	require.NoError(t, c.SetLive(id, "gfx-fill", "gfx-key", LiveOptions{Premultiplied: premultiplied}))
 	require.NoError(t, c.On(id))
-	c.SetLiveFrames(id,
+	c.SetLiveFrames(LiveSource{ID: id, Fill: "gfx-fill", Key: "gfx-key"},
 		LivePicture{Data: fill, Width: w, Height: h, TenBit: tenBit},
 		LivePicture{Data: key, Width: w, Height: h, TenBit: tenBit})
 	return c
@@ -178,7 +178,7 @@ func TestLiveMismatchSkipped(t *testing.T) {
 	id, _ := c.AddLayer()
 	require.NoError(t, c.SetLive(id, "f", "k", LiveOptions{}))
 	require.NoError(t, c.On(id))
-	c.SetLiveFrames(id,
+	c.SetLiveFrames(LiveSource{ID: id, Fill: "f", Key: "k"},
 		LivePicture{Data: yuv420(8, 8, 235, 128, 128), Width: 8, Height: 8},
 		LivePicture{Data: yuv420(w, h, 235, 128, 128), Width: w, Height: h})
 	bg := yuv420(w, h, 16, 128, 128)
@@ -187,13 +187,32 @@ func TestLiveMismatchSkipped(t *testing.T) {
 	require.Equal(t, want, bg)
 
 	// An 8-bit pair on a 10-bit program is skipped too.
-	c.SetLiveFrames(id,
+	c.SetLiveFrames(LiveSource{ID: id, Fill: "f", Key: "k"},
 		LivePicture{Data: yuv420(w, h, 235, 128, 128), Width: w, Height: h},
 		LivePicture{Data: yuv420(w, h, 235, 128, 128), Width: w, Height: h})
 	bg10 := yuv422p10(w, h, 64, 512, 512)
 	want10 := append([]byte(nil), bg10...)
 	c.ProcessYUV10(bg10, w, h)
 	require.Equal(t, want10, bg10)
+}
+
+// Frames read for the sources a layer showed before a SetLive are not
+// keyed with: for one tick the layer would show the old fill.
+func TestLiveFramesForOldSourcesDropped(t *testing.T) {
+	const w, h = 4, 4
+	c := NewCompositor()
+	id, _ := c.AddLayer()
+	require.NoError(t, c.SetLive(id, "f", "k", LiveOptions{}))
+	require.NoError(t, c.On(id))
+	read := c.LiveSources()
+	require.NoError(t, c.SetLive(id, "f2", "k", LiveOptions{}))
+	c.SetLiveFrames(read[0],
+		LivePicture{Data: yuv420(w, h, 235, 128, 128), Width: w, Height: h},
+		LivePicture{Data: yuv420(w, h, 235, 128, 128), Width: w, Height: h})
+	bg := yuv420(w, h, 16, 128, 128)
+	c.ProcessYUV(bg, w, h, nil, nil)
+	require.Equal(t, byte(16), bg[0], "old fill not keyed")
+	require.Empty(t, c.SnapshotVisibleLayers())
 }
 
 func TestLiveFramesClearedDrawNothing(t *testing.T) {

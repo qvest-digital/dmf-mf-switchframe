@@ -823,7 +823,7 @@ func (s *Switcher) feedLiveLayers(fs *FrameSynchronizer, tick clock.Tick) func()
 			continue
 		}
 		held = append(held, fill, key)
-		comp.SetLiveFrames(l.ID, livePicture(fill), livePicture(key))
+		comp.SetLiveFrames(l, livePicture(fill), livePicture(key))
 	}
 	return func() {
 		comp.ClearLiveFrames()

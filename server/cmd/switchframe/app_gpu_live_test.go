@@ -22,8 +22,9 @@ func TestCompositorStateAdapterLiveLayer(t *testing.T) {
 		return graphics.LivePicture{Data: make([]byte, w*h*3/2), Width: w, Height: h}
 	}
 	a := &compositorStateAdapter{compositor: comp}
+	src := graphics.LiveSource{ID: id, Fill: "fill", Key: "key"}
 
-	comp.SetLiveFrames(id, pic(4, 4), pic(4, 4))
+	comp.SetLiveFrames(src, pic(4, 4), pic(4, 4))
 	snaps := a.SnapshotVisibleLayers()
 	require.Len(t, snaps, 1)
 	require.Len(t, snaps[0].LiveFill, 24)
@@ -33,7 +34,7 @@ func TestCompositorStateAdapterLiveLayer(t *testing.T) {
 	require.Equal(t, byte(255), snaps[0].LiveLUT[235])
 	require.Equal(t, byte(0), snaps[0].LiveLUT[16])
 
-	comp.SetLiveFrames(id, pic(4, 4), pic(8, 8))
+	comp.SetLiveFrames(src, pic(4, 4), pic(8, 8))
 	require.Empty(t, a.SnapshotVisibleLayers())
 }
 
