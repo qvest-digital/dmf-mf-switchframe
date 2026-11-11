@@ -580,6 +580,9 @@ func (a *App) registerDVEActions(d *cmdqueue.Dispatcher) {
 				s.Transform.CropAnchor = *req.CropAnchor
 			}
 		}
+		if req.DurationMs > dve.MaxMorphDurationMs {
+			return fmt.Errorf("durationMs must be at most %d", dve.MaxMorphDurationMs)
+		}
 		if l := a.dveCompositor.GetLayout(); req.DurationMs > 0 && l != nil && id >= 0 && id < len(l.Slots) {
 			ease, err := transition.ParseEasing(req.Easing)
 			if err != nil {
@@ -652,6 +655,9 @@ func (a *App) registerDVEActions(d *cmdqueue.Dispatcher) {
 		}
 		if preset == nil {
 			return fmt.Errorf("preset not found: %s", req.PathID)
+		}
+		if req.DurationMs > dve.MaxMorphDurationMs {
+			return fmt.Errorf("durationMs must be at most %d", dve.MaxMorphDurationMs)
 		}
 		ease, err := transition.ParseEasing(cmp.Or(req.Easing, preset.Easing))
 		if err != nil {

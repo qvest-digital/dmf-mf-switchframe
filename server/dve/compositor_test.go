@@ -3,6 +3,7 @@ package dve
 import (
 	"bytes"
 	"image"
+	"math"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1333,4 +1334,19 @@ func TestSetLayout_CancelsMorph(t *testing.T) {
 	require.Len(t, snaps, 1)
 	require.Equal(t, 0, snaps[0].RectX)
 	require.Equal(t, 32, snaps[0].RectY)
+}
+
+// A durationMs beyond the cap would overflow time.Duration and never end.
+func TestRecallLayout_ClampsDuration(t *testing.T) {
+	c := NewCompositor(64, 64)
+	clock, advance := fakeClock()
+	c.now = clock
+	c.SetLayout(pipLayout("cam1", 0, 0))
+
+	c.RecallLayout(pipLayout("cam1", 32, 0), math.MaxInt, nil)
+	advance(MaxMorphDurationMs * time.Millisecond)
+	snaps := c.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Equal(t, 32, snaps[0].RectX, "morph ends at the cap")
+	require.Nil(t, c.morph.Load())
 }

@@ -3,6 +3,7 @@ package control
 import (
 	"cmp"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -212,6 +213,10 @@ func (a *API) handleDVESlotUpdateInner(w http.ResponseWriter, r *http.Request, b
 		return
 	}
 
+	if req.DurationMs > dve.MaxMorphDurationMs {
+		httperr.Write(w, http.StatusBadRequest, fmt.Sprintf("durationMs must be at most %d", dve.MaxMorphDurationMs))
+		return
+	}
 	if req.DurationMs > 0 {
 		ease, err := transition.ParseEasing(req.Easing)
 		if err != nil {
@@ -334,6 +339,10 @@ func (a *API) handleRecallDVEPresetInner(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	if req.DurationMs > dve.MaxMorphDurationMs {
+		httperr.Write(w, http.StatusBadRequest, fmt.Sprintf("durationMs must be at most %d", dve.MaxMorphDurationMs))
+		return
+	}
 	ease, err := transition.ParseEasing(cmp.Or(req.Easing, preset.Easing))
 	if err != nil {
 		httperr.Write(w, http.StatusBadRequest, err.Error())

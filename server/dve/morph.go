@@ -39,15 +39,22 @@ func (m *layoutMorph) slotsAt(now time.Time) []Slot {
 	return out
 }
 
+// MaxMorphDurationMs caps a layout morph. Longer requests are rejected by
+// the API and clamped here; an unbounded value overflows time.Duration and
+// the morph would never complete.
+const MaxMorphDurationMs = 5000
+
 // RecallLayout moves to target over durationMs, morphing every slot from
 // what is on screen now, an in-flight morph included. The target is stored
 // at once, so state reports it while the drawn slots catch up. ease warps
-// time; nil is linear. durationMs <= 0 is SetLayout.
+// time; nil is linear. durationMs <= 0 is SetLayout; durationMs is capped at
+// MaxMorphDurationMs.
 func (c *Compositor) RecallLayout(target *Layout, durationMs int, ease func(float64) float64) {
 	if target == nil || durationMs <= 0 {
 		c.SetLayout(target)
 		return
 	}
+	durationMs = min(durationMs, MaxMorphDurationMs)
 
 	c.mu.Lock()
 	wasBefore := c.Active()
