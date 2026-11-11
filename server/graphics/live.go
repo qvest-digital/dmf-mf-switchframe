@@ -108,9 +108,10 @@ func (c *Compositor) SetLive(id int, fill, key string, opts LiveOptions) error {
 		c.mu.Unlock()
 		return ErrLayerNotFound
 	}
+	// A fly or slide moves the layer; a live layer has no position to move.
 	if layer.animConfig != nil && layer.animConfig.ToRect != nil {
 		c.mu.Unlock()
-		return ErrFadeActive
+		return ErrLiveLayer
 	}
 	layer.live = &liveFeed{fill: fill, key: key, premultiplied: opts.Premultiplied}
 	// A live layer covers the frame: the fill and key are program-sized.

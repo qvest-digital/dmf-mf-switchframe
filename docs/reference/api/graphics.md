@@ -136,7 +136,7 @@ Most mutating endpoints respond with the compositor's current `Status()` (which 
 
 **Request body** (`control.graphicsLiveRequest`): `{ "fill": "gfx-fill", "key": "gfx-key", "premultiplied": false }`. `premultiplied` marks a shaped fill, already multiplied by its key: it is added over the keyed-out background instead of mixed in.
 
-**Errors:** 400 for an unknown source, a missing source, or fill equal to key; 404 for an unknown layer; 409 when the pipeline cannot draw it: a premultiplied fill on the GPU pipeline, or a 10-bit program on the CUDA pipeline.
+**Errors:** 400 for an unknown source, a missing source, or fill equal to key; 404 for an unknown layer; 409 (`graphics.ErrLiveLayer`) while a fly or slide moves the layer, and 409 (`graphics.ErrLiveUnsupported`) when the pipeline cannot draw it: a premultiplied fill on the GPU pipeline, or a 10-bit program on the CUDA pipeline.
 
 ---
 

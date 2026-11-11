@@ -251,6 +251,19 @@ func TestLiveLayerRejectsPositioning(t *testing.T) {
 	require.NoError(t, c.StopAnimation(id))
 }
 
+// A fly or slide in flight is a position animation, not a fade: SetLive
+// refuses it as one that does not apply to a live layer.
+func TestSetLiveDuringSlide(t *testing.T) {
+	c := NewCompositor()
+	id, _ := c.AddLayer()
+	require.NoError(t, c.SetOverlay(id, make([]byte, 4*4*4), 4, 4, ""))
+	require.NoError(t, c.On(id))
+	require.NoError(t, c.SlideLayer(id, image.Rect(0, 0, 10, 10), 5000))
+	require.ErrorIs(t, c.SetLive(id, "f", "k", LiveOptions{}), ErrLiveLayer)
+	require.NoError(t, c.StopAnimation(id))
+	require.NoError(t, c.SetLive(id, "f", "k", LiveOptions{}))
+}
+
 func TestSetLiveValidates(t *testing.T) {
 	c := NewCompositor()
 	id, _ := c.AddLayer()
