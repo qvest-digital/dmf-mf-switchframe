@@ -85,9 +85,14 @@ func (c *Compositor) SetLive(id int, fill, key string, opts LiveOptions) error {
 	if fill == "" || key == "" || fill == key {
 		return ErrLiveSources
 	}
+	// An unknown layer is reported as such, not as a pipeline refusal.
 	c.mu.RLock()
+	_, ok := c.layers[id]
 	guard := c.liveGuard
 	c.mu.RUnlock()
+	if !ok {
+		return ErrLayerNotFound
+	}
 	if guard != nil {
 		if err := guard(opts); err != nil {
 			return err

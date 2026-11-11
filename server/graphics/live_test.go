@@ -266,6 +266,8 @@ func TestSetLiveValidates(t *testing.T) {
 		return nil
 	})
 	require.ErrorIs(t, c.SetLive(id, "a", "b", LiveOptions{Premultiplied: true}), refused)
+	require.ErrorIs(t, c.SetLive(id+1, "a", "b", LiveOptions{Premultiplied: true}), ErrLayerNotFound,
+		"an unknown layer is not a pipeline refusal")
 	require.NoError(t, c.SetLive(id, "a", "b", LiveOptions{}))
 }
 

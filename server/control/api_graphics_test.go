@@ -1120,4 +1120,6 @@ func TestGraphicsLiveSetRejects(t *testing.T) {
 	rec := serve(t, api, "PUT", path, `{"fill":"camera1","key":"camera2"}`)
 	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
 	require.Contains(t, rec.Body.String(), "test pipeline")
+	rec = serve(t, api, "PUT", "/api/graphics/99/live", `{"fill":"camera1","key":"camera2"}`)
+	require.Equal(t, http.StatusNotFound, rec.Code, "unknown layer under a refusing guard: %s", rec.Body.String())
 }
