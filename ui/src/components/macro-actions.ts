@@ -91,6 +91,9 @@ export const ACTION_META: Record<MacroAction, ActionMeta> = {
 	layout_slot_off: { label: 'Slot Off', category: 'Layout', description: 'Disable a layout slot' },
 	layout_slot_source: { label: 'Slot Source', category: 'Layout', description: 'Set layout slot source' },
 	layout_clear: { label: 'Clear Layout', category: 'Layout', description: 'Remove all layout slots' },
+	squeezeback_set: { label: 'Squeezeback Set', category: 'Layout', description: 'Set the L-frame rect and background' },
+	squeezeback_on: { label: 'Squeezeback On', category: 'Layout', description: 'Squeeze the program into the L-frame' },
+	squeezeback_off: { label: 'Squeezeback Off', category: 'Layout', description: 'Return the program to full frame' },
 	// Color Grade
 	colorgrade_set: { label: 'Set Look', category: 'Color Grade', description: 'Apply color grading look' },
 	colorgrade_off: { label: 'Grade Off', category: 'Color Grade', description: 'Disable color grading' },

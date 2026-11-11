@@ -529,6 +529,80 @@
 		{/if}
 	{/if}
 
+	<!-- squeezeback_set -->
+	{#if step.action === 'squeezeback_set'}
+		<div class="field-row">
+			<span class="field-label">X</span>
+			<input class="field-input squeeze-x-input" type="number" min="0" step="2"
+				value={step.params.x as number ?? 0}
+				oninput={(e) => onupdate('x', parseInt((e.target as HTMLInputElement).value) || 0)} />
+			<span class="field-label">Y</span>
+			<input class="field-input" type="number" min="0" step="2"
+				value={step.params.y as number ?? 0}
+				oninput={(e) => onupdate('y', parseInt((e.target as HTMLInputElement).value) || 0)} />
+		</div>
+		<div class="field-row">
+			<span class="field-label">W</span>
+			<input class="field-input" type="number" min="2" step="2"
+				value={step.params.w as number ?? 0}
+				oninput={(e) => onupdate('w', parseInt((e.target as HTMLInputElement).value) || 0)} />
+			<span class="field-label">H</span>
+			<input class="field-input" type="number" min="2" step="2"
+				value={step.params.h as number ?? 0}
+				oninput={(e) => onupdate('h', parseInt((e.target as HTMLInputElement).value) || 0)} />
+		</div>
+		<div class="field-row">
+			<span class="field-label">Background</span>
+			<select
+				class="field-select squeeze-background-select"
+				value={step.params.background as string || ''}
+				onchange={(e) => onupdate('background', (e.target as HTMLSelectElement).value)}
+			>
+				<option value="">Black</option>
+				{#each sourceKeys as key}
+					<option value={key}>{sourceLabel(key)}</option>
+				{/each}
+			</select>
+		</div>
+	{/if}
+
+	<!-- squeezeback_set / on / off: animation -->
+	{#if step.action === 'squeezeback_set' || step.action === 'squeezeback_on' || step.action === 'squeezeback_off'}
+		<div class="field-row">
+			<span class="field-label">Duration</span>
+			<div class="field-with-unit">
+				<!-- Empty on on/off takes the configured duration. -->
+				<input
+					class="field-input squeeze-duration-input"
+					type="number"
+					min="0"
+					max="5000"
+					step="100"
+					placeholder={step.action === 'squeezeback_set' ? '0' : 'set'}
+					value={step.params.durationMs as number ?? ''}
+					oninput={(e) => {
+						const v = (e.target as HTMLInputElement).value;
+						onupdate('durationMs', v === '' ? undefined : parseInt(v) || 0);
+					}}
+				/>
+				<span class="field-unit">ms</span>
+			</div>
+		</div>
+		<div class="field-row">
+			<span class="field-label">Easing</span>
+			<select
+				class="field-select squeeze-easing-select"
+				value={step.params.easing as string || ''}
+				onchange={(e) => onupdate('easing', (e.target as HTMLSelectElement).value)}
+			>
+				<option value="">{step.action === 'squeezeback_set' ? 'Linear' : 'As set'}</option>
+				{#each EASINGS as easing}
+					<option value={easing}>{easing}</option>
+				{/each}
+			</select>
+		</div>
+	{/if}
+
 	<!-- replay_play -->
 	{#if step.action === 'replay_play'}
 		<div class="field-row">

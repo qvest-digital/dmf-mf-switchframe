@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, EngineRecordingGroup, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, DVEPresetInfo, WipePattern, WipeConfig } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, EngineRecordingGroup, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, DVEPresetInfo, WipePattern, WipeConfig, SqueezebackState, SqueezebackRect } from './types';
 import { version } from '$app/environment';
 import { notify } from '$lib/state/notifications.svelte';
 import { trackChange } from '$lib/util/activity';
@@ -2899,6 +2899,32 @@ export function recallDVEPreset(id: string, durationMs?: number, easing?: string
 
 export function deleteDVEPreset(id: string): Promise<void> {
 	return request(`/api/dve/presets/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// -- Squeezeback API --
+
+export interface SqueezebackConfig {
+	rect: SqueezebackRect;
+	background?: string;
+	durationMs?: number;
+	easing?: string;
+}
+
+export function setSqueezeback(cfg: SqueezebackConfig): Promise<SqueezebackState> {
+	return request<SqueezebackState>('/api/squeezeback', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(cfg),
+	});
+}
+
+/** Without durationMs or easing the configured ones apply; durationMs 0 cuts. */
+export function squeezebackOn(move: { durationMs?: number; easing?: string } = {}): Promise<void> {
+	return post('/api/squeezeback/on', move);
+}
+
+export function squeezebackOff(move: { durationMs?: number; easing?: string } = {}): Promise<void> {
+	return post('/api/squeezeback/off', move);
 }
 
 // ── Wipe Pattern API ──

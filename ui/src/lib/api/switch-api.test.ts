@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, checkFragmentToken, getAuthToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency, setDualTimestampProvider, graphicsOn, graphicsOff, recallPreset, dveSlotOn, clipPlayerPlay, clipPlayerStop, listRecordingsDualEngine, listRecordingsFromEngine, importRecordingFromEngine, graphicsSequenceUpload, runMacro, setSourceKey, setFormat, setEncoderBackend, resetCircuitBreakers, engineFetch, authHeaders } from './switch-api';
+import { setSqueezeback, squeezebackOn, squeezebackOff } from './switch-api';
 import { setEngineUrls } from './base-url';
 import * as notifications from '$lib/state/notifications.svelte';
 import type { SRTOutputConfig, SCTE35CueRequest, CreateSRTSourceConfig } from './types';
@@ -209,6 +210,48 @@ describe('Transition API', () => {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({}),
+		});
+	});
+});
+
+describe('Squeezeback API', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	function stubFetch() {
+		const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+		vi.stubGlobal('fetch', mockFetch);
+		return mockFetch;
+	}
+
+	it('setSqueezeback PUTs the configuration', async () => {
+		const mockFetch = stubFetch();
+		await setSqueezeback({ rect: { x: 480, y: 0, w: 1440, h: 810 }, background: 'cam2', durationMs: 800 });
+		expect(mockFetch).toHaveBeenCalledWith('/api/squeezeback', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ rect: { x: 480, y: 0, w: 1440, h: 810 }, background: 'cam2', durationMs: 800 }),
+		});
+	});
+
+	it('squeezebackOn without a move sends an empty body for the configured timing', async () => {
+		const mockFetch = stubFetch();
+		await squeezebackOn();
+		expect(mockFetch).toHaveBeenCalledWith('/api/squeezeback/on', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: '{}',
+		});
+	});
+
+	it('squeezebackOff sends its duration', async () => {
+		const mockFetch = stubFetch();
+		await squeezebackOff({ durationMs: 0 });
+		expect(mockFetch).toHaveBeenCalledWith('/api/squeezeback/off', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ durationMs: 0 }),
 		});
 	});
 });

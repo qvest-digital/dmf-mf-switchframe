@@ -225,6 +225,7 @@
 		if (action === 'scte35_cue') { params.durationMs = 30000; params.autoReturn = true; }
 		if (['scte35_return', 'scte35_cancel', 'scte35_hold'].includes(action)) params.eventId = 0;
 		if (action === 'scte35_extend') { params.eventId = 0; params.durationMs = 30000; }
+		if (action === 'squeezeback_set') { params.x = 480; params.y = 0; params.w = 1440; params.h = 810; }
 		editingSteps = [...editingSteps, { action, params }];
 		expandedStep = editingSteps.length - 1;
 		showPicker = false;
@@ -307,6 +308,7 @@
 		if (action === 'scte35_cue') { params.durationMs = 30000; params.autoReturn = true; }
 		if (['scte35_return', 'scte35_cancel', 'scte35_hold'].includes(action)) params.eventId = 0;
 		if (action === 'scte35_extend') { params.eventId = 0; params.durationMs = 30000; }
+		if (action === 'squeezeback_set') { params.x = 480; params.y = 0; params.w = 1440; params.h = 810; }
 		editingSteps[index] = { action, params };
 		editingSteps = [...editingSteps];
 	}

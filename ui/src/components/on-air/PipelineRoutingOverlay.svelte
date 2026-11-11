@@ -96,10 +96,11 @@
 		'gpu_neural_key': 1,
 		'gpu_ai_segment': 2,
 		'gpu_layout': 3,
-		'gpu_dsk': 4,
-		'gpu_colorgrade': 5,
-		'gpu_sharpness': 6,
-		'gpu_stmap': 7,
+		'gpu_squeezeback': 4,
+		'gpu_dsk': 5,
+		'gpu_colorgrade': 6,
+		'gpu_sharpness': 7,
+		'gpu_stmap': 8,
 		// Output nodes order
 		'gpu_raw_sink': 0,
 		'gpu_preview_encode': 1,
@@ -107,7 +108,8 @@
 		// CPU pipeline equivalents
 		'upstream-key': 0,
 		'dve-compositor': 1,
-		'compositor': 2,
+		'squeezeback': 2,
+		'compositor': 3,
 		'raw-sink-mxl': 0,
 		'h264-encode': 1,
 	};
