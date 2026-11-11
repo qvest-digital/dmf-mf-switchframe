@@ -275,6 +275,63 @@ func TestFrameSync_LateKeyYieldsOlderAlignedPair(t *testing.T) {
 	require.Equal(t, 0, poolFree(pool), "every peeked reference released, the frames still buffered")
 }
 
+// A fill a grain late pairs with the key of its own grain: the ahead
+// branch works for either source.
+func TestFrameSync_LateFillYieldsOlderAlignedPair(t *testing.T) {
+	pool := NewFramePool(4, 4, 4, ColorYUV420_8bit)
+	fs := NewFrameSynchronizer()
+	fs.AddSource("fill")
+	fs.AddSource("key")
+	fs.IngestRawVideo("fill", poolFrame(pool, 3000))
+	fs.IngestRawVideo("key", poolFrame(pool, 3000))
+	fs.IngestRawVideo("key", poolFrame(pool, 6000))
+
+	fill, key := alignedLivePair(fs, "fill", "key", 6000)
+	require.Equal(t, int64(3000), fill.PTS)
+	require.Equal(t, int64(3000), key.PTS)
+	fill.ReleaseYUV()
+	key.ReleaseYUV()
+	require.Equal(t, 1, poolFree(pool), "the newer key's peeked reference released too")
+}
+
+// When the ahead source no longer holds the other's grain, the newest
+// pair is keyed rather than none: a grain of skew beats a dropped key.
+func TestFrameSync_AlignedGrainGoneKeepsNewestPair(t *testing.T) {
+	pool := NewFramePool(5, 4, 4, ColorYUV420_8bit)
+	fs := NewFrameSynchronizer()
+	fs.AddSource("fill")
+	fs.AddSource("key")
+	fs.IngestRawVideo("fill", poolFrame(pool, 6000))
+	fs.IngestRawVideo("key", poolFrame(pool, 3000))
+
+	fill, key := alignedLivePair(fs, "fill", "key", 6000)
+	require.Equal(t, int64(6000), fill.PTS, "no fill of the key's grain: the newest")
+	require.Equal(t, int64(3000), key.PTS)
+	fill.ReleaseYUV()
+	key.ReleaseYUV()
+
+	// An older fill that is not the key's grain does not pair either.
+	fs.IngestRawVideo("fill", poolFrame(pool, 7000))
+	fs.IngestRawVideo("key", poolFrame(pool, 7500))
+	fill, key = alignedLivePair(fs, "fill", "key", 9000)
+	require.Equal(t, int64(7000), fill.PTS)
+	require.Equal(t, int64(7500), key.PTS, "the key's 7000 grain is gone: newest kept")
+	fill.ReleaseYUV()
+	key.ReleaseYUV()
+
+	// The same with the fill ahead.
+	fs.IngestRawVideo("fill", poolFrame(pool, 8000))
+	fill, key = alignedLivePair(fs, "fill", "key", 9000)
+	require.Equal(t, int64(8000), fill.PTS, "the fill's 7500 grain does not exist: newest kept")
+	require.Equal(t, int64(7500), key.PTS)
+	fill.ReleaseYUV()
+	key.ReleaseYUV()
+	require.Equal(t, 0, poolFree(pool), "every peeked reference released, the frames still buffered")
+	fs.RemoveSource("fill")
+	fs.RemoveSource("key")
+	require.Equal(t, 5, poolFree(pool))
+}
+
 // A source that is read for a live layer and cut to program keeps its
 // program bookkeeping: the peek neither takes the frame nor clears or
 // sets the time the source was lost.
