@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 )
 
@@ -141,4 +142,16 @@ func TestCompositorNode_10bit_PartialAlpha(t *testing.T) {
 	firstY := binary.LittleEndian.Uint16(out.Data[:2])
 	assert.Greater(t, firstY, uint16(300), "50%% alpha blend should be between black and white")
 	assert.Less(t, firstY, uint16(700), "50%% alpha blend should be between black and white")
+}
+
+// --- Squeeze-back 10-bit processing ---
+
+func TestSqueezeNode_10bitBackgroundFedFromIngest(t *testing.T) {
+	sw, sq := squeezeSwitcher(t)
+	sw.IngestRawVideo("cam2", frame10y(200))
+	require.NoError(t, sq.On(dve.SqueezeMove{DurationMs: zeroMs()}))
+
+	out := (&squeezeNode{squeeze: sq}).Process(nil, frame10y(940))
+	require.Equal(t, uint16(200), binary.LittleEndian.Uint16(out.Data), "background around the program")
+	require.Equal(t, uint16(940), binary.LittleEndian.Uint16(out.Data[(12*16+12)*2:]), "program inside the rect")
 }

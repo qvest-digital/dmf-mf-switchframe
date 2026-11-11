@@ -364,6 +364,9 @@ type Switcher struct {
 	// DVE compositor — applies DVE-transformed PIP/split-screen/quad layouts.
 	dveCompositor *dve.Compositor
 
+	// Squeeze-back -- shrinks the composited program into an L-frame.
+	squeeze *dve.Squeeze
+
 	// ST map registry — per-source lens correction applied in sourceDecoder.
 	stmapRegistry *stmap.Registry
 
@@ -1103,6 +1106,20 @@ func (s *Switcher) SetDVECompositor(dc *dve.Compositor) {
 	s.rebuildPipeline()
 }
 
+// SetSqueeze sets the squeeze-back stage for L-frames.
+func (s *Switcher) SetSqueeze(sq *dve.Squeeze) {
+	s.configMu.Lock()
+	s.squeeze = sq
+	s.updateGraphicsHandlers(func(gh *graphicsHandlers) { gh.squeeze = sq })
+	s.configMu.Unlock()
+	if sq != nil {
+		// The background leaves the air, and tally, when an Off arrives.
+		// Called on the pipeline goroutine, which must not wait on state.
+		sq.OnIdle = func() { go s.notifyStateChange(s.State()) }
+	}
+	s.rebuildPipeline()
+}
+
 // SetSTMapRegistry sets the ST map registry for per-source correction.
 // When set, each source decoder applies the assigned ST map warp after
 // decode and resolution normalization, before fan-out to all consumers.
@@ -1256,11 +1273,12 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(vps, sps, pps []byte, wi
 //
 // CPU pipeline order:
 //
-//	[upstream-key -> dve-compositor -> compositor -> colorgrade -> stmap-program -> raw-sink-mxl -> raw-sink-preview -> h264-encode]
+//	[upstream-key -> dve-compositor -> squeezeback -> compositor -> colorgrade -> stmap-program -> raw-sink-mxl -> raw-sink-preview -> h264-encode]
 func (s *Switcher) buildNodeList() []PipelineNode {
 	return []PipelineNode{
 		&upstreamKeyNode{bridge: s.keyBridge},
 		&dveCompositorNode{compositor: s.dveCompositor},
+		&squeezeNode{squeeze: s.squeeze},
 		&compositorNode{compositor: s.compositorRef},
 		&colorGradeNode{grader: s.programGrader},
 		&stmapProgramNode{registry: s.stmapRegistry},
@@ -3045,7 +3063,8 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 // noteRawVideo does the per-frame work that belongs to arrival rather than
 // to a tick: source counters, encoder parameters from the program source's
 // decoder, and the CPU fill feeds of keyers and the DVE compositor, which
-// read every source, not only program. With a GPU source manager those are
+// read every source, not only program, and of the squeeze-back background.
+// With a GPU source manager those are
 // fed from its cache instead.
 func (s *Switcher) noteRawVideo(ss *sourceState, sourceKey string, pf *ProcessingFrame) {
 	ss.rawFrameCount.Add(1)
@@ -3066,6 +3085,9 @@ func (s *Switcher) noteRawVideo(ss *sourceState, sourceKey string, pf *Processin
 		if gh.keyBridge != nil {
 			gh.keyBridge.IngestFillYUV10(sourceKey, pf.Data, pf.Width, pf.Height)
 		}
+		if gh.squeeze != nil && gh.squeeze.NeedsSource(sourceKey) {
+			gh.squeeze.IngestSourceFrame10(sourceKey, pf.Data, pf.Width, pf.Height)
+		}
 		return
 	}
 	if gh.keyBridge != nil {
@@ -3073,6 +3095,9 @@ func (s *Switcher) noteRawVideo(ss *sourceState, sourceKey string, pf *Processin
 	}
 	if gh.dveCompositor != nil && gh.dveCompositor.NeedsSource(sourceKey) {
 		gh.dveCompositor.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+	}
+	if gh.squeeze != nil && gh.squeeze.NeedsSource(sourceKey) {
+		gh.squeeze.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height)
 	}
 }
 
@@ -3801,6 +3826,14 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	}
 	if s.programSource != "" {
 		tally[s.programSource] = string(TallyProgram)
+	}
+	// A squeeze-back background is on air around the program.
+	if s.squeeze != nil {
+		if bg := s.squeeze.BackgroundOnAir(); bg != "" {
+			if _, ok := srcMap[bg]; ok {
+				tally[bg] = string(TallyProgram)
+			}
+		}
 	}
 	// During a transition, the destination is going-to-air via the blend —
 	// SMPTE broadcast-safe tally marks both source and destination as
