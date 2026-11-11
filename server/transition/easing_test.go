@@ -192,6 +192,18 @@ func TestEasingInvalidX(t *testing.T) {
 	}
 }
 
+func TestEasingNonFinite(t *testing.T) {
+	for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		for i := range 4 {
+			p := [4]float64{0.25, 0.1, 0.25, 1.0}
+			p[i] = v
+			c, err := NewCustomEasingCurve(p[0], p[1], p[2], p[3])
+			require.Error(t, err, "point %d = %v", i, v)
+			require.Nil(t, c)
+		}
+	}
+}
+
 // --- 9. Nil safety ---
 
 func TestEasingNilSafety(t *testing.T) {
@@ -401,6 +413,10 @@ func TestParseEasing_Rejects(t *testing.T) {
 		"cubic-bezier(0,0,1,1",
 		"cubic-bezier(a,0,1,1)",
 		"cubic-bezier(1.5,0,1,1)", // x outside [0, 1]
+		"cubic-bezier(NaN,0,1,1)",
+		"cubic-bezier(0,NaN,1,1)",
+		"cubic-bezier(0,0,1,Inf)",
+		"cubic-bezier(0,-Inf,1,1)",
 	} {
 		t.Run(in, func(t *testing.T) {
 			_, err := ParseEasing(in)

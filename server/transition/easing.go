@@ -62,8 +62,15 @@ func NewEasingCurve(preset EasingType) *EasingCurve {
 }
 
 // NewCustomEasingCurve creates a custom cubic-bezier easing curve.
-// x1 and x2 must be in [0, 1]; y1 and y2 may be any value (allows overshoot).
+// x1 and x2 must be in [0, 1]; y1 and y2 may be any finite value (allows
+// overshoot).
 func NewCustomEasingCurve(x1, y1, x2, y2 float64) (*EasingCurve, error) {
+	// NaN slips past the range checks and would propagate into every frame.
+	for _, v := range [4]float64{x1, y1, x2, y2} {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil, fmt.Errorf("easing: control point %v is not finite", v)
+		}
+	}
 	if x1 < 0 || x1 > 1 {
 		return nil, fmt.Errorf("easing: x1=%v outside [0, 1]", x1)
 	}
