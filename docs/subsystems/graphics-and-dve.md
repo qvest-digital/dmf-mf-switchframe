@@ -33,10 +33,14 @@ flowchart LR
   S2 -->|bg| UKN
   UKN --> DVEN["dveCompositorNode<br/>(PIP slots)"]
   S3 -->|slot fills| DVEN
-  DVEN --> DSKN["compositorNode<br/>(DSK overlays)"]
+  DVEN --> SQZN["squeezeNode<br/>(L-frame)"]
+  S2 -->|background| SQZN
+  SQZN --> DSKN["compositorNode<br/>(DSK overlays)"]
   OVR[RGBA overlays<br/>tickers, images, text] --> DSKN
   DSKN --> ENC[encode / MXL out]
 ```
+
+A squeezeback sits between DVE and the DSK: it shrinks the composited program, keys and PiPs included, into an L-frame rect over a background source, so downstream graphics stay full frame on top.
 
 Every stage reads the frame in-place, mutates it, and returns it. No stage allocates a new frame buffer per call; scratch buffers are owned by the node and resized only when the pipeline format changes.
 
@@ -145,6 +149,10 @@ The DVE preset store ([`dve/preset.go`](../../server/dve/preset.go)) persists co
 
 A recall with `durationMs` > 0 morphs instead of cutting. `Compositor.RecallLayout()` stores the target layout at once, so state reports it, and draws every slot on its way there: `RecallPreset()` generates a transient `Animation` with a linear track for each transform parameter that differs between what is on screen and the target, and the easing (a preset name or `cubic-bezier(x1, y1, x2, y2)`, parsed by `transition.ParseEasing`) warps its time. Both sides are padded to the larger slot count and resolved out of `RectMode` first, so built-in presets move too. A slot enabled on one side only fades in place. A recall during a morph starts from the in-flight state, and fills of outgoing sources are kept until the morph completes. Built-in presets carry no sources, so a morphing slot keeps the source it shows. Without `durationMs` the recall cuts.
 
+### Squeezeback
+
+`dve.Squeeze` ([`squeeze.go`](../../server/dve/squeeze.go)) scales the whole frame bilinearly into its rect, fills the frame with the background source, scaled to fit, or black, and copies the scaled program into the rect, in 8-bit 4:2:0 and 10-bit 4:2:2. On and off animate the rect between full frame and the configured one with a `slotAnimation` and `transition.ParseEasing` easings, starting from wherever the program is. The node is always in the pipeline, as the DSK is, so a toggle does not rebuild it, and returns the frame untouched while the program fills it. The background is ingested at arrival from every source while it is configured, so the first squeezed frame has one. The GPU pipeline runs the same stage in `gpu_squeezeback` with the scale and PIP kernels.
+
 ### Crop modes and fill calculation
 
 When a source's aspect ratio doesn't match its slot, there are three ways to handle it:
@@ -195,6 +203,12 @@ All crop and position values are even-aligned (`EvenAlign(v int) int { return v 
 - Presets: [`preset.go`](../../server/dve/preset.go) → `PresetStore.Save/Load/Delete/List`, `BuiltinPresets()`, `RecallPreset()`
 - GPU bridge: `Compositor.SnapshotSlots()` returning `[]SlotSnap` with pre-computed `DVEInvMatrix`
 - Pipeline node: [`switcher/node_dve_compositor.go`](../../server/switcher/node_dve_compositor.go) → `dveCompositorNode.Process()`
+
+**Squeezeback:**
+- Entry: [`server/dve/squeeze.go`](../../server/dve/squeeze.go) -> `Squeeze.ProcessFrame()`, `Squeeze.ProcessFrame10()`
+- Lifecycle: `Set`, `On`, `Off`; state `Snapshot`, tally `BackgroundOnAir`
+- Ingest: `Squeeze.IngestSourceFrame` / `IngestSourceFrame10`, gated by `NeedsSource`
+- Pipeline node: [`switcher/node_squeeze.go`](../../server/switcher/node_squeeze.go) -> `squeezeNode.Process()`; GPU [`gpu/node_squeeze.go`](../../server/gpu/node_squeeze.go)
 
 **Application wiring (where these are instantiated):**
 - [`server/cmd/switchframe/app.go`](../../server/cmd/switchframe/app.go) (the "Graphics compositor (DSK)" init block) — constructs the DSK compositor, wires resolution and FPS providers, attaches to switcher, starts the `htmlgfx` manager, constructs the DVE compositor and preset store. The upstream key processor + bridge are built in the same initialization block.

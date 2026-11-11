@@ -23,7 +23,7 @@ The API has 291 real endpoints split across the files below. Each sub-file follo
 - [transition-wipes](api/transition-wipes.md) — wipe pattern catalog, custom upload (5 endpoints)
 - [graphics](api/graphics.md) — DSK layer CRUD + animation, image/sequence/ticker, stingers (31 endpoints)
 - [graphics-html5](api/graphics-html5.md) — browser-based HTML5 graphics (8 endpoints)
-- [dve](api/dve.md) — DVE layout, slots, presets (10 endpoints)
+- [dve](api/dve.md) - DVE layout, slots, presets, squeezeback (14 endpoints)
 - [keying](api/keying.md) — per-source upstream key configuration (3 endpoints)
 - [replay](api/replay.md) — mark-in/out, play, pause, speed, shutter-angle (15 endpoints)
 - [clips](api/clips.md) — clip CRUD, upload, from-recording, 4-player slots (18 endpoints)
