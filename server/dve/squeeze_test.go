@@ -247,6 +247,31 @@ func TestSqueeze_FrameScalesRectToFrameSize(t *testing.T) {
 	require.Equal(t, image.Rect(64, 64, 128, 128), r)
 }
 
+// A resolution change keeps the L-frame's shape: the rect, and a move in
+// flight, scale with the frame instead of staying in old pixels.
+func TestSqueeze_FormatChangeScalesRect(t *testing.T) {
+	s := NewSqueeze(1920, 1080)
+	clock, advance := fakeClock()
+	s.now = clock
+	require.NoError(t, s.Set(SqueezeConfig{Rect: Rect{X: 480, Y: 0, W: 1440, H: 810}, DurationMs: 1000}))
+	require.NoError(t, s.On(SqueezeMove{}))
+	advance(500 * time.Millisecond)
+
+	s.UpdateFormat(1280, 720)
+	r, ok := s.Frame(1280, 720)
+	require.True(t, ok)
+	require.Equal(t, image.Rect(160, 0, 1280, 630), r, "halfway, in 720p pixels")
+	require.Equal(t, Rect{X: 320, Y: 0, W: 960, H: 540}, s.Snapshot().Rect)
+
+	advance(500 * time.Millisecond)
+	r, ok = s.Frame(1280, 720)
+	require.True(t, ok)
+	require.Equal(t, image.Rect(320, 0, 1280, 540), r)
+
+	// Set validates against the new frame.
+	require.Error(t, s.Set(SqueezeConfig{Rect: Rect{X: 480, Y: 0, W: 1440, H: 810}}))
+}
+
 func TestSqueeze_Validation(t *testing.T) {
 	s := NewSqueeze(64, 64)
 	require.ErrorIs(t, s.On(SqueezeMove{}), ErrSqueezeNotConfigured)

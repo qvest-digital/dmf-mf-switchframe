@@ -90,11 +90,39 @@ func (s *Squeeze) SetOnArrive(fn func()) {
 	s.mu.Unlock()
 }
 
-// UpdateFormat sets the frame size the configured rect is in.
+// UpdateFormat sets the frame size the configured rect is in. On a size
+// change the rect and a move in flight scale with the frame, so the
+// L-frame keeps its shape and Set validates against the new size.
 func (s *Squeeze) UpdateFormat(frameW, frameH int) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	oldW, oldH := s.frameW, s.frameH
 	s.frameW, s.frameH = frameW, frameH
-	s.mu.Unlock()
+	if oldW <= 0 || oldH <= 0 || (oldW == frameW && oldH == frameH) {
+		return
+	}
+	scale := func(r image.Rectangle) image.Rectangle {
+		return scaleRect(r, oldW, oldH, frameW, frameH)
+	}
+	if c := s.cfg.Load(); c != nil {
+		cfg := *c
+		r := scale(squeezeTarget(cfg.Rect))
+		cfg.Rect = Rect{X: float64(r.Min.X), Y: float64(r.Min.Y), W: float64(r.Dx()), H: float64(r.Dy())}
+		s.cfg.Store(&cfg)
+	}
+	if a := s.anim; a != nil {
+		moved := *a
+		moved.FromRect, moved.ToRect = scale(a.FromRect), scale(a.ToRect)
+		s.anim = &moved
+	}
+}
+
+// scaleRect maps r from a fromW x fromH frame to a toW x toH one, corners
+// on even pixels.
+func scaleRect(r image.Rectangle, fromW, fromH, toW, toH int) image.Rectangle {
+	x := func(v int) int { return EvenAlign(v * toW / fromW) }
+	y := func(v int) int { return EvenAlign(v * toH / fromH) }
+	return image.Rect(x(r.Min.X), y(r.Min.Y), x(r.Max.X), y(r.Max.Y))
 }
 
 // Set replaces the configuration. While on, the program moves to the new
@@ -249,11 +277,10 @@ func (s *Squeeze) Frame(width, height int) (image.Rectangle, bool) {
 	if arrived && cb != nil {
 		cb()
 	}
+	// A frame of another size than the format, as the GPU pipeline may
+	// pass before the CPU one reconfigures, scales as UpdateFormat does.
 	if fw > 0 && fh > 0 && (width != fw || height != fh) {
-		sx := float64(width) / float64(fw)
-		sy := float64(height) / float64(fh)
-		r = image.Rect(int(float64(r.Min.X)*sx), int(float64(r.Min.Y)*sy),
-			int(float64(r.Max.X)*sx), int(float64(r.Max.Y)*sy))
+		r = scaleRect(r, fw, fh, width, height)
 	}
 	// An overshooting curve can leave the frame.
 	r = r.Intersect(image.Rect(0, 0, width, height))
