@@ -147,3 +147,18 @@ func TestSqueezeNode_ArrivalDoesNotBlockOnStateLock(t *testing.T) {
 		t.Fatal("no state broadcast when the On arrived")
 	}
 }
+
+// An unregistered background shows black, as on the GPU, and no longer
+// tallies.
+func TestSqueezeNode_UnregisteredBackgroundShowsBlack(t *testing.T) {
+	sw, sq := squeezeSwitcher(t)
+	require.NoError(t, sq.On(dve.SqueezeMove{DurationMs: zeroMs()}))
+	sw.IngestRawVideo("cam2", frame8(50))
+	n := &squeezeNode{squeeze: sq}
+	require.Equal(t, byte(50), n.Process(nil, frame8(235)).Data[0])
+
+	sw.UnregisterSource("cam2")
+	require.Equal(t, byte(16), n.Process(nil, frame8(235)).Data[0], "black, not the last frame")
+	_, tallied := sw.State().TallyState["cam2"]
+	require.False(t, tallied)
+}

@@ -332,6 +332,18 @@ func (s *Squeeze) NeedsSource(sourceKey string) bool {
 	return c != nil && c.Background != "" && c.Background == sourceKey
 }
 
+// RemoveSource drops the kept frame when sourceKey is the background, so
+// black shows rather than its last frame, as on the GPU, whose source
+// cache drops it too.
+func (s *Squeeze) RemoveSource(sourceKey string) {
+	if s.Background() != sourceKey {
+		return
+	}
+	s.mu.Lock()
+	s.bg.valid = false
+	s.mu.Unlock()
+}
+
 // IngestSourceFrame keeps an 8-bit 4:2:0 background frame.
 func (s *Squeeze) IngestSourceFrame(sourceKey string, yuv []byte, width, height int) {
 	s.ingest(sourceKey, yuv, width, height, video.YUV420_8bit)

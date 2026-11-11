@@ -3154,6 +3154,10 @@ func (s *Switcher) UnregisterSource(key string) {
 	if srcDec != nil {
 		srcDec.Close()
 	}
+	// After the drain, so no late frame is kept frozen behind the program.
+	if gh := s.graphicsHandlers.Load(); gh != nil && gh.squeeze != nil {
+		gh.squeeze.RemoveSource(key)
+	}
 
 	s.log.Info("source unregistered", "source_key", key)
 	s.notifyStateChange(snapshot)
