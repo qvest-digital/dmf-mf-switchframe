@@ -162,19 +162,21 @@ func validateSqueezeDuration(ms int) error {
 
 // validateSqueezeRect requires an even, non-empty rect inside the frame:
 // chroma is subsampled horizontally, and vertically in 4:2:0.
+// Bounds are checked as floats before any int conversion: an out-of-range
+// float converts to an arbitrary int that can pass every int check.
 func validateSqueezeRect(r Rect, frameW, frameH int) error {
 	for _, v := range [...]struct {
 		name string
 		v    float64
 	}{{"x", r.X}, {"y", r.Y}, {"w", r.W}, {"h", r.H}} {
-		if v.v != math.Trunc(v.v) || int(v.v)%2 != 0 {
+		if math.Abs(v.v) > math.MaxInt32 || v.v != math.Trunc(v.v) || int(v.v)%2 != 0 {
 			return fmt.Errorf("rect %s must be an even whole number, got %v", v.name, v.v)
 		}
 	}
 	if r.W <= 0 || r.H <= 0 {
 		return fmt.Errorf("rect must have positive size, got %vx%v", r.W, r.H)
 	}
-	if r.X < 0 || r.Y < 0 || int(r.X+r.W) > frameW || int(r.Y+r.H) > frameH {
+	if r.X < 0 || r.Y < 0 || r.X+r.W > float64(frameW) || r.Y+r.H > float64(frameH) {
 		return fmt.Errorf("rect %v,%v %vx%v is outside the %dx%d frame", r.X, r.Y, r.W, r.H, frameW, frameH)
 	}
 	return nil

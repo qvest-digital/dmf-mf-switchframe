@@ -282,6 +282,11 @@ func TestSqueeze_Validation(t *testing.T) {
 		"empty":      {X: 0, Y: 0, W: 0, H: 32},
 		"outside":    {X: 48, Y: 0, W: 32, H: 32},
 		"negative y": {X: 0, Y: -2, W: 32, H: 32},
+		// int() of these is MinInt64, which passes the int bounds checks.
+		"huge x":   {X: 1e300, Y: 0, W: 32, H: 32},
+		"huge w":   {X: 0, Y: 0, W: 1e300, H: 32},
+		"infinite": {X: 0, Y: 0, W: math.Inf(1), H: 32},
+		"nan":      {X: math.NaN(), Y: 0, W: 32, H: 32},
 	} {
 		require.Error(t, s.Set(SqueezeConfig{Rect: r}), name)
 	}
