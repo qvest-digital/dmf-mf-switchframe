@@ -257,6 +257,11 @@ func (s *Squeeze) rectLocked() (r image.Rectangle, arrived bool) {
 		s.anim = nil
 		s.active.Store(s.on)
 		arrived = true
+		if !s.on {
+			// Not fed while off: a frame kept now would be stale at
+			// the next On.
+			s.bg.valid = false
+		}
 	}
 	if c := s.cfg.Load(); s.on && c != nil {
 		return squeezeTarget(c.Rect), arrived
@@ -315,10 +320,14 @@ func (s *Squeeze) Background() string {
 	return ""
 }
 
-// NeedsSource reports whether sourceKey is the background. It is fed
-// while configured, not only while on, so the first squeezed frame
-// already has it.
+// NeedsSource reports whether sourceKey is the background and is shown,
+// on or moving. A squeezeback configured but off costs no frame copy. An
+// On starts at full frame, so the background is fed before it is seen;
+// until its first frame, black shows.
 func (s *Squeeze) NeedsSource(sourceKey string) bool {
+	if !s.active.Load() {
+		return false
+	}
 	c := s.cfg.Load()
 	return c != nil && c.Background != "" && c.Background == sourceKey
 }

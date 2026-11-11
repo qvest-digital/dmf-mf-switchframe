@@ -64,8 +64,8 @@ func TestSqueeze_RectFollowsAnimation(t *testing.T) {
 
 func TestSqueeze_ProgramScaledIntoRectOverBackground(t *testing.T) {
 	s, _ := newTestSqueeze(t, "cam2")
-	s.IngestSourceFrame("cam2", makeYUV420(64, 64, 50, 90, 160), 64, 64)
 	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
+	s.IngestSourceFrame("cam2", makeYUV420(64, 64, 50, 90, 160), 64, 64)
 
 	out := s.ProcessFrame(splitFrame(64, 64), 64, 64)
 
@@ -92,8 +92,8 @@ func TestSqueeze_BlackWithoutBackground(t *testing.T) {
 
 func TestSqueeze_BackgroundScaledToFrame(t *testing.T) {
 	s, _ := newTestSqueeze(t, "cam2")
-	s.IngestSourceFrame("cam2", makeYUV420(32, 32, 50, 128, 128), 32, 32)
 	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
+	s.IngestSourceFrame("cam2", makeYUV420(32, 32, 50, 128, 128), 32, 32)
 	out := s.ProcessFrame(makeYUV420(64, 64, 235, 128, 128), 64, 64)
 	require.Equal(t, byte(50), out[0])
 	require.Equal(t, byte(50), out[30*64+63], "background fills the whole frame")
@@ -101,10 +101,10 @@ func TestSqueeze_BackgroundScaledToFrame(t *testing.T) {
 
 func TestSqueeze_IgnoresOtherSources(t *testing.T) {
 	s, _ := newTestSqueeze(t, "cam2")
-	require.True(t, s.NeedsSource("cam2"), "fed while configured, before On")
+	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
+	require.True(t, s.NeedsSource("cam2"))
 	require.False(t, s.NeedsSource("cam1"))
 	s.IngestSourceFrame("cam1", makeYUV420(64, 64, 50, 128, 128), 64, 64)
-	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
 	out := s.ProcessFrame(makeYUV420(64, 64, 235, 128, 128), 64, 64)
 	require.Equal(t, byte(16), out[0], "cam1 is not the background")
 }
@@ -112,8 +112,8 @@ func TestSqueeze_IgnoresOtherSources(t *testing.T) {
 func TestSqueeze_10bit(t *testing.T) {
 	f := video.YUV422_10bit
 	s, _ := newTestSqueeze(t, "cam2")
-	s.IngestSourceFrame10("cam2", video.NewFrame(f, 64, 64, 200, 300, 700), 64, 64)
 	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
+	s.IngestSourceFrame10("cam2", video.NewFrame(f, 64, 64, 200, 300, 700), 64, 64)
 
 	prog := video.NewFrame(f, 64, 64, 940, 512, 512)
 	for y := range 64 {
@@ -141,9 +141,9 @@ func TestSqueeze_10bit(t *testing.T) {
 
 func TestSqueeze_NewBackgroundDropsOldFrame(t *testing.T) {
 	s, _ := newTestSqueeze(t, "cam2")
+	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
 	s.IngestSourceFrame("cam2", makeYUV420(64, 64, 50, 128, 128), 64, 64)
 	require.NoError(t, s.Set(SqueezeConfig{Rect: Rect{X: 32, Y: 32, W: 32, H: 32}, Background: "cam3"}))
-	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
 	out := s.ProcessFrame(makeYUV420(64, 64, 235, 128, 128), 64, 64)
 	require.Equal(t, byte(16), out[0], "black until cam3 delivers, not the last cam2 frame")
 }
@@ -151,15 +151,14 @@ func TestSqueeze_NewBackgroundDropsOldFrame(t *testing.T) {
 func TestSqueeze_10bitIgnores8bitBackground(t *testing.T) {
 	f := video.YUV422_10bit
 	s, _ := newTestSqueeze(t, "cam2")
-	s.IngestSourceFrame("cam2", makeYUV420(64, 64, 50, 128, 128), 64, 64)
 	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
+	s.IngestSourceFrame("cam2", makeYUV420(64, 64, 50, 128, 128), 64, 64)
 	out := s.ProcessFrame10(video.NewFrame(f, 64, 64, 940, 512, 512), 64, 64)
 	require.Equal(t, uint16(64), binary.LittleEndian.Uint16(out), "black, not 8-bit bytes read as 10-bit")
 }
 
 func TestSqueeze_OffAtFullFrameLeavesFrameUntouched(t *testing.T) {
 	s, advance := newTestSqueeze(t, "cam2")
-	s.IngestSourceFrame("cam2", makeYUV420(64, 64, 50, 128, 128), 64, 64)
 
 	in := splitFrame(64, 64)
 	want := bytes.Clone(in)
@@ -168,6 +167,7 @@ func TestSqueeze_OffAtFullFrameLeavesFrameUntouched(t *testing.T) {
 	idle := 0
 	s.SetOnArrive(func() { idle++ })
 	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
+	s.IngestSourceFrame("cam2", makeYUV420(64, 64, 50, 128, 128), 64, 64)
 	require.NoError(t, s.Off(SqueezeMove{}))
 	require.True(t, s.Active(), "animating back out")
 	require.Equal(t, "cam2", s.BackgroundOnAir(), "background on air until the program fills the frame")
@@ -182,6 +182,28 @@ func TestSqueeze_OffAtFullFrameLeavesFrameUntouched(t *testing.T) {
 
 	s.ProcessFrame(in, 64, 64)
 	require.Equal(t, 1, idle, "idle reported once")
+}
+
+// A configured squeezeback that is off copies no background frames, and
+// a frame kept from an earlier On is not shown at the next one.
+func TestSqueeze_BackgroundFedOnlyWhileShown(t *testing.T) {
+	s, advance := newTestSqueeze(t, "cam2")
+	require.False(t, s.NeedsSource("cam2"), "configured but off")
+	s.IngestSourceFrame("cam2", makeYUV420(64, 64, 50, 128, 128), 64, 64)
+	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
+	out := s.ProcessFrame(makeYUV420(64, 64, 235, 128, 128), 64, 64)
+	require.Equal(t, byte(16), out[0], "black until the background delivers while on")
+
+	s.IngestSourceFrame("cam2", makeYUV420(64, 64, 50, 128, 128), 64, 64)
+	require.NoError(t, s.Off(SqueezeMove{}))
+	require.True(t, s.NeedsSource("cam2"), "fed while moving out")
+	advance(time.Second)
+	s.Frame(64, 64)
+	require.False(t, s.NeedsSource("cam2"), "off again")
+
+	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
+	out = s.ProcessFrame(makeYUV420(64, 64, 235, 128, 128), 64, 64)
+	require.Equal(t, byte(16), out[0], "not the frame from the last On")
 }
 
 // State reports animating until the move arrives, so an On arrival has
