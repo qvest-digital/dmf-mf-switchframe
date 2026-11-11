@@ -1,6 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import GraphicsPanel from './GraphicsPanel.svelte';
+import { GraphicsPublisher } from '$lib/graphics/publisher';
+
+vi.mock('$lib/api/switch-api', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/api/switch-api')>()),
+	graphicsOn: vi.fn().mockResolvedValue({}),
+	graphicsAutoOn: vi.fn().mockResolvedValue({}),
+}));
 
 // Mock OffscreenCanvas since jsdom doesn't support it.
 const mockCtx2d = {
@@ -354,6 +361,50 @@ describe('GraphicsPanel', () => {
 		expect(fill).toBeTruthy();
 		const options = Array.from(fill.options).map(o => o.value);
 		expect(options).toEqual(expect.arrayContaining(Object.keys(baseState.sources)));
+	});
+
+	describe('a layer set live elsewhere', () => {
+		// Live set by a macro or another session, over a stored template mode.
+		const liveLayer = {
+			...oneLayer, liveFill: 'cam1', liveKey: 'cam2',
+			config: { mode: 'template' },
+		};
+		const liveState = { ...baseState, graphics: { layers: [liveLayer] } };
+
+		it('should show the LIVE mode and a Live type without a stored mode', () => {
+			const state = { ...baseState, graphics: { layers: [{ ...liveLayer, config: undefined, imageName: 'logo.png' }] } };
+			const { container } = render(GraphicsPanel, { props: { state } });
+			expect(container.querySelector('.mode-seg.active')?.textContent).toContain('LIVE');
+			expect(container.querySelector('.live-fill')).toBeTruthy();
+			expect(container.querySelector('.layer-type')?.textContent).toBe('Live');
+		});
+
+		it('should label it Live over its stored mode', () => {
+			const { container } = render(GraphicsPanel, { props: { state: liveState } });
+			expect(container.querySelector('.layer-type')?.textContent).toBe('Live');
+		});
+
+		it.each(['CUT ON', 'AUTO ON'])('should not publish a template on %s', async (label) => {
+			const api = await import('$lib/api/switch-api');
+			vi.mocked(api.graphicsOn).mockClear();
+			vi.mocked(api.graphicsAutoOn).mockClear();
+			const publish = vi.spyOn(GraphicsPublisher.prototype, 'publish').mockResolvedValue();
+			const { container } = render(GraphicsPanel, { props: { state: liveState } });
+			const btn = Array.from(container.querySelectorAll('.dsk-btn')).find(b => b.textContent?.trim() === label);
+			await fireEvent.click(btn!);
+			const on = vi.mocked(label === 'CUT ON' ? api.graphicsOn : api.graphicsAutoOn);
+			await vi.waitFor(() => expect(on).toHaveBeenCalledWith(0));
+			expect(publish).not.toHaveBeenCalled();
+			publish.mockRestore();
+		});
+
+		it('should offer no fly for it', () => {
+			const state = { ...baseState, graphics: { layers: [{ ...liveLayer, active: true, fadePosition: 1 }] } };
+			const { container } = render(GraphicsPanel, { props: { state } });
+			const disclosures = Array.from(container.querySelectorAll('.disclosure')).map(b => b.textContent?.trim());
+			expect(disclosures.some(t => t?.includes('ANIM'))).toBe(true);
+			expect(disclosures.some(t => t?.includes('FLY'))).toBe(false);
+		});
 	});
 
 	it('should show image upload button after clicking IMG mode', async () => {

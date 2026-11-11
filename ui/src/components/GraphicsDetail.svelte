@@ -708,10 +708,13 @@
 			{#if layer.active}
 				<div class="effects-section">
 					<div class="effects-row">
+						<!-- A live layer is full frame; the engine refuses to move it. -->
+						{#if !layer.liveFill}
 						<button class="disclosure" onclick={() => { flyOpen = !flyOpen; if (flyOpen) animOpen = false; }} aria-expanded={flyOpen} class:active-disc={flyOpen}>
 							<span class="disc-arrow">{@html renderIcon(flyOpen ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 10, 'stroke')}</span>
 							FLY
 						</button>
+						{/if}
 						<button class="disclosure" onclick={() => { animOpen = !animOpen; if (animOpen) flyOpen = false; }} aria-expanded={animOpen} class:active-disc={animOpen}>
 							<span class="disc-arrow">{@html renderIcon(animOpen ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 10, 'stroke')}</span>
 							ANIM
@@ -721,7 +724,7 @@
 						</button>
 					</div>
 
-					{#if flyOpen}
+					{#if flyOpen && !layer.liveFill}
 						<div class="collapse-content">
 							<select
 								class="ctl-select"

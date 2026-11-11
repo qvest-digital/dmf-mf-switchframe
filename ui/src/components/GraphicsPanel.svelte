@@ -197,10 +197,18 @@
 		const mode = layerConfig(id).mode;
 		if (mode) return mode;
 		const layer = layers.find(l => l.id === id);
+		// Live may have been set by a macro, another session or a snapshot.
+		if (layer?.liveFill) return 'live';
 		if (layer?.sequenceLoaded || layer?.sequenceProcessing) return 'sequence';
 		if (layer?.html5Url) return 'html5';
 		if (layer?.imageName) return 'image';
 		return 'template';
+	}
+
+	// A live layer shows its fill and key, not an overlay: publishing a
+	// template under it would only resurface once live is cleared.
+	function isLive(id: number): boolean {
+		return !!layers.find(l => l.id === id)?.liveFill;
 	}
 
 	function getLayerFlyConfig(id: number): FlyConfig {
@@ -213,6 +221,8 @@
 
 	function layerTypeLabel(id: number): string {
 		const layer = layers.find(l => l.id === id);
+		// What goes to air, whatever mode the layer was last edited in.
+		if (layer?.liveFill) return 'Live';
 		if (layer?.html5Status) return 'HTML5';
 		switch (getLayerMode(id)) {
 			case 'image': return 'Image';
@@ -254,8 +264,7 @@
 	}
 
 	async function handleCutOn(id: number) {
-		const mode = getLayerMode(id);
-		if (mode === 'template') {
+		if (getLayerMode(id) === 'template' && !isLive(id)) {
 			const tplId = getLayerTemplate(id);
 			const tpl = builtinTemplates[tplId];
 			if (!tpl) return;
@@ -271,8 +280,7 @@
 	}
 
 	async function handleAutoOn(id: number) {
-		const mode = getLayerMode(id);
-		if (mode === 'template') {
+		if (getLayerMode(id) === 'template' && !isLive(id)) {
 			const tplId = getLayerTemplate(id);
 			const tpl = builtinTemplates[tplId];
 			if (!tpl) return;
