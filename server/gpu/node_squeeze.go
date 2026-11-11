@@ -18,6 +18,8 @@ type gpuSqueezeNode struct {
 	pool    *FramePool
 	state   SqueezeState
 	lastErr atomic.Value
+
+	warnedFormat atomic.Bool
 }
 
 // NewGPUSqueezeNode creates a GPU squeeze-back pipeline node.
@@ -68,12 +70,20 @@ func (n *gpuSqueezeNode) ProcessGPU(frame *GPUFrame) error {
 }
 
 // drawBackground fills frame with the background source scaled to it, or
-// black when there is none or it has no frame yet.
+// black when there is none, it has no frame yet or its frame is in another
+// format: the scale kernel is picked by the source's format and would
+// write it into the program frame as such.
 func (n *gpuSqueezeNode) drawBackground(frame *GPUFrame, background string) error {
 	if background != "" {
 		if fill := n.state.GPUFill(background); fill != nil {
 			defer fill.Release()
-			return GPUScaleDispatch(n.ctx, frame, fill)
+			if fill.Format == frame.Format {
+				return GPUScaleDispatch(n.ctx, frame, fill)
+			}
+			if !n.warnedFormat.Swap(true) {
+				slog.Warn("gpu_squeezeback: background format differs from program, drawing black",
+					"source", background, "background_format", fill.Format, "program_format", frame.Format)
+			}
 		}
 	}
 	return GPUFillBlackDispatch(n.ctx, frame)
