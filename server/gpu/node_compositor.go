@@ -3,6 +3,8 @@
 package gpu
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -19,6 +21,7 @@ type gpuCompositorNode struct {
 	overlays   map[int]*GPUOverlay // per-layer cached RGBA on GPU
 	overlayGen map[int]uint64      // per-layer generation for invalidation
 	visibleSet map[int]bool        // reusable set for cache eviction (avoids per-frame alloc)
+	liveWarned map[int]bool        // live layers whose failure was logged
 	lastErr    atomic.Value
 }
 
@@ -31,6 +34,7 @@ func NewGPUCompositorNode(ctx *Context, compositor CompositorState) GPUPipelineN
 		overlays:   make(map[int]*GPUOverlay),
 		overlayGen: make(map[int]uint64),
 		visibleSet: make(map[int]bool, 8),
+		liveWarned: make(map[int]bool),
 	}
 }
 
@@ -76,6 +80,18 @@ func (n *gpuCompositorNode) ProcessGPU(frame *GPUFrame) error {
 	// Process each layer in z-order (SnapshotVisibleLayers returns sorted).
 	for i := range layers {
 		layer := &layers[i]
+		if layer.LiveFill != nil {
+			if err := n.compositeLive(frame, layer); err != nil {
+				n.lastErr.Store(err)
+				if !n.liveWarned[layer.ID] {
+					n.liveWarned[layer.ID] = true
+					slog.Warn("gpu_dsk: live layer skipped", "layer", layer.ID, "error", err)
+				}
+			} else {
+				delete(n.liveWarned, layer.ID)
+			}
+			continue
+		}
 		n.visibleSet[layer.ID] = true
 
 		// Check overlay cache — upload or re-upload if generation changed.
@@ -151,6 +167,47 @@ func (n *gpuCompositorNode) ProcessGPU(frame *GPUFrame) error {
 	}
 
 	return nil
+}
+
+// errLivePremultiplied: no GPU kernel adds a shaped fill; the live guard
+// refuses one before it gets here.
+var errLivePremultiplied = errors.New("gpu_dsk: premultiplied live fill not supported")
+
+// compositeLive keys a live fill onto frame by its key's luma with the
+// kernels the upstream keyer uses: both pictures are uploaded, the key
+// becomes a mask through the layer's LUT, and the fill is blended by it.
+func (n *gpuCompositorNode) compositeLive(frame *GPUFrame, layer *VisibleLayerSnapshot) error {
+	if layer.Premultiplied {
+		return errLivePremultiplied
+	}
+	if layer.LiveW != frame.Width || layer.LiveH != frame.Height || layer.LiveTenBit != (frame.Format == GPUFormatP210) {
+		return fmt.Errorf("gpu_dsk: live fill and key %dx%d (10-bit %v) do not match the program %dx%d",
+			layer.LiveW, layer.LiveH, layer.LiveTenBit, frame.Width, frame.Height)
+	}
+	pool := n.ctx.Pool()
+	if pool == nil {
+		return ErrGPUNotAvailable
+	}
+	var frames [3]*GPUFrame // fill, key, mask
+	for i := range frames {
+		f, err := pool.Acquire()
+		if err != nil {
+			return err
+		}
+		defer f.Release()
+		frames[i] = f
+	}
+	fill, key, mask := frames[0], frames[1], frames[2]
+	if err := GPUUploadDispatch(n.ctx, fill, layer.LiveFill, layer.LiveW, layer.LiveH); err != nil {
+		return err
+	}
+	if err := GPUUploadDispatch(n.ctx, key, layer.LiveKey, layer.LiveW, layer.LiveH); err != nil {
+		return err
+	}
+	if err := GPULumaKeyDispatch(n.ctx, key, mask, layer.LiveLUT); err != nil {
+		return err
+	}
+	return GPUBlendStingerDispatch(n.ctx, frame, frame, fill, mask)
 }
 
 func (n *gpuCompositorNode) Close() error {

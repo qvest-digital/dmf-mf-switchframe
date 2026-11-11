@@ -299,4 +299,5 @@ func TestSnapshotVisibleLayersLive(t *testing.T) {
 	require.Equal(t, &key[0], &snaps[0].LiveKey.Data[0])
 	require.True(t, snaps[0].Premultiplied)
 	require.Nil(t, snaps[0].Overlay)
+	require.Equal(t, byte(128), snaps[0].LiveLUT[126], "the GPU keys with the CPU's LUT")
 }

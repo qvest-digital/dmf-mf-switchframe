@@ -43,6 +43,16 @@ type VisibleLayerSnapshot struct {
 	Overlay            []byte  // RGBA pixel data (deep copy)
 	OverlayW, OverlayH int
 	Gen                uint64 // generation counter for cache invalidation
+
+	// A live fill+key layer carries its pictures instead of Overlay: CPU
+	// planar frames in the pool's format (YUV420p, or YUV422P10LE for
+	// P210), valid only for the frame being processed. LiveLUT maps 8-bit
+	// key luma to the fill's weight with the fade folded in.
+	LiveFill, LiveKey []byte
+	LiveW, LiveH      int
+	LiveTenBit        bool
+	LiveLUT           [256]byte
+	Premultiplied     bool
 }
 
 // LayoutState provides layout compositor state to the GPU layout node.

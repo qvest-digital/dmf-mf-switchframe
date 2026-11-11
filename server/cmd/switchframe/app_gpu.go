@@ -1264,9 +1264,9 @@ func (a *compositorStateAdapter) SnapshotVisibleLayers() []gpu.VisibleLayerSnaps
 	if len(snaps) == 0 {
 		return nil
 	}
-	result := make([]gpu.VisibleLayerSnapshot, len(snaps))
-	for i, s := range snaps {
-		result[i] = gpu.VisibleLayerSnapshot{
+	result := make([]gpu.VisibleLayerSnapshot, 0, len(snaps))
+	for _, s := range snaps {
+		l := gpu.VisibleLayerSnapshot{
 			ID:       s.ID,
 			Rect:     gpu.Rect{X: s.RectX, Y: s.RectY, W: s.RectW, H: s.RectH},
 			Alpha:    s.Alpha,
@@ -1275,8 +1275,34 @@ func (a *compositorStateAdapter) SnapshotVisibleLayers() []gpu.VisibleLayerSnaps
 			OverlayH: s.OverlayH,
 			Gen:      s.Gen,
 		}
+		if f, k := s.LiveFill, s.LiveKey; f != nil && k != nil {
+			if f.Width != k.Width || f.Height != k.Height || f.TenBit != k.TenBit {
+				continue // fill and key of different formats cannot key
+			}
+			l.LiveFill, l.LiveKey = f.Data, k.Data
+			l.LiveW, l.LiveH, l.LiveTenBit = f.Width, f.Height, f.TenBit
+			l.LiveLUT = s.LiveLUT
+			l.Premultiplied = s.Premultiplied
+		}
+		result = append(result, l)
 	}
 	return result
+}
+
+// liveLayerGuard refuses a live graphics layer the GPU pipeline would not
+// draw: it has no shaped-fill blend, and CUDA has no 10-bit luma key.
+func (a *App) liveLayerGuard(o graphics.LiveOptions) error {
+	gs := a.gpu()
+	if gs == nil || gs.encoder == nil {
+		return nil // CPU pipeline
+	}
+	if o.Premultiplied {
+		return fmt.Errorf("%w: premultiplied fill on the GPU pipeline", graphics.ErrLiveUnsupported)
+	}
+	if gs.ctx.Backend() == "cuda" && a.sw.PipelineFormat().Color.ColorFormat == switcher.ColorYUV422_10bit {
+		return fmt.Errorf("%w: 10-bit live key on the CUDA pipeline", graphics.ErrLiveUnsupported)
+	}
+	return nil
 }
 
 // squeezeStateAdapter adapts dve.Squeeze to gpu.SqueezeState; the

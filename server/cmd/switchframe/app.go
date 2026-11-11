@@ -784,6 +784,7 @@ func (a *App) initSubsystems() error {
 		vi := a.programRelay.VideoInfo()
 		return vi.Width, vi.Height
 	})
+	a.compositor.SetLiveGuard(a.liveLayerGuard)
 	pf := a.sw.PipelineFormat()
 	a.compositor.SetPipelineFPS(pf.FPSNum, pf.FPSDen)
 	a.sw.SetCompositor(a.compositor)

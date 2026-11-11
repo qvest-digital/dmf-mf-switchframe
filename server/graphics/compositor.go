@@ -1162,7 +1162,9 @@ type VisibleLayerSnap struct {
 	// Overlay. They are not copied: they stay valid only while the tick
 	// that set them runs the pipeline.
 	LiveFill, LiveKey *LivePicture
-	Premultiplied     bool
+	// LiveLUT maps 8-bit key luma to the fill's weight, fade folded in.
+	LiveLUT       [256]byte
+	Premultiplied bool
 }
 
 // SnapshotVisibleLayers returns a deep-copied snapshot of all visible layers
@@ -1267,6 +1269,7 @@ func (c *Compositor) SnapshotVisibleLayers() []VisibleLayerSnap {
 				LiveKey:       &key,
 				Premultiplied: lf.premultiplied,
 			})
+			liveKeyLUT8(&result[len(result)-1].LiveLUT, layer.fadePosition)
 			continue
 		}
 		if layer.overlay == nil {
