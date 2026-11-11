@@ -79,15 +79,7 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 				}
 			},
 			OnRawVideo: func(sourceKey string, yuv []byte, w, h int, pts int64) {
-				pf := &switcher.ProcessingFrame{
-					Data:   yuv,
-					Width:  w,
-					Height: h,
-					PTS:    pts,
-					DTS:    pts,
-					Codec:  "h264",
-				}
-				a.sw.IngestRawVideo(sourceKey, pf)
+				a.sw.IngestRawVideo(sourceKey, newRawSourceFrame(yuv, switcher.ColorYUV420_8bit, w, h, pts, "h264"))
 			},
 			OnRawAudio: func(sourceKey string, pcm []float32, pts int64, channels int) {
 				a.mixer.IngestPCM(sourceKey, pcm, pts, channels)

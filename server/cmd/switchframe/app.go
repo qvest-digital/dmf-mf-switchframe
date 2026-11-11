@@ -1082,6 +1082,26 @@ func (a *App) initSubsystems() error {
 
 // initMXL handles MXL discovery, source registration, and output wiring.
 // Called between initSubsystems and initAPI.
+// newRawSourceFrame wraps a raw source's picture for IngestRawVideo. The
+// frame is managed: the frame synchronizer keeps it as the source's last
+// frame while the program takes a reference, and only a managed frame is
+// copied by the pipeline's MakeWritable before compositing writes into
+// it. Unmanaged, a repeated grain would read back a picture already
+// composited, keyed or overlaid a second time.
+func newRawSourceFrame(yuv []byte, format switcher.PipelineColorFormat, w, h int, pts int64, codec string) *switcher.ProcessingFrame {
+	pf := &switcher.ProcessingFrame{
+		Data:   yuv,
+		Format: format,
+		Width:  w,
+		Height: h,
+		PTS:    pts,
+		DTS:    pts,
+		Codec:  codec,
+	}
+	pf.SetRefs(1)
+	return pf
+}
+
 func (a *App) initMXL() error {
 	// Handle --mxl-discover: list flows and exit.
 	if a.cfg.MXLDiscover {
@@ -1231,16 +1251,7 @@ func (a *App) initMXL() error {
 				if lossless10bit {
 					frameFmt = switcher.ColorYUV422_10bit
 				}
-				pf := &switcher.ProcessingFrame{
-					Data:   yuv,
-					Format: frameFmt,
-					Width:  w,
-					Height: h,
-					PTS:    pts,
-					DTS:    pts,
-					Codec:  "h264",
-				}
-				a.sw.IngestRawVideo(key, pf)
+				a.sw.IngestRawVideo(key, newRawSourceFrame(yuv, frameFmt, w, h, pts, "h264"))
 			},
 			OnRawAudio: func(key string, pcm []float32, pts int64, channels int) {
 				a.mixer.IngestPCM(key, pcm, pts, channels)

@@ -569,15 +569,7 @@ func (a *App) activateST2110Receiver(id string, params nmos.StagedParams) error 
 			Channels: 2,
 			OnRawVideo: func(key string, yuv []byte, w, h int, pts int64) {
 				pts = st2110Anchor(key).PTS(pts)
-				pf := &switcher.ProcessingFrame{
-					Data:   yuv,
-					Width:  w,
-					Height: h,
-					PTS:    pts,
-					DTS:    pts,
-					Codec:  "raw",
-				}
-				a.sw.IngestRawVideo(key, pf)
+				a.sw.IngestRawVideo(key, newRawSourceFrame(yuv, switcher.ColorYUV420_8bit, w, h, pts, "raw"))
 			},
 		})
 

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/switcher"
 )
 
 // captureStartup runs fn with os.Stdout and the default logger redirected
@@ -387,4 +388,20 @@ func TestParseConfig_MXLSourcePreset(t *testing.T) {
 			require.Equal(t, tc.want, cfg.MXLSourcePreset)
 		})
 	}
+}
+
+// The frame synchronizer keeps a raw source's frame as its last one while
+// a tick composites into the program's reference to it. The pipeline's
+// MakeWritable has to copy it first, or a repeated grain reads back a
+// picture composited once already.
+func TestRawSourceFrameCopiedBeforeCompositing(t *testing.T) {
+	yuv := []byte{16, 16, 16, 16, 128, 128}
+	pf := newRawSourceFrame(yuv, switcher.ColorYUV420_8bit, 2, 2, 3003, "raw")
+	program := *pf // a tick's reference, as the synchronizer lends it
+	program.Ref()
+	program.MakeWritable(nil)
+	program.Data[0] = 235
+	require.Equal(t, byte(16), yuv[0], "the kept frame is not written")
+	program.ReleaseYUV()
+	require.Equal(t, int32(1), pf.Refs(), "the synchronizer's reference stays")
 }
