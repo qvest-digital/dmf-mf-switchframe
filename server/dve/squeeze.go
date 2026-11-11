@@ -64,9 +64,7 @@ type Squeeze struct {
 
 	now func() time.Time // test hook; nil means time.Now
 
-	// OnIdle is called, outside the lock, when an Off animation arrives at
-	// full frame and the background leaves the air.
-	OnIdle func()
+	onArrive func() // under mu; see SetOnArrive
 }
 
 // squeezeFill is the latest background frame.
@@ -81,6 +79,15 @@ type squeezeFill struct {
 // unconfigured.
 func NewSqueeze(frameW, frameH int) *Squeeze {
 	return &Squeeze{frameW: frameW, frameH: frameH}
+}
+
+// SetOnArrive sets fn to be called, on the pipeline goroutine and outside
+// the lock, when a move arrives: state stops reporting it as animating,
+// and after an Off the background leaves the air and tally.
+func (s *Squeeze) SetOnArrive(fn func()) {
+	s.mu.Lock()
+	s.onArrive = fn
+	s.mu.Unlock()
 }
 
 // UpdateFormat sets the frame size the configured rect is in.
@@ -208,9 +215,9 @@ func (s *Squeeze) startLocked(from, to image.Rectangle, durMs int, ease func(flo
 }
 
 // rectLocked returns the program rect now in frame coordinates, ending an
-// animation that has arrived. idle is true when that ended an Off.
+// animation that has arrived; arrived is true when that happened.
 // Must be called with s.mu held.
-func (s *Squeeze) rectLocked() (r image.Rectangle, idle bool) {
+func (s *Squeeze) rectLocked() (r image.Rectangle, arrived bool) {
 	if a := s.anim; a != nil {
 		// Decided on elapsed time, not eased progress: an overshooting
 		// curve passes 1 before the end.
@@ -218,15 +225,13 @@ func (s *Squeeze) rectLocked() (r image.Rectangle, idle bool) {
 			return a.InterpolateRect(a.Progress()), false
 		}
 		s.anim = nil
-		if !s.on {
-			s.active.Store(false)
-			idle = true
-		}
+		s.active.Store(s.on)
+		arrived = true
 	}
 	if c := s.cfg.Load(); s.on && c != nil {
-		return squeezeTarget(c.Rect), idle
+		return squeezeTarget(c.Rect), arrived
 	}
-	return image.Rect(0, 0, s.frameW, s.frameH), idle
+	return image.Rect(0, 0, s.frameW, s.frameH), arrived
 }
 
 // Frame returns where the program goes in a width x height frame, and
@@ -237,11 +242,11 @@ func (s *Squeeze) Frame(width, height int) (image.Rectangle, bool) {
 		return image.Rectangle{}, false
 	}
 	s.mu.Lock()
-	r, idle := s.rectLocked()
+	r, arrived := s.rectLocked()
 	fw, fh := s.frameW, s.frameH
-	cb := s.OnIdle
+	cb := s.onArrive
 	s.mu.Unlock()
-	if idle && cb != nil {
+	if arrived && cb != nil {
 		cb()
 	}
 	if fw > 0 && fh > 0 && (width != fw || height != fh) {

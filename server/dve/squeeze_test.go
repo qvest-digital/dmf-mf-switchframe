@@ -166,7 +166,7 @@ func TestSqueeze_OffAtFullFrameLeavesFrameUntouched(t *testing.T) {
 	require.Equal(t, want, s.ProcessFrame(in, 64, 64), "configured but never on")
 
 	idle := 0
-	s.OnIdle = func() { idle++ }
+	s.SetOnArrive(func() { idle++ })
 	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
 	require.NoError(t, s.Off(SqueezeMove{}))
 	require.True(t, s.Active(), "animating back out")
@@ -182,6 +182,24 @@ func TestSqueeze_OffAtFullFrameLeavesFrameUntouched(t *testing.T) {
 
 	s.ProcessFrame(in, 64, 64)
 	require.Equal(t, 1, idle, "idle reported once")
+}
+
+// State reports animating until the move arrives, so an On arrival has
+// to be reported as much as an Off one.
+func TestSqueeze_OnArrivalReported(t *testing.T) {
+	s, advance := newTestSqueeze(t, "")
+	arrived := 0
+	s.SetOnArrive(func() { arrived++ })
+	require.NoError(t, s.On(SqueezeMove{}))
+	s.Frame(64, 64)
+	require.Zero(t, arrived)
+	advance(time.Second)
+	s.Frame(64, 64)
+	require.Equal(t, 1, arrived, "On arrival reported")
+	require.False(t, s.Snapshot().Animating)
+	require.True(t, s.Active(), "still squeezed")
+	s.Frame(64, 64)
+	require.Equal(t, 1, arrived, "reported once")
 }
 
 func TestSqueeze_RetargetsFromCurrentRect(t *testing.T) {

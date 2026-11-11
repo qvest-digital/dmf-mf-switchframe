@@ -1087,20 +1087,6 @@ func (s *Switcher) SetDVECompositor(dc *dve.Compositor) {
 	s.rebuildPipeline()
 }
 
-// SetSqueeze sets the squeeze-back stage for L-frames.
-func (s *Switcher) SetSqueeze(sq *dve.Squeeze) {
-	s.configMu.Lock()
-	s.squeeze = sq
-	s.updateGraphicsHandlers(func(gh *graphicsHandlers) { gh.squeeze = sq })
-	s.configMu.Unlock()
-	if sq != nil {
-		// The background leaves the air, and tally, when an Off arrives.
-		// Called on the pipeline goroutine, which must not wait on state.
-		sq.OnIdle = func() { go s.notifyStateChange(s.State()) }
-	}
-	s.rebuildPipeline()
-}
-
 // SetSTMapRegistry sets the ST map registry for per-source correction.
 // When set, each source decoder applies the assigned ST map warp after
 // decode and resolution normalization, before fan-out to all consumers.

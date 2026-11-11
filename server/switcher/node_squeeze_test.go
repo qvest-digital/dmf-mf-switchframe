@@ -114,3 +114,36 @@ func TestState_SqueezeBackgroundTally(t *testing.T) {
 		t.Fatal("no state broadcast when the background left the air")
 	}
 }
+
+// The arrival is reported from the pipeline goroutine, which must not
+// wait on the state lock to build the broadcast.
+func TestSqueezeNode_ArrivalDoesNotBlockOnStateLock(t *testing.T) {
+	sw, sq := squeezeSwitcher(t)
+	states := make(chan internal.ControlRoomState, 8)
+	sw.OnStateChange(func(s internal.ControlRoomState) { states <- s })
+	ms := 1
+	require.NoError(t, sq.On(dve.SqueezeMove{DurationMs: &ms}))
+	time.Sleep(5 * time.Millisecond)
+
+	sw.configMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		(&squeezeNode{squeeze: sq}).Process(nil, frame8(235))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		sw.configMu.Unlock()
+		<-done
+		t.Fatal("frame blocked on the state lock")
+	}
+	sw.configMu.Unlock()
+
+	// The On arrival is broadcast too: animating is part of state.
+	select {
+	case <-states:
+	case <-time.After(time.Second):
+		t.Fatal("no state broadcast when the On arrived")
+	}
+}

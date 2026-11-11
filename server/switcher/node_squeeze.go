@@ -8,6 +8,21 @@ import (
 
 var _ PipelineNode = (*squeezeNode)(nil)
 
+// SetSqueeze sets the squeeze-back stage for L-frames.
+func (s *Switcher) SetSqueeze(sq *dve.Squeeze) {
+	if sq != nil {
+		// An arrival changes animating and, after an Off, tally. It is
+		// reported on the pipeline goroutine, which must not wait on the
+		// state lock. Set before the stage is published to the pipeline.
+		sq.SetOnArrive(func() { go func() { s.notifyStateChange(s.State()) }() })
+	}
+	s.configMu.Lock()
+	s.squeeze = sq
+	s.updateGraphicsHandlers(func(gh *graphicsHandlers) { gh.squeeze = sq })
+	s.configMu.Unlock()
+	s.rebuildPipeline()
+}
+
 // squeezeNode shrinks the composited program into the squeeze-back rect
 // over its background. It sits after the DVE compositor and before the
 // downstream graphics, so keys and PiPs shrink with the program and
