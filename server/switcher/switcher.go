@@ -1061,6 +1061,7 @@ func (s *Switcher) SetOnKeyframeBroadcast(fn func()) {
 func (s *Switcher) SetCompositor(c *graphics.Compositor) {
 	s.configMu.Lock()
 	s.compositorRef = c
+	s.updateGraphicsHandlers(func(gh *graphicsHandlers) { gh.compositor = c })
 	s.configMu.Unlock()
 	s.rebuildPipeline()
 }
@@ -3785,6 +3786,21 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 				if _, ok := srcMap[src]; ok {
 					tally[src] = string(TallyKeyFill)
 				}
+			}
+		}
+	}
+	// A live graphics layer that is on puts its fill on air and keys the
+	// program with its key, as an upstream key's fill and alpha do.
+	if s.compositorRef != nil {
+		fills, keys := s.compositorRef.LiveOnAir()
+		for _, src := range keys {
+			if _, ok := srcMap[src]; ok && tally[src] != string(TallyKeyFill) {
+				tally[src] = string(TallyKeyAlpha)
+			}
+		}
+		for _, src := range fills {
+			if _, ok := srcMap[src]; ok {
+				tally[src] = string(TallyKeyFill)
 			}
 		}
 	}

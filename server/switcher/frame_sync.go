@@ -201,6 +201,47 @@ func (ss *syncSource) popAt(limit int64) *ProcessingFrame {
 	return pf
 }
 
+// sourceLossTimeout90k is SourceLossTimeout in 90 kHz ticks.
+const sourceLossTimeout90k = int64(SourceLossTimeout) * 90000 / int64(time.Second)
+
+// FrameAt returns the frame a source shows at readPTS without taking it:
+// the newest buffered frame at or before readPTS less the source's delay,
+// else the last frame a tick took if it is not newer. The source's ring,
+// its last frame and its loss time stay as they are, so a source can be
+// read here and still be cut to program. A frame older than
+// SourceLossTimeout at the read point is not returned. The result is a
+// counted reference the caller releases.
+func (fs *FrameSynchronizer) FrameAt(key string, readPTS int64) *ProcessingFrame {
+	return fs.peek(key, readPTS, true)
+}
+
+// peek is FrameAt at limit, less the source's delay only when delayed.
+func (fs *FrameSynchronizer) peek(key string, limit int64, delayed bool) *ProcessingFrame {
+	ss := fs.source(key)
+	if ss == nil {
+		return nil
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if delayed {
+		limit -= ss.delay.Load()
+	}
+	var pf *ProcessingFrame
+	for _, f := range ss.ring {
+		if f.PTS > limit {
+			break
+		}
+		pf = f
+	}
+	if pf == nil && ss.lastRawVideo != nil && ss.lastRawVideo.PTS <= limit {
+		pf = ss.lastRawVideo
+	}
+	if pf == nil || limit-pf.PTS > sourceLossTimeout90k {
+		return nil
+	}
+	return borrowRawVideoRef(pf)
+}
+
 // DebugSnapshot reports each source's buffer state.
 func (fs *FrameSynchronizer) DebugSnapshot() map[string]any {
 	fs.mu.Lock()

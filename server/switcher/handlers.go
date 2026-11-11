@@ -16,6 +16,7 @@ type graphicsHandlers struct {
 	keyBridge     *graphics.KeyProcessorBridge
 	dveCompositor *dve.Compositor
 	squeeze       *dve.Squeeze
+	compositor    *graphics.Compositor // live layers are fed per tick
 }
 
 // audioHandlers groups the per-frame audio callbacks. audioTransition is

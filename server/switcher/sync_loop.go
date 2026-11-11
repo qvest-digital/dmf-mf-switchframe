@@ -6,6 +6,7 @@ import (
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/clock"
+	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
@@ -186,6 +187,9 @@ func (s *Switcher) processAudioTick(tick clock.Tick) {
 func (s *Switcher) processVideoTick(tick clock.Tick) {
 	hs := s.hotState.Load()
 	fs := s.frameSync
+	// Live graphics layers get their frames before any path runs the
+	// pipeline, and give them back once it has.
+	defer s.feedLiveLayers(fs, tick)()
 	programSource := hs.programSource
 	previewSource := hs.previewSource
 	engine := hs.transEngine
@@ -784,6 +788,83 @@ func (s *Switcher) feedSourceSubsystems(sourceKey string, pf *ProcessingFrame) {
 			dveComp.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 		}
 	}
+}
+
+// noLiveFrames is feedLiveLayers' release when it handed out nothing.
+var noLiveFrames = func() {}
+
+// feedLiveLayers hands each visible live graphics layer the fill and key
+// frames this tick shows, read at tick.ReadPTS as the program is, and
+// returns the function that clears and releases them; the pipeline runs
+// on this goroutine, so the frames stay valid until then. Fill and key
+// are not fed at arrival, as keyer and DVE fills are: two sources whose
+// frames land either side of a tick would then pair a fill with the key
+// of the grain before or after it.
+func (s *Switcher) feedLiveLayers(fs *FrameSynchronizer, tick clock.Tick) func() {
+	gh := s.graphicsHandlers.Load()
+	if gh == nil || gh.compositor == nil {
+		return noLiveFrames
+	}
+	comp := gh.compositor
+	layers := comp.LiveSources()
+	if len(layers) == 0 {
+		return noLiveFrames
+	}
+	var held []*ProcessingFrame
+	for _, l := range layers {
+		fill, key := alignedLivePair(fs, l.Fill, l.Key, tick.ReadPTS)
+		if fill == nil || key == nil || len(fill.Data) == 0 || len(key.Data) == 0 {
+			// Nothing to key without both; the layer skips this tick.
+			for _, f := range []*ProcessingFrame{fill, key} {
+				if f != nil {
+					f.ReleaseYUV()
+				}
+			}
+			continue
+		}
+		held = append(held, fill, key)
+		comp.SetLiveFrames(l.ID, livePicture(fill), livePicture(key))
+	}
+	return func() {
+		comp.ClearLiveFrames()
+		for _, f := range held {
+			f.ReleaseYUV()
+		}
+	}
+}
+
+// alignedLivePair reads a fill and key at readPTS. When one source's
+// newest due frame is a grain ahead of the other's, the pair takes the
+// ahead source's frame at the other's PTS, so both show one grain; if
+// that grain is gone the newest pair is kept rather than dropping the
+// graphics for a tick.
+func alignedLivePair(fs *FrameSynchronizer, fillKey, keyKey string, readPTS int64) (fill, key *ProcessingFrame) {
+	fill, key = fs.FrameAt(fillKey, readPTS), fs.FrameAt(keyKey, readPTS)
+	if fill == nil || key == nil || fill.PTS == key.PTS {
+		return fill, key
+	}
+	if fill.PTS > key.PTS {
+		if f := fs.peek(fillKey, key.PTS, false); f != nil {
+			if f.PTS == key.PTS {
+				fill.ReleaseYUV()
+				return f, key
+			}
+			f.ReleaseYUV()
+		}
+		return fill, key
+	}
+	if k := fs.peek(keyKey, fill.PTS, false); k != nil {
+		if k.PTS == fill.PTS {
+			key.ReleaseYUV()
+			return fill, k
+		}
+		k.ReleaseYUV()
+	}
+	return fill, key
+}
+
+func livePicture(pf *ProcessingFrame) graphics.LivePicture {
+	return graphics.LivePicture{Data: pf.Data, Width: pf.Width, Height: pf.Height, TenBit: pf.Format == ColorYUV422_10bit}
 }
 
 // logOverload logs overload drops at most once per second to avoid flooding.

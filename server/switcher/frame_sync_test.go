@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/prism/distribution"
 
 	"github.com/zsiec/switchframe/server/clock"
 )
@@ -221,4 +222,123 @@ func TestFrameSync_ConcurrentIngestAddRemove(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// Two sources writing frames of one grain index carry one PTS; read at a
+// tick both give the frame of the same grain.
+func TestFrameSync_FrameAtAlignsEqualPTS(t *testing.T) {
+	pool := NewFramePool(8, 4, 4, ColorYUV420_8bit)
+	fs := NewFrameSynchronizer()
+	fs.AddSource("fill")
+	fs.AddSource("key")
+	for _, pts := range []int64{3000, 6000, 9000} {
+		fs.IngestRawVideo("fill", poolFrame(pool, pts))
+		fs.IngestRawVideo("key", poolFrame(pool, pts))
+	}
+	for _, read := range []int64{6000, 7500} {
+		fill, key := fs.FrameAt("fill", read), fs.FrameAt("key", read)
+		require.Equal(t, int64(6000), fill.PTS)
+		require.Equal(t, fill.PTS, key.PTS)
+		fill.ReleaseYUV()
+		key.ReleaseYUV()
+	}
+	require.Nil(t, fs.FrameAt("fill", 2999), "nothing due yet")
+	require.Nil(t, fs.FrameAt("none", 6000))
+	require.Equal(t, 3, fs.Buffered("fill"), "a peek takes no frame")
+	require.Equal(t, 2, poolFree(pool), "a peek's reference released leaves the frame buffered")
+}
+
+// A key a grain late pairs with the fill of its own grain, not the
+// fill's newest.
+func TestFrameSync_LateKeyYieldsOlderAlignedPair(t *testing.T) {
+	pool := NewFramePool(4, 4, 4, ColorYUV420_8bit)
+	fs := NewFrameSynchronizer()
+	fs.AddSource("fill")
+	fs.AddSource("key")
+	fs.IngestRawVideo("fill", poolFrame(pool, 3000))
+	fs.IngestRawVideo("fill", poolFrame(pool, 6000))
+	fs.IngestRawVideo("key", poolFrame(pool, 3000))
+
+	fill, key := alignedLivePair(fs, "fill", "key", 6000)
+	require.Equal(t, int64(3000), fill.PTS)
+	require.Equal(t, int64(3000), key.PTS)
+	fill.ReleaseYUV()
+	key.ReleaseYUV()
+
+	// The key arrives: the newest grain again.
+	fs.IngestRawVideo("key", poolFrame(pool, 6000))
+	fill, key = alignedLivePair(fs, "fill", "key", 6000)
+	require.Equal(t, int64(6000), fill.PTS)
+	require.Equal(t, int64(6000), key.PTS)
+	fill.ReleaseYUV()
+	key.ReleaseYUV()
+	require.Equal(t, 0, poolFree(pool), "every peeked reference released, the frames still buffered")
+}
+
+// A source that is read for a live layer and cut to program keeps its
+// program bookkeeping: the peek neither takes the frame nor clears or
+// sets the time the source was lost.
+func TestFrameSync_PeekLeavesProgramBookkeeping(t *testing.T) {
+	s := newTestSwitcherDirect(distribution.NewRelay())
+	defer s.Close()
+	pool := NewFramePool(4, 4, 4, ColorYUV420_8bit)
+	fs := s.frameSync
+	fs.AddSource("cam")
+	tickAt := func(pts int64) clock.Tick { return clock.Tick{VideoPTS: pts, ReadPTS: pts} }
+
+	fs.IngestRawVideo("cam", poolFrame(pool, 3000))
+	f := fs.FrameAt("cam", 3000)
+	f.ReleaseYUV()
+	pf, fresh := s.popProgramFrame(fs, "cam", tickAt(3000))
+	require.True(t, fresh, "the peeked frame is still new to program")
+	require.Equal(t, int64(3000), pf.PTS)
+	pf.ReleaseYUV()
+
+	// Nothing new: program repeats and marks the source lost.
+	pf, fresh = s.popProgramFrame(fs, "cam", tickAt(6000))
+	require.False(t, fresh)
+	pf.ReleaseYUV()
+	ss := fs.source("cam")
+	ss.mu.Lock()
+	lostAt := ss.lostAt
+	ss.mu.Unlock()
+	require.False(t, lostAt.IsZero())
+
+	f = fs.FrameAt("cam", 6000)
+	require.Equal(t, int64(3000), f.PTS, "the last frame a tick took")
+	f.ReleaseYUV()
+	fs.IngestRawVideo("cam", poolFrame(pool, 6000))
+	f = fs.FrameAt("cam", 6000)
+	require.Equal(t, int64(6000), f.PTS)
+	f.ReleaseYUV()
+	ss.mu.Lock()
+	require.Equal(t, lostAt, ss.lostAt, "a peek does not count as delivery")
+	ss.mu.Unlock()
+	require.Equal(t, 1, fs.Buffered("cam"))
+
+	pf, fresh = s.popProgramFrame(fs, "cam", tickAt(6000))
+	require.True(t, fresh)
+	require.Equal(t, int64(6000), pf.PTS)
+	pf.ReleaseYUV()
+}
+
+// A live source that stopped delivering is dropped after SourceLossTimeout
+// of media time rather than frozen for good.
+func TestFrameSync_FrameAtStale(t *testing.T) {
+	pool := NewFramePool(2, 4, 4, ColorYUV420_8bit)
+	fs := NewFrameSynchronizer()
+	fs.AddSource("fill")
+	fs.IngestRawVideo("fill", poolFrame(pool, 3000))
+
+	f := fs.FrameAt("fill", 3000+sourceLossTimeout90k)
+	require.NotNil(t, f)
+	f.ReleaseYUV()
+	require.Nil(t, fs.FrameAt("fill", 3000+sourceLossTimeout90k+1))
+
+	// The source's delay moves its read point back.
+	require.True(t, fs.SetSourceDelay("fill", 100, 40*time.Millisecond))
+	require.Nil(t, fs.FrameAt("fill", 3000+9000-1))
+	f = fs.FrameAt("fill", 3000+9000)
+	require.NotNil(t, f)
+	f.ReleaseYUV()
 }
