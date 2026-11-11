@@ -1444,3 +1444,22 @@ func TestAnimateSlot(t *testing.T) {
 	c.AnimateSlot(1, move, 1000, nil)
 	require.Nil(t, c.morph.Load(), "slot out of range is a no-op")
 }
+
+func TestRecallLayout_NothingOnScreenSkipsMorph(t *testing.T) {
+	c := NewCompositor(64, 64)
+	clock, _ := fakeClock()
+	c.now = clock
+	off := pipLayout("cam1", 0, 0)
+	off.Slots[0].Enabled = false
+	c.SetLayout(off)
+	var changes atomic.Int32
+	c.OnActiveChange = func() { changes.Add(1) }
+
+	target := pipLayout("cam1", 32, 0)
+	target.Slots[0].Enabled = false
+	c.RecallLayout(target, 1000, nil)
+
+	require.False(t, c.Active(), "no morph keeps the node active")
+	require.Zero(t, changes.Load(), "no pipeline rebuild")
+	require.Equal(t, 32.0, c.GetLayout().Slots[0].Transform.PositionX)
+}
