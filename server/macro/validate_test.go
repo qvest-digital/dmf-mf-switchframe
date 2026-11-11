@@ -1,6 +1,7 @@
 package macro
 
 import (
+	"math"
 	"path/filepath"
 	"testing"
 
@@ -813,6 +814,9 @@ func TestValidateSteps_SqueezebackParams(t *testing.T) {
 		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"w": float64(0)})},
 		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"y": float64(-2)})},
 		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"h": "810"})},
+		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"w": float64(1 << 40)})},
+		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"x": math.Inf(1)})},
+		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"y": math.NaN()})},
 		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"background": float64(2)})},
 		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"easing": "wobble"})},
 		{Action: ActionSqueezebackOn, Params: map[string]any{"durationMs": float64(-1)}},

@@ -2,6 +2,7 @@ package macro
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/transition"
@@ -289,7 +290,9 @@ func validateMoveParams(i int, step Step, result *ValidationResult) {
 func validateSqueezebackSet(i int, step Step, result *ValidationResult) {
 	for _, key := range []string{"x", "y", "w", "h"} {
 		v, isNum := step.Params[key].(float64)
-		if !isNum || v < 0 || v != float64(int(v)) || int(v)%2 != 0 || ((key == "w" || key == "h") && v == 0) {
+		// Bounded as a float first: int() of an out-of-range float is
+		// arbitrary.
+		if !isNum || !(v >= 0 && v <= math.MaxInt32) || v != math.Trunc(v) || int(v)%2 != 0 || ((key == "w" || key == "h") && v == 0) {
 			result.Errors = append(result.Errors, ValidationError{
 				Step:    i,
 				Message: fmt.Sprintf("squeezeback_set requires '%s' as an even number of pixels, got %v", key, step.Params[key]),
