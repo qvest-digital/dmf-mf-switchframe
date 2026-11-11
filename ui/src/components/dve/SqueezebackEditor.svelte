@@ -20,6 +20,8 @@
 	let shapeId = $state('top-right');
 	let background = $state('');
 	let durationMs = $state(800);
+	let easing: string | undefined;
+	let liveRect: SqueezebackRect | undefined;
 
 	let sq = $derived(crState.squeezeback);
 	let isOn = $derived(sq?.on ?? false);
@@ -36,8 +38,28 @@
 		return { x: s.ax * (w - rw), y: s.ay * (h - rh), w: rw, h: rh };
 	}
 
+	const sameRect = (a: SqueezebackRect, b: SqueezebackRect) =>
+		a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+
+	// The fields follow the live configuration whenever it changes, so a
+	// reload shows it and configure() never replaces it with the defaults
+	// above. Broadcasts that leave it alone keep unsent local edits.
+	let seen = '';
+	$effect(() => {
+		if (!sq) return;
+		const key = JSON.stringify([sq.rect, sq.background, sq.durationMs, sq.easing, frameW, frameH]);
+		if (key === seen) return;
+		seen = key;
+		shapeId = SHAPES.find((s) => sameRect(shapeRect(s.id, frameW, frameH), sq.rect))?.id ?? 'custom';
+		liveRect = sq.rect;
+		background = sq.background ?? '';
+		durationMs = sq.durationMs ?? 0; // omitted is 0, a cut
+		easing = sq.easing;
+	});
+
 	async function configure() {
-		await setSqueezeback({ rect: shapeRect(shapeId, frameW, frameH), background, durationMs });
+		const rect = shapeId === 'custom' && liveRect ? liveRect : shapeRect(shapeId, frameW, frameH);
+		await setSqueezeback({ rect, background, durationMs, ...(easing ? { easing } : {}) });
 	}
 
 	function toggle() {
@@ -60,6 +82,9 @@
 			{#each SHAPES as s (s.id)}
 				<option value={s.id}>{s.label}</option>
 			{/each}
+			{#if shapeId === 'custom'}
+				<option value="custom">Custom</option>
+			{/if}
 		</select>
 		<select class="squeeze-select squeeze-background" bind:value={background} onchange={changed} title="Background">
 			<option value="">Black</option>
