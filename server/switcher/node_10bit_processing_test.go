@@ -148,8 +148,8 @@ func TestCompositorNode_10bit_PartialAlpha(t *testing.T) {
 
 func TestSqueezeNode_10bitBackgroundFedFromIngest(t *testing.T) {
 	sw, sq := squeezeSwitcher(t)
-	sw.IngestRawVideo("cam2", frame10y(200))
 	require.NoError(t, sq.On(dve.SqueezeMove{DurationMs: zeroMs()}))
+	sw.IngestRawVideo("cam2", frame10y(200))
 
 	out := (&squeezeNode{squeeze: sq}).Process(nil, frame10y(940))
 	require.Equal(t, uint16(200), binary.LittleEndian.Uint16(out.Data), "background around the program")

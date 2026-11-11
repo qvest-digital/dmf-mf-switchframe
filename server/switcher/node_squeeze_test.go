@@ -79,8 +79,8 @@ func TestSqueezeNode_OffLeavesFrameUntouched(t *testing.T) {
 // the program, not only the one on program.
 func TestSqueezeNode_BackgroundFedFromIngest(t *testing.T) {
 	sw, sq := squeezeSwitcher(t)
-	sw.IngestRawVideo("cam2", frame8(50))
 	require.NoError(t, sq.On(dve.SqueezeMove{DurationMs: zeroMs()}))
+	sw.IngestRawVideo("cam2", frame8(50))
 
 	out := (&squeezeNode{squeeze: sq}).Process(nil, frame8(235))
 	require.Equal(t, byte(50), out.Data[0], "background around the program")
