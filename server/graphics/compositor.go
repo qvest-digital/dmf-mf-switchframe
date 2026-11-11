@@ -78,6 +78,9 @@ type LayerState struct {
 	SequenceProcessing bool            `json:"sequenceProcessing,omitempty"`
 	SequenceProgress   float64         `json:"sequenceProgress,omitempty"`
 	SequenceSpeed      float64         `json:"sequenceSpeed,omitempty"`
+	LiveFill           string          `json:"liveFill,omitempty"`
+	LiveKey            string          `json:"liveKey,omitempty"`
+	Premultiplied      bool            `json:"premultiplied,omitempty"`
 }
 
 // RectState describes a layer's position and size for serialization.
@@ -140,6 +143,10 @@ type graphicsLayer struct {
 	seq                   *sequenceState
 	seqProcessing         bool    // true while background ZIP decode is in progress
 	seqProcessingProgress float64 // 0.0-1.0 progress during processing
+
+	// live, when set, makes the layer show a live fill+key source pair
+	// instead of its overlay (SetLive).
+	live *liveFeed
 }
 
 // tickerState holds the pre-rendered strip and scroll state for a
@@ -213,6 +220,12 @@ type Compositor struct {
 	// fade is triggered — mid-flight changes do not retime an in-flight
 	// ramp. Range enforced in SetDSKFadeDuration.
 	dskFadeDurationMs int
+
+	// liveGuard refuses a live layer the pipeline cannot draw.
+	liveGuard func(LiveOptions) error
+	// liveMu guards liveScratch, used under the read lock.
+	liveMu      sync.Mutex
+	liveScratch liveScratch
 }
 
 // NewCompositor creates a new multi-layer graphics compositor.
@@ -389,6 +402,10 @@ func (c *Compositor) SetLayerRect(id int, rect image.Rectangle) error {
 		c.mu.Unlock()
 		return ErrLayerNotFound
 	}
+	if layer.live != nil && rect != (image.Rectangle{}) {
+		c.mu.Unlock()
+		return ErrLiveLayer
+	}
 
 	layer.rect = rect
 
@@ -414,6 +431,9 @@ func (c *Compositor) UpdateLayerRect(id int, rect image.Rectangle) error {
 	layer, ok := c.layers[id]
 	if !ok {
 		return ErrLayerNotFound
+	}
+	if layer.live != nil && rect != (image.Rectangle{}) {
+		return ErrLiveLayer
 	}
 
 	layer.rect = rect
@@ -444,7 +464,7 @@ func (c *Compositor) On(id int) error {
 		return ErrSequenceProcessing
 	}
 
-	if layer.overlay == nil {
+	if layer.overlay == nil && layer.live == nil {
 		c.mu.Unlock()
 		return ErrNoOverlay
 	}
@@ -569,7 +589,7 @@ func (c *Compositor) AutoOn(id int, duration time.Duration) error {
 		return ErrSequenceProcessing
 	}
 
-	if layer.overlay == nil {
+	if layer.overlay == nil && layer.live == nil {
 		c.mu.Unlock()
 		return ErrNoOverlay
 	}
@@ -658,6 +678,10 @@ func (c *Compositor) Animate(id int, cfg AnimationConfig) error {
 	if !layer.active {
 		c.mu.Unlock()
 		return ErrNotActive
+	}
+	if layer.live != nil && cfg.ToRect != nil {
+		c.mu.Unlock()
+		return ErrLiveLayer
 	}
 	if layer.fadeDone != nil || layer.animDone != nil {
 		c.mu.Unlock()
@@ -919,7 +943,14 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]b
 	fullFrame := fullFrameRect(width, height)
 	for _, id := range c.sortedIDs {
 		layer := c.layers[id]
-		if !layer.active || layer.fadePosition < 1.0/255.0 || layer.overlay == nil {
+		if !layer.active || layer.fadePosition < 1.0/255.0 {
+			continue
+		}
+		if layer.live != nil {
+			c.blendLiveLocked(yuv, width, height, false, layer)
+			continue
+		}
+		if layer.overlay == nil {
 			continue
 		}
 		// Skip fully transparent overlays (empty layers, cleared graphics).
@@ -1047,7 +1078,14 @@ func (c *Compositor) ProcessYUV10(yuv []byte, width, height int) []byte {
 
 	for _, id := range c.sortedIDs {
 		layer := c.layers[id]
-		if !layer.active || layer.fadePosition < 1.0/255.0 || layer.overlay == nil {
+		if !layer.active || layer.fadePosition < 1.0/255.0 {
+			continue
+		}
+		if layer.live != nil {
+			c.blendLiveLocked(yuv, width, height, true, layer)
+			continue
+		}
+		if layer.overlay == nil {
 			continue
 		}
 		if isOverlayTransparent(layer.overlay, layer.overlayWidth*layer.overlayHeight) {
@@ -1090,10 +1128,11 @@ func (c *Compositor) IsActive() bool {
 }
 
 // hasVisibleLayersLocked returns true if any layer is active with a visible
-// fade position and a non-nil overlay. Caller must hold at least c.mu.RLock.
+// fade position and an overlay or live source. Caller must hold at least
+// c.mu.RLock.
 func (c *Compositor) hasVisibleLayersLocked() bool {
 	for _, layer := range c.layers {
-		if layer.active && layer.fadePosition >= 1.0/255.0 && layer.overlay != nil {
+		if layer.active && layer.fadePosition >= 1.0/255.0 && (layer.overlay != nil || layer.live != nil) {
 			return true
 		}
 	}
@@ -1118,6 +1157,12 @@ type VisibleLayerSnap struct {
 	Overlay            []byte  // RGBA pixel data (deep copy)
 	OverlayW, OverlayH int
 	Gen                uint64 // generation counter for cache invalidation
+
+	// LiveFill and LiveKey are a live layer's pictures, set instead of
+	// Overlay. They are not copied: they stay valid only while the tick
+	// that set them runs the pipeline.
+	LiveFill, LiveKey *LivePicture
+	Premultiplied     bool
 }
 
 // SnapshotVisibleLayers returns a deep-copied snapshot of all visible layers
@@ -1205,7 +1250,26 @@ func (c *Compositor) SnapshotVisibleLayers() []VisibleLayerSnap {
 	var result []VisibleLayerSnap
 	for _, id := range c.sortedIDs {
 		layer := c.layers[id]
-		if !layer.active || layer.fadePosition < 1.0/255.0 || layer.overlay == nil {
+		if !layer.active || layer.fadePosition < 1.0/255.0 {
+			continue
+		}
+		if lf := layer.live; lf != nil {
+			if lf.fillPic.Data == nil || lf.keyPic.Data == nil {
+				continue
+			}
+			fill, key := lf.fillPic, lf.keyPic
+			result = append(result, VisibleLayerSnap{
+				ID:            layer.id,
+				RectW:         fill.Width,
+				RectH:         fill.Height,
+				Alpha:         float32(layer.fadePosition),
+				LiveFill:      &fill,
+				LiveKey:       &key,
+				Premultiplied: lf.premultiplied,
+			})
+			continue
+		}
+		if layer.overlay == nil {
 			continue
 		}
 		if isOverlayTransparent(layer.overlay, layer.overlayWidth*layer.overlayHeight) {
@@ -1607,6 +1671,10 @@ func (c *Compositor) FlyIn(id int, from string, durationMs int) error {
 		c.mu.Unlock()
 		return ErrNotActive
 	}
+	if layer.live != nil {
+		c.mu.Unlock()
+		return ErrLiveLayer
+	}
 	if layer.fadeDone != nil || layer.animDone != nil {
 		c.mu.Unlock()
 		return ErrFadeActive
@@ -1662,6 +1730,10 @@ func (c *Compositor) FlyOn(id int, from string, durationMs int) error {
 	if layer.active {
 		c.mu.Unlock()
 		return ErrAlreadyActive
+	}
+	if layer.live != nil {
+		c.mu.Unlock()
+		return ErrLiveLayer
 	}
 	if layer.overlay == nil {
 		c.mu.Unlock()
@@ -1726,6 +1798,10 @@ func (c *Compositor) FlyOut(id int, to string, durationMs int) error {
 	if !layer.active {
 		c.mu.Unlock()
 		return ErrNotActive
+	}
+	if layer.live != nil {
+		c.mu.Unlock()
+		return ErrLiveLayer
 	}
 	if layer.fadeDone != nil || layer.animDone != nil {
 		c.mu.Unlock()
@@ -1819,6 +1895,11 @@ func (c *Compositor) buildStateLocked() State {
 			ImageName:   layer.imageName,
 			ImageWidth:  layer.imageWidth,
 			ImageHeight: layer.imageHeight,
+		}
+		if layer.live != nil {
+			ls.LiveFill = layer.live.fill
+			ls.LiveKey = layer.live.key
+			ls.Premultiplied = layer.live.premultiplied
 		}
 		if layer.animConfig != nil {
 			ls.AnimationMode = layer.animConfig.Mode
