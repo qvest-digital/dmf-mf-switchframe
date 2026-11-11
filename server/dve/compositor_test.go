@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"math"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1498,4 +1499,39 @@ func TestProcessFrame_GraySlotResized(t *testing.T) {
 	frame = c.ProcessFrame(makeYUV420(64, 64, 100, 128, 128), 64, 64)
 	require.InDelta(t, 58, int(frame[40*64+40]), 2, "translucent gray slot blended")
 	require.Equal(t, video.YUV420FrameSize(32, 32), len(c.grayBufs[0]))
+}
+
+// Recalls race the frame path and the lock-free Active/NeedsSource readers;
+// run with -race.
+func TestRecallLayout_ConcurrentWithFramePath(t *testing.T) {
+	c := NewCompositor(64, 64)
+	c.SetLayout(pipLayout("cam1", 0, 0))
+	src := makeYUV420(16, 16, 235, 128, 128)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		frame := makeYUV420(64, 64, 16, 128, 128)
+		for pts := int64(0); ; pts++ {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			c.IngestSourceFrame("cam1", src, 16, 16, pts)
+			c.ProcessFrame(frame, 64, 64)
+			c.SnapshotSlots()
+			c.Active()
+			c.NeedsSource("cam1")
+			c.NeedsSource("cam2")
+		}
+	}()
+
+	targets := []*Layout{pipLayout("cam1", 32, 32), pipLayout("cam2", 0, 32), {Name: "empty"}, pipLayout("", 16, 0)}
+	for i := range 2000 {
+		c.RecallLayout(targets[i%len(targets)], 1+i%20, nil)
+	}
+	close(done)
+	wg.Wait()
 }
