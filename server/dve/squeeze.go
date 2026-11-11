@@ -302,14 +302,18 @@ func (s *Squeeze) Frame(width, height int) (image.Rectangle, bool) {
 func (s *Squeeze) Active() bool { return s.active.Load() }
 
 // BackgroundOnAir returns the background source while it shows, else "".
+// A rect of the full frame, once arrived, shows none of it.
 func (s *Squeeze) BackgroundOnAir() string {
 	if !s.active.Load() {
 		return ""
 	}
-	if c := s.cfg.Load(); c != nil {
-		return c.Background
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.cfg.Load()
+	if c == nil || (s.anim == nil && squeezeTarget(c.Rect) == image.Rect(0, 0, s.frameW, s.frameH)) {
+		return ""
 	}
-	return ""
+	return c.Background
 }
 
 // Background returns the configured background source, "" for black.
