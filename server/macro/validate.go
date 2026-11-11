@@ -3,6 +3,7 @@ package macro
 import (
 	"fmt"
 
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -254,10 +255,10 @@ func validateLayoutPreset(i int, step Step, result *ValidationResult) {
 		})
 	}
 	if v, ok := step.Params["durationMs"]; ok {
-		if d, isNum := v.(float64); !isNum || d < 0 || d > 5000 {
+		if d, isNum := v.(float64); !isNum || d < 0 || d > dve.MaxMorphDurationMs {
 			result.Errors = append(result.Errors, ValidationError{
 				Step:    i,
-				Message: fmt.Sprintf("layout_preset durationMs must be a number between 0 and 5000, got %v", v),
+				Message: fmt.Sprintf("layout_preset durationMs must be a number between 0 and %d, got %v", dve.MaxMorphDurationMs, v),
 			})
 		}
 	}

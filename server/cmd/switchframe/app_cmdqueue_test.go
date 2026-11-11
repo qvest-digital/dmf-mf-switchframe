@@ -104,7 +104,7 @@ func TestInitCommandQueue_DVEPresetRecallAnimates(t *testing.T) {
 	app := &App{sw: sw, dveCompositor: dc}
 	require.NoError(t, app.initCommandQueue())
 
-	payload, _ := json.Marshal(map[string]any{"_path_id": "pip-bottom-right", "durationMs": 60000, "easing": "ease-in-out"})
+	payload, _ := json.Marshal(map[string]any{"_path_id": "pip-bottom-right", "durationMs": dve.MaxMorphDurationMs, "easing": "ease-in-out"})
 	require.NoError(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_preset_recall", Payload: payload}))
 
 	require.Greater(t, dc.GetLayout().Slots[0].Transform.OutputRect.X, float64(format.Width)/2, "state reports the target")
@@ -114,6 +114,9 @@ func TestInitCommandQueue_DVEPresetRecallAnimates(t *testing.T) {
 
 	bad, _ := json.Marshal(map[string]any{"_path_id": "pip-bottom-right", "durationMs": 500, "easing": "bounce"})
 	require.Error(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_preset_recall", Payload: bad}))
+
+	long, _ := json.Marshal(map[string]any{"_path_id": "pip-bottom-right", "durationMs": dve.MaxMorphDurationMs + 1})
+	require.Error(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_preset_recall", Payload: long}))
 }
 
 func TestInitCommandQueue_DVESlotUpdateAnimates(t *testing.T) {
@@ -132,7 +135,7 @@ func TestInitCommandQueue_DVESlotUpdateAnimates(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{
 		"_path_id":   "0",
 		"transform":  map[string]any{"positionX": 1200, "positionY": 600, "width": 480, "height": 270},
-		"durationMs": 60000,
+		"durationMs": dve.MaxMorphDurationMs,
 	})
 	require.NoError(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_slot_update", Payload: payload}))
 
@@ -140,4 +143,12 @@ func TestInitCommandQueue_DVESlotUpdateAnimates(t *testing.T) {
 	snaps := dc.SnapshotSlots()
 	require.Len(t, snaps, 1)
 	require.Less(t, snaps[0].RectX, 100, "timed slot update with durationMs must glide")
+
+	long, _ := json.Marshal(map[string]any{
+		"_path_id":   "0",
+		"transform":  map[string]any{"positionX": 0, "positionY": 0, "width": 480, "height": 270},
+		"durationMs": dve.MaxMorphDurationMs + 1,
+	})
+	require.Error(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_slot_update", Payload: long}))
+	require.Equal(t, 1200.0, dc.GetLayout().Slots[0].Transform.PositionX, "rejected update not applied")
 }

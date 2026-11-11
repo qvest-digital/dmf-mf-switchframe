@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -565,7 +566,7 @@ func recallBuiltin(t *testing.T, body string) (*dve.Compositor, *httptest.Respon
 }
 
 func TestDVEPresetRecall_Animated(t *testing.T) {
-	dc, rec := recallBuiltin(t, `{"durationMs":60000,"easing":"cubic-bezier(0,0,0.580,0.750)"}`)
+	dc, rec := recallBuiltin(t, `{"durationMs":5000,"easing":"cubic-bezier(0,0,0.580,0.750)"}`)
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	// State and response report the target, with the slot's source kept.
@@ -575,7 +576,7 @@ func TestDVEPresetRecall_Animated(t *testing.T) {
 	frameW, _ := dc.FrameSize()
 	require.Greater(t, dc.GetLayout().Slots[0].Transform.OutputRect.X, float64(frameW)/2)
 
-	// The drawn slot is still near its start a minute before the morph ends.
+	// The drawn slot is still near its start seconds before the morph ends.
 	snaps := dc.SnapshotSlots()
 	require.Len(t, snaps, 1)
 	require.Less(t, snaps[0].RectX, frameW/2, "recall with durationMs must animate, not cut")
@@ -604,7 +605,7 @@ func TestDVESlotUpdate_Animated(t *testing.T) {
 		{SourceKey: "cam1", Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true},
 	}})
 
-	body := `{"transform":{"positionX":1200,"positionY":600,"width":480,"height":270},"durationMs":60000}`
+	body := `{"transform":{"positionX":1200,"positionY":600,"width":480,"height":270},"durationMs":5000}`
 	req := httptest.NewRequest("PUT", "/api/dve/slots/0", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -615,4 +616,27 @@ func TestDVESlotUpdate_Animated(t *testing.T) {
 	snaps := dc.SnapshotSlots()
 	require.Len(t, snaps, 1)
 	require.Less(t, snaps[0].RectX, 100, "slot glides instead of jumping")
+}
+
+// An unbounded durationMs overflows time.Duration; the morph would never end.
+func TestDVEPresetRecall_RejectsLongDuration(t *testing.T) {
+	_, rec := recallBuiltin(t, fmt.Sprintf(`{"durationMs":%d}`, dve.MaxMorphDurationMs+1))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestDVESlotUpdate_RejectsLongDuration(t *testing.T) {
+	_, sw := setupTestAPI(t)
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
+	dc.SetLayout(&dve.Layout{Name: "pip", Slots: []dve.Slot{
+		{SourceKey: "cam1", Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true},
+	}})
+
+	body := fmt.Sprintf(`{"transform":{"positionX":1200,"positionY":600,"width":480,"height":270},"durationMs":%d}`, dve.MaxMorphDurationMs+1)
+	req := httptest.NewRequest("PUT", "/api/dve/slots/0", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, 0.0, dc.GetLayout().Slots[0].Transform.PositionX, "rejected update not applied")
 }
