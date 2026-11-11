@@ -4,7 +4,7 @@
 > **Read this first:** [api.md](../api.md)
 > **See also:** [playout.md](../../subsystems/playout.md) · [subsystems/playout.md](../../subsystems/playout.md)
 
-**TL;DR** Forty-seven endpoints drive the playout channel engine: channel transport (start/stop/next/previous/jump), manual vs. auto mode, playlist loading, pod boards (20 endpoints for pod CRUD and lifecycle), pod templates (CRUD), BXF import, as-run logs (query / export / reset), asset-cache inspection and eviction, health and recovery, and sample/clip/template/saved-playlist discovery. Channels are addressed as `1..N` (capped by `playout.MaxChannels`); pod IDs are strings assigned by the pod board.
+**TL;DR** Forty-nine endpoints drive the playout channel engine: channel transport (start/stop/next/previous/jump), manual vs. auto mode, playlist loading, pod boards (20 endpoints for pod CRUD and lifecycle), pod templates (CRUD), BXF import, as-run logs (query / export / reset), asset-cache inspection and eviction, health and recovery, and sample/clip/template/saved-playlist discovery. Channels are addressed as `1..N` (capped by `playout.MaxChannels`); pod IDs are strings assigned by the pod board.
 
 ## Channel transport
 
@@ -60,6 +60,13 @@
 
 **Purpose:** jump to a playlist item by ID.
 **Handler:** `(*API).handlePlayoutJump`. **Request body:** `{ "itemId": "item-17" }`. **Errors:** 400 (missing ID), 404 (`playout.ErrItemNotFound`).
+
+---
+
+### `POST /api/playout/channels/{n}/end-loop`
+
+**Purpose:** have the looping clip on air end after its current pass.
+**Handler:** `(*API).handlePlayoutEndLoop`. **Response 200:** the channel's `playout.ChannelState`. **Errors:** 400 (invalid channel, `playout.ErrNotOnAir`), 409 (`playout.ErrNotLooping`).
 
 ---
 

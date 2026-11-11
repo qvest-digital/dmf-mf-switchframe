@@ -4,7 +4,7 @@
 > **Read this first:** [api.md](../api.md)
 > **See also:** [subsystems/clips.md](../../subsystems/clips.md) · [clips.md](../../subsystems/clips.md)
 
-**TL;DR** Nineteen endpoints manage the clip library (upload, CRUD, pin for lifecycle retention, import from recordings, rescan of `--clip-library-dir`) and the four player slots (load, eject, play/pause/stop, seek, speed, loop). Uploads go through a transcode pipeline; progress is broadcast via `ClipUploadProgress` so the UI can show a status bar.
+**TL;DR** Twenty endpoints manage the clip library (upload, CRUD, pin for lifecycle retention, import from recordings, rescan of `--clip-library-dir`) and the four player slots (load, eject, play/pause/stop, seek, speed, loop). Uploads go through a transcode pipeline; progress is broadcast via `ClipUploadProgress` so the UI can show a status bar.
 
 ## Clip library
 

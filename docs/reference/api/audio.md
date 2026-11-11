@@ -4,7 +4,7 @@
 > **Read this first:** [api.md](../api.md)
 > **See also:** [subsystems/audio.md](../../subsystems/audio.md) · [api/preset.md](preset.md)
 
-**TL;DR** Nineteen endpoints cover the audio mixer: per-channel level, trim, mute, AFV, phase, balance, 3-band EQ, compressor, HPF, noise gate, and lip-sync delay, plus master bus level and a master brickwall limiter. Per-channel reads return typed responses (EQ bands, compressor stats, HPF state, gate state) separate from the full state broadcast. All mutations are wrapped by the timed command queue so dual-engine deployments keep audio changes frame-aligned.
+**TL;DR** Eighteen endpoints cover the audio mixer: per-channel level, trim, mute, AFV, phase, balance, 3-band EQ, compressor, HPF, noise gate, and lip-sync delay, plus master bus level and a master brickwall limiter. Per-channel reads return typed responses (EQ bands, compressor stats, HPF state, gate state) separate from the full state broadcast. All mutations are wrapped by the timed command queue so dual-engine deployments keep audio changes frame-aligned.
 
 Most of these endpoints accept a `source` either in the request body (for the historical top-level routes under `/api/audio/<verb>`) or as a path parameter (for the newer, RESTful `/api/audio/{source}/<verb>` routes). Both forms route to the same audio mixer interface.
 

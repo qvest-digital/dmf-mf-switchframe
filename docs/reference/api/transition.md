@@ -4,7 +4,7 @@
 > **Read this first:** [api.md](../api.md)
 > **See also:** [subsystems/transition.md](../../subsystems/transition.md) · [api/transition-wipes.md](transition-wipes.md) · [api/graphics.md](graphics.md)
 
-**TL;DR** Three endpoints drive the main transition engine: kick off an auto mix / dip / wipe / stinger / DVE move (`POST /api/switch/transition`), nudge the T-bar position mid-transition (`POST /api/switch/transition/position`), and arm or release Fade-to-Black (`POST /api/switch/ftb`). All three go through the timed command queue so they can be scheduled on a synchronized clock.
+**TL;DR** Five endpoints drive the main transition engine: kick off an auto mix / dip / wipe / stinger / DVE move (`POST /api/switch/transition`), nudge the T-bar position mid-transition (`POST /api/switch/transition/position`), arm or release Fade-to-Black (`POST /api/switch/ftb`), and set the FTB duration and the T-bar abort threshold. All five go through the timed command queue so they can be scheduled on a synchronized clock.
 
 ## Endpoints
 
@@ -100,9 +100,31 @@
 |---|---|
 | 409 | `transition.ErrActive` — a non-FTB transition is running |
 
-**Emits:** state broadcast with updated `FTBActive`. Amber tally applied to all sources during FTB. The fade duration is server-configured (see [deployment.md](../../operations/deployment.md)).
+**Emits:** state broadcast with updated `FTBActive`. Amber tally applied to all sources during FTB. The fade duration is set with `PUT /api/switch/ftb-duration`.
 
 **Related:** [subsystems/transition.md](../../subsystems/transition.md)
+
+---
+
+### `PUT /api/switch/ftb-duration`
+
+**Purpose:** set the Fade-to-Black duration. A fade in flight keeps its rate; the next one uses the new duration.
+**Handler:** `(*API).handleSetFTBDurationInner` (wrapped by `timedHandler`).
+
+**Request body:** `{ "durationMs": 1000 }`, 100-5000.
+
+**Response 200:** full `ControlRoomState`. **Errors:** 400 (invalid JSON, `switcher.ErrInvalidFTBDuration`).
+
+---
+
+### `PUT /api/switch/transition-abort-threshold`
+
+**Purpose:** set the T-bar position below which pulling the T-bar back aborts the transition, once it had been driven past twice that position. It applies from the next T-bar position. Default 0.3.
+**Handler:** `(*API).handleSetTransitionAbortThresholdInner` (wrapped by `timedHandler`).
+
+**Request body:** `{ "threshold": 0.1 }`, 0.05-0.5.
+
+**Response 200:** full `ControlRoomState`. **Errors:** 400 (invalid JSON, `switcher.ErrInvalidTransitionAbortThreshold`).
 
 ## Related docs
 

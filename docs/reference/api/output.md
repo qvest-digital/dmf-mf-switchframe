@@ -4,7 +4,7 @@
 > **Read this first:** [api.md](../api.md)
 > **See also:** [subsystems/output.md](../../subsystems/output.md) · [state-broadcast.md](../state-broadcast.md) · [deployment.md](../../operations/deployment.md)
 
-**TL;DR** Sixteen endpoints cover recording, SRT output, multi-destination streaming (SRT caller, SRT listener, RTMP), the CBR pacer status, and the confidence thumbnail. Legacy single-stream SRT output (`/api/output/srt/*`) coexists with the newer multi-destination API (`/api/output/destinations/*`); new integrations should prefer destinations.
+**TL;DR** Fifteen endpoints cover recording, SRT output, multi-destination streaming (SRT caller, SRT listener, RTMP), the CBR pacer status, and the confidence thumbnail. Legacy single-stream SRT output (`/api/output/srt/*`) coexists with the newer multi-destination API (`/api/output/destinations/*`); new integrations should prefer destinations.
 
 ## Recording
 

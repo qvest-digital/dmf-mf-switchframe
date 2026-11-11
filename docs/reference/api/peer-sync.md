@@ -4,7 +4,7 @@
 > **Read this first:** [api.md](../api.md)
 > **See also:** [subsystems/switcher.md](../../subsystems/switcher.md) · [deployment.md](../../operations/deployment.md)
 
-**TL;DR** Nine endpoints handle dual-engine coordination: a lightweight health endpoint polled between engines, a force-takeover endpoint gated by a shared secret, a sync-health probe returning clock and sequence state, and a reconcile-lock protocol (acquire / refresh / release) plus state-snapshot get/apply for active-active reconciliation. The reconcile lock ensures only one engine at a time runs the active reconciler during a failover.
+**TL;DR** Eight endpoints handle dual-engine coordination: a lightweight health endpoint polled between engines, a force-takeover endpoint gated by a shared secret, a sync-health probe returning clock and sequence state, and a reconcile-lock protocol (acquire / refresh / release) plus state-snapshot get/apply for active-active reconciliation. The reconcile lock ensures only one engine at a time runs the active reconciler during a failover.
 
 ## Peer health
 

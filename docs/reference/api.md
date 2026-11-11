@@ -13,7 +13,7 @@ The API has 307 real endpoints split across the files below. Each sub-file follo
 ### Core
 
 - [switching](api/switching.md) — program/preview cut, state, sync-health (3 endpoints)
-- [transition](api/transition.md) — auto transition, T-bar position, fade-to-black (3 endpoints)
+- [transition](api/transition.md) - auto transition, T-bar position, fade-to-black, FTB duration, abort threshold (5 endpoints)
 - [format-encoder](api/format-encoder.md) — pipeline format + runtime encoder (4 endpoints)
 - [source](api/source.md) — source CRUD, label, delay, position, SRT (12 endpoints)
 - [audio](api/audio.md) — level, mute, AFV, trim, EQ, compressor, HPF, gate, limiter, master, delay (18 endpoints)
@@ -21,12 +21,12 @@ The API has 307 real endpoints split across the files below. Each sub-file follo
 ### Production
 
 - [transition-wipes](api/transition-wipes.md) — wipe pattern catalog, custom upload (5 endpoints)
-- [graphics](api/graphics.md) - DSK layer CRUD + animation, image/sequence/ticker, live fill+key, stingers (33 endpoints)
+- [graphics](api/graphics.md) - DSK layer CRUD, settings, order, export/import + animation, image/sequence/ticker, live fill+key, stingers (38 endpoints)
 - [graphics-html5](api/graphics-html5.md) — browser-based HTML5 graphics (8 endpoints)
 - [dve](api/dve.md) - DVE layout, slots, presets, squeezeback (14 endpoints)
 - [keying](api/keying.md) — per-source upstream key configuration (3 endpoints)
 - [replay](api/replay.md) — mark-in/out, play, pause, speed, shutter-angle (15 endpoints)
-- [clips](api/clips.md) — clip CRUD, upload, from-recording, 4-player slots (18 endpoints)
+- [clips](api/clips.md) - clip CRUD, upload, from-recording, 4-player slots (20 endpoints)
 - [captions](api/captions.md) — closed-caption mode and author-mode text input (3 endpoints)
 - [stmap](api/stmap.md) — per-pixel coordinate remapping library and assignments (12 endpoints)
 - [colorgrade](api/colorgrade.md) — LUT-based looks and per-look corrector settings (9 endpoints)
@@ -42,7 +42,7 @@ The API has 307 real endpoints split across the files below. Each sub-file follo
 - [scte35](api/scte35.md) — cue inject, return, cancel, hold, extend, rules CRUD, webhook (20 endpoints)
 - [preset](api/preset.md) — switcher preset CRUD and recall (8 endpoints)
 - [macro](api/macro.md) — macro CRUD, run, cancel, dismiss (7 endpoints)
-- [playout](api/playout.md) — playout channels, playlists, pods, cache, BXF (48 endpoints)
+- [playout](api/playout.md) - playout channels, playlists, pods, cache, BXF (49 endpoints)
 
 ### Platform
 

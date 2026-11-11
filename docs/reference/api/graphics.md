@@ -4,7 +4,7 @@
 > **Read this first:** [api.md](../api.md)
 > **See also:** [subsystems/graphics-and-dve.md](../../subsystems/graphics-and-dve.md) · [api/graphics-html5.md](graphics-html5.md) · [html5-graphics.md](../../integration/cef-protocol.md)
 
-**TL;DR** Thirty-four endpoints cover downstream-key (DSK) graphics: layer CRUD, frame upload, live fill+key sources, cut/auto on/off, programmatic animation (pulse, transition, fly-in/out/on, slide), static image upload, animated PNG-sequence upload, server-side text animation (typewriter + fade-word), scrolling ticker, and the stinger clip library. Per-layer HTML5-browser endpoints are documented separately in [graphics-html5.md](graphics-html5.md).
+**TL;DR** Thirty-eight endpoints cover downstream-key (DSK) graphics: layer CRUD, settings, order, export and import, frame upload, live fill+key sources, cut/auto on/off, programmatic animation (pulse, transition, fly-in/out/on, slide), static image upload, animated PNG-sequence upload, server-side text animation (typewriter + fade-word), scrolling ticker, and the stinger clip library. Per-layer HTML5-browser endpoints are documented separately in [graphics-html5.md](graphics-html5.md).
 
 All graphics endpoints are only registered when a compositor is attached. Stinger endpoints are registered independently when a stinger store is configured.
 
@@ -40,6 +40,48 @@ Most mutating endpoints respond with the compositor's current `Status()` (which 
 **Handler:** `(*API).handleGraphicsRemoveLayer`.
 
 **Response 204.** **Errors:** 400 (invalid id), 404 (`graphics.ErrLayerNotFound`).
+
+---
+
+### `PATCH /api/graphics/{id}`
+
+**Purpose:** store a layer's name and control-surface config. The config is opaque to the engine; it is kept so every session and both engines show the layer as it was set up.
+**Handler:** `(*API).handleGraphicsLayerSettings`.
+
+**Request body** (`control.layerSettingsRequest`): `{ "name": "Sponsor", "config": { ... } }`. An absent field is left as it is. The name is at most 64 characters; the config is a JSON object of at most 64 KiB.
+
+**Response 200:** compositor status. **Errors:** 400 (invalid id or JSON, `graphics.ErrInvalidLayerName`, `graphics.ErrInvalidLayerConfig`), 404 (`graphics.ErrLayerNotFound`).
+
+---
+
+### `PUT /api/graphics/order`
+
+**Purpose:** restack every layer bottom to top. Z-orders become 0..n-1; layer IDs stay as they are.
+**Handler:** `(*API).handleGraphicsLayerOrder`.
+
+**Request body:** `{ "ids": [2, 0, 1] }`, naming every layer exactly once.
+
+**Response 200:** compositor status. **Errors:** 400 (invalid JSON, `graphics.ErrInvalidLayerOrder`).
+
+---
+
+### `GET /api/graphics/export`
+
+**Purpose:** download every layer, bottom to top, as a `graphics.LayerExport` document (`format` `switchframe-graphics`, `version` 1): ID, name, z-order, rect, config and uploaded PNG. On-air state, fades, animations, tickers, sequences and live sources are not part of it.
+**Handler:** `(*API).handleGraphicsExport`.
+
+**Response 200:** `application/json` with `Content-Disposition: attachment; filename="graphics-layers.json"`.
+
+---
+
+### `POST /api/graphics/import`
+
+**Purpose:** replace every layer with an export document's, keeping their IDs. Imported layers start off air; nothing changes when the document is invalid.
+**Handler:** `(*API).handleGraphicsImport`.
+
+**Request body:** a `graphics.LayerExport`, at most 64 MiB.
+
+**Response 200:** compositor status. **Errors:** 400 (invalid JSON, `graphics.ErrInvalidLayerExport`), 409 (`graphics.ErrLayersOnAir` while a layer is on, fading, running a ticker or sequence, or holding an HTML5 template).
 
 ---
 
@@ -127,15 +169,26 @@ Most mutating endpoints respond with the compositor's current `Status()` (which 
 
 ### `POST /api/graphics/{id}/auto-on`
 
-**Purpose:** 500 ms fade-in of the layer.
+**Purpose:** fade the layer in over the DSK fade duration.
 **Handler:** `(*API).handleGraphicsAutoOn`.
 
 ---
 
 ### `POST /api/graphics/{id}/auto-off`
 
-**Purpose:** 500 ms fade-out.
+**Purpose:** fade the layer out over the DSK fade duration.
 **Handler:** `(*API).handleGraphicsAutoOff`.
+
+---
+
+### `PUT /api/graphics/dsk-fade-duration`
+
+**Purpose:** set the duration of every layer's auto-on and auto-off fade. A fade in flight keeps its rate; the next one uses the new duration.
+**Handler:** `(*API).handleSetDSKFadeDurationInner` (wrapped by `timedHandler`).
+
+**Request body:** `{ "durationMs": 500 }`, 100-5000.
+
+**Response 200:** full `ControlRoomState`. **Errors:** 400 (invalid JSON, `graphics.ErrInvalidDSKFadeDuration`).
 
 ---
 
