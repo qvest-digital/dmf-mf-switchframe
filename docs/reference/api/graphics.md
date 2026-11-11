@@ -4,7 +4,7 @@
 > **Read this first:** [api.md](../api.md)
 > **See also:** [subsystems/graphics-and-dve.md](../../subsystems/graphics-and-dve.md) · [api/graphics-html5.md](graphics-html5.md) · [html5-graphics.md](../../integration/cef-protocol.md)
 
-**TL;DR** Thirty-two endpoints cover downstream-key (DSK) graphics: layer CRUD, frame upload, cut/auto on/off, programmatic animation (pulse, transition, fly-in/out/on, slide), static image upload, animated PNG-sequence upload, server-side text animation (typewriter + fade-word), scrolling ticker, and the stinger clip library. Per-layer HTML5-browser endpoints are documented separately in [graphics-html5.md](graphics-html5.md).
+**TL;DR** Thirty-four endpoints cover downstream-key (DSK) graphics: layer CRUD, frame upload, live fill+key sources, cut/auto on/off, programmatic animation (pulse, transition, fly-in/out/on, slide), static image upload, animated PNG-sequence upload, server-side text animation (typewriter + fade-word), scrolling ticker, and the stinger clip library. Per-layer HTML5-browser endpoints are documented separately in [graphics-html5.md](graphics-html5.md).
 
 All graphics endpoints are only registered when a compositor is attached. Stinger endpoints are registered independently when a stinger store is configured.
 
@@ -84,6 +84,24 @@ Most mutating endpoints respond with the compositor's current `Status()` (which 
 **Handler:** `(*API).handleGraphicsImageDelete`.
 
 **Response 204.**
+
+---
+
+### `PUT /api/graphics/{id}/live`
+
+**Purpose:** make the layer show a live fill source keyed by a live key source, in place of its overlay. The key's legal-range luma is the fill's alpha (16 transparent, 235 opaque; 64 and 940 in 10-bit), as with a hardware fill+key pair. The layer is full frame and keeps on/off, fade and z-order; rect changes, fly and slide answer 409. Fill and key are read at each tick's read point from the frame synchronizer, and when one is a grain ahead of the other its frame of the other's grain is used, so both show one grain. They must match the program's size and format; a pair that does not is skipped and logged once. While the layer is on, the fill tallies `key_fill` and the key `key_alpha`.
+**Handler:** `(*API).handleGraphicsLiveSet`.
+
+**Request body** (`control.graphicsLiveRequest`): `{ "fill": "gfx-fill", "key": "gfx-key", "premultiplied": false }`. `premultiplied` marks a shaped fill, already multiplied by its key: it is added over the keyed-out background instead of mixed in.
+
+**Errors:** 400 for an unknown source, a missing source, or fill equal to key; 404 for an unknown layer; 409 when the pipeline cannot draw it: a premultiplied fill on the GPU pipeline, or a 10-bit program on the CUDA pipeline.
+
+---
+
+### `DELETE /api/graphics/{id}/live`
+
+**Purpose:** return the layer to its overlay. A layer without one goes off.
+**Handler:** `(*API).handleGraphicsLiveClear`.
 
 ---
 

@@ -90,7 +90,7 @@ Keyed by source key under `sources`. One entry per registered source:
 
 ### Graphics and composition
 
-- `graphics` — `GraphicsState` — DSK layer list with rect, z-order, image name, HTML5 status, sequence state, fade position, animation mode
+- `graphics` - `GraphicsState` - DSK layer list with rect, z-order, image name, HTML5 status, sequence state, fade position, animation mode, live `liveFill`/`liveKey`/`premultiplied`
 - `layout` — `LayoutState` — PIP / DVE slots with full transform state, plus DVE preset list and animation flag
 - `squeezeback` - `SqueezebackState` - L-frame rect, background source, duration and easing, whether it is on and whether it is moving; absent until configured
 - `stmap` — `STMapState` — per-source and program map assignments plus available maps

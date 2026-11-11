@@ -41,7 +41,7 @@
 }
 ```
 
-Valid actions are listed in `macro.allActions` (~60 actions covering cut, preview, transition, wait, audio controls, graphics, keys, clips, SCTE-35, etc.). Each action validates its own params; invalid steps are rejected on save by `macro.ValidateSteps`. `layout_preset` takes a built-in `preset` name and an optional `durationMs` (0-5000, 0 cuts) and `easing`, which animate the recall as in [DVE preset recall](dve.md). `squeezeback_set` takes the rect as `x`, `y`, `w`, `h` (even pixels) and an optional `background`, `durationMs` and `easing`; `squeezeback_on` and `squeezeback_off` take an optional `durationMs` (0-5000, 0 cuts) and `easing`, each defaulting to the configured one, as the [squeezeback](dve.md#squeezeback) endpoints do.
+Valid actions are listed in `macro.allActions` (~60 actions covering cut, preview, transition, wait, audio controls, graphics, keys, clips, SCTE-35, etc.). Each action validates its own params; invalid steps are rejected on save by `macro.ValidateSteps`. `layout_preset` takes a built-in `preset` name and an optional `durationMs` (0-5000, 0 cuts) and `easing`, which animate the recall as in [DVE preset recall](dve.md). `squeezeback_set` takes the rect as `x`, `y`, `w`, `h` (even pixels) and an optional `background`, `durationMs` and `easing`; `squeezeback_on` and `squeezeback_off` take an optional `durationMs` (0-5000, 0 cuts) and `easing`, each defaulting to the configured one, as the [squeezeback](dve.md#squeezeback) endpoints do. `graphics_live_set` takes `layerId`, two different sources `fill` and `key`, and an optional `premultiplied`, as [`PUT /api/graphics/{id}/live`](graphics.md#put-apigraphicsidlive) does; `graphics_live_clear` takes `layerId`.
 
 **Response 200:** saved `macro.Macro`.
 

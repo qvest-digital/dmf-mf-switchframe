@@ -37,6 +37,7 @@ flowchart LR
   S2 -->|background| SQZN
   SQZN --> DSKN["compositorNode<br/>(DSK overlays)"]
   OVR[RGBA overlays<br/>tickers, images, text] --> DSKN
+  LIVE[live fill + key<br/>frame sync at tick] --> DSKN
   DSKN --> ENC[encode / MXL out]
 ```
 
@@ -63,6 +64,8 @@ Three engines live on top of the compositor:
 Fade-in and fade-out animations (`AutoOn`, `AutoOff`) run in a dedicated goroutine at 60 Hz, interpolating `layer.fadePosition` linearly while the compositor's `RLock`-protected blend pass reads the current value. The pulse and transition animation modes (`runPulseAnimation`, `runTransitionAnimation`) use the same pattern, with transition supporting `ToRect`, `ToAlpha`, and easing curves (`applyEasing`: `linear`, `smoothstep`, `ease-in-out`). The `FlyIn`/`FlyOut`/`FlyOn` helpers are specializations of transition mode that compute an off-screen start or end rect using `offScreenRect()` and the registered `resolutionProvider`.
 
 Each layer can also carry a persisted PNG via `SetImage` / `GetImage` / `DeleteImage`. The original PNG bytes stay in the layer for retrieval, and a decoded RGBA buffer is used for compositing. Setting an image also activates the layer and sizes the rect to the image's native dimensions (capped to program resolution, even-aligned for YUV420).
+
+A layer can instead show a live fill+key source pair (`SetLive`), as from a graphics renderer that plays out fill and key as two video sources. The sync loop reads both from the `FrameSynchronizer` at the tick's read point (`feedLiveLayers`, `FrameSynchronizer.FrameAt`), not at arrival as upstream key fills are, so fill and key show the same grain; when one is a grain ahead, its frame of the other's grain is taken. `FrameAt` peeks without taking the frame, so program's buffer, last frame and loss time are untouched. The frames are handed to the compositor for the tick (`SetLiveFrames`) and released after the pipeline ran. The key's legal-range luma becomes the blend weight through a LUT with the fade folded in (`liveKeyLUT8`, a 1024-entry `liveKeyLUT10` for 10-bit), and the fill is blended with the upstream key kernels (`lumaKeyMaskLUT`, `blendMaskY`, `keyMaskBlend10Row`); a shaped fill takes `blendShaped8`/`blendShaped10`, which add it over the keyed-out background. A live layer is full frame: rect, fly and slide are refused. On the GPU, `gpu_dsk` uploads fill and key and runs the luma key and stinger blend kernels; a premultiplied fill, and a 10-bit program on CUDA, which has no P210 luma key, are refused when the layer is set.
 
 For GPU pipelines, `Compositor.SnapshotVisibleLayers()` returns a deep-copied `[]VisibleLayerSnap` under lock. The GPU compositor node ([`gpu/gpu_nodes.go`](../../server/gpu/pipeline_nodes.go)) calls this once per frame, uploads overlay RGBA to GPU memory (or re-uses cached uploads when `VisibleLayerSnap.Gen` matches last frame), and dispatches Metal/CUDA blend kernels. The generation counter (`layer.overlayGen`) is the only piece of shared state the GPU path actually needs to invalidate.
 
@@ -173,6 +176,7 @@ All crop and position values are even-aligned (`EvenAlign(v int) int { return v 
 - Entry: [`server/graphics/compositor.go`](../../server/graphics/compositor.go) → `Compositor.ProcessYUV()` and `Compositor.ProcessYUV10()`
 - State: `Compositor.layers` (map of ID → `*graphicsLayer`), `Compositor.sortedIDs` (z-order), guarded by `Compositor.mu`
 - Lifecycle: `AddLayer`, `RemoveLayer`, `SetOverlay`, `SetLayerRect`, `On`, `Off`, `AutoOn`, `AutoOff`, `Animate`, `StopAnimation`, `FlyIn`, `FlyOn`, `FlyOut`, `SlideLayer`
+- Live fill+key: [`live.go`](../../server/graphics/live.go) -> `SetLive`, `ClearLive`, `LiveSources`, `SetLiveFrames`, `ClearLiveFrames`, `LiveOnAir` (tally); fed by `Switcher.feedLiveLayers` in [`sync_loop.go`](../../server/switcher/sync_loop.go)
 - Hot path: `AlphaBlendRGBA()`, `AlphaBlendRGBARectInto()` in [`blend.go`](../../server/graphics/blend.go)
 - GPU bridge: `Compositor.SnapshotVisibleLayers()` returning `[]VisibleLayerSnap`
 - Pipeline node: [`switcher/node_compositor.go`](../../server/switcher/node_compositor.go) → `compositorNode.Process()`

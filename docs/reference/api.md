@@ -4,11 +4,11 @@
 > **Read this first:** [architecture.md](../architecture.md)
 > **See also:** [state-broadcast.md](state-broadcast.md) · [fast-control.md](../reference/fast-control.md) · [subsystems/control-plane.md](../subsystems/control-plane.md)
 
-**TL;DR** The Switchframe REST API exposes the full state and command surface of the switcher over HTTP/3 (with HTTP/1.1 fallback). Every UI button, macro action, and automation hook ultimately lands on one of the 305 endpoints documented here (plus one `/api/v1/` wildcard compatibility route). Endpoints are grouped by subsystem — switching, audio, transition, graphics, DVE, clips, playout, replay, SCTE-35, operator, captions, comms, ST map, color grade, AI segmentation, ASR, output, peer, sync, pipeline, and debug — and share a common auth, error, and state-broadcast model. This is the biggest doc in the project; drill into the per-section files below rather than reading end-to-end.
+**TL;DR** The Switchframe REST API exposes the full state and command surface of the switcher over HTTP/3 (with HTTP/1.1 fallback). Every UI button, macro action, and automation hook ultimately lands on one of the 307 endpoints documented here (plus one `/api/v1/` wildcard compatibility route). Endpoints are grouped by subsystem - switching, audio, transition, graphics, DVE, clips, playout, replay, SCTE-35, operator, captions, comms, ST map, color grade, AI segmentation, ASR, output, peer, sync, pipeline, and debug - and share a common auth, error, and state-broadcast model. This is the biggest doc in the project; drill into the per-section files below rather than reading end-to-end.
 
 ## Table of contents
 
-The API has 305 real endpoints split across the files below. Each sub-file follows the same per-endpoint format (Purpose, Auth, Handler, Request, Response, Errors, Emits, Related) and opens with a short narrative explaining the subsystem.
+The API has 307 real endpoints split across the files below. Each sub-file follows the same per-endpoint format (Purpose, Auth, Handler, Request, Response, Errors, Emits, Related) and opens with a short narrative explaining the subsystem.
 
 ### Core
 
@@ -21,7 +21,7 @@ The API has 305 real endpoints split across the files below. Each sub-file follo
 ### Production
 
 - [transition-wipes](api/transition-wipes.md) — wipe pattern catalog, custom upload (5 endpoints)
-- [graphics](api/graphics.md) — DSK layer CRUD + animation, image/sequence/ticker, stingers (31 endpoints)
+- [graphics](api/graphics.md) - DSK layer CRUD + animation, image/sequence/ticker, live fill+key, stingers (33 endpoints)
 - [graphics-html5](api/graphics-html5.md) — browser-based HTML5 graphics (8 endpoints)
 - [dve](api/dve.md) - DVE layout, slots, presets, squeezeback (14 endpoints)
 - [keying](api/keying.md) — per-source upstream key configuration (3 endpoints)
