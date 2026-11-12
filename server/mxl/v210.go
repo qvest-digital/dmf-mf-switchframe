@@ -2,6 +2,7 @@ package mxl
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/zsiec/switchframe/server/mxl/v210asm"
 )
@@ -158,13 +159,29 @@ func YUV420pToV210Into(yuv, out []byte, width, height int) error {
 	cbPlane := yuv[ySize : ySize+cSize]
 	crPlane := yuv[ySize+cSize:]
 
-	for row := 0; row < height; row++ {
-		yRow := yPlane[row*width:]
-		cbRow := cbPlane[(row/2)*chromaW:]
-		crRow := crPlane[(row/2)*chromaW:]
-		v210Row := out[row*stride:]
-		v210asm.V210PackRow(&v210Row[0], &yRow[0], &cbRow[0], &crRow[0], groups)
+	packRows := func(lo, hi int) {
+		for row := lo; row < hi; row++ {
+			yRow := yPlane[row*width:]
+			cbRow := cbPlane[(row/2)*chromaW:]
+			crRow := crPlane[(row/2)*chromaW:]
+			v210Row := out[row*stride:]
+			v210asm.V210PackRow(&v210Row[0], &yRow[0], &cbRow[0], &crRow[0], groups)
+		}
 	}
+	bands := min(v210PackBands, height)
+	var wg sync.WaitGroup
+	for b := 1; b < bands; b++ {
+		wg.Go(func() { packRows(height*b/bands, height*(b+1)/bands) })
+	}
+	packRows(0, height/bands)
+	wg.Wait()
 
 	return nil
 }
+
+// v210PackBands is how many row bands YUV420pToV210Into packs in parallel. The
+// conversion runs on the program's frame path, once per frame: packed on
+// one core, a 1080p frame took up to the whole frame period on a node
+// whose memory other work kept busy, and a frame that misses its grain is
+// dropped from the MXL output.
+var v210PackBands = 8
