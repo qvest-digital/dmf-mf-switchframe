@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-rc.46](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.45...mxl-v1.0.0-rc.46) (2026-11-12)
+
+
+### Performance Improvements
+
+* **mxl:** pack an 8-bit program frame to V210 in row bands ([#203](https://github.com/qvest-digital/dmf-mf-switchframe/issues/203)) ([e0f86c8](https://github.com/qvest-digital/dmf-mf-switchframe/commit/e0f86c8d430f4ed725651eef5b6db3d0e95a91a5))
+
+
+### Continuous Integration
+
+* list perf commits in the changelog ([#204](https://github.com/qvest-digital/dmf-mf-switchframe/issues/204)) ([fe1e495](https://github.com/qvest-digital/dmf-mf-switchframe/commit/fe1e49589c4b0652f9169daaaf5388728a17705a))
+
 ## [1.0.0-rc.45](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.44...mxl-v1.0.0-rc.45) (2026-11-09)
 
 
