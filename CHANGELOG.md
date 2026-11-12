@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.47](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.46...mxl-v1.0.0-rc.47) (2026-11-12)
+
+
+### Performance Improvements
+
+* **transition:** average the 2x box shrink with SIMD on amd64 ([#206](https://github.com/qvest-digital/dmf-mf-switchframe/issues/206)) ([a45f570](https://github.com/qvest-digital/dmf-mf-switchframe/commit/a45f57071a8382a83f0664325ee161b27a554b44))
+
 ## [1.0.0-rc.46](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.45...mxl-v1.0.0-rc.46) (2026-11-12)
 
 
