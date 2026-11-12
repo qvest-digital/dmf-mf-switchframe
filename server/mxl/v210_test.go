@@ -1,6 +1,7 @@
 package mxl
 
 import (
+	"bytes"
 	"encoding/binary"
 	"testing"
 )
@@ -528,6 +529,36 @@ func TestYUV420pToV210Into_MatchesOriginal(t *testing.T) {
 	for i := range orig {
 		if out[i] != orig[i] {
 			t.Fatalf("byte %d: Into=%d, orig=%d", i, out[i], orig[i])
+		}
+	}
+}
+
+// Each band packs its own rows from the shared planes, so the frame must
+// come out the same whichever way its rows are split, including heights
+// with fewer rows than bands and heights the bands do not divide.
+func TestYUV420pToV210Into_BandsMatchOneBand(t *testing.T) {
+	defer func(n int) { v210PackBands = n }(v210PackBands)
+	for _, size := range [][2]int{{6, 2}, {12, 4}, {48, 6}, {48, 14}, {192, 38}, {1920, 1080}} {
+		width, height := size[0], size[1]
+		yuv := make([]byte, width*height*3/2)
+		for i := range yuv {
+			yuv[i] = byte(i*7 + i/width)
+		}
+		stride := V210LineStride(width)
+		v210PackBands = 1
+		want := make([]byte, stride*height)
+		if err := YUV420pToV210Into(yuv, want, width, height); err != nil {
+			t.Fatal(err)
+		}
+		for _, bands := range []int{2, 3, 5, 8, 64} {
+			v210PackBands = bands
+			got := make([]byte, stride*height)
+			if err := YUV420pToV210Into(yuv, got, width, height); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("%dx%d in %d bands differs from one band", width, height, bands)
+			}
 		}
 	}
 }
