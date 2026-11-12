@@ -6,8 +6,9 @@ import "github.com/zsiec/switchframe/server/internal/video"
 // On amd64, uses box-shrink 2x + bilinear for the remainder when the source
 // is at least twice the destination. Bilinear alone samples 2x2 source
 // pixels per destination pixel and skips the rest, so detail finer than the
-// destination aliases into moire; the box pass averages it out first. It is
-// the slower of the two: about 3.8 ms against 2.0 ms per 1080p to 480p frame.
+// destination aliases into moire; the box pass averages it out first. With
+// the SIMD box kernel it costs about the same: 2.0 ms against 1.95 ms per
+// 1080p to 480p frame.
 func ScaleYUV420Preview(src []byte, srcW, srcH int, dst []byte, dstW, dstH int, boxBuf *[]byte) {
 	if srcW == dstW && srcH == dstH {
 		copy(dst[:video.YUV420FrameSize(srcW, srcH)], src[:video.YUV420FrameSize(srcW, srcH)])

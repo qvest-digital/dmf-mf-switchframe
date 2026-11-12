@@ -1,7 +1,7 @@
 package transition
 
 // BoxShrink2xYUV420 downscales a YUV420 frame by exactly 2x in both dimensions
-// using box-average (2×2 block average for Y, 2×2 for chroma which is already
+// using box-average (2x2 block average for Y, 2x2 for chroma which is already
 // at half-res). This is ~4x faster than bilinear for the same pixel count
 // because each source pixel is read exactly once (no scatter-gather).
 //
@@ -17,10 +17,10 @@ func BoxShrink2xYUV420(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
 	dstUVH := dstH / 2
 	dstUVSize := dstUVW * dstUVH
 
-	// Y plane: average 2×2 blocks
+	// Y plane: average 2x2 blocks
 	boxShrink2xPlane(src[:srcYSize], srcW, srcH, dst[:dstYSize], dstW, dstH)
 
-	// Cb plane: average 2×2 blocks at half resolution
+	// Cb plane: average 2x2 blocks at half resolution
 	srcCb := src[srcYSize : srcYSize+srcUVSize]
 	dstCb := dst[dstYSize : dstYSize+dstUVSize]
 	boxShrink2xPlane(srcCb, srcUVW, srcUVH, dstCb, dstUVW, dstUVH)
@@ -31,20 +31,20 @@ func BoxShrink2xYUV420(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
 	boxShrink2xPlane(srcCr, srcUVW, srcUVH, dstCr, dstUVW, dstUVH)
 }
 
-// boxShrink2xPlane averages 2×2 blocks to produce a half-size plane.
-// Tight inner loop with no bounds checks in the hot path.
+// boxShrink2xPlane averages 2x2 blocks to produce a half-size plane, one
+// row pair per boxShrink2xRow call.
 func boxShrink2xPlane(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
+	if dstW <= 0 {
+		return
+	}
 	for dy := 0; dy < dstH; dy++ {
-		sy := dy * 2
-		srcRow0 := sy * srcW
+		srcRow0 := dy * 2 * srcW
 		srcRow1 := srcRow0 + srcW
 		dstRow := dy * dstW
-		for dx := 0; dx < dstW; dx++ {
-			sx := dx * 2
-			// Average of 4 pixels: (a + b + c + d + 2) >> 2
-			sum := int(src[srcRow0+sx]) + int(src[srcRow0+sx+1]) +
-				int(src[srcRow1+sx]) + int(src[srcRow1+sx+1])
-			dst[dstRow+dx] = byte((sum + 2) >> 2)
-		}
+		// The kernel does not bounds-check; these panic where the scalar
+		// loop did.
+		_ = src[srcRow1+2*dstW-1]
+		_ = dst[dstRow+dstW-1]
+		boxShrink2xRow(&dst[dstRow], &src[srcRow0], &src[srcRow1], dstW)
 	}
 }
