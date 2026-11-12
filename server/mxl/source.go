@@ -177,6 +177,10 @@ type Source struct {
 
 	// Reusable buffer for audio interleaving (avoids per-call allocation).
 	interleaveBuf []float32
+
+	// Sample rate and channel count the audio encoder last failed to
+	// open for, so a layout it rejects is logged once, not per grain.
+	audioEncFailed [2]int
 }
 
 // NewSource creates an MXL source.
@@ -595,17 +599,33 @@ func (s *Source) processAudioGrain(grain AudioGrain) {
 
 	// 2. Encode PCM→AAC and broadcast to relay.
 	if s.config.Relay != nil && s.config.AudioEncoderFactory != nil {
-		s.encodeAndBroadcastAudio(interleaved, grain.SampleRate, grain.Channels, pts)
+		channels := grain.Channels
+		if channels > maxRelayAudioChannels && len(grain.PCM) >= 2 {
+			// The stereo mixer keeps the first two channels of a source
+			// wider than 5.1, so the preview carries the same pair.
+			// interleaved has been handed to the mixer and is free.
+			interleaved = interleaveChannelsInto(&s.interleaveBuf, grain.PCM[:2])
+			channels = 2
+		}
+		s.encodeAndBroadcastAudio(interleaved, grain.SampleRate, channels, pts)
 	}
 }
+
+// maxRelayAudioChannels is the widest layout the AAC encoder accepts.
+const maxRelayAudioChannels = 6
 
 // encodeAndBroadcastAudio encodes PCM to AAC and broadcasts it.
 // Called only from the single audioFanOut goroutine, so lazy-init is safe.
 func (s *Source) encodeAndBroadcastAudio(pcm []float32, sampleRate, channels int, pts int64) {
 	if s.audioEncoder == nil {
+		if s.audioEncFailed == [2]int{sampleRate, channels} {
+			return
+		}
 		enc, err := s.config.AudioEncoderFactory(sampleRate, channels)
 		if err != nil {
-			s.log.Error("mxl source: failed to create audio encoder", "error", err)
+			s.audioEncFailed = [2]int{sampleRate, channels}
+			s.log.Error("mxl source: failed to create audio encoder",
+				"source", s.config.FlowName, "sample_rate", sampleRate, "channels", channels, "error", err)
 			return
 		}
 		s.audioEncoder = enc
