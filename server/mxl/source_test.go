@@ -3,6 +3,8 @@ package mxl
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -980,4 +982,150 @@ func TestSource_SlowSwitcherStaysNearHead(t *testing.T) {
 	if ring.maxLag > videoMaxLag+2 {
 		t.Fatalf("reader fell %d grains behind the head, bound %d", ring.maxLag, videoMaxLag)
 	}
+}
+
+// limitedAudioEncoder records the PCM it encodes. limitedAudioEncoderFactory
+// rejects more than six channels, as the AAC encoder does, and any rate
+// but 48 kHz.
+type limitedAudioEncoder struct {
+	fakeAudioEncoder
+	pcm [][]float32
+}
+
+func (e *limitedAudioEncoder) Encode(pcm []float32) ([]byte, error) {
+	e.pcm = append(e.pcm, append([]float32(nil), pcm...))
+	return e.fakeAudioEncoder.Encode(pcm)
+}
+
+type limitedAudioEncoderFactory struct {
+	calls int
+	enc   *limitedAudioEncoder
+}
+
+func (f *limitedAudioEncoderFactory) create(sampleRate, channels int) (AudioEnc, error) {
+	f.calls++
+	if channels < 1 || channels > 6 || sampleRate != 48000 {
+		return nil, fmt.Errorf("unsupported layout: %d Hz, %d channels", sampleRate, channels)
+	}
+	f.enc = &limitedAudioEncoder{}
+	return f.enc, nil
+}
+
+// countingHandler counts the ERROR records it receives.
+type countingHandler struct{ errors atomic.Int32 }
+
+func (h *countingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *countingHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelError {
+		h.errors.Add(1)
+	}
+	return nil
+}
+func (h *countingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *countingHandler) WithGroup(string) slog.Handler      { return h }
+
+// sixteenChannelGrain carries 16 channels whose samples name their channel
+// and position: channel c, sample i holds c + i/100.
+func sixteenChannelGrain(samples int) AudioGrain {
+	pcm := make([][]float32, 16)
+	for c := range pcm {
+		pcm[c] = make([]float32, samples)
+		for i := range pcm[c] {
+			pcm[c][i] = float32(c) + float32(i)/100
+		}
+	}
+	return AudioGrain{PCM: pcm, SampleRate: 48000, Channels: 16}
+}
+
+// A source wider than the AAC encoder accepts still gets preview audio, and
+// it is the pair the stereo mixer takes to program: the first two channels.
+// The mixer itself still gets every channel.
+func TestSource_WideAudioPreviewCarriesMixerPair(t *testing.T) {
+	const grains, samples = 3, 4
+	relay := &mockMediaBroadcasterForTest{}
+	factory := &limitedAudioEncoderFactory{}
+	logs := &countingHandler{}
+	var mixerChannels []int
+	src := NewSource(SourceConfig{
+		FlowName:            "wide",
+		Relay:               relay,
+		AudioEncoderFactory: factory.create,
+		OnRawAudio: func(_ string, pcm []float32, _ int64, channels int) {
+			if len(pcm) != samples*channels {
+				t.Errorf("mixer got %d values for %d channels", len(pcm), channels)
+			}
+			mixerChannels = append(mixerChannels, channels)
+		},
+		Logger: slog.New(logs),
+	})
+
+	for i := 0; i < grains; i++ {
+		src.processAudioGrain(sixteenChannelGrain(samples))
+	}
+
+	if n := logs.errors.Load(); n != 0 {
+		t.Fatalf("logged %d errors, want 0", n)
+	}
+	frames := relay.getAudioFrames()
+	if len(frames) != grains {
+		t.Fatalf("relay got %d audio frames, want %d", len(frames), grains)
+	}
+	for _, f := range frames {
+		if f.Channels != 2 || f.SampleRate != 48000 {
+			t.Fatalf("relay frame is %d ch at %d Hz, want 2 ch at 48000 Hz", f.Channels, f.SampleRate)
+		}
+	}
+	in := sixteenChannelGrain(samples).PCM
+	var want []float32
+	for i := 0; i < samples; i++ {
+		want = append(want, in[0][i], in[1][i])
+	}
+	if len(factory.enc.pcm) != grains {
+		t.Fatalf("encoder got %d grains, want %d", len(factory.enc.pcm), grains)
+	}
+	for g, pcm := range factory.enc.pcm {
+		if fmt.Sprint(pcm) != fmt.Sprint(want) {
+			t.Fatalf("grain %d: encoder got %v, want %v", g, pcm, want)
+		}
+	}
+	for _, c := range mixerChannels {
+		if c != 16 {
+			t.Fatalf("mixer got %d channels, want 16", c)
+		}
+	}
+	src.Stop()
+}
+
+// A layout the encoder rejects is tried and logged once, not on every
+// grain, and a later grain with a layout it takes still gets an encoder.
+func TestSource_AudioEncoderFailureLoggedOncePerLayout(t *testing.T) {
+	relay := &mockMediaBroadcasterForTest{}
+	factory := &limitedAudioEncoderFactory{}
+	logs := &countingHandler{}
+	src := NewSource(SourceConfig{
+		FlowName:            "odd-rate",
+		Relay:               relay,
+		AudioEncoderFactory: factory.create,
+		Logger:              slog.New(logs),
+	})
+
+	grain := AudioGrain{PCM: [][]float32{{0.1, 0.2}, {0.3, 0.4}}, SampleRate: 44100, Channels: 2}
+	for i := 0; i < 5; i++ {
+		src.processAudioGrain(grain)
+	}
+	if factory.calls != 1 || logs.errors.Load() != 1 {
+		t.Fatalf("rejected layout: %d encoder attempts and %d errors, want 1 and 1",
+			factory.calls, logs.errors.Load())
+	}
+	if n := len(relay.getAudioFrames()); n != 0 {
+		t.Fatalf("relay got %d audio frames with no encoder", n)
+	}
+
+	grain.SampleRate = 48000
+	src.processAudioGrain(grain)
+	if factory.calls != 2 || len(relay.getAudioFrames()) != 1 {
+		t.Fatalf("supported layout: %d encoder attempts and %d frames, want 2 and 1",
+			factory.calls, len(relay.getAudioFrames()))
+	}
+	src.Stop()
 }
