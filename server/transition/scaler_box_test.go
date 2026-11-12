@@ -1,6 +1,7 @@
 package transition
 
 import (
+	"math/rand"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -95,5 +96,87 @@ func BenchmarkScaleYUV420_1080pTo480p_BoxThenBilinear(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		BoxShrink2xYUV420(src, 1920, 1080, boxBuf, 960, 540)
 		ScaleYUV420(boxBuf, 960, 540, dst, 854, 480)
+	}
+}
+
+// boxAvg is the exact 2x2 average every box shrink path must produce.
+func boxAvg(a, b, c, d byte) byte {
+	return byte((int(a) + int(b) + int(c) + int(d) + 2) >> 2)
+}
+
+// The kernel splits a row into 16-, 8- and 1-pixel steps, so every width
+// from 0 to 80 takes a different split. A rounding average (PAVGB) is up
+// to 1 high on about a third of pixels, which lifts the whole picture;
+// the sum has to be exact, saturated values included, and nothing past
+// the row may be written.
+func TestBoxShrink2xRow_ExactAtEveryWidth(t *testing.T) {
+	t.Parallel()
+	checkBoxShrink2xRowExact(t)
+}
+
+func checkBoxShrink2xRowExact(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+	const guard = 0xA5
+	for n := 0; n <= 80; n++ {
+		row0 := make([]byte, 2*n+1)
+		row1 := make([]byte, 2*n+1)
+		rng.Read(row0)
+		rng.Read(row1)
+		if n%3 == 0 {
+			for i := range row0 {
+				row0[i], row1[i] = 255, 255
+			}
+		}
+		dst := make([]byte, n+16)
+		for i := range dst {
+			dst[i] = guard
+		}
+		boxShrink2xRow(&dst[0], &row0[0], &row1[0], n)
+		for i := 0; i < n; i++ {
+			want := boxAvg(row0[2*i], row0[2*i+1], row1[2*i], row1[2*i+1])
+			require.Equal(t, want, dst[i], "n=%d pixel %d", n, i)
+		}
+		for i := n; i < len(dst); i++ {
+			require.Equal(t, byte(guard), dst[i], "n=%d wrote past the row at %d", n, i)
+		}
+	}
+}
+
+func TestBoxShrink2xYUV420_ExactOn1080p(t *testing.T) {
+	t.Parallel()
+	const srcW, srcH, dstW, dstH = 1920, 1080, 960, 540
+	src := make([]byte, video.YUV420FrameSize(srcW, srcH))
+	rand.New(rand.NewSource(7)).Read(src)
+	dst := make([]byte, video.YUV420FrameSize(dstW, dstH))
+	BoxShrink2xYUV420(src, srcW, srcH, dst, dstW, dstH)
+
+	check := func(name string, s []byte, sw int, d []byte, dw, dh int) {
+		for y := 0; y < dh; y++ {
+			r0, r1 := s[2*y*sw:], s[(2*y+1)*sw:]
+			for x := 0; x < dw; x++ {
+				want := boxAvg(r0[2*x], r0[2*x+1], r1[2*x], r1[2*x+1])
+				if d[y*dw+x] != want {
+					t.Fatalf("%s (%d,%d) = %d, want %d", name, x, y, d[y*dw+x], want)
+				}
+			}
+		}
+	}
+	sY, dY := srcW*srcH, dstW*dstH
+	sC, dC := sY/4, dY/4
+	check("Y", src, srcW, dst, dstW, dstH)
+	check("Cb", src[sY:], srcW/2, dst[dY:], dstW/2, dstH/2)
+	check("Cr", src[sY+sC:], srcW/2, dst[dY+dC:], dstW/2, dstH/2)
+}
+
+func BenchmarkBoxShrink2xYUV420_1080p(b *testing.B) {
+	src := make([]byte, video.YUV420FrameSize(1920, 1080))
+	dst := make([]byte, video.YUV420FrameSize(960, 540))
+	for i := range src {
+		src[i] = byte(i % 256)
+	}
+	b.SetBytes(int64(len(src)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		BoxShrink2xYUV420(src, 1920, 1080, dst, 960, 540)
 	}
 }
