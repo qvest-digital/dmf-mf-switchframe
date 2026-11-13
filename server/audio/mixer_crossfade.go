@@ -128,16 +128,13 @@ func (m *Mixer) OnCut(oldSource, newSource string) {
 	m.cutFramesRemaining = 4
 	m.cutTotalFrames = 4
 
-	// Flush the new source's ring buffer to discard stale audio that
-	// accumulated between source connect and this cut. Without this,
-	// the mixer reads samples that are hundreds of ms old, causing
-	// audible A/V desync. After flush, push and pop rates match
-	// (both 48kHz), so depth stays near zero.
+	// Place the new source's ring again at the next read. That read drops
+	// what the ring holds from before the read point, so audio buffered
+	// while the source was off program is not played; what it holds for
+	// the read point and after is kept, as a source writing ahead of its
+	// media time has delivered it already.
 	if ch, ok := m.channels[newSource]; ok {
-		if ch.ringBuf != nil {
-			ch.ringBuf.Reset()
-			ch.placed = false
-		}
+		ch.placed = false
 		ch.active = true
 		// The cut put this source on program; a later OnTransitionAbort must
 		// not roll back its activation.
@@ -178,14 +175,11 @@ func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMo
 	m.transCrossfadeAudioPos = 0.0
 	m.mixCycleTransPos = 0.0
 
-	// Flush + activate the incoming source's channel so we start from
-	// fresh audio rather than stale data buffered before the transition.
+	// Activate the incoming source's channel, placed again at the next
+	// read as on a cut.
 	m.transAbortActivated = ""
 	if ch, ok := m.channels[newSource]; ok {
-		if ch.ringBuf != nil {
-			ch.ringBuf.Reset()
-			ch.placed = false
-		}
+		ch.placed = false
 		if !ch.active {
 			// Remember that this transition is what activated the channel
 			// so OnTransitionAbort can roll the activation back.
