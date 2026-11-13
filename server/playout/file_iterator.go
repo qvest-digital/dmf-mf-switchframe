@@ -2,12 +2,15 @@ package playout
 
 import (
 	"fmt"
+	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/filepcm"
 )
 
 // audioFrameInfo holds extracted audio frame data for PTS-matched interleaving.
@@ -104,7 +107,19 @@ type FileFrameIterator struct {
 	fps         float64
 	totalFrames int
 	closed      bool
+
+	// pcm decodes the audio to PCM for the mixer, which each picture
+	// carries for its own time: pcmPics is the pictures that took theirs
+	// since the stream started, pcmPut the samples, pcmPasses the passes.
+	pcm       *clip.PCMStream
+	pcmPics   int64
+	pcmPut    int64
+	pcmPasses int64
 }
+
+// audioRate is the rate of the PCM a FileFrameIterator hands out, the
+// mixer's.
+const audioRate = 48000
 
 // NewFileFrameIterator demuxes and decodes a media file, returning an iterator
 // over raw YUV420 video frames with interleaved audio.
@@ -174,7 +189,7 @@ func NewFileFrameIteratorWithDecoder(path string, factory DecoderFactory) (*File
 
 	// Step 4: Extract audio frame info for PTS-matched interleaving in Next().
 	var audio []audioFrameInfo
-	for _, af := range audioFrames {
+	for _, af := range clip.PresentedAudio(audioFrames) {
 		audio = append(audio, audioFrameInfo{
 			data:       af.Data(),
 			pts:        af.PTS(),
@@ -183,7 +198,18 @@ func NewFileFrameIteratorWithDecoder(path string, factory DecoderFactory) (*File
 		})
 	}
 
-	return newFileFrameIterator(encoded, audio, decoder, factory), nil
+	it := newFileFrameIterator(encoded, audio, decoder, factory)
+	if len(it.audioFrames) < len(audio) {
+		audioFrames = clip.AudioFrom(audioFrames, it.encodedFrames[0].pts)
+	}
+	if len(audioFrames) > 0 {
+		if it.pcm, err = clip.NewPCMStream(audioFrames, audioRate, filepcm.Codec()); err != nil {
+			slog.Warn("playout: audio does not decode, playing without it", "path", path, "error", err)
+		} else {
+			it.startPCM(0)
+		}
+	}
+	return it, nil
 }
 
 // newFileFrameIterator builds an iterator over demuxed frames. A stream cut
@@ -361,6 +387,7 @@ func (f *FileFrameIterator) makeDecodedFrame(yuv []byte, w, h int, pts int64, is
 
 	// PTS-matched audio interleaving.
 	f.attachAudio(frame)
+	f.attachPCM(frame)
 
 	// Update output tracking for drain PTS estimation.
 	f.prevPTS = f.lastPTS
@@ -408,6 +435,58 @@ func (f *FileFrameIterator) attachAudio(frame *DecodedFrame) {
 		frame.AudioSampleRate = batch[0].SampleRate
 		frame.AudioChannels = batch[0].Channels
 	}
+}
+
+// startPCM starts the PCM stream at the time of picture pic.
+func (f *FileFrameIterator) startPCM(pic int) {
+	if f.pcm == nil {
+		return
+	}
+	f.pcmPics, f.pcmPasses = int64(pic), 0
+	f.pcmPut = f.pcmSamples(f.pcmPics, audioRate)
+	f.pcm.Start(f.pcmSamples(f.pcmPics, f.pcm.SourceRate()), f.pcmSamples(int64(f.totalFrames), f.pcm.SourceRate()), f.nextPCMPass)
+}
+
+// nextPCMPass gives the PCM stream its next pass, as long as the
+// pictures', while another pass follows. Called under f.mu.
+func (f *FileFrameIterator) nextPCMPass() (int64, bool) {
+	if !f.loop {
+		return 0, false
+	}
+	f.pcmPasses++
+	n := int64(f.totalFrames)
+	return f.pcmSamples((f.pcmPasses+1)*n, f.pcm.SourceRate()) - f.pcmSamples(f.pcmPasses*n, f.pcm.SourceRate()), true
+}
+
+// pcmSamples is how many samples at rate the first pics pictures last.
+func (f *FileFrameIterator) pcmSamples(pics int64, rate int) int64 {
+	return int64(math.Round(float64(pics) * float64(rate) / f.fps))
+}
+
+// attachPCM gives the frame the PCM of its picture's time: one picture
+// period of the stream each, so the audio of every picture goes out with
+// it and a picture dropped drops its audio.
+func (f *FileFrameIterator) attachPCM(frame *DecodedFrame) {
+	if f.pcm == nil {
+		return
+	}
+	f.pcmPics++
+	n := f.pcmSamples(f.pcmPics, audioRate) - f.pcmPut
+	if n <= 0 {
+		return
+	}
+	at := f.pcmPut
+	pcm := f.pcm.Read(int(n))
+	if len(pcm) == 0 {
+		return
+	}
+	f.pcmPut += int64(len(pcm) / f.pcm.Channels())
+	frame.AudioFrames = append(frame.AudioFrames, AudioFrameData{
+		PCM:        pcm,
+		PTS:        at * 90000 / audioRate,
+		SampleRate: audioRate,
+		Channels:   f.pcm.Channels(),
+	})
 }
 
 // estimateDrainPTS estimates PTS for frames drained from the decoder's
@@ -472,6 +551,7 @@ func (f *FileFrameIterator) Rewind() error {
 	f.outputCount = 0
 	f.audioIndex = 0
 	f.lastPTS, f.prevPTS = 0, 0
+	// The PCM runs on into the next pass.
 	return nil
 }
 
@@ -521,6 +601,8 @@ func (f *FileFrameIterator) seekLocked(targetFrame int) error {
 	f.passDone = false
 	f.lastPTS = 0
 	f.prevPTS = 0
+
+	f.startPCM(seekIdx)
 
 	// Reset audio index to match video position by PTS. The audio list
 	// starts at the first picture, so a seek to it starts at the first
@@ -585,6 +667,9 @@ func (f *FileFrameIterator) Close() {
 	f.closed = true
 	if f.decoder != nil {
 		f.decoder.Close()
+	}
+	if f.pcm != nil {
+		f.pcm.Close()
 	}
 }
 

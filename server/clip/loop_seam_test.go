@@ -456,7 +456,8 @@ func TestFromFirstKeyframeKeepsKeyframeStart(t *testing.T) {
 
 // A clip cut before its keyframe keeps the AAC frame that spans the
 // keyframe, as a playout channel does: dropping it starts the sound up
-// to one AAC frame after the first picture.
+// to one AAC frame after the first picture. The frame before it stays,
+// hidden, for the PCM decode of the first.
 func TestFromFirstKeyframeKeepsAudioSpanningKeyframe(t *testing.T) {
 	frames := []BufferedFrame{
 		{pts: 1800},
@@ -471,7 +472,10 @@ func TestFromFirstKeyframeKeepsAudioSpanningKeyframe(t *testing.T) {
 	}
 	gotFrames, gotAudio := fromFirstKeyframe(frames, audio)
 	assert.Equal(t, frames[1:], gotFrames)
-	assert.Equal(t, audio[1:], gotAudio)
+	assert.Equal(t, audio[1:], PresentedAudio(gotAudio))
+	require.Len(t, gotAudio, 3)
+	assert.True(t, gotAudio[0].hidden)
+	assert.Equal(t, audio[0].pts, gotAudio[0].pts)
 }
 
 // The TS demuxer gives a frame without a PTS the PTS 0. Its place in
@@ -551,7 +555,7 @@ func TestFromFirstKeyframePTSZeroIsNotAWrap(t *testing.T) {
 			gotFrames, gotAudio := fromFirstKeyframe(frames, audio)
 			assert.Equal(t, frames[2:], gotFrames)
 			// The keyframe is at base+3600; audio frame 1 spans it.
-			assert.Equal(t, audio[1:], gotAudio)
+			assert.Equal(t, audio[1:], PresentedAudio(gotAudio))
 		})
 	}
 }

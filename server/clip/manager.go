@@ -45,6 +45,7 @@ type Manager struct {
 	rawVideoOutput func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool)
 	videoOutput    func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte)
 	audioOutput    func(key string, data []byte, pts int64, sampleRate, channels int)
+	pcmOutput      func(key string, pcm []float32, pts int64, channels int, start bool)
 }
 
 // ManagerConfig configures the clip Manager.
@@ -76,6 +77,10 @@ type ManagerConfig struct {
 	// when it is ejected, so the slot's source can be cut to before it
 	// plays.
 	Timed bool
+	// AudioRate is the rate of the PCM the players hand to SetPCMOutput,
+	// 48 kHz when 0, and PCMCodec what they decode it with.
+	AudioRate int
+	PCMCodec  PCMCodec
 }
 
 // playerSlot holds the state of a single clip player slot.
@@ -325,10 +330,31 @@ func fromFirstKeyframe(frames []BufferedFrame, audio []BufferedAudioFrame) ([]Bu
 	if wrapped {
 		return kept, audio
 	}
-	audio = audio[sort.Search(len(audio), func(j int) bool {
-		return audio[j].pts >= key || audio[j].pts+aacFrameTicks(audio[j]) > key
-	}):]
-	return kept, audio
+	return kept, AudioFrom(audio, key)
+}
+
+// AudioFrom drops the audio frames that end before pts, keeping the one
+// before the first that does not, hidden: a frame decodes right only
+// after the one before it.
+func AudioFrom(audio []BufferedAudioFrame, pts int64) []BufferedAudioFrame {
+	i := sort.Search(len(audio), func(j int) bool {
+		return audio[j].pts >= pts || audio[j].pts+aacFrameTicks(audio[j]) > pts
+	})
+	if i == 0 {
+		return audio
+	}
+	out := append([]BufferedAudioFrame(nil), audio[i-1:]...)
+	out[0].hidden = true
+	return out
+}
+
+// PresentedAudio returns the frames of audio that are not hidden, the
+// ones a stream of AAC frames carries.
+func PresentedAudio(audio []BufferedAudioFrame) []BufferedAudioFrame {
+	if !slices.ContainsFunc(audio, func(f BufferedAudioFrame) bool { return f.hidden }) {
+		return audio
+	}
+	return slices.DeleteFunc(slices.Clone(audio), func(f BufferedAudioFrame) bool { return f.hidden })
 }
 
 // ptsWraps reports whether the video PTS steps back by more than half the
@@ -701,6 +727,7 @@ func (m *Manager) newPlayer(idx int, slot *playerSlot, speed float64, loop, cued
 	rawVideoFn := m.rawVideoOutput
 	videoFn := m.videoOutput
 	audioFn := m.audioOutput
+	pcmFn := m.pcmOutput
 	key := playerKey(playerID)
 
 	// Create a per-player decoder if factory is available.
@@ -735,8 +762,16 @@ func (m *Manager) newPlayer(idx int, slot *playerSlot, speed float64, loop, cued
 		outNum, outDen = m.config.OutputRate()
 	}
 
+	var pcmOut func([]float32, int64, int, bool)
+	if pcmFn != nil {
+		pcmOut = func(pcm []float32, pts int64, channels int, start bool) {
+			pcmFn(key, pcm, pts, channels, start)
+		}
+	}
+
 	var p *Player
 	p = NewPlayer(PlayerConfig{
+		PCMOutput:      pcmOut,
 		OutputFPSNum:   outNum,
 		OutputFPSDen:   outDen,
 		Clip:           slot.frames,
@@ -766,6 +801,8 @@ func (m *Manager) newPlayer(idx int, slot *playerSlot, speed float64, loop, cued
 				audioFn(key, data, pts, sampleRate, channels)
 			}
 		},
+		AudioRate: m.config.AudioRate,
+		PCMCodec:  m.config.PCMCodec,
 		OnStart: func(media string, delay time.Duration, preroll string) {
 			m.noteStart(playerID, media, delay, preroll, outNum, outDen)
 		},
@@ -1043,6 +1080,15 @@ func (m *Manager) SetAudioOutput(fn func(key string, data []byte, pts int64, sam
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.audioOutput = fn
+}
+
+// SetPCMOutput registers a callback for the PCM of timed clip players
+// (PlayerConfig.PCMOutput), with the player source key. start marks the
+// first PCM of a playback, whose source the mixer should place afresh.
+func (m *Manager) SetPCMOutput(fn func(key string, pcm []float32, pts int64, channels int, start bool)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pcmOutput = fn
 }
 
 // LoadedClipIDs returns the set of clip IDs currently loaded in player slots.

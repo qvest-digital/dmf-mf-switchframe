@@ -79,8 +79,11 @@ func TestEditHidesPictures(t *testing.T) {
 
 // An AAC track with 2112 priming samples, as Apple and FDK encoders write,
 // carries two frames wholly before the edit and one straddling it. Played
-// in order, the two would delay all audio by 2048 samples (43 ms at 48 kHz).
-func TestReadAudioSamples_EditListDropsPrimingAndPadding(t *testing.T) {
+// in order, the two would delay all audio by 2048 samples (43 ms at 48 kHz),
+// so they are hidden from the AAC stream; the PCM decode needs them, to
+// decode the first presented samples whole, and skips what the edit does
+// not present of the straddling frame and of the last one.
+func TestReadAudioSamples_EditListMarksPrimingAndPadding(t *testing.T) {
 	const n = 6
 	sizes := make([]uint32, n)
 	data := make([]byte, 0, 4*n)
@@ -111,14 +114,29 @@ func TestReadAudioSamples_EditListDropsPrimingAndPadding(t *testing.T) {
 
 	var ids []byte
 	var pts []int64
-	for _, fr := range frames {
+	for _, fr := range PresentedAudio(frames) {
 		ids = append(ids, fr.data[0])
 		pts = append(pts, fr.pts)
 	}
-	assert.Equal(t, []byte{2, 3, 4}, ids, "frames kept")
+	assert.Equal(t, []byte{2, 3, 4}, ids, "frames presented")
 	// (2048-2112)*90000/48000 = -120: the straddling frame starts 64
 	// samples before the picture.
 	assert.Equal(t, []int64{-120, 1800, 3720}, pts)
+
+	type trim struct {
+		id        byte
+		skip, cut int
+		hidden    bool
+	}
+	var trims []trim
+	for _, fr := range frames {
+		trims = append(trims, trim{fr.data[0], fr.skip, fr.cut, fr.hidden})
+	}
+	// 2400 samples from 2112 end at 4512, 608 into frame 4; frame 5 is
+	// all padding and goes.
+	assert.Equal(t, []trim{
+		{0, 1024, 0, true}, {1, 1024, 0, true}, {2, 64, 0, false}, {3, 0, 0, false}, {4, 0, 608, false},
+	}, trims)
 }
 
 // ffmpeg writes B-frames with ctts offsets from DTS 0 and an edit starting
@@ -243,12 +261,13 @@ func TestDemuxMP4_EditListMatchesFFmpeg(t *testing.T) {
 				gotVideo = append(gotVideo, f.pts)
 				first = min(first, f.pts)
 			}
-			for _, a := range audio {
+			for _, a := range PresentedAudio(audio) {
 				gotAudio = append(gotAudio, a.pts)
 			}
 			assert.Equal(t, wantVideo, gotVideo, "video PTS")
 			assert.Equal(t, wantAudio, gotAudio, "audio PTS")
 
+			audio = PresentedAudio(audio)
 			require.NotEmpty(t, audio)
 			offset := audio[0].pts - first
 			t.Logf("MEASURE: %d fps first audio - first picture = %.2f ms, %d audio frames (ffprobe presents %d)",

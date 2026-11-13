@@ -2042,10 +2042,15 @@ func playPasses(t *testing.T, iter *FileFrameIterator, passes int) []clipPass {
 				break
 			}
 			p.pics = append(p.pics, f.YUV)
-			if p.audio == 0 && len(f.AudioFrames) > 0 {
-				p.firstAudio = f.AudioFrames[0].PTS
+			for _, af := range f.AudioFrames {
+				if af.Data == nil {
+					continue // the PCM decoded from them
+				}
+				if p.audio == 0 {
+					p.firstAudio = af.PTS
+				}
+				p.audio++
 			}
-			p.audio += len(f.AudioFrames)
 		}
 	}
 	return out

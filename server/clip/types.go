@@ -168,6 +168,13 @@ type BufferedAudioFrame struct {
 	pts        int64
 	sampleRate int
 	channels   int
+	// skip and cut are the samples at the frame's start and end that are
+	// not presented: the encoder priming and the padding of the last
+	// frame, as the container counts them. A hidden frame presents none:
+	// it lies wholly before the presented samples and is there only to be
+	// decoded ahead of them. Only the PCM decode reads hidden frames.
+	skip, cut int
+	hidden    bool
 }
 
 // Data returns the raw AAC payload (no ADTS header).
