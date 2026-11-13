@@ -132,20 +132,39 @@ func TestProgramAACFramesCompensateEncoderDelay(t *testing.T) {
 	rec := &aacRecorder{}
 	a.programRelay.AddViewer(rec)
 
+	// A clock that ticks on demand, so no tick is dropped however slow the
+	// host is. A dropped tick rebases the AAC frames onto the next one, and
+	// the audio still in the encoder's delay comes out stamped late by the
+	// ticks dropped.
+	pf := a.sw.PipelineFormat()
+	a.sw.SetReferenceClock(clock.NewReferenceClock(pf.FPSNum, pf.FPSDen, 48000, clock.PTSBase, false))
+
 	// The program audio, made by the sync loop's mixer: an impulse at a
-	// sample index half a second in, whatever the clock's rate or drops.
-	r48 := clock.Rate{Num: 48000, Den: 1}
-	imp := &impulseMixer{at: clock.TimestampToIndex(r48, clock.TAINow()) + 24000, pts: -1}
+	// sample index half a second in.
+	imp := &impulseMixer{at: 24000, pts: -1}
 	a.sw.SetSyncMixer(imp)
 	a.sw.Start()
-	time.Sleep(1500 * time.Millisecond)
 
-	rec.mu.Lock()
-	frames := append([]*media.AudioFrame(nil), rec.frames...)
-	rec.mu.Unlock()
-	if len(frames) < 20 {
-		t.Fatalf("%d program AAC frames in 1.5 s, want about 70", len(frames))
+	// The impulse is out once a frame starts past the PTS it must be heard
+	// at.
+	var frames []*media.AudioFrame
+	var want int64
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		imp.mu.Lock()
+		at := imp.pts
+		imp.mu.Unlock()
+		want = at + int64(decoderDelay)*90000/48000
+		rec.mu.Lock()
+		frames = append(frames[:0], rec.frames...)
+		rec.mu.Unlock()
+		if at >= 0 && len(frames) > 0 && frames[len(frames)-1].PTS > want {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("impulse made at program PTS %d, %d program AAC frames after 10 s", at, len(frames))
+		}
 	}
+
 	dec, err := audio.NewFDKDecoder(48000, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -165,14 +184,6 @@ func TestProgramAACFramesCompensateEncoderDelay(t *testing.T) {
 	if heard < 0 {
 		t.Fatal("the impulse never came out of the program audio")
 	}
-
-	imp.mu.Lock()
-	at := imp.pts
-	imp.mu.Unlock()
-	if at < 0 {
-		t.Fatal("the tick carrying the impulse was dropped")
-	}
-	want := at + int64(decoderDelay)*90000/48000
 	if d := heard - want; d < -4 || d > 4 {
 		t.Fatalf("impulse heard at program PTS %d, want %d: off by %d ticks (%.1f samples; encoder delay %d samples)",
 			heard, want, d, float64(d)*48000/90000, encDelay)
