@@ -417,8 +417,11 @@ func (k *kernel) project(x, y float32) (float32, float32) {
 
 // projectX and projectY are project's two halves for an axis transform,
 // where m01 and m10 are zero and drop out of the GPU kernel's sums exactly.
-func (k *kernel) projectX(x float32) float32 { return (k.inv[0]*x + k.inv[2]) * k.invW }
-func (k *kernel) projectY(y float32) float32 { return (k.inv[4]*y + k.inv[5]) * k.invW }
+// The conversion rounds the product before the add, as the kernel's
+// three-term sum does; fused, as arm64 compiles it, the sum differs in the
+// last bit and moves a coordinate on a slot edge across it.
+func (k *kernel) projectX(x float32) float32 { return (float32(k.inv[0]*x) + k.inv[2]) * k.invW }
+func (k *kernel) projectY(y float32) float32 { return (float32(k.inv[4]*y) + k.inv[5]) * k.invW }
 
 func (k *kernel) mirrorMosaicX(sx float32) float32 {
 	if k.mirrorH {
