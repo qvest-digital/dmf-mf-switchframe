@@ -1,5 +1,10 @@
 package transition
 
+import (
+	"runtime"
+	"sync"
+)
+
 // ScaleYUV420 scales a YUV420 planar frame from (srcW x srcH) to (dstW x dstH)
 // using bilinear interpolation. Both src and dst must be sized for their
 // respective resolutions: video.YUV420FrameSize(w,h) bytes (Y[w*h] + Cb[w/2*h/2] + Cr[w/2*h/2]).
@@ -94,9 +99,7 @@ func scalePlaneWithCoords(src []byte, srcW, srcH int, dst []byte, dstW, dstH int
 	// avoids step-accumulation rounding error and guarantees exact
 	// corner mapping. The table is computed once and reused for every row.
 	dstWm1 := int64(dstW - 1)
-	dstHm1 := int64(dstH - 1)
 	srcWm1 := int64(srcW - 1)
-	srcHm1 := int64(srcH - 1)
 
 	// xCoords[dx] holds the 16.16 fixed-point source X for destination col dx.
 	// Reuse caller-provided scratch when sized appropriately.
@@ -112,7 +115,40 @@ func scalePlaneWithCoords(src []byte, srcW, srcH int, dst []byte, dstW, dstH int
 		}
 	}
 
-	for dy := 0; dy < dstH; dy++ {
+	// A caller that brings scratch scales without allocating, on its own
+	// goroutine; the bands cost a few allocations a plane.
+	workers := scaleWorkers()
+	if xCoordsScratch != nil || dstW*dstH < bandedScalePixels || workers < 2 {
+		scaleRows(src, srcW, srcH, dst, dstW, dstH, xCoords, 0, dstH)
+		return
+	}
+	scaleBands(dstH, workers, func(r0, r1 int) {
+		scaleRows(src, srcW, srcH, dst, dstW, dstH, xCoords, r0, r1)
+	})
+}
+
+// scaleBands runs rows over rows [0, dstH) in up to workers bands of
+// ceil(dstH/workers) rows: the first on the calling goroutine, each other
+// on a goroutine of its own. It returns once all of them are done.
+func scaleBands(dstH, workers int, rows func(r0, r1 int)) {
+	var wg sync.WaitGroup
+	band := (dstH + workers - 1) / workers
+	for r0 := band; r0 < dstH; r0 += band {
+		wg.Add(1)
+		go func(r0, r1 int) {
+			defer wg.Done()
+			rows(r0, r1)
+		}(r0, min(r0+band, dstH))
+	}
+	rows(0, min(band, dstH))
+	wg.Wait()
+}
+
+// scaleRows scales destination rows [r0, r1) of a plane.
+func scaleRows(src []byte, srcW, srcH int, dst []byte, dstW, dstH int, xCoords []int64, r0, r1 int) {
+	dstHm1 := int64(dstH - 1)
+	srcHm1 := int64(srcH - 1)
+	for dy := r0; dy < r1; dy++ {
 		// Compute source Y in 16.16 fixed-point directly per-row
 		var srcY int64
 		if dstHm1 > 0 {
@@ -130,4 +166,17 @@ func scalePlaneWithCoords(src []byte, srcW, srcH int, dst []byte, dstW, dstH int
 
 		scaleBilinearRow(&dst[dy*dstW], &src[iy*srcW], &src[iy1*srcW], srcW, dstW, &xCoords[0], fy)
 	}
+}
+
+// bandedScalePixels is the destination plane size from which ScaleYUV420
+// scales a plane in row bands on several cores: a 720p to 1080p upscale
+// takes about 10 ms on one, half a 50 fps frame period, and the clip
+// player and the playout channel scale every picture on the goroutine that
+// paces them.
+const bandedScalePixels = 1 << 18
+
+// scaleWorkers is how many goroutines one plane is scaled with: the
+// GOMAXPROCS of the moment, at most four.
+func scaleWorkers() int {
+	return min(runtime.GOMAXPROCS(0), 4)
 }
