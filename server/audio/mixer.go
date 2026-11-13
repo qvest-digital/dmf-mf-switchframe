@@ -115,7 +115,7 @@ type Channel struct {
 	// ring on the media timeline (popAt).
 	ringEnd int64
 	// placed is set once the ring was put exactly on the read point, at its
-	// first read after being empty or reset.
+	// first read after being empty, reset or PlaceChannel.
 	placed bool
 	// realigned is set while the ring's audio is off the read point by
 	// more than a period and was moved onto it; realigns counts entries.
@@ -508,6 +508,18 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 	out := make([]float32, n*c)
 	copy(out[skip*c:], ch.ringBuf.Pop(need*c))
 	return out
+}
+
+// PlaceChannel has the next read that reaches a channel's audio put it
+// exactly on the read point, as the first read after a reset does: a
+// source whose timestamps moved by less than a period is otherwise read
+// that far off them from then on.
+func (m *Mixer) PlaceChannel(sourceKey string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ch, ok := m.channels[sourceKey]; ok {
+		ch.placed = false
+	}
 }
 
 func (ch *Channel) noteRealign(off bool) {

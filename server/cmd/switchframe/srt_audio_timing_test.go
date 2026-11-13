@@ -155,3 +155,81 @@ func TestSRTReconnectPlacesTheNewConnectionsAudioAfresh(t *testing.T) {
 
 // newConnectionJitter offsets the reconnected source's i-th audio PTS.
 var newConnectionJitter = func(int) int64 { return 0 }
+
+// An SRT connection's first audio arrives 10 ms later than the rest, as a
+// backlog the socket built before the first frame was decoded. The anchor
+// places it at that lateness, and the mixer's first read puts it on those
+// stamps; the windows after the first arrive on time, and the anchor
+// settles 10 ms earlier. Ten milliseconds is less than the period the
+// mixer realigns at, so without placing the audio again on its stamps
+// once the anchor settles, it would stay 10 ms later than its video for
+// the rest of the connection.
+func TestSRTAudioLandsOnItsStampsOnceTheAnchorSettles(t *testing.T) {
+	const n = 960   // one 20 ms read period at 48 kHz
+	const job = 480 // 10 ms of audio per delivery
+	const step = int64(10_000_000)
+	const key = "srt:settle"
+	var now atomic.Int64
+	scriptTAI(t, &now)
+	m := audio.NewMixer(audio.MixerConfig{SampleRate: 48000, Channels: 2})
+	t.Cleanup(func() { _ = m.Close() })
+	m.AddChannel(key)
+	m.SetActive(key, true)
+	a := &App{mixer: m}
+	var anchor clock.TrackingAnchor
+
+	rate := clock.Rate{Num: 48000, Den: 1}
+	start := now.Load()
+	// Job k's own PTS is the engine PTS of step k, so on time it lands on
+	// sample index startIdx+k*job, and every 20th job is loud.
+	startIdx := clock.TimestampToIndex(rate, start)
+	deliver := func(k int) {
+		pcm := make([]float32, job*2)
+		level := float32(0.1)
+		if k%20 == 0 {
+			level = 0.5
+		}
+		for j := range pcm {
+			pcm[j] = level
+		}
+		pts := clock.PTS(start + int64(k)*step)
+		a.ingestSRTAudio(key, &anchor, srtAudioJob{pcm: pcm, pts: pts, sampleRate: 48000, channels: 2})
+	}
+
+	// The first 1.9 s each job arrives one step late, then on time.
+	const lateUntil, steps = 190, 1000
+	settled := clock.TrackingSettle * clock.TrackingWindow / 900
+	var prev float32
+	var onsets int
+	for s := 1; s <= steps; s++ {
+		now.Store(start + int64(s)*step)
+		switch {
+		case s < lateUntil:
+			deliver(s - 1)
+		case s == lateUntil:
+			deliver(s - 1)
+			deliver(s)
+		default:
+			deliver(s)
+		}
+		if s%2 != 0 {
+			continue
+		}
+		at := clock.TimestampToIndex(rate, now.Load()) - 2*n
+		out := m.ProduceSamples(at, n, 0)
+		for i := 0; i < n; i++ {
+			v := out[2*i]
+			if v > 0.3 && prev <= 0.3 && s > settled+4 {
+				onsets++
+				off := int64(at+uint64(i)-startIdx) % (20 * job)
+				if off > 10*job {
+					off -= 20 * job
+				}
+				require.Zerof(t, off, "a loud job lands %d samples off its stamps after the anchor settled", off)
+			}
+			prev = v
+		}
+	}
+	require.NotZero(t, onsets, "no loud job was read after the anchor settled")
+	require.Zero(t, m.ChannelRealigns()[key], "the source was realigned")
+}

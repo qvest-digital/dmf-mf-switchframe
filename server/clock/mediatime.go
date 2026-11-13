@@ -223,6 +223,8 @@ type TrackingAnchor struct {
 	windowEnd int64                  // engine PTS at which the current window ends
 	moves     int64
 	raises    int64
+	settles   int64 // times the offset settled after a placement
+	told      int64 // settles SettledPTS has reported
 }
 
 // TrackingWindow is the span over which a TrackingAnchor takes a
@@ -247,10 +249,29 @@ const TrackingHistory = 30
 
 // PTS maps the source timestamp src to the engine timeline.
 func (a *TrackingAnchor) PTS(src int64) int64 {
-	now := NowPTS()
-	late := now - src
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.place(src)
+}
+
+// SettledPTS is PTS that also reports whether the offset settled since
+// the last SettledPTS call: true for the first timestamp it maps on the
+// settled offset. The settle can move the source by less than a period,
+// which the mixer never realigns, so the source's audio is placed on its
+// timestamps again from that one on.
+func (a *TrackingAnchor) SettledPTS(src int64) (int64, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	pts := a.place(src)
+	settled := a.told != a.settles
+	a.told = a.settles
+	return pts, settled
+}
+
+// place maps src to the engine timeline. Caller holds a.mu.
+func (a *TrackingAnchor) place(src int64) int64 {
+	now := NowPTS()
+	late := now - src
 	was, placed := a.offset, false
 	switch {
 	case !a.set || late-a.offset > MaxAnchorSkew || a.offset-late > MaxAnchorSkew:
@@ -271,6 +292,7 @@ func (a *TrackingAnchor) PTS(src int64) int64 {
 			a.offset = max(a.maxes[0], late)
 		case a.windows == TrackingSettle:
 			a.offset = slices.Max(a.maxes[:TrackingSettle-1])
+			a.settles++
 		case min(a.maxes[0], a.maxes[1]) > a.offset+TrackingSlack:
 			a.offset = min(a.maxes[0], a.maxes[1])
 		case a.windows >= TrackingSettle+TrackingHistory && slices.Max(a.maxes[:]) < a.offset:

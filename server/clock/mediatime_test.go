@@ -515,3 +515,42 @@ func TestTrackingAnchorCountsItsRaises(t *testing.T) {
 		t.Fatalf("after a jump: %+v, want 1 move, no new raise and an offset of 0 from the new placement", s)
 	}
 }
+
+// SettledPTS reports the settle once per placement, on the first
+// timestamp it maps on the settled offset, also when a PTS call made the
+// anchor settle: the caller places the source's audio on its stamps again
+// from that timestamp, and placed again after a jump, settles again.
+func TestTrackingAnchorReportsEachSettleOnce(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	var a TrackingAnchor
+	src := int64(1_000_000)
+	settles := 0
+	frames := func(count int) {
+		for range count {
+			now += 20_000_000
+			src += 1800
+			a.PTS(src)
+			if _, settled := a.SettledPTS(src); settled {
+				settles++
+			}
+		}
+	}
+	frames(TrackingSettle*TrackingWindow/1800 - 1)
+	if settles != 0 {
+		t.Fatalf("%d settles reported before the settle windows passed", settles)
+	}
+	frames(2)
+	if settles != 1 {
+		t.Fatalf("%d settles reported once the settle windows passed, want 1", settles)
+	}
+	frames(2 * TrackingWindow / 1800)
+	if settles != 1 {
+		t.Fatalf("%d settles reported two windows on, want still 1", settles)
+	}
+	src += 10 * 90000 // the source restarts 10 s on
+	frames((TrackingSettle+1)*TrackingWindow/1800 + 1)
+	if settles != 2 {
+		t.Fatalf("%d settles reported after a jump, want 2", settles)
+	}
+}
