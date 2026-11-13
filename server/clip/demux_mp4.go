@@ -567,7 +567,10 @@ func parseEsdsDescriptors(track *mp4Track, descriptors []mp4.Descriptor) {
 			// not the sample entry's, which ISO 14496-12 lets read 2
 			// whatever the stream carries. Configuration 0, a layout the
 			// stream describes itself, leaves the sample entry's.
-			if n := ascChannelCount(chanCfg); n > 0 {
+			// An escaped object type (31) or sampling frequency (15)
+			// moves the channel configuration to later bits than read
+			// here: such a config leaves the sample entry's count too.
+			if n := ascChannelCount(chanCfg); n > 0 && aot != 31 && srIdx != 15 {
 				track.audioChannels = n
 			} else if track.audioChannels == 0 {
 				track.audioChannels = chanCfg
@@ -578,12 +581,13 @@ func parseEsdsDescriptors(track *mp4Track, descriptors []mp4.Descriptor) {
 
 // ascChannelCount is the channel count of an AudioSpecificConfig
 // channelConfiguration (ISO 14496-3 table 1.19), 0 for one it does not
-// define.
+// define and for 14: 5.1.2 has eight channels in another element order
+// than the 7.1 ADTS configuration 7 eight channels are framed as.
 func ascChannelCount(chanCfg int) int {
 	switch chanCfg {
 	case 1, 2, 3, 4, 5, 6:
 		return chanCfg
-	case 7, 12, 14:
+	case 7, 12:
 		return 8
 	case 11:
 		return 7
