@@ -98,6 +98,8 @@ type AppConfig struct {
 	PlayoutEnabled      bool // --playout (enable playout subsystem)
 	PlayoutCacheMaxGB   int  // --playout-cache-max (GB, default 200)
 	PlayoutAsRunRetDays int  // --playout-asrun-retention (days, default 30)
+	PlayoutPreroll      int  // --playout-preroll (clips ahead, default 1)
+	PlayoutPrerollMaxMB int  // --playout-preroll-max-mb (MiB of look-ahead files, default 2048)
 
 	// SRT input.
 	SRTListen    string // SRT listener address (e.g., ":6464")
@@ -391,6 +393,8 @@ func parseConfig() (AppConfig, error) {
 	playoutFlag := flag.Bool("playout", false, "Enable playout subsystem")
 	playoutCacheMaxFlag := flag.Int("playout-cache-max", 200, "Playout cache max size in GB")
 	playoutAsRunRetFlag := flag.Int("playout-asrun-retention", 30, "As-run log retention in days")
+	playoutPrerollFlag := flag.Int("playout-preroll", 1, "Clips after the one on air each playout channel opens and decodes ahead of their cut (0 = open each clip on its cut)")
+	playoutPrerollMaxMBFlag := flag.Int("playout-preroll-max-mb", 2048, "MiB of asset files each playout channel holds prepared after the item at its cursor; a prepared clip holds its whole file in memory (0 = no limit)")
 
 	// SRT input flags.
 	srtListenFlag := flag.String("srt-listen", "", "SRT listener address for incoming push connections (e.g., :6464)")
@@ -475,6 +479,13 @@ func parseConfig() (AppConfig, error) {
 	warmCacheFlag := flag.Bool("warm-cache", false, "Pre-generate caches (ST map LUTs) for all resolutions and exit")
 
 	flag.Parse()
+
+	if *playoutPrerollFlag < 0 {
+		return AppConfig{}, fmt.Errorf("--playout-preroll must be 0 or more, got %d", *playoutPrerollFlag)
+	}
+	if *playoutPrerollMaxMBFlag < 0 {
+		return AppConfig{}, fmt.Errorf("--playout-preroll-max-mb must be 0 or more, got %d", *playoutPrerollMaxMBFlag)
+	}
 
 	// Parse SRT output port range if provided.
 	var srtOutputBase, srtOutputEnd int
@@ -636,6 +647,8 @@ func parseConfig() (AppConfig, error) {
 		PlayoutEnabled:       *playoutFlag,
 		PlayoutCacheMaxGB:    *playoutCacheMaxFlag,
 		PlayoutAsRunRetDays:  *playoutAsRunRetFlag,
+		PlayoutPreroll:       *playoutPrerollFlag,
+		PlayoutPrerollMaxMB:  *playoutPrerollMaxMBFlag,
 		SRTListen:            *srtListenFlag,
 		SRTLatencyMs:         *srtLatencyFlag,
 		SRTOutputPortBase:    srtOutputBase,

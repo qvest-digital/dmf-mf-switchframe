@@ -243,6 +243,9 @@ Read by [`playout.MetricsCollector`](../../server/playout/metrics_collector.go),
 | `switchframe_playout_last_frame_age_seconds` | gauge | `channel` | Time since a watched channel delivered its last frame. |
 | `switchframe_playout_ticks_made_up_total` | counter | `channel` | Extra ticks the channel's run loop ran, at most one per frame period, to make up frame periods it fell behind on. |
 | `switchframe_playout_ticks_skipped_total` | counter | `channel` | Ticks the channel's run loop dropped when it fell more than a second behind: frames the output lost. |
+| `switchframe_playout_prerolled_items` | gauge | `channel` | Clip items the channel has opened and decoded to their first frame ahead of their cut. |
+| `switchframe_playout_item_starts_total` | counter | `channel`, `preroll` | Clip items the channel put on air, by whether they were pre-rolled: `ready` (prepared before the cut), `waited` (still being prepared at the cut) or `missed` (opened at the cut). |
+| `switchframe_playout_item_start_delay_seconds` | histogram | `channel`, `media` | Time from the tick that cut or transitioned to a clip item to its first video frame (`media=video`) and its first audio (`media=audio`). Buckets: 1 ms, 5 ms, 10 ms, 20 ms, 40 ms, 100 ms, 250 ms, 500 ms, 1 s, 2.5 s, 5 s. |
 | `switchframe_playout_cache_used_bytes` | gauge | - | Bytes the playout asset cache holds. |
 | `switchframe_playout_cache_max_bytes` | gauge | - | Bytes the playout asset cache may hold. |
 | `switchframe_playout_cache_items` | gauge | `state` | Assets in the playout cache, by state: ready, pending (queued for a fetch), fetching (or transcoding) and error. |

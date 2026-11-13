@@ -129,6 +129,10 @@ func (t *TrimIterator) Next() (*DecodedFrame, error) {
 		}
 
 		rel := frame.PTS - t.basePTS
+		if rel < -(1 << 32) {
+			// The 33-bit PTS wrapped since the first frame.
+			rel += 1 << 33
+		}
 
 		// Check out point first (past the out point = end of stream).
 		if t.outMs > 0 && rel >= outPTS {
@@ -178,13 +182,26 @@ func (t *TrimIterator) Seek(targetFrame int) error {
 	}
 
 	// Translate the trimmed-timeline frame index to the full timeline by
-	// adding the in-point's frame offset.
+	// adding the in-point's offset: by PTS where the inner iterator can
+	// seek to one, which holds where the frame rate does not.
 	fps := t.inner.EstimateFPS()
 	if fps <= 0 {
 		fps = 30.0
 	}
+	if ps, ok := t.inner.(ptsSeeker); ok {
+		return ps.seekPTS(t.basePTS + t.inMs*90 + int64(float64(targetFrame)*90000/fps))
+	}
 	inFrames := int(float64(t.inMs) * fps / 1000.0)
 	return seeker.Seek(targetFrame + inFrames)
+}
+
+// ptsSeeker is an iterator that seeks to the keyframe before a PTS.
+type ptsSeeker interface {
+	// keyframeBefore returns the index of the last keyframe at or before
+	// pts, 0 when there is none.
+	keyframeBefore(pts int64) int
+	// seekPTS moves to the keyframe keyframeBefore(pts) returns.
+	seekPTS(pts int64) error
 }
 
 // SetLoop passes loop on to the inner iterator.
@@ -195,8 +212,17 @@ func (t *TrimIterator) SetLoop(loop bool) {
 }
 
 // Rewind starts the inner iterator over. The base PTS stays: every pass
-// carries the same source PTS.
+// carries the same source PTS. With an in-point past the first GOP the
+// next pass starts at a seek to it, as the first did, instead of decoding
+// every frame before it on the tick that wraps.
 func (t *TrimIterator) Rewind() error {
+	if t.inMs > 0 && t.started {
+		ps, ok := t.inner.(ptsSeeker)
+		inFirstGOP := ok && ps.keyframeBefore(t.basePTS+t.inMs*90) == 0
+		if _, ok := t.inner.(interface{ Seek(int) error }); ok && !inFirstGOP {
+			return t.Seek(0)
+		}
+	}
 	l, ok := t.inner.(LoopingIterator)
 	if !ok {
 		return fmt.Errorf("playout: trim rewind: inner iterator cannot rewind")
@@ -284,6 +310,25 @@ func (p *CacheAssetProvider) Open(assetURI string) (FrameIterator, error) {
 		return nil, fmt.Errorf("cache lookup: %w", err)
 	}
 	return nil, ErrAssetNotReady
+}
+
+// assetSize returns the size of the file Open would open for assetURI, or
+// -1 when there is none yet.
+func (p *CacheAssetProvider) assetSize(assetURI string) int64 {
+	path := ""
+	if entry, err := p.cache.Peek(assetURI); err == nil && entry.State == AssetCached {
+		path = entry.LocalPath
+	} else if _, local := ParseAssetURI(assetURI); !strings.Contains(local, "..") {
+		path = local
+	}
+	if path == "" {
+		return -1
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return -1
+	}
+	return info.Size()
 }
 
 // fileExists returns true if the path exists on disk.
