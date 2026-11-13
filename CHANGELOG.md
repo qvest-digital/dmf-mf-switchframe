@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.48](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.47...mxl-v1.0.0-rc.48) (2026-11-12)
+
+
+### Bug Fixes
+
+* **mxl:** encode preview audio of sources wider than 5.1 ([#208](https://github.com/qvest-digital/dmf-mf-switchframe/issues/208)) ([15edc4d](https://github.com/qvest-digital/dmf-mf-switchframe/commit/15edc4de477598c73490697293bf7fe26b1b77d4))
+
 ## [1.0.0-rc.47](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.46...mxl-v1.0.0-rc.47) (2026-11-12)
 
 
