@@ -100,7 +100,7 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame, time
 	srcChannels := ch.decoder.Channels()
 	if srcChannels > m.numChannels {
 		var result downmixResult
-		pcm, result = m.downmixChannels(&ch.downmixBuf, pcm, srcChannels)
+		pcm, result = m.downmixAAC(&ch.downmixBuf, pcm, srcChannels)
 		if !ch.surroundWarned {
 			ch.surroundWarned = true
 			m.logDownmixWarn(sourceKey, "AAC", srcChannels, result)

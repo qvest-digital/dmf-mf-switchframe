@@ -226,3 +226,18 @@ func TestBuildADTS_NonStandardRate_RoundTrips(t *testing.T) {
 	require.Equal(t, 22050, sr, "non-standard 22000 should snap to 22050")
 	require.Equal(t, 2, ch)
 }
+
+// The ADTS channel_configuration field has three bits. Eight channels
+// written into it as the count read back as 0, a layout only an in-band
+// program config element describes, and no MP4 clip's frames carry one:
+// 7.1 is configuration 7. Counts without a configuration are 0.
+func TestBuildADTS_ChannelConfiguration(t *testing.T) {
+	t.Parallel()
+	for channels, want := range map[int]byte{1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 0, 8: 7, 16: 0} {
+		h := BuildADTS(48000, channels, 100)
+		got := (h[2]&0x01)<<2 | h[3]>>6
+		require.Equal(t, want, got, "%d channels", channels)
+		frameLen := (int(h[3]&0x03) << 11) | (int(h[4]) << 3) | (int(h[5]) >> 5)
+		require.Equal(t, 107, frameLen, "%d channels: frame length", channels)
+	}
+}

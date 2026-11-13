@@ -1138,6 +1138,55 @@ func (m *Mixer) downmixChannels(buf *[]float32, pcm []float32, srcChannels int) 
 	return out, downmixTruncated
 }
 
+// downmixAAC folds a decoded AAC bitstream of srcChannels channels down to
+// stereo by the layout its channel configuration fixes, in the FDK
+// decoder's WAV order, with the BS.775-3 coefficients downmixChannels
+// uses for 5.1: centre and surround channels at -3 dB into both or their
+// side, LFE dropped.
+//
+//	3: L R C            4: L R C Cs          5: L R C Ls Rs
+//	6: L R C LFE Ls Rs  (downmixChannels)
+//	8: L R C LFE Ls Rs Lc Rc
+//
+// Eight channels are 7.1 framed as ADTS configuration 7 (see
+// codec.BuildADTS). For a 7.1 bitstream signalled as configuration 12,
+// rear surround, Lc/Rc carry its front pair, L/R its side pair and Ls/Rs
+// its rear pair; for one that is configuration 7, L/R are its outer front
+// pair and go in at -3 dB too. Other counts are downmixChannels'.
+// Caller must hold m.mu (write lock): *buf is mutated.
+func (m *Mixer) downmixAAC(buf *[]float32, pcm []float32, srcChannels int) ([]float32, downmixResult) {
+	if m.numChannels != 2 || len(pcm) == 0 {
+		return m.downmixChannels(buf, pcm, srcChannels)
+	}
+	const k = float32(0.7071067811865475) // 1/sqrt(2) = -3 dB
+	var fold func(src []float32) (l, r float32)
+	switch srcChannels {
+	case 3:
+		fold = func(s []float32) (float32, float32) { return s[0] + k*s[2], s[1] + k*s[2] }
+	case 4:
+		fold = func(s []float32) (float32, float32) {
+			return s[0] + k*s[2] + k*s[3], s[1] + k*s[2] + k*s[3]
+		}
+	case 5:
+		fold = func(s []float32) (float32, float32) {
+			return s[0] + k*s[2] + k*s[3], s[1] + k*s[2] + k*s[4]
+		}
+	case 8:
+		fold = func(s []float32) (float32, float32) {
+			return s[6] + k*s[2] + k*s[0] + k*s[4], s[7] + k*s[2] + k*s[1] + k*s[5]
+		}
+	default:
+		return m.downmixChannels(buf, pcm, srcChannels)
+	}
+	frames := len(pcm) / srcChannels
+	*buf = growBuf(*buf, frames*2)
+	out := *buf
+	for i := 0; i < frames; i++ {
+		out[2*i], out[2*i+1] = fold(pcm[i*srcChannels : (i+1)*srcChannels])
+	}
+	return out, downmixLoRo
+}
+
 // upmixMono duplicates each mono sample to all mixer channels.
 // srcChannels is the source's actual channel count (must be < m.numChannels).
 // buf is a reusable output slice owned by the caller; it is regrown as needed

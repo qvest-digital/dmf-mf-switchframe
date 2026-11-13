@@ -30,6 +30,10 @@ static int aacdec_open(aacdec_t* h, int sample_rate, int channels) {
 	// code is ignored: ancient FDK builds reject the param but default to
 	// WAV order anyway, so a failure here is indistinguishable from success.
 	aacDecoder_SetParam(h->dec, AAC_PCM_OUTPUT_CHANNEL_MAPPING, 1);
+	// Hand out every channel of the bitstream: FDK's own mix of 7.1 down
+	// to 5.1 folds the front pair partly into the centre, which the
+	// stereo downmix then spreads over both sides.
+	aacDecoder_SetParam(h->dec, AAC_PCM_MAX_OUTPUT_CHANNELS, -1);
 	return 0;
 }
 
