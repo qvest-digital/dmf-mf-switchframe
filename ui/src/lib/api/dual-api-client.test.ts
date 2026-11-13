@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DualApiClient } from './dual-api-client';
-import { EngineStartingError } from '$lib/state/auto-reconcile';
+import { EngineStartingError, PullUnsupportedError, SnapshotStaleError } from '$lib/state/auto-reconcile';
 
 describe('DualApiClient', () => {
 	beforeEach(() => {
@@ -241,5 +241,40 @@ describe('DualApiClient', () => {
 		const err = await client.getStateSnapshot('A', 'lock-1').catch((e) => e);
 		expect(err).toBeInstanceOf(EngineStartingError);
 		expect((err as EngineStartingError).engine).toBe('A');
+	});
+
+	// --- pullFromPeer ---
+
+	it('pullFromPeer asks the engine to take its peer\'s state under the peer lock', async () => {
+		const mockFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ applied: true, warnings: [] }), { status: 200 }));
+		vi.stubGlobal('fetch', mockFetch);
+		const client = new DualApiClient({
+			engines: [{ id: 'A', url: 'https://a.example.com' }, { id: 'B', url: 'https://b.example.com' }],
+		});
+
+		await client.pullFromPeer('B', 'A', 'lock-A', { force: true });
+
+		expect(mockFetch.mock.calls[0][0]).toBe('https://b.example.com/api/sync/pull-from-peer?lockId=lock-A&force=true');
+		expect(mockFetch.mock.calls[0][1].method).toBe('POST');
+	});
+
+	it('pullFromPeer maps the engine\'s refusals', async () => {
+		const client = new DualApiClient({
+			engines: [{ id: 'A', url: 'https://a.example.com' }, { id: 'B', url: 'https://b.example.com' }],
+		});
+		const answer = (status: number, body = '{}') => vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { status })));
+
+		for (const status of [403, 404, 405, 501]) {
+			answer(status);
+			expect(await client.pullFromPeer('B', 'A').catch((e) => e)).toBeInstanceOf(PullUnsupportedError);
+		}
+		answer(503);
+		const starting = await client.pullFromPeer('B', 'A').catch((e) => e);
+		expect(starting).toBeInstanceOf(EngineStartingError);
+		expect((starting as EngineStartingError).engine).toBe('A');
+		answer(409, JSON.stringify({ snapshot_seq: 3, current_seq: 5 }));
+		const stale = await client.pullFromPeer('B', 'A').catch((e) => e);
+		expect(stale).toBeInstanceOf(SnapshotStaleError);
+		expect((stale as SnapshotStaleError).currentSeq).toBe(5);
 	});
 });

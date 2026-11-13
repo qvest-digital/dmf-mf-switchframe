@@ -29,7 +29,23 @@ export class EngineStartingError extends Error {
 	}
 }
 
+/**
+ * Thrown by pullFromPeer when the engine has no pull from its peer, as one
+ * built before it: its state is then relayed through the browser.
+ */
+export class PullUnsupportedError extends Error {
+	constructor(public engine: EngineId) {
+		super(`engine ${engine} cannot pull its peer's state`);
+		this.name = 'PullUnsupportedError';
+	}
+}
+
 export interface AutoReconcileConfig {
+	/** Has the engine take its peer's state straight from the peer, under the
+	 * lock held on the peer; a snapshot then never passes through the browser.
+	 * Throws as pushSnapshot does, PullUnsupportedError where the engine has
+	 * no such pull, and EngineStartingError while the peer is starting. */
+	pullFromPeer?: (engine: EngineId, peerLockId?: string, opts?: { force: true }) => Promise<{ warnings: string[] }>;
 	getSnapshot: (engine: EngineId, lockId?: string) => Promise<unknown>;
 	/** force applies the snapshot even when the target has advanced past it. */
 	pushSnapshot: (engine: EngineId, snapshot: unknown, opts?: { force: true }) => Promise<{ warnings: string[] }>;
@@ -275,21 +291,35 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 				}),
 			]);
 
-			let snapshot = await timeoutRace((sourceLockId ? config.getSnapshot(authoritative, sourceLockId) : config.getSnapshot(authoritative)));
+			// Copies from's state to `to`: the engines move it between
+			// themselves, and only to an engine that cannot is it relayed.
+			const copyState = async (from: EngineId, to: EngineId, fromLockId: string | undefined, force: boolean) => {
+				if (config.pullFromPeer) {
+					try {
+						return await timeoutRace(force
+							? config.pullFromPeer(to, fromLockId, { force: true })
+							: config.pullFromPeer(to, fromLockId));
+					} catch (err) {
+						if (!(err instanceof PullUnsupportedError)) throw err;
+					}
+				}
+				const snapshot = await timeoutRace(fromLockId ? config.getSnapshot(from, fromLockId) : config.getSnapshot(from));
+				return timeoutRace(force
+					? config.pushSnapshot(to, snapshot, { force: true })
+					: config.pushSnapshot(to, snapshot));
+			};
+
 			let result: { warnings: string[] };
 			try {
-				result = await timeoutRace(overrideStale
-					? config.pushSnapshot(target, snapshot, { force: true })
-					: config.pushSnapshot(target, snapshot));
+				result = await copyState(authoritative, target, sourceLockId, overrideStale);
 			} catch (pushErr) {
 				if (pushErr instanceof SnapshotStaleError) {
 					// The target holds a newer command than the source, so its
 					// state is the one to keep: push it the other way. Only when
 					// that is refused too do the engines need an operator.
 					const targetLockId = target === first ? firstLockId : secondLockId;
-					const newer = await timeoutRace(targetLockId ? config.getSnapshot(target, targetLockId) : config.getSnapshot(target));
 					try {
-						result = await timeoutRace(config.pushSnapshot(authoritative, newer));
+						result = await copyState(target, authoritative, targetLockId, false);
 					} catch (reverseErr) {
 						if (reverseErr instanceof SnapshotStaleError) {
 							clearTimeout(timeoutTimer);

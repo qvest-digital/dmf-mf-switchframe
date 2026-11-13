@@ -1,6 +1,8 @@
 package control
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -147,6 +150,7 @@ func (a *API) registerSyncRoutes(mux *http.ServeMux) {
 		return
 	}
 	mux.HandleFunc("GET /api/sync/state-snapshot", a.handleGetStateSnapshot)
+	mux.HandleFunc("POST /api/sync/pull-from-peer", a.handlePullFromPeer)
 	if a.sequenceEngine != nil {
 		mux.HandleFunc("GET /api/sync/graphics-sequence", a.handleGetGraphicsSequence)
 	}
@@ -184,6 +188,14 @@ type snapshotEnvelope struct {
 // startup read is an admin one.
 func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
 	admin := r.URL.Query().Get("admin") == "true"
+	if admin && r.URL.Query().Get("ready") == "true" {
+		// An admin read that copies the state on, as a pull for a
+		// browser does, refuses a starting engine as a locked read does.
+		if sr, ok := a.snapshotProvider.(SnapshotReadiness); ok && !sr.SnapshotReady() {
+			httperr.Write(w, http.StatusServiceUnavailable, "engine still starting: its state is not the one to copy")
+			return
+		}
+	}
 	if !admin {
 		lockID := r.URL.Query().Get("lockId")
 		if !a.reconcileLock.isHeldBy(lockID) {
@@ -390,6 +402,66 @@ func (a *API) graphicsLayersRemovedBy(snap internal.FullStateSnapshot) int {
 		}
 	}
 	return n
+}
+
+// peerSnapshotReadTimeout bounds reading the peer's snapshot for a pull.
+const peerSnapshotReadTimeout = 60 * time.Second
+
+// handlePullFromPeer reads the peer engine's state snapshot and applies it
+// here, as a browser reconciling the two would by reading it and pushing it:
+// the snapshot travels between the engines rather than through the browser.
+// ?lockId= is the reconcile lock the caller holds on the peer, without
+// which the peer's state is read as an admin read that a starting peer
+// refuses too; ?force=true is passed on
+// to the apply. The caller's credentials are passed on to the peer. Answers
+// as POST /api/sync/state-snapshot does, 503 while the peer is starting
+// and 502 when the peer cannot be read.
+func (a *API) handlePullFromPeer(w http.ResponseWriter, r *http.Request) {
+	if a.peerPoller.PeerURL() == "" {
+		httperr.Write(w, http.StatusNotImplemented, "no peer engine configured")
+		return
+	}
+	q := url.Values{}
+	if lockID := r.URL.Query().Get("lockId"); lockID != "" {
+		q.Set("lockId", lockID)
+	} else {
+		q.Set("admin", "true")
+		q.Set("ready", "true")
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), peerSnapshotReadTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.peerPoller.PeerURL()+"/api/sync/state-snapshot?"+q.Encode(), nil)
+	if err != nil {
+		httperr.Write(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	resp, err := a.peerPoller.HTTPClient().Do(req)
+	if err != nil {
+		httperr.Write(w, http.StatusBadGateway, fmt.Sprintf("peer snapshot: %v", err))
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusServiceUnavailable:
+		httperr.Write(w, http.StatusServiceUnavailable, "peer engine still starting: its state is not the one to copy")
+		return
+	default:
+		httperr.Write(w, http.StatusBadGateway, fmt.Sprintf("peer snapshot: status %d", resp.StatusCode))
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSnapshotBodySize+1))
+	if err != nil {
+		httperr.Write(w, http.StatusBadGateway, fmt.Sprintf("peer snapshot: %v", err))
+		return
+	}
+	apply := r.Clone(r.Context())
+	apply.Body = io.NopCloser(bytes.NewReader(body))
+	apply.ContentLength = int64(len(body))
+	a.handleApplyStateSnapshot(w, apply)
 }
 
 // handleGetGraphicsSequence serves the ZIP the sequence on a layer was

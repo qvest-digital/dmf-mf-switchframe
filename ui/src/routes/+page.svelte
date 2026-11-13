@@ -292,6 +292,7 @@
 
 	// Auto-reconcile: watches sync status and triggers snapshot push when engines diverge
 	const autoReconcile = createAutoReconcile({
+		pullFromPeer: (engine, lockId, opts) => dualApi.pullFromPeer(engine, engine === 'A' ? 'B' : 'A', lockId, opts),
 		getSnapshot: (engine, lockId) => dualApi.getStateSnapshot(engine, lockId),
 		pushSnapshot: (engine, snapshot, opts) => dualApi.pushStateSnapshot(engine, snapshot, opts),
 		acquireLock: (engine) => dualApi.acquireReconcileLock(engine),

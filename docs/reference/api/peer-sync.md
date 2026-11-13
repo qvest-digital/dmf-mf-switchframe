@@ -97,6 +97,17 @@ For a snapshot with `graphicsContent` set, the engine takes the snapshot's set o
 
 ---
 
+### `POST /api/sync/pull-from-peer`
+
+**Purpose:** take the peer engine's state snapshot straight from the peer (`--peer-engine-url`) and apply it as `POST /api/sync/state-snapshot` applies one, so the snapshot travels between the engines rather than through a browser. The browser reconciler uses it, and relays the snapshot itself only to an engine that answers 403, 404, 405 or 501, as one built before the pull does.
+**Handler:** `(*API).handlePullFromPeer`.
+
+**Query:** `lockId`, the reconcile lock the caller holds on the peer, without which the peer is read as an `?admin=true&ready=true` read, which a starting peer refuses with 503 as it does a locked read; `force=true`, passed on to the apply. The caller's `Authorization` header is passed on to the peer.
+
+**Response 200 and errors:** as `POST /api/sync/state-snapshot`, and 501 (no peer configured), 502 (peer unreachable or refusing the read), 503 (peer still starting).
+
+---
+
 ### `GET /api/sync/graphics-sequence?layer=&hash=`
 
 **Purpose:** the ZIP a layer's PNG sequence was uploaded as, served while the layer holds the sequence of that SHA-256 `hash`.

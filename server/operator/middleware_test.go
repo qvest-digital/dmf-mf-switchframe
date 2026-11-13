@@ -747,11 +747,13 @@ func TestMiddleware_SyncEndpointsAllowAnyAuthenticatedOperator(t *testing.T) {
 		path   string
 	}{
 		{"POST", "/api/sync/state-snapshot"},
+		{"POST", "/api/sync/pull-from-peer"},
 		{"POST", "/api/sync/reconcile-lock"},
 		{"PUT", "/api/sync/reconcile-lock/lock-123"},
 		{"DELETE", "/api/sync/reconcile-lock/lock-123"},
 		// Versioned variants must be classified identically.
 		{"POST", "/api/v1/sync/state-snapshot"},
+		{"POST", "/api/v1/sync/pull-from-peer"},
 		{"POST", "/api/v1/sync/reconcile-lock"},
 	}
 
