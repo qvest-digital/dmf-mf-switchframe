@@ -120,6 +120,9 @@ func (a *App) initPlayout() error {
 	mgr.OnChannelLifecycle(
 		// onStart: register playout channel as a raw YUV switcher source + mixer channel.
 		func(channelID int, key string) {
+			// The run's PTS start over from the program's last broadcast
+			// PTS: place it afresh, at its first frame.
+			playoutAnchors.Delete(key)
 			a.sw.RegisterTimedReplaySource(key)
 			a.mixer.AddChannel(key)
 			_ = a.mixer.SetAFV(key, true)
