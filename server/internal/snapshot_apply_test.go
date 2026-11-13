@@ -1653,3 +1653,115 @@ func TestApplyFullSnapshot_GraphicsLayerSettings(t *testing.T) {
 		t.Fatalf("settings not applied: %v %v", target.names, target.configs)
 	}
 }
+
+type mockLayerSyncTarget struct {
+	*mockApplyTarget
+}
+
+func (m *mockLayerSyncTarget) SyncGraphicsLayers(layers []GraphicsLayerSnapshot) error {
+	return m.record("SyncGraphicsLayers", layers)
+}
+
+// An engine that lost its layers cannot take a layer's on-air state, place
+// or settings: every per-layer call fails on a layer it does not hold. The
+// layer set is synced first.
+func TestApplyFullSnapshot_SyncsGraphicsLayersFirst(t *testing.T) {
+	target := &mockLayerSyncTarget{newMockApplyTarget()}
+	layers := []GraphicsLayerSnapshot{{ID: 2, Active: true, Image: []byte("png")}, {ID: 5}}
+	if w := ApplyFullSnapshot(context.Background(), FullStateSnapshot{Graphics: layers, GraphicsContent: true}, target); len(w) > 0 {
+		t.Fatalf("warnings: %v", w)
+	}
+	calls := target.callsFor("SyncGraphicsLayers")
+	if len(calls) != 1 || !reflect.DeepEqual(calls[0].Args[0], layers) {
+		t.Fatalf("SyncGraphicsLayers calls = %+v, want one with the snapshot's layers", calls)
+	}
+	order := map[string]int{}
+	for i, c := range target.calls {
+		if _, ok := order[c.Method]; !ok {
+			order[c.Method] = i
+		}
+	}
+	if order["SyncGraphicsLayers"] > order["SetGraphicsLayerActive"] {
+		t.Fatalf("layers synced after their settings: %v", order)
+	}
+}
+
+// A snapshot of an engine without layers removes the target's: nil is
+// what such an engine captures.
+func TestApplyFullSnapshot_SyncsEmptyGraphicsLayers(t *testing.T) {
+	target := &mockLayerSyncTarget{newMockApplyTarget()}
+	ApplyFullSnapshot(context.Background(), FullStateSnapshot{GraphicsContent: true}, target)
+	if target.callCount("SyncGraphicsLayers") != 1 {
+		t.Fatal("SyncGraphicsLayers not called for a snapshot without layers")
+	}
+}
+
+// An engine running an image from before layer content captures layers
+// without it. Taking that as the whole set would create layers with
+// nothing to show and remove the ones this engine holds, so in a pair of
+// mixed images the layer set is left alone.
+func TestApplyFullSnapshot_LeavesLayerSetWithoutContent(t *testing.T) {
+	target := &mockLayerSyncTarget{newMockApplyTarget()}
+	ApplyFullSnapshot(context.Background(), FullStateSnapshot{Graphics: []GraphicsLayerSnapshot{{ID: 2}}}, target)
+	if target.wasCalled("SyncGraphicsLayers") {
+		t.Fatal("layer set synced from a snapshot without layer content")
+	}
+}
+
+func TestApplyFullSnapshot_GraphicsLayerSyncFailureWarns(t *testing.T) {
+	target := &mockLayerSyncTarget{newMockApplyTarget()}
+	target.errors["SyncGraphicsLayers"] = fmt.Errorf("layer 2 content: bad png")
+	w := ApplyFullSnapshot(context.Background(), FullStateSnapshot{Graphics: []GraphicsLayerSnapshot{{ID: 2}}, GraphicsContent: true}, target)
+	if len(w) != 1 || !strings.Contains(w[0], "bad png") {
+		t.Fatalf("warnings = %v, want the sync failure", w)
+	}
+}
+
+type mockSTMapRemoveTarget struct {
+	*mockApplyTarget
+	sources []string
+}
+
+func (m *mockSTMapRemoveTarget) STMapSources() []string { return m.sources }
+func (m *mockSTMapRemoveTarget) RemoveSTMapSource(sourceKey string) error {
+	return m.record("RemoveSTMapSource", sourceKey)
+}
+func (m *mockSTMapRemoveTarget) RemoveSTMapProgram() error {
+	return m.record("RemoveSTMapProgram")
+}
+
+// ST map assignments the source engine does not hold are dropped: the
+// assignments are compared between engines, so one left behind keeps the
+// pair diverged however often a snapshot is pushed.
+func TestApplyFullSnapshot_STMapsRemovesUnassigned(t *testing.T) {
+	target := &mockSTMapRemoveTarget{newMockApplyTarget(), []string{"cam3", "cam1"}}
+	snap := FullStateSnapshot{STMaps: &STMapSnapshot{Sources: map[string]string{"cam1": "barrel"}}}
+	if w := ApplyFullSnapshot(context.Background(), snap, target); len(w) > 0 {
+		t.Fatalf("warnings: %v", w)
+	}
+	removed := target.callsFor("RemoveSTMapSource")
+	if len(removed) != 1 || removed[0].Args[0] != "cam3" {
+		t.Fatalf("RemoveSTMapSource calls = %+v, want cam3 alone", removed)
+	}
+	if target.callCount("RemoveSTMapProgram") != 1 {
+		t.Fatal("program map not removed for a snapshot without one")
+	}
+	if target.callCount("AssignSTMapSource") != 1 {
+		t.Fatal("cam1 not assigned")
+	}
+
+	kept := &mockSTMapRemoveTarget{newMockApplyTarget(), nil}
+	ApplyFullSnapshot(context.Background(), FullStateSnapshot{STMaps: &STMapSnapshot{Program: "fisheye"}}, kept)
+	if kept.wasCalled("RemoveSTMapProgram") {
+		t.Fatal("program map removed although the snapshot assigns one")
+	}
+}
+
+// An engine without ST maps captures none at all.
+func TestApplyFullSnapshot_STMapsNilRemovesAll(t *testing.T) {
+	target := &mockSTMapRemoveTarget{newMockApplyTarget(), []string{"cam1", "cam2"}}
+	ApplyFullSnapshot(context.Background(), FullStateSnapshot{}, target)
+	if target.callCount("RemoveSTMapSource") != 2 || target.callCount("RemoveSTMapProgram") != 1 {
+		t.Fatalf("calls = %+v, want every assignment removed", target.calls)
+	}
+}

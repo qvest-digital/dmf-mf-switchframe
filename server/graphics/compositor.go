@@ -133,6 +133,13 @@ type graphicsLayer struct {
 	imageWidth  int
 	imageHeight int
 
+	// framePNG is the overlay as a PNG, valid while framePNGGen equals
+	// overlayGen: the frame last captured or applied by LayerContent and
+	// SetLayerContent, so an unchanged frame is neither encoded nor decoded
+	// again on every reconcile.
+	framePNG    []byte
+	framePNGGen uint64
+
 	// Frame-locked ticker state. Set by ticker engine, advanced by ProcessYUV.
 	ticker *tickerState
 

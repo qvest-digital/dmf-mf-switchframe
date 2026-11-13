@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -450,4 +451,107 @@ func TestPeerDown(t *testing.T) {
 	assert.True(t, p.PeerDown())
 	p.recordSuccess(HealthResponse{Status: "ok"})
 	assert.False(t, p.PeerDown())
+}
+
+// The peer's snapshot carries every graphics layer's image, so it can
+// outgrow the JSON bodies the API takes. A truncated read fails to decode,
+// and the engine starts without the peer's state.
+func TestFetchStateSnapshot_ReadsSnapshotWithLargeImages(t *testing.T) {
+	layerImage := make([]byte, 20<<20)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		snap, _ := json.Marshal(internal.FullStateSnapshot{
+			Graphics: []internal.GraphicsLayerSnapshot{{ID: 1, Image: layerImage}},
+		})
+		_ = json.NewEncoder(w).Encode(map[string]any{"snapshot": json.RawMessage(snap), "seq": 7})
+	}))
+	defer srv.Close()
+
+	snap, seq, err := NewHealthPoller(srv.URL).FetchStateSnapshot(context.Background(), "")
+	require.NoError(t, err)
+	require.Equal(t, uint64(7), seq)
+	require.Len(t, snap.Graphics, 1)
+	require.Len(t, snap.Graphics[0].Image, len(layerImage))
+}
+
+// The startup read takes longer than a health poll may: a snapshot with
+// graphics is megabytes, and the poller's client gives up after 3 s.
+func TestFetchStateSnapshot_OutlastsThePollTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]any{"snapshot": json.RawMessage(`{}`), "seq": 3})
+	}))
+	defer srv.Close()
+
+	p := NewHealthPoller(srv.URL, WithHTTPClient(&http.Client{Timeout: 100 * time.Millisecond}))
+	_, seq, err := p.FetchStateSnapshot(context.Background(), "")
+	require.NoError(t, err)
+	require.Equal(t, uint64(3), seq)
+}
+
+// runSettling runs RunStartup against peerURL and reports on settled
+// when OnSettled is called, and in applied how many snapshots e had
+// applied by then.
+func runSettling(t *testing.T, e *fakeEngine, peerURL string) (settled chan struct{}, calls *atomic.Int32, applied *atomic.Int32) {
+	t.Helper()
+	p := NewHealthPoller(peerURL,
+		WithLocalIdentity(e.label),
+		WithPollInterval(10*time.Millisecond),
+		WithFailureThreshold(2),
+		WithHTTPClient(&http.Client{Timeout: time.Second}))
+	p.Start()
+	t.Cleanup(p.Stop)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	settled = make(chan struct{})
+	calls, applied = &atomic.Int32{}, &atomic.Int32{}
+	go RunStartup(ctx, p, e, StartupConfig{Token: e.token, Tick: 5 * time.Millisecond, LeaderWait: time.Hour,
+		OnSettled: func() {
+			if calls.Add(1) == 1 {
+				e.get(func(e *fakeEngine) { applied.Store(int32(len(e.applied))) })
+				close(settled)
+			}
+		}})
+	return settled, calls, applied
+}
+
+// An engine refuses reconcile reads until it settles. One that never goes
+// on air, with no source of its own and its peer down, still settles: it
+// has no peer state to wait for, and a gate that never ends would keep the
+// pair from reconciling for good.
+func TestRunStartup_SettlesWithoutGoingLive(t *testing.T) {
+	down := httptest.NewServer(http.NotFoundHandler())
+	down.Close()
+	e := newFakeEngine(t, "b", "tok")
+	settled, _, _ := runSettling(t, e, down.URL)
+	waitDone(t, settled)
+	e.get(func(e *fakeEngine) { assert.Empty(t, e.program) })
+}
+
+// An engine whose peer's snapshot cannot be read settles once the read has
+// failed, and an engine that took the snapshot once it has applied the
+// first one, not after following a peer that keeps cutting; each settles
+// once however often it follows.
+func TestRunStartup_SettlesAfterTheFirstFollow(t *testing.T) {
+	for name, fail := range map[string]bool{"applied": false, "refused": true} {
+		t.Run(name, func(t *testing.T) {
+			leader := newFakeEngine(t, "a", "tok")
+			cut := 0
+			var cutAway func(e *fakeEngine)
+			cutAway = func(e *fakeEngine) {
+				cut++
+				e.program, e.afterSnap = fmt.Sprintf("mxl:cam%d", cut+2), cutAway
+			}
+			leader.set(func(e *fakeEngine) { e.program = "mxl:cam2"; e.snapFail = fail; e.afterSnap = cutAway })
+			e := newFakeEngine(t, "b", "tok")
+			settled, calls, applied := runSettling(t, e, leader.srv.URL)
+			waitDone(t, settled)
+			want := int32(1)
+			if fail {
+				want = 0
+			}
+			assert.Equal(t, want, applied.Load(), "snapshots applied when the engine settled")
+			time.Sleep(100 * time.Millisecond)
+			assert.Equal(t, int32(1), calls.Load())
+		})
+	}
 }

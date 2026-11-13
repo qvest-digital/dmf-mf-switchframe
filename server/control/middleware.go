@@ -432,8 +432,9 @@ func isLargeUploadPath(path string) bool {
 	}
 	switch path {
 	case "/api/clips/upload", // multipart media clip (2GB)
-		"/api/colorgrade/upload", // multipart .cube LUT
-		"/api/wipes/custom":      // multipart grayscale PNG
+		"/api/colorgrade/upload",   // multipart .cube LUT
+		"/api/wipes/custom",        // multipart grayscale PNG
+		"/api/sync/state-snapshot": // snapshot with graphics images (64MB)
 		return true
 	}
 	// Path-variable routes: stmap upload, stinger raw upload, graphics

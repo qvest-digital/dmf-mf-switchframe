@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -108,6 +109,14 @@ type SnapshotProvider interface {
 	ApplyTarget() internal.SnapshotApplyTarget
 }
 
+// SnapshotReadiness is optionally implemented by a SnapshotProvider. An
+// engine that has just started holds none of the production until it has
+// taken its peer's state; a browser copying its state to the peer
+// meanwhile would wipe the peer's.
+type SnapshotReadiness interface {
+	SnapshotReady() bool
+}
+
 // WithSnapshotProvider attaches a snapshot provider to the API.
 func WithSnapshotProvider(sp SnapshotProvider) APIOption {
 	return func(a *API) { a.snapshotProvider = sp }
@@ -143,6 +152,11 @@ func (a *API) registerSyncRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/sync/reconcile-lock/{lockId}", a.handleReleaseReconcileLock)
 }
 
+// maxSnapshotBodySize bounds a pushed snapshot. It carries every graphics
+// layer's image and rendered frame, so it takes what a graphics import
+// takes.
+const maxSnapshotBodySize = 64 << 20
+
 // snapshotEnvelope wraps a FullStateSnapshot with staleness metadata.
 // Seq is the engine's LastCommandSeq at capture time, used by the receiving
 // engine to warn when a stale snapshot is being applied (seq is behind
@@ -161,7 +175,9 @@ type snapshotEnvelope struct {
 // lock on this engine, or ?admin=true for break-glass access. Without a
 // matching lock the handler returns 409. Gating the capture side (not just
 // apply) prevents two browsers from pulling opposing snapshots and
-// reconciling each other's engines in contradictory directions.
+// reconciling each other's engines in contradictory directions. While the
+// engine is starting a locked read returns 503; the peer engine's own
+// startup read is an admin one.
 func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
 	admin := r.URL.Query().Get("admin") == "true"
 	if !admin {
@@ -172,6 +188,10 @@ func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"error": "no active reconcile lock",
 			})
+			return
+		}
+		if sr, ok := a.snapshotProvider.(SnapshotReadiness); ok && !sr.SnapshotReady() {
+			httperr.Write(w, http.StatusServiceUnavailable, "engine still starting: its state is not the one to copy")
 			return
 		}
 	}
@@ -187,6 +207,7 @@ func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusInternalServerError, "marshal failed")
 		return
 	}
+	slog.Info("state snapshot captured", "bytes", len(snapJSON), "graphicsLayers", len(snap.Graphics))
 	env := snapshotEnvelope{
 		Snapshot:  snapJSON,
 		Seq:       state.LastCommandSeq,
@@ -214,9 +235,15 @@ func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 
 	// Bound the read so a missing/incorrect outer body cap cannot translate
 	// into an unbounded allocation when restoring a snapshot.
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxCommandBodySize))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxSnapshotBodySize))
 	if err != nil {
-		httperr.Write(w, http.StatusBadRequest, "could not read body")
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			httperr.Write(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("snapshot larger than %d MiB", maxSnapshotBodySize>>20))
+		} else {
+			httperr.Write(w, http.StatusBadRequest, "could not read body")
+		}
 		if a.appMetrics != nil {
 			a.appMetrics.SnapshotApplyTotal.WithLabelValues("error").Inc()
 		}
@@ -290,6 +317,26 @@ func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A snapshot of an engine that holds no graphics, or one that names no
+	// command sequence, may come from an engine that came up empty and went
+	// live alone. Taking it would remove every layer here, so it is refused
+	// as stale, and a browser pushes this engine's state the other way.
+	if removed := a.graphicsLayersRemovedBy(snap); removed > 0 && (snapSeq == 0 || len(snap.Graphics) == 0) && !force {
+		slog.Warn("snapshot apply: refused, it would remove graphics layers",
+			"snapshot_seq", snapSeq, "snapshot_layers", len(snap.Graphics), "removed", removed)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":        "snapshot would remove graphics layers",
+			"snapshot_seq": snapSeq,
+			"current_seq":  a.enrichedState().LastCommandSeq,
+		})
+		if a.appMetrics != nil {
+			a.appMetrics.SnapshotApplyTotal.WithLabelValues("stale").Inc()
+		}
+		return
+	}
+
 	warnings = append(warnings, internal.ApplyFullSnapshot(r.Context(), snap, a.snapshotProvider.ApplyTarget())...)
 
 	// The engine now holds the source's state as of snapSeq. Without taking
@@ -320,6 +367,25 @@ func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// graphicsLayersRemovedBy counts the layers here that applying snap would
+// remove.
+func (a *API) graphicsLayersRemovedBy(snap internal.FullStateSnapshot) int {
+	if !snap.GraphicsContent || a.compositor == nil {
+		return 0
+	}
+	keep := make(map[int]bool, len(snap.Graphics))
+	for _, l := range snap.Graphics {
+		keep[l.ID] = true
+	}
+	n := 0
+	for _, l := range a.compositor.Status().Layers {
+		if !keep[l.ID] {
+			n++
+		}
+	}
+	return n
 }
 
 // handleAcquireReconcileLock attempts to acquire the per-engine reconcile lock.

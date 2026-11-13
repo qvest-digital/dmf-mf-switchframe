@@ -51,6 +51,11 @@ type FullStateSnapshot struct {
 
 	Graphics []GraphicsLayerSnapshot `json:"graphics,omitempty"`
 
+	// GraphicsContent is set by an engine that captures every layer with
+	// its content. Only then is Graphics the whole set of layers to hold:
+	// an engine that predates it sends layers without content.
+	GraphicsContent bool `json:"graphicsContent,omitempty"`
+
 	// --- DVE / Layout ---
 
 	Layout LayoutSnapshot `json:"layout"`
@@ -165,6 +170,13 @@ type GraphicsLayerSnapshot struct {
 	HTML5URL  string          `json:"html5Url,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Config    json.RawMessage `json:"config,omitempty"`
+
+	// Image is the PNG uploaded to the layer, Frame a PNG of the frame
+	// last rendered into it from Template, absent for a template rendered
+	// live on each engine (HTML5, text animation). With them an engine
+	// lacking the layer creates it showing what the source's shows.
+	Image []byte `json:"image,omitempty"`
+	Frame []byte `json:"frame,omitempty"`
 }
 
 // LayoutSnapshot captures the full DVE layout configuration.

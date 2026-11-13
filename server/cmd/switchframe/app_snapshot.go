@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"log/slog"
@@ -30,8 +31,15 @@ func (sp *snapshotProviderAdapter) ApplyTarget() internal.SnapshotApplyTarget {
 	return sp.app
 }
 
+// SnapshotReady reports whether the engine has taken its peer's state
+// after its start, failed to read it, or found none to take.
+func (sp *snapshotProviderAdapter) SnapshotReady() bool {
+	return sp.app.startupDone.Load()
+}
+
 // Verify snapshotProviderAdapter satisfies the interface at compile time.
 var _ control.SnapshotProvider = (*snapshotProviderAdapter)(nil)
+var _ control.SnapshotReadiness = (*snapshotProviderAdapter)(nil)
 
 // Verify App satisfies SnapshotApplyTarget at compile time.
 var _ internal.SnapshotApplyTarget = (*App)(nil)
@@ -46,6 +54,8 @@ var _ internal.SnapshotPlayoutApplier = (*App)(nil)
 var _ internal.SnapshotSCTE35Applier = (*App)(nil)
 var _ internal.SnapshotMacroApplier = (*App)(nil)
 var _ internal.SnapshotEncoderApplier = (*App)(nil)
+var _ internal.SnapshotGraphicsLayerSyncer = (*App)(nil)
+var _ internal.SnapshotSTMapRemover = (*App)(nil)
 
 // --- SnapshotApplyTarget implementation ---
 
@@ -176,6 +186,48 @@ func (a *App) SetGraphicsLayerSettings(id int, name string, config json.RawMessa
 		config = json.RawMessage("null")
 	}
 	return a.compositor.SetLayerSettings(id, &name, config)
+}
+
+// SyncGraphicsLayers takes over the peer engine's set of layers under the
+// peer's IDs, and what each shows.
+func (a *App) SyncGraphicsLayers(layers []internal.GraphicsLayerSnapshot) error {
+	if a.compositor == nil {
+		return nil
+	}
+	want := make(map[int]bool, len(layers))
+	for _, l := range layers {
+		want[l.ID] = true
+	}
+	var errs []error
+	have := make(map[int]bool)
+	// Removed first, so the layers to add fit under the layer limit.
+	for _, l := range a.compositor.Status().Layers {
+		if want[l.ID] {
+			have[l.ID] = true
+			continue
+		}
+		if err := a.compositor.RemoveLayer(l.ID); err != nil && !errors.Is(err, graphics.ErrLayerNotFound) {
+			errs = append(errs, fmt.Errorf("remove layer %d: %w", l.ID, err))
+		}
+	}
+	for _, l := range layers {
+		if !have[l.ID] {
+			if err := a.compositor.AddLayerWithID(l.ID); err != nil && !errors.Is(err, graphics.ErrLayerExists) {
+				errs = append(errs, fmt.Errorf("add layer %d: %w", l.ID, err))
+				continue
+			}
+		}
+		err := a.compositor.SetLayerContent(l.ID, graphics.LayerContent{
+			ImageName: l.ImageName,
+			Image:     l.Image,
+			Template:  l.Template,
+			Frame:     l.Frame,
+		})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("layer %d content: %w", l.ID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (a *App) SetGraphicsLayerRect(id int, x, y, width, height int) error {
@@ -361,6 +413,38 @@ func (a *App) AssignSTMapProgram(mapName string) error {
 		return nil
 	}
 	return a.stmapRegistry.AssignProgram(mapName)
+}
+
+// STMapSources returns the sources an ST map is assigned to.
+func (a *App) STMapSources() []string {
+	if a.stmapRegistry == nil {
+		return nil
+	}
+	sources := a.stmapRegistry.State().Sources
+	keys := make([]string, 0, len(sources))
+	for k := range sources {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// RemoveSTMapSource drops the ST map assigned to a source.
+func (a *App) RemoveSTMapSource(sourceKey string) error {
+	if a.stmapRegistry == nil {
+		return nil
+	}
+	a.stmapRegistry.RemoveSource(sourceKey)
+	return nil
+}
+
+// RemoveSTMapProgram clears the program map, if one is assigned: clearing
+// broadcasts state, and an apply runs on every reconcile.
+func (a *App) RemoveSTMapProgram() error {
+	if a.stmapRegistry == nil || !a.stmapRegistry.HasProgramMap() {
+		return nil
+	}
+	a.stmapRegistry.RemoveProgram()
+	return nil
 }
 
 // --- Clip player restore ---

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SyncStatus } from './reconciler.svelte';
-import { createAutoReconcile, SnapshotStaleError, type AutoReconcileConfig } from './auto-reconcile';
+import { createAutoReconcile, EngineStartingError, PUSH_TIMEOUT_MS, SnapshotStaleError, type AutoReconcileConfig } from './auto-reconcile';
 
 function makeConfig(overrides: Partial<AutoReconcileConfig> = {}): AutoReconcileConfig {
 	return {
@@ -1295,7 +1295,7 @@ describe('createAutoReconcile', () => {
 	// ── Push timeout ──
 
 	describe('push timeout', () => {
-		it('times out if getSnapshot hangs for more than 10s', async () => {
+		it('times out if getSnapshot hangs past the push timeout', async () => {
 			const config = makeConfig({
 				getSnapshot: vi.fn().mockImplementation(() => new Promise(() => {})), // never resolves
 			});
@@ -1305,8 +1305,7 @@ describe('createAutoReconcile', () => {
 			await vi.advanceTimersByTimeAsync(0);
 			expect(config.onRecoveryStart).toHaveBeenCalledOnce();
 
-			// Advance past 10s timeout
-			await vi.advanceTimersByTimeAsync(10_100);
+			await vi.advanceTimersByTimeAsync(PUSH_TIMEOUT_MS + 100);
 
 			expect(config.onRecoveryError).toHaveBeenCalledOnce();
 			const err = (config.onRecoveryError as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -1316,7 +1315,7 @@ describe('createAutoReconcile', () => {
 			reconcile.destroy();
 		});
 
-		it('times out if pushSnapshot hangs for more than 10s', async () => {
+		it('times out if pushSnapshot hangs past the push timeout', async () => {
 			const config = makeConfig({
 				pushSnapshot: vi.fn().mockImplementation(() => new Promise(() => {})), // never resolves
 			});
@@ -1326,8 +1325,7 @@ describe('createAutoReconcile', () => {
 			await vi.advanceTimersByTimeAsync(0);
 			expect(config.onRecoveryStart).toHaveBeenCalledOnce();
 
-			// Advance past 10s timeout
-			await vi.advanceTimersByTimeAsync(10_100);
+			await vi.advanceTimersByTimeAsync(PUSH_TIMEOUT_MS + 100);
 
 			expect(config.onRecoveryError).toHaveBeenCalledOnce();
 			const err = (config.onRecoveryError as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -1337,7 +1335,26 @@ describe('createAutoReconcile', () => {
 			reconcile.destroy();
 		});
 
-		it('does not time out when push completes within 10s', async () => {
+		// A snapshot carrying graphics PNGs takes a while to read from one
+		// engine and send to the other.
+		it('does not time out a slow transfer of a large snapshot', async () => {
+			const slow = <T,>(value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), 30_000));
+			const config = makeConfig({
+				getSnapshot: vi.fn().mockImplementation(() => slow({ graphics: [] })),
+				pushSnapshot: vi.fn().mockImplementation(() => slow({ warnings: [] })),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(60_100);
+
+			expect(config.onRecoveryError).not.toHaveBeenCalled();
+			expect(config.onRecoveryComplete).toHaveBeenCalledOnce();
+
+			reconcile.destroy();
+		});
+
+		it('does not time out when push completes at once', async () => {
 			const config = makeConfig();
 			const reconcile = createAutoReconcile(config);
 
@@ -1349,6 +1366,64 @@ describe('createAutoReconcile', () => {
 
 			reconcile.destroy();
 		});
+	});
+
+	describe('source engine still starting (503)', () => {
+		// A restarted engine has not taken its peer's state yet. Reading it is
+		// refused; the push waits for it without reporting a failed recovery.
+		it('retries quietly once the engine is ready', async () => {
+			const config = makeConfig({
+				getSnapshot: vi.fn()
+					.mockRejectedValueOnce(new EngineStartingError('A'))
+					.mockResolvedValue({ from: 'A' }),
+				onEngineStarting: vi.fn(),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.onEngineStarting).toHaveBeenCalledWith('A');
+			expect(config.onRecoveryError).not.toHaveBeenCalled();
+			expect(config.pushSnapshot).not.toHaveBeenCalled();
+
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(config.onRecoveryError).not.toHaveBeenCalled();
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+			expect(config.onRecoveryComplete).toHaveBeenCalledOnce();
+
+			reconcile.destroy();
+		});
+	});
+
+	describe('operator push deferred by a starting engine (503)', () => {
+		// The operator chose to copy A to B. While A is still starting the
+		// reconciler may come to prefer B, or a status change may cancel
+		// pending pushes; the deferred push still goes A to B, once.
+		for (const between of ['diverged', 'lagging', 'synced', 'mismatch'] as SyncStatus[]) {
+			it(`keeps the operator's direction through a ${between} status from B`, async () => {
+				const config = makeConfig({
+					getSnapshot: vi.fn()
+						.mockRejectedValueOnce(new EngineStartingError('A'))
+						.mockImplementation((engine) => Promise.resolve({ from: engine })),
+					onEngineStarting: vi.fn(),
+				});
+				const reconcile = createAutoReconcile(config);
+
+				expect(reconcile.forceSnapshotPush('A', { overrideStale: true })).toBe(true);
+				await vi.advanceTimersByTimeAsync(0);
+				expect(config.onEngineStarting).toHaveBeenCalledWith('A');
+
+				reconcile.onSyncStatusChange(between, 'B');
+				await vi.advanceTimersByTimeAsync(10_000);
+
+				const pushes = (config.pushSnapshot as ReturnType<typeof vi.fn>).mock.calls;
+				expect(pushes.length).toBeGreaterThan(0);
+				expect(pushes[0]).toEqual(['B', { from: 'A' }, { force: true }]);
+				expect(config.onRecoveryError).not.toHaveBeenCalled();
+
+				reconcile.destroy();
+			});
+		}
 	});
 
 	describe('stale snapshot (409)', () => {

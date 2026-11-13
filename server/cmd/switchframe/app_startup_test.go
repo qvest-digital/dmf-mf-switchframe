@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/zsiec/switchframe/server/internal"
 )
@@ -48,4 +49,16 @@ func TestInitialProgramSource(t *testing.T) {
 			assert.Equal(t, tt.want, initialProgramSource(tt.configured, tt.sources, tt.graceOver))
 		})
 	}
+}
+
+// A browser's reconcile read is refused until the startup has settled,
+// and served from then on.
+func TestStartupConfig_SettlingOpensSnapshotReads(t *testing.T) {
+	app := &App{}
+	ready := &snapshotProviderAdapter{app: app}
+	cfg := app.startupConfig()
+	require.False(t, ready.SnapshotReady())
+	require.NotNil(t, cfg.OnSettled)
+	cfg.OnSettled()
+	require.True(t, ready.SnapshotReady())
 }
