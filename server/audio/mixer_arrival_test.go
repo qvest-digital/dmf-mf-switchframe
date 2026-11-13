@@ -13,9 +13,14 @@ import (
 // engine timeline; its video is stamped with the TAI of its arrival. The
 // mixer stamps the decoded audio the same way, so the tick reading the
 // media time of its arrival plays it, rather than dropping it as audio
-// from a far-away time.
+// from a far-away time. The frames arrive one AAC frame apart on a
+// simulated clock, as a live source delivers them.
 func TestIngestFrameStampsDecodedAudioWithItsArrival(t *testing.T) {
 	const frames, spf = 8, 1024
+	base := clock.TimestampToIndex(rate48k, clock.TAINow())
+	var elapsed uint64 // samples since base
+	clock.SetTAISource(func() int64 { return clock.IndexToTimestamp(rate48k, base+elapsed) })
+	t.Cleanup(func() { clock.SetTAISource(nil) })
 	enc, err := NewFDKEncoder(48000, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -41,6 +46,7 @@ func TestIngestFrameStampsDecodedAudioWithItsArrival(t *testing.T) {
 		if len(aac) == 0 {
 			continue
 		}
+		elapsed += spf
 		m.IngestFrame("cam1", &media.AudioFrame{
 			Data: aac, PTS: 90000 + int64(i)*1920, SampleRate: 48000, Channels: 2,
 		})

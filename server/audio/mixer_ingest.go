@@ -181,7 +181,7 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame, time
 		delay := int64(ch.primingSkipCount) * m.primingSamples(frame.SampleRate)
 		m.stampRing(ch, frame.PTS-delay*90000/int64(m.sampleRate), n)
 	} else {
-		m.stampRing(ch, clock.ArrivalPTS(n, m.sampleRate), n)
+		m.stampArrival(ch, n)
 	}
 	m.mu.Unlock()
 }
@@ -308,6 +308,40 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 	ch.ringBuf.Push(trimmedPCM)
 	m.stampRing(ch, pts, len(trimmedPCM)/m.numChannels)
 	m.mu.Unlock()
+}
+
+// arrivalSlack is how far ahead of its arrival a source's audio may be
+// placed to continue the audio it delivered before: two AAC frames. A
+// source that hands over its AAC frames with its video frames, as the
+// clip player and the replay player do, delivers 1024 samples a frame
+// period, none in some periods; placed by each arrival, its audio steps
+// back and forth by about an AAC frame, and a step past a period, which
+// scheduling jitter makes likely, is spliced.
+const arrivalSlack = 2 * 1024
+
+// arrivalLate is how far behind its arrival a source's audio may be placed
+// to continue the audio before it: 256 samples, 5.3 ms. The read point is
+// two frame periods behind the clock, and a read reaches up to one frame
+// period (16.7 ms at 60 fps) before it; audio placed further behind its
+// arrival than that would be missing when read.
+const arrivalLate = 256
+
+// stampArrival places the n samples just pushed for a source without a
+// media clock right after the source's audio before them, when they
+// arrive between arrivalSlack before and arrivalLate after that ends, and
+// otherwise at their arrival. A source whose rate is off the mixer's by
+// more than those bounds allow is placed again at its arrival each time it
+// leaves them.
+func (m *Mixer) stampArrival(ch *Channel, n int) {
+	pts := clock.ArrivalPTS(n, m.sampleRate)
+	if ch.ringEnd != 0 {
+		ns := func(samples int) int64 { return int64(samples) * 1_000_000_000 / int64(m.sampleRate) }
+		if d := clock.TimestampOf(pts) - ch.ringEnd; d <= ns(arrivalLate) && d >= -ns(arrivalSlack) {
+			ch.ringEnd += ns(n)
+			return
+		}
+	}
+	m.stampRing(ch, pts, n)
 }
 
 // primingSamples is one AAC frame at the mixer rate, for a source at

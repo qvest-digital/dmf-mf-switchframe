@@ -120,6 +120,7 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 			"peak_l_dbfs":         LinearToDBFS(ch.peakL),
 			"peak_r_dbfs":         LinearToDBFS(ch.peakR),
 			"realigns":            ch.realigns,
+			"underruns":           ch.underruns,
 		}
 		channelDetails[key] = detail
 	}

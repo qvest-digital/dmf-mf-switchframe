@@ -20,6 +20,9 @@ var (
 	descChannelRealigns = prometheus.NewDesc("switchframe_audio_source_realigns_total",
 		"Times a source's audio was moved onto the program read point because it ran more than a period off: the behaviour for sources whose audio has no media clock, such as a drifting SRT stream.",
 		[]string{"source"}, nil)
+	descChannelUnderruns = prometheus.NewDesc("switchframe_audio_source_underruns_total",
+		"Times a read of a source's audio found less buffered than it needed and played silence for the rest: a source that stopped, or audio placed earlier than it arrived.",
+		[]string{"source"}, nil)
 	descMixCycle = prometheus.NewDesc("switchframe_audio_mix_cycle_seconds",
 		"Time the most recent mix cycle took.", nil, nil)
 	descMaxFrameGap = prometheus.NewDesc("switchframe_audio_max_frame_gap_seconds",
@@ -48,7 +51,7 @@ func NewMetricsCollector(m *Mixer) *MetricsCollector {
 func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		descLoudness, descProgramPeak, descChannelPeak, descChannelLevel, descChannelMuted,
-		descChannelRealigns, descMixCycle, descMaxFrameGap, descDecodeErrors,
+		descChannelRealigns, descChannelUnderruns, descMixCycle, descMaxFrameGap, descDecodeErrors,
 	} {
 		ch <- d
 	}
@@ -88,6 +91,9 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 			muted = 1
 		}
 		gauge(descChannelMuted, muted, source)
+	}
+	for key, n := range c.m.ChannelUnderruns() {
+		ch <- prometheus.MustNewConstMetric(descChannelUnderruns, prometheus.CounterValue, float64(n), metrics.SourceLabel(key))
 	}
 	for key, n := range c.m.ChannelRealigns() {
 		ch <- prometheus.MustNewConstMetric(descChannelRealigns, prometheus.CounterValue, float64(n), metrics.SourceLabel(key))

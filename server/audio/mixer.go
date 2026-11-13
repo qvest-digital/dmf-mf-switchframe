@@ -105,6 +105,10 @@ type Channel struct {
 	// more than a period and was moved onto it; realigns counts entries.
 	realigned bool
 	realigns  int64
+	// dry is set while the ring holds less than a read needs;
+	// underruns counts entries.
+	dry       bool
+	underruns int64
 
 	// Reusable work buffers (hot-path allocation elimination)
 	trimBuf    []float32
@@ -472,8 +476,13 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 		out := make([]float32, n*c)
 		copy(out[skip*c:], ch.ringBuf.Pop(got*c))
 		ch.placed = false
+		if !ch.dry {
+			ch.underruns++
+		}
+		ch.dry = true
 		return out
 	}
+	ch.dry = false
 	if skip == 0 {
 		return ch.ringBuf.Pop(n * c)
 	}
@@ -509,7 +518,7 @@ func (m *Mixer) ResetChannelInput(sourceKey string) bool {
 	ch.isPCM, ch.surroundWarned, ch.sampleRateWarned = false, false, false
 	ch.resampler, ch.resamplerSrcRate = nil, 0
 	ch.ringBuf = m.newChannelRingBuf(m.delaySamples(ch))
-	ch.ringEnd, ch.placed, ch.realigned = 0, false, false
+	ch.ringEnd, ch.placed, ch.realigned, ch.dry = 0, false, false, false
 	if ch.active {
 		m.initChannelDecoder(ch)
 	}
@@ -815,6 +824,18 @@ func (m *Mixer) ChannelStates() map[string]internal.AudioChannel {
 			ac.GateReduction = ch.gate.GainReduction()
 		}
 		result[key] = ac
+	}
+	return result
+}
+
+// ChannelUnderruns returns, per source, how many times a read found less
+// audio buffered than it needed and played silence for the rest.
+func (m *Mixer) ChannelUnderruns() map[string]int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]int64, len(m.channels))
+	for key, ch := range m.channels {
+		result[key] = ch.underruns
 	}
 	return result
 }

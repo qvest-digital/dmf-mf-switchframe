@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/clock"
 )
 
 // TestMixer_IngestPCMProducesOutput verifies the end-to-end flow: IngestPCM
@@ -41,7 +42,12 @@ func TestMixer_IngestPCMProducesOutput(t *testing.T) {
 // TestMixer_IngestFrameProducesOutput verifies that IngestFrame (AAC path)
 // decodes, processes, and pushes to the ring buffer ProduceSamples reads.
 func TestMixer_IngestFrameProducesOutput(t *testing.T) {
-	t.Parallel()
+	// The frames arrive one AAC frame apart on a simulated clock, as a
+	// live source delivers them.
+	base := clock.TimestampToIndex(rate48k, clock.TAINow())
+	var now uint64 // samples since base
+	clock.SetTAISource(func() int64 { return clock.IndexToTimestamp(rate48k, base+now) })
+	t.Cleanup(func() { clock.SetTAISource(nil) })
 
 	// Track what the "decoder" produces
 	decodedPCM := make([]float32, 1024*2)
@@ -66,6 +72,7 @@ func TestMixer_IngestFrameProducesOutput(t *testing.T) {
 	// Ingest multiple frames
 	tl := newTimeline()
 	for i := 0; i < 3; i++ {
+		now += 1024
 		m.IngestFrame("cam1", &media.AudioFrame{
 			Data:       []byte{0xFF, 0xF1, 0x50, 0x80, 0x02, 0x00, 0xFC},
 			SampleRate: 48000,
@@ -73,10 +80,10 @@ func TestMixer_IngestFrameProducesOutput(t *testing.T) {
 		})
 	}
 
-	// AAC is stamped with its arrival: the three frames end at about the
-	// timeline's base, so the two periods before it are theirs.
-	tl.read = tl.base - 2*1024
-	for i := 0; i < 2; i++ {
+	// AAC is placed at its arrival: the three frames end at their
+	// arrivals, one, two and three frames after the timeline's base.
+	tl.read = tl.base
+	for i := 0; i < 3; i++ {
 		out := tl.produce(m, 1024)
 		require.Len(t, out, 1024*2)
 		for j, v := range out {
