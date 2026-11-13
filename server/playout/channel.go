@@ -201,6 +201,10 @@ type Channel struct {
 	audioSrcNext int64
 	audioSrcSet  bool
 
+	// transitionAudioFrom is the ID of the incoming item of a transition
+	// whose audio the transition has started to carry.
+	transitionAudioFrom string
+
 	// Run control.
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -1224,6 +1228,9 @@ func (c *Channel) tick(now time.Time) bool {
 
 	var frame *DecodedFrame
 
+	if decision.Transition == nil {
+		c.transitionAudioFrom = ""
+	}
 	if decision.Transition != nil {
 		frame = c.transitionFrame(decision.Transition)
 	} else if decision.IsIdle {
@@ -1266,7 +1273,10 @@ func (c *Channel) transitionFrame(t *TransitionReq) *DecodedFrame {
 	}
 	if outFrame != nil && inFrame != nil {
 		frame := c.compositor.Blend(outFrame, inFrame, t.Progress, t.Config)
-		attachTransitionAudio(frame, outFrame, inFrame)
+		if hasAudio(inFrame) {
+			c.transitionAudioFrom = t.Incoming.ID
+		}
+		attachTransitionAudio(frame, outFrame, inFrame, c.transitionAudioFrom == t.Incoming.ID)
 		return frame
 	}
 	if inFrame != nil {
@@ -1335,15 +1345,19 @@ func (c *Channel) itemFrame(decision SchedulerDecision, secScheduler *SecondaryE
 // used as soon as it is available — in the common case the outgoing clip has
 // already played out fully when the transition starts, so its audio stream is
 // finished anyway — falling back to the outgoing item's audio (e.g. a manual
-// mid-clip Next into a slate keeps the tail audio under the fade).
-func attachTransitionAudio(blended, out, in *DecodedFrame) {
+// mid-clip Next into a slate keeps the tail audio under the fade). Once the
+// incoming item has supplied audio (inStarted), a tick on which it has none
+// carries none: AAC frames do not fall on every picture, and going back to
+// the outgoing item there would alternate between two streams, each placed
+// on the timeline afresh.
+func attachTransitionAudio(blended, out, in *DecodedFrame, inStarted bool) {
 	if blended == nil || blended == out || blended == in {
 		// Hard-cut path (Compositor.Cut for unknown transition types) returns
 		// one of the input frames, which already carries its own audio.
 		return
 	}
 	src := in
-	if len(in.AudioFrames) == 0 && len(in.AudioData) == 0 {
+	if !hasAudio(in) && !inStarted {
 		src = out
 	}
 	blended.AudioFrames = src.AudioFrames
@@ -1351,6 +1365,11 @@ func attachTransitionAudio(blended, out, in *DecodedFrame) {
 	blended.AudioPTS = src.AudioPTS
 	blended.AudioSampleRate = src.AudioSampleRate
 	blended.AudioChannels = src.AudioChannels
+}
+
+// hasAudio reports whether f carries audio.
+func hasAudio(f *DecodedFrame) bool {
+	return len(f.AudioFrames) > 0 || len(f.AudioData) > 0
 }
 
 // handleItemChange detects when the scheduler moves to a new item and fires
