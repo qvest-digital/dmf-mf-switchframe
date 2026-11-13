@@ -2,6 +2,7 @@ package clock
 
 import (
 	"math/bits"
+	"slices"
 	"sync"
 	"time"
 )
@@ -174,22 +175,40 @@ func (a *Anchor) Moves() int64 {
 
 // TrackingAnchor maps the own 90 kHz timeline of a source whose clock is
 // not locked to the engine's, such as an SRT stream or a playout channel,
-// onto the engine timeline. A timestamp is placed no earlier than it
-// arrives: the offset is the largest lateness (arrival less source
-// timestamp) seen over the current and the previous TrackingWindow. A
-// source whose essences arrive in bursts, as an MPEG-TS stream's audio does
-// in PES packets of several frames, is placed at its latest arrival, so it
-// is on hand at every read; a sender clock that drifts is followed in steps
-// of the lateness change over a window; video and audio of the source share
-// the offset and keep their own relation. A jump of more than MaxAnchorSkew,
-// as on a source restart, places the source again.
+// onto the engine timeline: every timestamp gets the same offset, so video
+// and audio of the source keep their own relation, and the offset is the
+// lateness (arrival less source timestamp) the source's latest timestamps
+// arrive with. A source whose essences arrive in bursts, as an MPEG-TS
+// stream's audio does in PES packets of several frames, is placed at its
+// latest arrival, so it is on hand at every read.
+//
+// The offset moves the source's audio against the program read point, and
+// the mixer splices a source's audio whenever it moved by more than a
+// period, so the offset settles once and then moves only on a lasting
+// change. For the first TrackingSettle windows after a placement every
+// timestamp is placed no earlier than it arrives and the offset forgets a
+// lateness after two windows, so the backlog a connection's socket and
+// stream probe built before the first frame was decoded is left behind.
+// Then the offset is the largest lateness of the settle windows after the
+// first, and it is raised only when two windows in a row arrived more
+// than TrackingSlack later than it, to the smaller of their largest
+// latenesses, and lowered only when TrackingHistory windows in a row
+// arrived earlier, to their largest. A frame up to TrackingSlack later
+// than its placement is still read on time: every input is read
+// ReaderDelayGrains behind the clock. A
+// single late burst, as a stalled sender or decode loop delivers, leaves
+// the offset where it is: its frames are shown late and its audio that
+// arrives after its read point is lost, once, rather than moving the rest
+// of the source later and back. A sender clock that drifts is followed,
+// in steps of TrackingSlack when slow and of the drift over a window when
+// fast, TrackingHistory windows behind. A jump of more than MaxAnchorSkew, as on a source
+// restart, places the source again.
 //
 // No timestamp is placed more than MaxSourceHold after its own arrival:
 // the stores that hold a source's frames and audio until they are due
 // keep no more than that, so a frame placed further ahead is dropped
 // before it is due. A burst whose first frame is later than that ahead
-// of the rest, as the backlog a connection's socket built before it was
-// first read, raises the offset only as far as each later frame allows.
+// of the rest raises the offset only as far as each later frame allows.
 // The bound applies to each essence on its own: a source whose video
 // arrives more than MaxSourceHold later than its audio of the same time
 // has its audio placed earlier than its video by the excess.
@@ -197,15 +216,34 @@ type TrackingAnchor struct {
 	mu        sync.Mutex
 	set       bool
 	offset    int64
-	placedAt  int64 // offset the source was last placed at
-	cur, prev int64 // largest lateness in the current and previous window
-	windowEnd int64 // engine PTS at which the current window ends
+	placedAt  int64                  // offset the source was last placed at
+	cur       int64                  // largest lateness in the current window
+	maxes     [TrackingHistory]int64 // largest lateness of the last windows, newest first
+	windows   int                    // windows completed since the placement
+	windowEnd int64                  // engine PTS at which the current window ends
 	moves     int64
 	raises    int64
 }
 
-// TrackingWindow is how long a TrackingAnchor remembers a lateness.
+// TrackingWindow is the span over which a TrackingAnchor takes a
+// source's largest lateness.
 const TrackingWindow = 2 * 90000
+
+// TrackingSettle is how many windows after a placement a TrackingAnchor
+// follows every lateness at once, before its offset settles.
+const TrackingSettle = 3
+
+// TrackingSlack is how much later than its offset a settled
+// TrackingAnchor's source may arrive without raising it: well inside the
+// ReaderDelayGrains a tick reads behind the clock at any program rate up
+// to 60 fps.
+const TrackingSlack = 900
+
+// TrackingHistory is how many windows in a row a settled TrackingAnchor's
+// source must arrive earlier than its offset for the offset to come down:
+// a minute, so a lateness that comes and goes within one does not move the
+// source.
+const TrackingHistory = 30
 
 // PTS maps the source timestamp src to the engine timeline.
 func (a *TrackingAnchor) PTS(src int64) int64 {
@@ -220,19 +258,35 @@ func (a *TrackingAnchor) PTS(src int64) int64 {
 			a.moves++
 		}
 		a.set = true
-		a.offset, a.cur, a.prev = late, late, late
+		a.offset, a.cur, a.windows = late, late, 0
 		a.windowEnd = now + TrackingWindow
 		placed = true
 	case now >= a.windowEnd:
-		a.prev, a.cur = a.cur, late
-		a.offset = max(a.prev, a.cur)
+		copy(a.maxes[1:], a.maxes[:])
+		a.maxes[0], a.cur = a.cur, late
+		a.windows++
 		a.windowEnd = now + TrackingWindow
+		switch {
+		case a.windows < TrackingSettle:
+			a.offset = max(a.maxes[0], late)
+		case a.windows == TrackingSettle:
+			a.offset = slices.Max(a.maxes[:TrackingSettle-1])
+		case min(a.maxes[0], a.maxes[1]) > a.offset+TrackingSlack:
+			a.offset = min(a.maxes[0], a.maxes[1])
+		case a.windows >= TrackingSettle+TrackingHistory && slices.Max(a.maxes[:]) < a.offset:
+			a.offset = slices.Max(a.maxes[:])
+		}
 	default:
 		a.cur = max(a.cur, late)
-		a.offset = max(a.offset, late)
+		if a.windows < TrackingSettle {
+			a.offset = max(a.offset, late)
+		}
 	}
 	ceil := late + MaxSourceHold
-	a.offset, a.cur, a.prev = min(a.offset, ceil), min(a.cur, ceil), min(a.prev, ceil)
+	a.offset, a.cur = min(a.offset, ceil), min(a.cur, ceil)
+	for i := range a.maxes {
+		a.maxes[i] = min(a.maxes[i], ceil)
+	}
 	if placed {
 		a.placedAt = a.offset
 	} else if a.offset > was {

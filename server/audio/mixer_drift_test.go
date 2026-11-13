@@ -70,7 +70,7 @@ func TestDriftingSourceOverAnHour(t *testing.T) {
 	}
 	moves := m.ChannelRealigns()["srt:cam"]
 	if moves < 8 || moves > 10 {
-		t.Errorf("%d realigns in 6 minutes at +%d ppm, want about 9 (one per %d-sample period of drift)",
+		t.Errorf("%d realigns in 100 s at +%d ppm, want about 9 (one per %d-sample period of drift)",
 			moves, ppm, period)
 	}
 	t.Logf("+%d ppm for 6 minutes: %d realigns, max ring depth %d samples", ppm, moves, maxDepth)
@@ -80,15 +80,15 @@ func TestDriftingSourceOverAnHour(t *testing.T) {
 // PTS through a clock.TrackingAnchor, as an SRT stream is, its audio
 // arriving in 180 ms bursts as an MPEG-TS muxer's PES packets deliver it:
 // the ring never underruns or overruns, and the drift is moved back at most
-// once per period of it. It runs as 36 s at +10000 ppm, a hundredth of the
-// ticks, as the anchor's two-second windows then still step by half a
-// period at most.
+// once per period of it. It runs as 100 s at +4000 ppm, 0.4 s of drift:
+// the anchor lowers its offset for a fast sender only after a minute of
+// windows, so the run has to outlast that.
 func TestDriftingAnchoredSourceOverAnHour(t *testing.T) {
 	const (
 		fps      = 25
 		period   = 48000 / fps // samples per program frame
-		ppm      = 10000
-		ticks    = 36 * fps
+		ppm      = 4000
+		ticks    = 100 * fps
 		perBurst = 9 // 20 ms batches in a 180 ms burst
 		batch    = 960
 	)
@@ -149,8 +149,8 @@ func TestDriftingAnchoredSourceOverAnHour(t *testing.T) {
 	// Each move places the ring exactly, so the drift takes no more moves
 	// than placing every batch at its arrival does.
 	if moves < 1 || moves > 10 {
-		t.Errorf("%d realigns in 36 s at +%d ppm, want 1 to 10 (at most one per %d-sample period of drift)",
+		t.Errorf("%d realigns in 100 s at +%d ppm, want 1 to 10 (at most one per %d-sample period of drift)",
 			moves, ppm, period)
 	}
-	t.Logf("+%d ppm for 36 s in bursts: %d realigns, max ring depth %d samples", ppm, moves, maxDepth)
+	t.Logf("+%d ppm for 100 s in bursts: %d realigns, max ring depth %d samples", ppm, moves, maxDepth)
 }
