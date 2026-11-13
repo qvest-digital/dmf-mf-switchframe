@@ -562,11 +562,35 @@ func parseEsdsDescriptors(track *mp4Track, descriptors []mp4.Descriptor) {
 			if track.audioSampleRate == 0 {
 				track.audioSampleRate = sampleRateFromASCIndex(srIdx)
 			}
-			if track.audioChannels == 0 {
+			// The decoder is handed the channel configuration in ADTS,
+			// derived from the channel count: the configuration's count,
+			// not the sample entry's, which ISO 14496-12 lets read 2
+			// whatever the stream carries. Configuration 0, a layout the
+			// stream describes itself, leaves the sample entry's.
+			if n := ascChannelCount(chanCfg); n > 0 {
+				track.audioChannels = n
+			} else if track.audioChannels == 0 {
 				track.audioChannels = chanCfg
 			}
 		}
 	}
+}
+
+// ascChannelCount is the channel count of an AudioSpecificConfig
+// channelConfiguration (ISO 14496-3 table 1.19), 0 for one it does not
+// define.
+func ascChannelCount(chanCfg int) int {
+	switch chanCfg {
+	case 1, 2, 3, 4, 5, 6:
+		return chanCfg
+	case 7, 12, 14:
+		return 8
+	case 11:
+		return 7
+	case 13:
+		return 24
+	}
+	return 0
 }
 
 // sampleRateFromASCIndex maps ISO 14496-3 sampling_frequency_index to Hz.
