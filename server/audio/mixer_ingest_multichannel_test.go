@@ -82,6 +82,8 @@ func TestMixer_IngestFrame_DecodesSevenOneAAC(t *testing.T) {
 		require.Greater(t, toneAmp(r, f), 0.02, "right lacks the %v Hz channel", f)
 		require.Less(t, toneAmp(l, f), 0.01, "left carries the %v Hz right channel", f)
 	}
+	require.Less(t, toneAmp(l, 600), 0.01, "left carries the LFE")
+	require.Less(t, toneAmp(r, 600), 0.01, "right carries the LFE")
 	require.Greater(t, toneAmp(l, 500), 0.02, "left lacks the centre")
 	require.Greater(t, toneAmp(r, 500), 0.02, "right lacks the centre")
 }
