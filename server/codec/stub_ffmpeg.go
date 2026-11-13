@@ -237,6 +237,9 @@ func ProbeFile(path string) (*FileProbeResult, error) {
 	return nil, errFFmpegDisabled
 }
 
+// AVFormatVersionMajor returns 0 when FFmpeg is not available.
+func AVFormatVersionMajor() int { return 0 }
+
 // IsH264 always returns false when FFmpeg is not available.
 func (r *FileProbeResult) IsH264() bool { return false }
 

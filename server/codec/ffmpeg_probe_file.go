@@ -126,6 +126,12 @@ func ProbeFile(path string) (*FileProbeResult, error) {
 	return r, nil
 }
 
+// AVFormatVersionMajor returns the major version of the libavformat the
+// process runs, which decides what a demuxer reports for a file.
+func AVFormatVersionMajor() int {
+	return int(C.avformat_version() >> 16)
+}
+
 // IsH264 returns true if the probed video codec is H.264.
 func (r *FileProbeResult) IsH264() bool {
 	return r.VideoCodecID == 27 // AV_CODEC_ID_H264
