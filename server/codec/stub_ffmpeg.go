@@ -223,12 +223,13 @@ func NewHEVCVideoEncoder10bit(width, height, bitrate, fpsNum, fpsDen int, opts .
 
 // FileProbeResult holds the result of probing a media file.
 type FileProbeResult struct {
-	VideoCodecID int
-	AudioCodecID int
-	Width        int
-	Height       int
-	HasVideo     bool
-	HasAudio     bool
+	VideoCodecID  int
+	AudioCodecID  int
+	AudioChannels int
+	Width         int
+	Height        int
+	HasVideo      bool
+	HasAudio      bool
 }
 
 // ProbeFile returns an error when FFmpeg is not available.
@@ -241,6 +242,9 @@ func (r *FileProbeResult) IsH264() bool { return false }
 
 // IsHEVC always returns false when FFmpeg is not available.
 func (r *FileProbeResult) IsHEVC() bool { return false }
+
+// IsAAC always returns false when FFmpeg is not available.
+func (r *FileProbeResult) IsAAC() bool { return false }
 
 // TranscodeResult holds metadata from a transcode operation.
 type TranscodeResult struct {

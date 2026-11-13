@@ -14,6 +14,7 @@ typedef struct {
 	int height;
 	int has_video;
 	int has_audio;
+	int audio_channels;
 } ff_probe_result_t;
 
 // ff_probe_file opens a media file with avformat and extracts stream info.
@@ -55,6 +56,7 @@ static int ff_probe_file(const char* path, ff_probe_result_t* result) {
 	if (audio_idx >= 0) {
 		result->has_audio = 1;
 		result->audio_codec_id = (int)fmt_ctx->streams[audio_idx]->codecpar->codec_id;
+		result->audio_channels = fmt_ctx->streams[audio_idx]->codecpar->ch_layout.nb_channels;
 	}
 
 	avformat_close_input(&fmt_ctx);
@@ -70,12 +72,13 @@ import (
 
 // FileProbeResult holds the result of probing a media file with avformat.
 type FileProbeResult struct {
-	VideoCodecID int
-	AudioCodecID int
-	Width        int
-	Height       int
-	HasVideo     bool
-	HasAudio     bool
+	VideoCodecID  int
+	AudioCodecID  int
+	AudioChannels int
+	Width         int
+	Height        int
+	HasVideo      bool
+	HasAudio      bool
 }
 
 // ProbeFile opens a media file with FFmpeg's avformat and extracts stream
@@ -99,12 +102,13 @@ func ProbeFile(path string) (*FileProbeResult, error) {
 	}
 
 	r := &FileProbeResult{
-		VideoCodecID: int(result.video_codec_id),
-		AudioCodecID: int(result.audio_codec_id),
-		Width:        int(result.width),
-		Height:       int(result.height),
-		HasVideo:     result.has_video != 0,
-		HasAudio:     result.has_audio != 0,
+		VideoCodecID:  int(result.video_codec_id),
+		AudioCodecID:  int(result.audio_codec_id),
+		AudioChannels: int(result.audio_channels),
+		Width:         int(result.width),
+		Height:        int(result.height),
+		HasVideo:      result.has_video != 0,
+		HasAudio:      result.has_audio != 0,
 	}
 
 	if !r.HasVideo {
@@ -117,6 +121,11 @@ func ProbeFile(path string) (*FileProbeResult, error) {
 // IsH264 returns true if the probed video codec is H.264.
 func (r *FileProbeResult) IsH264() bool {
 	return r.VideoCodecID == 27 // AV_CODEC_ID_H264
+}
+
+// IsAAC returns true if the probed audio codec is AAC.
+func (r *FileProbeResult) IsAAC() bool {
+	return r.AudioCodecID == int(C.AV_CODEC_ID_AAC)
 }
 
 // IsHEVC returns true if the probed video codec is HEVC (H.265).
