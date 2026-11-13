@@ -18,6 +18,11 @@ func NewFDKDecoder(sampleRate, channels int) (Decoder, error) {
 	return nil, errCGODisabled
 }
 
+// NewFDKFileDecoder returns an error when cgo is not available.
+func NewFDKFileDecoder(sampleRate, channels int) (FileDecoder, error) {
+	return nil, errCGODisabled
+}
+
 // NewFDKEncoder returns an error when cgo is not available.
 func NewFDKEncoder(sampleRate, channels int) (Encoder, error) {
 	return nil, errCGODisabled

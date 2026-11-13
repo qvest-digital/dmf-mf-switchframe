@@ -37,6 +37,27 @@ static int aacdec_open(aacdec_t* h, int sample_rate, int channels) {
 	return 0;
 }
 
+// aacdec_open_file opens a decoder that adds no delay of its own:
+// concealment by spectral muting instead of the default energy
+// interpolation, which holds every frame back by one, and no PCM limiter,
+// whose look-ahead holds the output back too.
+static int aacdec_open_file(aacdec_t* h, int sample_rate, int channels) {
+	if (aacdec_open(h, sample_rate, channels) != 0) {
+		return -1;
+	}
+	if (aacDecoder_SetParam(h->dec, AAC_CONCEAL_METHOD, 0) != AAC_DEC_OK ||
+	    aacDecoder_SetParam(h->dec, AAC_PCM_LIMITER_ENABLE, 0) != AAC_DEC_OK) {
+		aacDecoder_Close(h->dec);
+		h->dec = NULL;
+		return -2;
+	}
+	return 0;
+}
+
+static int aacdec_output_delay(aacdec_t* h) {
+	return h->info ? (int)h->info->outputDelay : 0;
+}
+
 static void aacdec_close(aacdec_t* h) {
 	if (h->dec) {
 		aacDecoder_Close(h->dec);
@@ -93,7 +114,7 @@ import (
 // consume the returned []float32 before the next Decode() call.
 type FDKDecoder struct {
 	handle       C.aacdec_t
-	channels     int        // configured/expected channel count (for buffer sizing)
+	channels     int          // configured/expected channel count (for buffer sizing)
 	lastChannels atomic.Int32 // channel count reported by the most recent successful Decode
 	closed       atomic.Bool
 	closeOnce    sync.Once
@@ -121,6 +142,39 @@ func NewFDKDecoder(sampleRate, channels int) (*FDKDecoder, error) {
 		return nil, fmt.Errorf("failed to open FDK AAC decoder: code %d", int(rc))
 	}
 	return d, nil
+}
+
+// NewFDKFileDecoder creates an FDK AAC decoder for audio read from a file,
+// which adds no delay of its own (see OutputDelay): decoding the n-th AAC
+// frame of a stream returns that frame's 1024 samples, so the samples
+// line up with the stream's priming and padding as its container counts
+// them. Errors are concealed by muting instead of the interpolation the
+// live decoder uses, which delays every frame by one, and the PCM limiter,
+// whose look-ahead delays the output too, is off.
+func NewFDKFileDecoder(sampleRate, channels int) (FileDecoder, error) {
+	if sampleRate <= 0 {
+		return nil, fmt.Errorf("invalid sample rate: %d", sampleRate)
+	}
+	if channels < 1 || channels > 8 {
+		return nil, fmt.Errorf("invalid channel count: %d (must be 1-8)", channels)
+	}
+	d := &FDKDecoder{
+		channels: channels,
+		pcmBuf:   make([]int16, 2048*8),
+	}
+	if rc := C.aacdec_open_file(&d.handle, C.int(sampleRate), C.int(channels)); rc != 0 {
+		return nil, fmt.Errorf("failed to open FDK AAC decoder: code %d", int(rc))
+	}
+	return d, nil
+}
+
+// OutputDelay returns how many samples per channel the decoder delays its
+// output by beyond the stream's own, as of the last decoded frame.
+func (d *FDKDecoder) OutputDelay() int {
+	if d.closed.Load() {
+		return 0
+	}
+	return int(C.aacdec_output_delay(&d.handle))
 }
 
 // Decode decodes an ADTS-framed AAC frame into interleaved float32 PCM.

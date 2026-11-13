@@ -14,6 +14,15 @@ type Decoder interface {
 	Close() error
 }
 
+// FileDecoder is a Decoder that reports the delay it adds to its output.
+// Implementation: NewFDKFileDecoder.
+type FileDecoder interface {
+	Decoder
+	// OutputDelay returns how many samples per channel the decoder
+	// delays its output by beyond the stream's own.
+	OutputDelay() int
+}
+
 // Encoder encodes interleaved float32 PCM to AAC frames.
 // Implementations: FDKEncoder (cgo), mockEncoder (tests).
 type Encoder interface {
