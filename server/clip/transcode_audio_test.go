@@ -90,17 +90,27 @@ func TestTranscode_DiscreteChannelsKeepTheirFirstPair(t *testing.T) {
 	}
 }
 
-// A layout that names its speakers keeps the resampler's speaker matrix,
-// in whatever order its channels come: the 6.1 fixture's one tone, on
-// every channel, reaches both sides, and film-order 5.1 (L C R Ls Rs LFE,
-// as MOV carries it; tones FL 300 Hz, FC 500, FR 400, SL 700, SR 800,
-// LFE 600) folds each speaker to its side, centre to both, LFE to neither.
+// A layout that names its speakers keeps the resampler's speaker matrix:
+// the 6.1 fixture's one tone, on every channel, reaches both sides.
 func TestTranscode_SpeakerLayoutIsMixedDown(t *testing.T) {
 	l, r := stereoTones(t, "testdata/h264-aac-6.1.mp4", []float64{440})
 	require.Greater(t, l[440], 0.05)
 	require.Greater(t, r[440], 0.05)
+}
 
-	l, r = stereoTones(t, "testdata/h264-pcm-5.1-film-order.mov", []float64{300, 400, 500, 600, 700, 800})
+// A named layout keeps the speaker matrix in whatever order its channels
+// come: film-order 5.1 (L C R Ls Rs LFE, as MOV carries it; tones FL
+// 300 Hz, FC 500, FR 400, SL 700, SR 800, LFE 600) folds each speaker to
+// its side, centre to both, LFE to neither. libavformat before 61 (FFmpeg
+// 7.0) reads the MOV chan atom's channel descriptions into a native-order
+// mask, so the file reaches the transcode as 5.1(side) with its channels
+// mislabelled, the left surround as LFE, and no custom-order layout to
+// test.
+func TestTranscode_SpeakerLayoutInFilmOrderIsMixedDown(t *testing.T) {
+	if v := codec.AVFormatVersionMajor(); v < 61 {
+		t.Skipf("libavformat %d demuxes MOV channel descriptions in native order", v)
+	}
+	l, r := stereoTones(t, "testdata/h264-pcm-5.1-film-order.mov", []float64{300, 400, 500, 600, 700, 800})
 	for _, f := range []float64{300, 700} {
 		require.Greater(t, l[f], 0.02, "the %v Hz left speaker is not on the left", f)
 		require.Less(t, r[f], 0.01, "the %v Hz left speaker is on the right", f)

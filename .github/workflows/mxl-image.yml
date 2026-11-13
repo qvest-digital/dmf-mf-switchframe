@@ -44,7 +44,7 @@ jobs:
       - name: Test with the mxl build tag
         run: |
           docker run --rm switchframe-build:test \
-            go test -tags mxl -race -count=1 ./mxl/... ./output/...
+            go test -tags mxl -race -count=1 ./mxl/... ./output/... ./clip/... ./codec/...
 
   # The sidecar's own tests build without CEF; nothing upstream runs them.
   test-cef-sidecar:
