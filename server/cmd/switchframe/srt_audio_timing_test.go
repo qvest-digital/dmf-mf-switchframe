@@ -181,8 +181,10 @@ func TestSRTAudioLandsOnItsStampsOnceTheAnchorSettles(t *testing.T) {
 	rate := clock.Rate{Num: 48000, Den: 1}
 	start := now.Load()
 	// Job k's own PTS is the engine PTS of step k, so on time it lands on
-	// sample index startIdx+k*job, and every 20th job is loud.
-	startIdx := clock.TimestampToIndex(rate, start)
+	// sample index startIdx+k*job, and every 20th job is loud. The index
+	// is the one that PTS stands for: start is off the sample grid, and
+	// its PTS, a 90 kHz tick, is up to half a tick off start.
+	startIdx := clock.PTSIndex(rate, clock.PTS(start))
 	deliver := func(k int) {
 		pcm := make([]float32, job*2)
 		level := float32(0.1)
