@@ -236,8 +236,8 @@ func TestTrackingAnchorPlacesABacklogNoFurtherThanAHoldAhead(t *testing.T) {
 }
 
 // A source whose sender clock runs fast is followed: its timestamps stay
-// within a window's drift of their arrival rather than running ahead
-// without bound.
+// within TrackingHistory windows' drift of their arrival rather than
+// running ahead without bound.
 func TestTrackingAnchorFollowsAFastSender(t *testing.T) {
 	now := int64(1_798_000_000_000_000_000)
 	fixedTAI(t, &now)
@@ -251,17 +251,18 @@ func TestTrackingAnchorFollowsAFastSender(t *testing.T) {
 		if ahead < 0 {
 			t.Fatalf("frame %d placed %d ticks before it arrived", i, -ahead)
 		}
-		// Two windows of drift at 1000 ppm: 4 ms.
-		if ahead > 2*TrackingWindow*ppm/1_000_000+1 {
+		// The drift over the settle and history windows at 1000 ppm: 64 ms.
+		if ahead > (TrackingSettle+TrackingHistory)*TrackingWindow*ppm/1_000_000+1 {
 			t.Fatalf("frame %d placed %d ticks after it arrived: the anchor does not follow the sender", i, ahead)
 		}
 	}
 }
 
 // A source whose sender clock runs slow arrives later with every frame.
-// The anchor raises its offset with each one, so every frame is placed at
-// its arrival: never before it, and never held behind it, however long the
-// drift runs.
+// Once settled, the anchor raises its offset each time two windows in a
+// row arrived more than TrackingSlack later than it, so no frame is placed
+// after its arrival nor more than that and two windows' drift before it,
+// however long the drift runs.
 func TestTrackingAnchorFollowsASlowSender(t *testing.T) {
 	now := int64(1_798_000_000_000_000_000)
 	fixedTAI(t, &now)
@@ -271,12 +272,58 @@ func TestTrackingAnchorFollowsASlowSender(t *testing.T) {
 	for i := 0; i < 360*50; i++ { // 6 minutes of 20 ms frames
 		now += 20_000_000
 		src += 1800 - 1800*ppm/1_000_000
-		if ahead := a.PTS(src) - PTS(now); ahead != 0 {
+		if ahead := a.PTS(src) - PTS(now); ahead > 0 || ahead < -(TrackingSlack+2*TrackingWindow*ppm/1_000_000+1) {
 			t.Fatalf("frame %d placed %d ticks off its arrival", i, ahead)
 		}
 	}
 	if a.Moves() != 0 {
 		t.Fatalf("%d moves for a source that drifted 0.36 s and never jumped", a.Moves())
+	}
+}
+
+// Once settled, a TrackingAnchor's offset stays where it is through a late
+// burst, as a sender or decode loop that stalls for 200 ms delivers: every
+// frame of the stall arrives at its end. Following it, the offset moved
+// the source's audio 200 ms later, and back once the burst was forgotten,
+// and the mixer spliced the audio at both steps. A lateness that lasts
+// two windows raises the offset, once and by exactly that lateness.
+func TestTrackingAnchorMovesOnlyOnALastingLateness(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	var a TrackingAnchor
+	src := int64(1_000_000)
+	frame := func(lateNs int64) {
+		now += 20_000_000
+		src += 1800
+		now += lateNs
+		a.PTS(src)
+		now -= lateNs
+	}
+	const perWindow = TrackingWindow / 1800
+	for range (TrackingSettle + 1) * perWindow {
+		frame(0)
+	}
+	settled := a.Stats()
+	for w := range 300 { // ten minutes, a stall in every fourth window
+		for f := 0; f < perWindow; f++ {
+			if w%4 == 0 && f == perWindow/2 {
+				for j := range int64(10) {
+					frame((10 - j) * 20_000_000)
+				}
+				f += 9
+				continue
+			}
+			frame(0)
+			if s := a.Stats(); s.Offset != settled.Offset {
+				t.Fatalf("window %d frame %d: offset moved %d ticks after a stall", w, f, s.Offset-settled.Offset)
+			}
+		}
+	}
+	for range 3 * perWindow {
+		frame(100_000_000)
+	}
+	if s := a.Stats(); s.Offset != settled.Offset+9000 || s.Raises != settled.Raises+1 {
+		t.Fatalf("after three windows 100 ms later: %+v, want one raise of 9000 ticks over %+v", s, settled)
 	}
 }
 
@@ -466,5 +513,44 @@ func TestTrackingAnchorCountsItsRaises(t *testing.T) {
 	frame(0)
 	if s := a.Stats(); s.Raises != 1 || s.Offset != 0 || s.Moves != 1 {
 		t.Fatalf("after a jump: %+v, want 1 move, no new raise and an offset of 0 from the new placement", s)
+	}
+}
+
+// SettledPTS reports the settle once per placement, on the first
+// timestamp it maps on the settled offset, also when a PTS call made the
+// anchor settle: the caller places the source's audio on its stamps again
+// from that timestamp, and placed again after a jump, settles again.
+func TestTrackingAnchorReportsEachSettleOnce(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	var a TrackingAnchor
+	src := int64(1_000_000)
+	settles := 0
+	frames := func(count int) {
+		for range count {
+			now += 20_000_000
+			src += 1800
+			a.PTS(src)
+			if _, settled := a.SettledPTS(src); settled {
+				settles++
+			}
+		}
+	}
+	frames(TrackingSettle*TrackingWindow/1800 - 1)
+	if settles != 0 {
+		t.Fatalf("%d settles reported before the settle windows passed", settles)
+	}
+	frames(2)
+	if settles != 1 {
+		t.Fatalf("%d settles reported once the settle windows passed, want 1", settles)
+	}
+	frames(2 * TrackingWindow / 1800)
+	if settles != 1 {
+		t.Fatalf("%d settles reported two windows on, want still 1", settles)
+	}
+	src += 10 * 90000 // the source restarts 10 s on
+	frames((TrackingSettle+1)*TrackingWindow/1800 + 1)
+	if settles != 2 {
+		t.Fatalf("%d settles reported after a jump, want 2", settles)
 	}
 }

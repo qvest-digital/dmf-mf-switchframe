@@ -1205,9 +1205,14 @@ func (a *App) startSRTReplayCPUEncode(rc *srtRelayContext) {
 // ingestSRTAudio hands an SRT source's decoded audio to the mixer. The
 // stream's own PTS, placed on the timeline by the tracking anchor its video
 // shares, keep the audio continuous however the decoder bunches it; the
-// anchor follows a sender clock that drifts.
+// anchor follows a sender clock that drifts. Once the anchor settles, the
+// audio is placed on its timestamps again, so it stays on its video.
 func (a *App) ingestSRTAudio(key string, anchor *clock.TrackingAnchor, job srtAudioJob) {
-	a.mixer.IngestPCM(key, job.pcm, anchor.PTS(job.pts), job.channels)
+	pts, settled := anchor.SettledPTS(job.pts)
+	a.mixer.IngestPCM(key, job.pcm, pts, job.channels)
+	if settled {
+		a.mixer.PlaceChannel(key)
+	}
 }
 
 // startSRTAudioRelay starts a goroutine that delivers decoded PCM audio to the
