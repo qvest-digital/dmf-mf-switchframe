@@ -892,6 +892,8 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 
 	// --- Graphics (DSK layers) ---
 	captureGraphics(&snap, a.compositor)
+	snap.Tickers, snap.Sequences = a.graphicsMotionSnapshots()
+	snap.GraphicsMotion = true
 
 	// --- DVE / Layout ---
 	if a.dveCompositor != nil {

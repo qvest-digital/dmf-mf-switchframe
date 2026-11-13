@@ -149,6 +149,7 @@ func isMachineAuthPath(path string) bool {
 // serialize snapshot pushes server-side.
 var authenticatedOperatorMutatingPaths = map[string]bool{
 	"/api/sync/state-snapshot": true, // POST applies a snapshot (GET passes via read-only rule)
+	"/api/sync/pull-from-peer": true, // POST applies the peer engine's snapshot
 }
 
 // authenticatedOperatorMutatingPrefixes complements the exact-path map above

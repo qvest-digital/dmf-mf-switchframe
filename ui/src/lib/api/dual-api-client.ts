@@ -1,5 +1,5 @@
 import type { EngineId } from '$lib/api/types';
-import { EngineStartingError, SnapshotStaleError } from '$lib/state/auto-reconcile';
+import { EngineStartingError, PullUnsupportedError, SnapshotStaleError } from '$lib/state/auto-reconcile';
 import { engineFetch } from '$lib/api/switch-api';
 
 export interface EngineConfig {
@@ -107,6 +107,43 @@ export class DualApiClient {
 		if (!res.ok) {
 			const body = await res.text().catch(() => 'unknown error');
 			throw new Error(`Failed to push snapshot to engine ${engineId}: ${res.status} ${body}`);
+		}
+		return res.json();
+	}
+
+	/** Has engineId take its peer's state straight from the peer, peerId,
+	 * under peerLockId held there. Errors as pushStateSnapshot. */
+	async pullFromPeer(
+		engineId: EngineId,
+		peerId: EngineId,
+		peerLockId?: string,
+		opts?: { force: true }
+	): Promise<{ warnings: string[] }> {
+		const engine = this.findEngine(engineId);
+		const url = new URL(`${engine.url}/api/sync/pull-from-peer`);
+		if (peerLockId) url.searchParams.set('lockId', peerLockId);
+		if (opts?.force) url.searchParams.set('force', 'true');
+		const res = await engineFetch(url.toString(), {
+			method: 'POST',
+			headers: { ...this.authHeaders() },
+		});
+		// 404 and 405: an engine built before the pull. 403: an engine whose
+		// access rules predate it, refusing the path to this operator. 501:
+		// an engine without a peer configured.
+		if (res.status === 403 || res.status === 404 || res.status === 405 || res.status === 501) {
+			throw new PullUnsupportedError(engineId);
+		}
+		if (res.status === 503) {
+			throw new EngineStartingError(peerId);
+		}
+		if (res.status === 409) {
+			const body = await res.json().catch(() => null) as
+				{ error?: string; snapshot_seq?: number; current_seq?: number } | null;
+			throw new SnapshotStaleError(body?.snapshot_seq ?? 0, body?.current_seq ?? 0);
+		}
+		if (!res.ok) {
+			const body = await res.text().catch(() => 'unknown error');
+			throw new Error(`Engine ${engineId} failed to take engine ${peerId}'s state: ${res.status} ${body}`);
 		}
 		return res.json();
 	}

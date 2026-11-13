@@ -325,6 +325,46 @@ func (s *Store) Upsert(id, name string, role Role) (Operator, error) {
 	return s.operators[idx], nil
 }
 
+// Put stores op as it is, replacing the operator with its ID or adding it,
+// and persists the change: the peer engine's record of an operator, token
+// included, so that both engines take its token.
+func (s *Store) Put(op Operator) error {
+	if op.ID == "" {
+		return fmt.Errorf("operator: empty ID")
+	}
+	if op.Name == "" {
+		return ErrEmptyName
+	}
+	if !IsValidRole(op.Role) {
+		return ErrInvalidRole
+	}
+	if op.Token != "" && !isTokenFormat(op.Token) {
+		return ErrInvalidToken
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prev := append([]Operator(nil), s.operators...)
+	if idx, ok := s.idIdx[op.ID]; ok {
+		s.operators[idx] = op
+	} else {
+		s.operators = append(s.operators, op)
+	}
+	s.rebuildIndices()
+
+	data, err := s.marshalLocked()
+	if err == nil {
+		err = s.writeFile(data)
+	}
+	if err != nil {
+		s.operators = prev
+		s.rebuildIndices()
+		return fmt.Errorf("save operators: %w", err)
+	}
+	return nil
+}
+
 // Delete removes an operator by ID.
 func (s *Store) Delete(id string) error {
 	s.mu.Lock()

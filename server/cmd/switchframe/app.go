@@ -297,6 +297,11 @@ type App struct {
 	// Peer health monitoring
 	peerPoller *peer.HealthPoller
 
+	// storeSyncer converges the stores with the peer's, converger the
+	// state; nil without a peer.
+	storeSyncer *peer.StoreSyncer
+	converger   *peer.Converger
+
 	// Performance monitoring
 	perfSampler *perf.Sampler
 
@@ -765,6 +770,7 @@ func (a *App) initSubsystems() error {
 		return fmt.Errorf("create wipe map store: %w", err)
 	}
 	a.wipeMapStore.RegisterBuiltins()
+	loadCustomWipes(a.wipeMapStore, wipeDir)
 	slog.Info("wipe map store initialized", "path", wipeDir, "patterns", len(a.wipeMapStore.List()))
 
 	// Session manager for operator session tracking and subsystem locks.
@@ -822,36 +828,16 @@ func (a *App) initSubsystems() error {
 		// Load persisted static maps.
 		staticNames, _ := a.stmapStore.ListStatic()
 		for _, name := range staticNames {
-			m, loadErr := a.stmapStore.LoadStatic(name)
-			if loadErr != nil {
-				slog.Warn("stmap load failed", "name", name, "error", loadErr)
-				continue
+			if err := a.loadSTMap(name, false); err != nil {
+				slog.Warn("stmap load failed", "name", name, "error", err)
 			}
-			_ = a.stmapRegistry.Store(m)
 		}
 		// Load persisted animated map metadata and regenerate.
 		animNames, _ := a.stmapStore.ListAnimated()
 		for _, name := range animNames {
-			meta, loadErr := a.stmapStore.LoadAnimatedMeta(name)
-			if loadErr != nil {
-				slog.Warn("stmap animated load failed", "name", name, "error", loadErr)
-				continue
+			if err := a.loadSTMap(name, true); err != nil {
+				slog.Warn("stmap animated load failed", "name", name, "error", err)
 			}
-			anim, genErr := stmap.GenerateAnimated(meta.Generator, meta.Params, meta.Width, meta.Height, meta.FrameCount)
-			if genErr != nil {
-				slog.Warn("stmap animated regenerate failed", "name", name, "error", genErr)
-				continue
-			}
-			anim.Name = name
-			// Use mmap-cached LUT build when cache dir is configured.
-			if a.cfg.CacheDir != "" {
-				cacheDir := filepath.Join(a.cfg.CacheDir, "stmap",
-					name+"_"+stmap.CacheKey(meta.Generator, meta.Params, meta.Width, meta.Height, meta.FrameCount))
-				anim.BuildProcessorsCached(cacheDir)
-			} else {
-				anim.BuildProcessors()
-			}
-			_ = a.stmapRegistry.StoreAnimated(anim)
 		}
 		if n := len(staticNames) + len(animNames); n > 0 {
 			slog.Info("stmap store loaded", "path", stmapStoreDir, "static", len(staticNames), "animated", len(animNames))
@@ -1603,9 +1589,12 @@ func (a *App) initAPI() error {
 		a.peerPoller = peer.NewHealthPoller(a.cfg.PeerEngineURL, pollerOpts...)
 	}
 
+	a.initStoreSync()
+
 	apiOpts := []control.APIOption{
 		control.WithMixer(a.mixer),
 		control.WithPeerPoller(a.peerPoller),
+		control.WithStoreSyncer(a.storeSyncer),
 		control.WithControlPlaneSecret(a.cfg.ControlPlaneSecret),
 		control.WithOutputManager(a.outputMgr),
 		control.WithDebugCollector(a.debugCollector),
@@ -1720,6 +1709,12 @@ func (a *App) initAPI() error {
 	// Create animated sequence engine for graphics layers.
 	if a.compositor != nil {
 		a.sequenceEngine = graphics.NewSequenceEngine(a.compositor)
+		if a.cfg.StateDir != "" {
+			// The ZIPs a peer engine reads sequences from, kept off the heap.
+			if err := a.sequenceEngine.SetSourceDir(a.statePath("graphics-sequences")); err != nil {
+				slog.Warn("sequence ZIPs kept in memory", "error", err)
+			}
+		}
 		a.compositor.SetSequenceEngine(a.sequenceEngine)
 		apiOpts = append(apiOpts, control.WithSequenceEngine(a.sequenceEngine))
 		slog.Info("sequence engine initialized")
@@ -1754,6 +1749,20 @@ func (a *App) initAPI() error {
 	// Late-bind snapshot provider — requires API to exist first (App delegates
 	// to subsystems wired above), but the provider is a lightweight adapter.
 	a.api.SetSnapshotProvider(&snapshotProviderAdapter{app: a})
+
+	// Engines of a pair converge their state between themselves too, so
+	// that no browser has to be open for a missed command to be repaired.
+	if a.peerPoller != nil && a.cfg.EngineLabel != "" {
+		a.converger = peer.NewConverger(a.peerPoller, peer.ConvergeConfig{
+			Token:      a.cfg.APIToken,
+			Tick:       convergeTick,
+			Settle:     convergeSettle,
+			Backoff:    convergeBackoff,
+			MaxBackoff: convergeMaxBackoff,
+			StartTie:   convergeStartTie,
+			ChangeTie:  convergeChangeTie,
+		}, a.api.CompareState, a.applyPeerState)
+	}
 
 	// Late-bind HTML5 graphics manager to the API.
 	if a.htmlGfxMgr != nil {
@@ -1997,11 +2006,26 @@ func (a *App) Run(ctx context.Context) error {
 	go func() {
 		defer a.bgWG.Done()
 		peer.RunStartup(a.bgCtx, a.peerPoller, &startupEngine{app: a}, a.startupConfig())
+		if a.converger != nil {
+			a.converger.Run(a.bgCtx)
+		}
 	}()
 
 	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).
 	stopAdmin, _ := StartAdminServer(ctx, a.cfg.AdminAddr, a.advertisedAddr(), a.cert.FingerprintBase64(), a.externalCert, a.cfg.AdminToken)
 	defer stopAdmin()
+
+	// Take what the peer's stores hold before the API serves, then keep the
+	// stores in step. The admin server runs meanwhile, so a liveness probe
+	// is answered however long the first round takes.
+	if a.storeSyncer != nil {
+		a.storeSyncAtStart(ctx)
+		a.bgWG.Add(1)
+		go func() {
+			defer a.bgWG.Done()
+			a.storeSyncer.Run(a.bgCtx, storeSyncInterval)
+		}()
+	}
 
 	// Optionally start HTTP/1.1 fallback for curl/scripts.
 	if a.cfg.HTTPFallback {

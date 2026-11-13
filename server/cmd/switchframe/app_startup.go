@@ -31,6 +31,22 @@ func (a *App) startupConfig() peer.StartupConfig {
 	}
 }
 
+// The engines compare their states every convergeTick. Once they have
+// differed, unchanged, for convergeSettle, longer than a browser takes to
+// reconcile them (its 2s divergence delay and 5s cooldown), the engine
+// without authority takes the other's state, then waits convergeBackoff,
+// doubling up to convergeMaxBackoff while the difference stays, before it
+// takes it again. Starts within convergeStartTie, and last changes within
+// convergeChangeTie, count as at the same time.
+const (
+	convergeTick       = 3 * time.Second
+	convergeSettle     = 15 * time.Second
+	convergeBackoff    = 30 * time.Second
+	convergeMaxBackoff = 10 * time.Minute
+	convergeStartTie   = time.Minute
+	convergeChangeTie  = 5 * time.Second
+)
+
 // startupEngine is the App as peer.RunStartup drives it.
 type startupEngine struct {
 	app *App
@@ -53,12 +69,24 @@ func (e *startupEngine) Cut(ctx context.Context, source string) error {
 // ApplyPeerSnapshot applies the peer's state the way a snapshot pushed to
 // POST /api/sync/state-snapshot is applied, seq included.
 func (e *startupEngine) ApplyPeerSnapshot(ctx context.Context, snap internal.FullStateSnapshot, seq uint64) {
-	if warnings := internal.ApplyFullSnapshot(ctx, snap, e.app); len(warnings) > 0 {
+	if warnings := e.app.applyPeerState(ctx, snap, seq); len(warnings) > 0 {
 		slog.Warn("startup: peer state applied in part", "warnings", warnings)
 	}
-	if seq > 0 {
-		e.app.sw.TrackCommandSeq(seq)
+}
+
+// applyPeerState applies the peer's state the way a snapshot pushed to
+// POST /api/sync/state-snapshot is applied, seq included, and returns what
+// it could not apply.
+func (a *App) applyPeerState(ctx context.Context, snap internal.FullStateSnapshot, seq uint64) []string {
+	ctx = a.prefetchSequences(ctx, snap)
+	if a.api != nil {
+		defer a.api.ApplyingPeerState()()
 	}
+	warnings := internal.ApplyFullSnapshot(ctx, snap, a)
+	if seq > 0 {
+		a.sw.TrackCommandSeq(seq)
+	}
+	return warnings
 }
 
 func (e *startupEngine) GoLive(ctx context.Context) bool {

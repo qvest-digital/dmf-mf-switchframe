@@ -152,6 +152,15 @@ type SnapshotGraphicsLayerSyncer interface {
 	SyncGraphicsLayers(layers []GraphicsLayerSnapshot) error
 }
 
+// SnapshotGraphicsMotionSyncer is optionally implemented to bring the
+// tickers and PNG sequences the target's layers run to the snapshot's, for
+// a snapshot with GraphicsMotion set: it starts, changes and stops tickers,
+// and loads and removes sequences.
+type SnapshotGraphicsMotionSyncer interface {
+	SyncTickers(tickers []TickerSnapshot) error
+	SyncSequences(ctx context.Context, sequences []SequenceSnapshot) error
+}
+
 // SnapshotSTMapRemover is optionally implemented to drop the ST map
 // assignments the snapshot does not carry; assigning alone leaves them in
 // place.
@@ -270,6 +279,16 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 		if err := syncer.SyncGraphicsLayers(snap.Graphics); err != nil {
 			slog.Warn("snapshot apply: graphics layer sync failed", "error", err)
 			warnings = append(warnings, fmt.Sprintf("graphics layers: %v", err))
+		}
+	}
+	if motion, ok := target.(SnapshotGraphicsMotionSyncer); ok && snap.GraphicsMotion {
+		if err := motion.SyncSequences(ctx, snap.Sequences); err != nil {
+			slog.Warn("snapshot apply: graphics sequence sync failed", "error", err)
+			warnings = append(warnings, fmt.Sprintf("graphics sequences: %v", err))
+		}
+		if err := motion.SyncTickers(snap.Tickers); err != nil {
+			slog.Warn("snapshot apply: ticker sync failed", "error", err)
+			warnings = append(warnings, fmt.Sprintf("tickers: %v", err))
 		}
 	}
 	for _, layer := range snap.Graphics {

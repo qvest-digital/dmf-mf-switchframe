@@ -310,6 +310,28 @@ func (s *RulesStore) CreateFromTemplate(templateName string) (Rule, error) {
 	return Rule{}, ErrTemplateNotFound
 }
 
+// Replace sets every rule and the default action at once, as the peer
+// engine holds them, and persists them.
+func (s *RulesStore) Replace(rules []Rule, defaultAction RuleAction) error {
+	if rules == nil {
+		rules = []Rule{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prevRules, prevDefault := s.rules, s.defaultAction
+	s.rules = append([]Rule(nil), rules...)
+	if defaultAction != "" {
+		s.defaultAction = defaultAction
+	}
+	if err := s.save(); err != nil {
+		s.rules, s.defaultAction = prevRules, prevDefault
+		return fmt.Errorf("save rules: %w", err)
+	}
+	s.syncEngine()
+	return nil
+}
+
 // save writes the current rules to disk atomically (temp file + fsync + rename).
 // Must be called with s.mu held.
 func (s *RulesStore) save() error {

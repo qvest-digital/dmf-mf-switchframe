@@ -235,6 +235,43 @@ func (ps *Store) Delete(id string) error {
 	return ErrNotFound
 }
 
+// ReplaceByName replaces every preset named name with ps, in place of the
+// first one or at the end, and persists the change: the peer engine's
+// presets of that name, IDs included. An empty ps deletes them.
+func (ps *Store) ReplaceByName(name string, presets []Preset) error {
+	for _, p := range presets {
+		if p.Name != name {
+			return fmt.Errorf("preset %q: name is not %q", p.ID, name)
+		}
+	}
+
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	prev := ps.presets
+	next := make([]Preset, 0, len(prev)+len(presets))
+	placed := false
+	for _, p := range prev {
+		if p.Name != name {
+			next = append(next, p)
+			continue
+		}
+		if !placed {
+			next = append(next, presets...)
+			placed = true
+		}
+	}
+	if !placed {
+		next = append(next, presets...)
+	}
+	ps.presets = next
+	if err := ps.save(); err != nil {
+		ps.presets = prev
+		return fmt.Errorf("save presets: %w", err)
+	}
+	return nil
+}
+
 // save writes the current presets to disk atomically (temp file + rename).
 // Must be called with ps.mu held (either read or write lock).
 func (ps *Store) save() error {

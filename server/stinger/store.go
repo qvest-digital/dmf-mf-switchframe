@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -281,6 +282,101 @@ func (s *Store) LoadFromDir(name string) error {
 	return nil
 }
 
+// DirFiles lists the stinger directories on disk, loaded or not, with the
+// files in each. It reads them under the store's lock, so a Replace
+// swapping a directory is never seen half way, as a directory missing or
+// empty. A directory that cannot be read is listed with a nil slice.
+func (s *Store) DirFiles() (map[string][]fs.FileInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]fs.FileInfo, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		out[e.Name()] = nil
+		files, err := os.ReadDir(filepath.Join(s.dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		infos := make([]fs.FileInfo, 0, len(files))
+		ok := true
+		for _, f := range files {
+			if !f.Type().IsRegular() {
+				continue
+			}
+			fi, err := f.Info()
+			if err != nil {
+				ok = false
+				break
+			}
+			infos = append(infos, fi)
+		}
+		if ok {
+			out[e.Name()] = infos
+		}
+	}
+	return out, nil
+}
+
+// Room reports ErrMaxClipsReached when the store holds no stinger name and
+// has no room for another.
+func (s *Store) Room(name string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, exists := s.clips[name]; !exists && len(s.clips)+len(s.pending) >= s.maxClips {
+		return ErrMaxClipsReached
+	}
+	return nil
+}
+
+// Replace takes the directory srcDir, holding a stinger's PNG frames and
+// optional WAV as an upload leaves them, into the store as name, replacing
+// the stinger of that name. srcDir must be on the store's filesystem. The
+// frames are decoded before anything is replaced: on failure the stinger
+// of that name stays as it was.
+func (s *Store) Replace(name, srcDir string) error {
+	if err := validateName(name); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidName, name)
+	}
+	if err := s.Room(name); err != nil {
+		return err
+	}
+	clip, err := s.decodeDir(name, srcDir)
+	if err != nil {
+		return fmt.Errorf("load clip: %w", err)
+	}
+
+	dir := filepath.Join(s.dir, name)
+	aside := srcDir + ".replaced"
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.clips[name]; !exists && len(s.clips)+len(s.pending) >= s.maxClips {
+		return ErrMaxClipsReached
+	}
+	// The old files go aside first, so a failed move leaves them in place.
+	if err := os.Rename(dir, aside); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("move stinger dir: %w", err)
+	}
+	if err := os.Rename(srcDir, dir); err != nil {
+		_ = os.Rename(aside, dir)
+		return fmt.Errorf("move stinger dir: %w", err)
+	}
+	_ = os.RemoveAll(aside)
+	if old, ok := s.clips[name]; ok && old != nil {
+		_ = old.Close()
+	}
+	if s.cacheDir != "" {
+		_ = os.Remove(filepath.Join(s.cacheDir, name+".bin"))
+	}
+	s.clips[name] = clip
+	return nil
+}
+
 // Upload extracts a zip of PNG files into the store directory and loads the clip.
 // The zip must contain PNG files at the root level (no subdirectories).
 func (s *Store) Upload(name string, zipData []byte) error {
@@ -424,19 +520,9 @@ func (s *Store) Upload(name string, zipData []byte) error {
 	return nil
 }
 
-func (s *Store) loadClip(name string) (*Clip, error) {
-	// Try cache first.
-	if s.cacheDir != "" {
-		cachePath := filepath.Join(s.cacheDir, name+".bin")
-		if clip, err := LoadCache(cachePath); err == nil {
-			clip.Name = name
-			// Load audio separately (small, kept on heap).
-			s.loadClipAudio(clip, name)
-			return clip, nil
-		}
-	}
-
-	dir := filepath.Join(s.dir, name)
+// decodeDir decodes the stinger name from the PNG frames and optional WAV
+// in dir, onto the heap.
+func (s *Store) decodeDir(name, dir string) (*Clip, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read stinger dir %q: %w", name, err)
@@ -494,6 +580,26 @@ func (s *Store) loadClip(name string) (*Clip, error) {
 			// Silently ignore WAV parse errors — audio is optional
 		}
 		// Silently ignore file read errors — audio is optional
+	}
+
+	return clip, nil
+}
+
+func (s *Store) loadClip(name string) (*Clip, error) {
+	// Try cache first.
+	if s.cacheDir != "" {
+		cachePath := filepath.Join(s.cacheDir, name+".bin")
+		if clip, err := LoadCache(cachePath); err == nil {
+			clip.Name = name
+			// Load audio separately (small, kept on heap).
+			s.loadClipAudio(clip, name)
+			return clip, nil
+		}
+	}
+
+	clip, err := s.decodeDir(name, filepath.Join(s.dir, name))
+	if err != nil {
+		return nil, err
 	}
 
 	// After successful decode, write cache for next time.

@@ -272,6 +272,23 @@ func (p *HealthPoller) DownAfter() time.Duration {
 	return time.Duration(p.failureThreshold) * p.pollInterval
 }
 
+// PeerURL returns the peer's API base URL, "" for none.
+func (p *HealthPoller) PeerURL() string {
+	if p == nil {
+		return ""
+	}
+	return p.peerURL
+}
+
+// HTTPClient returns a client for requests to the peer that take longer
+// than a health poll: the poller's, TLS pin included, without its timeout.
+// Each request is bounded by its context.
+func (p *HealthPoller) HTTPClient() *http.Client {
+	c := *p.client
+	c.Timeout = 0
+	return &c
+}
+
 // LocalLabel returns this engine's configured label ("", "a", or "b").
 func (p *HealthPoller) LocalLabel() string {
 	if p == nil {

@@ -1,6 +1,8 @@
 package control
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -9,12 +11,15 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/peer"
 )
 
 // reconcileLockState holds an in-memory lock that prevents two browser tabs
@@ -25,6 +30,30 @@ type reconcileLockState struct {
 	lockID   string
 	expiry   time.Duration
 	deadline time.Time
+
+	// lastActive is when a browser last took, refreshed or released the
+	// lock, or pushed a snapshot.
+	lastActive time.Time
+}
+
+// reconcileQuiet is how long after a browser's last reconcile step the
+// engines leave converging to it.
+const reconcileQuiet = 10 * time.Second
+
+// touch records a browser's reconcile step.
+func (l *reconcileLockState) touch() {
+	l.mu.Lock()
+	l.lastActive = time.Now()
+	l.mu.Unlock()
+}
+
+// active reports whether a browser holds the lock or took a reconcile step
+// within reconcileQuiet.
+func (l *reconcileLockState) active() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	return (l.lockID != "" && now.Before(l.deadline)) || now.Sub(l.lastActive) < reconcileQuiet
 }
 
 // newReconcileLockState returns an initialized lock with a 15s default expiry.
@@ -51,6 +80,7 @@ func (l *reconcileLockState) tryAcquire(holder string) (string, string, bool) {
 	l.lockID = hex.EncodeToString(b)
 	l.holder = holder
 	l.deadline = now.Add(l.expiry)
+	l.lastActive = now
 	return l.lockID, "", true
 }
 
@@ -69,6 +99,7 @@ func (l *reconcileLockState) release(lockID string) bool {
 	l.lockID = ""
 	l.holder = ""
 	l.deadline = time.Time{}
+	l.lastActive = time.Now()
 	return true
 }
 
@@ -81,6 +112,7 @@ func (l *reconcileLockState) refresh(lockID string) bool {
 		return false
 	}
 	l.deadline = time.Now().Add(l.expiry)
+	l.lastActive = time.Now()
 	return true
 }
 
@@ -107,6 +139,16 @@ type SnapshotProvider interface {
 
 	// ApplyTarget returns the target that can apply a snapshot to restore state.
 	ApplyTarget() internal.SnapshotApplyTarget
+}
+
+// SnapshotPreparer is optionally implemented by a SnapshotProvider whose
+// apply reads content from the peer engine, as graphics sequences: that is
+// read before the apply starts, so an apply marks no longer a window than
+// it takes to apply.
+type SnapshotPreparer interface {
+	// PrepareSnapshot reads what applying snap takes from the peer before
+	// the apply, and returns the context to apply it under.
+	PrepareSnapshot(ctx context.Context, snap internal.FullStateSnapshot) context.Context
 }
 
 // SnapshotReadiness is optionally implemented by a SnapshotProvider. An
@@ -146,6 +188,11 @@ func (a *API) registerSyncRoutes(mux *http.ServeMux) {
 		return
 	}
 	mux.HandleFunc("GET /api/sync/state-snapshot", a.handleGetStateSnapshot)
+	mux.HandleFunc("GET /api/sync/state-compare", a.handleGetStateCompare)
+	mux.HandleFunc("POST /api/sync/pull-from-peer", a.handlePullFromPeer)
+	if a.sequenceEngine != nil {
+		mux.HandleFunc("GET /api/sync/graphics-sequence", a.handleGetGraphicsSequence)
+	}
 	mux.HandleFunc("POST /api/sync/state-snapshot", a.handleApplyStateSnapshot)
 	mux.HandleFunc("POST /api/sync/reconcile-lock", a.handleAcquireReconcileLock)
 	mux.HandleFunc("PUT /api/sync/reconcile-lock/{lockId}", a.handleRefreshReconcileLock)
@@ -180,6 +227,14 @@ type snapshotEnvelope struct {
 // startup read is an admin one.
 func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
 	admin := r.URL.Query().Get("admin") == "true"
+	if admin && r.URL.Query().Get("ready") == "true" {
+		// An admin read that copies the state on, as a pull for a
+		// browser does, refuses a starting engine as a locked read does.
+		if sr, ok := a.snapshotProvider.(SnapshotReadiness); ok && !sr.SnapshotReady() {
+			httperr.Write(w, http.StatusServiceUnavailable, "engine still starting: its state is not the one to copy")
+			return
+		}
+	}
 	if !admin {
 		lockID := r.URL.Query().Get("lockId")
 		if !a.reconcileLock.isHeldBy(lockID) {
@@ -232,6 +287,7 @@ func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
 // parameter overrides the check for admin-driven recovery.
 func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	a.reconcileLock.touch()
 
 	// Bound the read so a missing/incorrect outer body cap cannot translate
 	// into an unbounded allocation when restoring a snapshot.
@@ -337,7 +393,14 @@ func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	warnings = append(warnings, internal.ApplyFullSnapshot(r.Context(), snap, a.snapshotProvider.ApplyTarget())...)
+	ctx := r.Context()
+	if sp, ok := a.snapshotProvider.(SnapshotPreparer); ok {
+		ctx = sp.PrepareSnapshot(ctx, snap)
+	}
+	func() {
+		defer a.ApplyingPeerState()()
+		warnings = append(warnings, internal.ApplyFullSnapshot(ctx, snap, a.snapshotProvider.ApplyTarget())...)
+	}()
 
 	// The engine now holds the source's state as of snapSeq. Without taking
 	// the seq along, a gap between the engines' seqs outlives the push, and
@@ -386,6 +449,174 @@ func (a *API) graphicsLayersRemovedBy(snap internal.FullStateSnapshot) int {
 		}
 	}
 	return n
+}
+
+// compareChangeState tracks when the engine's compared state last changed
+// by a write of its own, as seen by the reads of it. Taking the peer's
+// state is no write of its own: dating it would hand authority over what
+// is left of the difference to the engine that took the peer's state, and
+// the peer would then take that state back over its own later write.
+type compareChangeState struct {
+	mu        sync.Mutex
+	digest    string
+	changedAt time.Time
+	applying  int // applies of the peer's state running
+}
+
+// observe records the compared state's digest and returns when it last
+// changed: the engine's start until it first does. A change seen while the
+// peer's state is applied is not dated.
+func (c *compareChangeState) observe(digest string, start, now time.Time) time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case c.digest == "":
+		c.changedAt = start
+	case c.digest != digest && c.applying == 0:
+		c.changedAt = now
+	}
+	c.digest = digest
+	return c.changedAt
+}
+
+// absorb records digest, the compared state after an apply of the peer's
+// state, without dating a change.
+func (c *compareChangeState) absorb(digest string, start time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.applying--
+	if c.digest == "" {
+		c.changedAt = start
+	}
+	c.digest = digest
+}
+
+// ApplyingPeerState marks an apply of the peer's state, by this engine's
+// converger, its startup or a browser, until the returned func is called:
+// what the apply changes is not dated as a write of this engine's own.
+func (a *API) ApplyingPeerState() (done func()) {
+	a.compareChange.mu.Lock()
+	a.compareChange.applying++
+	a.compareChange.mu.Unlock()
+	return func() {
+		digest := ""
+		if a.snapshotProvider != nil {
+			digest = internal.SnapshotDigest(internal.ComparableSnapshot(a.snapshotProvider.CaptureFullSnapshot()))
+		}
+		a.compareChange.absorb(digest, a.startTime)
+	}
+}
+
+// CompareState returns what this engine's state is compared on with its
+// peer's. Zero without a snapshot provider.
+func (a *API) CompareState() peer.CompareState {
+	if a.snapshotProvider == nil {
+		return peer.CompareState{}
+	}
+	// Seq first, as for a snapshot read: the state is at least that new.
+	state := a.enrichedState()
+	ready := true
+	if sr, ok := a.snapshotProvider.(SnapshotReadiness); ok {
+		ready = sr.SnapshotReady()
+	}
+	snap := internal.ComparableSnapshot(a.snapshotProvider.CaptureFullSnapshot())
+	changedAt := a.compareChange.observe(internal.SnapshotDigest(snap), a.startTime, time.Now())
+	return peer.CompareState{
+		Ready:        ready,
+		Seq:          state.LastCommandSeq,
+		StartedAtMs:  a.startTime.UnixMilli(),
+		ChangedAtMs:  changedAt.UnixMilli(),
+		InTransition: state.InTransition,
+		Reconciling:  a.reconcileLock.active(),
+		Snapshot:     snap,
+	}
+}
+
+// handleGetStateCompare serves the engine's state as its peer compares it
+// with its own (peer.CompareState).
+func (a *API) handleGetStateCompare(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.CompareState())
+}
+
+// peerSnapshotReadTimeout bounds reading the peer's snapshot for a pull.
+const peerSnapshotReadTimeout = 60 * time.Second
+
+// handlePullFromPeer reads the peer engine's state snapshot and applies it
+// here, as a browser reconciling the two would by reading it and pushing it:
+// the snapshot travels between the engines rather than through the browser.
+// ?lockId= is the reconcile lock the caller holds on the peer, without
+// which the peer's state is read as an admin read that a starting peer
+// refuses too; ?force=true is passed on
+// to the apply. The caller's credentials are passed on to the peer. Answers
+// as POST /api/sync/state-snapshot does, 503 while the peer is starting
+// and 502 when the peer cannot be read.
+func (a *API) handlePullFromPeer(w http.ResponseWriter, r *http.Request) {
+	if a.peerPoller.PeerURL() == "" {
+		httperr.Write(w, http.StatusNotImplemented, "no peer engine configured")
+		return
+	}
+	q := url.Values{}
+	if lockID := r.URL.Query().Get("lockId"); lockID != "" {
+		q.Set("lockId", lockID)
+	} else {
+		q.Set("admin", "true")
+		q.Set("ready", "true")
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), peerSnapshotReadTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.peerPoller.PeerURL()+"/api/sync/state-snapshot?"+q.Encode(), nil)
+	if err != nil {
+		httperr.Write(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	resp, err := a.peerPoller.HTTPClient().Do(req)
+	if err != nil {
+		httperr.Write(w, http.StatusBadGateway, fmt.Sprintf("peer snapshot: %v", err))
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusServiceUnavailable:
+		httperr.Write(w, http.StatusServiceUnavailable, "peer engine still starting: its state is not the one to copy")
+		return
+	default:
+		httperr.Write(w, http.StatusBadGateway, fmt.Sprintf("peer snapshot: status %d", resp.StatusCode))
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSnapshotBodySize+1))
+	if err != nil {
+		httperr.Write(w, http.StatusBadGateway, fmt.Sprintf("peer snapshot: %v", err))
+		return
+	}
+	apply := r.Clone(r.Context())
+	apply.Body = io.NopCloser(bytes.NewReader(body))
+	apply.ContentLength = int64(len(body))
+	a.handleApplyStateSnapshot(w, apply)
+}
+
+// handleGetGraphicsSequence serves the ZIP the sequence on a layer was
+// uploaded as, for the peer engine to load the same one. With ?hash= it is
+// served only while the layer holds that sequence.
+func (a *API) handleGetGraphicsSequence(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.URL.Query().Get("layer"))
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	rc, size, err := a.sequenceEngine.OpenSource(id, r.URL.Query().Get("hash"))
+	if err != nil {
+		httperr.Write(w, http.StatusNotFound, "no such sequence on the layer")
+		return
+	}
+	defer func() { _ = rc.Close() }()
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	_, _ = io.Copy(w, rc)
 }
 
 // handleAcquireReconcileLock attempts to acquire the per-engine reconcile lock.

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SyncStatus } from './reconciler.svelte';
-import { createAutoReconcile, EngineStartingError, PUSH_TIMEOUT_MS, SnapshotStaleError, type AutoReconcileConfig } from './auto-reconcile';
+import { createAutoReconcile, EngineStartingError, PullUnsupportedError, PUSH_TIMEOUT_MS, SnapshotStaleError, type AutoReconcileConfig } from './auto-reconcile';
 
 function makeConfig(overrides: Partial<AutoReconcileConfig> = {}): AutoReconcileConfig {
 	return {
@@ -1616,6 +1616,78 @@ describe('createAutoReconcile', () => {
 			reconcile.onSyncStatusChange('mismatch', 'A');
 			await vi.advanceTimersByTimeAsync(0);
 			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
+
+			reconcile.destroy();
+		});
+	});
+
+	describe('engine-to-engine pull', () => {
+		it('has the target take the source state from its peer, nothing relayed', async () => {
+			const config = makeConfig({
+				pullFromPeer: vi.fn().mockResolvedValue({ warnings: [] }),
+				acquireLock: vi.fn().mockImplementation((engine) => Promise.resolve({ acquired: true, lockId: `lock-${engine}` })),
+				releaseLock: vi.fn().mockResolvedValue(undefined),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(config.pullFromPeer).toHaveBeenCalledOnce();
+			expect(config.pullFromPeer).toHaveBeenCalledWith('B', 'lock-A');
+			expect(config.getSnapshot).not.toHaveBeenCalled();
+			expect(config.pushSnapshot).not.toHaveBeenCalled();
+			expect(config.onRecoveryComplete).toHaveBeenCalledWith([]);
+
+			reconcile.destroy();
+		});
+
+		it('relays the snapshot through the browser to an engine without the pull', async () => {
+			const config = makeConfig({
+				pullFromPeer: vi.fn().mockRejectedValue(new PullUnsupportedError('B')),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(config.pullFromPeer).toHaveBeenCalledOnce();
+			expect(config.getSnapshot).toHaveBeenCalledWith('A');
+			expect(config.pushSnapshot).toHaveBeenCalledWith('B', { programSource: 'cam1', previewSource: 'cam2' });
+			expect(config.onRecoveryComplete).toHaveBeenCalledWith([]);
+
+			reconcile.destroy();
+		});
+
+		it('pulls the other way when the target is ahead', async () => {
+			const config = makeConfig({
+				pullFromPeer: vi.fn()
+					.mockRejectedValueOnce(new SnapshotStaleError(100, 105))
+					.mockResolvedValue({ warnings: [] }),
+				acquireLock: vi.fn().mockImplementation((engine) => Promise.resolve({ acquired: true, lockId: `lock-${engine}` })),
+				releaseLock: vi.fn().mockResolvedValue(undefined),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(config.pullFromPeer).toHaveBeenNthCalledWith(1, 'B', 'lock-A');
+			expect(config.pullFromPeer).toHaveBeenNthCalledWith(2, 'A', 'lock-B');
+			expect(config.pushSnapshot).not.toHaveBeenCalled();
+			expect(config.onRecoveryComplete).toHaveBeenCalledOnce();
+
+			reconcile.destroy();
+		});
+
+		it('passes an operator\'s override on to the pull', async () => {
+			const config = makeConfig({ pullFromPeer: vi.fn().mockResolvedValue({ warnings: [] }) });
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('B', { overrideStale: true });
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(config.pullFromPeer).toHaveBeenCalledWith('A', undefined, { force: true });
 
 			reconcile.destroy();
 		});

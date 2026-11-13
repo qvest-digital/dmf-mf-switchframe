@@ -1,9 +1,15 @@
 package graphics
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"image"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -20,7 +26,24 @@ type SequenceEngine struct {
 
 	mu        sync.Mutex
 	sequences map[int]*sequenceState // layerID -> loaded sequence data
+	sources   map[int]*SequenceSource
+	sourceDir string // where uploaded ZIPs are kept by hash; "" keeps them in memory
 	closeOnce sync.Once
+}
+
+// SequenceSource is what a layer's sequence was uploaded as: another
+// engine loads the same sequence from it, through OpenSource.
+type SequenceSource struct {
+	Hash      string // hex SHA-256 of the ZIP
+	Size      int64  // bytes of the ZIP
+	SourceFPS float64
+
+	// Speed is the playback speed set on the sequence, 1 until it is
+	// loaded.
+	Speed float64
+
+	zip  []byte // the ZIP, without a source directory
+	path string // the ZIP's file, with one
 }
 
 // NewSequenceEngine creates a sequence engine bound to a compositor.
@@ -29,7 +52,157 @@ func NewSequenceEngine(c *Compositor) *SequenceEngine {
 		compositor: c,
 		log:        slog.With("component", "sequence-engine"),
 		sequences:  make(map[int]*sequenceState),
+		sources:    make(map[int]*SequenceSource),
 	}
+}
+
+// SetSourceDir keeps the ZIP each sequence was uploaded as in dir, one file
+// per content hash, rather than in memory. What dir holds is removed: the
+// ZIPs of a process that ended belong to no layer. Call it before the first
+// upload.
+func (se *SequenceEngine) SetSourceDir(dir string) error {
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	se.mu.Lock()
+	se.sourceDir = dir
+	se.mu.Unlock()
+	return nil
+}
+
+// keepZip stores the ZIP of src, in the source directory where there is
+// one; must be called without se.mu held.
+func (se *SequenceEngine) keepZip(src *SequenceSource, zipData []byte) {
+	se.mu.Lock()
+	dir := se.sourceDir
+	se.mu.Unlock()
+	if dir == "" {
+		src.zip = zipData
+		return
+	}
+	path := filepath.Join(dir, src.Hash+".zip")
+	if _, err := os.Stat(path); err == nil {
+		src.path = path
+		return
+	}
+	tmp, err := os.CreateTemp(dir, ".zip-*")
+	if err == nil {
+		_, err = tmp.Write(zipData)
+		if cerr := tmp.Close(); err == nil {
+			err = cerr
+		}
+		if err == nil {
+			err = os.Rename(tmp.Name(), path)
+		}
+		if err != nil {
+			_ = os.Remove(tmp.Name())
+		}
+	}
+	if err != nil {
+		se.log.Warn("sequence ZIP kept in memory: not stored on disk", "error", err)
+		src.zip = zipData
+		return
+	}
+	src.path = path
+}
+
+// releaseLocked removes the file of a source no longer held, unless another
+// layer holds the same ZIP. Must be called with se.mu held.
+func (se *SequenceEngine) releaseLocked(src *SequenceSource) {
+	if src == nil || src.path == "" {
+		return
+	}
+	for _, other := range se.sources {
+		if other.path == src.path {
+			return
+		}
+	}
+	_ = os.Remove(src.path)
+}
+
+// setSourceLocked makes src the source of layerID, releasing the one it
+// replaces. Must be called with se.mu held.
+func (se *SequenceEngine) setSourceLocked(layerID int, src *SequenceSource) {
+	old := se.sources[layerID]
+	if src == nil {
+		delete(se.sources, layerID)
+	} else {
+		se.sources[layerID] = src
+	}
+	if old != src {
+		se.releaseLocked(old)
+	}
+}
+
+// OpenSource returns the ZIP the sequence on layerID was uploaded as, while
+// the layer holds the sequence of that hash.
+func (se *SequenceEngine) OpenSource(layerID int, hash string) (io.ReadCloser, int64, error) {
+	se.mu.Lock()
+	src, ok := se.sources[layerID]
+	var zip []byte
+	var path string
+	var size int64
+	if ok {
+		zip, path, size = src.zip, src.path, src.Size
+	}
+	se.mu.Unlock()
+	if !ok || (hash != "" && src.Hash != hash) {
+		return nil, 0, ErrSequenceNotFound
+	}
+	if path == "" {
+		return io.NopCloser(bytes.NewReader(zip)), size, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	return f, size, nil
+}
+
+// Sources returns what the sequence on each layer was uploaded as, a
+// sequence still loading included.
+func (se *SequenceEngine) Sources() map[int]SequenceSource {
+	se.mu.Lock()
+	out := make(map[int]SequenceSource, len(se.sources))
+	for id, src := range se.sources {
+		out[id] = *src
+	}
+	se.mu.Unlock()
+
+	var gone []int
+	se.compositor.mu.RLock()
+	for id, src := range out {
+		layer, ok := se.compositor.layers[id]
+		if !ok {
+			delete(out, id)
+			gone = append(gone, id)
+			continue
+		}
+		src.Speed = 1
+		if layer.seq != nil && layer.seq.speed > 0 {
+			src.Speed = layer.seq.speed
+		}
+		src.zip = nil
+		out[id] = src
+	}
+	se.compositor.mu.RUnlock()
+
+	if len(gone) > 0 {
+		// Layers removed since: their ZIPs are no longer needed.
+		se.mu.Lock()
+		se.compositor.mu.RLock()
+		for _, id := range gone {
+			if _, back := se.compositor.layers[id]; !back {
+				se.setSourceLocked(id, nil)
+			}
+		}
+		se.compositor.mu.RUnlock()
+		se.mu.Unlock()
+	}
+	return out
 }
 
 // upload decodes a ZIP synchronously and installs the sequence on the layer.
@@ -97,13 +270,20 @@ func (se *SequenceEngine) UploadAsync(layerID int, zipData []byte, sourceFPS flo
 		cb(state)
 	}
 
-	go se.processUpload(layerID, zipData, sourceFPS)
+	sum := sha256.Sum256(zipData)
+	src := &SequenceSource{Hash: hex.EncodeToString(sum[:]), Size: int64(len(zipData)), SourceFPS: sourceFPS}
+	se.keepZip(src, zipData)
+	se.mu.Lock()
+	se.setSourceLocked(layerID, src)
+	se.mu.Unlock()
+
+	go se.processUpload(layerID, zipData, sourceFPS, src)
 	return nil
 }
 
 // processUpload decodes the ZIP and installs the sequence on the layer.
 // Called in a background goroutine by UploadAsync.
-func (se *SequenceEngine) processUpload(layerID int, zipData []byte, sourceFPS float64) {
+func (se *SequenceEngine) processUpload(layerID int, zipData []byte, sourceFPS float64, src *SequenceSource) {
 	// Progress callback: update layer state and broadcast on each frame.
 	// Throttle to every 2% to avoid flooding the state broadcast.
 	lastBroadcast := 0.0
@@ -160,6 +340,11 @@ func (se *SequenceEngine) processUpload(layerID int, zipData []byte, sourceFPS f
 	layer.seqProcessing = false
 
 	if err != nil {
+		se.mu.Lock()
+		if se.sources[layerID] == src {
+			se.setSourceLocked(layerID, nil)
+		}
+		se.mu.Unlock()
 		se.log.Error("sequence upload failed", "layer", layerID, "error", err)
 		state := se.compositor.buildStateLocked()
 		cb := se.compositor.onStateChange
@@ -170,8 +355,19 @@ func (se *SequenceEngine) processUpload(layerID int, zipData []byte, sourceFPS f
 		return
 	}
 
-	// Install the decoded sequence.
+	// Install the decoded sequence, unless it was deleted or replaced by
+	// a later upload while it was decoded.
 	se.mu.Lock()
+	if se.sources[layerID] != src {
+		se.mu.Unlock()
+		state := se.compositor.buildStateLocked()
+		cb := se.compositor.onStateChange
+		se.compositor.mu.Unlock()
+		if cb != nil {
+			cb(state)
+		}
+		return
+	}
 	se.sequences[layerID] = seq
 	se.mu.Unlock()
 
@@ -465,10 +661,17 @@ func (se *SequenceEngine) Delete(layerID int) error {
 	se.mu.Lock()
 	_, ok := se.sequences[layerID]
 	if !ok {
+		// A sequence still loading is dropped once it is decoded.
+		_, loading := se.sources[layerID]
+		se.setSourceLocked(layerID, nil)
 		se.mu.Unlock()
+		if loading {
+			return nil
+		}
 		return ErrSequenceNotFound
 	}
 	delete(se.sequences, layerID)
+	se.setSourceLocked(layerID, nil)
 	se.mu.Unlock()
 
 	se.compositor.mu.Lock()
@@ -504,6 +707,11 @@ func (se *SequenceEngine) Close() {
 			layerIDs = append(layerIDs, id)
 		}
 		se.sequences = make(map[int]*sequenceState)
+		old := se.sources
+		se.sources = make(map[int]*SequenceSource)
+		for _, src := range old {
+			se.releaseLocked(src)
+		}
 		se.mu.Unlock()
 
 		// Clear sequence state from each layer and deactivate.
