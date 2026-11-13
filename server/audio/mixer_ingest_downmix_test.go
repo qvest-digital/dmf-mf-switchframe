@@ -357,3 +357,46 @@ func TestMixer_IngestPCM_SurroundLogWarnsOncePerChannelLife(t *testing.T) {
 	m.mu.RUnlock()
 	require.False(t, warnedAfterReconnect, "re-registered channel must reset the surround warning state")
 }
+
+// A mono AAC source decodes to one channel. Pushed into the stereo ring as
+// it is, every two mono samples read as one stereo frame: the source plays
+// at twice its speed, an octave up, and the ring runs dry every other
+// period, a click each time. Each sample goes to every mixer channel.
+func TestMixer_IngestFrame_UpmixMonoToStereo(t *testing.T) {
+	t.Parallel()
+
+	const frames = 1024
+	samples := make([]float32, frames)
+	for i := range samples {
+		samples[i] = float32(i%7) * 0.1
+	}
+	dec := &surroundDecoder{channels: 1, samples: samples}
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		DecoderFactory: func(int, int) (Decoder, error) {
+			return dec, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+	m.AddChannel("clip:1")
+	m.SetActive("clip:1", true)
+
+	m.IngestFrame("clip:1", &media.AudioFrame{
+		Data:       []byte{0xFF, 0xF1, 0x50, 0x40, 0x02, 0x00, 0xFC},
+		SampleRate: 48000,
+		Channels:   1,
+	})
+
+	m.mu.RLock()
+	ch := m.channels["clip:1"]
+	ringLen := ch.ringBuf.Len()
+	popped := ch.ringBuf.Pop(ringLen)
+	m.mu.RUnlock()
+
+	require.Equal(t, frames*2, ringLen, "a mono frame must fill the stereo ring with as many frames as it has samples")
+	for i := 0; i < frames; i++ {
+		require.Equal(t, samples[i], popped[2*i], "L of frame %d", i)
+		require.Equal(t, samples[i], popped[2*i+1], "R of frame %d", i)
+	}
+}

@@ -96,8 +96,12 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame, time
 
 	// Surround → mixer-channels downmix: if the bitstream decoded to more
 	// channels than the mixer supports, fold before the resampler and ring
-	// buffer, which are both sized for m.numChannels.
+	// buffer, which are both sized for m.numChannels. A bitstream with
+	// fewer channels, mono, is spread over all of them.
 	srcChannels := ch.decoder.Channels()
+	if srcChannels > 0 && srcChannels < m.numChannels {
+		pcm = m.upmixMono(&ch.upmixBuf, pcm, srcChannels)
+	}
 	if srcChannels > m.numChannels {
 		var result downmixResult
 		pcm, result = m.downmixChannels(&ch.downmixBuf, pcm, srcChannels)
