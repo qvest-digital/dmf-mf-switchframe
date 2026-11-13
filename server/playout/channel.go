@@ -63,10 +63,22 @@ type ChannelConfig struct {
 	// rejects every local-scheme URI (deny by default).
 	AllowedLocalPrefixes []string
 
+	// PrerollItems is how many clip items after the one on air the channel
+	// opens and decodes ahead of their cut, with the item a cued channel
+	// starts on. Zero opens every item on the tick that cuts to it.
+	PrerollItems int
+
+	// PrerollMaxBytes bounds the bytes of the asset files a channel holds
+	// prepared after the item at its cursor. Zero leaves them unbounded.
+	PrerollMaxBytes int64
+
 	// ticks counts the ticks the run loop makes up and skips. The manager
 	// owns it, so the count survives the channel being recreated. Nil
 	// counts nothing.
 	ticks *tickStats
+
+	// starts counts how clip items went on air. Nil counts nothing.
+	starts *startStats
 }
 
 // Channel is a tick-driven frame router that registers as a switcher source
@@ -112,6 +124,16 @@ type Channel struct {
 	inClipFrame       int
 	inClipOutputFrame int
 	inClipLastFrame   *DecodedFrame
+
+	// Clip items prepared ahead of their cut; nil when pre-roll is off.
+	preroll *preroll
+	// When the tick running now started, and the clip item being followed
+	// from its cut to its first frame and audio.
+	tickAt    time.Time
+	itemStart itemStart
+	// The clip on air ended, or failed to open, during this tick: the
+	// scheduler moves on, and the tick puts out the next item.
+	itemEnded bool
 
 	// GPU-native live source aliasing — zero-copy frame routing in VRAM.
 	// When set, live items alias the playout channel's GPU frame to the
@@ -203,7 +225,7 @@ func NewChannel(id int, config ChannelConfig) *Channel {
 		fps = 30.0
 	}
 
-	return &Channel{
+	c := &Channel{
 		id:            id,
 		config:        config,
 		state:         StateStopped,
@@ -213,6 +235,10 @@ func NewChannel(id int, config ChannelConfig) *Channel {
 		slateFrame:    makeBlackFrame(w, h),
 		frameDuration: time.Duration(float64(time.Second) / fps),
 	}
+	if config.PrerollItems > 0 && config.AssetProvider != nil {
+		c.preroll = newPreroll(id, config.AssetProvider, config.PrerollMaxBytes)
+	}
+	return c
 }
 
 // makeBlackFrame allocates a BT.709-legal black YUV420 frame (Y=16, UV=128).
@@ -393,6 +419,7 @@ func (c *Channel) LoadPlaylist(pl *Playlist) error {
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(0)
 	c.itemError.Store(nil)
+	c.updatePrerollLocked()
 
 	fn := c.onStateChange
 	c.mu.Unlock()
@@ -444,6 +471,7 @@ func (c *Channel) Start() error {
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(0)
 	c.itemError.Store(nil)
+	c.updatePrerollLocked()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
@@ -494,6 +522,7 @@ func (c *Channel) Stop() {
 	c.cancel = nil
 	c.state = StateStopped
 	c.scheduler.Stop()
+	c.updatePrerollLocked()
 
 	onStopFn := c.onStop
 	stateChangeFn := c.onStateChange
@@ -547,6 +576,7 @@ func (c *Channel) Previous() error {
 	if err := c.scheduler.Previous(); err != nil {
 		return err
 	}
+	c.updatePreroll()
 	// The item airs on the next tick; its source may not have been armed.
 	c.prepareLiveSources()
 	return nil
@@ -562,6 +592,7 @@ func (c *Channel) JumpTo(itemID string) error {
 		if err := c.scheduler.JumpTo(itemID); err != nil {
 			return err
 		}
+		c.updatePreroll()
 		// The item airs on the next tick; unless it was the one after the
 		// cursor, nothing has armed its source.
 		c.prepareLiveSources()
@@ -575,6 +606,7 @@ func (c *Channel) JumpTo(itemID string) error {
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(0)
 	c.itemError.Store(nil)
+	c.updatePrerollLocked()
 	fn := c.onStateChange
 	c.mu.Unlock()
 
@@ -599,23 +631,47 @@ func (c *Channel) EndLoop() error {
 // SeekToItem repositions the channel to a specific playlist item at a given
 // elapsed offset. Used by snapshot-driven sync to align a standby engine's
 // playout cursor with the active engine's state. For clip items, the existing
-// iterator is closed and re-opened, then seeked to the target frame. For live
-// and slate items, only the scheduler cursor is updated.
+// iterator is closed and replaced by the item's prepared one or a fresh one,
+// opened before c.mu is taken, then seeked to the target frame. For live and
+// slate items, only the scheduler cursor is updated.
 func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
-	c.mu.Lock()
-
 	// Must be on-air (or at least cued with a playlist).
 	pl := c.schedulerPlaylist()
 	if pl == nil {
-		c.mu.Unlock()
 		return ErrNoPlaylist
 	}
 	if itemIndex < 0 || itemIndex >= len(pl.Items) {
-		c.mu.Unlock()
 		return ErrInvalidItem
 	}
-
 	item := pl.Items[itemIndex]
+
+	// Open the clip without c.mu: the tick keeps the channel's output
+	// going meanwhile.
+	var (
+		frameSource FrameIterator
+		openFPS     float64
+		openTotal   int
+		openErr     error
+	)
+	if item.Type == ItemClip && c.config.AssetProvider != nil {
+		c.awaitPreroll(&item)
+		frameSource, openFPS, openTotal, _, openErr = c.openItem(&item)
+	}
+
+	c.mu.Lock()
+	if c.schedulerPlaylist() != pl {
+		c.mu.Unlock()
+		if frameSource != nil {
+			frameSource.Close()
+		}
+		return ErrNoPlaylist
+	}
+	if frameSource != nil && c.state != StateOnAir && c.state != StateCued {
+		// No run goroutine is left to close it: the cursor moves, and the
+		// item opens when the channel starts.
+		frameSource.Close()
+		frameSource = nil
+	}
 	mode := c.scheduler.Mode()
 	elapsed := time.Duration(elapsedMs) * time.Millisecond
 
@@ -637,48 +693,48 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 	// Any in-flight transition pre-roll is invalidated by the seek.
 	c.discardIncomingClipLocked()
 
-	// For clip items, open a new iterator and seek to the target frame.
-	if item.Type == ItemClip && c.config.AssetProvider != nil {
-		iter, err := c.config.AssetProvider.Open(item.AssetURI)
-		if err == nil {
-			frameSource := clipFrameSource(iter, &item)
+	// For clip items, install the opened iterator and seek to the target
+	// frame. One that failed to open opens again on the next tick, which
+	// reports the error.
+	if openErr != nil {
+		slog.Warn("playout: SeekToItem open failed", "item", item.ID, "error", openErr)
+	}
+	if frameSource != nil {
+		c.clipIter = frameSource
+		c.clipItemID = item.ID
+		c.clipFPS = openFPS
+		c.clipTotal = openTotal
 
-			c.clipIter = frameSource
-			c.clipItemID = item.ID
-			c.clipFPS = frameSource.EstimateFPS()
-			c.clipTotal = frameSource.TotalFrames()
+		// Calculate target frame from elapsed time.
+		fps := c.clipFPS
+		if fps <= 0 {
+			fps = 30.0
+		}
+		targetFrame := int(float64(elapsedMs) * fps / 1000.0)
+		// The elapsed time of a looping item counts every pass; the
+		// position in the clip is where the current pass is.
+		passElapsed := elapsed
+		if item.Loop && c.clipTotal > 0 && targetFrame >= c.clipTotal {
+			targetFrame %= c.clipTotal
+			passElapsed = time.Duration(float64(targetFrame) / fps * float64(time.Second))
+		}
+		c.clipStartTime = time.Now().Add(-passElapsed)
 
-			// Calculate target frame from elapsed time.
-			fps := c.clipFPS
-			if fps <= 0 {
-				fps = 30.0
-			}
-			targetFrame := int(float64(elapsedMs) * fps / 1000.0)
-			// The elapsed time of a looping item counts every pass; the
-			// position in the clip is where the current pass is.
-			passElapsed := elapsed
-			if item.Loop && c.clipTotal > 0 && targetFrame >= c.clipTotal {
-				targetFrame %= c.clipTotal
-				passElapsed = time.Duration(float64(targetFrame) / fps * float64(time.Second))
-			}
-			c.clipStartTime = time.Now().Add(-passElapsed)
-
-			// Seek the iterator if it supports seeking. targetFrame is on the
-			// item's playback timeline: for trimmed clips TrimIterator.Seek
-			// translates it past the in-point on the full timeline.
-			if targetFrame > 0 {
-				if seeker, ok := frameSource.(interface{ Seek(int) error }); ok {
-					if err := seeker.Seek(targetFrame); err != nil {
-						slog.Warn("playout: SeekToItem seek failed, starting from beginning",
-							"item", item.ID, "targetFrame", targetFrame, "error", err)
-					} else {
-						c.clipFrame = targetFrame
-						c.clipOutputFrame = targetFrame
-					}
+		// Seek the iterator if it supports seeking. targetFrame is on the
+		// item's playback timeline: for trimmed clips TrimIterator.Seek
+		// translates it past the in-point on the full timeline.
+		if targetFrame > 0 {
+			if seeker, ok := frameSource.(interface{ Seek(int) error }); ok {
+				if err := seeker.Seek(targetFrame); err != nil {
+					slog.Warn("playout: SeekToItem seek failed, starting from beginning",
+						"item", item.ID, "targetFrame", targetFrame, "error", err)
 				} else {
-					slog.Warn("playout: SeekToItem iterator does not support seeking, starting from beginning",
-						"item", item.ID, "targetFrame", targetFrame)
+					c.clipFrame = targetFrame
+					c.clipOutputFrame = targetFrame
 				}
+			} else {
+				slog.Warn("playout: SeekToItem iterator does not support seeking, starting from beginning",
+					"item", item.ID, "targetFrame", targetFrame)
 			}
 		}
 	}
@@ -702,6 +758,7 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 	c.lastLiveTapMiss = ""
 	clear(c.liveTapMissSince)
 	c.itemStartTime = time.Now().Add(-elapsed)
+	c.updatePrerollLocked()
 
 	c.mu.Unlock()
 	// The item airs on the next tick; nothing has armed its source on this
@@ -922,6 +979,57 @@ func (c *Channel) prepareLiveSources() {
 	}
 }
 
+// updatePreroll hands the preroll the clip items the channel airs next.
+func (c *Channel) updatePreroll() {
+	c.mu.Lock()
+	c.updatePrerollLocked()
+	c.mu.Unlock()
+}
+
+// updatePrerollLocked is updatePreroll with c.mu held. A channel that is
+// neither cued nor on air keeps nothing prepared, a cued one only the item
+// it starts on, and the clips already open in the channel's slots are not
+// prepared again.
+func (c *Channel) updatePrerollLocked() {
+	if c.preroll == nil {
+		return
+	}
+	var cur, next []PlaylistItem
+	switch c.state {
+	case StateCued:
+		cur, _ = c.scheduler.ClipsAhead(0, c.clipItemID, c.inClipItemID)
+	case StateOnAir:
+		cur, next = c.scheduler.ClipsAhead(c.config.PrerollItems, c.clipItemID, c.inClipItemID)
+	}
+	c.preroll.want(cur, next)
+}
+
+// awaitPreroll waits, without c.mu, for a preparation of item that is
+// running, so the tick that cuts to item does not wait for it under c.mu.
+func (c *Channel) awaitPreroll(item *PlaylistItem) {
+	if c.preroll != nil {
+		c.preroll.await(item)
+	}
+}
+
+// openItem opens item for the tick that cuts to it: the iterator its
+// pre-roll prepared, or a fresh one when there is none, and reports which.
+func (c *Channel) openItem(item *PlaylistItem) (src FrameIterator, fps float64, total int, result string, err error) {
+	if c.preroll != nil {
+		if e, result := c.preroll.take(item); e != nil {
+			if e.err == nil {
+				return e.src, e.fps, e.total, result, nil
+			}
+			// The asset may have reached the cache since.
+			if !notCachedYet(e.err) {
+				return nil, 0, 0, result, e.err
+			}
+		}
+	}
+	src, fps, total, err = openClip(c.config.AssetProvider, item)
+	return src, fps, total, prerollMissed, err
+}
+
 // SetCursor overrides the scheduler's cursor position. Used by the Manager
 // during state recovery to restore the exact playlist position. Start still
 // begins at the first item; CueAt makes the position the one Start plays.
@@ -955,6 +1063,7 @@ func (c *Channel) setCursor(cursor int, cue bool) {
 	c.scheduler.transOutgoing = nil
 	c.scheduler.transIncoming = nil
 	c.scheduler.mu.Unlock()
+	c.updatePrerollLocked()
 }
 
 // SetIdleConfig configures the idle loop asset and provider.
@@ -1081,7 +1190,12 @@ func (k *tickClock) due(now time.Time) (run, skipped int) {
 // tick processes one frame period. Returns true when the playlist is done.
 func (c *Channel) tick(now time.Time) bool {
 	c.mu.Lock()
+	c.tickAt = now
+	// Only the item this tick plays can end in it: an outgoing clip that
+	// ran out during a transition says nothing about the next tick.
+	c.itemEnded = false
 	decision := c.scheduler.Tick(now)
+	c.updatePrerollLocked()
 
 	// Grab callbacks under lock.
 	outputFn := c.rawVideoOutput
@@ -1104,38 +1218,12 @@ func (c *Channel) tick(now time.Time) bool {
 	var frame *DecodedFrame
 
 	if decision.Transition != nil {
-		outFrame := c.frameForItem(decision.Transition.Outgoing)
-		inFrame := c.incomingFrameForItem(decision.Transition.Incoming)
-		// GPU-aliased sentinels have nil YUV and cannot be blended.
-		// Force hard cut when either frame is a sentinel.
-		outIsAlias := outFrame == &c.gpuAliasedSentinel
-		inIsAlias := inFrame == &c.gpuAliasedSentinel
-		if outIsAlias || inIsAlias {
-			// Hard cut to incoming (or outgoing if incoming unavailable).
-			if inFrame != nil {
-				frame = inFrame
-			} else {
-				frame = outFrame
-			}
-		} else if outFrame != nil && inFrame != nil {
-			frame = c.compositor.Blend(outFrame, inFrame, decision.Transition.Progress, decision.Transition.Config)
-			attachTransitionAudio(frame, outFrame, inFrame)
-		} else if inFrame != nil {
-			frame = inFrame
-		} else if outFrame != nil {
-			frame = outFrame
-		}
+		frame = c.transitionFrame(decision.Transition)
 	} else if decision.IsIdle {
 		frame = c.idleLoop.NextFrame()
 		c.discardIncomingClip()
 	} else if decision.Item != nil {
-		// A transition just completed: if the incoming slot was pre-rolling this
-		// exact item, promote it into the primary slot so playback continues from
-		// where the pre-roll left off instead of reopening from frame 0.
-		c.promoteIncomingClip(decision.Item)
-		// Track item changes for as-run logging and secondary events.
-		c.handleItemChange(decision.Item, secScheduler, asRunFn, channelID, now)
-		frame = c.frameForItem(decision.Item)
+		frame = c.itemFrame(decision, secScheduler, asRunFn, channelID, now)
 	}
 
 	// Always emit a frame — never let the output go dark.
@@ -1151,6 +1239,84 @@ func (c *Channel) tick(now time.Time) bool {
 	}
 
 	return false
+}
+
+// transitionFrame returns the frame of a transition in progress: the
+// outgoing and incoming items blended at its progress.
+func (c *Channel) transitionFrame(t *TransitionReq) *DecodedFrame {
+	outFrame := c.frameForItem(t.Outgoing)
+	inFrame := c.incomingFrameForItem(t.Incoming)
+	// GPU-aliased sentinels have nil YUV and cannot be blended.
+	// Force hard cut when either frame is a sentinel.
+	outIsAlias := outFrame == &c.gpuAliasedSentinel
+	inIsAlias := inFrame == &c.gpuAliasedSentinel
+	if outIsAlias || inIsAlias {
+		// Hard cut to incoming (or outgoing if incoming unavailable).
+		if inFrame != nil {
+			return inFrame
+		}
+		return outFrame
+	}
+	if outFrame != nil && inFrame != nil {
+		frame := c.compositor.Blend(outFrame, inFrame, t.Progress, t.Config)
+		attachTransitionAudio(frame, outFrame, inFrame)
+		return frame
+	}
+	if inFrame != nil {
+		return inFrame
+	}
+	return outFrame
+}
+
+// maxHandovers bounds how many items one tick moves past: a clip that
+// ends, then items that fail to open.
+const maxHandovers = 8
+
+// itemFrame returns the frame of the item decision plays. A clip that ends
+// on this tick hands over to what the scheduler plays next on the same
+// tick, so the next item's first frame and audio go out where the ended
+// clip's would have been, instead of its last frame a second time.
+func (c *Channel) itemFrame(decision SchedulerDecision, secScheduler *SecondaryEventScheduler, asRunFn func(AsRunEvent), channelID int, now time.Time) *DecodedFrame {
+	var frame *DecodedFrame
+	for n := 0; ; n++ {
+		item := decision.Item
+		// A transition just completed: if the incoming slot was pre-rolling this
+		// exact item, promote it into the primary slot so playback continues from
+		// where the pre-roll left off instead of reopening from frame 0.
+		c.promoteIncomingClip(item)
+		// Track item changes for as-run logging and secondary events.
+		c.handleItemChange(item, secScheduler, asRunFn, channelID, now)
+		if f := c.frameForItem(item); f != nil || frame == nil {
+			frame = f
+		}
+
+		c.mu.Lock()
+		ended := c.itemEnded
+		c.itemEnded = false
+		if !ended || n == maxHandovers {
+			c.mu.Unlock()
+			return frame
+		}
+		next := c.scheduler.Tick(now)
+		c.updatePrerollLocked()
+		c.mu.Unlock()
+
+		switch {
+		case next.Transition != nil:
+			// The ended clip's last picture stays the outgoing side.
+			if f := c.transitionFrame(next.Transition); f != nil {
+				return f
+			}
+			return frame
+		case next.IsIdle:
+			c.discardIncomingClip()
+			return c.idleLoop.NextFrame()
+		case next.Item == nil || next.Item.ID == item.ID:
+			// Completed, or the item stays: manual mode, a break.
+			return frame
+		}
+		decision = next
+	}
 }
 
 // attachTransitionAudio attaches audio to a blended transition frame.
@@ -1369,6 +1535,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 	var reanchorSched *SecondaryEventScheduler
 	var reanchorMs int64
 
+	c.awaitPreroll(item)
 	c.mu.Lock()
 	provider := c.config.AssetProvider
 	asRunFn := c.asRunLog
@@ -1392,7 +1559,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 			return nil
 		}
 
-		iter, err := provider.Open(item.AssetURI)
+		frameSource, fps, total, result, err := c.openItem(item)
 		if err != nil {
 			slog.Warn("playout: asset open failed", "item", item.ID, "error", err)
 			msg := fmt.Sprintf("asset open failed: %v", err)
@@ -1412,16 +1579,16 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 			// scheduler.SetCursor) cannot interleave and have this stale
 			// signal advance the cursor past the freshly-seeked item.
 			c.scheduler.SignalItemComplete()
+			c.itemEnded = true
 			c.mu.Unlock()
 			return nil
 		}
 
-		frameSource := clipFrameSource(iter, item)
-
+		c.beginItemStartLocked(item, result)
 		c.clipIter = frameSource
 		c.itemError.Store(nil)
-		c.clipFPS = frameSource.EstimateFPS()
-		c.clipTotal = frameSource.TotalFrames()
+		c.clipFPS = fps
+		c.clipTotal = total
 
 		// Reanchor end-anchored secondary events with the clip's measured
 		// duration. handleItemChange ran BEFORE this iterator was opened, so
@@ -1597,6 +1764,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 		c.mu.Lock()
 		if c.clipIter == iter {
 			c.scheduler.SignalItemComplete()
+			c.itemEnded = true
 		}
 		lf := c.clipLastFrame
 		c.mu.Unlock()
@@ -1620,6 +1788,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 		// with collected audio attached. Return it now and let the next tick
 		// handle the end-of-clip state transition (hold/loop/advance).
 		if resultFrame != nil {
+			c.noteItemFrame(item.ID, resultFrame)
 			return resultFrame
 		}
 
@@ -1685,6 +1854,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 		c.mu.Lock()
 		if c.clipIter == iter {
 			c.scheduler.SignalItemComplete()
+			c.itemEnded = true
 		}
 		c.mu.Unlock()
 
@@ -1714,6 +1884,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 		c.itemRemainMs.Store(int64(float64(remainFrames) * 1000.0 / clipFPS))
 	}
 
+	c.noteItemFrame(item.ID, resultFrame)
 	return resultFrame
 }
 
@@ -1772,6 +1943,7 @@ func (c *Channel) incomingFrameForItem(item *PlaylistItem) *DecodedFrame {
 // stays smooth. The iterator is opened once per item and advanced once per
 // tick — not opened/closed every tick.
 func (c *Channel) nextIncomingClipFrame(item *PlaylistItem) *DecodedFrame {
+	c.awaitPreroll(item)
 	c.mu.Lock()
 	provider := c.config.AssetProvider
 
@@ -1791,18 +1963,17 @@ func (c *Channel) nextIncomingClipFrame(item *PlaylistItem) *DecodedFrame {
 			return nil
 		}
 
-		iter, err := provider.Open(item.AssetURI)
+		frameSource, fps, total, result, err := c.openItem(item)
 		if err != nil {
 			slog.Warn("playout: incoming asset open failed", "item", item.ID, "error", err)
 			c.mu.Unlock()
 			return nil
 		}
-
-		frameSource := clipFrameSource(iter, item)
+		c.beginItemStartLocked(item, result)
 
 		c.inClipIter = frameSource
-		c.inClipFPS = frameSource.EstimateFPS()
-		c.inClipTotal = frameSource.TotalFrames()
+		c.inClipFPS = fps
+		c.inClipTotal = total
 	}
 
 	iter := c.inClipIter
@@ -1879,7 +2050,7 @@ func (c *Channel) nextIncomingClipFrame(item *PlaylistItem) *DecodedFrame {
 	if len(collectedAudio) > 0 {
 		// Attach all collected audio to a NEW DecodedFrame so we don't mutate
 		// the iterator's backing data.
-		return &DecodedFrame{
+		frame = &DecodedFrame{
 			YUV:         frame.YUV,
 			PTS:         frame.PTS,
 			IsKeyframe:  frame.IsKeyframe,
@@ -1889,6 +2060,7 @@ func (c *Channel) nextIncomingClipFrame(item *PlaylistItem) *DecodedFrame {
 		}
 	}
 
+	c.noteItemFrame(item.ID, frame)
 	return frame
 }
 

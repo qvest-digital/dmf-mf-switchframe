@@ -537,6 +537,41 @@ func (f *FileFrameIterator) seekLocked(targetFrame int) error {
 	return nil
 }
 
+// keyframeBefore returns the index of the last keyframe, in decode order,
+// whose PTS is at or before pts, and 0 when there is none. On a stream
+// whose 33-bit PTS wraps, the PTS after the wrap, and pts, count on from
+// the first frame's.
+func (f *FileFrameIterator) keyframeBefore(pts int64) int {
+	if len(f.encodedFrames) == 0 {
+		return 0
+	}
+	unwrap := func(p int64) int64 { return p }
+	if ptsWraps(f.encodedFrames) {
+		first := f.encodedFrames[0].pts
+		unwrap = func(p int64) int64 {
+			if p < first {
+				return p + 1<<33
+			}
+			return p
+		}
+	}
+	pts = unwrap(pts)
+	k := 0
+	for i, ef := range f.encodedFrames {
+		if ef.isKeyframe && unwrap(ef.pts) <= pts {
+			k = i
+		}
+	}
+	return k
+}
+
+// seekPTS moves to the keyframe keyframeBefore(pts) returns.
+func (f *FileFrameIterator) seekPTS(pts int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.seekLocked(f.keyframeBefore(pts))
+}
+
 // Close releases the decoder resources. It is idempotent and safe to call
 // concurrently with Next()/Seek(): the lock ensures Close() blocks until any
 // in-flight decode completes before freeing the decoder.

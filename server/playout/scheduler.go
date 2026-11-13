@@ -1,6 +1,7 @@
 package playout
 
 import (
+	"slices"
 	"sync"
 	"time"
 )
@@ -493,6 +494,40 @@ func (s *Scheduler) LiveSourcesAhead() (cur, next string) {
 		return s.playlist.Items[i].Source
 	}
 	return liveSource(s.cursor), liveSource(s.cursor + 1)
+}
+
+// ClipsAhead returns the clip items the channel airs next: cur holds the
+// one at the cursor, which is on air or starts next, and next up to n
+// clips after it. Off air the cursor is the item Start puts on air. Items
+// whose IDs are in open are left out, and count towards n when they follow
+// the cursor.
+func (s *Scheduler) ClipsAhead(n int, open ...string) (cur, next []PlaylistItem) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.playlist == nil {
+		return nil, nil
+	}
+	at := s.cursor
+	if !s.started {
+		at = s.startAt
+	}
+	if at < 0 || at >= len(s.playlist.Items) {
+		return nil, nil
+	}
+	if item := s.playlist.Items[at]; item.Type == ItemClip && !slices.Contains(open, item.ID) {
+		cur = append(cur, item)
+	}
+	for i := at + 1; i < len(s.playlist.Items) && n > 0; i++ {
+		item := s.playlist.Items[i]
+		if item.Type != ItemClip {
+			continue
+		}
+		n--
+		if !slices.Contains(open, item.ID) {
+			next = append(next, item)
+		}
+	}
+	return cur, next
 }
 
 // --- internal helpers (must be called with s.mu held) ---

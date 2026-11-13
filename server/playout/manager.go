@@ -15,6 +15,7 @@ type Manager struct {
 	mu       sync.Mutex
 	channels [MaxChannels]*Channel
 	ticks    [MaxChannels]tickStats
+	starts   *startStats
 	config   ManagerConfig
 	log      *slog.Logger
 
@@ -61,6 +62,16 @@ type ManagerConfig struct {
 	// accepted by LoadPlaylist. Propagated to every Channel; nil/empty
 	// rejects every local-scheme URI (deny by default).
 	AllowedLocalPrefixes []string
+
+	// PrerollItems is how many clip items after the one on air each
+	// channel opens and decodes ahead of their cut. Zero opens every item
+	// on the tick that cuts to it.
+	PrerollItems int
+
+	// PrerollMaxBytes bounds the bytes of the asset files each channel
+	// holds prepared after the item at its cursor. Zero leaves them
+	// unbounded.
+	PrerollMaxBytes int64
 }
 
 // NewManager creates a playout Manager and pre-creates all channels.
@@ -68,13 +79,17 @@ func NewManager(config ManagerConfig) *Manager {
 	m := &Manager{
 		config: config,
 		log:    slog.With("component", "playout-manager"),
+		starts: newStartStats(),
 	}
 
 	for i := 0; i < MaxChannels; i++ {
 		m.channels[i] = NewChannel(i+1, ChannelConfig{
 			AssetProvider:        config.AssetProvider,
 			AllowedLocalPrefixes: config.AllowedLocalPrefixes,
+			PrerollItems:         config.PrerollItems,
+			PrerollMaxBytes:      config.PrerollMaxBytes,
 			ticks:                &m.ticks[i],
+			starts:               m.starts,
 		})
 		m.podBoards[i] = NewPodBoard(i + 1)
 	}
@@ -717,7 +732,10 @@ func (m *Manager) SetPipelineFormat(width, height int, fps float64) {
 				Height:               height,
 				FPS:                  fps,
 				AllowedLocalPrefixes: m.config.AllowedLocalPrefixes,
+				PrerollItems:         m.config.PrerollItems,
+				PrerollMaxBytes:      m.config.PrerollMaxBytes,
 				ticks:                &m.ticks[i],
+				starts:               m.starts,
 			})
 		}
 	}
@@ -731,6 +749,20 @@ func (m *Manager) tickCounts() (madeUp, skipped [MaxChannels]uint64) {
 		skipped[i] = m.ticks[i].skipped.Load()
 	}
 	return madeUp, skipped
+}
+
+// prerolledItems returns how many clip items each channel holds prepared
+// and ready to air, indexed by channel ID - 1.
+func (m *Manager) prerolledItems() (n [MaxChannels]int) {
+	m.mu.Lock()
+	channels := m.channels
+	m.mu.Unlock()
+	for i, ch := range channels {
+		if ch != nil && ch.preroll != nil {
+			n[i] = ch.preroll.ready()
+		}
+	}
+	return n
 }
 
 // SetWatchdog sets the watchdog health monitor.

@@ -81,6 +81,33 @@ func TestMetricsCollector_Ticks(t *testing.T) {
 	require.Equal(t, dto.MetricType_COUNTER, familyType(t, c, "switchframe_playout_ticks_skipped_total"))
 }
 
+// Pre-roll readiness is a gauge per channel, a cued channel holding the
+// item it starts on, and every clip the channel puts on air counts by
+// whether it was pre-rolled and times its start, through a channel
+// recreated for a new pipeline format too.
+func TestMetricsCollector_Preroll(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		AssetProvider: fakeProvider(3), AllowedLocalPrefixes: []string{"/"}, PrerollItems: 1})
+	defer m.Close()
+	m.SetPipelineFormat(64, 48, 50)
+	c := NewMetricsCollector(m, nil)
+	require.Equal(t, map[string]float64{"1": 0, "2": 0}, metricstest.Series(t, c)["switchframe_playout_prerolled_items"])
+
+	require.NoError(t, m.LoadPlaylist(1, testPlaylist(clipItem("a"), clipItem("b"))))
+	waitFor(t, 5*time.Second, func() bool {
+		return metricstest.Series(t, c)["switchframe_playout_prerolled_items"]["1"] == 1
+	})
+	require.NoError(t, m.Start(1))
+	waitFor(t, 5*time.Second, func() bool { return m.ChannelStates()[0].State == "completed" })
+
+	f := metricstest.Series(t, c)
+	require.Equal(t, float64(2), f["switchframe_playout_item_starts_total"]["1/ready"])
+	require.Equal(t, float64(0), f["switchframe_playout_prerolled_items"]["1"], "a completed channel holds nothing")
+	require.Equal(t, dto.MetricType_GAUGE, familyType(t, c, "switchframe_playout_prerolled_items"))
+	require.Equal(t, dto.MetricType_COUNTER, familyType(t, c, "switchframe_playout_item_starts_total"))
+	require.Equal(t, dto.MetricType_HISTOGRAM, familyType(t, c, "switchframe_playout_item_start_delay_seconds"))
+}
+
 // familyType is the type of the collector's family name.
 func familyType(t *testing.T, c prometheus.Collector, name string) dto.MetricType {
 	t.Helper()

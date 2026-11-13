@@ -93,6 +93,8 @@ func (a *App) initPlayout() error {
 	mgr := playout.NewManager(playout.ManagerConfig{
 		AssetProvider:        provider,
 		AllowedLocalPrefixes: allowedPrefixes,
+		PrerollItems:         a.cfg.PlayoutPreroll,
+		PrerollMaxBytes:      int64(a.cfg.PlayoutPrerollMaxMB) << 20,
 	})
 
 	// Set pipeline format on manager so channels get correct dimensions/FPS.

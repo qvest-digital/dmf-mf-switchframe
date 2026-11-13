@@ -338,6 +338,41 @@ func TestParseConfig_HTML5Graphics(t *testing.T) {
 	}
 }
 
+func TestParseConfig_PlayoutPreroll(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"default", nil, 1},
+		{"off", []string{"--playout-preroll=0"}, 0},
+		{"set", []string{"--playout-preroll=3"}, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args, cmdLine := os.Args, flag.CommandLine
+			t.Cleanup(func() { os.Args, flag.CommandLine = args, cmdLine })
+			os.Args = append([]string{"switchframe"}, tc.args...)
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+			cfg, err := parseConfig()
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.PlayoutPreroll)
+			require.Equal(t, 2048, cfg.PlayoutPrerollMaxMB)
+		})
+	}
+	for _, arg := range []string{"--playout-preroll=-1", "--playout-preroll-max-mb=-1"} {
+		t.Run(arg, func(t *testing.T) {
+			args, cmdLine := os.Args, flag.CommandLine
+			t.Cleanup(func() { os.Args, flag.CommandLine = args, cmdLine })
+			os.Args = []string{"switchframe", arg}
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+			_, err := parseConfig()
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestParseConfig_MXLGCInterval(t *testing.T) {
 	for _, tc := range []struct {
 		name string

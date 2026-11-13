@@ -31,6 +31,8 @@ var (
 		"Extra ticks the channel's run loop ran, at most one per frame period, to make up frame periods it fell behind on.", []string{"channel"}, nil)
 	descTicksSkipped = prometheus.NewDesc("switchframe_playout_ticks_skipped_total",
 		"Ticks the channel's run loop dropped when it fell more than a second behind: frames the output lost.", []string{"channel"}, nil)
+	descPrerolled = prometheus.NewDesc("switchframe_playout_prerolled_items",
+		"Clip items the channel has opened and decoded to their first frame ahead of their cut.", []string{"channel"}, nil)
 
 	descCacheUsed = prometheus.NewDesc("switchframe_playout_cache_used_bytes",
 		"Bytes the playout asset cache holds.", nil, nil)
@@ -59,10 +61,12 @@ func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		descChannelState, descItemIndex, descItemCount, descItemRemaining, descPodsArmed,
 		descPodsCompleted, descStalled, descSinceFrame, descTicksMadeUp, descTicksSkipped,
-		descCacheUsed, descCacheMax, descCacheItems,
+		descPrerolled, descCacheUsed, descCacheMax, descCacheItems,
 	} {
 		ch <- d
 	}
+	c.m.starts.starts.Describe(ch)
+	c.m.starts.delay.Describe(ch)
 }
 
 // Collect implements prometheus.Collector.
@@ -97,6 +101,11 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(descTicksMadeUp, prometheus.CounterValue, float64(madeUp[i]), id)
 		ch <- prometheus.MustNewConstMetric(descTicksSkipped, prometheus.CounterValue, float64(skipped[i]), id)
 	}
+	for i, n := range c.m.prerolledItems() {
+		gauge(descPrerolled, float64(n), strconv.Itoa(i+1))
+	}
+	c.m.starts.starts.Collect(ch)
+	c.m.starts.delay.Collect(ch)
 	for _, h := range c.m.HealthSummary() {
 		id := strconv.Itoa(h.ChannelID)
 		stalled := 0.0

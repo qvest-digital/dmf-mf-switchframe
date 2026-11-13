@@ -106,6 +106,8 @@ All flags are defined in [`parseConfig`](../../server/cmd/switchframe/main.go). 
 | `--playout` | bool | `false` (true in demo) | Enable playout subsystem |
 | `--playout-cache-max` | int (GB) | `200` | Playout asset cache max size |
 | `--playout-asrun-retention` | int (days) | `30` | As-run log retention |
+| `--playout-preroll` | int | `1` | Clip items after the one on air that each playout channel opens and decodes to its first frame ahead of their cut; a cued channel prepares only the item it starts on. `0` opens each clip on the tick that cuts to it |
+| `--playout-preroll-max-mb` | int (MiB) | `2048` | Asset file bytes each playout channel holds prepared after the item at its cursor. A prepared clip holds its whole file in memory; a clip that does not fit opens at its cut. `0` is no limit |
 
 ### Replay
 
