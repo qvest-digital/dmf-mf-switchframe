@@ -41,7 +41,7 @@
 }
 ```
 
-Valid actions are listed in `macro.allActions` (~60 actions covering cut, preview, transition, wait, audio controls, graphics, keys, clips, SCTE-35, etc.). Each action validates its own params; invalid steps are rejected on save by `macro.ValidateSteps`.
+Valid actions are listed in `macro.allActions` (~60 actions covering cut, preview, transition, wait, audio controls, graphics, keys, clips, SCTE-35, etc.). Each action validates its own params; invalid steps are rejected on save by `macro.ValidateSteps`. `layout_preset` takes a built-in `preset` name and an optional `durationMs` (0-5000, 0 cuts) and `easing`, which animate the recall as in [DVE preset recall](dve.md).
 
 **Response 200:** saved `macro.Macro`.
 

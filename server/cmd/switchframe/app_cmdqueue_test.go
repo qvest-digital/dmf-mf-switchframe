@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/cmdqueue"
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -88,4 +89,115 @@ func TestInitCommandQueue_WithWAL(t *testing.T) {
 
 	assert.NotNil(t, app.cmdQueue, "cmdQueue should be non-nil")
 	assert.NotNil(t, app.cmdQueueWAL, "cmdQueueWAL should be non-nil when StateDir is set")
+}
+
+func TestInitCommandQueue_DVEPresetRecallAnimates(t *testing.T) {
+	relay := distribution.NewRelay()
+	sw := switcher.New(relay)
+	defer sw.Close()
+
+	format := sw.PipelineFormat()
+	dc := dve.NewCompositor(format.Width, format.Height)
+	from := dve.ResolveBuiltinPreset("pip-top-left", format.Width, format.Height)
+	dc.SetLayout(&dve.Layout{Name: from.Name, Slots: from.Slots})
+
+	app := &App{sw: sw, dveCompositor: dc}
+	require.NoError(t, app.initCommandQueue())
+
+	payload, _ := json.Marshal(map[string]any{"_path_id": "pip-bottom-right", "durationMs": dve.MaxMorphDurationMs, "easing": "ease-in-out"})
+	require.NoError(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_preset_recall", Payload: payload}))
+
+	require.Greater(t, dc.GetLayout().Slots[0].Transform.OutputRect.X, float64(format.Width)/2, "state reports the target")
+	snaps := dc.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Less(t, snaps[0].RectX, format.Width/2, "timed recall with durationMs must animate, not cut")
+
+	bad, _ := json.Marshal(map[string]any{"_path_id": "pip-bottom-right", "durationMs": 500, "easing": "bounce"})
+	require.Error(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_preset_recall", Payload: bad}))
+
+	long, _ := json.Marshal(map[string]any{"_path_id": "pip-bottom-right", "durationMs": dve.MaxMorphDurationMs + 1})
+	require.Error(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_preset_recall", Payload: long}))
+}
+
+func TestInitCommandQueue_DVESlotUpdateAnimates(t *testing.T) {
+	relay := distribution.NewRelay()
+	sw := switcher.New(relay)
+	defer sw.Close()
+
+	dc := dve.NewCompositor(1920, 1080)
+	dc.SetLayout(&dve.Layout{Name: "pip", Slots: []dve.Slot{
+		{SourceKey: "cam1", Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true},
+	}})
+
+	app := &App{sw: sw, dveCompositor: dc}
+	require.NoError(t, app.initCommandQueue())
+
+	payload, _ := json.Marshal(map[string]any{
+		"_path_id":   "0",
+		"transform":  map[string]any{"positionX": 1200, "positionY": 600, "width": 480, "height": 270},
+		"durationMs": dve.MaxMorphDurationMs,
+	})
+	require.NoError(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_slot_update", Payload: payload}))
+
+	require.Equal(t, 1200.0, dc.GetLayout().Slots[0].Transform.PositionX)
+	snaps := dc.SnapshotSlots()
+	require.Len(t, snaps, 1)
+	require.Less(t, snaps[0].RectX, 100, "timed slot update with durationMs must glide")
+
+	long, _ := json.Marshal(map[string]any{
+		"_path_id":   "0",
+		"transform":  map[string]any{"positionX": 0, "positionY": 0, "width": 480, "height": 270},
+		"durationMs": dve.MaxMorphDurationMs + 1,
+	})
+	require.Error(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_slot_update", Payload: long}))
+	require.Equal(t, 1200.0, dc.GetLayout().Slots[0].Transform.PositionX, "rejected update not applied")
+}
+
+// An animated slot update applies its edit to the layout current under the
+// compositor lock; an edit to another slot landing meanwhile is kept.
+func TestInitCommandQueue_DVESlotUpdateKeepsConcurrentEdits(t *testing.T) {
+	relay := distribution.NewRelay()
+	sw := switcher.New(relay)
+	defer sw.Close()
+
+	dc := dve.NewCompositor(1920, 1080)
+	dc.SetLayout(&dve.Layout{Name: "two", Slots: []dve.Slot{
+		{SourceKey: "cam1", Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true},
+		{SourceKey: "cam2", Transform: dve.DefaultTransform(0, 540, 480, 270), Enabled: true},
+	}})
+	app := &App{sw: sw, dveCompositor: dc}
+	require.NoError(t, app.initCommandQueue())
+
+	payload, _ := json.Marshal(map[string]any{
+		"_path_id":   "0",
+		"transform":  map[string]any{"positionX": 1200, "positionY": 0, "width": 480, "height": 270},
+		"durationMs": 100,
+	})
+	// A writer keeps editing slot 1 while updates to slot 0 dispatch; an
+	// update that stored a stale copy of slot 1 rolls its value back.
+	stop := make(chan struct{})
+	lost := make(chan float64, 1)
+	go func() {
+		defer close(lost)
+		for i := 1.0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			var got float64
+			dc.UpdateSlot(1, func(s *dve.Slot) { got, s.Transform.PositionX = s.Transform.PositionX, i })
+			if got != i-1 && i > 1 {
+				lost <- got
+				return
+			}
+		}
+	}()
+	for range 500 {
+		require.NoError(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "dve_slot_update", Payload: payload}))
+	}
+	close(stop)
+	if got, ok := <-lost; ok {
+		t.Fatalf("edit to slot 1 rolled back to %v", got)
+	}
 }

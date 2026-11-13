@@ -62,9 +62,9 @@ Preset lookup: built-in presets first (`dve.ResolveBuiltinPreset` with the curre
 { "sourceKey": "cam2", "transform": { "positionX": 0.7, "positionY": 0.3, "width": 0.4, "height": 0.4 }, "zOrder": 1, "enabled": true }
 ```
 
-Any field may be omitted. Convenience fields: `scaleMode` and `cropAnchor` map to `transform.scaleMode` / `transform.cropAnchor`.
+Any field may be omitted. Convenience fields: `scaleMode` and `cropAnchor` map to `transform.scaleMode` / `transform.cropAnchor`. With `durationMs` > 0 the slot animates to the result instead of jumping, timed by an optional `easing` as for preset recall. An update without `durationMs` ends a morph in flight and applies at once.
 
-**Errors:** 400 (invalid id/JSON/slot range, `dve.ValidateSlot` failure), 404 (layout changed).
+**Errors:** 400 (invalid id/JSON/slot range, `dve.ValidateSlot` failure, unknown easing, `durationMs` above 5000), 404 (layout changed).
 
 ---
 
@@ -110,14 +110,16 @@ Any field may be omitted. Convenience fields: `scaleMode` and `cropAnchor` map t
 
 ### `PUT /api/dve/presets/{id}/recall`
 
-**Purpose:** recall a preset. The body accepts animated-recall fields for forward compatibility; currently presets apply instantly.
+**Purpose:** recall a preset, cutting to it or, with `durationMs` > 0, morphing every slot from what is on screen to the preset.
 **Handler:** `(*API).handleRecallDVEPresetInner` (`timedHandlerWithPath`).
 
-**Request body** (`control.dvePresetRecallRequest`): `{ "durationMs": 800, "easing": "ease-in-out" }` (both optional, currently unused).
+**Request body** (`control.dvePresetRecallRequest`): `{ "durationMs": 800, "easing": "ease-in-out" }`, both optional. `easing` is `linear`, `ease`, `ease-in`, `ease-out`, `ease-in-out`, `smoothstep` or `cubic-bezier(x1, y1, x2, y2)`, and defaults to the preset's own easing. `durationMs` is at most 5000 (`dve.MaxMorphDurationMs`). A cubic-bezier `y` outside [0, 1] is clamped: the morph holds at its start or target rather than overshooting.
 
-**Response 200:** resulting `dve.Layout`.
+Slots of the preset without a `sourceKey`, such as every built-in, keep the source the slot shows when the recall morphs. A recall without `durationMs` applies the preset as stored, so a built-in recalled instantly leaves its slots without a source.
 
-**Errors:** 404 (preset not found).
+**Response 200:** resulting `dve.Layout`, the target even while the morph runs.
+
+**Errors:** 400 (unknown easing, `durationMs` above 5000), 404 (preset not found).
 
 ---
 

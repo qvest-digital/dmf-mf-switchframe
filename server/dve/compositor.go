@@ -175,13 +175,19 @@ type Compositor struct {
 	// Active animations
 	animations []*slotAnimation
 
+	// Layout recall in flight; nil when none. Read lock-free by Active and
+	// NeedsSource, written under mu.
+	morph atomic.Pointer[layoutMorph]
+
+	now func() time.Time // test hook; nil means time.Now
+
 	// Slot-level transition configs (indexed by slot)
 	slotTransitions []SlotTransition
 
 	// Frame dimensions
 	frameW, frameH int
 
-	// OnActiveChange is called when SetLayout changes the Active() state.
+	// OnActiveChange is called when a layout change alters the Active() state.
 	// Used by the switcher to trigger pipeline rebuilds.
 	OnActiveChange func()
 }
@@ -204,30 +210,36 @@ func NewCompositor(frameW, frameH int) *Compositor {
 // haven't been prepared yet.
 func (c *Compositor) SetLayout(l *Layout) {
 	c.mu.Lock()
-	wasBefore := c.hasEnabledSlots(c.layout.Load())
+	wasBefore := c.Active()
 	if l != nil {
 		c.allocateBuffers(l)
-		// Prune fills for sources not in the new layout.
-		needed := make(map[string]bool, len(l.Slots))
-		for _, slot := range l.Slots {
-			if slot.SourceKey != "" {
-				needed[slot.SourceKey] = true
-			}
-		}
-		for key := range c.fills {
-			if !needed[key] {
-				delete(c.fills, key)
-			}
-		}
+		c.pruneFills(l.Slots)
 	} else {
 		// Layout cleared -- drop all fills.
 		c.fills = make(map[string]*fillEntry)
 	}
+	c.morph.Store(nil)
 	c.layout.Store(l)
-	wasAfter := c.hasEnabledSlots(l)
+	wasAfter := c.Active()
 	c.mu.Unlock()
 	if wasBefore != wasAfter && c.OnActiveChange != nil {
 		c.OnActiveChange()
+	}
+}
+
+// pruneFills drops fills for sources no slot in slots needs.
+// Must be called with c.mu held.
+func (c *Compositor) pruneFills(slots []Slot) {
+	needed := make(map[string]bool, len(slots))
+	for _, slot := range slots {
+		if slot.SourceKey != "" {
+			needed[slot.SourceKey] = true
+		}
+	}
+	for key := range c.fills {
+		if !needed[key] {
+			delete(c.fills, key)
+		}
 	}
 }
 
@@ -275,9 +287,10 @@ func makeGrayFrame(w, h int) []byte {
 // FrameSize returns the compositor's configured frame dimensions.
 func (c *Compositor) FrameSize() (int, int) { return c.frameW, c.frameH }
 
-// Active returns true if a layout is configured with at least one enabled slot.
+// Active returns true if a layout is configured with at least one enabled
+// slot, or a layout recall is still morphing, a fade to no slots included.
 func (c *Compositor) Active() bool {
-	return c.hasEnabledSlots(c.layout.Load())
+	return c.morph.Load() != nil || c.hasEnabledSlots(c.layout.Load())
 }
 
 // hasEnabledSlots checks if a layout has at least one enabled slot.
@@ -293,8 +306,16 @@ func (c *Compositor) hasEnabledSlots(l *Layout) bool {
 	return false
 }
 
-// NeedsSource returns true if the source is assigned to any slot in the current layout.
+// NeedsSource returns true if the source is assigned to any slot in the
+// current layout or, while a recall morphs, to a slot still on screen.
 func (c *Compositor) NeedsSource(sourceKey string) bool {
+	if m := c.morph.Load(); m != nil {
+		for _, slot := range m.slots {
+			if slot.SourceKey == sourceKey {
+				return true
+			}
+		}
+	}
 	l := c.layout.Load()
 	if l == nil {
 		return false
@@ -403,21 +424,24 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 	// Phase 1: Under lock -- tick animations, snapshot source data, release lock.
 	c.mu.Lock()
 	deactivated := c.tickAnimations()
+	// A morph resizes slots every frame; caching its scaled output would
+	// only allocate and copy entries no later frame matches.
+	morphing := c.morph.Load() != nil
 
-	sortedSlots := c.sortedSlots
+	slots, sortedSlots := c.frameSlots(l)
 	if len(sortedSlots) == 0 {
-		sortedSlots = make([]int, len(l.Slots))
-		for i := range l.Slots {
+		sortedSlots = make([]int, len(slots))
+		for i := range slots {
 			sortedSlots[i] = i
 		}
 	}
 
 	c.snapCache = c.snapCache[:0]
 	for _, idx := range sortedSlots {
-		if idx >= len(l.Slots) {
+		if idx >= len(slots) {
 			continue
 		}
-		slot := l.Slots[idx]
+		slot := slots[idx]
 		if !slot.Enabled && !c.isAnimating(idx) {
 			continue
 		}
@@ -500,21 +524,25 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			if entry.scaledCache != nil {
 				snap.cachedScaled = entry.scaledCache[idx]
 			}
-		} else if idx < len(c.grayBufs) {
-			snap.srcYUV = c.grayBufs[idx]
-			// Use the actual gray buffer dimensions from the slot transform rect.
+		} else {
+			snap.hasGray = true
+		}
+		// An opaque gray slot is filled black directly; only a blend reads
+		// the gray buffer. Size it to the slot transform rect, which a layout
+		// morph changes per frame, so it is reallocated only while blending.
+		if snap.hasGray && alpha < 1.0 {
 			grayRect := slot.Transform.ToRect()
 			grayW := grayRect.Dx()
 			grayH := grayRect.Dy()
-			if len(snap.srcYUV) == video.YUV420FrameSize(grayW, grayH) {
-				snap.srcW = grayW
-				snap.srcH = grayH
-			} else {
-				continue
+			for len(c.grayBufs) <= idx {
+				c.grayBufs = append(c.grayBufs, nil)
 			}
-			snap.hasGray = true
-		} else {
-			continue
+			if len(c.grayBufs[idx]) != video.YUV420FrameSize(grayW, grayH) {
+				c.grayBufs[idx] = makeGrayFrame(grayW, grayH)
+			}
+			snap.srcYUV = c.grayBufs[idx]
+			snap.srcW = grayW
+			snap.srcH = grayH
 		}
 
 		// Grab the scale buffer reference (pre-allocated).
@@ -621,7 +649,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			scaled = snap.scaleBuf
 
 			// Write scaled result back to cache (under lock since fillEntry is shared).
-			if snap.hasFill && snap.cropBuf == nil {
+			if snap.hasFill && snap.cropBuf == nil && !morphing {
 				c.mu.Lock()
 				if entry, ok := c.fills[snap.fillKey]; ok {
 					if entry.scaledCache == nil {
@@ -734,11 +762,12 @@ func (c *Compositor) SnapshotSlots() []SlotSnap {
 	deactivated = c.tickAnimations()
 
 	var result []SlotSnap
-	for _, idx := range c.sortedSlots {
-		if idx >= len(l.Slots) {
+	slots, sortedSlots := c.frameSlots(l)
+	for _, idx := range sortedSlots {
+		if idx >= len(slots) {
 			continue
 		}
-		slot := l.Slots[idx]
+		slot := slots[idx]
 		if !slot.Enabled && !c.isAnimating(idx) {
 			continue
 		}
@@ -867,13 +896,18 @@ func (c *Compositor) tickAnimations() (deactivated bool) {
 	// the active state lazily, right before the first completion callback runs.
 	wasActive := false
 	capturedActive := false
+	if m := c.morph.Load(); m != nil && m.progress(c.clock()) >= 1.0 {
+		capturedActive = true
+		wasActive = true
+		c.stopMorph()
+	}
 	remaining := c.animations[:0]
 	for _, anim := range c.animations {
 		if anim.Progress() >= 1.0 {
 			if anim.OnComplete != nil {
 				if !capturedActive {
 					capturedActive = true
-					wasActive = c.hasEnabledSlots(c.layout.Load())
+					wasActive = c.Active()
 				}
 				anim.OnComplete()
 			}
@@ -883,7 +917,7 @@ func (c *Compositor) tickAnimations() (deactivated bool) {
 	}
 	c.animations = remaining
 
-	return wasActive && !c.hasEnabledSlots(c.layout.Load())
+	return wasActive && !c.Active()
 }
 
 // UpdateFormat updates the frame dimensions (called on pipeline format change).
@@ -898,17 +932,25 @@ func (c *Compositor) UpdateFormat(frameW, frameH int) {
 }
 
 // UpdateSlot modifies a slot in-place using the given function, then atomically swaps the layout.
+// A layout recall in flight ends, so the edit is drawn at once.
 func (c *Compositor) UpdateSlot(slotIdx int, fn func(*Slot)) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	l := c.layout.Load()
 	if l == nil || slotIdx < 0 || slotIdx >= len(l.Slots) {
+		c.mu.Unlock()
 		return
 	}
+	wasBefore := c.Active()
+	c.stopMorph()
 	updated := c.cloneLayout(l)
 	fn(&updated.Slots[slotIdx])
 	c.computeSortedSlots(updated)
 	c.layout.Store(updated)
+	wasAfter := c.Active()
+	c.mu.Unlock()
+	if wasBefore != wasAfter && c.OnActiveChange != nil {
+		c.OnActiveChange()
+	}
 }
 
 // UpdateSlotTransform applies a mutation function to a slot's Transform in the
@@ -917,18 +959,24 @@ func (c *Compositor) UpdateSlot(slotIdx int, fn func(*Slot)) {
 // triggers broadcasts separately.
 func (c *Compositor) UpdateSlotTransform(slotIdx int, fn func(*Transform)) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	l := c.layout.Load()
 	if l == nil || slotIdx < 0 || slotIdx >= len(l.Slots) {
+		c.mu.Unlock()
 		return
 	}
+	wasBefore := c.Active()
+	c.stopMorph()
 
 	// Deep-copy the layout so concurrent readers see a consistent snapshot.
 	updated := c.cloneLayout(l)
 	fn(&updated.Slots[slotIdx].Transform)
 	c.computeSortedSlots(updated)
 	c.layout.Store(updated)
+	wasAfter := c.Active()
+	c.mu.Unlock()
+	if wasBefore != wasAfter && c.OnActiveChange != nil {
+		c.OnActiveChange()
+	}
 }
 
 // UpdateSlotRect updates only the position and size of a slot via the transform.
@@ -937,9 +985,9 @@ func (c *Compositor) UpdateSlotTransform(slotIdx int, fn func(*Transform)) {
 // without flooding the control channel.
 func (c *Compositor) UpdateSlotRect(slotIdx int, rect image.Rectangle) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	l := c.layout.Load()
 	if l == nil || slotIdx < 0 || slotIdx >= len(l.Slots) {
+		c.mu.Unlock()
 		return fmt.Errorf("slot %d: no layout or out of range", slotIdx)
 	}
 	// Snap to even alignment for YUV420 compatibility.
@@ -948,8 +996,11 @@ func (c *Compositor) UpdateSlotRect(slotIdx int, rect image.Rectangle) error {
 	rect.Max.X = (rect.Max.X + 1) &^ 1
 	rect.Max.Y = (rect.Max.Y + 1) &^ 1
 	if rect.Min.X < 0 || rect.Min.Y < 0 || rect.Max.X > c.frameW || rect.Max.Y > c.frameH {
+		c.mu.Unlock()
 		return fmt.Errorf("rect %v exceeds frame bounds %dx%d", rect, c.frameW, c.frameH)
 	}
+	wasBefore := c.Active()
+	c.stopMorph()
 	updated := c.cloneLayout(l)
 	updated.Slots[slotIdx].Transform.PositionX = float64(rect.Min.X)
 	updated.Slots[slotIdx].Transform.PositionY = float64(rect.Min.Y)
@@ -957,6 +1008,11 @@ func (c *Compositor) UpdateSlotRect(slotIdx int, rect image.Rectangle) error {
 	updated.Slots[slotIdx].Transform.Height = float64(rect.Dy())
 	c.computeSortedSlots(updated)
 	c.layout.Store(updated)
+	wasAfter := c.Active()
+	c.mu.Unlock()
+	if wasBefore != wasAfter && c.OnActiveChange != nil {
+		c.OnActiveChange()
+	}
 	return nil
 }
 
@@ -970,7 +1026,9 @@ func (c *Compositor) SlotOn(slotIdx int) {
 		return
 	}
 
-	wasBefore := c.hasEnabledSlots(l)
+	// A morph in flight keeps the node active; compare what Active reports.
+	wasBefore := c.Active()
+	c.stopMorph()
 
 	// Clone layout and enable the slot
 	updated := c.cloneLayout(l)
@@ -978,7 +1036,7 @@ func (c *Compositor) SlotOn(slotIdx int) {
 	slot.Enabled = true
 	c.layout.Store(updated)
 
-	wasAfter := c.hasEnabledSlots(updated)
+	wasAfter := c.Active()
 
 	// Get the slot rect for animation.
 	slotRect := slot.Transform.ToRect()
@@ -1032,7 +1090,8 @@ func (c *Compositor) SlotOff(slotIdx int) {
 		return
 	}
 
-	wasBefore := c.hasEnabledSlots(l)
+	wasBefore := c.Active()
+	c.stopMorph()
 
 	slot := l.Slots[slotIdx]
 	slotRect := slot.Transform.ToRect()
@@ -1045,7 +1104,6 @@ func (c *Compositor) SlotOff(slotIdx int) {
 		transDuration = c.slotTransitions[slotIdx].TransitionDuration()
 	}
 
-	var wasAfter bool
 	switch transType {
 	case "dissolve":
 		c.animations = append(c.animations, &slotAnimation{
@@ -1066,7 +1124,6 @@ func (c *Compositor) SlotOff(slotIdx int) {
 				}
 			},
 		})
-		wasAfter = wasBefore
 	case "fly":
 		dest := flyInOrigin(slotRect, c.frameW, c.frameH)
 		c.animations = append(c.animations, &slotAnimation{
@@ -1087,13 +1144,12 @@ func (c *Compositor) SlotOff(slotIdx int) {
 				}
 			},
 		})
-		wasAfter = wasBefore
 	default: // "cut"
 		updated := c.cloneLayout(l)
 		updated.Slots[slotIdx].Enabled = false
 		c.layout.Store(updated)
-		wasAfter = c.hasEnabledSlots(updated)
 	}
+	wasAfter := c.Active()
 	c.mu.Unlock()
 
 	if wasBefore != wasAfter && c.OnActiveChange != nil {

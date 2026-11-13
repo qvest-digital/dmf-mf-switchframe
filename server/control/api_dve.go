@@ -1,13 +1,16 @@
 package control
 
 import (
+	"cmp"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/dve"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 type dveLayoutRequest struct {
@@ -26,6 +29,10 @@ type dveSlotUpdateRequest struct {
 	// without sending the full transform object.
 	ScaleMode  *string     `json:"scaleMode,omitempty"`
 	CropAnchor *[2]float64 `json:"cropAnchor,omitempty"`
+
+	// Animate the change instead of applying it at once.
+	DurationMs int    `json:"durationMs,omitempty"`
+	Easing     string `json:"easing,omitempty"`
 }
 
 type dvePresetSaveRequest struct {
@@ -205,7 +212,17 @@ func (a *API) handleDVESlotUpdateInner(w http.ResponseWriter, r *http.Request, b
 		return
 	}
 
-	a.dveCompositor.UpdateSlot(id, func(s *dve.Slot) {
+	if req.DurationMs > dve.MaxMorphDurationMs {
+		httperr.Write(w, http.StatusBadRequest, fmt.Sprintf("durationMs must be at most %d", dve.MaxMorphDurationMs))
+		return
+	}
+	ease, err := transition.ParseEasing(req.Easing)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	a.dveCompositor.AnimateSlot(id, func(s *dve.Slot) {
 		if req.SourceKey != nil {
 			s.SourceKey = *req.SourceKey
 		}
@@ -224,7 +241,7 @@ func (a *API) handleDVESlotUpdateInner(w http.ResponseWriter, r *http.Request, b
 		if req.CropAnchor != nil {
 			s.Transform.CropAnchor = *req.CropAnchor
 		}
-	})
+	}, req.DurationMs, ease.Ease)
 	a.broadcast()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -313,18 +330,20 @@ func (a *API) handleRecallDVEPresetInner(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	targetLayout := dveLayoutFromPreset(preset)
+	if req.DurationMs > dve.MaxMorphDurationMs {
+		httperr.Write(w, http.StatusBadRequest, fmt.Sprintf("durationMs must be at most %d", dve.MaxMorphDurationMs))
+		return
+	}
+	ease, err := transition.ParseEasing(cmp.Or(req.Easing, preset.Easing))
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
-	// Animated preset recall requires a compositor animation ticker (not yet implemented).
-	// For now, presets apply instantly. The durationMs/easing fields are accepted in the
-	// request for forward compatibility but have no effect until the animation system
-	// is wired up.
-
-	// Apply target layout immediately.
-	a.dveCompositor.SetLayout(targetLayout)
+	a.dveCompositor.RecallLayout(dveLayoutFromPreset(preset), req.DurationMs, ease.Ease)
 	a.broadcast()
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(targetLayout)
+	_ = json.NewEncoder(w).Encode(a.dveCompositor.GetLayout())
 }
 
 func (a *API) handleDeleteDVEPreset(w http.ResponseWriter, r *http.Request) {
