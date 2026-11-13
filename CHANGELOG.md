@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.0.0-rc.50](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.49...mxl-v1.0.0-rc.50) (2026-11-13)
+
+
+### Features
+
+* **audio:** select the channel pair a wide input feeds program ([#227](https://github.com/qvest-digital/dmf-mf-switchframe/issues/227)) ([0a404b5](https://github.com/qvest-digital/dmf-mf-switchframe/commit/0a404b54a3d7e5c99a9e64ab1ae1523b1e341bcb))
+* **clip:** cut to a loaded clip player and start it on that tick ([#229](https://github.com/qvest-digital/dmf-mf-switchframe/issues/229)) ([358937d](https://github.com/qvest-digital/dmf-mf-switchframe/commit/358937d4d4d8ebfeee7f9af32c48f4939fbcf0e2))
+* **peer:** converge the stores an operator writes between the engines ([ba018cd](https://github.com/qvest-digital/dmf-mf-switchframe/commit/ba018cd957a336ec1c92ad02eb407806fdfd4dc8))
+* **peer:** repair live state drift between engines without a browser ([ba018cd](https://github.com/qvest-digital/dmf-mf-switchframe/commit/ba018cd957a336ec1c92ad02eb407806fdfd4dc8))
+* **playout:** open upcoming clips before their cut ([5e561e9](https://github.com/qvest-digital/dmf-mf-switchframe/commit/5e561e96e154f62d718cda0d3d2f573a7dd07bb1))
+* **sync:** carry graphics tickers and image sequences in the snapshot ([ba018cd](https://github.com/qvest-digital/dmf-mf-switchframe/commit/ba018cd957a336ec1c92ad02eb407806fdfd4dc8))
+* **sync:** move reconcile snapshots between the engines directly ([ba018cd](https://github.com/qvest-digital/dmf-mf-switchframe/commit/ba018cd957a336ec1c92ad02eb407806fdfd4dc8))
+
+
+### Bug Fixes
+
+* **audio:** decode 7.1 AAC and fold 3.0 to 7.1 AAC with its centre ([#219](https://github.com/qvest-digital/dmf-mf-switchframe/issues/219)) ([1ca3c00](https://github.com/qvest-digital/dmf-mf-switchframe/commit/1ca3c005c1df04b87c882a3c9d7d720371c28b74))
+* **audio:** keep arrival-placed audio continuous across its delivery ([#221](https://github.com/qvest-digital/dmf-mf-switchframe/issues/221)) ([3f558bc](https://github.com/qvest-digital/dmf-mf-switchframe/commit/3f558bc0300a3c1b714a5ed1aee802424abea275))
+* **audio:** spread mono AAC over every mixer channel ([#218](https://github.com/qvest-digital/dmf-mf-switchframe/issues/218)) ([abcfc75](https://github.com/qvest-digital/dmf-mf-switchframe/commit/abcfc754f9240bc9befeb5005757e5810c7a1a7f))
+* **clip:** read an AAC config's channel count only where it sits ([#225](https://github.com/qvest-digital/dmf-mf-switchframe/issues/225)) ([91b10d8](https://github.com/qvest-digital/dmf-mf-switchframe/commit/91b10d8e261a73c06c7d3231311c246a06f27ed9))
+* **clip:** take an MP4 track's channel count from its AAC config ([#223](https://github.com/qvest-digital/dmf-mf-switchframe/issues/223)) ([73ebc2b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/73ebc2b3f856dcfa0c65aa4f5773bb291855e570))
+* **clip:** transcode uploads whose audio the engine cannot decode ([#220](https://github.com/qvest-digital/dmf-mf-switchframe/issues/220)) ([711a0fc](https://github.com/qvest-digital/dmf-mf-switchframe/commit/711a0fca4284b071dbff3b822ba636a2aad909eb))
+* **clock:** settle an SRT source's anchor instead of following bursts ([#228](https://github.com/qvest-digital/dmf-mf-switchframe/issues/228)) ([4f27a6a](https://github.com/qvest-digital/dmf-mf-switchframe/commit/4f27a6a3278022ad1f67a56ae76a1318018aed50))
+* **playout:** hand over to the next item on the tick a clip ends ([5e561e9](https://github.com/qvest-digital/dmf-mf-switchframe/commit/5e561e96e154f62d718cda0d3d2f573a7dd07bb1))
+* **playout:** keep a channel's audio on the mixer's read point ([#217](https://github.com/qvest-digital/dmf-mf-switchframe/issues/217)) ([96b35f1](https://github.com/qvest-digital/dmf-mf-switchframe/commit/96b35f1d0d68012753e860b1a16c46a3a9e6665f))
+* **playout:** keep a transition's audio on the incoming item ([#224](https://github.com/qvest-digital/dmf-mf-switchframe/issues/224)) ([35bb75a](https://github.com/qvest-digital/dmf-mf-switchframe/commit/35bb75a6176223ce7250a32cb164006ebe8c43ea))
+* **playout:** seek to a clip's in-point instead of decoding up to it ([5e561e9](https://github.com/qvest-digital/dmf-mf-switchframe/commit/5e561e96e154f62d718cda0d3d2f573a7dd07bb1))
+
+
+### Dependencies
+
+* **go-mxl:** update go-mxl to v1.1.0-rc.15 ([#226](https://github.com/qvest-digital/dmf-mf-switchframe/issues/226)) ([ec6a354](https://github.com/qvest-digital/dmf-mf-switchframe/commit/ec6a354197096e2435ea142ac6b0d687427432d1))
+
 ## [1.0.0-rc.49](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.48...mxl-v1.0.0-rc.49) (2026-11-13)
 
 
