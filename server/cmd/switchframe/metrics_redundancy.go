@@ -32,6 +32,21 @@ var (
 		"1 while the peer last reported the same program source as this engine, 0 when the two disagree. Absent without a reachable peer.",
 		nil, nil)
 
+	descStoreRounds = prometheus.NewDesc("switchframe_peer_store_sync_rounds_total",
+		"Rounds of converging the stores with the peer's, by result.", []string{"result"}, nil)
+	descStoreLastRound = prometheus.NewDesc("switchframe_peer_store_sync_last_round_age_seconds",
+		"Time since the stores last completed a round with the peer.", nil, nil)
+	descStorePulled = prometheus.NewDesc("switchframe_peer_store_items_pulled_total",
+		"Items taken from the peer's store.", []string{"store"}, nil)
+	descStoreDeleted = prometheus.NewDesc("switchframe_peer_store_items_deleted_total",
+		"Items deleted because the peer deleted them later.", []string{"store"}, nil)
+	descStoreBytes = prometheus.NewDesc("switchframe_peer_store_bytes_pulled_total",
+		"Bytes taken from the peer's store.", []string{"store"}, nil)
+	descStoreFailures = prometheus.NewDesc("switchframe_peer_store_failures_total",
+		"Items of the store that failed to be taken from or deleted for the peer.", []string{"store"}, nil)
+	descStoreDiverged = prometheus.NewDesc("switchframe_peer_store_diverged_items",
+		"Items of the store that differed from the peer's at the last round.", []string{"store"}, nil)
+
 	descNMOSRegistered = prometheus.NewDesc("switchframe_nmos_registered",
 		"1 while this engine holds the node's registration with the NMOS registry.", nil, nil)
 	descNMOSRegistrations = prometheus.NewDesc("switchframe_nmos_registrations_total",
@@ -54,6 +69,8 @@ type redundancyCollector struct {
 func (c *redundancyCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		descPeerRole, descPeerReachable, descPeerFailures, descPeerLastSeen, descEpoch, descProgramAgrees,
+		descStoreRounds, descStoreLastRound, descStorePulled, descStoreDeleted, descStoreBytes, descStoreFailures,
+		descStoreDiverged,
 		descNMOSRegistered, descNMOSRegistrations, descNMOSHeartbeats, descNMOSHeartbeatAge, descNMOSActivations,
 	} {
 		ch <- d
@@ -92,6 +109,22 @@ func (c *redundancyCollector) Collect(ch chan<- prometheus.Metric) {
 		gauge(descEpoch, float64(st.PeerEpoch), "peer")
 		if st.Reachable && st.ProgramSource != "" && c.a.sw != nil {
 			gauge(descProgramAgrees, flag(st.ProgramSource == c.a.sw.State().ProgramSource))
+		}
+	}
+
+	if s := c.a.storeSyncer; s != nil {
+		ok, failed, last := s.Rounds()
+		counter(descStoreRounds, ok, "ok")
+		counter(descStoreRounds, failed, "error")
+		if !last.IsZero() {
+			gauge(descStoreLastRound, time.Since(last).Seconds())
+		}
+		for _, st := range s.Stats() {
+			counter(descStorePulled, st.Pulled, st.Store)
+			counter(descStoreDeleted, st.Deleted, st.Store)
+			counter(descStoreBytes, st.Bytes, st.Store)
+			counter(descStoreFailures, st.Failures, st.Store)
+			gauge(descStoreDiverged, float64(st.Diverged), st.Store)
 		}
 	}
 

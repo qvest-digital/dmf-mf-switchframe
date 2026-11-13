@@ -909,3 +909,103 @@ func TestStingerStore_StingerData_ConcurrentDelete(t *testing.T) {
 		}
 	}
 }
+
+// A stinger taken from the peer engine replaces the one of that name, from
+// a directory of its frames, and is loaded at once.
+func TestStoreReplace(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Upload("swipe", createTestZip(t, 4, 4, 2)); err != nil {
+		t.Fatal(err)
+	}
+	src := t.TempDir()
+	staged := filepath.Join(src, "staged")
+	if err := os.MkdirAll(staged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other := t.TempDir()
+	o, err := NewStore(other, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Upload("tmp", createTestZip(t, 4, 4, 5)); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(other, "tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		data, err := os.ReadFile(filepath.Join(other, "tmp", e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(staged, e.Name()), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.Replace("swipe", staged); err != nil {
+		t.Fatal(err)
+	}
+	c, ok := s.Get("swipe")
+	if !ok || len(c.Frames) != 5 {
+		t.Fatalf("replaced stinger not loaded with the new frames: %v", c)
+	}
+	if _, err := os.Stat(staged); !os.IsNotExist(err) {
+		t.Fatal("staged directory left behind")
+	}
+	if err := s.Replace("new", t.TempDir()); err == nil {
+		t.Fatal("a directory without frames was taken as a stinger")
+	}
+	if _, ok := s.Get("new"); ok {
+		t.Fatal("a stinger that failed to load is listed")
+	}
+
+	// A replacement that fails to load leaves the stinger it was to
+	// replace as it was, loaded and on disk.
+	bad := filepath.Join(src, "bad")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "frame_0001.png"), []byte("not a png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Replace("swipe", bad); err == nil {
+		t.Fatal("frames that fail to decode replaced a stinger")
+	}
+	if c, ok := s.Get("swipe"); !ok || len(c.Frames) != 5 {
+		t.Fatal("a failed replacement removed the stinger")
+	}
+	reopened, err := NewStore(dir, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, ok := reopened.Get("swipe"); !ok || len(c.Frames) != 5 {
+		t.Fatal("a failed replacement removed the stinger's files")
+	}
+}
+
+// Room refuses a new stinger only once the store is full, never the
+// replacement of one it holds.
+func TestStoreRoom(t *testing.T) {
+	s, err := NewStore(t.TempDir(), 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Room("a"); err != nil {
+		t.Fatalf("empty store: %v", err)
+	}
+	if err := s.Upload("a", createTestZip(t, 4, 4, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Room("b"); !errors.Is(err, ErrMaxClipsReached) {
+		t.Fatalf("full store: %v", err)
+	}
+	if err := s.Room("a"); err != nil {
+		t.Fatalf("replacing a held stinger: %v", err)
+	}
+}

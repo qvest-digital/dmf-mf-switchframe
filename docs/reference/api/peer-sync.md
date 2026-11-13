@@ -115,6 +115,13 @@ For a snapshot with `graphicsContent` set, the engine takes the snapshot's set o
 
 ---
 
+### `GET /api/sync/stores`, `GET /api/sync/stores/item?store=&key=`
+
+**Purpose:** the engine's ledger of the stores an operator writes to, and one item's content with its hash and modification time in `X-Sync-Hash` and `X-Sync-Mod`. Registered on an engine with `--peer-engine-url`. See [Convergence](#convergence).
+**Handler:** [`peer/storesync.go`](../../../server/peer/storesync.go): `(*StoreSyncer).ServeManifest`, `ServeItem`.
+
+---
+
 ### `POST /api/sync/reconcile-lock`
 
 **Purpose:** acquire the reconcile lock. Returns the lock ID and a TTL. Lock is refreshed via PUT with the ID.
@@ -136,6 +143,12 @@ For a snapshot with `graphicsContent` set, the engine takes the snapshot's set o
 ### `DELETE /api/sync/reconcile-lock/{lockId}`
 
 **Handler:** `(*API).handleReleaseReconcileLock`.
+
+## Convergence
+
+The two engines of a pair converge their state between themselves, with no browser open.
+
+**Stores.** What an operator writes to disk converges item by item: presets (by name), macros, operators registered with a token, the SCTE-35 rules (as one item), stingers, custom wipe patterns, DVE presets, ST maps, uploaded LUTs and their corrector settings, saved playout playlists, and uploaded clips where no clip library is attached. Each engine keeps a ledger (`peer_sync.json` in the state directory) of every item's content hash and when it last changed, and a tombstone for each it deleted. Every 5s, and once before the API serves after a start (once the admin server runs, bounded to 2 minutes, the first scan of the stores included), an engine reads its peer's ledger and takes every item the peer wrote, or deleted, later than it did; the later write of an item wins on both engines, and an item deleted later than it was written is not brought back by an older copy. An engine that does not list an item says nothing about it: a freshly started or empty engine lists nothing, so its peer neither takes nor deletes anything from it. Only an item a listing positively lacks counts as deleted: one the engine holds but cannot read now, such as a stinger it did not load, a stinger directory without a frame, or a clip whose media fails to open, keeps its ledger entry; the stinger directories and their files are listed under the stinger store's lock, so one being replaced is never seen missing. An item the ledger does not hold yet and whose store does not date it (presets, macros, operators, SCTE-35 rules) counts as older than any dated write of it. Items transfer one at a time as a stream, checked against their hash and bounded per store (stingers 600 MiB, ST maps 256 MiB, clips the clip storage limit); a transfer that moves no byte for a minute is cut, and reading the manifest is bounded to 30s. A version taken keeps the peer's date while the store holds it as transferred, or in the store's own form: a JSON store decodes an item into its type, so an engine whose type lacks a field the peer's has, or adds one, holds the same version without it or with it, and the two count it as one version. When an engine's type changes with its own upgrade, its stores are listed before it serves; a version taken from the peer that it then holds in another form counts as read anew, not written, and is taken from the peer again in the new form. Held as anything else, as by a write here right after it was stored, it counts as a change here, dated now, and the peer takes it in turn. An item refused for its size or for want of room, which a clip or stinger is before it transfers, or that fails otherwise, is tried again after a minute, doubling to 30 minutes, and at once when the peer holds a new version of it. Left out, as each engine's own: the SRT sources (copied from the booking at every start), the MXL NMOS receiver state, the uploaded ZIPs of graphics sequences (cleared at start), as-run logs, the playout cache, the command queue and sequence, the leadership epoch, the API token, replays and recordings, operators of an identity provider, and every clip where a clip library already shares them.
 
 ## Related docs
 

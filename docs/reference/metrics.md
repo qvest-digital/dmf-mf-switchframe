@@ -296,6 +296,13 @@ Read by [`redundancyCollector`](../../server/cmd/switchframe/metrics_redundancy.
 | `switchframe_peer_last_seen_age_seconds` | gauge | - | Time since the peer last answered a health poll. |
 | `switchframe_peer_epoch` | gauge | `side` | Leadership epoch, of this engine (side local) and as the peer last reported it (side peer). A forced leader change raises it. |
 | `switchframe_peer_program_agrees` | gauge | - | 1 while the peer last reported the same program source as this engine, 0 when the two disagree. Absent without a reachable peer. |
+| `switchframe_peer_store_sync_rounds_total` | counter | `result` | Rounds of converging the stores with the peer's, by result. |
+| `switchframe_peer_store_sync_last_round_age_seconds` | gauge | - | Time since the stores last completed a round with the peer. |
+| `switchframe_peer_store_items_pulled_total` | counter | `store` | Items taken from the peer's store. |
+| `switchframe_peer_store_items_deleted_total` | counter | `store` | Items deleted because the peer deleted them later. |
+| `switchframe_peer_store_bytes_pulled_total` | counter | `store` | Bytes taken from the peer's store. |
+| `switchframe_peer_store_failures_total` | counter | `store` | Items of the store that failed to be taken from or deleted for the peer. |
+| `switchframe_peer_store_diverged_items` | gauge | `store` | Items of the store that differed from the peer's at the last round. |
 | `switchframe_nmos_registered` | gauge | - | 1 while this engine holds the node's registration with the NMOS registry. |
 | `switchframe_nmos_registrations_total` | counter | `result` | Registrations of the node with the NMOS registry, by result. |
 | `switchframe_nmos_heartbeats_total` | counter | `result` | Heartbeats to the NMOS registry, by result. |

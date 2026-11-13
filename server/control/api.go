@@ -443,6 +443,11 @@ func WithPeerPoller(p *peer.HealthPoller) APIOption {
 	return func(a *API) { a.peerPoller = p }
 }
 
+// WithStoreSyncer serves the stores' ledger and items to the peer engine.
+func WithStoreSyncer(s *peer.StoreSyncer) APIOption {
+	return func(a *API) { a.storeSyncer = s }
+}
+
 // WithControlPlaneSecret enables POST /api/peer/force-leader by setting
 // the shared secret the control plane uses (via X-Control-Plane-Secret
 // header) to authorize force-takeover. Empty disables the endpoint — it
@@ -617,6 +622,7 @@ type API struct {
 	lastPongSentFn     func() int64                        // returns Unix µs of last fast-control pong
 	connectionCounter  func() (webtransport, srt, moq int) // returns active connection counts by type
 	peerPoller         *peer.HealthPoller                  // local identity + role for /api/peer/health
+	storeSyncer        *peer.StoreSyncer                   // the stores' ledger and items, read by the peer
 	controlPlaneSecret string                              // enables /api/peer/force-leader when non-empty
 	startTime          time.Time
 	reconcileLock      reconcileLockState
@@ -776,6 +782,10 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerAISegmentRoutes(mux)
 	a.registerASRRoutes(mux)
 	a.registerPeerRoutes(mux)
+	if a.storeSyncer != nil {
+		mux.HandleFunc("GET /api/sync/stores", a.storeSyncer.ServeManifest)
+		mux.HandleFunc("GET /api/sync/stores/item", a.storeSyncer.ServeItem)
+	}
 	a.registerPipelineRoutes(mux)
 	mux.HandleFunc("GET /api/sync/health", a.handleSyncHealth)
 	mux.HandleFunc("GET /api/internal/connections", a.handleInternalConnections)
