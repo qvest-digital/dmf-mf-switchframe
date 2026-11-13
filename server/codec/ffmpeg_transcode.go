@@ -14,6 +14,7 @@ package codec
 #include <libavutil/timestamp.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -166,9 +167,6 @@ static int ff_transcode_drain_audio_fifo(AVAudioFifo* afifo, int frame_size, int
 	return 0;
 }
 
-// ff_transcode_free releases every resource held by ctx. Safe to call on a
-// zeroed ctx, after a failed open, or after a completed run; it is idempotent
-// because every release nulls the corresponding pointer.
 // ff_transcode_stereo_matrix makes swr_ctx, before swr_init, take the
 // first two channels of a layout that names no speakers as left and right,
 // or its one channel as both, instead of folding every channel in by the
@@ -176,7 +174,8 @@ static int ff_transcode_drain_audio_fifo(AVAudioFifo* afifo, int frame_size, int
 // Discrete multichannel audio, such as 8 to 16 tracks of a broadcast file,
 // carries separate programs, not one surround mix, and some counts have no
 // guessed layout at all, which swr_init rejects. Layouts that name their
-// speakers, in any order, are left to the resampler's matrix.
+// speakers in native order are left to the resampler's matrix, a custom
+// order of them gets the same matrix from ff_transcode_speaker_matrix.
 static int ff_transcode_names_speakers(const AVChannelLayout* l) {
 	switch (l->order) {
 	case AV_CHANNEL_ORDER_UNSPEC:
@@ -194,9 +193,74 @@ static int ff_transcode_names_speakers(const AVChannelLayout* l) {
 	}
 }
 
-static int ff_transcode_stereo_matrix(struct SwrContext* swr_ctx, const AVChannelLayout* in) {
-	if (in->nb_channels <= 0 || ff_transcode_names_speakers(in)) {
+// ff_transcode_speaker_matrix sets on swr_ctx the speaker matrix for a
+// custom order of named speakers, such as film-order 5.1 from MOV.
+// swresample before 8.0 builds no matrix for a custom order and fails
+// swr_init, so the matrix is built for the same speakers in native order
+// and each column moved to where its speaker sits; a channel outside the
+// native mask mixes into neither side. The options and maxval are the ones
+// swresample builds its own matrix with for float output.
+// swr_build_matrix2 scales all SWR_CH_MAX (64) rows by the rematrix
+// volume, so it gets a 64 x 64 matrix.
+static int ff_transcode_speaker_matrix(struct SwrContext* swr_ctx,
+		const AVChannelLayout* in, const AVChannelLayout* out) {
+	int n = in->nb_channels;
+	uint64_t mask = 0;
+	for (int i = 0; i < n; i++) {
+		enum AVChannel c = av_channel_layout_channel_from_index(in, i);
+		if (c >= 0 && c < 64) {
+			mask |= 1ULL << c;
+		}
+	}
+	AVChannelLayout native = {0};
+	double clev, slev, lfe, rmvol, maxval;
+	int64_t enc;
+	double* full = NULL;
+	double* m = NULL;
+	int ret = av_channel_layout_from_mask(&native, mask);
+	if (ret < 0) {
+		return ret;
+	}
+	if ((ret = av_opt_get_double(swr_ctx, "clev", 0, &clev)) < 0 ||
+	    (ret = av_opt_get_double(swr_ctx, "slev", 0, &slev)) < 0 ||
+	    (ret = av_opt_get_double(swr_ctx, "lfe_mix_level", 0, &lfe)) < 0 ||
+	    (ret = av_opt_get_double(swr_ctx, "rmvol", 0, &rmvol)) < 0 ||
+	    (ret = av_opt_get_double(swr_ctx, "rematrix_maxval", 0, &maxval)) < 0 ||
+	    (ret = av_opt_get_int(swr_ctx, "matrix_encoding", 0, &enc)) < 0) {
+		goto done;
+	}
+	full = calloc(64 * 64, sizeof(double));
+	m = calloc((size_t)out->nb_channels * n, sizeof(double));
+	if (!full || !m) {
+		ret = AVERROR(ENOMEM);
+		goto done;
+	}
+	ret = swr_build_matrix2(&native, out, clev, slev, lfe, maxval > 0 ? maxval : INT_MAX,
+		rmvol, full, 64, (enum AVMatrixEncoding)enc, swr_ctx);
+	if (ret < 0) {
+		goto done;
+	}
+	for (int i = 0; i < n; i++) {
+		int k = av_channel_layout_index_from_channel(&native, av_channel_layout_channel_from_index(in, i));
+		for (int o = 0; k >= 0 && o < out->nb_channels; o++) {
+			m[o * n + i] = full[o * 64 + k];
+		}
+	}
+	ret = swr_set_matrix(swr_ctx, m, n);
+done:
+	free(m);
+	free(full);
+	av_channel_layout_uninit(&native);
+	return ret;
+}
+
+static int ff_transcode_stereo_matrix(struct SwrContext* swr_ctx,
+		const AVChannelLayout* in, const AVChannelLayout* out) {
+	if (in->nb_channels <= 0) {
 		return 0;
+	}
+	if (ff_transcode_names_speakers(in)) {
+		return in->order == AV_CHANNEL_ORDER_CUSTOM ? ff_transcode_speaker_matrix(swr_ctx, in, out) : 0;
 	}
 	int n = in->nb_channels;
 	double* m = calloc(2 * n, sizeof(double));
@@ -210,6 +274,9 @@ static int ff_transcode_stereo_matrix(struct SwrContext* swr_ctx, const AVChanne
 	return ret;
 }
 
+// ff_transcode_free releases every resource held by ctx. Safe to call on a
+// zeroed ctx, after a failed open, or after a completed run; it is idempotent
+// because every release nulls the corresponding pointer.
 static void ff_transcode_free(transcode_ctx_t* ctx) {
 	if (ctx->enc_pkt) av_packet_free(&ctx->enc_pkt);
 	if (ctx->pkt) av_packet_free(&ctx->pkt);
@@ -546,7 +613,8 @@ static int ff_transcode_open(const char* input_path, const char* output_path,
 			ret = -10;
 			goto fail;
 		}
-		ret = ff_transcode_stereo_matrix(ctx->swr_ctx, &ctx->audio_dec_ctx->ch_layout);
+		ret = ff_transcode_stereo_matrix(ctx->swr_ctx, &ctx->audio_dec_ctx->ch_layout,
+			&ctx->audio_enc_ctx->ch_layout);
 		if (ret < 0) {
 			ret = -10;
 			goto fail;
