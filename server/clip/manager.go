@@ -35,6 +35,7 @@ type Manager struct {
 	// loaded reads this slot as catching up rather than diverged.
 	loading [MaxPlayers]*Clip
 	log     *slog.Logger
+	starts  *startStats
 
 	onStateChange func()
 	ptsProvider   func() int64
@@ -67,6 +68,14 @@ type ManagerConfig struct {
 	// fpsNum/fpsDen express the frame rate as a rational number
 	// (e.g. 30000/1001 for 29.97fps, 25000/1000 for 25fps).
 	EncoderFactory func(w, h, fpsNum, fpsDen int) (VideoEncoder, error)
+	// Timed places the players on the engine timeline (PlayerConfig.Timed)
+	// and keeps a slot that holds a clip and plays none cued
+	// (PlayerConfig.Cued), so a start puts the clip's first picture out at
+	// once. The lifecycle callbacks then follow the clip rather than its
+	// playback: the start one runs when a slot gets a clip, the stop one
+	// when it is ejected, so the slot's source can be cut to before it
+	// plays.
+	Timed bool
 }
 
 // playerSlot holds the state of a single clip player slot.
@@ -81,6 +90,11 @@ type playerSlot struct {
 	loop          bool
 	cancel        context.CancelFunc
 	decoderCloser func()
+	// cue is the cued player of a slot that plays nothing
+	// (ManagerConfig.Timed), with its cancel and its decoder's closer.
+	cue       *Player
+	cueCancel context.CancelFunc
+	cueCloser func()
 }
 
 // NewManager creates a clip Manager backed by the given Store.
@@ -92,6 +106,7 @@ func NewManager(store *Store, cfg ManagerConfig) *Manager {
 		store:  store,
 		config: cfg,
 		log:    slog.With("component", "clip-manager"),
+		starts: newStartStats(),
 	}
 }
 
@@ -162,8 +177,14 @@ func (m *Manager) Load(playerID int, clipID string) error {
 
 	m.mu.Lock()
 
-	// If slot already has content, eject first.
+	// If slot already has content, eject first. Timed, its source stays.
+	hadClip := m.players[idx] != nil
 	if slot := m.players[idx]; slot != nil {
+		if stopCue := takeCueLocked(slot); stopCue != nil {
+			m.mu.Unlock()
+			stopCue()
+			m.mu.Lock()
+		}
 		wasPlaying := slot.player != nil
 		if wasPlaying {
 			player := slot.player
@@ -182,7 +203,7 @@ func (m *Manager) Load(playerID int, clipID string) error {
 			if closer != nil {
 				closer()
 			}
-			if stopCb != nil {
+			if stopCb != nil && !m.config.Timed {
 				stopCb(playerID, playerKey(playerID))
 			}
 			m.mu.Lock()
@@ -191,12 +212,17 @@ func (m *Manager) Load(playerID int, clipID string) error {
 
 	m.loading[idx] = nil
 	loaded = true
-	m.players[idx] = &playerSlot{
+	slot := &playerSlot{
 		clipID:   c.ID,
 		clipName: c.Name,
 		clip:     c,
 		frames:   frames,
 		audio:    audio,
+	}
+	m.players[idx] = slot
+	var startCb func(int, string)
+	if m.config.Timed && !hadClip {
+		startCb = m.onPlayerStart
 	}
 
 	// Count keyframes and check for SPS/PPS presence.
@@ -223,8 +249,35 @@ func (m *Manager) Load(playerID int, clipID string) error {
 		"height", c.Height,
 	)
 	m.mu.Unlock()
+	// The source exists before the cued player puts its first picture out.
+	if startCb != nil {
+		startCb(playerID, playerKey(playerID))
+	}
+	m.mu.Lock()
+	if m.players[idx] == slot {
+		m.cueLocked(idx, slot)
+	}
+	m.mu.Unlock()
 	m.notifyStateChange()
 	return nil
+}
+
+// takeCueLocked takes the cued player out of slot and returns what stops
+// it, to run without m.mu, or nil when the slot has none.
+func takeCueLocked(slot *playerSlot) func() {
+	p, cancel, closer := slot.cue, slot.cueCancel, slot.cueCloser
+	if p == nil {
+		return nil
+	}
+	slot.cue, slot.cueCancel, slot.cueCloser = nil, nil, nil
+	return func() {
+		cancel()
+		p.Stop()
+		p.Wait()
+		if closer != nil {
+			closer()
+		}
+	}
 }
 
 // fromFirstKeyframe drops the frames before the first keyframe, the
@@ -477,9 +530,13 @@ func (m *Manager) Eject(playerID int) error {
 	cancel := slot.cancel
 	closer := slot.decoderCloser
 	stopCb := m.onPlayerStop
+	stopCue := takeCueLocked(slot)
 	m.players[idx] = nil
 	m.mu.Unlock()
 
+	if stopCue != nil {
+		stopCue()
+	}
 	if wasPlaying {
 		if cancel != nil {
 			cancel()
@@ -489,9 +546,14 @@ func (m *Manager) Eject(playerID int) error {
 		if closer != nil {
 			closer()
 		}
-		if stopCb != nil {
+		if stopCb != nil && !m.config.Timed {
 			stopCb(playerID, playerKey(playerID))
 		}
+	}
+	// Timed, the source lives as long as the clip, and goes once nothing
+	// outputs to it any more.
+	if m.config.Timed && stopCb != nil {
+		stopCb(playerID, playerKey(playerID))
 	}
 
 	m.log.Info("clip ejected", "player", playerID)
@@ -501,6 +563,8 @@ func (m *Manager) Eject(playerID int) error {
 
 // Play creates a Player with the stored frames and starts playback.
 // If the player is paused, it resumes instead. Valid speed range: 0.25-2.0.
+// A slot cued (ManagerConfig.Timed) starts its cued player, whose first
+// picture is decoded already.
 func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 	if err := validatePlayerID(playerID); err != nil {
 		return err
@@ -532,6 +596,98 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 		return ErrPlayerBusy
 	}
 
+	var startCb func(int, string)
+	if !m.config.Timed {
+		startCb = m.onPlayerStart
+	}
+
+	p, cancel, closer := slot.cue, slot.cueCancel, slot.cueCloser
+	slot.cue, slot.cueCancel, slot.cueCloser = nil, nil, nil
+	cued := p != nil
+	var ctx context.Context
+	if cued {
+		p.SetSpeed(speed)
+		p.SetLoop(loop)
+	} else {
+		var err error
+		ctx, cancel = context.WithCancel(context.Background())
+		p, closer, err = m.newPlayer(idx, slot, speed, loop, false)
+		if err != nil {
+			cancel()
+			m.mu.Unlock()
+			return err
+		}
+	}
+
+	slot.player = p
+	slot.cancel = cancel
+	slot.decoderCloser = closer
+	slot.speed = speed
+	slot.loop = loop
+
+	m.log.Info("clip playback started", "player", playerID, "speed", speed, "loop", loop, "cued", cued)
+	m.mu.Unlock()
+
+	// Register source BEFORE starting player to prevent race where the
+	// player outputs frames before the source is registered.
+	if startCb != nil {
+		startCb(playerID, playerKey(playerID))
+	}
+
+	if cued {
+		p.Release()
+	} else {
+		p.Start(ctx)
+	}
+	m.notifyStateChange()
+	return nil
+}
+
+// StartCued starts a slot that holds a clip it is not playing, at the
+// speed and loop setting it holds: the start a cut or a transition to the
+// slot's source makes. It reports whether the slot started.
+func (m *Manager) StartCued(playerID int) bool {
+	if validatePlayerID(playerID) != nil {
+		return false
+	}
+	m.mu.Lock()
+	slot := m.players[playerID-1]
+	if slot == nil || slot.player != nil {
+		m.mu.Unlock()
+		return false
+	}
+	speed, loop := slot.speed, slot.loop
+	m.mu.Unlock()
+	if speed < 0.25 || speed > 2.0 {
+		speed = 1.0
+	}
+	return m.Play(playerID, speed, loop) == nil
+}
+
+// cueLocked gives a slot that holds a clip and plays none a cued player,
+// which decodes the clip's first picture and holds it. Caller holds m.mu.
+func (m *Manager) cueLocked(idx int, slot *playerSlot) {
+	if !m.config.Timed || slot.player != nil || slot.cue != nil {
+		return
+	}
+	speed := slot.speed
+	if speed < 0.25 || speed > 2.0 {
+		speed = 1.0
+	}
+	p, closer, err := m.newPlayer(idx, slot, speed, slot.loop, true)
+	if err != nil {
+		m.log.Warn("clip: cannot cue", "player", idx+1, "error", err)
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	slot.cue, slot.cueCancel, slot.cueCloser = p, cancel, closer
+	p.Start(ctx)
+}
+
+// newPlayer creates a player for the clip in slot, with its own decoder.
+// Caller holds m.mu.
+func (m *Manager) newPlayer(idx int, slot *playerSlot, speed float64, loop, cued bool) (*Player, func(), error) {
+	playerID := idx + 1
 	// Anchor PTS to program timeline.
 	var initialPTS int64
 	if m.ptsProvider != nil {
@@ -541,7 +697,6 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 		}
 	}
 
-	startCb := m.onPlayerStart
 	// Capture output callbacks once under lock — avoids per-frame mutex in hot path.
 	rawVideoFn := m.rawVideoOutput
 	videoFn := m.videoOutput
@@ -561,8 +716,7 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 		var err error
 		dec, err = m.config.DecoderFactoryForCodec(clipCodec)
 		if err != nil {
-			m.mu.Unlock()
-			return fmt.Errorf("create %s decoder: %w", clipCodec, err)
+			return nil, nil, fmt.Errorf("create %s decoder: %w", clipCodec, err)
 		}
 		decodeFrame = dec.Decode
 		decoderCloser = dec.Close
@@ -570,8 +724,7 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 		var err error
 		dec, err = m.config.DecoderFactory()
 		if err != nil {
-			m.mu.Unlock()
-			return fmt.Errorf("create decoder: %w", err)
+			return nil, nil, fmt.Errorf("create decoder: %w", err)
 		}
 		decodeFrame = dec.Decode
 		decoderCloser = dec.Close
@@ -582,9 +735,8 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 		outNum, outDen = m.config.OutputRate()
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	p := NewPlayer(PlayerConfig{
+	var p *Player
+	p = NewPlayer(PlayerConfig{
 		OutputFPSNum:   outNum,
 		OutputFPSDen:   outDen,
 		Clip:           slot.frames,
@@ -592,6 +744,8 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 		Speed:          speed,
 		Loop:           loop,
 		InitialPTS:     initialPTS,
+		Timed:          m.config.Timed,
+		Cued:           cued,
 		Width:          slot.clip.Width,
 		Height:         slot.clip.Height,
 		DecodeFrame:    decodeFrame,
@@ -612,12 +766,15 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 				audioFn(key, data, pts, sampleRate, channels)
 			}
 		},
+		OnStart: func(media string, delay time.Duration, preroll string) {
+			m.noteStart(playerID, media, delay, preroll, outNum, outDen)
+		},
 		OnDone: func() {
 			// Playback finished — clean up decoder (not needed for hold loop)
 			// but keep player/cancel alive so Stop/Eject can cancel holdLoop.
 			// Do NOT call onPlayerStop: the source stays registered during hold.
 			m.mu.Lock()
-			if s := m.players[idx]; s != nil {
+			if s := m.players[idx]; s != nil && s.player == p {
 				if s.decoderCloser != nil {
 					s.decoderCloser()
 					s.decoderCloser = nil
@@ -627,25 +784,7 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 			m.notifyStateChange()
 		},
 	})
-
-	slot.player = p
-	slot.cancel = cancel
-	slot.decoderCloser = decoderCloser
-	slot.speed = speed
-	slot.loop = loop
-
-	m.log.Info("clip playback started", "player", playerID, "speed", speed, "loop", loop)
-	m.mu.Unlock()
-
-	// Register source BEFORE starting player to prevent race where the
-	// player outputs frames before the source is registered.
-	if startCb != nil {
-		startCb(playerID, playerKey(playerID))
-	}
-
-	p.Start(ctx)
-	m.notifyStateChange()
-	return nil
+	return p, decoderCloser, nil
 }
 
 // Pause pauses playback for the given player slot.
@@ -726,7 +865,14 @@ func (m *Manager) Stop(playerID int) error {
 		closer()
 	}
 
-	if stopCb != nil {
+	if m.config.Timed {
+		// The clip stays loaded, cued again; its source stays.
+		m.mu.Lock()
+		if m.players[idx] == slot {
+			m.cueLocked(idx, slot)
+		}
+		m.mu.Unlock()
+	} else if stopCb != nil {
 		stopCb(playerID, playerKey(playerID))
 	}
 
@@ -777,6 +923,9 @@ func (m *Manager) SetLoop(playerID int, loop bool) error {
 	slot.loop = loop
 	if slot.player != nil {
 		slot.player.SetLoop(loop)
+	}
+	if slot.cue != nil {
+		slot.cue.SetLoop(loop)
 	}
 	m.mu.Unlock()
 
@@ -921,7 +1070,13 @@ func (m *Manager) Close() {
 		decoderCloser func()
 	}
 	var active []activePlayer
+	var cues []func()
 	for i := range m.players {
+		if m.players[i] != nil {
+			if stop := takeCueLocked(m.players[i]); stop != nil {
+				cues = append(cues, stop)
+			}
+		}
 		if m.players[i] != nil && m.players[i].player != nil {
 			active = append(active, activePlayer{
 				player:        m.players[i].player,
@@ -935,6 +1090,9 @@ func (m *Manager) Close() {
 	}
 	m.mu.Unlock()
 
+	for _, stop := range cues {
+		stop()
+	}
 	// Stop all players outside lock.
 	for _, a := range active {
 		if a.cancel != nil {

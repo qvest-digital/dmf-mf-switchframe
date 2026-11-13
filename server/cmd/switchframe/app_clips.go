@@ -74,10 +74,11 @@ func (a *App) initClips() error {
 			return pf.FPSNum, pf.FPSDen
 		},
 		EncoderFactory: clipRelayEncoderFactory(previewW, previewH, a.cfg.PreviewBitrate),
+		// A loaded slot is a source, cued on its first picture, and a cut
+		// or a transition to it starts it (SetOnAir below) on the next
+		// program tick.
+		Timed: true,
 	})
-
-	// PTS anchoring (same pattern as replay).
-	mgr.SetPTSProvider(a.sw.LastBroadcastVideoPTS)
 
 	// Register per-player MoQ relays so browsers can subscribe to clip sources.
 	for i := 0; i < clip.MaxPlayers; i++ {
@@ -94,9 +95,10 @@ func (a *App) initClips() error {
 
 	// Player lifecycle: register/unregister virtual sources.
 	mgr.OnPlayerLifecycle(
-		// onStart: register clip player as a raw YUV switcher source + mixer channel.
+		// onStart: a slot got a clip. Register it as a raw YUV switcher
+		// source + mixer channel, both placed by the player's PTS.
 		func(playerID int, key string) {
-			a.sw.RegisterReplaySource(key)
+			a.sw.RegisterTimedReplaySource(key)
 			a.mixer.AddChannel(key)
 			_ = a.mixer.SetAFV(key, true)
 			// If program is already this key, re-trigger AFV activation
@@ -153,7 +155,7 @@ func (a *App) initClips() error {
 				slog.Info("clip: GPU preview encoder registered", "key", key)
 			}
 		},
-		// onStop: unregister clip player source.
+		// onStop: the slot was ejected; unregister its source.
 		func(playerID int, key string) {
 			a.sw.UnregisterSource(key)
 			a.mixer.RemoveChannel(key)
@@ -322,7 +324,7 @@ func (a *App) initClips() error {
 			SampleRate: sampleRate,
 			Channels:   channels,
 		}
-		a.mixer.IngestFrame(key, frame)
+		a.mixer.IngestTimedFrame(key, frame)
 
 		// Broadcast audio to per-player relay for browser playback.
 		idx := clipPlayerIDFromKey(key) - 1
@@ -330,6 +332,9 @@ func (a *App) initClips() error {
 			a.clipRelays[idx].BroadcastAudio(frame)
 		}
 	})
+
+	// A cut or a transition to a slot's source starts the clip it holds.
+	a.sw.SetOnAir(startClipOnAir(mgr))
 
 	// State change broadcasts.
 	mgr.SetOnStateChange(func() {
@@ -385,6 +390,17 @@ func acquireClipFrameBuf(pool *switcher.FramePool, size int) ([]byte, bool) {
 		return pool.Acquire()[:size], true
 	}
 	return make([]byte, size), false
+}
+
+// startClipOnAir returns the switcher's on-air callback for the clip
+// players: a cut or a transition to a slot's source starts the clip it
+// holds and does not play, from its cue.
+func startClipOnAir(mgr *clip.Manager) func(key string) {
+	return func(key string) {
+		if strings.HasPrefix(key, "clip:") {
+			mgr.StartCued(clipPlayerIDFromKey(key))
+		}
+	}
 }
 
 // clipPlayerIDFromKey extracts the player ID from a "clip:N" key.

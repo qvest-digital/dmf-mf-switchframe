@@ -668,6 +668,10 @@ type Switcher struct {
 	// outputAudioCallbackDirect delivers AAC frames to the muxer (SRT/recording).
 	outputAudioCallback       atomic.Pointer[func(*media.AudioFrame)]
 	outputAudioCallbackDirect atomic.Pointer[func(*media.AudioFrame)]
+
+	// onAir is called with the source a cut or a transition takes to
+	// program, once the mixer has taken the change (SetOnAir).
+	onAir atomic.Pointer[func(sourceKey string)]
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -694,6 +698,21 @@ func New(programRelay *distribution.Relay) *Switcher {
 	s.registerBuiltinSourcesLocked()
 	s.startBuiltinProducer()
 	return s
+}
+
+// SetOnAir registers fn to be called with the source a cut or a
+// transition takes to program. It is called after the mixer has taken the
+// change, which flushes the source's audio: a source that starts on the
+// call, as a cued clip player does, keeps the audio it then delivers.
+func (s *Switcher) SetOnAir(fn func(sourceKey string)) {
+	s.onAir.Store(&fn)
+}
+
+// notifyOnAir calls the SetOnAir callback, if any, with sourceKey.
+func (s *Switcher) notifyOnAir(sourceKey string) {
+	if fn := s.onAir.Load(); fn != nil && *fn != nil {
+		(*fn)(sourceKey)
+	}
 }
 
 // SetMixer attaches an audio mixer to the switcher for state broadcasts.
@@ -2233,6 +2252,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 	s.log.Info("transition started",
 		"type", string(tt), "from", fromSource, "to", sourceKey, "duration_ms", durationMs)
+	s.notifyOnAir(sourceKey)
 
 	s.notifyStateChange(snapshot)
 	return nil
@@ -3243,6 +3263,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 			}
 			audioCut.OnProgramChange(sourceKey)
 		}
+		s.notifyOnAir(sourceKey)
 		s.notifyStateChange(snapshot)
 	}
 	return nil

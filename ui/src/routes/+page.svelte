@@ -1891,6 +1891,7 @@
 					{#each sortedSourceKeys(store.effectiveState.sources) as key, i}
 						<SourceButton
 							source={store.effectiveState.sources[key]}
+							clipPlayers={store.effectiveState.clipPlayers}
 							tally={store.effectiveState.tallyState[key] || 'idle'}
 							index={i}
 							audioLevelDb={store.effectiveState.audioChannels?.[key] ? Math.max(store.effectiveState.audioChannels[key].peakL, store.effectiveState.audioChannels[key].peakR) : undefined}

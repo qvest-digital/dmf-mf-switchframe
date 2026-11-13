@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 )
 
@@ -64,6 +65,28 @@ type PlayerConfig struct {
 	// OnVideoInfo signals codec parameters (SPS/PPS) and dimensions.
 	// Called once on the first keyframe with SPS/PPS.
 	OnVideoInfo func(sps, pps []byte, width, height int)
+
+	// Timed places the output on the engine timeline (package clock) at
+	// the output rate, replacing InitialPTS: the first frame takes the
+	// read point of the next program tick, so that tick shows it, and
+	// every frame goes out when its PTS is due. The audio is a stream of
+	// its own, stamped frame after frame and handed over ahead of the
+	// video it plays with, so a source placed by these PTS never runs dry
+	// and never steps. It plays at speed 1 only.
+	Timed bool
+
+	// Cued makes the player decode up to its first picture and hold it
+	// until Release: the picture goes out once a second meanwhile, so the
+	// source shows what a start puts on air, and the start has no decode
+	// to wait for. Requires Timed.
+	Cued bool
+
+	// OnStart reports the first video frame (media "video") and the first
+	// audio (media "audio") of the playback: the time since Release, or
+	// Start for a player not cued, and the pre-roll, "ready" when the first
+	// picture was decoded before the start, "waited" when the start waited
+	// for it and "missed" for a player not cued.
+	OnStart func(media string, delay time.Duration, preroll string)
 }
 
 // Player plays back a pre-demuxed clip with support for pause, seek,
@@ -148,6 +171,24 @@ type Player struct {
 	audioCallCount    int
 	totalOutputFrames int
 	outputAudioPTS    int64
+
+	// Start (Cued, Timed). release is closed by Release; releasedAt is
+	// when, in Unix nanoseconds.
+	release     chan struct{}
+	releaseOnce sync.Once
+	releasedAt  atomic.Int64
+	started     bool   // the first frame went out
+	audioOut    bool   // the first audio went out
+	preroll     string // how the first picture was had, for OnStart
+	rate        clock.Rate
+
+	// Timed audio. audioRem carries the remainder of the 90 kHz audio
+	// steps; audioPassStart is where the pass of the audio clip under way
+	// started; audioResync re-places the audio onto the video after a
+	// seek or a speed change.
+	audioRem       int64
+	audioPassStart int64
+	audioResync    bool
 }
 
 // NewPlayer creates a new clip player. The player starts in StateLoaded
@@ -162,9 +203,14 @@ func NewPlayer(config PlayerConfig) *Player {
 	}
 
 	p := &Player{
-		config: config,
-		done:   make(chan struct{}),
-		seekCh: make(chan float64, 1),
+		config:  config,
+		done:    make(chan struct{}),
+		seekCh:  make(chan float64, 1),
+		release: make(chan struct{}),
+		preroll: "missed",
+	}
+	if config.Cued {
+		p.preroll = "ready"
 	}
 
 	// Initialize speed.
@@ -192,10 +238,39 @@ func NewPlayer(config PlayerConfig) *Player {
 	return p
 }
 
-// Start begins playback in a background goroutine.
+// Start begins playback in a background goroutine. A cued player decodes
+// its first picture and holds it until Release.
 func (p *Player) Start(ctx context.Context) {
 	ctx, p.cancel = context.WithCancel(ctx)
+	if !p.config.Cued {
+		p.Release()
+	}
 	go p.run(ctx)
+}
+
+// Release starts the playback of a cued player: its first picture goes
+// out at once, or as soon as it is decoded. The player reports
+// StatePlaying from here on.
+func (p *Player) Release() {
+	p.releaseOnce.Do(func() {
+		p.releasedAt.Store(time.Now().UnixNano())
+		p.pauseMu.Lock()
+		if p.State() == StateLoaded {
+			p.state.Store(StatePlaying)
+		}
+		p.pauseMu.Unlock()
+		close(p.release)
+	})
+}
+
+// released reports whether Release was called.
+func (p *Player) released() bool {
+	select {
+	case <-p.release:
+		return true
+	default:
+		return false
+	}
 }
 
 // Stop cancels playback.
@@ -327,8 +402,6 @@ func (p *Player) run(ctx context.Context) {
 	p.sourceFPS = sourceFPS
 	p.runOn = startsWithIDR(clip[0])
 
-	p.state.Store(StatePlaying)
-
 	outputPTS := p.config.InitialPTS
 	p.outputAudioPTS = p.config.InitialPTS
 
@@ -368,7 +441,9 @@ func (p *Player) run(ctx context.Context) {
 		// Reset videoInfoSent so browser gets fresh SPS/PPS on loop restart.
 		p.videoInfoSent = false
 
-		p.audioIdx = 0
+		if !p.config.Timed {
+			p.audioIdx = 0
+		}
 		p.audioCallCount = 0
 	}
 }
@@ -387,6 +462,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 	}
 	ptsStep := &p.pts
 	ptsStep.num, ptsStep.den = int64(outNum), int64(outDen)
+	p.rate = clock.Rate{Num: int64(outNum), Den: int64(outDen)}
 	frameDuration := time.Second * time.Duration(outDen) / time.Duration(outNum)
 
 	speed := p.speed.Load().(float64)
@@ -468,8 +544,12 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 				p.progress.Store(prog)
 			}
 
-			// Emit audio proportionally.
-			p.emitAudioForVideoFrame(outputIdx, totalFrames)
+			// Emit audio proportionally, or, timed, ahead of the slot.
+			if p.config.Timed {
+				p.emitTimedAudio(speed, pic, totalClipFrames, *outputPTS)
+			} else {
+				p.emitAudioForVideoFrame(outputIdx, totalFrames)
+			}
 		}
 		return false
 	}
@@ -510,6 +590,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 				p.audioIdx = targetIdx * len(p.config.AudioClip) / totalClipFrames
 				p.audioCallCount = outputIdx
 			}
+			p.audioResync = true
 			continue
 		default:
 		}
@@ -527,6 +608,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 				p.totalOutputFrames = totalFrames
 				outputIdx = cad.start(pic)
 				p.paceIdx = 0
+				p.audioResync = true
 			}
 		}
 
@@ -787,6 +869,18 @@ func (p *Player) outputFrame(
 	playbackStart *time.Time,
 	pacingIdx *int,
 ) bool {
+	if !p.started {
+		if p.config.Cued && p.awaitRelease(ctx, frameData, fw, fh, srcKeyframe, wireData, isKeyframe, sps, pps) {
+			return true
+		}
+		p.started = true
+		if p.config.Timed {
+			*outputPTS = timelineStart(p.rate, clock.TAINow())
+			p.outputAudioPTS, p.audioPassStart, p.audioRem = *outputPTS, *outputPTS, 0
+		}
+		p.noteStart("video")
+	}
+
 	// Check for pause. If paused, this blocks until resumed or cancelled.
 	chPtr := p.pauseCh.Load()
 	if chPtr != nil {
@@ -812,6 +906,10 @@ func (p *Player) outputFrame(
 	default:
 	}
 
+	if p.config.Timed {
+		p.keepOnTimeline(outputPTS)
+	}
+
 	// Output decoded YUV video to switcher pipeline (only when decode succeeded).
 	if frameData != nil && p.config.RawVideoOutput != nil {
 		p.config.RawVideoOutput(frameData, fw, fh, *outputPTS, srcKeyframe)
@@ -820,6 +918,21 @@ func (p *Player) outputFrame(
 	// Forward H.264 wire data to browser relay (re-encoded or original).
 	if wireData != nil && p.config.VideoOutput != nil {
 		p.config.VideoOutput(wireData, *outputPTS, isKeyframe, sps, pps)
+	}
+
+	// Timed, the next frame is due at its PTS.
+	if p.config.Timed {
+		*outputPTS += pts.next()
+		*pacingIdx++
+		if wait := time.Duration(clock.TimestampOf(*outputPTS) - clock.TAINow()); wait > 0 {
+			timer.Reset(wait)
+			select {
+			case <-ctx.Done():
+				return true
+			case <-timer.C:
+			}
+		}
+		return false
 	}
 
 	// Pace using absolute time to prevent drift from callback overhead. The
@@ -865,6 +978,171 @@ func (p *Player) emitAudioForVideoFrame(outputIdx, totalFrames int) {
 	}
 }
 
+// awaitRelease holds a cued player's first picture until Release, putting
+// it out once a second meanwhile at the read point of the program tick
+// running then. Returns true if the context was cancelled.
+func (p *Player) awaitRelease(ctx context.Context, frameData []byte, fw, fh int, srcKeyframe bool, wireData []byte, isKeyframe bool, sps, pps []byte) bool {
+	if p.released() {
+		p.preroll = "waited"
+		return false
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		pts := timelineRead(p.rate, clock.TAINow())
+		if frameData != nil && p.config.RawVideoOutput != nil {
+			p.config.RawVideoOutput(frameData, fw, fh, pts, srcKeyframe)
+		}
+		if wireData != nil && p.config.VideoOutput != nil {
+			p.config.VideoOutput(wireData, pts, isKeyframe, sps, pps)
+		}
+		select {
+		case <-ctx.Done():
+			return true
+		case <-p.release:
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+// noteStart reports the first output of media to OnStart.
+func (p *Player) noteStart(media string) {
+	if p.config.OnStart == nil {
+		return
+	}
+	p.config.OnStart(media, time.Since(time.Unix(0, p.releasedAt.Load())), p.preroll)
+}
+
+// keepOnTimeline moves a timed player's PTS, video and audio alike, onto
+// the clock when the frame about to go out is due more than
+// ReaderDelayGrains periods ago, as after a pause or a decoder that fell
+// behind, or more than a period ahead, as after a seek whose decode-only
+// frames advanced the PTS: the tick due to show such a frame has passed
+// or is still far off. Otherwise the PTS run on unbroken.
+func (p *Player) keepOnTimeline(outputPTS *int64) {
+	period := 90000 * p.rate.Den / p.rate.Num
+	off := clock.NowPTS() - *outputPTS
+	if off <= clock.ReaderDelayGrains*period && off >= -period {
+		return
+	}
+	*outputPTS += off
+	p.outputAudioPTS += off
+	p.audioPassStart += off
+}
+
+// emitTimedAudio hands over a timed player's audio up to an AAC frame past
+// until, the PTS of the next video slot, so it is buffered before the
+// read that needs it. pic is the pictures of the pass put out so far, of
+// total. The audio runs on from pass to pass of a loop as one stream: a
+// pass of it ends at the AAC frame nearest to where the video's pass
+// does, so the two never drift apart, and only audio that ends more than
+// an AAC frame short of the video's pass is moved onto it. At a speed other
+// than 1 no audio goes out; on the return to 1 and after a seek the audio
+// is placed on the video again, at the picture's share of it.
+func (p *Player) emitTimedAudio(speed float64, pic, total int, until int64) {
+	audioClip := p.config.AudioClip
+	if len(audioClip) == 0 || p.config.AudioOutput == nil || total == 0 {
+		return
+	}
+	if speed != 1 {
+		p.audioResync = true
+		return
+	}
+	if p.audioResync {
+		p.audioResync = false
+		p.audioIdx = pic * len(audioClip) / total
+		p.outputAudioPTS, p.audioRem = until, 0
+		p.audioPassStart = until - p.audioClipTicks(p.audioIdx)
+	}
+	passTicks := int64(p.totalOutputFrames) * 90000 * p.rate.Den / p.rate.Num
+	frame := aacFrameTicks(audioClip[0])
+	for {
+		end := p.audioPassStart + passTicks
+		loop := p.loop.Load()
+		if p.audioIdx >= len(audioClip) || (loop && passTicks > 0 && p.outputAudioPTS+frame/2 >= end) {
+			if !loop {
+				return
+			}
+			p.audioIdx = 0
+			if d := p.outputAudioPTS - end; d > frame || -d > frame {
+				p.outputAudioPTS, p.audioRem = end, 0
+			}
+			p.audioPassStart = end
+		}
+		af := &audioClip[p.audioIdx]
+		if p.outputAudioPTS >= until+aacFrameTicks(*af) {
+			return
+		}
+		p.config.AudioOutput(af.data, p.outputAudioPTS, af.sampleRate, af.channels)
+		if !p.audioOut {
+			p.audioOut = true
+			p.noteStart("audio")
+		}
+		p.outputAudioPTS += p.audioStep(af.sampleRate)
+		p.audioIdx++
+	}
+}
+
+// audioStep returns the 90 kHz duration of the next AAC frame at
+// sampleRate (48 kHz when unknown), carrying the remainder so a rate that
+// does not divide 90000*1024 does not drift.
+func (p *Player) audioStep(sampleRate int) int64 {
+	if sampleRate <= 0 {
+		sampleRate = 48000
+	}
+	p.audioRem += 1024 * 90000
+	d := p.audioRem / int64(sampleRate)
+	p.audioRem -= d * int64(sampleRate)
+	return d
+}
+
+// audioClipTicks is the 90 kHz duration of the first n AAC frames of the
+// audio clip.
+func (p *Player) audioClipTicks(n int) int64 {
+	var ticks int64
+	for _, af := range p.config.AudioClip[:n] {
+		rate := int64(af.sampleRate)
+		if rate <= 0 {
+			rate = 48000
+		}
+		ticks += 1024 * 90000 / rate
+	}
+	return ticks
+}
+
+// startMargin is the least time a start leaves before the next program
+// tick to put out the frames and the audio due at once.
+const startMargin = 5 * time.Millisecond
+
+// timelineStart returns the PTS of a timed player's first frame when it
+// starts at TAI now on an output at rate r: the read point of the next
+// program tick, or of the one after it when the next is closer than
+// startMargin.
+func timelineStart(r clock.Rate, now int64) int64 {
+	i := tickAt(r, now) + 1
+	if clock.IndexToTimestamp(r, i)-now < int64(startMargin) {
+		i++
+	}
+	return clock.IndexPTS(r, i-clock.ReaderDelayGrains)
+}
+
+// timelineRead returns the read point of the program tick running at TAI
+// now, on an output at rate r.
+func timelineRead(r clock.Rate, now int64) int64 {
+	return clock.IndexPTS(r, tickAt(r, now)-clock.ReaderDelayGrains)
+}
+
+// tickAt returns the program tick running at TAI now: the grain that
+// started last, as the reference clock ticks at a grain's start.
+func tickAt(r clock.Rate, now int64) uint64 {
+	i := clock.TimestampToIndex(r, now)
+	if clock.IndexToTimestamp(r, i) > now {
+		i--
+	}
+	return i
+}
+
 // holdLoop transitions to StateHolding and outputs the last frame at 1fps
 // to keep the source alive for health checks. Blocks until context is done.
 func (p *Player) holdLoop(ctx context.Context, outputPTS *int64) {
@@ -893,6 +1171,12 @@ func (p *Player) holdLoop(ctx context.Context, outputPTS *int64) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Timed, each repeat is due at the tick running: stamped a
+			// second on from the last, it could be due ticks later and
+			// leave the source with nothing new to show until then.
+			if p.config.Timed {
+				*outputPTS = timelineRead(p.rate, clock.TAINow())
+			}
 			if holdData != nil && p.config.RawVideoOutput != nil {
 				p.config.RawVideoOutput(holdData, holdW, holdH, *outputPTS, true)
 			}

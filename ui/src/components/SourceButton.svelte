@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { holdReload } from '$lib/util/activity';
-	import type { SourceInfo, TallyStatus, LayoutSlotState } from '$lib/api/types';
+	import type { SourceInfo, TallyStatus, LayoutSlotState, ClipPlayerState } from '$lib/api/types';
+	import { virtualSourceBadge } from '$lib/clips/source-badge';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import { computeSRTHealth } from '$lib/util/srt-health';
 	import { isSourceStalled } from '$lib/transport/source-errors.svelte';
@@ -9,6 +10,7 @@
 
 	interface Props {
 		source: SourceInfo;
+		clipPlayers?: ClipPlayerState[];
 		tally: TallyStatus;
 		index: number;
 		audioLevelDb?: number;
@@ -19,7 +21,7 @@
 		onSRTClick?: (e: MouseEvent) => void;
 	}
 
-	let { source, tally, index, audioLevelDb = -96, layoutSlots, onPreview, onCut, onLabelChange, onSRTClick }: Props = $props();
+	let { source, clipPlayers, tally, index, audioLevelDb = -96, layoutSlots, onPreview, onCut, onLabelChange, onSRTClick }: Props = $props();
 
 	let isPIP = $derived(layoutSlots?.some(s => s.enabled && s.sourceKey === source.key) ?? false);
 	let srtHealth = $derived(computeSRTHealth(source.srt));
@@ -164,7 +166,7 @@
 				role={onLabelChange ? 'button' : undefined}
 			>{source.label || source.key}</span>
 		{/if}
-		{#if source.isVirtual}<span class="virtual-badge">RPL</span>{/if}
+		{#if source.isVirtual}<span class="virtual-badge">{virtualSourceBadge(source.key, clipPlayers)}</span>{/if}
 	</div>
 	{#if showBar}
 		<div class="audio-bar" aria-hidden="true">

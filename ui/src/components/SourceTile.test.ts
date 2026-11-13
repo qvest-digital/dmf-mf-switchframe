@@ -474,4 +474,14 @@ describe('SourceTile dual engine health dots', () => {
 		// Standard tile-status should be hidden (not rendered)
 		expect(container.querySelector('.tile-status')).toBeNull();
 	});
+
+	// A loaded clip player is a source to cut to; the badge says a cut
+	// starts it.
+	it('marks a cued clip player source', () => {
+		const clipSource = { key: 'clip:3', label: 'CLIP:3', type: 'clip', status: 'healthy', isVirtual: true } as SourceInfo;
+		const { container } = render(SourceTile, {
+			props: { source: clipSource, clipPlayers: [{ id: 3, state: 'loaded', clipName: 'Opener' }], tally: 'idle' as TallyStatus, index: 0, onclick: vi.fn() },
+		});
+		expect(container.querySelector('.virtual-badge')?.textContent).toBe('CUE');
+	});
 });
