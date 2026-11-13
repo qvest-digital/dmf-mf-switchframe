@@ -195,6 +195,12 @@ type Channel struct {
 	outputPTSFrac      int64
 	outputAudioPTSFrac int64
 
+	// audioSrcNext is the source PTS at which the audio last handed out
+	// ends, and audioSrcSet whether there is any: audio that does not
+	// start there begins a new stream (see emitAudio).
+	audioSrcNext int64
+	audioSrcSet  bool
+
 	// Run control.
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -480,6 +486,7 @@ func (c *Channel) Start() error {
 	c.outputAudioPTS = 0
 	c.outputPTSFrac = 0
 	c.outputAudioPTSFrac = 0
+	c.audioSrcSet = false
 
 	// Seed PTS from provider if available.
 	if c.ptsProvider != nil {
@@ -1694,6 +1701,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 		} else if len(frame.AudioData) > 0 {
 			collectedAudio = append(collectedAudio, AudioFrameData{
 				Data:       frame.AudioData,
+				PTS:        frame.AudioPTS,
 				SampleRate: frame.AudioSampleRate,
 				Channels:   frame.AudioChannels,
 			})
@@ -2027,6 +2035,7 @@ func (c *Channel) nextIncomingClipFrame(item *PlaylistItem) *DecodedFrame {
 		} else if len(frame.AudioData) > 0 {
 			collectedAudio = append(collectedAudio, AudioFrameData{
 				Data:       frame.AudioData,
+				PTS:        frame.AudioPTS,
 				SampleRate: frame.AudioSampleRate,
 				Channels:   frame.AudioChannels,
 			})
@@ -2364,22 +2373,37 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 			// absorbs the burst.
 			for i := range frame.AudioFrames {
 				af := &frame.AudioFrames[i]
-				audioFn(af.Data, c.outputAudioPTS, af.SampleRate, af.Channels)
-				if af.SampleRate > 0 {
-					aStepInt, aStepFrac := ptsStep(1024.0 * 90000.0 / float64(af.SampleRate))
-					c.outputAudioPTS, c.outputAudioPTSFrac = advancePTS(c.outputAudioPTS, c.outputAudioPTSFrac, aStepInt, aStepFrac)
-				}
+				c.emitAudio(audioFn, af.Data, af.PTS, af.SampleRate, af.Channels)
 			}
 		} else if len(frame.AudioData) > 0 {
-			audioFn(frame.AudioData, c.outputAudioPTS, frame.AudioSampleRate, frame.AudioChannels)
-			if frame.AudioSampleRate > 0 {
-				aStepInt, aStepFrac := ptsStep(1024.0 * 90000.0 / float64(frame.AudioSampleRate))
-				c.outputAudioPTS, c.outputAudioPTSFrac = advancePTS(c.outputAudioPTS, c.outputAudioPTSFrac, aStepInt, aStepFrac)
-			}
+			c.emitAudio(audioFn, frame.AudioData, frame.AudioPTS, frame.AudioSampleRate, frame.AudioChannels)
 		}
 	}
 
 	c.outputPTS, c.outputPTSFrac = advancePTS(c.outputPTS, c.outputPTSFrac, vStepInt, vStepFrac)
+}
+
+// emitAudio hands one AAC frame to audioFn under the channel's audio PTS.
+// srcPTS is the frame's PTS in its own file. A frame that does not continue
+// the audio handed out before (a new item, a loop or seek, audio after an
+// item without any) starts on the video PTS of the frame carrying it:
+// otherwise the audio PTS keeps the length of every stretch without audio
+// behind the video, and the audio lands that far behind its pictures, or
+// behind the mixer's read point altogether.
+func (c *Channel) emitAudio(audioFn func([]byte, int64, int, int), data []byte, srcPTS int64, sampleRate, channels int) {
+	var dur int64 // one AAC frame in 90 kHz ticks
+	if sampleRate > 0 {
+		dur = 1024 * 90000 / int64(sampleRate)
+	}
+	if d := srcPTS - c.audioSrcNext; !c.audioSrcSet || d > dur/2 || d < -dur/2 {
+		c.outputAudioPTS, c.outputAudioPTSFrac = c.outputPTS, c.outputPTSFrac
+	}
+	c.audioSrcNext, c.audioSrcSet = srcPTS+dur, true
+	audioFn(data, c.outputAudioPTS, sampleRate, channels)
+	if sampleRate > 0 {
+		aStepInt, aStepFrac := ptsStep(1024.0 * 90000.0 / float64(sampleRate))
+		c.outputAudioPTS, c.outputAudioPTSFrac = advancePTS(c.outputAudioPTS, c.outputAudioPTSFrac, aStepInt, aStepFrac)
+	}
 }
 
 // completeIfOnAir moves an on-air channel whose playlist ran out to

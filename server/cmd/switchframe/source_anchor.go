@@ -8,8 +8,8 @@ import (
 
 // playoutAnchors places each playout channel's continuous output PTS on
 // the engine timeline. The channel's frame ticker runs on the engine's own
-// clock, so the channel is placed once, at its first frame, and again only
-// after a jump such as a restart.
+// clock, so each run of the channel is placed once, at its first frame,
+// and again only after a jump.
 var playoutAnchors sync.Map // source key -> *clock.Anchor
 
 func playoutAnchor(key string) *clock.Anchor {
