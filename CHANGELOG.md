@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.0-rc.49](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.48...mxl-v1.0.0-rc.49) (2026-11-13)
+
+
+### Features
+
+* **dve:** animate layout recall over durationMs and easing ([#210](https://github.com/qvest-digital/dmf-mf-switchframe/issues/210)) ([143d3c9](https://github.com/qvest-digital/dmf-mf-switchframe/commit/143d3c910b0c8e33078d88666c8ed18a95dc19f9))
+
+
+### Bug Fixes
+
+* **sync:** drop the ST map assignments a peer snapshot lacks ([3a9e443](https://github.com/qvest-digital/dmf-mf-switchframe/commit/3a9e44396a70be5278316646c940dabddc9d546e))
+* **sync:** refuse reconcile reads while an engine is starting ([3a9e443](https://github.com/qvest-digital/dmf-mf-switchframe/commit/3a9e44396a70be5278316646c940dabddc9d546e))
+* **sync:** take a peer's graphics layers with their content ([3a9e443](https://github.com/qvest-digital/dmf-mf-switchframe/commit/3a9e44396a70be5278316646c940dabddc9d546e))
+* **ui:** read the served build past the service worker cache ([#212](https://github.com/qvest-digital/dmf-mf-switchframe/issues/212)) ([7b94354](https://github.com/qvest-digital/dmf-mf-switchframe/commit/7b94354b6556c431095aec721e97cf8eab4482a5))
+
 ## [1.0.0-rc.48](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.47...mxl-v1.0.0-rc.48) (2026-11-12)
 
 
