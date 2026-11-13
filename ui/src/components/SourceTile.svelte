@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { holdReload } from '$lib/util/activity';
-	import type { SourceInfo, TallyStatus, LayoutSlotState, SourceHealthStatus } from '$lib/api/types';
+	import type { SourceInfo, TallyStatus, LayoutSlotState, SourceHealthStatus, ClipPlayerState } from '$lib/api/types';
+	import { virtualSourceBadge } from '$lib/clips/source-badge';
 	import { computeSRTHealth } from '$lib/util/srt-health';
 	import { healthDotColor } from '$lib/util/health-dots';
 	import { isSourceStalled } from '$lib/transport/source-errors.svelte';
@@ -8,6 +9,7 @@
 
 	interface Props {
 		source: SourceInfo;
+		clipPlayers?: ClipPlayerState[];
 		tally: TallyStatus;
 		index: number;
 		audioLevelDb?: number;
@@ -18,7 +20,7 @@
 		onSRTClick?: (e: MouseEvent) => void;
 	}
 
-	let { source, tally, index, audioLevelDb = -96, layoutSlots, engineSourceHealth, onclick, onLabelChange, onSRTClick }: Props = $props();
+	let { source, clipPlayers, tally, index, audioLevelDb = -96, layoutSlots, engineSourceHealth, onclick, onLabelChange, onSRTClick }: Props = $props();
 
 	let showDualDots = $derived(
 		engineSourceHealth != null && engineSourceHealth.A !== engineSourceHealth.B
@@ -127,7 +129,7 @@
 		</span>
 	{:else}
 		<span class="tile-status" class:offline={source.status === 'offline'} class:stale={source.status === 'stale' || stalled}>
-			{#if stalled}<span class="stall-badge">STALL</span>{:else if source.isVirtual}<span class="virtual-badge">RPL</span>{:else if source.status !== 'healthy'}{source.status}{/if}
+			{#if stalled}<span class="stall-badge">STALL</span>{:else if source.isVirtual}<span class="virtual-badge">{virtualSourceBadge(source.key, clipPlayers)}</span>{:else if source.status !== 'healthy'}{source.status}{/if}
 		</span>
 	{/if}
 

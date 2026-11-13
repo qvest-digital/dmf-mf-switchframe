@@ -18,4 +18,14 @@ describe('SourceButton', () => {
 		await fireEvent.keyDown(container.querySelector('.label-input') as HTMLInputElement, { key: 'Escape' });
 		expect(reloadHolds()).not.toContain('source rename');
 	});
+
+	// A loaded clip player is a source to cut to; the badge says a cut
+	// starts it.
+	it('marks a cued clip player source', () => {
+		const clipSource = { key: 'clip:1', label: 'CLIP:1', type: 'clip', status: 'healthy', isVirtual: true } as SourceInfo;
+		const { container } = render(SourceButton, {
+			props: { source: clipSource, clipPlayers: [{ id: 1, state: 'loaded', clipName: 'Opener' }], tally: 'idle', index: 0, onCut: vi.fn() },
+		});
+		expect(container.querySelector('.virtual-badge')?.textContent).toBe('CUE');
+	});
 });

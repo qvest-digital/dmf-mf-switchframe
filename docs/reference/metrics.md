@@ -257,6 +257,8 @@ Read by [`clip.MetricsCollector`](../../server/clip/metrics_collector.go), per c
 | Metric | Type | Labels | Description |
 |---|---|---|---|
 | `switchframe_clip_player_state` | gauge | `player`, `state` | 1 for the clip player's state, 0 for the others. |
+| `switchframe_clip_player_starts_total` | counter | `player`, `preroll` | Clip player starts, by whether the first picture was cued: `ready` (decoded before the start), `waited` (still being decoded at the start) or `missed` (not cued). |
+| `switchframe_clip_player_start_delay_seconds` | histogram | `player`, `media` | Time from a clip player's start to its first video frame (`media=video`) and its first audio (`media=audio`). Buckets: 1 ms, 5 ms, 10 ms, 20 ms, 40 ms, 100 ms, 250 ms, 500 ms, 1 s, 2.5 s, 5 s. |
 | `switchframe_clip_player_position_ratio` | gauge | `player` | How far a loaded clip has played, 0 to 1. |
 | `switchframe_clip_player_speed` | gauge | `player` | Playback speed of a playing clip; 1 is real time. |
 
