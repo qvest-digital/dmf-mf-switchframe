@@ -99,6 +99,10 @@ self.addEventListener('fetch', (event) => {
     // Never cache API calls or WebTransport
     if (isApiRequest(url)) return;
 
+    // version.json names the build the engine serves now. From cache it
+    // names the build cached first, until sw.js changes.
+    if (new URL(url).pathname === '/_app/version.json') return;
+
     // Navigation requests: try network first, fall back to cached index.html
     if (isNavigationRequest(event.request)) {
         event.respondWith(
