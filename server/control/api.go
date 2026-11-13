@@ -59,6 +59,8 @@ type AudioMixerAPI interface {
 	GetGate(sourceKey string) (audio.GateState, error)
 	SetAudioDelay(sourceKey string, delayMs int) error
 	AudioDelayMs(sourceKey string) int
+	SetChannelPair(sourceKey string, firstChannel int) error
+	ChannelPair(sourceKey string) int
 	SetLimiterThreshold(thresholdDB float64) error
 	SetLimiterCeiling(ceilingDB float64) error
 	// LimiterSettings returns threshold, ceiling, GR, and last-block true-peak

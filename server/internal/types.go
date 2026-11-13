@@ -125,6 +125,11 @@ type AudioChannel struct {
 	GateEnabled   bool               `json:"gateEnabled,omitempty"`
 	GateReduction float64            `json:"gateReduction,omitempty"` // gate GR in dB
 	AudioDelayMs  int                `json:"audioDelayMs,omitempty"`  // lip-sync delay (0-500ms)
+	// FirstChannel is the first source channel of the pair fed to program,
+	// 1-based and odd; 0 is the default mapping.
+	FirstChannel int `json:"firstChannel,omitempty"`
+	// SourceChannels is the channel count of the source's last frame.
+	SourceChannels int `json:"sourceChannels,omitempty"`
 }
 
 // RecordingStatus is the JSON-serializable status for recording output,

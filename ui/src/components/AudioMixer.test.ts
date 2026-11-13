@@ -13,6 +13,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	setCompressor: vi.fn().mockResolvedValue({}),
 	setSourceDelay: vi.fn().mockResolvedValue({}),
 	setAudioDelay: vi.fn().mockResolvedValue({}),
+	setChannelPair: vi.fn().mockResolvedValue({}),
 	setGate: vi.fn().mockResolvedValue({}),
 }));
 
@@ -268,6 +269,55 @@ describe('AudioMixer', () => {
 		const detail = container.querySelector('.channel-detail');
 		expect(detail).toBeTruthy();
 		expect(detail!.textContent).toContain('Camera 1');
+	});
+
+	describe('channel pair', () => {
+		const wide = (sourceChannels?: number, firstChannel?: number) => ({
+			...state,
+			audioChannels: {
+				...state.audioChannels,
+				cam1: { ...state.audioChannels.cam1, sourceChannels, firstChannel },
+			},
+		});
+
+		it('is offered only for a source wider than stereo', () => {
+			for (const n of [undefined, 1, 2]) {
+				const { container, unmount } = render(AudioMixer, { props: { state: wide(n), selectedChannel: 'cam1' } });
+				expect(container.querySelector('.pair-select'), `sourceChannels ${n}`).toBeFalsy();
+				unmount();
+			}
+		});
+
+		it('offers Default and every pair the source has', () => {
+			const { container } = render(AudioMixer, { props: { state: wide(16, 3), selectedChannel: 'cam1' } });
+			const select = container.querySelector('.pair-select') as HTMLSelectElement;
+			expect(select).toBeTruthy();
+			const labels = Array.from(select.options).map((o) => o.textContent);
+			expect(labels).toEqual(['Default', '1/2', '3/4', '5/6', '7/8', '9/10', '11/12', '13/14', '15/16']);
+			expect(select.selectedIndex).toBe(2);
+		});
+
+		it('offers no pair a source is too narrow for', () => {
+			const { container } = render(AudioMixer, { props: { state: wide(3), selectedChannel: 'cam1' } });
+			const select = container.querySelector('.pair-select') as HTMLSelectElement;
+			expect(Array.from(select.options).map((o) => o.textContent)).toEqual(['Default', '1/2']);
+			expect(select.selectedIndex).toBe(0);
+		});
+
+		it('sends the chosen pair, and 0 for Default', async () => {
+			const api = await import('$lib/api/switch-api');
+			vi.mocked(api.setChannelPair).mockClear();
+			const { container } = render(AudioMixer, { props: { state: wide(16), selectedChannel: 'cam1' } });
+			const select = container.querySelector('.pair-select') as HTMLSelectElement;
+
+			select.selectedIndex = 2;
+			await fireEvent.change(select);
+			expect(api.setChannelPair).toHaveBeenLastCalledWith('cam1', 3);
+
+			select.selectedIndex = 0;
+			await fireEvent.change(select);
+			expect(api.setChannelPair).toHaveBeenLastCalledWith('cam1', 0);
+		});
 	});
 
 	it('should not show channel-detail when selectedChannel is null', () => {

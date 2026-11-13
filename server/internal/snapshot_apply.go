@@ -35,6 +35,7 @@ type SnapshotApplyTarget interface {
 	SetCompressor(sourceKey string, threshold, ratio, attack, release, makeupGain float64) error
 	SetGate(sourceKey string, threshold, rangeDB, attack, release, hold float64, enabled bool) error
 	SetAudioDelay(sourceKey string, delayMs int) error
+	SetChannelPair(sourceKey string, firstChannel int) error
 
 	// Audio master
 	SetMasterLevel(levelDB float64) error
@@ -507,6 +508,10 @@ func applyAudioChannels(channels map[string]AudioChannelSnapshot, target Snapsho
 		if err := target.SetAudioDelay(key, ch.AudioDelayMs); err != nil {
 			slog.Warn("snapshot apply: audio delay failed", "channel", key, "error", err)
 			warnings = append(warnings, fmt.Sprintf("audio channel %q delay: %v", key, err))
+		}
+		if err := target.SetChannelPair(key, ch.FirstChannel); err != nil {
+			slog.Warn("snapshot apply: audio channel pair failed", "channel", key, "error", err)
+			warnings = append(warnings, fmt.Sprintf("audio channel %q channel pair: %v", key, err))
 		}
 	}
 

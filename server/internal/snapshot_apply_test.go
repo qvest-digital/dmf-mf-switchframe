@@ -129,6 +129,10 @@ func (m *mockApplyTarget) SetAudioDelay(sourceKey string, delayMs int) error {
 	return m.record("SetAudioDelay", sourceKey, delayMs)
 }
 
+func (m *mockApplyTarget) SetChannelPair(sourceKey string, firstChannel int) error {
+	return m.record("SetChannelPair", sourceKey, firstChannel)
+}
+
 func (m *mockApplyTarget) SetMasterLevel(levelDB float64) error {
 	return m.record("SetMasterLevel", levelDB)
 }
@@ -557,6 +561,7 @@ func TestApplyFullSnapshot_AudioChannelAllFields(t *testing.T) {
 					Enabled:   true,
 				},
 				AudioDelayMs: 80,
+				FirstChannel: 3,
 			},
 		},
 	}
@@ -571,7 +576,7 @@ func TestApplyFullSnapshot_AudioChannelAllFields(t *testing.T) {
 	audioMethods := []string{
 		"SetLevel", "SetTrim", "SetMuted", "SetAFV",
 		"SetPhaseInvert", "SetBalance", "SetHPF",
-		"SetCompressor", "SetGate", "SetAudioDelay",
+		"SetCompressor", "SetGate", "SetAudioDelay", "SetChannelPair",
 	}
 	for _, method := range audioMethods {
 		if mock.callCount(method) != 1 {
@@ -587,6 +592,10 @@ func TestApplyFullSnapshot_AudioChannelAllFields(t *testing.T) {
 	levelCall := mock.callsFor("SetLevel")[0]
 	if levelCall.Args[0] != "mic1" || levelCall.Args[1] != -12.5 {
 		t.Errorf("SetLevel args: got %v", levelCall.Args)
+	}
+
+	if pairCall := mock.callsFor("SetChannelPair")[0]; pairCall.Args[0] != "mic1" || pairCall.Args[1] != 3 {
+		t.Errorf("SetChannelPair args: got %v", pairCall.Args)
 	}
 
 	trimCall := mock.callsFor("SetTrim")[0]

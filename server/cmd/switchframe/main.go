@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/comms"
 	"github.com/zsiec/switchframe/server/control"
@@ -204,6 +205,11 @@ type AppConfig struct {
 	// start when no peer is on air to follow. Empty: the first input that
 	// delivers frames.
 	InitialProgramSource string // --initial-program-source or SWITCHFRAME_INITIAL_PROGRAM_SOURCE
+
+	// AudioChannelPairs is the first channel of the pair each source feeds
+	// program at start, by source key; a source not named keeps the
+	// default mapping.
+	AudioChannelPairs map[string]int // --audio-channel-pairs or SWITCHFRAME_AUDIO_CHANNEL_PAIRS
 
 	// Reference clock: single clock source drives synchronous A/V processing.
 
@@ -461,6 +467,7 @@ func parseConfig() (AppConfig, error) {
 	peerCertHashFlag := flag.String("peer-cert-hash", "", "SHA-256 hex of the peer engine's leaf cert DER (comma-separated pair during rotation); required when --peer-engine-url uses a private IP")
 	engineLabelFlag := flag.String("engine-label", "", "engine label for active-active pairs (\"a\" or \"b\"); empty = single-engine")
 	controlPlaneSecretFlag := flag.String("control-plane-secret", "", "shared secret authorizing POST /api/peer/force-leader; empty disables the endpoint")
+	audioChannelPairsFlag := flag.String("audio-channel-pairs", "", "first channel of the pair a source feeds program at start, as <source key>=<first channel>,..., e.g. mxl:cam1=3,srt:cam2=5; the first channel is odd, 1 to 15 (env: SWITCHFRAME_AUDIO_CHANNEL_PAIRS)")
 	initialProgramSourceFlag := flag.String("initial-program-source", "", "source key put on air at start when no peer engine is on air to follow, e.g. mxl:cam1; empty = the first input delivering frames (env: SWITCHFRAME_INITIAL_PROGRAM_SOURCE)")
 
 	// OpenID Connect sign-in.
@@ -591,6 +598,11 @@ func parseConfig() (AppConfig, error) {
 		return AppConfig{}, fmt.Errorf("--mxl-source-preset %q: want low-latency, balanced, quality or fastest", *mxlSourcePresetFlag)
 	}
 
+	audioChannelPairs, err := parseAudioChannelPairs(resolveEnvOrFlag(*audioChannelPairsFlag, "SWITCHFRAME_AUDIO_CHANNEL_PAIRS"))
+	if err != nil {
+		return AppConfig{}, err
+	}
+
 	x264Threads, err := x264ThreadsFromEnvironment(*x264ThreadsFlag)
 	if err != nil {
 		return AppConfig{}, err
@@ -702,6 +714,7 @@ func parseConfig() (AppConfig, error) {
 		EngineLabel:          resolveEnvOrFlag(*engineLabelFlag, "SWITCHFRAME_ENGINE_LABEL"),
 		ControlPlaneSecret:   resolveEnvOrFlag(*controlPlaneSecretFlag, "SWITCHFRAME_CONTROL_PLANE_SECRET"),
 		InitialProgramSource: resolveEnvOrFlag(*initialProgramSourceFlag, "SWITCHFRAME_INITIAL_PROGRAM_SOURCE"),
+		AudioChannelPairs:    audioChannelPairs,
 		WarmCache:            *warmCacheFlag,
 	}, nil
 }
@@ -731,6 +744,33 @@ func resolveIntEnvOrFlag(flagVal int, envKey string) int {
 		return 0
 	}
 	return v
+}
+
+// parseAudioChannelPairs parses --audio-channel-pairs, a comma-separated
+// list of <source key>=<first channel>. A source key may itself hold "=",
+// so the first channel follows the last one.
+func parseAudioChannelPairs(s string) (map[string]int, error) {
+	pairs := map[string]int{}
+	for _, entry := range strings.Split(s, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		i := strings.LastIndex(entry, "=")
+		if i <= 0 {
+			return nil, fmt.Errorf("--audio-channel-pairs %q: want <source key>=<first channel>", entry)
+		}
+		key := strings.TrimSpace(entry[:i])
+		first, err := strconv.Atoi(strings.TrimSpace(entry[i+1:]))
+		if err != nil || first == 0 || !audio.ValidFirstChannel(first) {
+			return nil, fmt.Errorf("--audio-channel-pairs %q: first channel must be odd, 1 to %d", entry, audio.MaxFirstChannel)
+		}
+		if _, dup := pairs[key]; dup {
+			return nil, fmt.Errorf("--audio-channel-pairs: %q named twice", key)
+		}
+		pairs[key] = first
+	}
+	return pairs, nil
 }
 
 func resolveEnvOrFlag(flagVal, envKey string) string {

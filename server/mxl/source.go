@@ -59,6 +59,11 @@ type SourceConfig struct {
 	// OnRawAudio delivers interleaved float32 PCM to the mixer.
 	OnRawAudio SourceAudioSink
 
+	// AudioPair returns the first channel, 1-based, of the pair the mixer
+	// takes to program from this source; 0 for its default mapping. nil
+	// is the default mapping.
+	AudioPair func() int
+
 	// OnDataGrain is called with raw data grain payloads (metadata/ancillary).
 	// key is the source identifier, data is the raw payload, pts is the monotonic counter.
 	OnDataGrain func(key string, data []byte, pts int64)
@@ -601,10 +606,17 @@ func (s *Source) processAudioGrain(grain AudioGrain) {
 	if s.config.Relay != nil && s.config.AudioEncoderFactory != nil {
 		channels := grain.Channels
 		if channels > maxRelayAudioChannels && len(grain.PCM) >= 2 {
-			// The stereo mixer keeps the first two channels of a source
-			// wider than 5.1, so the preview carries the same pair.
-			// interleaved has been handed to the mixer and is free.
-			interleaved = interleaveChannelsInto(&s.interleaveBuf, grain.PCM[:2])
+			// The stereo mixer keeps the selected pair of a source wider
+			// than 5.1, by default its first two channels, so the preview
+			// carries the same pair. interleaved has been handed to the
+			// mixer and is free.
+			first := 0
+			if s.config.AudioPair != nil {
+				if k := s.config.AudioPair(); k > 0 && k < len(grain.PCM) {
+					first = k - 1
+				}
+			}
+			interleaved = interleaveChannelsInto(&s.interleaveBuf, grain.PCM[first:first+2])
 			channels = 2
 		}
 		s.encodeAndBroadcastAudio(interleaved, grain.SampleRate, channels, pts)

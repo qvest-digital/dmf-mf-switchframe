@@ -84,6 +84,8 @@ export interface AudioChannel {
 	gateEnabled?: boolean;
 	gateReduction?: number;  // gate GR in dB
 	audioDelayMs?: number;  // lip-sync delay (0-500ms)
+	firstChannel?: number;  // first source channel of the pair fed to program, 1-based; absent = default mapping
+	sourceChannels?: number;  // channel count of the source's last frame
 }
 
 export interface LimiterSettings {

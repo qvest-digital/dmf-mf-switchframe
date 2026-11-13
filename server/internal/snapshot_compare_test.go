@@ -132,6 +132,18 @@ func TestSnapshotDiffComparesContent(t *testing.T) {
 	}
 }
 
+// A channel pair selected on one engine of a pair only is a difference the
+// engines converge on, like any other audio setting.
+func TestSnapshotDiffComparesChannelPair(t *testing.T) {
+	a, b := fullSnapshot(), fullSnapshot()
+	pair := b.AudioChannels["cam1"]
+	pair.FirstChannel = 3
+	b.AudioChannels = map[string]AudioChannelSnapshot{"cam1": pair}
+	if diff := SnapshotDiff(a, b); !slices.Equal(diff, []string{"audioChannels"}) {
+		t.Fatalf("diff %v, want [audioChannels]", diff)
+	}
+}
+
 func TestSnapshotDigestFollowsComparableState(t *testing.T) {
 	a, b := fullSnapshot(), fullSnapshot()
 	b.CapturedAt = 1234

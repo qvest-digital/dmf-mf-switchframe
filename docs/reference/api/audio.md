@@ -200,6 +200,18 @@ Ranges are defined in `control.MinGate*` / `MaxGate*` constants.
 
 ---
 
+### `PUT /api/audio/{source}/channel-pair`
+
+**Purpose:** select the pair of a wide source's channels fed to the stereo program: `firstChannel` on L, the next channel on R, 1-based. `0` restores the default mapping (5.1 folded Lo/Ro, AAC folded by its layout, other wider sources' channels 1/2, mono on both sides). A source with fewer channels than the pair needs gets the default mapping. The selection is kept by source key across the source being removed and added again.
+**Auth:** required.
+**Handler:** `(*API).handleSetChannelPairInner`.
+
+**Request body** (`control.channelPairRequest`): `{ "firstChannel": 3 }`, odd from 1 to 15, or 0.
+
+**Emits:** state broadcast with `audioChannels[source].firstChannel`; `audioChannels[source].sourceChannels` is the channel count of the source's last frame.
+
+---
+
 ### `PUT /api/audio/limiter`
 
 **Purpose:** configure the master-bus brickwall limiter.

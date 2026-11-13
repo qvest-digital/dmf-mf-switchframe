@@ -94,6 +94,7 @@ func populatedSnapshot() FullStateSnapshot {
 					Threshold: -40.0, Range: -60.0, Attack: 0.5, Release: 50.0, Hold: 20.0, Enabled: true,
 				},
 				AudioDelayMs: 40,
+				FirstChannel: 3,
 			},
 			"cam2": {
 				Level:       -12.0,

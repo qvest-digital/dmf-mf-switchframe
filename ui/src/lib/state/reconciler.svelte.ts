@@ -141,7 +141,7 @@ const DIVERGENCE_FIELDS: (keyof ControlRoomState)[] = [
 const AUDIO_SETTING_KEYS: string[] = [
 	'level', 'trim', 'muted', 'afv', 'phaseInvert', 'balance',
 	'hpfFrequency', 'hpfEnabled', 'eq', 'compressor', 'gate',
-	'gateEnabled', 'audioDelayMs',
+	'gateEnabled', 'audioDelayMs', 'firstChannel',
 ];
 
 /** Compare audio channels excluding metering fields (peakL, peakR, gainReduction, gateReduction). */

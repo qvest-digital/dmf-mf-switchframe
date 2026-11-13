@@ -150,6 +150,10 @@ func (a *App) SetAudioDelay(sourceKey string, delayMs int) error {
 	return a.mixer.SetAudioDelay(sourceKey, delayMs)
 }
 
+func (a *App) SetChannelPair(sourceKey string, firstChannel int) error {
+	return a.mixer.SetChannelPair(sourceKey, firstChannel)
+}
+
 // --- Audio master ---
 
 func (a *App) SetMasterLevel(levelDB float64) error {

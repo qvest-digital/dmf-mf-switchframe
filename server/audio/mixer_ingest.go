@@ -99,6 +99,10 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame, time
 	// buffer, which are both sized for m.numChannels. A bitstream with
 	// fewer channels, mono, is spread over all of them.
 	srcChannels := ch.decoder.Channels()
+	if srcChannels > 0 {
+		ch.sourceChannels = srcChannels
+	}
+	pcm, srcChannels = m.selectPair(ch, pcm, srcChannels)
 	if srcChannels > 0 && srcChannels < m.numChannels {
 		pcm = m.upmixMono(&ch.upmixBuf, pcm, srcChannels)
 	}
@@ -217,6 +221,11 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 		m.mu.Unlock()
 		return
 	}
+
+	if channels > 0 {
+		ch.sourceChannels = channels
+	}
+	pcm, channels = m.selectPair(ch, pcm, channels)
 
 	// Mono->stereo upmix: if source delivers fewer channels than the mixer
 	// expects, duplicate each sample to fill all channels.

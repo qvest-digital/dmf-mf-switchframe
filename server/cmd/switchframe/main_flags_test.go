@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/peer"
 )
 
@@ -45,5 +46,35 @@ func TestRun_RejectsInternalIPPeerURLWithoutCertHash(t *testing.T) {
 func TestRun_AcceptsFQDNPeerURLWithoutCertHash(t *testing.T) {
 	if err := peer.ValidatePeerTLSConfig("https://engine-b.prod.example.com:8080", ""); err != nil {
 		t.Errorf("FQDN URL without pin should be accepted: %v", err)
+	}
+}
+
+func TestParseAudioChannelPairs(t *testing.T) {
+	got, err := parseAudioChannelPairs("mxl:mxl-3=3, srt:cam2=5,mxl:5fbec3b1-2c4c-4d4c-9d6a-1f2e3d4c5b6a=15")
+	require.NoError(t, err)
+	require.Equal(t, map[string]int{
+		"mxl:mxl-3": 3,
+		"srt:cam2":  5,
+		"mxl:5fbec3b1-2c4c-4d4c-9d6a-1f2e3d4c5b6a": 15,
+	}, got)
+
+	got, err = parseAudioChannelPairs("")
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestParseAudioChannelPairs_RejectsInvalid(t *testing.T) {
+	for _, s := range []string{
+		"mxl:cam1",              // no first channel
+		"=3",                    // no source key
+		"mxl:cam1=",             // empty first channel
+		"mxl:cam1=two",          // not a number
+		"mxl:cam1=0",            // the default is no entry
+		"mxl:cam1=4",            // even
+		"mxl:cam1=17",           // beyond 16 channels
+		"mxl:cam1=3,mxl:cam1=5", // named twice
+	} {
+		_, err := parseAudioChannelPairs(s)
+		require.Error(t, err, s)
 	}
 }

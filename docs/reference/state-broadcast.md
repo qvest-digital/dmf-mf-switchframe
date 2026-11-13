@@ -70,6 +70,7 @@ Keyed by source under `audioChannels`. See [`server/internal/types.go`](../../se
 - Fader: `level`, `trim`, `muted`, `afv`, `phaseInvert`, `balance`
 - Metering: `peakL`, `peakR`, `gainReduction`, `gateReduction`, `audioDelayMs`
 - Per-channel DSP: `eq` (3-band), `compressor`, `gate`, `gateEnabled`, `hpfFrequency`, `hpfEnabled`
+- Input: `firstChannel` (the selected channel pair, omitted for the default mapping), `sourceChannels` (channel count of the source's last frame)
 
 Plus master-bus fields at the top level: `masterLevel`, `programPeak`, `gainReduction`, `limiter`, `momentaryLufs`, `shortTermLufs`, `integratedLufs`.
 

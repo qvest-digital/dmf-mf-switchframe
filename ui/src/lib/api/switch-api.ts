@@ -864,6 +864,15 @@ export function setAudioDelay(source: string, delayMs: number): Promise<ControlR
 	});
 }
 
+/** Selects the pair of a source's channels fed to program; 0 = default mapping. */
+export function setChannelPair(source: string, firstChannel: number): Promise<ControlRoomState> {
+	return request(`/api/audio/${encodeURIComponent(source)}/channel-pair`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ firstChannel }),
+	});
+}
+
 export function getState(): Promise<ControlRoomState> {
 	return request('/api/switch/state');
 }
