@@ -152,6 +152,15 @@ type SnapshotGraphicsLayerSyncer interface {
 	SyncGraphicsLayers(layers []GraphicsLayerSnapshot) error
 }
 
+// SnapshotSTMapRemover is optionally implemented to drop the ST map
+// assignments the snapshot does not carry; assigning alone leaves them in
+// place.
+type SnapshotSTMapRemover interface {
+	STMapSources() []string
+	RemoveSTMapSource(sourceKey string) error
+	RemoveSTMapProgram() error
+}
+
 // SnapshotGraphicsHTML5Applier is optionally implemented for HTML5 graphics overlay reload.
 type SnapshotGraphicsHTML5Applier interface {
 	LoadGraphicsHTML5(layerID int, url string) error
@@ -550,8 +559,12 @@ func applyColorGrade(cg *ColorGradeSnapshot, target SnapshotApplyTarget, warning
 	return warnings
 }
 
-// applySTMaps applies ST map source and program assignments.
+// applySTMaps applies ST map source and program assignments. A nil
+// snapshot assigns none.
 func applySTMaps(stmaps *STMapSnapshot, target SnapshotApplyTarget, warnings []string) []string {
+	if remover, ok := target.(SnapshotSTMapRemover); ok {
+		warnings = removeSTMaps(stmaps, remover, warnings)
+	}
 	if stmaps == nil {
 		return warnings
 	}
@@ -579,6 +592,33 @@ func applySTMaps(stmaps *STMapSnapshot, target SnapshotApplyTarget, warnings []s
 		}
 	}
 
+	return warnings
+}
+
+// removeSTMaps drops the source and program assignments stmaps does not
+// carry.
+func removeSTMaps(stmaps *STMapSnapshot, remover SnapshotSTMapRemover, warnings []string) []string {
+	var want STMapSnapshot
+	if stmaps != nil {
+		want = *stmaps
+	}
+	have := remover.STMapSources()
+	sort.Strings(have)
+	for _, key := range have {
+		if _, ok := want.Sources[key]; ok {
+			continue
+		}
+		if err := remover.RemoveSTMapSource(key); err != nil {
+			slog.Warn("snapshot apply: ST map source removal failed", "source", key, "error", err)
+			warnings = append(warnings, fmt.Sprintf("remove ST map source %q: %v", key, err))
+		}
+	}
+	if want.Program == "" {
+		if err := remover.RemoveSTMapProgram(); err != nil {
+			slog.Warn("snapshot apply: ST map program removal failed", "error", err)
+			warnings = append(warnings, fmt.Sprintf("remove ST map program: %v", err))
+		}
+	}
 	return warnings
 }
 

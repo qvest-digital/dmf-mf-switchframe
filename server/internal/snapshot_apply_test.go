@@ -1716,3 +1716,52 @@ func TestApplyFullSnapshot_GraphicsLayerSyncFailureWarns(t *testing.T) {
 		t.Fatalf("warnings = %v, want the sync failure", w)
 	}
 }
+
+type mockSTMapRemoveTarget struct {
+	*mockApplyTarget
+	sources []string
+}
+
+func (m *mockSTMapRemoveTarget) STMapSources() []string { return m.sources }
+func (m *mockSTMapRemoveTarget) RemoveSTMapSource(sourceKey string) error {
+	return m.record("RemoveSTMapSource", sourceKey)
+}
+func (m *mockSTMapRemoveTarget) RemoveSTMapProgram() error {
+	return m.record("RemoveSTMapProgram")
+}
+
+// ST map assignments the source engine does not hold are dropped: the
+// assignments are compared between engines, so one left behind keeps the
+// pair diverged however often a snapshot is pushed.
+func TestApplyFullSnapshot_STMapsRemovesUnassigned(t *testing.T) {
+	target := &mockSTMapRemoveTarget{newMockApplyTarget(), []string{"cam3", "cam1"}}
+	snap := FullStateSnapshot{STMaps: &STMapSnapshot{Sources: map[string]string{"cam1": "barrel"}}}
+	if w := ApplyFullSnapshot(context.Background(), snap, target); len(w) > 0 {
+		t.Fatalf("warnings: %v", w)
+	}
+	removed := target.callsFor("RemoveSTMapSource")
+	if len(removed) != 1 || removed[0].Args[0] != "cam3" {
+		t.Fatalf("RemoveSTMapSource calls = %+v, want cam3 alone", removed)
+	}
+	if target.callCount("RemoveSTMapProgram") != 1 {
+		t.Fatal("program map not removed for a snapshot without one")
+	}
+	if target.callCount("AssignSTMapSource") != 1 {
+		t.Fatal("cam1 not assigned")
+	}
+
+	kept := &mockSTMapRemoveTarget{newMockApplyTarget(), nil}
+	ApplyFullSnapshot(context.Background(), FullStateSnapshot{STMaps: &STMapSnapshot{Program: "fisheye"}}, kept)
+	if kept.wasCalled("RemoveSTMapProgram") {
+		t.Fatal("program map removed although the snapshot assigns one")
+	}
+}
+
+// An engine without ST maps captures none at all.
+func TestApplyFullSnapshot_STMapsNilRemovesAll(t *testing.T) {
+	target := &mockSTMapRemoveTarget{newMockApplyTarget(), []string{"cam1", "cam2"}}
+	ApplyFullSnapshot(context.Background(), FullStateSnapshot{}, target)
+	if target.callCount("RemoveSTMapSource") != 2 || target.callCount("RemoveSTMapProgram") != 1 {
+		t.Fatalf("calls = %+v, want every assignment removed", target.calls)
+	}
+}

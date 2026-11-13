@@ -48,6 +48,7 @@ var _ internal.SnapshotSCTE35Applier = (*App)(nil)
 var _ internal.SnapshotMacroApplier = (*App)(nil)
 var _ internal.SnapshotEncoderApplier = (*App)(nil)
 var _ internal.SnapshotGraphicsLayerSyncer = (*App)(nil)
+var _ internal.SnapshotSTMapRemover = (*App)(nil)
 
 // --- SnapshotApplyTarget implementation ---
 
@@ -405,6 +406,38 @@ func (a *App) AssignSTMapProgram(mapName string) error {
 		return nil
 	}
 	return a.stmapRegistry.AssignProgram(mapName)
+}
+
+// STMapSources returns the sources an ST map is assigned to.
+func (a *App) STMapSources() []string {
+	if a.stmapRegistry == nil {
+		return nil
+	}
+	sources := a.stmapRegistry.State().Sources
+	keys := make([]string, 0, len(sources))
+	for k := range sources {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// RemoveSTMapSource drops the ST map assigned to a source.
+func (a *App) RemoveSTMapSource(sourceKey string) error {
+	if a.stmapRegistry == nil {
+		return nil
+	}
+	a.stmapRegistry.RemoveSource(sourceKey)
+	return nil
+}
+
+// RemoveSTMapProgram clears the program map, if one is assigned: clearing
+// broadcasts state, and an apply runs on every reconcile.
+func (a *App) RemoveSTMapProgram() error {
+	if a.stmapRegistry == nil || !a.stmapRegistry.HasProgramMap() {
+		return nil
+	}
+	a.stmapRegistry.RemoveProgram()
+	return nil
 }
 
 // --- Clip player restore ---
