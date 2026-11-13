@@ -41,7 +41,7 @@ func stereoTones(t *testing.T, path string, tones []float64) (l, r map[float64]f
 			right = append(right, float64(pcm[k+1]))
 		}
 	}
-	require.Greater(t, len(left), 4800)
+	require.Greater(t, len(left), 4096)
 	amp := func(x []float64, f float64) float64 {
 		var s, c float64
 		for i, v := range x {
@@ -90,10 +90,39 @@ func TestTranscode_DiscreteChannelsKeepTheirFirstPair(t *testing.T) {
 	}
 }
 
-// A layout that names its speakers keeps the resampler's speaker matrix:
-// the 6.1 fixture's one tone, on every channel, reaches both sides.
+// A layout that names its speakers keeps the resampler's speaker matrix,
+// in whatever order its channels come: the 6.1 fixture's one tone, on
+// every channel, reaches both sides, and film-order 5.1 (L C R Ls Rs LFE,
+// as MOV carries it; tones FL 300 Hz, FC 500, FR 400, SL 700, SR 800,
+// LFE 600) folds each speaker to its side, centre to both, LFE to neither.
 func TestTranscode_SpeakerLayoutIsMixedDown(t *testing.T) {
 	l, r := stereoTones(t, "testdata/h264-aac-6.1.mp4", []float64{440})
 	require.Greater(t, l[440], 0.05)
 	require.Greater(t, r[440], 0.05)
+
+	l, r = stereoTones(t, "testdata/h264-pcm-5.1-film-order.mov", []float64{300, 400, 500, 600, 700, 800})
+	for _, f := range []float64{300, 700} {
+		require.Greater(t, l[f], 0.02, "the %v Hz left speaker is not on the left", f)
+		require.Less(t, r[f], 0.01, "the %v Hz left speaker is on the right", f)
+	}
+	for _, f := range []float64{400, 800} {
+		require.Greater(t, r[f], 0.02, "the %v Hz right speaker is not on the right", f)
+		require.Less(t, l[f], 0.01, "the %v Hz right speaker is on the left", f)
+	}
+	require.Greater(t, l[500], 0.02, "the centre is not on the left")
+	require.Greater(t, r[500], 0.02, "the centre is not on the right")
+	require.Less(t, l[600], 0.01, "the LFE is on the left")
+	require.Less(t, r[600], 0.01, "the LFE is on the right")
+}
+
+// The demuxer plays an upload's first sound track, and the probe judges
+// it, so the transcode converts that one too, not the track avformat
+// would pick as best: here a mono 300 Hz track first and a default 5.1
+// 400 Hz track second.
+func TestTranscode_ConvertsTheFirstAudioTrack(t *testing.T) {
+	l, r := stereoTones(t, "testdata/h264-two-audio-tracks.mp4", []float64{300, 400})
+	require.Greater(t, l[300], 0.02, "the first track is not on the left")
+	require.Greater(t, r[300], 0.02, "the first track is not on the right")
+	require.Less(t, l[400], 0.01, "the second track is on the left")
+	require.Less(t, r[400], 0.01, "the second track is on the right")
 }

@@ -176,9 +176,26 @@ static int ff_transcode_drain_audio_fifo(AVAudioFifo* afifo, int frame_size, int
 // Discrete multichannel audio, such as 8 to 16 tracks of a broadcast file,
 // carries separate programs, not one surround mix, and some counts have no
 // guessed layout at all, which swr_init rejects. Layouts that name their
-// speakers are left to the resampler's matrix.
+// speakers, in any order, are left to the resampler's matrix.
+static int ff_transcode_names_speakers(const AVChannelLayout* l) {
+	switch (l->order) {
+	case AV_CHANNEL_ORDER_UNSPEC:
+		return 0;
+	case AV_CHANNEL_ORDER_CUSTOM:
+		for (int i = 0; i < l->nb_channels; i++) {
+			enum AVChannel c = av_channel_layout_channel_from_index(l, i);
+			if (c != AV_CHAN_UNKNOWN && c != AV_CHAN_UNUSED) {
+				return 1;
+			}
+		}
+		return 0;
+	default:
+		return 1;
+	}
+}
+
 static int ff_transcode_stereo_matrix(struct SwrContext* swr_ctx, const AVChannelLayout* in) {
-	if (in->order == AV_CHANNEL_ORDER_NATIVE || in->nb_channels <= 0) {
+	if (in->nb_channels <= 0 || ff_transcode_names_speakers(in)) {
 		return 0;
 	}
 	int n = in->nb_channels;
@@ -281,7 +298,14 @@ static int ff_transcode_open(const char* input_path, const char* output_path,
 		goto fail;
 	}
 
-	ctx->audio_stream_idx = av_find_best_stream(ctx->ifmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+	// The first audio stream, as the clip demuxer and the probe take it.
+	ctx->audio_stream_idx = -1;
+	for (unsigned i = 0; i < ctx->ifmt_ctx->nb_streams; i++) {
+		if (ctx->ifmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+			ctx->audio_stream_idx = (int)i;
+			break;
+		}
+	}
 
 	// --- Open video decoder ---
 	{
