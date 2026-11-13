@@ -865,6 +865,7 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 					Enabled:   ch.GateEnabled,
 				},
 				AudioDelayMs: ch.AudioDelayMs,
+				FirstChannel: ch.FirstChannel,
 			}
 			for i := 0; i < 3; i++ {
 				acs.EQ[i] = internal.EQBandSnapshot{

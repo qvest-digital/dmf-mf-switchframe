@@ -222,6 +222,12 @@ switchframe --mxl-domain /run/mxl/domain \
 | `--st2110-ptp` | string | `auto` | PTP mode: `auto`, `l2`, `l4`, `none` |
 | `--st2110-nmos-port` | int | `8090` | NMOS API HTTP port (IS-04/IS-05) |
 
+### Audio
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--audio-channel-pairs` | string | `""` (env `SWITCHFRAME_AUDIO_CHANNEL_PAIRS`) | First channel of the pair each named source feeds the stereo program at start, as `<source key>=<first channel>,...`, e.g. `mxl:cam1=3,srt:cam2=5`. The first channel is odd, 1 to 15. A source not named keeps the default mapping. `PUT /api/audio/{source}/channel-pair` and a peer's state change it later. An invalid entry fails startup |
+
 ### Multi-engine (active-active)
 
 | Flag | Type | Default | Description |
@@ -268,6 +274,7 @@ Most env vars are flag overrides or fallbacks. A few are low-level runtime knobs
 | `SWITCHFRAME_MXL_SOURCES` | `--mxl-sources` | Comma-separated MXL source specs |
 | `SWITCHFRAME_PEER_ENGINE_URL` | `--peer-engine-url` | Peer engine URL for active-active |
 | `SWITCHFRAME_ENGINE_LABEL` | `--engine-label` | Engine label for active-active pairs |
+| `SWITCHFRAME_AUDIO_CHANNEL_PAIRS` | `--audio-channel-pairs` | First channel of the pair each named source feeds program at start |
 | `SWITCHFRAME_INITIAL_PROGRAM_SOURCE` | `--initial-program-source` | Source put on air at start with no peer to follow |
 
 ### Runtime knobs

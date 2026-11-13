@@ -124,6 +124,7 @@ type AudioChannelSnapshot struct {
 	Compressor   CompressorSnapshot `json:"compressor"`
 	Gate         GateSnapshot       `json:"gate"`
 	AudioDelayMs int                `json:"audioDelayMs,omitempty"`
+	FirstChannel int                `json:"firstChannel,omitempty"`
 }
 
 // EQBandSnapshot captures the settings for a single parametric EQ band.

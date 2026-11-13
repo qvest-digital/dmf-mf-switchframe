@@ -390,6 +390,20 @@ func (a *App) registerAudioActions(d *cmdqueue.Dispatcher) {
 		return a.mixer.SetAudioDelay(req.PathSource, req.DelayMs)
 	})
 
+	d.Register("audio_channel_pair", func(payload json.RawMessage) error {
+		if a.mixer == nil {
+			return nil
+		}
+		var req struct {
+			PathSource   string `json:"_path_source"`
+			FirstChannel int    `json:"firstChannel"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return err
+		}
+		return a.mixer.SetChannelPair(req.PathSource, req.FirstChannel)
+	})
+
 	d.Register("audio_limiter", func(payload json.RawMessage) error {
 		if a.mixer == nil {
 			return nil

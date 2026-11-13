@@ -28,7 +28,20 @@ func growBuf(buf []float32, n int) []float32 {
 var (
 	ErrChannelNotFound = errors.New("audio: channel not found")
 	ErrInvalidTrim     = errors.New("audio: trim must be between -20 and +20 dB")
+	// ErrInvalidChannelPair rejects a first channel other than 0 (the
+	// default mapping) or an odd channel from 1 to MaxFirstChannel.
+	ErrInvalidChannelPair = errors.New("audio: first channel must be 0 or odd from 1 to 15")
 )
+
+// MaxFirstChannel is the highest first channel of a pair, the pair 15/16
+// of a 16-channel source.
+const MaxFirstChannel = 15
+
+// ValidFirstChannel reports whether n selects a channel pair: 0 for the
+// default mapping, or the odd first channel of a pair, 1-based.
+func ValidFirstChannel(n int) bool {
+	return n == 0 || n >= 1 && n <= MaxFirstChannel && n%2 == 1
+}
 
 // RawAudioSink receives a copy of the mixed PCM after master processing
 // (fader + limiter) but before AAC encode. Used by MXL output to write
@@ -88,6 +101,9 @@ type Channel struct {
 	balL                 float32        // cached left gain from BalanceGains()
 	balR                 float32        // cached right gain from BalanceGains()
 	delayMs              int            // audio-only lip-sync delay (SetAudioDelay)
+	firstChannel         int            // first source channel of the pair fed to program, 1-based; 0 = default mapping
+	sourceChannels       int            // channel count of the source's last frame
+	pairWarned           bool           // true after the source first had too few channels for firstChannel
 	sourceDelayMs        int            // the source's A/V delay (SetSourceDelay)
 	isPCM                bool           // true if this channel receives raw PCM (not AAC)
 	sampleRateWarned     bool           // true after first sample rate mismatch log (once per channel)
@@ -137,6 +153,7 @@ type Mixer struct {
 	// through the playout mixer channel.
 	audioForwards map[string]string // srcKey → dstKey
 	sourceDelays  map[string]int    // SetSourceDelay by source key, kept across AddChannel
+	channelPairs  map[string]int    // SetChannelPair by source key, kept across AddChannel
 
 	// Reusable accumulator for mix output (used by produceSamplesLocked)
 	mixAccum []float32
@@ -238,6 +255,7 @@ func NewMixer(config MixerConfig) *Mixer {
 		log:          slog.With("component", "audio"),
 		channels:     make(map[string]*Channel),
 		sourceDelays: make(map[string]int),
+		channelPairs: make(map[string]int),
 		masterLevel:  0.0,
 		masterLinear: 1.0, // 0 dB = unity
 		sampleRate:   config.SampleRate,
@@ -384,6 +402,7 @@ func (m *Mixer) AddChannel(sourceKey string) {
 		balL:          1.0,
 		balR:          1.0,
 		sourceDelayMs: m.sourceDelays[sourceKey],
+		firstChannel:  m.channelPairs[sourceKey],
 	}
 	ch := m.channels[sourceKey]
 	ch.ringBuf = m.newChannelRingBuf(m.delaySamples(ch))
@@ -516,6 +535,7 @@ func (m *Mixer) ResetChannelInput(sourceKey string) bool {
 	ch.decoderOnce = sync.Once{}
 	ch.primingSkipCount, ch.primingOffsetApplied = 0, false
 	ch.isPCM, ch.surroundWarned, ch.sampleRateWarned = false, false, false
+	ch.sourceChannels, ch.pairWarned = 0, false
 	ch.resampler, ch.resamplerSrcRate = nil, 0
 	ch.ringBuf = m.newChannelRingBuf(m.delaySamples(ch))
 	ch.ringEnd, ch.placed, ch.realigned, ch.dry = 0, false, false, false
@@ -786,6 +806,7 @@ func (m *Mixer) ChannelStates() map[string]internal.AudioChannel {
 			PeakR:        LinearToDBFS(ch.peakR),
 			AudioDelayMs: ch.delayMs,
 		}
+		ac.FirstChannel, ac.SourceChannels = ch.firstChannel, ch.sourceChannels
 		// Include EQ band settings
 		if ch.eq != nil {
 			bands := ch.eq.GetBands()
@@ -956,6 +977,68 @@ func (m *Mixer) AudioDelayMs(sourceKey string) int {
 		return 0
 	}
 	return ch.delayMs
+}
+
+// SetChannelPair selects the pair of a wide source's channels fed to the
+// program, firstChannel on the left and the next on the right, 1-based;
+// 0 restores the default mapping. The selection holds for a channel added
+// later under the same key, as a source that is removed and added again
+// on every load is.
+func (m *Mixer) SetChannelPair(sourceKey string, firstChannel int) error {
+	if !ValidFirstChannel(firstChannel) {
+		return fmt.Errorf("first channel %d: %w", firstChannel, ErrInvalidChannelPair)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if firstChannel == 0 {
+		delete(m.channelPairs, sourceKey)
+	} else {
+		m.channelPairs[sourceKey] = firstChannel
+	}
+	if ch, ok := m.channels[sourceKey]; ok {
+		ch.firstChannel, ch.pairWarned = firstChannel, false
+	}
+	return nil
+}
+
+// ChannelPair returns the first channel of the pair selected for a
+// source, 0 for the default mapping.
+func (m *Mixer) ChannelPair(sourceKey string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.channelPairs[sourceKey]
+}
+
+// selectPair keeps the m.numChannels source channels from ch.firstChannel
+// on and returns them with their count. A source too narrow for the pair,
+// or with no pair selected, is returned as it is, for the default mapping.
+// The returned slice may alias ch.downmixBuf, which the downmix then does
+// not use. Caller holds m.mu.
+func (m *Mixer) selectPair(ch *Channel, pcm []float32, srcChannels int) ([]float32, int) {
+	first := ch.firstChannel - 1
+	if first < 0 || srcChannels <= 0 || len(pcm) == 0 {
+		return pcm, srcChannels
+	}
+	if first+m.numChannels > srcChannels {
+		if !ch.pairWarned {
+			ch.pairWarned = true
+			m.log.Warn("audio: source has too few channels for the selected pair, using the default mapping",
+				"source", ch.sourceKey,
+				"first_channel", ch.firstChannel,
+				"src_channels", srcChannels)
+		}
+		return pcm, srcChannels
+	}
+	if first == 0 && srcChannels == m.numChannels {
+		return pcm, srcChannels
+	}
+	frames := len(pcm) / srcChannels
+	ch.downmixBuf = growBuf(ch.downmixBuf, frames*m.numChannels)
+	out := ch.downmixBuf
+	for i := 0; i < frames; i++ {
+		copy(out[i*m.numChannels:(i+1)*m.numChannels], pcm[i*srcChannels+first:])
+	}
+	return out, m.numChannels
 }
 
 // GainReduction returns the current limiter gain reduction in dB.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/control/httperr"
 )
 
@@ -114,6 +115,11 @@ type audioDelayRequest struct {
 	DelayMs int `json:"delayMs"`
 }
 
+// channelPairRequest is the JSON body for the channel pair endpoint.
+type channelPairRequest struct {
+	FirstChannel int `json:"firstChannel"`
+}
+
 // limiterRequest is the JSON body for the limiter PUT endpoint.
 type limiterRequest struct {
 	Threshold float64 `json:"threshold"`
@@ -146,6 +152,7 @@ func (a *API) registerAudioRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/audio/{source}/gate", timedHandlerWithPath(a.cmdQueue, "audio_gate", a.seqTracker, []string{"source"}, a.handleSetGateInner))
 	mux.HandleFunc("GET /api/audio/{source}/gate", a.handleGetGate)
 	mux.HandleFunc("PUT /api/audio/{source}/audio-delay", timedHandlerWithPath(a.cmdQueue, "audio_delay", a.seqTracker, []string{"source"}, a.handleSetAudioDelayInner))
+	mux.HandleFunc("PUT /api/audio/{source}/channel-pair", timedHandlerWithPath(a.cmdQueue, "audio_channel_pair", a.seqTracker, []string{"source"}, a.handleSetChannelPairInner))
 	mux.HandleFunc("PUT /api/audio/limiter", timedHandler(a.cmdQueue, "audio_limiter", a.seqTracker, a.handleSetLimiterInner))
 	mux.HandleFunc("GET /api/audio/limiter", a.handleGetLimiter)
 }
@@ -614,6 +621,37 @@ func (a *API) handleSetAudioDelayInner(w http.ResponseWriter, r *http.Request, b
 		return
 	}
 	if err := a.mixer.SetAudioDelay(source, req.DelayMs); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// handleSetChannelPairInner selects the pair of a source's channels fed to
+// the program. body is the pre-read request body provided by
+// timedHandlerWithPath.
+func (a *API) handleSetChannelPairInner(w http.ResponseWriter, r *http.Request, body []byte) {
+	a.setLastOperator(r)
+	if a.mixer == nil {
+		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
+		return
+	}
+	source := r.PathValue("source")
+	if source == "" {
+		httperr.Write(w, http.StatusBadRequest, "source required")
+		return
+	}
+	var req channelPairRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if !audio.ValidFirstChannel(req.FirstChannel) {
+		httperr.Write(w, http.StatusBadRequest, audio.ErrInvalidChannelPair.Error())
+		return
+	}
+	if err := a.mixer.SetChannelPair(source, req.FirstChannel); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}

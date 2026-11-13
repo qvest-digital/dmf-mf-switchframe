@@ -163,6 +163,7 @@ func (m *mockApplyTarget) SetGate(_ string, _, _, _, _, _ float64, _ bool) error
 	return nil
 }
 func (m *mockApplyTarget) SetAudioDelay(_ string, _ int) error                           { return nil }
+func (m *mockApplyTarget) SetChannelPair(_ string, _ int) error                          { return nil }
 func (m *mockApplyTarget) SetMasterLevel(_ float64) error                                { return nil }
 func (m *mockApplyTarget) SetLimiterThreshold(_ float64) error                           { return nil }
 func (m *mockApplyTarget) SetLimiterCeiling(_ float64) error                             { return nil }

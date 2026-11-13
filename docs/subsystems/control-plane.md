@@ -92,7 +92,7 @@ A subset of state-mutating routes wrap their handlers with `timedHandler` or `ti
 
 - Cut, preview, transition, transition-position, FTB, format set, encoder set.
 - Source label, source delay, source position.
-- Audio: trim, level, mute, AFV, phase, balance, master, EQ, compressor, HPF, gate, audio-delay, limiter.
+- Audio: trim, level, mute, AFV, phase, balance, master, EQ, compressor, HPF, gate, audio-delay, channel-pair, limiter.
 - Graphics on/off, graphics fly-on.
 - Upstream key set/delete.
 - DVE slot on/off/update, layout set, preset recall.

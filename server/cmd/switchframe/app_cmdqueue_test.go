@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/cmdqueue"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -200,4 +201,23 @@ func TestInitCommandQueue_DVESlotUpdateKeepsConcurrentEdits(t *testing.T) {
 	if got, ok := <-lost; ok {
 		t.Fatalf("edit to slot 1 rolled back to %v", got)
 	}
+}
+
+// A channel pair goes through the command queue, so a WAL replay restores
+// it like the other audio settings.
+func TestInitCommandQueue_AudioChannelPair(t *testing.T) {
+	sw := switcher.New(distribution.NewRelay())
+	defer sw.Close()
+	m := audio.NewMixer(audio.MixerConfig{SampleRate: 48000, Channels: 2})
+	defer func() { _ = m.Close() }()
+	app := &App{sw: sw, mixer: m}
+	require.NoError(t, app.initCommandQueue())
+
+	payload, _ := json.Marshal(map[string]any{"_path_source": "mxl:cam1", "firstChannel": 3})
+	require.NoError(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "audio_channel_pair", Payload: payload}))
+	require.Equal(t, 3, m.ChannelPair("mxl:cam1"))
+
+	bad, _ := json.Marshal(map[string]any{"_path_source": "mxl:cam1", "firstChannel": 4})
+	require.ErrorIs(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "audio_channel_pair", Payload: bad}), audio.ErrInvalidChannelPair)
+	require.Equal(t, 3, m.ChannelPair("mxl:cam1"))
 }

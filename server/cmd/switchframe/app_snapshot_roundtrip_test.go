@@ -47,6 +47,23 @@ func roundTripApp(t *testing.T) *App {
 	return a
 }
 
+// A channel pair selected on one engine reaches the other through the
+// state it captures and the other applies.
+func TestSnapshotRoundTripCarriesChannelPair(t *testing.T) {
+	ctx := context.Background()
+	a, b := roundTripApp(t), roundTripApp(t)
+	require.NoError(t, a.sw.Cut(ctx, "cam1"))
+	require.NoError(t, b.sw.Cut(ctx, "cam1"))
+	require.NoError(t, a.mixer.SetChannelPair("cam2", 3))
+
+	require.Equal(t, []string{"audioChannels"}, internal.SnapshotDiff(a.captureFullSnapshot(), b.captureFullSnapshot()))
+	if w := b.applyPeerState(ctx, a.captureFullSnapshot(), 7); len(w) > 0 {
+		t.Fatalf("apply warnings: %v", w)
+	}
+	require.Equal(t, 3, b.mixer.ChannelPair("cam2"))
+	require.Empty(t, internal.SnapshotDiff(a.captureFullSnapshot(), b.captureFullSnapshot()))
+}
+
 // What one engine captures, another applies to the point where the two
 // compare equal, and applying it again changes nothing: a difference the
 // engines repair between themselves is repaired by one apply, and engines

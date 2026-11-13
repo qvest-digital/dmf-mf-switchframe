@@ -14,6 +14,7 @@
 		setGate as apiSetGate,
 		setSourceDelay,
 		setAudioDelay as apiSetAudioDelay,
+		setChannelPair as apiSetChannelPair,
 	} from '$lib/api/switch-api';
 	import { coalesce } from '$lib/util/coalesce';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
@@ -90,6 +91,17 @@
 
 	function setPhaseInvert(source: string, invert: boolean) {
 		applyResult(apiSetPhaseInvert(source, invert));
+	}
+
+	function setChannelPair(source: string, firstChannel: number) {
+		applyResult(apiSetChannelPair(source, firstChannel));
+	}
+
+	/** First channels of the stereo pairs a source of n channels has: 1, 3, ... */
+	function channelPairs(n: number): number[] {
+		const pairs: number[] = [];
+		for (let first = 1; first + 1 <= n; first += 2) pairs.push(first);
+		return pairs;
 	}
 
 	const setBalanceThrottled = coalesce((source: string, balance: number) =>
@@ -745,6 +757,22 @@
 					<span class="eq-param-value">{ch.audioDelayMs ?? 0}ms</span>
 				</div>
 			</div>
+
+			{#if (ch.sourceChannels ?? 0) > 2}
+				<!-- Channel pair of a wide source fed to program -->
+				<div class="detail-section detail-pair">
+					<span class="detail-section-label">PAIR</span>
+					<select class="pair-select" aria-label="Channel pair to program"
+						value={ch.firstChannel ?? 0}
+						onchange={(e) => setChannelPair(selectedChannel, parseInt(e.currentTarget.value, 10))}
+					>
+						<option value={0}>Default</option>
+						{#each channelPairs(Math.max(ch.sourceChannels ?? 0, (ch.firstChannel ?? 0) + 1)) as first (first)}
+							<option value={first}>{first}/{first + 1}</option>
+						{/each}
+					</select>
+				</div>
+			{/if}
 		</div>
 	{/if}
 	{:else}
@@ -1434,6 +1462,15 @@
 
 	.delay-param .eq-param-value {
 		min-width: 36px;
+	}
+
+	.pair-select {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--text-primary);
+		background: var(--bg-surface);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
 	}
 
 	.lufs-readout {

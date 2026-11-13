@@ -1096,6 +1096,32 @@ func TestSource_WideAudioPreviewCarriesMixerPair(t *testing.T) {
 	src.Stop()
 }
 
+// The preview of a wide source carries the pair selected for program, and
+// the first two channels again for a pair the source is too narrow for.
+func TestSource_WideAudioPreviewFollowsChannelPair(t *testing.T) {
+	const samples = 4
+	for _, tc := range []struct{ pair, wantFirst int }{{3, 2}, {15, 14}, {17, 0}} {
+		factory := &limitedAudioEncoderFactory{}
+		src := NewSource(SourceConfig{
+			FlowName:            "wide",
+			Relay:               &mockMediaBroadcasterForTest{},
+			AudioEncoderFactory: factory.create,
+			AudioPair:           func() int { return tc.pair },
+		})
+		src.processAudioGrain(sixteenChannelGrain(samples))
+
+		in := sixteenChannelGrain(samples).PCM
+		var want []float32
+		for i := 0; i < samples; i++ {
+			want = append(want, in[tc.wantFirst][i], in[tc.wantFirst+1][i])
+		}
+		if len(factory.enc.pcm) != 1 || fmt.Sprint(factory.enc.pcm[0]) != fmt.Sprint(want) {
+			t.Fatalf("pair %d: encoder got %v, want %v", tc.pair, factory.enc.pcm, want)
+		}
+		src.Stop()
+	}
+}
+
 // A layout the encoder rejects is tried and logged once, not on every
 // grain, and a later grain with a layout it takes still gets an encoder.
 func TestSource_AudioEncoderFailureLoggedOncePerLayout(t *testing.T) {

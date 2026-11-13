@@ -331,6 +331,7 @@ type mockMixer struct {
 	afvCalls    []mockAFVCall
 	masterCalls []float64
 	knownKeys   map[string]bool
+	pairs       map[string]int
 }
 
 type mockLevelCall struct {
@@ -493,6 +494,21 @@ func (m *mockMixer) SetAudioDelay(sourceKey string, delayMs int) error {
 
 func (m *mockMixer) AudioDelayMs(sourceKey string) int {
 	return 0
+}
+
+func (m *mockMixer) SetChannelPair(sourceKey string, firstChannel int) error {
+	if !audio.ValidFirstChannel(firstChannel) {
+		return audio.ErrInvalidChannelPair
+	}
+	if m.pairs == nil {
+		m.pairs = make(map[string]int)
+	}
+	m.pairs[sourceKey] = firstChannel
+	return nil
+}
+
+func (m *mockMixer) ChannelPair(sourceKey string) int {
+	return m.pairs[sourceKey]
 }
 
 func (m *mockMixer) SetLimiterThreshold(thresholdDB float64) error {
@@ -1021,4 +1037,45 @@ func TestInternalConnections_WithCounter(t *testing.T) {
 	require.Equal(t, 1, resp.SRT)
 	require.Equal(t, 5, resp.MoQ)
 	require.Equal(t, 9, resp.Total)
+}
+
+func TestSetChannelPair(t *testing.T) {
+	api, mock := setupAudioTestAPI(t)
+
+	req := httptest.NewRequest("PUT", "/api/audio/camera1/channel-pair", strings.NewReader(`{"firstChannel":3}`))
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, 3, mock.ChannelPair("camera1"))
+
+	req = httptest.NewRequest("PUT", "/api/audio/camera1/channel-pair", strings.NewReader(`{"firstChannel":0}`))
+	rec = httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, 0, mock.ChannelPair("camera1"), "0 restores the default mapping")
+}
+
+func TestSetChannelPair_Invalid(t *testing.T) {
+	api, mock := setupAudioTestAPI(t)
+
+	for _, body := range []string{`{"firstChannel":2}`, `{"firstChannel":17}`, `{"firstChannel":-1}`, `{bad`} {
+		req := httptest.NewRequest("PUT", "/api/audio/camera1/channel-pair", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusBadRequest, rec.Code, "body %s: %s", body, rec.Body.String())
+	}
+	require.Empty(t, mock.pairs, "a rejected request sets nothing")
+}
+
+func TestSetChannelPair_NoMixer(t *testing.T) {
+	api, _ := setupTestAPI(t)
+
+	req := httptest.NewRequest("PUT", "/api/audio/camera1/channel-pair", strings.NewReader(`{"firstChannel":3}`))
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
 }

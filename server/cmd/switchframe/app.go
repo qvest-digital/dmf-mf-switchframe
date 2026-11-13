@@ -496,6 +496,11 @@ func (a *App) initCoreEngine() error {
 		DecoderFactory: audioDecoderFactory(),
 	})
 	a.mixer.SetMetrics(a.appMetrics)
+	for key, first := range a.cfg.AudioChannelPairs {
+		if err := a.mixer.SetChannelPair(key, first); err != nil {
+			return fmt.Errorf("audio channel pair %q: %w", key, err)
+		}
+	}
 
 	if err := a.initSwitcherCommon(); err != nil {
 		return err
@@ -1226,6 +1231,7 @@ func (a *App) initMXL() error {
 			OnRawAudio: func(key string, pcm []float32, pts int64, channels int) {
 				a.mixer.IngestPCM(key, pcm, pts, channels)
 			},
+			AudioPair: func() int { return a.mixer.ChannelPair(flowName) },
 		}
 
 		// Wire SCTE-104 input: data grains → parse → inject into SCTE-35 injector.
