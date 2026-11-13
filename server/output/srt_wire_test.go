@@ -266,3 +266,40 @@ func TestSRTOutputCloseDoesNotLinger(t *testing.T) {
 		assert.Less(t, time.Since(start), 300*time.Millisecond)
 	})
 }
+
+// TestSRTAcceptLoopReturnsWhenListenerCloses covers a listener that closes
+// while the output's context is still live. srtgo's Accept then fails at
+// once on every call, so a loop that logs the error and accepts again spins
+// on a core for as long as the process runs.
+func TestSRTAcceptLoopReturnsWhenListenerCloses(t *testing.T) {
+	lns := make(chan *srt.Listener, 1)
+	srtListen = func(addr string, cfg srt.Config) (*srt.Listener, error) {
+		ln, err := srt.Listen(addr, cfg)
+		if err == nil {
+			lns <- ln
+		}
+		return ln, err
+	}
+	t.Cleanup(func() { srtListen = srt.Listen })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l := NewSRTListener(SRTListenerConfig{Port: 0})
+	require.NoError(t, l.Start(ctx))
+	defer func() { _ = l.Close() }()
+	done := make(chan error, 1)
+	go func() { done <- SRTAcceptLoop(ctx, l.config, l) }()
+
+	select {
+	case ln := <-lns:
+		_ = ln.Close()
+	case <-time.After(5 * time.Second):
+		t.Fatal("listener never bound")
+	}
+	select {
+	case err := <-done:
+		assert.Error(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("accept loop kept accepting on a closed listener")
+	}
+}

@@ -124,8 +124,9 @@ func SRTAcceptLoop(ctx context.Context, config SRTListenerConfig, listener *SRTL
 			if ctx.Err() != nil {
 				return nil
 			}
-			slog.Warn("SRT accept error", "error", err)
-			continue
+			// Accept fails only once the listener is closed, and from
+			// then on at once on every call.
+			return fmt.Errorf("srt accept on %s: %w", addr, err)
 		}
 
 		id := fmt.Sprintf("srt-%d", srtConnCounter.Add(1))
