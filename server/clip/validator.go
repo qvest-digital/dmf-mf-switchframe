@@ -41,7 +41,10 @@ func IsAcceptedExtension(ext string) bool {
 // NeedsTranscode returns true if the file at path needs transcoding before
 // it can be stored. Files with transcode-only extensions always need it.
 // Files with native extensions are probed to check if the video codec is H.264
-// or HEVC; other codecs in .mp4/.mov containers trigger transcode.
+// or HEVC; other codecs in .mp4/.mov containers trigger transcode. So does
+// audio the engine cannot decode: the demuxer hands any sound track on as
+// AAC frames, and the mixer frames them in ADTS, which carries only some
+// channel counts (codec.ADTSCarries).
 func NeedsTranscode(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	if transcodeExtensions[ext] {
@@ -59,7 +62,10 @@ func NeedsTranscode(path string) bool {
 		// try first (recordings and replay exports are always TS).
 		return ext != ".ts"
 	}
-	return !result.IsH264() && !result.IsHEVC()
+	if !result.IsH264() && !result.IsHEVC() {
+		return true
+	}
+	return result.HasAudio && (!result.IsAAC() || !codec.ADTSCarries(result.AudioChannels))
 }
 
 // CanTranscodeFallback returns true if the extension is a native container

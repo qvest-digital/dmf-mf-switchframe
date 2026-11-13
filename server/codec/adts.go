@@ -75,6 +75,13 @@ func BuildADTS(sampleRate, channels, frameLen int) []byte {
 	return header
 }
 
+// ADTSCarries reports whether ADTS framing can describe an AAC bitstream
+// of the given channel count without an in-band program config element:
+// 1 to 6 channels, and 8.
+func ADTSCarries(channels int) bool {
+	return adtsChannelConfig(channels) != 0
+}
+
 // adtsChannelConfig is the ADTS channel_configuration of a bitstream with
 // the given channel count. 1 to 6 channels are configurations 1 to 6.
 // Eight are 7: a 7.1 bitstream signalled as configuration 12 in its
