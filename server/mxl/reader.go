@@ -71,9 +71,12 @@ const videoMaxLag = 3
 // resync to.
 const grainLookBack = 2
 
-// defaultSamplesPerRead is what the audio loop reads at a time. A read ends
-// at its index, so after a resync to the head it reads the samples before.
-const defaultSamplesPerRead = 1024
+// defaultSamplesPerRead is what the audio loop reads at a time, 10 ms at
+// 48 kHz, the batch GStreamer MXL writers commit. A read is handed over
+// only once its last sample is written, so its first sample reaches the
+// mixer at least the read's duration after its media time. A read ends at
+// its index, so after a resync to the head it reads the samples before.
+const defaultSamplesPerRead = 480
 
 func (c *ReaderConfig) defaults() {
 	if c.BufSize <= 0 {

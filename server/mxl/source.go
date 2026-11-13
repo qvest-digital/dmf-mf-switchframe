@@ -8,6 +8,7 @@ import (
 
 	"github.com/zsiec/prism/media"
 
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -63,6 +64,15 @@ type SourceConfig struct {
 	// takes to program from this source; 0 for its default mapping. nil
 	// is the default mapping.
 	AudioPair func() int
+
+	// AudioReadDelayMs returns how far behind the program's read point the
+	// mixer reads this source's audio, its audio and source delays
+	// together; nil reads none.
+	AudioReadDelayMs func() int
+
+	// PlaceAudio has the mixer place this source's audio exactly on its
+	// timestamps at its next read, after the source moved them.
+	PlaceAudio func()
 
 	// OnDataGrain is called with raw data grain payloads (metadata/ancillary).
 	// key is the source identifier, data is the raw payload, pts is the monotonic counter.
@@ -186,6 +196,20 @@ type Source struct {
 	// Sample rate and channel count the audio encoder last failed to
 	// open for, so a layout it rejects is logged once, not per grain.
 	audioEncFailed [2]int
+
+	// Where the mixer gets the audio, later than its media time when it
+	// keeps arriving after the read point. Used from audioFanOut only.
+	audioPlace audioPlacement
+	// How much later than its media time the video is shown to stay with
+	// the audio, in 90 kHz ticks; audioPlace's videoShift.
+	videoShift atomic.Int64
+
+	// Relay audio waiting for a whole AAC frame: interleaved PCM of
+	// relayChannels channels from sample index relayStart on.
+	relayPCM      []float32
+	relayStart    uint64
+	relayChannels int
+	relayRate     int
 }
 
 // NewSource creates an MXL source.
@@ -415,7 +439,7 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 		yuv = s.v210Bufs.yuvOut
 	}
 
-	pts := grain.PTS
+	pts := grain.PTS + s.videoShift.Load()
 
 	// 2. Deliver raw YUV to switcher pipeline.
 	// Allocate a fresh copy because the pooled conversion buffer
@@ -599,7 +623,22 @@ func (s *Source) processAudioGrain(grain AudioGrain) {
 
 	// 1. Deliver raw PCM to mixer.
 	if s.config.OnRawAudio != nil {
-		s.config.OnRawAudio(s.config.FlowName, interleaved, pts, grain.Channels)
+		var delay int64
+		if s.config.AudioReadDelayMs != nil {
+			delay = int64(s.config.AudioReadDelayMs()) * 90
+		}
+		shift := s.audioPlace.shift
+		mixPTS := s.audioPlace.pts(pts, delay)
+		if s.audioPlace.shift != shift {
+			s.videoShift.Store(s.audioPlace.videoShift())
+			s.log.Warn("mxl source: audio arrives after the mixer's read point, mixing it later",
+				"source", s.config.FlowName, "audio_shift_ms", s.audioPlace.shift/90,
+				"video_shift_ms", s.videoShift.Load()/90)
+			if s.config.PlaceAudio != nil {
+				s.config.PlaceAudio()
+			}
+		}
+		s.config.OnRawAudio(s.config.FlowName, interleaved, mixPTS, grain.Channels)
 	}
 
 	// 2. Encode PCM→AAC and broadcast to relay.
@@ -619,7 +658,32 @@ func (s *Source) processAudioGrain(grain AudioGrain) {
 			interleaved = interleaveChannelsInto(&s.interleaveBuf, grain.PCM[first:first+2])
 			channels = 2
 		}
-		s.encodeAndBroadcastAudio(interleaved, grain.SampleRate, channels, pts)
+		s.queueRelayAudio(interleaved, grain.SampleRate, channels, grain.Start)
+	}
+}
+
+// aacFrameSamples is how many samples per channel an AAC-LC frame holds,
+// what the relay's encoder takes at a time.
+const aacFrameSamples = 1024
+
+// queueRelayAudio collects the relay's audio into whole AAC frames, which
+// it encodes stamped with the media time of their first sample, moved
+// with the video. pcm of grains that do not follow on from the last
+// starts a new frame.
+func (s *Source) queueRelayAudio(pcm []float32, sampleRate, channels int, start uint64) {
+	if channels != s.relayChannels || sampleRate != s.relayRate ||
+		start != s.relayStart+uint64(len(s.relayPCM)/max(channels, 1)) {
+		s.relayPCM, s.relayStart = s.relayPCM[:0], start
+		s.relayChannels, s.relayRate = channels, sampleRate
+	}
+	s.relayPCM = append(s.relayPCM, pcm...)
+	r := clock.Rate{Num: int64(sampleRate), Den: 1}
+	n := aacFrameSamples * channels
+	for len(s.relayPCM) >= n {
+		s.encodeAndBroadcastAudio(s.relayPCM[:n], sampleRate, channels,
+			clock.IndexPTS(r, s.relayStart)+s.videoShift.Load())
+		s.relayPCM = append(s.relayPCM[:0], s.relayPCM[n:]...)
+		s.relayStart += aacFrameSamples
 	}
 }
 

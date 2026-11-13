@@ -24,11 +24,22 @@ const minFramePeriod = 90000 / 120
 // realtime ReferenceClock starts.
 var readLag atomic.Int64
 
+// programPeriod is the program frame period in 90 kHz ticks, rounded up.
+// 0 until a realtime ReferenceClock starts.
+var programPeriod atomic.Int64
+
 // SetProgramRate records the program frame rate the ticks read at. A
 // realtime ReferenceClock sets it as it starts.
 func SetProgramRate(r Rate) {
 	n := (ReaderDelayGrains + 1) * 90000 * r.Den
 	readLag.Store((n + r.Num - 1) / r.Num)
+	programPeriod.Store((90000*r.Den + r.Num - 1) / r.Num)
+}
+
+// ProgramPeriod returns the program frame period the ticks read at, in
+// 90 kHz ticks, rounded up; 0 until a realtime ReferenceClock starts.
+func ProgramPeriod() int64 {
+	return programPeriod.Load()
 }
 
 // SourceHold counts a source's frames that wait in a store for the read

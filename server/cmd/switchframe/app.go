@@ -1236,7 +1236,9 @@ func (a *App) initMXL() error {
 			OnRawAudio: func(key string, pcm []float32, pts int64, channels int) {
 				a.mixer.IngestPCM(key, pcm, pts, channels)
 			},
-			AudioPair: func() int { return a.mixer.ChannelPair(flowName) },
+			AudioPair:        func() int { return a.mixer.ChannelPair(flowName) },
+			AudioReadDelayMs: func() int { return a.mixer.ReadDelayMs(flowName) },
+			PlaceAudio:       func() { a.mixer.PlaceChannel(flowName) },
 		}
 
 		// Wire SCTE-104 input: data grains → parse → inject into SCTE-35 injector.

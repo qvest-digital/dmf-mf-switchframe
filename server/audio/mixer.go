@@ -1015,6 +1015,18 @@ func (m *Mixer) AudioDelayMs(sourceKey string) int {
 	return ch.delayMs
 }
 
+// ReadDelayMs returns how far behind the read point a source channel is
+// read, its audio delay and source delay together, in milliseconds.
+func (m *Mixer) ReadDelayMs(sourceKey string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		return 0
+	}
+	return ch.delayMs + ch.sourceDelayMs
+}
+
 // SetChannelPair selects the pair of a wide source's channels fed to the
 // program, firstChannel on the left and the next on the right, 1-based;
 // 0 restores the default mapping. The selection holds for a channel added

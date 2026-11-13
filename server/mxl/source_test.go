@@ -693,9 +693,9 @@ func TestSource_DualEncode_PreviewAndReplay(t *testing.T) {
 		PTS:    2,
 	})
 
-	// Process 1 audio grain.
+	// Process audio for one AAC frame.
 	src.processAudioGrain(AudioGrain{
-		PCM:        [][]float32{{0.1, 0.2}, {0.3, 0.4}},
+		PCM:        [][]float32{make([]float32, aacFrameSamples), make([]float32, aacFrameSamples)},
 		SampleRate: 48000,
 		Channels:   2,
 	})
@@ -1041,7 +1041,7 @@ func sixteenChannelGrain(samples int) AudioGrain {
 // it is the pair the stereo mixer takes to program: the first two channels.
 // The mixer itself still gets every channel.
 func TestSource_WideAudioPreviewCarriesMixerPair(t *testing.T) {
-	const grains, samples = 3, 4
+	const grains, samples = 3, aacFrameSamples
 	relay := &mockMediaBroadcasterForTest{}
 	factory := &limitedAudioEncoderFactory{}
 	logs := &countingHandler{}
@@ -1099,7 +1099,7 @@ func TestSource_WideAudioPreviewCarriesMixerPair(t *testing.T) {
 // The preview of a wide source carries the pair selected for program, and
 // the first two channels again for a pair the source is too narrow for.
 func TestSource_WideAudioPreviewFollowsChannelPair(t *testing.T) {
-	const samples = 4
+	const samples = aacFrameSamples
 	for _, tc := range []struct{ pair, wantFirst int }{{3, 2}, {15, 14}, {17, 0}} {
 		factory := &limitedAudioEncoderFactory{}
 		src := NewSource(SourceConfig{
@@ -1135,7 +1135,8 @@ func TestSource_AudioEncoderFailureLoggedOncePerLayout(t *testing.T) {
 		Logger:              slog.New(logs),
 	})
 
-	grain := AudioGrain{PCM: [][]float32{{0.1, 0.2}, {0.3, 0.4}}, SampleRate: 44100, Channels: 2}
+	pcm := [][]float32{make([]float32, aacFrameSamples), make([]float32, aacFrameSamples)}
+	grain := AudioGrain{PCM: pcm, SampleRate: 44100, Channels: 2}
 	for i := 0; i < 5; i++ {
 		src.processAudioGrain(grain)
 	}
