@@ -56,6 +56,13 @@ type FullStateSnapshot struct {
 	// an engine that predates it sends layers without content.
 	GraphicsContent bool `json:"graphicsContent,omitempty"`
 
+	// Tickers and Sequences are the scrolling tickers and the PNG
+	// sequences the layers run. GraphicsMotion is set by an engine that
+	// captures them; only then are they the whole set to hold.
+	Tickers        []TickerSnapshot   `json:"tickers,omitempty"`
+	Sequences      []SequenceSnapshot `json:"sequences,omitempty"`
+	GraphicsMotion bool               `json:"graphicsMotion,omitempty"`
+
 	// --- DVE / Layout ---
 
 	Layout LayoutSnapshot `json:"layout"`
@@ -177,6 +184,29 @@ type GraphicsLayerSnapshot struct {
 	// lacking the layer creates it showing what the source's shows.
 	Image []byte `json:"image,omitempty"`
 	Frame []byte `json:"frame,omitempty"`
+}
+
+// TickerSnapshot captures the ticker running on a graphics layer. Omits its
+// scroll position, which each engine advances with its own frames.
+type TickerSnapshot struct {
+	LayerID  int     `json:"layerId"`
+	Text     string  `json:"text"`
+	FontSize float64 `json:"fontSize"`
+	Speed    float64 `json:"speed"`
+	Bold     bool    `json:"bold,omitempty"`
+	Loop     bool    `json:"loop,omitempty"`
+	Height   int     `json:"height,omitempty"`
+}
+
+// SequenceSnapshot names the PNG sequence loaded on a graphics layer by
+// the hash of the ZIP it was uploaded as; an engine lacking it reads the
+// ZIP from its peer. Omits the playback position.
+type SequenceSnapshot struct {
+	LayerID   int     `json:"layerId"`
+	Hash      string  `json:"hash"`
+	Size      int64   `json:"size"`
+	SourceFPS float64 `json:"sourceFps"`
+	Speed     float64 `json:"speed"`
 }
 
 // LayoutSnapshot captures the full DVE layout configuration.

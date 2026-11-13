@@ -1720,6 +1720,12 @@ func (a *App) initAPI() error {
 	// Create animated sequence engine for graphics layers.
 	if a.compositor != nil {
 		a.sequenceEngine = graphics.NewSequenceEngine(a.compositor)
+		if a.cfg.StateDir != "" {
+			// The ZIPs a peer engine reads sequences from, kept off the heap.
+			if err := a.sequenceEngine.SetSourceDir(a.statePath("graphics-sequences")); err != nil {
+				slog.Warn("sequence ZIPs kept in memory", "error", err)
+			}
+		}
 		a.compositor.SetSequenceEngine(a.sequenceEngine)
 		apiOpts = append(apiOpts, control.WithSequenceEngine(a.sequenceEngine))
 		slog.Info("sequence engine initialized")

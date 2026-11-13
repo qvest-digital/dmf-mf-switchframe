@@ -1717,6 +1717,55 @@ func TestApplyFullSnapshot_GraphicsLayerSyncFailureWarns(t *testing.T) {
 	}
 }
 
+type mockMotionTarget struct {
+	*mockApplyTarget
+}
+
+func (m *mockMotionTarget) SyncTickers(tickers []TickerSnapshot) error {
+	return m.record("SyncTickers", tickers)
+}
+
+func (m *mockMotionTarget) SyncSequences(_ context.Context, sequences []SequenceSnapshot) error {
+	return m.record("SyncSequences", sequences)
+}
+
+// The tickers and sequences a snapshot carries become the target's, an
+// empty set included, before the layers' on-air state is set: removing a
+// sequence takes its layer off air.
+func TestApplyFullSnapshot_SyncsGraphicsMotion(t *testing.T) {
+	target := &mockMotionTarget{newMockApplyTarget()}
+	tickers := []TickerSnapshot{{LayerID: 1, Text: "news"}}
+	snap := FullStateSnapshot{GraphicsMotion: true, Tickers: tickers, Graphics: []GraphicsLayerSnapshot{{ID: 1, Active: true}}}
+	if w := ApplyFullSnapshot(context.Background(), snap, target); len(w) > 0 {
+		t.Fatalf("warnings: %v", w)
+	}
+	if calls := target.callsFor("SyncTickers"); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args[0], tickers) {
+		t.Fatalf("SyncTickers calls = %+v", calls)
+	}
+	if target.callCount("SyncSequences") != 1 {
+		t.Fatal("an empty set of sequences not synced")
+	}
+	order := map[string]int{}
+	for i, c := range target.calls {
+		if _, ok := order[c.Method]; !ok {
+			order[c.Method] = i
+		}
+	}
+	if order["SyncSequences"] > order["SetGraphicsLayerActive"] {
+		t.Fatalf("sequences synced after the layers went on air: %v", order)
+	}
+}
+
+// A snapshot of an engine that does not capture tickers and sequences
+// says nothing about them: the target's keep running.
+func TestApplyFullSnapshot_LeavesGraphicsMotionWithoutIt(t *testing.T) {
+	target := &mockMotionTarget{newMockApplyTarget()}
+	ApplyFullSnapshot(context.Background(), FullStateSnapshot{GraphicsContent: true}, target)
+	if target.wasCalled("SyncTickers") || target.wasCalled("SyncSequences") {
+		t.Fatal("tickers or sequences synced from a snapshot that does not carry them")
+	}
+}
+
 type mockSTMapRemoveTarget struct {
 	*mockApplyTarget
 	sources []string

@@ -63,6 +63,17 @@ func (te *TickerEngine) IsRunning(layerID int) bool {
 	return ok
 }
 
+// Configs returns the config of the ticker running on each layer.
+func (te *TickerEngine) Configs() map[int]TickerConfig {
+	te.mu.Lock()
+	defer te.mu.Unlock()
+	out := make(map[int]TickerConfig, len(te.tickers))
+	for id, inst := range te.tickers {
+		out[id] = inst.config
+	}
+	return out
+}
+
 // Start begins a scrolling ticker on the specified layer.
 func (te *TickerEngine) Start(layerID int, cfg TickerConfig) error {
 	te.mu.Lock()

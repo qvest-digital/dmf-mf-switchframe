@@ -4,7 +4,7 @@
 > **Read this first:** [api.md](../api.md)
 > **See also:** [subsystems/switcher.md](../../subsystems/switcher.md) · [deployment.md](../../operations/deployment.md)
 
-**TL;DR** Nine endpoints handle dual-engine coordination: a lightweight health endpoint polled between engines, a force-takeover endpoint gated by a shared secret, a sync-health probe returning clock and sequence state, and a reconcile-lock protocol (acquire / refresh / release) plus state-snapshot get/apply for active-active reconciliation. The reconcile lock ensures only one engine at a time runs the active reconciler during a failover.
+**TL;DR** These endpoints handle dual-engine coordination: a lightweight health endpoint polled between engines, a force-takeover endpoint gated by a shared secret, a sync-health probe returning clock and sequence state, and a reconcile-lock protocol (acquire / refresh / release) plus state-snapshot get/apply for active-active reconciliation. The reconcile lock ensures only one engine at a time runs the active reconciler during a failover.
 
 ## Peer health
 
@@ -91,9 +91,16 @@ Polled at 1 Hz by the browser in dual-engine mode for clock calibration.
 
 **Request body:** `sync.StateSnapshot`, at most 64 MiB: it carries every graphics layer's uploaded image and the frame last rendered into it from a template, except for HTML5 and text animation layers, which each engine renders itself.
 
-For a snapshot with `graphicsContent` set, the engine takes the snapshot's set of graphics layers, creating the ones it lacks under the snapshot's IDs with their content and removing the ones the snapshot does not hold. A snapshot without it, from an engine that predates layer content, leaves the set of layers as it is. The engine also drops the ST map assignments the snapshot does not carry. Image sequences and tickers are not carried.
+For a snapshot with `graphicsContent` set, the engine takes the snapshot's set of graphics layers, creating the ones it lacks under the snapshot's IDs with their content and removing the ones the snapshot does not hold. A snapshot without it, from an engine that predates layer content, leaves the set of layers as it is. The engine also drops the ST map assignments the snapshot does not carry. For a snapshot with `graphicsMotion` set it also runs the snapshot's tickers, and loads the PNG sequence of each layer it lacks from the peer engine (`GET /api/sync/graphics-sequence`), removing the sequences the snapshot does not hold.
 
 **Errors:** 400 (invalid snapshot), 409 (reconcile lock not held; or, without `?force=true`, the snapshot would remove graphics layers here while it holds none itself or names no command sequence, with `snapshot_seq` and `current_seq` as for a stale snapshot), 413 (snapshot larger than 64 MiB).
+
+---
+
+### `GET /api/sync/graphics-sequence?layer=&hash=`
+
+**Purpose:** the ZIP a layer's PNG sequence was uploaded as, served while the layer holds the sequence of that SHA-256 `hash`.
+**Handler:** `(*API).handleGetGraphicsSequence`. **Errors:** 404 (no such sequence on the layer).
 
 ---
 

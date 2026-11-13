@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -146,6 +147,9 @@ func (a *API) registerSyncRoutes(mux *http.ServeMux) {
 		return
 	}
 	mux.HandleFunc("GET /api/sync/state-snapshot", a.handleGetStateSnapshot)
+	if a.sequenceEngine != nil {
+		mux.HandleFunc("GET /api/sync/graphics-sequence", a.handleGetGraphicsSequence)
+	}
 	mux.HandleFunc("POST /api/sync/state-snapshot", a.handleApplyStateSnapshot)
 	mux.HandleFunc("POST /api/sync/reconcile-lock", a.handleAcquireReconcileLock)
 	mux.HandleFunc("PUT /api/sync/reconcile-lock/{lockId}", a.handleRefreshReconcileLock)
@@ -386,6 +390,26 @@ func (a *API) graphicsLayersRemovedBy(snap internal.FullStateSnapshot) int {
 		}
 	}
 	return n
+}
+
+// handleGetGraphicsSequence serves the ZIP the sequence on a layer was
+// uploaded as, for the peer engine to load the same one. With ?hash= it is
+// served only while the layer holds that sequence.
+func (a *API) handleGetGraphicsSequence(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.URL.Query().Get("layer"))
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	rc, size, err := a.sequenceEngine.OpenSource(id, r.URL.Query().Get("hash"))
+	if err != nil {
+		httperr.Write(w, http.StatusNotFound, "no such sequence on the layer")
+		return
+	}
+	defer func() { _ = rc.Close() }()
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	_, _ = io.Copy(w, rc)
 }
 
 // handleAcquireReconcileLock attempts to acquire the per-engine reconcile lock.
