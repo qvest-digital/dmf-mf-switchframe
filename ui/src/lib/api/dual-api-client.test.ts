@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DualApiClient } from './dual-api-client';
+import { EngineStartingError } from '$lib/state/auto-reconcile';
 
 describe('DualApiClient', () => {
 	beforeEach(() => {
@@ -229,5 +230,16 @@ describe('DualApiClient', () => {
 
 		const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
 		expect((init.headers as Record<string, string>)['Authorization']).toBeUndefined();
+	});
+
+	// An engine that has not yet taken its peer's state answers 503; its
+	// state is not the one to copy, and the reconcile waits for it.
+	it('getStateSnapshot throws EngineStartingError on 503', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+			new Response('{"error":"engine still starting"}', { status: 503 })));
+		const client = new DualApiClient({ engines: [{ id: 'A', url: 'https://a.example.com' }] });
+		const err = await client.getStateSnapshot('A', 'lock-1').catch((e) => e);
+		expect(err).toBeInstanceOf(EngineStartingError);
+		expect((err as EngineStartingError).engine).toBe('A');
 	});
 });

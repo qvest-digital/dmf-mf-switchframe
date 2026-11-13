@@ -31,8 +31,15 @@ func (sp *snapshotProviderAdapter) ApplyTarget() internal.SnapshotApplyTarget {
 	return sp.app
 }
 
+// SnapshotReady reports whether the engine has taken its peer's state
+// after its start, failed to read it, or found none to take.
+func (sp *snapshotProviderAdapter) SnapshotReady() bool {
+	return sp.app.startupDone.Load()
+}
+
 // Verify snapshotProviderAdapter satisfies the interface at compile time.
 var _ control.SnapshotProvider = (*snapshotProviderAdapter)(nil)
+var _ control.SnapshotReadiness = (*snapshotProviderAdapter)(nil)
 
 // Verify App satisfies SnapshotApplyTarget at compile time.
 var _ internal.SnapshotApplyTarget = (*App)(nil)

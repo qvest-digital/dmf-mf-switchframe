@@ -109,6 +109,14 @@ type SnapshotProvider interface {
 	ApplyTarget() internal.SnapshotApplyTarget
 }
 
+// SnapshotReadiness is optionally implemented by a SnapshotProvider. An
+// engine that has just started holds none of the production until it has
+// taken its peer's state; a browser copying its state to the peer
+// meanwhile would wipe the peer's.
+type SnapshotReadiness interface {
+	SnapshotReady() bool
+}
+
 // WithSnapshotProvider attaches a snapshot provider to the API.
 func WithSnapshotProvider(sp SnapshotProvider) APIOption {
 	return func(a *API) { a.snapshotProvider = sp }
@@ -167,7 +175,9 @@ type snapshotEnvelope struct {
 // lock on this engine, or ?admin=true for break-glass access. Without a
 // matching lock the handler returns 409. Gating the capture side (not just
 // apply) prevents two browsers from pulling opposing snapshots and
-// reconciling each other's engines in contradictory directions.
+// reconciling each other's engines in contradictory directions. While the
+// engine is starting a locked read returns 503; the peer engine's own
+// startup read is an admin one.
 func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
 	admin := r.URL.Query().Get("admin") == "true"
 	if !admin {
@@ -178,6 +188,10 @@ func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"error": "no active reconcile lock",
 			})
+			return
+		}
+		if sr, ok := a.snapshotProvider.(SnapshotReadiness); ok && !sr.SnapshotReady() {
+			httperr.Write(w, http.StatusServiceUnavailable, "engine still starting: its state is not the one to copy")
 			return
 		}
 	}

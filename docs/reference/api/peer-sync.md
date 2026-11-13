@@ -80,6 +80,8 @@ Polled at 1 Hz by the browser in dual-engine mode for clock calibration.
 
 **Response 200:** `sync.StateSnapshot`.
 
+**Errors:** 409 (reconcile lock not held), 503 (engine still starting: until it has taken its peer's state after its start, failed to read it, or found none to take, only an `?admin=true` read is served).
+
 ---
 
 ### `POST /api/sync/state-snapshot`
@@ -87,11 +89,11 @@ Polled at 1 Hz by the browser in dual-engine mode for clock calibration.
 **Purpose:** apply a peer's state snapshot to this engine (used during reconciliation after a split-brain).
 **Handler:** `(*API).handleApplyStateSnapshot`.
 
-**Request body:** `sync.StateSnapshot`, at most 64 MiB: it carries every graphics layer's uploaded image and the frame last rendered into it from a template.
+**Request body:** `sync.StateSnapshot`, at most 64 MiB: it carries every graphics layer's uploaded image and the frame last rendered into it from a template, except for HTML5 and text animation layers, which each engine renders itself.
 
-The engine takes the snapshot's set of graphics layers, creating the ones it lacks under the snapshot's IDs with their content and removing the ones the snapshot does not hold, and drops the ST map assignments the snapshot does not carry.
+For a snapshot with `graphicsContent` set, the engine takes the snapshot's set of graphics layers, creating the ones it lacks under the snapshot's IDs with their content and removing the ones the snapshot does not hold. A snapshot without it, from an engine that predates layer content, leaves the set of layers as it is. The engine also drops the ST map assignments the snapshot does not carry. Image sequences and tickers are not carried.
 
-**Errors:** 400 (invalid snapshot), 409 (reconcile-lock not held).
+**Errors:** 400 (invalid snapshot), 409 (reconcile lock not held; or, without `?force=true`, the snapshot would remove graphics layers here while it holds none itself or names no command sequence, with `snapshot_seq` and `current_seq` as for a stale snapshot), 413 (snapshot larger than 64 MiB).
 
 ---
 

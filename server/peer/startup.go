@@ -65,6 +65,11 @@ type StartupConfig struct {
 	// LeaderWait bounds how long an engine that does not lead waits for a
 	// reachable leader to go on air before it goes live on its own.
 	LeaderWait time.Duration
+
+	// OnSettled, when set, is called once the engine has applied its
+	// peer's state, failed to read it, or found none to take: a peer down
+	// or dark, or the engine on air already. It is called once.
+	OnSettled func()
 }
 
 // startupState is what nextStartupStep decides on.
@@ -148,6 +153,15 @@ func RunStartup(ctx context.Context, p *HealthPoller, eng StartupEngine, cfg Sta
 	var synced, live time.Time
 	follows := 0
 	gaveUp := false
+	settled := false
+	settle := func() {
+		if !settled {
+			settled = true
+			if cfg.OnSettled != nil {
+				cfg.OnSettled()
+			}
+		}
+	}
 	for {
 		step := stepGoLive
 		if p != nil && !gaveUp {
@@ -170,6 +184,7 @@ func RunStartup(ctx context.Context, p *HealthPoller, eng StartupEngine, cfg Sta
 
 		switch step {
 		case stepDone:
+			settle()
 			slog.Info("startup: on air", "programSource", eng.ProgramSource())
 			return
 		case stepFollow:
@@ -185,12 +200,15 @@ func RunStartup(ctx context.Context, p *HealthPoller, eng StartupEngine, cfg Sta
 				if err := eng.Cut(ctx, peerProgram); err != nil {
 					slog.Warn("startup: cut to the peer's program failed", "programSource", peerProgram, "error", err)
 				}
+				settle()
 				break
 			}
 			slog.Info("startup: following the peer's program",
 				"programSource", snap.ProgramSource, "seq", seq)
 			eng.ApplyPeerSnapshot(ctx, snap, seq)
+			settle()
 		case stepGoLive:
+			settle()
 			if gaveUp && eng.ProgramSource() != "" {
 				return
 			}

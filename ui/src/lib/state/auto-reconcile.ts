@@ -17,6 +17,18 @@ export class SnapshotStaleError extends Error {
 	}
 }
 
+/**
+ * Thrown by getSnapshot when the engine answers 503: it has just started
+ * and not yet taken its peer's state, so its own is not the one to copy.
+ * The push is retried quietly once the engine is ready.
+ */
+export class EngineStartingError extends Error {
+	constructor(public engine: EngineId) {
+		super(`engine ${engine} is still starting`);
+		this.name = 'EngineStartingError';
+	}
+}
+
 export interface AutoReconcileConfig {
 	getSnapshot: (engine: EngineId, lockId?: string) => Promise<unknown>;
 	/** force applies the snapshot even when the target has advanced past it. */
@@ -42,6 +54,9 @@ export interface AutoReconcileConfig {
 	 * Prevents the AB-vs-BA snapshot stampede that would otherwise silently swap
 	 * engine states. */
 	onReconcileBusy?: (engine: EngineId) => void;
+	/** Called when the source engine is still starting; the push is retried
+	 * after ENGINE_STARTING_RETRY_MS. */
+	onEngineStarting?: (engine: EngineId) => void;
 }
 
 const DIVERGE_DELAY_MS = 2000;
@@ -57,6 +72,7 @@ const LOCK_REFRESH_INTERVAL_MS = 5000; // Lock TTL is 15s
 const PARTIAL_RECHECK_DELAY_MS = 500;
 const RETRY_BASE_DELAY_MS = 2000;
 const RETRY_JITTER_MS = 1000;
+const ENGINE_STARTING_RETRY_MS = 2000;
 
 function otherEngine(engine: EngineId): EngineId {
 	return engine === 'A' ? 'B' : 'A';
@@ -327,6 +343,28 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			}
 		} catch (err) {
 			clearTimeout(timeoutTimer);
+			if (err instanceof EngineStartingError) {
+				config.onEngineStarting?.(err.engine);
+				if (overrideStale) {
+					// An operator push keeps the operator's direction, and no
+					// status change or auto push replaces it meanwhile.
+					operatorRetryPending = true;
+					if (retryTimer !== null) clearTimeout(retryTimer);
+					const retryTarget = target;
+					retryTimer = setTimeout(() => {
+						retryTimer = null;
+						operatorRetryPending = false;
+						lastPushTimes.delete(retryTarget);
+						executeSnapshotPush(authoritative, true);
+					}, ENGINE_STARTING_RETRY_MS);
+				} else if (pendingTimer === null) {
+					pendingTimer = setTimeout(() => {
+						pendingTimer = null;
+						executeSnapshotPush(currentAuthoritative);
+					}, ENGINE_STARTING_RETRY_MS);
+				}
+				return;
+			}
 			pushErrors++;
 			lastError = toError(err).message;
 			config.onRecoveryError?.(toError(err));

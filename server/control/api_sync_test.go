@@ -1041,3 +1041,35 @@ func TestApplyStateSnapshot_RefusesToRemoveLayersFromAnEmptySource(t *testing.T)
 	require.Equal(t, http.StatusOK, push(one, 50, "").Code, "a source with layers and a sequence is taken")
 	require.Equal(t, http.StatusOK, push(empty, 60, "?force=true").Code)
 }
+
+type startingSnapshotProvider struct {
+	mockSnapshotProvider
+	ready bool
+}
+
+func (p *startingSnapshotProvider) SnapshotReady() bool { return p.ready }
+
+// An engine that has just restarted holds none of the production until its
+// startup has taken the peer's state. A browser that read its state then
+// and pushed it to the peer would wipe the peer's graphics layers, so a
+// reconcile read is refused until the engine is on air. The peer's own
+// startup read, an admin one, is not.
+func TestGetStateSnapshot_RefusedWhileStarting(t *testing.T) {
+	provider := &startingSnapshotProvider{}
+	api := setupTestAPIWithSnapshot(t, &provider.mockSnapshotProvider)
+	api.snapshotProvider = provider
+
+	get := func(query string) int {
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/api/sync/state-snapshot?"+query, nil))
+		return rec.Code
+	}
+	lockID, _, ok := api.reconcileLock.tryAcquire("browser-X")
+	require.True(t, ok)
+	defer api.reconcileLock.release(lockID)
+
+	require.Equal(t, http.StatusServiceUnavailable, get("lockId="+lockID))
+	require.Equal(t, http.StatusOK, get("admin=true"))
+	provider.ready = true
+	require.Equal(t, http.StatusOK, get("lockId="+lockID))
+}

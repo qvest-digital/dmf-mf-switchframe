@@ -20,6 +20,17 @@ const initialSourceGrace = 10 * time.Second
 // polls to see it.
 const leaderWait = initialSourceGrace + 10*time.Second
 
+// startupConfig is how the App runs peer.RunStartup. Once the startup has
+// settled, the engine serves its state to a browser reconciling the pair.
+func (a *App) startupConfig() peer.StartupConfig {
+	return peer.StartupConfig{
+		Token:      a.cfg.APIToken,
+		Tick:       time.Second,
+		LeaderWait: leaderWait,
+		OnSettled:  func() { a.startupDone.Store(true) },
+	}
+}
+
 // startupEngine is the App as peer.RunStartup drives it.
 type startupEngine struct {
 	app *App

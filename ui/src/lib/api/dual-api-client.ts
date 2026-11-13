@@ -1,5 +1,5 @@
 import type { EngineId } from '$lib/api/types';
-import { SnapshotStaleError } from '$lib/state/auto-reconcile';
+import { EngineStartingError, SnapshotStaleError } from '$lib/state/auto-reconcile';
 import { engineFetch } from '$lib/api/switch-api';
 
 export interface EngineConfig {
@@ -73,6 +73,9 @@ export class DualApiClient {
 				...this.authHeaders(),
 			},
 		});
+		if (res.status === 503) {
+			throw new EngineStartingError(engineId);
+		}
 		if (!res.ok) {
 			const body = await res.text().catch(() => 'unknown error');
 			throw new Error(`Failed to get snapshot from engine ${engineId}: ${res.status} ${body}`);

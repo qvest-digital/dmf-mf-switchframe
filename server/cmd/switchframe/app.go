@@ -314,6 +314,10 @@ type App struct {
 	// finish. Cancelled in closeSubsystems before bgWG.Wait().
 	bgCtx    context.Context
 	bgCancel context.CancelFunc
+
+	// startupDone is set once the engine has taken its peer's state after
+	// its start, failed to read it, or found none to take.
+	startupDone atomic.Bool
 }
 
 // statePath joins path components under the state directory.
@@ -1992,11 +1996,7 @@ func (a *App) Run(ctx context.Context) error {
 	a.bgWG.Add(1)
 	go func() {
 		defer a.bgWG.Done()
-		peer.RunStartup(a.bgCtx, a.peerPoller, &startupEngine{app: a}, peer.StartupConfig{
-			Token:      a.cfg.APIToken,
-			Tick:       time.Second,
-			LeaderWait: leaderWait,
-		})
+		peer.RunStartup(a.bgCtx, a.peerPoller, &startupEngine{app: a}, a.startupConfig())
 	}()
 
 	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).
