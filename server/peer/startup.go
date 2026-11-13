@@ -12,8 +12,15 @@ import (
 	"github.com/zsiec/switchframe/server/internal"
 )
 
-// maxSnapshotBytes bounds the peer's state snapshot read at startup.
-const maxSnapshotBytes = 16 << 20
+// maxSnapshotBytes bounds the peer's state snapshot read at startup. It
+// carries every graphics layer's image and rendered frame, so it takes what
+// a graphics import takes.
+const maxSnapshotBytes = 64 << 20
+
+// snapshotReadTimeout bounds the startup read of the peer's snapshot, which
+// with graphics carries far more than a health poll: 64 MiB takes about
+// 50 s at 10 Mbit/s.
+const snapshotReadTimeout = 60 * time.Second
 
 // StartupEngine is what RunStartup needs of the local engine.
 type StartupEngine interface {
@@ -232,7 +239,10 @@ func (p *HealthPoller) FetchStateSnapshot(ctx context.Context, token string) (in
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := p.client.Do(req)
+	// The poller's client, TLS pin included, with a timeout of its own.
+	client := *p.client
+	client.Timeout = snapshotReadTimeout
+	resp, err := client.Do(req)
 	if err != nil {
 		return env.Snapshot, 0, err
 	}

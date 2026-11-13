@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/cmdqueue"
+	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -970,4 +972,72 @@ func TestApplySnapshot_TakesTheSnapshotSeq(t *testing.T) {
 			require.Equal(t, tc.want, api.enrichedState().LastCommandSeq)
 		})
 	}
+}
+
+// A snapshot carries every graphics layer's image, so it outgrows the
+// JSON cap the API applies to commands: a capped push fails as a whole,
+// and the engines stay apart on everything else as well.
+func TestApplyStateSnapshot_TakesSnapshotAboveJSONCap(t *testing.T) {
+	api := setupTestAPIWithSnapshot(t, &mockSnapshotProvider{})
+	handler := MaxBytesMiddleware(api.Mux())
+
+	body, err := json.Marshal(internal.FullStateSnapshot{
+		Version:  "1",
+		Graphics: []internal.GraphicsLayerSnapshot{{ID: 1, Image: make([]byte, maxJSONBodySize)}},
+	})
+	require.NoError(t, err)
+	require.Greater(t, len(body), maxJSONBodySize)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("POST", "/api/sync/state-snapshot", bytes.NewReader(body)))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+// The handler bounds the body itself, whatever the Content-Type.
+func TestApplyStateSnapshot_BodyCapped(t *testing.T) {
+	api := setupTestAPIWithSnapshot(t, &mockSnapshotProvider{})
+	handler := MaxBytesMiddleware(api.Mux())
+
+	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", bytes.NewReader(make([]byte, maxSnapshotBodySize+1)))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	require.Contains(t, rec.Body.String(), "snapshot larger than 64 MiB")
+}
+
+// An engine that came up empty and went live alone, then turned
+// authoritative on health, would otherwise wipe its peer's graphics with
+// its first push. A snapshot that holds no layers, or names no command
+// sequence, is refused as stale where it would remove layers; force, an
+// operator's choice, takes it, and so does a push that removes nothing.
+func TestApplyStateSnapshot_RefusesToRemoveLayersFromAnEmptySource(t *testing.T) {
+	api := setupTestAPIWithSnapshot(t, &mockSnapshotProvider{})
+	comp := graphics.NewCompositor()
+	defer comp.Close()
+	api.compositor = comp
+	require.NoError(t, comp.AddLayerWithID(1))
+	require.NoError(t, comp.AddLayerWithID(2))
+
+	push := func(snap internal.FullStateSnapshot, seq uint64, query string) *httptest.ResponseRecorder {
+		raw, err := json.Marshal(snap)
+		require.NoError(t, err)
+		body, err := json.Marshal(map[string]any{"snapshot": json.RawMessage(raw), "seq": seq})
+		require.NoError(t, err)
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, httptest.NewRequest("POST", "/api/sync/state-snapshot"+query, bytes.NewReader(body)))
+		return rec
+	}
+	empty := internal.FullStateSnapshot{GraphicsContent: true}
+	one := internal.FullStateSnapshot{GraphicsContent: true, Graphics: []internal.GraphicsLayerSnapshot{{ID: 1}}}
+	both := internal.FullStateSnapshot{GraphicsContent: true, Graphics: []internal.GraphicsLayerSnapshot{{ID: 1}, {ID: 2}}}
+
+	rec := push(empty, 50, "")
+	require.Equal(t, http.StatusConflict, rec.Code)
+	require.Contains(t, rec.Body.String(), "snapshot would remove graphics layers")
+	require.Contains(t, rec.Body.String(), `"snapshot_seq":50`)
+	require.Equal(t, http.StatusConflict, push(one, 0, "").Code)
+	require.Equal(t, http.StatusOK, push(both, 0, "").Code, "nothing removed")
+	require.Equal(t, http.StatusOK, push(internal.FullStateSnapshot{}, 0, "").Code, "an older engine's snapshot removes nothing")
+	require.Equal(t, http.StatusOK, push(one, 50, "").Code, "a source with layers and a sequence is taken")
+	require.Equal(t, http.StatusOK, push(empty, 60, "?force=true").Code)
 }

@@ -339,28 +339,6 @@ func TestMaxBytesMiddleware_OctetStreamCannotBypassCapOnCommandPath(t *testing.T
 	}
 }
 
-// TestMaxBytesMiddleware_SnapshotPathCapped ensures the snapshot-apply endpoint
-// is also bounded (it formerly relied on the bypassable middleware and did an
-// unbounded io.ReadAll).
-func TestMaxBytesMiddleware_SnapshotPathCapped(t *testing.T) {
-	handler := MaxBytesMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, err := io.ReadAll(r.Body); err != nil {
-			w.WriteHeader(http.StatusRequestEntityTooLarge)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	bigBody := make([]byte, maxJSONBodySize+1)
-	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", bytes.NewReader(bigBody))
-	req.Header.Set("Content-Type", "application/octet-stream")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code,
-		"oversized snapshot body must be capped regardless of Content-Type")
-}
-
 // TestMaxBytesMiddleware_LargeUploadPathsExempt confirms the dedicated upload
 // endpoints (which install their own larger per-handler limits) remain exempt
 // from the global JSON cap, including via the /api/v1/ version prefix.
@@ -382,6 +360,7 @@ func TestMaxBytesMiddleware_LargeUploadPathsExempt(t *testing.T) {
 		"/api/stinger/intro/upload",
 		"/api/graphics/2/image",
 		"/api/graphics/2/sequence",
+		"/api/sync/state-snapshot",
 		"/api/v1/clips/upload", // version-prefixed
 		"/api/v1/stinger/intro/upload",
 	}

@@ -46,7 +46,10 @@ export interface AutoReconcileConfig {
 
 const DIVERGE_DELAY_MS = 2000;
 const COOLDOWN_MS = 5000;
-const PUSH_TIMEOUT_MS = 10_000;
+// A snapshot carries every graphics layer's image and rendered frame, up to
+// the 64 MiB an engine takes, read from one engine and sent to the other:
+// at 10 Mbit/s that is about 50 s each way for the largest.
+export const PUSH_TIMEOUT_MS = 120_000;
 const TRANSITION_POLL_MS = 100;
 const TRANSITION_WAIT_TIMEOUT_MS = 5000;
 const LOCK_ACQUIRE_TIMEOUT_MS = 5000;

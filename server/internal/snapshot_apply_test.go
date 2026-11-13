@@ -1653,3 +1653,66 @@ func TestApplyFullSnapshot_GraphicsLayerSettings(t *testing.T) {
 		t.Fatalf("settings not applied: %v %v", target.names, target.configs)
 	}
 }
+
+type mockLayerSyncTarget struct {
+	*mockApplyTarget
+}
+
+func (m *mockLayerSyncTarget) SyncGraphicsLayers(layers []GraphicsLayerSnapshot) error {
+	return m.record("SyncGraphicsLayers", layers)
+}
+
+// An engine that lost its layers cannot take a layer's on-air state, place
+// or settings: every per-layer call fails on a layer it does not hold. The
+// layer set is synced first.
+func TestApplyFullSnapshot_SyncsGraphicsLayersFirst(t *testing.T) {
+	target := &mockLayerSyncTarget{newMockApplyTarget()}
+	layers := []GraphicsLayerSnapshot{{ID: 2, Active: true, Image: []byte("png")}, {ID: 5}}
+	if w := ApplyFullSnapshot(context.Background(), FullStateSnapshot{Graphics: layers, GraphicsContent: true}, target); len(w) > 0 {
+		t.Fatalf("warnings: %v", w)
+	}
+	calls := target.callsFor("SyncGraphicsLayers")
+	if len(calls) != 1 || !reflect.DeepEqual(calls[0].Args[0], layers) {
+		t.Fatalf("SyncGraphicsLayers calls = %+v, want one with the snapshot's layers", calls)
+	}
+	order := map[string]int{}
+	for i, c := range target.calls {
+		if _, ok := order[c.Method]; !ok {
+			order[c.Method] = i
+		}
+	}
+	if order["SyncGraphicsLayers"] > order["SetGraphicsLayerActive"] {
+		t.Fatalf("layers synced after their settings: %v", order)
+	}
+}
+
+// A snapshot of an engine without layers removes the target's: nil is
+// what such an engine captures.
+func TestApplyFullSnapshot_SyncsEmptyGraphicsLayers(t *testing.T) {
+	target := &mockLayerSyncTarget{newMockApplyTarget()}
+	ApplyFullSnapshot(context.Background(), FullStateSnapshot{GraphicsContent: true}, target)
+	if target.callCount("SyncGraphicsLayers") != 1 {
+		t.Fatal("SyncGraphicsLayers not called for a snapshot without layers")
+	}
+}
+
+// An engine running an image from before layer content captures layers
+// without it. Taking that as the whole set would create layers with
+// nothing to show and remove the ones this engine holds, so in a pair of
+// mixed images the layer set is left alone.
+func TestApplyFullSnapshot_LeavesLayerSetWithoutContent(t *testing.T) {
+	target := &mockLayerSyncTarget{newMockApplyTarget()}
+	ApplyFullSnapshot(context.Background(), FullStateSnapshot{Graphics: []GraphicsLayerSnapshot{{ID: 2}}}, target)
+	if target.wasCalled("SyncGraphicsLayers") {
+		t.Fatal("layer set synced from a snapshot without layer content")
+	}
+}
+
+func TestApplyFullSnapshot_GraphicsLayerSyncFailureWarns(t *testing.T) {
+	target := &mockLayerSyncTarget{newMockApplyTarget()}
+	target.errors["SyncGraphicsLayers"] = fmt.Errorf("layer 2 content: bad png")
+	w := ApplyFullSnapshot(context.Background(), FullStateSnapshot{Graphics: []GraphicsLayerSnapshot{{ID: 2}}, GraphicsContent: true}, target)
+	if len(w) != 1 || !strings.Contains(w[0], "bad png") {
+		t.Fatalf("warnings = %v, want the sync failure", w)
+	}
+}

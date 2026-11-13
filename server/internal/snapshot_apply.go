@@ -140,6 +140,18 @@ type SnapshotGraphicsSettingsApplier interface {
 	SetGraphicsLayerSettings(id int, name string, config json.RawMessage) error
 }
 
+// SnapshotGraphicsLayerSyncer is optionally implemented to bring the
+// target's set of graphics layers, and what each shows, to the snapshot's,
+// for a snapshot with GraphicsContent set:
+// it creates the layers the snapshot holds and the target lacks, under the
+// snapshot's IDs, removes the layers the snapshot does not hold, and sets
+// each layer's image or rendered frame. The per-layer settings that follow
+// fail on a layer the target lacks, and a target holding other layers than
+// the source never compares equal to it.
+type SnapshotGraphicsLayerSyncer interface {
+	SyncGraphicsLayers(layers []GraphicsLayerSnapshot) error
+}
+
 // SnapshotGraphicsHTML5Applier is optionally implemented for HTML5 graphics overlay reload.
 type SnapshotGraphicsHTML5Applier interface {
 	LoadGraphicsHTML5(layerID int, url string) error
@@ -244,7 +256,13 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 		warnings = append(warnings, fmt.Sprintf("FTB: %v", err))
 	}
 
-	// 7. Graphics layers
+	// 7. Graphics layers: the set of layers first, then each one's settings.
+	if syncer, ok := target.(SnapshotGraphicsLayerSyncer); ok && snap.GraphicsContent {
+		if err := syncer.SyncGraphicsLayers(snap.Graphics); err != nil {
+			slog.Warn("snapshot apply: graphics layer sync failed", "error", err)
+			warnings = append(warnings, fmt.Sprintf("graphics layers: %v", err))
+		}
+	}
 	for _, layer := range snap.Graphics {
 		if err := target.SetGraphicsLayerActive(layer.ID, layer.Active); err != nil {
 			slog.Warn("snapshot apply: graphics layer active failed", "id", layer.ID, "error", err)

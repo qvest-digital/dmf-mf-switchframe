@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"log/slog"
@@ -46,6 +47,7 @@ var _ internal.SnapshotPlayoutApplier = (*App)(nil)
 var _ internal.SnapshotSCTE35Applier = (*App)(nil)
 var _ internal.SnapshotMacroApplier = (*App)(nil)
 var _ internal.SnapshotEncoderApplier = (*App)(nil)
+var _ internal.SnapshotGraphicsLayerSyncer = (*App)(nil)
 
 // --- SnapshotApplyTarget implementation ---
 
@@ -176,6 +178,48 @@ func (a *App) SetGraphicsLayerSettings(id int, name string, config json.RawMessa
 		config = json.RawMessage("null")
 	}
 	return a.compositor.SetLayerSettings(id, &name, config)
+}
+
+// SyncGraphicsLayers takes over the peer engine's set of layers under the
+// peer's IDs, and what each shows.
+func (a *App) SyncGraphicsLayers(layers []internal.GraphicsLayerSnapshot) error {
+	if a.compositor == nil {
+		return nil
+	}
+	want := make(map[int]bool, len(layers))
+	for _, l := range layers {
+		want[l.ID] = true
+	}
+	var errs []error
+	have := make(map[int]bool)
+	// Removed first, so the layers to add fit under the layer limit.
+	for _, l := range a.compositor.Status().Layers {
+		if want[l.ID] {
+			have[l.ID] = true
+			continue
+		}
+		if err := a.compositor.RemoveLayer(l.ID); err != nil && !errors.Is(err, graphics.ErrLayerNotFound) {
+			errs = append(errs, fmt.Errorf("remove layer %d: %w", l.ID, err))
+		}
+	}
+	for _, l := range layers {
+		if !have[l.ID] {
+			if err := a.compositor.AddLayerWithID(l.ID); err != nil && !errors.Is(err, graphics.ErrLayerExists) {
+				errs = append(errs, fmt.Errorf("add layer %d: %w", l.ID, err))
+				continue
+			}
+		}
+		err := a.compositor.SetLayerContent(l.ID, graphics.LayerContent{
+			ImageName: l.ImageName,
+			Image:     l.Image,
+			Template:  l.Template,
+			Frame:     l.Frame,
+		})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("layer %d content: %w", l.ID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (a *App) SetGraphicsLayerRect(id int, x, y, width, height int) error {

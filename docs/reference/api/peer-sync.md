@@ -87,7 +87,9 @@ Polled at 1 Hz by the browser in dual-engine mode for clock calibration.
 **Purpose:** apply a peer's state snapshot to this engine (used during reconciliation after a split-brain).
 **Handler:** `(*API).handleApplyStateSnapshot`.
 
-**Request body:** `sync.StateSnapshot`.
+**Request body:** `sync.StateSnapshot`, at most 64 MiB: it carries every graphics layer's uploaded image and the frame last rendered into it from a template.
+
+The engine takes the snapshot's set of graphics layers, creating the ones it lacks under the snapshot's IDs with their content and removing the ones the snapshot does not hold.
 
 **Errors:** 400 (invalid snapshot), 409 (reconcile-lock not held).
 

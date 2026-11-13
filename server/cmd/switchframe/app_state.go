@@ -891,22 +891,7 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 	}
 
 	// --- Graphics (DSK layers) ---
-	gfxStatus := a.compositor.Status()
-	for _, l := range gfxStatus.Layers {
-		snap.Graphics = append(snap.Graphics, internal.GraphicsLayerSnapshot{
-			ID:        l.ID,
-			Active:    l.Active,
-			ZOrder:    l.ZOrder,
-			X:         l.Rect.X,
-			Y:         l.Rect.Y,
-			Width:     l.Rect.Width,
-			Height:    l.Rect.Height,
-			Template:  l.Template,
-			ImageName: l.ImageName,
-			Name:      l.Name,
-			Config:    l.Config,
-		})
-	}
+	captureGraphics(&snap, a.compositor)
 
 	// --- DVE / Layout ---
 	if a.dveCompositor != nil {
@@ -1109,6 +1094,40 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 	}
 
 	return snap
+}
+
+// captureGraphics puts every layer of c into snap with what it shows, and
+// marks snap as carrying the whole set of layers.
+func captureGraphics(snap *internal.FullStateSnapshot, c *graphics.Compositor) {
+	snap.Graphics = graphicsLayerSnapshots(c)
+	snap.GraphicsContent = true
+}
+
+// graphicsLayerSnapshots captures every layer of c with what it shows.
+func graphicsLayerSnapshots(c *graphics.Compositor) []internal.GraphicsLayerSnapshot {
+	var out []internal.GraphicsLayerSnapshot
+	for _, l := range c.Status().Layers {
+		ls := internal.GraphicsLayerSnapshot{
+			ID:        l.ID,
+			Active:    l.Active,
+			ZOrder:    l.ZOrder,
+			X:         l.Rect.X,
+			Y:         l.Rect.Y,
+			Width:     l.Rect.Width,
+			Height:    l.Rect.Height,
+			Template:  l.Template,
+			ImageName: l.ImageName,
+			Name:      l.Name,
+			Config:    l.Config,
+		}
+		if lc, err := c.LayerContent(l.ID); err == nil {
+			ls.Image, ls.Frame = lc.Image, lc.Frame
+		} else {
+			slog.Warn("snapshot capture: graphics layer content failed", "id", l.ID, "error", err)
+		}
+		out = append(out, ls)
+	}
+	return out
 }
 
 // captureClipPlayers records every clip player slot (ClipPlayers) and, for

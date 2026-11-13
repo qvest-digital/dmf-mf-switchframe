@@ -451,3 +451,38 @@ func TestPeerDown(t *testing.T) {
 	p.recordSuccess(HealthResponse{Status: "ok"})
 	assert.False(t, p.PeerDown())
 }
+
+// The peer's snapshot carries every graphics layer's image, so it can
+// outgrow the JSON bodies the API takes. A truncated read fails to decode,
+// and the engine starts without the peer's state.
+func TestFetchStateSnapshot_ReadsSnapshotWithLargeImages(t *testing.T) {
+	layerImage := make([]byte, 20<<20)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		snap, _ := json.Marshal(internal.FullStateSnapshot{
+			Graphics: []internal.GraphicsLayerSnapshot{{ID: 1, Image: layerImage}},
+		})
+		_ = json.NewEncoder(w).Encode(map[string]any{"snapshot": json.RawMessage(snap), "seq": 7})
+	}))
+	defer srv.Close()
+
+	snap, seq, err := NewHealthPoller(srv.URL).FetchStateSnapshot(context.Background(), "")
+	require.NoError(t, err)
+	require.Equal(t, uint64(7), seq)
+	require.Len(t, snap.Graphics, 1)
+	require.Len(t, snap.Graphics[0].Image, len(layerImage))
+}
+
+// The startup read takes longer than a health poll may: a snapshot with
+// graphics is megabytes, and the poller's client gives up after 3 s.
+func TestFetchStateSnapshot_OutlastsThePollTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]any{"snapshot": json.RawMessage(`{}`), "seq": 3})
+	}))
+	defer srv.Close()
+
+	p := NewHealthPoller(srv.URL, WithHTTPClient(&http.Client{Timeout: 100 * time.Millisecond}))
+	_, seq, err := p.FetchStateSnapshot(context.Background(), "")
+	require.NoError(t, err)
+	require.Equal(t, uint64(3), seq)
+}
