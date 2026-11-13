@@ -246,13 +246,20 @@ func (p *HealthPoller) PeerDown() bool {
 // (admin=true): the lock serializes browsers pushing state between engines,
 // and this only reads the peer to apply its state here.
 func (p *HealthPoller) FetchStateSnapshot(ctx context.Context, token string) (internal.FullStateSnapshot, uint64, error) {
+	snap, seq, _, err := p.fetchStateSnapshot(ctx, token)
+	return snap, seq, err
+}
+
+// fetchStateSnapshot is FetchStateSnapshot, also returning the size of the
+// snapshot read.
+func (p *HealthPoller) fetchStateSnapshot(ctx context.Context, token string) (internal.FullStateSnapshot, uint64, int64, error) {
 	var env struct {
 		Snapshot internal.FullStateSnapshot `json:"snapshot"`
 		Seq      uint64                     `json:"seq"`
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.peerURL+"/api/sync/state-snapshot?admin=true", nil)
 	if err != nil {
-		return env.Snapshot, 0, err
+		return env.Snapshot, 0, 0, err
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -262,18 +269,30 @@ func (p *HealthPoller) FetchStateSnapshot(ctx context.Context, token string) (in
 	client.Timeout = snapshotReadTimeout
 	resp, err := client.Do(req)
 	if err != nil {
-		return env.Snapshot, 0, err
+		return env.Snapshot, 0, 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return env.Snapshot, 0, fmt.Errorf("status %d: the peer does not take this engine's API token, and both engines need the same one", resp.StatusCode)
+		return env.Snapshot, 0, 0, fmt.Errorf("status %d: the peer does not take this engine's API token, and both engines need the same one", resp.StatusCode)
 	default:
-		return env.Snapshot, 0, fmt.Errorf("status %d", resp.StatusCode)
+		return env.Snapshot, 0, 0, fmt.Errorf("status %d", resp.StatusCode)
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSnapshotBytes)).Decode(&env); err != nil {
-		return env.Snapshot, 0, fmt.Errorf("decode: %w", err)
+	body := &countingReader{r: io.LimitReader(resp.Body, maxSnapshotBytes)}
+	if err := json.NewDecoder(body).Decode(&env); err != nil {
+		return env.Snapshot, 0, 0, fmt.Errorf("decode: %w", err)
 	}
-	return env.Snapshot, env.Seq, nil
+	return env.Snapshot, env.Seq, body.n, nil
+}
+
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(b []byte) (int, error) {
+	n, err := c.r.Read(b)
+	c.n += int64(n)
+	return n, err
 }

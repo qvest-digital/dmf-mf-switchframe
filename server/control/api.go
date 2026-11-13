@@ -626,6 +626,7 @@ type API struct {
 	controlPlaneSecret string                              // enables /api/peer/force-leader when non-empty
 	startTime          time.Time
 	reconcileLock      reconcileLockState
+	compareChange      compareChangeState
 }
 
 // enrichFunc is the type for the state enrichment callback.

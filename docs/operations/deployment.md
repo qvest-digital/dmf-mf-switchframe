@@ -333,7 +333,9 @@ Two engines run in different regions; the `--engine-label a` and `--engine-label
 
 An engine goes on air at start without an operator cut. When its peer is on air, it reads the peer's state snapshot (`GET /api/sync/state-snapshot`, with its own API token, so both engines need the same `--api-token`; the token travels to `--peer-engine-url`, which is TLS unless the network between the engines is trusted) and applies it, then checks on the next peer poll that both carry the same program, following again if the peer cut meanwhile; this holds for a restarted engine whatever its label. After five applies that do not put the peer's program on air here, the engine goes live on its own source. With no peer on air, the leader by the role tiebreak goes live on `--initial-program-source`, or the first input delivering frames, and the other engine waits for it and follows; it goes live on its own after 20s with the leader still dark, and follows the leader once that is on air. An engine whose peer is unreachable goes live alone, and follows a leader that turns out to have gone live alongside it. Both engines write MXL program grains at the wall-clock grain index, so an engine that follows writes the same indices as its peer.
 
-See [metrics.md](../reference/metrics.md) for the `switchframe_cmdqueue_*` and `switchframe_snapshot_*` metric families that expose active-active health.
+Once on air, the two engines keep their state and their stores in step between themselves, without a browser: see [peer-sync.md](../reference/api/peer-sync.md#convergence). An engine takes its peer's stores before it serves.
+
+See [metrics.md](../reference/metrics.md) for the `switchframe_cmdqueue_*` and `switchframe_snapshot_*` and `switchframe_peer_*` metric families that expose active-active health.
 
 ## Key types and entry points
 

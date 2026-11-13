@@ -48,7 +48,7 @@ The API has 291 real endpoints split across the files below. Each sub-file follo
 
 - [operator](api/operator.md) — operator registration, sessions, subsystem locks (9 endpoints)
 - [comms](api/comms.md) — operator voice comms join/leave/mute/status (4 endpoints)
-- [peer-sync](api/peer-sync.md) — dual-engine peer health, force-leader, reconcile lock, state snapshot (8 endpoints)
+- [peer-sync](api/peer-sync.md) - dual-engine peer health, force-leader, reconcile lock, state snapshot, convergence
 - [pipeline](api/pipeline.md) — pipeline snapshot, per-node bypass, thumbnails (4 endpoints)
 - [debug-perf](api/debug-perf.md) — debug snapshot, live perf, baseline CRUD, connection counter (5 endpoints)
 

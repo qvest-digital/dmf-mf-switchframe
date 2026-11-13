@@ -131,7 +131,11 @@ func (a *App) SyncSequences(ctx context.Context, sequences []internal.SequenceSn
 			}
 			continue
 		}
-		zip, err := a.fetchPeerSequence(ctx, s)
+		zip, ok := prefetchedSequence(ctx, s.Hash)
+		var err error
+		if !ok {
+			zip, err = a.fetchPeerSequence(ctx, s)
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("sequence on layer %d: %w", s.LayerID, err))
 			continue
@@ -143,6 +147,44 @@ func (a *App) SyncSequences(ctx context.Context, sequences []internal.SequenceSn
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// prefetchKey carries the sequence ZIPs read before an apply, by hash.
+type prefetchKey struct{}
+
+func prefetchedSequence(ctx context.Context, hash string) ([]byte, bool) {
+	m, _ := ctx.Value(prefetchKey{}).(map[string][]byte)
+	zip, ok := m[hash]
+	return zip, ok
+}
+
+// prefetchSequences reads the sequence ZIPs snap names that this engine
+// lacks from the peer, before the apply starts, and returns ctx carrying
+// them for SyncSequences: a read takes up to sequenceReadTimeout, which
+// the apply's window, during which this engine dates no change of its
+// own, does not then span. A ZIP not read here is read by the apply, which
+// reports what fails.
+func (a *App) prefetchSequences(ctx context.Context, snap internal.FullStateSnapshot) context.Context {
+	if !snap.GraphicsMotion || a.sequenceEngine == nil || a.peerPoller == nil {
+		return ctx
+	}
+	have := a.sequenceEngine.Sources()
+	zips := map[string][]byte{}
+	for _, s := range snap.Sequences {
+		if h, ok := have[s.LayerID]; ok && h.Hash == s.Hash {
+			continue
+		}
+		if _, ok := zips[s.Hash]; ok {
+			continue
+		}
+		if zip, err := a.fetchPeerSequence(ctx, s); err == nil {
+			zips[s.Hash] = zip
+		}
+	}
+	if len(zips) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, prefetchKey{}, zips)
 }
 
 // fetchPeerSequence reads the ZIP a sequence was uploaded as from the peer

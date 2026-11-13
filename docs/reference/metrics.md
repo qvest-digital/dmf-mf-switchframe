@@ -296,6 +296,11 @@ Read by [`redundancyCollector`](../../server/cmd/switchframe/metrics_redundancy.
 | `switchframe_peer_last_seen_age_seconds` | gauge | - | Time since the peer last answered a health poll. |
 | `switchframe_peer_epoch` | gauge | `side` | Leadership epoch, of this engine (side local) and as the peer last reported it (side peer). A forced leader change raises it. |
 | `switchframe_peer_program_agrees` | gauge | - | 1 while the peer last reported the same program source as this engine, 0 when the two disagree. Absent without a reachable peer. |
+| `switchframe_peer_state_diverged` | gauge | - | 1 while this engine's state differs from its peer's, as the engines compare it. |
+| `switchframe_peer_state_divergences_total` | counter | - | Times this engine's state came to differ from its peer's. |
+| `switchframe_peer_state_applies_total` | counter | `result` | Peer states this engine took to converge with its peer (ok), and reads or applies of them that failed or took them in part (error). |
+| `switchframe_peer_state_apply_bytes_total` | counter | - | Bytes of the peer states this engine took. |
+| `switchframe_peer_state_unresolved_total` | counter | - | Applies of the peer's state repeated for a difference an earlier apply left in place. |
 | `switchframe_peer_store_sync_rounds_total` | counter | `result` | Rounds of converging the stores with the peer's, by result. |
 | `switchframe_peer_store_sync_last_round_age_seconds` | gauge | - | Time since the stores last completed a round with the peer. |
 | `switchframe_peer_store_items_pulled_total` | counter | `store` | Items taken from the peer's store. |

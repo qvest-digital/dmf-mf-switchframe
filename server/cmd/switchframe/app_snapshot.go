@@ -40,6 +40,13 @@ func (sp *snapshotProviderAdapter) SnapshotReady() bool {
 // Verify snapshotProviderAdapter satisfies the interface at compile time.
 var _ control.SnapshotProvider = (*snapshotProviderAdapter)(nil)
 var _ control.SnapshotReadiness = (*snapshotProviderAdapter)(nil)
+var _ control.SnapshotPreparer = (*snapshotProviderAdapter)(nil)
+
+// PrepareSnapshot reads the graphics sequences snap names that this engine
+// lacks from the peer before the apply.
+func (sp *snapshotProviderAdapter) PrepareSnapshot(ctx context.Context, snap internal.FullStateSnapshot) context.Context {
+	return sp.app.prefetchSequences(ctx, snap)
+}
 
 // Verify App satisfies SnapshotApplyTarget at compile time.
 var _ internal.SnapshotApplyTarget = (*App)(nil)

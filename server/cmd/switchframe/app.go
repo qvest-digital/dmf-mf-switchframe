@@ -297,9 +297,10 @@ type App struct {
 	// Peer health monitoring
 	peerPoller *peer.HealthPoller
 
-	// storeSyncer converges the stores with the peer's; nil without a
-	// peer.
+	// storeSyncer converges the stores with the peer's, converger the
+	// state; nil without a peer.
 	storeSyncer *peer.StoreSyncer
+	converger   *peer.Converger
 
 	// Performance monitoring
 	perfSampler *perf.Sampler
@@ -1749,6 +1750,20 @@ func (a *App) initAPI() error {
 	// to subsystems wired above), but the provider is a lightweight adapter.
 	a.api.SetSnapshotProvider(&snapshotProviderAdapter{app: a})
 
+	// Engines of a pair converge their state between themselves too, so
+	// that no browser has to be open for a missed command to be repaired.
+	if a.peerPoller != nil && a.cfg.EngineLabel != "" {
+		a.converger = peer.NewConverger(a.peerPoller, peer.ConvergeConfig{
+			Token:      a.cfg.APIToken,
+			Tick:       convergeTick,
+			Settle:     convergeSettle,
+			Backoff:    convergeBackoff,
+			MaxBackoff: convergeMaxBackoff,
+			StartTie:   convergeStartTie,
+			ChangeTie:  convergeChangeTie,
+		}, a.api.CompareState, a.applyPeerState)
+	}
+
 	// Late-bind HTML5 graphics manager to the API.
 	if a.htmlGfxMgr != nil {
 		a.api.SetHTMLGfxManager(a.htmlGfxMgr)
@@ -1991,6 +2006,9 @@ func (a *App) Run(ctx context.Context) error {
 	go func() {
 		defer a.bgWG.Done()
 		peer.RunStartup(a.bgCtx, a.peerPoller, &startupEngine{app: a}, a.startupConfig())
+		if a.converger != nil {
+			a.converger.Run(a.bgCtx)
+		}
 	}()
 
 	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).
