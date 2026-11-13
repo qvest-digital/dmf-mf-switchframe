@@ -47,6 +47,7 @@ func BuildADTS(sampleRate, channels, frameLen int) []byte {
 	totalLen := frameLen + 7
 
 	srIdx := sampleRateIndex(sampleRate)
+	chanCfg := adtsChannelConfig(channels)
 
 	// Byte 0: sync word high byte.
 	header[0] = 0xFF
@@ -57,10 +58,10 @@ func BuildADTS(sampleRate, channels, frameLen int) []byte {
 	// Byte 2: profile (2 bits) | sr index (4 bits) | private (1 bit) | channel config high (1 bit).
 	// ADTS profile = audioObjectType - 1. AAC-LC = objectType 2, so profile = 1 (0b01).
 	profile := byte(1)
-	header[2] = (profile << 6) | (byte(srIdx) << 2) | (byte(channels>>2) & 0x01)
+	header[2] = (profile << 6) | (byte(srIdx) << 2) | (chanCfg>>2)&0x01
 
 	// Byte 3: channel config low 2 bits | originality=0 | home=0 | copyright_id=0 | copyright_start=0 | frame length high 2 bits.
-	header[3] = (byte(channels&0x03) << 6) | byte((totalLen>>11)&0x03)
+	header[3] = (chanCfg&0x03)<<6 | byte((totalLen>>11)&0x03)
 
 	// Byte 4: frame length mid 8 bits.
 	header[4] = byte((totalLen >> 3) & 0xFF)
@@ -72,6 +73,23 @@ func BuildADTS(sampleRate, channels, frameLen int) []byte {
 	header[6] = 0xFC
 
 	return header
+}
+
+// adtsChannelConfig is the ADTS channel_configuration of a bitstream with
+// the given channel count. 1 to 6 channels are configurations 1 to 6.
+// Eight are 7: a 7.1 bitstream signalled as configuration 12 in its
+// AudioSpecificConfig, as an MP4 clip carries it, has the same syntactic
+// elements (SCE, three CPEs, LFE), which configuration 12 does not fit
+// into the three ADTS bits. Every other count has none, 0, and decodes
+// only from a stream carrying its own program config element.
+func adtsChannelConfig(channels int) byte {
+	switch {
+	case channels >= 1 && channels <= 6:
+		return byte(channels)
+	case channels == 8:
+		return 7
+	}
+	return 0
 }
 
 // EnsureADTS returns data with an ADTS header prepended. If data
