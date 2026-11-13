@@ -28,7 +28,7 @@ type SRTCallerConfig struct {
 	Passphrase     string // enables SRT encryption when non-empty (10-79 chars)
 	KeyLength      int    // AES key length in bytes: 16/24/32; 0 = srtgo default (16)
 	RingBufferSize int    // bytes, default 4MB
-	InputBW        int64  // bytes/sec, 0 = auto-estimate
+	InputBW        int64  // bytes/sec, 0 = pace at srtgo's default 1 Gbps
 	OverheadBW     int    // percent, 0 = use srtgo default (25%)
 }
 

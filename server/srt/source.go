@@ -38,6 +38,11 @@ type Source struct {
 	stopped   sync.Once
 	connClose sync.Once
 
+	// lastStats is the previous poll's reading. srtgo's packet counters are
+	// cumulative for the connection, while stats outlives it, so each poll
+	// adds only what changed since the last one.
+	lastStats srtgo.ConnStats
+
 	// decoderFactory creates the stream decoder. Injected for testing;
 	// defaults to newRealDecoder which creates a real StreamDecoder.
 	decoderFactory decoderFactoryFunc
@@ -212,21 +217,22 @@ func (s *Source) updateStats(ctx context.Context) {
 		return
 	}
 
-	// Interval mode: MbpsRecvRate and loss rate reflect the recent window.
-	// The packet counters are also interval deltas; ConnStats.Update
-	// accumulates them into the lifetime totals exposed by snapshots.
+	// clear=true restarts the window MbpsRecvRate is measured over; the
+	// packet counters stay cumulative for the connection.
 	cs := statter.Stats(true)
+	prev := s.lastStats
+	s.lastStats = cs
 
 	s.stats.Update(StatsUpdate{
 		RTTMs:           float64(cs.RTT) / float64(time.Millisecond),
 		RTTVarMs:        float64(cs.RTTVar) / float64(time.Millisecond),
 		RecvRateMbps:    cs.MbpsRecvRate,
 		LossRatePct:     cs.RecvLossRate,
-		PacketsReceived: int64(cs.RecvPackets),
-		PacketsLost:     int64(cs.RecvLoss),
-		PacketsDropped:  int64(cs.RecvDropped),
-		PacketsRetrans:  int64(cs.Retransmits),
-		PacketsBelated:  int64(cs.RecvBelated),
+		PacketsReceived: int64(cs.RecvPackets - prev.RecvPackets),
+		PacketsLost:     int64(cs.RecvLoss - prev.RecvLoss),
+		PacketsDropped:  int64(cs.RecvDropped - prev.RecvDropped),
+		PacketsRetrans:  int64(cs.RecvRetrans - prev.RecvRetrans),
+		PacketsBelated:  int64(cs.RecvBelated - prev.RecvBelated),
 		RecvBufMs:       float64(cs.MsRcvBuf) / float64(time.Millisecond),
 		RecvBufPackets:  cs.RecvBufSize,
 		FlightSize:      cs.FlightSize,

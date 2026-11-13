@@ -44,6 +44,41 @@ func (c *srtgoConn) SRTStats(clear bool) SRTConnStats {
 	}
 }
 
+// srtListen is srt.Listen, replaceable in tests.
+var srtListen = srt.Listen
+
+// srtOutputConfig is the srtgo configuration of a sending connection, in
+// caller and listener mode alike.
+func srtOutputConfig(latencyMs int, passphrase string, keyLength int, inputBW int64, overheadBW int) srt.Config {
+	if latencyMs == 0 {
+		latencyMs = defaultSRTLatency
+	}
+	cfg := srt.Config{
+		Latency:    time.Duration(latencyMs) * time.Millisecond,
+		Passphrase: passphrase,
+		KeyLength:  keyLength,
+		// Close returns at once instead of waiting for unacknowledged data;
+		// connections are closed under the adapters' locks.
+		Linger: -1,
+		// Pace at the line rate. Left at 0, srtgo paces at 1.25 times the
+		// input rate it sampled, which spreads every keyframe burst out
+		// over the following frames.
+		MaxBW: srt.DefaultMaxBW,
+	}
+
+	// When InputBW is set, tell SRT the expected input rate so it can
+	// derive MaxBW = InputBW * (1 + OverheadBW/100) instead of relying
+	// on auto-estimation which chases VBR spikes.
+	if inputBW > 0 {
+		cfg.InputBW = inputBW
+		cfg.MaxBW = 0 // auto = InputBW * (1 + OverheadBW/100)
+		if overheadBW > 0 {
+			cfg.OverheadBW = overheadBW
+		}
+	}
+	return cfg
+}
+
 // SRTConnect creates a real SRT caller connection using zsiec/srtgo.
 // It dials the remote SRT endpoint with the given configuration.
 //
@@ -51,29 +86,9 @@ func (c *srtgoConn) SRTStats(clear bool) SRTConnStats {
 // passed to srt.Dial, which does not support context-based cancellation.
 // Connection timeout is controlled by srt.Config.ConnTimeout (default 5s).
 func SRTConnect(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
-	latency := config.Latency
-	if latency == 0 {
-		latency = defaultSRTLatency
-	}
-
-	cfg := srt.Config{
-		Latency:     time.Duration(latency) * time.Millisecond,
-		StreamID:    config.StreamID,
-		ConnTimeout: 5 * time.Second,
-		Passphrase:  config.Passphrase,
-		KeyLength:   config.KeyLength,
-	}
-
-	// When InputBW is set, tell SRT the expected input rate so it can
-	// derive MaxBW = InputBW * (1 + OverheadBW/100) instead of relying
-	// on auto-estimation which chases VBR spikes.
-	if config.InputBW > 0 {
-		cfg.InputBW = config.InputBW
-		cfg.MaxBW = 0 // auto = InputBW * (1 + OverheadBW/100)
-		if config.OverheadBW > 0 {
-			cfg.OverheadBW = config.OverheadBW
-		}
-	}
+	cfg := srtOutputConfig(config.Latency, config.Passphrase, config.KeyLength, config.InputBW, config.OverheadBW)
+	cfg.StreamID = config.StreamID
+	cfg.ConnTimeout = 5 * time.Second
 
 	addr := fmt.Sprintf("%s:%d", config.Address, config.Port)
 	conn, err := srt.Dial(addr, cfg)
@@ -88,30 +103,10 @@ func SRTConnect(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
 // port and accepts incoming connections, adding each to the SRTListener.
 // The loop runs until ctx is cancelled.
 func SRTAcceptLoop(ctx context.Context, config SRTListenerConfig, listener *SRTListener) error {
-	latency := config.Latency
-	if latency == 0 {
-		latency = defaultSRTLatency
-	}
-
-	cfg := srt.Config{
-		Latency:    time.Duration(latency) * time.Millisecond,
-		Passphrase: config.Passphrase,
-		KeyLength:  config.KeyLength,
-	}
-
-	// When InputBW is set, tell SRT the expected input rate so it can
-	// derive MaxBW = InputBW * (1 + OverheadBW/100) instead of relying
-	// on auto-estimation which chases VBR spikes.
-	if config.InputBW > 0 {
-		cfg.InputBW = config.InputBW
-		cfg.MaxBW = 0 // auto = InputBW * (1 + OverheadBW/100)
-		if config.OverheadBW > 0 {
-			cfg.OverheadBW = config.OverheadBW
-		}
-	}
+	cfg := srtOutputConfig(config.Latency, config.Passphrase, config.KeyLength, config.InputBW, config.OverheadBW)
 
 	addr := fmt.Sprintf(":%d", config.Port)
-	ln, err := srt.Listen(addr, cfg)
+	ln, err := srtListen(addr, cfg)
 	if err != nil {
 		return fmt.Errorf("srt listen %s: %w", addr, err)
 	}
