@@ -52,7 +52,15 @@ static int ff_probe_file(const char* path, ff_probe_result_t* result) {
 		}
 	}
 
-	int audio_idx = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+	// The first audio stream, which the clip demuxer plays, not the one
+	// avformat would pick as best.
+	int audio_idx = -1;
+	for (unsigned i = 0; i < fmt_ctx->nb_streams; i++) {
+		if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+			audio_idx = (int)i;
+			break;
+		}
+	}
 	if (audio_idx >= 0) {
 		result->has_audio = 1;
 		result->audio_codec_id = (int)fmt_ctx->streams[audio_idx]->codecpar->codec_id;

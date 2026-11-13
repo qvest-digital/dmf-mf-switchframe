@@ -19,6 +19,8 @@ func TestNeedsTranscode_AudioTheEngineCannotDecode(t *testing.T) {
 		"testdata/h264-ac3.mp4":        true,
 		"testdata/h264-mp3.mp4":        true,
 		"testdata/h264-aac-6.1.mp4":    true,
+		// The demuxer plays the first sound track.
+		"testdata/h264-ac3-then-aac.mp4": true,
 	} {
 		assert.Equal(t, want, NeedsTranscode(file), file)
 	}

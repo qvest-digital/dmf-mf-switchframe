@@ -241,3 +241,10 @@ func TestBuildADTS_ChannelConfiguration(t *testing.T) {
 		require.Equal(t, 107, frameLen, "%d channels: frame length", channels)
 	}
 }
+
+func TestADTSCarries(t *testing.T) {
+	t.Parallel()
+	for channels, want := range map[int]bool{0: false, 1: true, 2: true, 6: true, 7: false, 8: true, 9: false, 16: false} {
+		require.Equal(t, want, ADTSCarries(channels), "%d channels", channels)
+	}
+}

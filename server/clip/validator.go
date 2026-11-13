@@ -43,8 +43,8 @@ func IsAcceptedExtension(ext string) bool {
 // Files with native extensions are probed to check if the video codec is H.264
 // or HEVC; other codecs in .mp4/.mov containers trigger transcode. So does
 // audio the engine cannot decode: the demuxer hands any sound track on as
-// AAC frames, and the mixer frames them in ADTS, which has no channel
-// configuration for 7 or more than 8 channels.
+// AAC frames, and the mixer frames them in ADTS, which carries only some
+// channel counts (codec.ADTSCarries).
 func NeedsTranscode(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	if transcodeExtensions[ext] {
@@ -65,7 +65,7 @@ func NeedsTranscode(path string) bool {
 	if !result.IsH264() && !result.IsHEVC() {
 		return true
 	}
-	return result.HasAudio && (!result.IsAAC() || result.AudioChannels == 7 || result.AudioChannels > 8)
+	return result.HasAudio && (!result.IsAAC() || !codec.ADTSCarries(result.AudioChannels))
 }
 
 // CanTranscodeFallback returns true if the extension is a native container
