@@ -26,6 +26,7 @@ type mockDiscreteWriter struct {
 type writtenGrain struct {
 	index uint64
 	data  []byte
+	at    int64 // TAI when written
 }
 
 func (m *mockDiscreteWriter) WriteGrain(index uint64, data []byte) error {
@@ -33,7 +34,7 @@ func (m *mockDiscreteWriter) WriteGrain(index uint64, data []byte) error {
 	defer m.mu.Unlock()
 	cp := make([]byte, len(data))
 	copy(cp, data)
-	m.grains = append(m.grains, writtenGrain{index: index, data: cp})
+	m.grains = append(m.grains, writtenGrain{index: index, data: cp, at: clock.TAINow()})
 	return nil
 }
 
@@ -681,23 +682,41 @@ func TestWriter_StalledProducerRepeatsOnSchedule(t *testing.T) {
 	w.WriteVideo(frameYUV(16), 12, 2, framePTS(rate, CurrentIndex(rate)))
 
 	time.Sleep(400 * time.Millisecond)
-	// Sample the head well inside a grain period.
-	time.Sleep(time.Duration(NsUntilIndex(CurrentIndex(rate)+1, rate)) + 5*time.Millisecond)
-	end := CurrentIndex(rate)
-	head := mock.getGrains()
+	// Sample the head well inside a grain period. A host that pauses the
+	// process can delay the writer or the sample past the grain's half
+	// period, where the clock already names the next grain, so a missed
+	// sample is taken again a period later. A repeat that waits for a late
+	// frame instead takes its grain a period and a grace after it starts,
+	// and the head never meets the clock in any period.
+	var head, end uint64
+	for range 10 {
+		time.Sleep(time.Duration(NsUntilIndex(CurrentIndex(rate)+1, rate)) + 5*time.Millisecond)
+		// Grains first, then the clock: a head read before the clock
+		// moved on can only trail it, never match it by lagging.
+		g := mock.getGrains()
+		end = CurrentIndex(rate)
+		if head = g[len(g)-1].index; head == end {
+			break
+		}
+	}
 	cancel()
 	_ = w.Close()
-	if got := head[len(head)-1].index; got != end {
-		t.Fatalf("head %d mid-period of grain %d during a stall", got, end)
+	if head != end {
+		t.Fatalf("head %d mid-period of grain %d during a stall", head, end)
 	}
 
 	grains := mock.getGrains()
 	if len(grains) < 18 {
 		t.Fatalf("%d grains in 400ms at 50/1, want about 20", len(grains))
 	}
+	r := clock.Rate{Num: rate.Numerator, Den: rate.Denominator}
 	for i := 1; i < len(grains); i++ {
-		if grains[i].index != grains[i-1].index+1 {
-			t.Fatalf("grain %d follows %d", grains[i].index, grains[i-1].index)
+		g, prev := grains[i], grains[i-1].index
+		// A writer paused past a grain resumes at the grain before the
+		// clock and leaves the ones between unwritten.
+		behind := g.index > prev && clock.TimestampToIndex(r, g.at) > g.index
+		if g.index != prev+1 && !behind {
+			t.Fatalf("grain %d follows %d", g.index, prev)
 		}
 	}
 	if last := grains[len(grains)-1].index; last+2 < end {
