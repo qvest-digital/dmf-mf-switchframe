@@ -359,7 +359,10 @@ func TestTimelineStartLeavesHalfAPeriodBeforeTheTick(t *testing.T) {
 		} {
 			t.Run(fmt.Sprintf("%d_%d/%s", r.Num, r.Den, tc.name), func(t *testing.T) {
 				got := timelineStart(r, tick-tc.before*period/64)
-				assert.Equal(t, clock.IndexPTS(r, tc.want-clock.ReaderDelayGrains), got)
+				// The read point of tick want, however far behind its
+				// grain the program reads at rate r.
+				want := timelineRead(r, clock.IndexToTimestamp(r, tc.want))
+				assert.Equal(t, want, got)
 			})
 		}
 	}

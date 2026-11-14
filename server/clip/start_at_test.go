@@ -39,15 +39,16 @@ func fakeTAI(t *testing.T) *atomic.Int64 {
 	return now
 }
 
-// rampCodec decodes every AAC frame to 1024 samples per channel that count
-// the coded samples from 1, so a sample names its own place in the clip.
-var rampCodec = PCMCodec{NewDecoder: func(_, channels int) (PCMDecoder, error) {
-	return &rampDecoder{ch: channels}, nil
+// startRampCodec decodes every AAC frame to 1024 samples per channel
+// that count the coded samples from 1, so a sample names its own place in
+// the clip.
+var startRampCodec = PCMCodec{NewDecoder: func(_, channels int) (PCMDecoder, error) {
+	return &startRampDecoder{ch: channels}, nil
 }}
 
-type rampDecoder struct{ n, ch int }
+type startRampDecoder struct{ n, ch int }
 
-func (d *rampDecoder) Decode([]byte) ([]float32, error) {
+func (d *startRampDecoder) Decode([]byte) ([]float32, error) {
 	out := make([]float32, 1024*d.ch)
 	for i := range out {
 		if i%d.ch == 0 {
@@ -57,9 +58,9 @@ func (d *rampDecoder) Decode([]byte) ([]float32, error) {
 	}
 	return out, nil
 }
-func (d *rampDecoder) Channels() int    { return d.ch }
-func (d *rampDecoder) OutputDelay() int { return 0 }
-func (d *rampDecoder) Close() error     { return nil }
+func (d *startRampDecoder) Channels() int    { return d.ch }
+func (d *startRampDecoder) OutputDelay() int { return 0 }
+func (d *startRampDecoder) Close() error     { return nil }
 
 // startClip returns n pictures at rate r, or at 120 fps above it, the
 // most a clip is taken to run at, each carrying its index, and stereo
@@ -161,7 +162,7 @@ func (r *startRec) config(rate clock.Rate, sampleRate int, frames []BufferedFram
 		Timed:        true,
 		Cued:         true,
 		AudioRate:    sampleRate,
-		PCMCodec:     rampCodec,
+		PCMCodec:     startRampCodec,
 		RawVideoOutput: func(yuv []byte, _, _ int, pts int64, _ bool) {
 			r.add(func(in bool) { r.video = append(r.video, startOut{yuv[0], pts, in}) })
 		},
@@ -203,7 +204,7 @@ func TestCuedPlayerStartsOnTheTickItIsStartedOn(t *testing.T) {
 					require.Eventually(t, func() bool { v, _, _ := rec.snapshot(); return len(v) == 1 }, 2*time.Second, time.Millisecond)
 
 					now.Store(clock.IndexToTimestamp(r, n) + phase*period/64)
-					read := clock.IndexPTS(r, n-clock.ReaderDelayGrains)
+					read := timelineRead(r, clock.IndexToTimestamp(r, n))
 					rec.shut(t)
 					require.True(t, p.StartAt(read))
 					assert.Equal(t, StatePlaying, p.State())
@@ -236,7 +237,8 @@ func TestCuedPlayerStartsOnTheTickItIsStartedOn(t *testing.T) {
 					assert.True(t, pcm[0].start && pcm[0].inStart)
 					assert.Equal(t, read, pcm[0].pts, "clip sample 0 is on the read point")
 					ra := clock.Rate{Num: int64(sr), Den: 1}
-					tickSamples := clock.TimestampToIndex(ra, clock.IndexToTimestamp(r, n-1)) - clock.TimestampToIndex(ra, clock.IndexToTimestamp(r, n-2))
+					ri := clock.PTSIndex(r, read)
+					tickSamples := clock.TimestampToIndex(ra, clock.IndexToTimestamp(r, ri+1)) - clock.TimestampToIndex(ra, clock.IndexToTimestamp(r, ri))
 					var handed, put int
 					for i, c := range pcm {
 						if c.inStart {
@@ -374,12 +376,12 @@ func (o *onStarter) note() {
 	}
 }
 
-// codec is rampCodec with every decoder made and every frame decoded on
+// codec is startRampCodec with every decoder made and every frame decoded on
 // the goroutine counted.
 func (o *onStarter) codec() PCMCodec {
 	return PCMCodec{NewDecoder: func(sr, channels int) (PCMDecoder, error) {
 		o.note()
-		d, err := rampCodec.NewDecoder(sr, channels)
+		d, err := startRampCodec.NewDecoder(sr, channels)
 		return countingDecoder{d, o}, err
 	}}
 }
@@ -439,7 +441,7 @@ func TestCuedPlayerStartsInTheLoopModeSetAfterItsCue(t *testing.T) {
 
 					p.SetLoop(loop)
 					now.Store(clock.IndexToTimestamp(r, n))
-					read := clock.IndexPTS(r, n-clock.ReaderDelayGrains)
+					read := timelineRead(r, clock.IndexToTimestamp(r, n))
 					rec.shut(t)
 					on.id.Store(goid())
 					require.True(t, p.StartAt(read))
@@ -490,7 +492,7 @@ func TestCuedPlayerOfAShortClipStartsItsSoundOffTheTick(t *testing.T) {
 
 	p.SetLoop(true)
 	now.Store(clock.IndexToTimestamp(r, n))
-	read := clock.IndexPTS(r, n-clock.ReaderDelayGrains)
+	read := timelineRead(r, clock.IndexToTimestamp(r, n))
 	rec.shut(t)
 	on.id.Store(goid())
 	require.True(t, p.StartAt(read))
