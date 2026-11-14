@@ -29,6 +29,7 @@ type Manager struct {
 	onStop            func(channelID int, key string)
 	rawVideoOutput    func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool)
 	audioOutput       func(key string, data []byte, pts int64, sampleRate, channels int)
+	pcmOutput         func(key string, pcm []float32, pts int64, channels int, start bool)
 	ptsProvider       func() int64
 	secondaryHandler  SecondaryEventHandler
 	spliceCoordinator *SpliceCoordinator
@@ -156,6 +157,7 @@ func (m *Manager) Start(channelID int) error {
 	onStopFn := m.onStop
 	rawVideoFn := m.rawVideoOutput
 	audioFn := m.audioOutput
+	pcmFn := m.pcmOutput
 	ptsFn := m.ptsProvider
 	secondaryH := m.secondaryHandler
 	sc := m.spliceCoordinator
@@ -204,6 +206,11 @@ func (m *Manager) Start(channelID int) error {
 	if audioFn != nil {
 		ch.SetAudioOutput(func(data []byte, pts int64, sampleRate, channels int) {
 			audioFn(ch.Key(), data, pts, sampleRate, channels)
+		})
+	}
+	if pcmFn != nil {
+		ch.SetPCMOutput(func(pcm []float32, pts int64, channels int, start bool) {
+			pcmFn(ch.Key(), pcm, pts, channels, start)
 		})
 	}
 	if ptsFn != nil {
@@ -585,6 +592,20 @@ func (m *Manager) SetAudioOutput(fn func(key string, data []byte, pts int64, sam
 		capturedKey := fmt.Sprintf("playout:%d", i+1)
 		m.channels[i].SetAudioOutput(func(data []byte, pts int64, sampleRate, channels int) {
 			fn(capturedKey, data, pts, sampleRate, channels)
+		})
+	}
+}
+
+// SetPCMOutput registers a callback for the PCM of the channels' clips
+// (Channel.SetPCMOutput), with the channel source key.
+func (m *Manager) SetPCMOutput(fn func(key string, pcm []float32, pts int64, channels int, start bool)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pcmOutput = fn
+	for i := 0; i < MaxChannels; i++ {
+		capturedKey := fmt.Sprintf("playout:%d", i+1)
+		m.channels[i].SetPCMOutput(func(pcm []float32, pts int64, channels int, start bool) {
+			fn(capturedKey, pcm, pts, channels, start)
 		})
 	}
 }

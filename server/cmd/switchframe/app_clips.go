@@ -17,6 +17,7 @@ import (
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/gpu"
+	"github.com/zsiec/switchframe/server/internal/filepcm"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -77,7 +78,8 @@ func (a *App) initClips() error {
 		// A loaded slot is a source, cued on its first picture, and a cut
 		// or a transition to it starts it (SetOnAir below) on the next
 		// program tick.
-		Timed: true,
+		Timed:    true,
+		PCMCodec: filepcm.Codec(),
 	})
 
 	// Register per-player MoQ relays so browsers can subscribe to clip sources.
@@ -316,22 +318,7 @@ func (a *App) initClips() error {
 		relay.BroadcastVideo(frame)
 	})
 
-	// Audio output: clip player sends audio frames to mixer AND relay.
-	mgr.SetAudioOutput(func(key string, data []byte, pts int64, sampleRate, channels int) {
-		frame := &media.AudioFrame{
-			Data:       data,
-			PTS:        pts,
-			SampleRate: sampleRate,
-			Channels:   channels,
-		}
-		a.mixer.IngestTimedFrame(key, frame)
-
-		// Broadcast audio to per-player relay for browser playback.
-		idx := clipPlayerIDFromKey(key) - 1
-		if idx >= 0 && idx < clip.MaxPlayers && a.clipRelays[idx] != nil {
-			a.clipRelays[idx].BroadcastAudio(frame)
-		}
-	})
+	a.wireClipAudio(mgr)
 
 	// A cut or a transition to a slot's source starts the clip it holds.
 	a.sw.SetOnAir(startClipOnAir(mgr))
@@ -364,6 +351,23 @@ func (a *App) initClips() error {
 	}
 
 	return nil
+}
+
+// wireClipAudio routes the clip players' audio: to the mixer as the PCM
+// the players decode, to the relays as AAC for browser playback.
+func (a *App) wireClipAudio(mgr *clip.Manager) {
+	mgr.SetPCMOutput(a.ingestFilePCM)
+	mgr.SetAudioOutput(func(key string, data []byte, pts int64, sampleRate, channels int) {
+		idx := clipPlayerIDFromKey(key) - 1
+		if idx >= 0 && idx < clip.MaxPlayers && a.clipRelays[idx] != nil {
+			a.clipRelays[idx].BroadcastAudio(&media.AudioFrame{
+				Data:       data,
+				PTS:        pts,
+				SampleRate: sampleRate,
+				Channels:   channels,
+			})
+		}
+	})
 }
 
 // scaleClipFrame scales a decoded clip frame to the target dimensions into a

@@ -15,9 +15,12 @@ import (
 	"github.com/zsiec/switchframe/server/internal/video"
 )
 
-// AudioFrameData holds one audio frame (typically AAC) for playout.
+// AudioFrameData holds one audio frame (typically AAC) for playout, or,
+// with PCM set and Data nil, interleaved PCM decoded from it; PTS is then
+// where the PCM starts in the stream it was decoded into.
 type AudioFrameData struct {
 	Data       []byte
+	PCM        []float32
 	PTS        int64
 	SampleRate int
 	Channels   int
@@ -164,6 +167,7 @@ type Channel struct {
 	// Output callbacks (set before Start, read under lock then called without lock).
 	rawVideoOutput func(yuv []byte, w, h int, pts int64, isKeyframe bool)
 	audioOutput    func(data []byte, pts int64, sampleRate, channels int)
+	pcmOutput      func(pcm []float32, pts int64, channels int, start bool)
 	onStateChange  func(ChannelState)
 	onStart        func(key string)
 	onStop         func(key string)
@@ -200,6 +204,14 @@ type Channel struct {
 	// start there begins a new stream (see emitAudio).
 	audioSrcNext int64
 	audioSrcSet  bool
+
+	// The PCM stream under way (emitPCM): pcmSrcNext is the stream PTS
+	// its last chunk ends at, pcmPTS/pcmPTSFrac the output PTS of the next
+	// sample handed out.
+	pcmSet     bool
+	pcmSrcNext int64
+	pcmPTS     int64
+	pcmPTSFrac int64
 
 	// transitionAudioFrom is the ID of the incoming item of a transition
 	// whose audio the transition has started to carry.
@@ -491,6 +503,7 @@ func (c *Channel) Start() error {
 	c.outputPTSFrac = 0
 	c.outputAudioPTSFrac = 0
 	c.audioSrcSet = false
+	c.pcmSet = false
 
 	// Seed PTS from provider if available.
 	if c.ptsProvider != nil {
@@ -897,6 +910,16 @@ func (c *Channel) SetAudioOutput(fn func(data []byte, pts int64, sampleRate, cha
 	c.audioOutput = fn
 }
 
+// SetPCMOutput registers a callback for the PCM of clip playback
+// (AudioFrameData.PCM), each sample stamped with its output PTS. start
+// marks the first PCM of a stream: an item, a pass that does not run on
+// from the one before, a seek.
+func (c *Channel) SetPCMOutput(fn func(pcm []float32, pts int64, channels int, start bool)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pcmOutput = fn
+}
+
 // SetPTSProvider registers a function that returns the current program PTS.
 func (c *Channel) SetPTSProvider(fn func() int64) {
 	c.mu.Lock()
@@ -1211,6 +1234,7 @@ func (c *Channel) tick(now time.Time) bool {
 	// Grab callbacks under lock.
 	outputFn := c.rawVideoOutput
 	audioFn := c.audioOutput
+	pcmFn := c.pcmOutput
 	sc := c.spliceCoordinator
 	secScheduler := c.secondaryScheduler
 	asRunFn := c.asRunLog
@@ -1249,7 +1273,9 @@ func (c *Channel) tick(now time.Time) bool {
 		frame = c.slateFrame
 	}
 	if frame != nil {
+		pts, frac := c.outputPTS, c.outputPTSFrac
 		c.emitFrame(frame, outputFn, audioFn, sc)
+		c.emitPCM(frame, pcmFn, pts, frac)
 	}
 
 	return false
@@ -2343,6 +2369,7 @@ func (c *Channel) skipPTS(n int) {
 	for range n {
 		c.outputPTS, c.outputPTSFrac = advancePTS(c.outputPTS, c.outputPTSFrac, vStepInt, vStepFrac)
 		c.outputAudioPTS, c.outputAudioPTSFrac = advancePTS(c.outputAudioPTS, c.outputAudioPTSFrac, vStepInt, vStepFrac)
+		c.pcmPTS, c.pcmPTSFrac = advancePTS(c.pcmPTS, c.pcmPTSFrac, vStepInt, vStepFrac)
 	}
 }
 
@@ -2392,7 +2419,9 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 			// absorbs the burst.
 			for i := range frame.AudioFrames {
 				af := &frame.AudioFrames[i]
-				c.emitAudio(audioFn, af.Data, af.PTS, af.SampleRate, af.Channels)
+				if af.Data != nil {
+					c.emitAudio(audioFn, af.Data, af.PTS, af.SampleRate, af.Channels)
+				}
 			}
 		} else if len(frame.AudioData) > 0 {
 			c.emitAudio(audioFn, frame.AudioData, frame.AudioPTS, frame.AudioSampleRate, frame.AudioChannels)
@@ -2422,6 +2451,34 @@ func (c *Channel) emitAudio(audioFn func([]byte, int64, int, int), data []byte, 
 	if sampleRate > 0 {
 		aStepInt, aStepFrac := ptsStep(1024.0 * 90000.0 / float64(sampleRate))
 		c.outputAudioPTS, c.outputAudioPTSFrac = advancePTS(c.outputAudioPTS, c.outputAudioPTSFrac, aStepInt, aStepFrac)
+	}
+}
+
+// emitPCM hands pcmFn the PCM of the frame emitFrame just put out at
+// framePTS, each chunk stamped after the one before it. PCM that does
+// not continue the stream before it (a new item, a seek, a pass that
+// does not run on) starts a new stream on framePTS, its first sample on
+// the frame's picture.
+func (c *Channel) emitPCM(frame *DecodedFrame, pcmFn func([]float32, int64, int, bool), framePTS, framePTSFrac int64) {
+	if pcmFn == nil || frame == &c.gpuAliasedSentinel {
+		return
+	}
+	for i := range frame.AudioFrames {
+		af := &frame.AudioFrames[i]
+		if af.PCM == nil || af.Channels <= 0 || af.SampleRate <= 0 {
+			continue
+		}
+		n := int64(len(af.PCM) / af.Channels)
+		// Chunk PTS are rounded to the tick, so they continue within two.
+		start := false
+		if d := af.PTS - c.pcmSrcNext; !c.pcmSet || d > 2 || d < -2 {
+			c.pcmPTS, c.pcmPTSFrac = framePTS, framePTSFrac
+			c.pcmSet, start = true, true
+		}
+		c.pcmSrcNext = af.PTS + n*90000/int64(af.SampleRate)
+		pcmFn(af.PCM, c.pcmPTS, af.Channels, start)
+		stepInt, stepFrac := ptsStep(float64(n) * 90000 / float64(af.SampleRate))
+		c.pcmPTS, c.pcmPTSFrac = advancePTS(c.pcmPTS, c.pcmPTSFrac, stepInt, stepFrac)
 	}
 }
 

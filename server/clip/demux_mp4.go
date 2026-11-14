@@ -8,6 +8,8 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 
 	mp4 "github.com/abema/go-mp4"
 )
@@ -138,6 +140,29 @@ type mp4Track struct {
 	// media times in timescale (mdhd).
 	edits          []mp4Edit
 	movieTimescale uint32
+
+	// gapless is the file's iTunSMPB: the encoder delay and the padding
+	// of the sound, in samples.
+	gapless *mp4Gapless
+}
+
+// mp4Gapless is the encoder delay and padding an iTunSMPB tag gives.
+type mp4Gapless struct{ delay, padding int64 }
+
+// parseITunSMPB reads an iTunSMPB value, " 00000000 00000840 000001CA
+// 00000000003F31F6 ...": hexadecimal fields of which the second is the
+// encoder delay and the third the padding.
+func parseITunSMPB(v string) (*mp4Gapless, bool) {
+	f := strings.Fields(v)
+	if len(f) < 3 {
+		return nil, false
+	}
+	delay, err1 := strconv.ParseInt(f[1], 16, 64)
+	padding, err2 := strconv.ParseInt(f[2], 16, 64)
+	if err1 != nil || err2 != nil || delay < 0 || padding < 0 {
+		return nil, false
+	}
+	return &mp4Gapless{delay: delay, padding: padding}, true
 }
 
 // mp4Edit is one elst entry. mediaTime -1 is an empty edit.
@@ -215,6 +240,8 @@ func parseMP4Tracks(r io.ReadSeeker, fileSize int64) ([]mp4Track, error) {
 	var tracks []mp4Track
 	var currentTrack *mp4Track
 	var movieTimescale uint32
+	var gapless *mp4Gapless
+	var freeformName string // name of the iTunes freeform tag being read
 
 	_, err := mp4.ReadBoxStructure(r, func(h *mp4.ReadHandle) (interface{}, error) {
 		switch h.BoxInfo.Type {
@@ -235,6 +262,47 @@ func parseMP4Tracks(r io.ReadSeeker, fileSize int64) ([]mp4Track, error) {
 			// Container boxes: expand to parse children.
 			_, err := h.Expand()
 			return nil, err
+
+		case mp4.BoxType(mp4.BoxTypeUdta()),
+			mp4.BoxType(mp4.BoxTypeMeta()),
+			mp4.BoxType(mp4.BoxTypeIlst()):
+			// The iTunes tags, for iTunSMPB.
+			_, err := h.Expand()
+			return nil, err
+
+		case mp4.StrToBoxType("----"):
+			freeformName = ""
+			_, err := h.Expand()
+			return nil, err
+
+		case mp4.StrToBoxType("name"):
+			if !h.BoxInfo.UnderIlstFreeMeta {
+				return nil, nil
+			}
+			box, _, err := h.ReadPayload()
+			if err != nil {
+				return nil, err
+			}
+			if sd, ok := box.(*mp4.StringData); ok {
+				// The payload starts with a full box's version and flags.
+				freeformName = strings.TrimLeft(string(sd.Data), "\x00")
+			}
+			return nil, nil
+
+		case mp4.BoxType(mp4.BoxTypeData()):
+			if !h.BoxInfo.UnderIlstFreeMeta || freeformName != "iTunSMPB" {
+				return nil, nil
+			}
+			box, _, err := h.ReadPayload()
+			if err != nil {
+				return nil, err
+			}
+			if d, ok := box.(*mp4.Data); ok {
+				if g, ok := parseITunSMPB(string(d.Data)); ok {
+					gapless = g
+				}
+			}
+			return nil, nil
 
 		case mp4.BoxType(mp4.BoxTypeMvhd()):
 			box, _, err := h.ReadPayload()
@@ -264,7 +332,8 @@ func parseMP4Tracks(r io.ReadSeeker, fileSize int64) ([]mp4Track, error) {
 			return nil, nil
 
 		case mp4.BoxType(mp4.BoxTypeHdlr()):
-			if currentTrack == nil {
+			// A meta box carries an hdlr of its own.
+			if currentTrack == nil || len(h.Path) < 2 || h.Path[len(h.Path)-2] != mp4.BoxTypeMdia() {
 				return nil, nil
 			}
 			box, _, err := h.ReadPayload()
@@ -526,6 +595,9 @@ func parseMP4Tracks(r io.ReadSeeker, fileSize int64) ([]mp4Track, error) {
 	}
 	for i := range tracks {
 		tracks[i].movieTimescale = movieTimescale
+		if tracks[i].handlerType == "soun" {
+			tracks[i].gapless = gapless
+		}
 	}
 
 	return tracks, nil
@@ -857,15 +929,33 @@ func readAudioSamples(r io.ReadSeeker, track *mp4Track, fileSize int64) ([]Buffe
 
 	frames := make([]BufferedAudioFrame, 0, numSamples)
 
+	// The samples outside the edit are not presented: before it the
+	// encoder priming, after it the padding of the last frame. Without an
+	// edit an iTunSMPB tag gives the two, and without either the stream
+	// starts with one frame of priming. The frames that carry the priming
+	// are kept, marked, as decoding the first presented samples needs
+	// them; the frames wholly after the edit go.
+	edited := start != 0 || end != math.MaxInt64
+	if !edited && track.gapless != nil {
+		start = track.gapless.delay * int64(track.timescale) / int64(sampleRate)
+		if total := dts[numSamples] - track.gapless.padding*int64(track.timescale)/int64(sampleRate); total > start {
+			end = total
+		}
+	} else if !edited {
+		start = aacPriming * int64(track.timescale) / int64(sampleRate)
+	}
+	toSamples := func(ticks int64) int {
+		return int(ticks * int64(sampleRate) / int64(track.timescale))
+	}
+
 	for i, sample := range sampleTable {
-		// Frames wholly outside the edit are not presented: before it the
-		// encoder priming, after it the padding of the last frame. Playout
-		// and the clip player send audio frames in order without their PTS,
-		// so a priming frame left in would delay all audio by its length.
-		// A frame straddling the start is kept whole; raw AAC cannot be cut.
-		if start > 0 && dts[i+1] <= start || dts[i] >= end {
+		if dts[i] >= end {
 			continue
 		}
+		dur := dts[i+1] - dts[i]
+		skip := toSamples(min(max(start-dts[i], 0), dur))
+		cut := toSamples(min(max(dts[i+1]-end, 0), dur))
+		hidden := dts[i+1] <= start
 
 		// Read raw AAC frame from file.
 		if _, err := r.Seek(int64(sample.offset), io.SeekStart); err != nil {
@@ -885,6 +975,9 @@ func readAudioSamples(r io.ReadSeeker, track *mp4Track, fileSize int64) ([]Buffe
 			pts:        pts90k,
 			sampleRate: sampleRate,
 			channels:   channels,
+			skip:       skip,
+			cut:        cut,
+			hidden:     hidden,
 		})
 	}
 

@@ -164,6 +164,11 @@ func demuxTS(r io.Reader) ([]BufferedFrame, []BufferedAudioFrame, error) {
 	sort.Slice(audioFrames, func(i, j int) bool {
 		return audioFrames[i].pts < audioFrames[j].pts
 	})
+	// MPEG-TS carries no gapless information: the stream starts with one
+	// frame of encoder priming.
+	if len(audioFrames) > 0 {
+		audioFrames[0].skip = aacPriming
+	}
 
 	return videoFrames, audioFrames, nil
 }

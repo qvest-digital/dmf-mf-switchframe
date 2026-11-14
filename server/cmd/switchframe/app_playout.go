@@ -289,20 +289,7 @@ func (a *App) initPlayout() error {
 		a.sw.IngestReplayVideo(key, frame)
 	})
 
-	// Audio output: playout sends decoded audio to the mixer (same pattern as clips).
-	mgr.SetAudioOutput(func(key string, data []byte, pts int64, sampleRate, channels int) {
-		frame := &media.AudioFrame{
-			Data:       data,
-			PTS:        pts,
-			SampleRate: sampleRate,
-			Channels:   channels,
-		}
-		a.ingestPlayoutAudio(key, frame)
-		// The relay carries the audio too, for the tile's meter.
-		if idx := playoutChannelIDFromKey(key) - 1; idx >= 0 && idx < playout.MaxChannels && a.playoutRelays[idx] != nil {
-			a.playoutRelays[idx].BroadcastAudio(frame)
-		}
-	})
+	a.wirePlayoutAudio(mgr)
 
 	// State change broadcasts.
 	mgr.SetOnStateChange(func() {
@@ -654,13 +641,26 @@ func buildPodCueMessage(isOut, autoReturn bool, durationMs int64) *scte35.CueMes
 	return msg
 }
 
-// ingestPlayoutAudio hands a playout channel's AAC frame to the mixer. The
-// channel hands over a video frame's AAC frames together, on its frame
-// ticker, under continuous output PTS: placed by those PTS through the
-// channel's anchor rather than by their arrival, they stay on the read
-// point.
-func (a *App) ingestPlayoutAudio(key string, frame *media.AudioFrame) {
-	timed := *frame
-	timed.PTS = playoutAnchor(key).PTS(frame.PTS)
-	a.mixer.IngestTimedFrame(key, &timed)
+// wirePlayoutAudio routes the playout channels' audio: to the mixer as
+// the PCM the channels decode, to the relays as AAC, for the tile's meter.
+func (a *App) wirePlayoutAudio(mgr *playout.Manager) {
+	mgr.SetPCMOutput(a.ingestPlayoutPCM)
+	mgr.SetAudioOutput(func(key string, data []byte, pts int64, sampleRate, channels int) {
+		if idx := playoutChannelIDFromKey(key) - 1; idx >= 0 && idx < playout.MaxChannels && a.playoutRelays[idx] != nil {
+			a.playoutRelays[idx].BroadcastAudio(&media.AudioFrame{
+				Data:       data,
+				PTS:        pts,
+				SampleRate: sampleRate,
+				Channels:   channels,
+			})
+		}
+	})
+}
+
+// ingestPlayoutPCM hands a playout channel's PCM to the mixer. The channel
+// hands over a video frame's PCM with it, on its frame ticker, under
+// continuous output PTS: placed by those PTS through the anchor its video
+// shares rather than by their arrival, it stays on the read point.
+func (a *App) ingestPlayoutPCM(key string, pcm []float32, pts int64, channels int, start bool) {
+	a.ingestFilePCM(key, pcm, playoutAnchor(key).PTS(pts), channels, start)
 }

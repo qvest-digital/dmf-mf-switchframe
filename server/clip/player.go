@@ -59,6 +59,18 @@ type PlayerConfig struct {
 	// AudioOutput sends audio frame data during playback.
 	AudioOutput func(data []byte, pts int64, sampleRate, channels int)
 
+	// PCMOutput, on a Timed player, hands over the clip's audio decoded to
+	// PCM at AudioRate (48 kHz when 0), with the encoder priming and the
+	// padding taken off: clip sample 0 is stamped with the PTS of the
+	// first picture, and every sample after it on from there, so the
+	// audio lies on the pictures to the sample. start marks the first PCM
+	// of the playback. A loop plays each pass of the audio for as long as
+	// a pass of the pictures lasts, the next pass following the last
+	// sample without a gap.
+	PCMOutput func(pcm []float32, pts int64, channels int, start bool)
+	AudioRate int
+	PCMCodec  PCMCodec
+
 	// OnDone is called when playback ends (non-loop clip finishes) or is stopped.
 	OnDone func()
 
@@ -189,6 +201,25 @@ type Player struct {
 	audioRem       int64
 	audioPassStart int64
 	audioResync    bool
+
+	// PCM audio (PCMOutput). pcmBase is the PTS of the stream's first
+	// sample and pcmPut the samples handed over since; pcmFirst asks the
+	// next emission to start the stream at the first picture, pcmResync
+	// to place it on the video again. pcmVideoEnd and pcmAudioEnd are
+	// where, in clip samples from the start of the stream's first pass,
+	// the passes of the video and of the audio under way end; pcmAcc
+	// carries the remainder of the video's pass lengths.
+	pcmClip     []BufferedAudioFrame
+	pcm         *PCMStream
+	pcmBase     int64
+	pcmPut      int64
+	pcmFirst    bool
+	pcmResync   bool
+	pcmStarted  bool
+	pcmEnded    bool // the stream ran out
+	pcmVideoEnd int64
+	pcmAudioEnd int64
+	pcmAcc      int64
 }
 
 // NewPlayer creates a new clip player. The player starts in StateLoaded
@@ -202,7 +233,12 @@ func NewPlayer(config PlayerConfig) *Player {
 		config.Height = 1080
 	}
 
+	// The AAC goes out as a stream carries it, the PCM is decoded from
+	// every frame.
+	pcmClip := config.AudioClip
+	config.AudioClip = PresentedAudio(config.AudioClip)
 	p := &Player{
+		pcmClip: pcmClip,
 		config:  config,
 		done:    make(chan struct{}),
 		seekCh:  make(chan float64, 1),
@@ -397,6 +433,16 @@ func (p *Player) run(ctx context.Context) {
 		return
 	}
 
+	if p.config.Timed && p.config.PCMOutput != nil && len(p.pcmClip) > 0 {
+		s, err := NewPCMStream(p.pcmClip, p.audioRate(), p.config.PCMCodec)
+		if err != nil {
+			slog.Warn("clip: audio does not decode, playing without it", "error", err)
+		} else {
+			p.pcm = s
+			defer s.Close()
+		}
+	}
+
 	// Estimate source FPS from clip PTS values.
 	sourceFPS := estimateFPSFromClipFrames(clip)
 	p.sourceFPS = sourceFPS
@@ -547,6 +593,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 			// Emit audio proportionally, or, timed, ahead of the slot.
 			if p.config.Timed {
 				p.emitTimedAudio(speed, pic, totalClipFrames, *outputPTS)
+				p.emitTimedPCM(speed, pic, totalClipFrames, *outputPTS)
 			} else {
 				p.emitAudioForVideoFrame(outputIdx, totalFrames)
 			}
@@ -591,6 +638,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 				p.audioCallCount = outputIdx
 			}
 			p.audioResync = true
+			p.pcmResync = true
 			continue
 		default:
 		}
@@ -609,6 +657,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 				outputIdx = cad.start(pic)
 				p.paceIdx = 0
 				p.audioResync = true
+				p.pcmResync = true
 			}
 		}
 
@@ -877,6 +926,7 @@ func (p *Player) outputFrame(
 		if p.config.Timed {
 			*outputPTS = timelineStart(p.rate, clock.TAINow())
 			p.outputAudioPTS, p.audioPassStart, p.audioRem = *outputPTS, *outputPTS, 0
+			p.pcmBase, p.pcmFirst = *outputPTS, true
 		}
 		p.noteStart("video")
 	}
@@ -891,7 +941,9 @@ func (p *Player) outputFrame(
 			select {
 			case <-*chPtr:
 				// Resumed: the slots due during the pause are not owed,
-				// so pacing restarts from this one.
+				// so pacing restarts from this one, and the PCM handed
+				// over ahead of the pause has played.
+				p.pcmResync = true
 				*playbackStart = time.Now().Add(-time.Duration(*pacingIdx) * frameDuration)
 			case <-ctx.Done():
 				return true
@@ -1014,12 +1066,13 @@ func (p *Player) noteStart(media string) {
 	p.config.OnStart(media, time.Since(time.Unix(0, p.releasedAt.Load())), p.preroll)
 }
 
-// keepOnTimeline moves a timed player's PTS, video and audio alike, onto
+// keepOnTimeline moves a timed player's PTS, its video and its AAC, onto
 // the clock when the frame about to go out is due more than
 // ReaderDelayGrains periods ago, as after a pause or a decoder that fell
 // behind, or more than a period ahead, as after a seek whose decode-only
 // frames advanced the PTS: the tick due to show such a frame has passed
-// or is still far off. Otherwise the PTS run on unbroken.
+// or is still far off. Otherwise the PTS run on unbroken. The PCM is not
+// moved: it runs ahead of the video by itself (emitTimedPCM).
 func (p *Player) keepOnTimeline(outputPTS *int64) {
 	period := 90000 * p.rate.Den / p.rate.Num
 	off := clock.NowPTS() - *outputPTS
@@ -1082,6 +1135,102 @@ func (p *Player) emitTimedAudio(speed float64, pic, total int, until int64) {
 		p.outputAudioPTS += p.audioStep(af.sampleRate)
 		p.audioIdx++
 	}
+}
+
+// pcmLead is how far ahead of the clock a timed player hands over its
+// PCM: a player that stalls for less, as on a slow decode, keeps the
+// mixer supplied, and its audio runs on unbroken. The mixer holds 640 ms
+// of a source.
+const pcmLead = 150 * time.Millisecond
+
+// emitTimedPCM hands over a timed player's PCM up to pcmLead past the
+// clock. pic is the pictures of the pass put out so far, of total. The
+// audio runs on by itself: a video that falls behind and is put back on
+// the clock (keepOnTimeline) leaves it where it is. At a speed other
+// than 1 none goes out; on the return to 1, after a seek or a pause, and
+// when the audio itself fell behind the read point, the stream starts
+// again at the picture's share of the pass, on until, the PTS of the
+// next video slot.
+func (p *Player) emitTimedPCM(speed float64, pic, total int, until int64) {
+	s := p.pcm
+	if s == nil || total == 0 {
+		return
+	}
+	if speed != 1 {
+		p.pcmResync = true
+		return
+	}
+	if p.pcmEnded && !p.pcmResync {
+		return
+	}
+	rate := int64(p.audioRate())
+	now := clock.NowPTS()
+	period := 90000 * p.rate.Den / p.rate.Num
+	switch {
+	case p.pcmFirst:
+		p.pcmFirst, p.pcmResync = false, false
+		p.startPCM(p.pcmBase, 0)
+	case p.pcmResync, p.pcmBase+p.pcmPut*90000/rate < now-clock.ReaderDelayGrains*period:
+		p.pcmResync = false
+		p.startPCM(until, int64(pic)*p.pcmPass(false)/int64(total))
+	}
+	want := (now + pcmLead.Milliseconds()*90 - p.pcmBase) * rate / 90000
+	for p.pcmPut < want {
+		pcm := s.Read(int(min(want-p.pcmPut, 1024)))
+		if len(pcm) == 0 {
+			p.pcmEnded = true
+			return
+		}
+		p.config.PCMOutput(pcm, p.pcmBase+p.pcmPut*90000/rate, s.Channels(), !p.pcmStarted)
+		p.pcmStarted = true
+		p.pcmPut += int64(len(pcm) / s.Channels())
+	}
+}
+
+// startPCM starts the PCM stream at clip sample pos of the pass under
+// way, its first sample stamped base.
+func (p *Player) startPCM(base, pos int64) {
+	p.pcmBase, p.pcmPut, p.pcmAcc, p.pcmEnded = base, 0, 0, false
+	p.pcmVideoEnd = p.pcmPass(true)
+	p.pcmAudioEnd = p.pcmVideoEnd
+	if !p.loop.Load() {
+		p.pcmAudioEnd = p.pcm.Samples()
+	}
+	p.pcm.Start(pos, p.pcmAudioEnd, p.nextPCMPass)
+}
+
+// pcmPass returns how many clip samples a pass of the video lasts at
+// speed 1, carrying the remainder into the next pass when advance is
+// set.
+func (p *Player) pcmPass(advance bool) int64 {
+	acc := p.pcmAcc + int64(p.totalOutputFrames)*int64(p.pcm.SourceRate())*p.rate.Den
+	n := acc / p.rate.Num
+	if advance {
+		p.pcmAcc = acc - n*p.rate.Num
+	}
+	return n
+}
+
+// nextPCMPass gives the PCM stream the length of its next pass: to the
+// end of the video's, so audio that ran past the video's last pass, as a
+// pass played to the audio's end before the loop was set does, is taken
+// off this one and the passes line up again. False when not looping.
+func (p *Player) nextPCMPass() (int64, bool) {
+	if !p.loop.Load() {
+		return 0, false
+	}
+	p.pcmVideoEnd += p.pcmPass(true)
+	n := max(1, p.pcmVideoEnd-p.pcmAudioEnd)
+	p.pcmAudioEnd += n
+	return n, true
+}
+
+// audioRate is the rate of the player's PCM.
+func (p *Player) audioRate() int {
+	if p.config.AudioRate > 0 {
+		return p.config.AudioRate
+	}
+	return 48000
 }
 
 // audioStep returns the 90 kHz duration of the next AAC frame at
