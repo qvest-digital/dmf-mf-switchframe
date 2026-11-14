@@ -1,6 +1,7 @@
 package clock
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -272,7 +273,7 @@ func TestTrackingAnchorFollowsASlowSender(t *testing.T) {
 	for i := 0; i < 360*50; i++ { // 6 minutes of 20 ms frames
 		now += 20_000_000
 		src += 1800 - 1800*ppm/1_000_000
-		if ahead := a.PTS(src) - PTS(now); ahead > 0 || ahead < -(TrackingSlack+2*TrackingWindow*ppm/1_000_000+1) {
+		if ahead := a.PTS(src) - PTS(now); ahead > 0 || ahead < -(TrackingSlack()+2*TrackingWindow*ppm/1_000_000+1) {
 			t.Fatalf("frame %d placed %d ticks off its arrival", i, ahead)
 		}
 	}
@@ -324,6 +325,149 @@ func TestTrackingAnchorMovesOnlyOnALastingLateness(t *testing.T) {
 	}
 	if s := a.Stats(); s.Offset != settled.Offset+9000 || s.Raises != settled.Raises+1 {
 		t.Fatalf("after three windows 100 ms later: %+v, want one raise of 9000 ticks over %+v", s, settled)
+	}
+}
+
+// programRates are the program frame rates the timing tests run at: every
+// preset rate from 23.976 to 60 fps, and 120 and 240 fps, which a custom
+// format can set.
+var programRates = []Rate{
+	{24000, 1001}, {24, 1}, {25, 1}, {30000, 1001}, {30, 1},
+	{50, 1}, {60000, 1001}, {60, 1}, {120, 1}, {240, 1},
+}
+
+// programRate has the ticks read at r for the test's duration.
+func programRate(t *testing.T, r Rate) {
+	t.Helper()
+	lag, period := readLag.Load(), programPeriod.Load()
+	SetProgramRate(r)
+	t.Cleanup(func() { readLag.Store(lag); programPeriod.Store(period) })
+}
+
+// A settled source whose frames arrive later than its offset for good,
+// by less than a program period, is read on time where it is, its audio
+// included. A raise would move its video that much later and leave its
+// audio, which the mixer realigns only past a period, so the two would
+// sit apart until the offset came down a minute later. A lateness past a
+// period would have its audio run dry at reads, so two windows of it
+// raise the offset, once. Both hold at every program rate; a slack fixed
+// in time would have to be under the 4.2 ms period at 240 fps, and would
+// then raise for a lateness under the period at every slower rate.
+func TestTrackingAnchorRaisesOnlyPastAnAudioPeriod(t *testing.T) {
+	for _, r := range programRates {
+		t.Run(fmt.Sprintf("%d/%d", r.Num, r.Den), func(t *testing.T) {
+			programRate(t, r)
+			now := int64(1_798_000_000_000_000_000)
+			fixedTAI(t, &now)
+			var a TrackingAnchor
+			src := int64(1_000_000)
+			frame := func(late int64) { // late in 90 kHz ticks
+				now += 20_000_000
+				src += 1800
+				lateNs := late * 100_000 / 9
+				now += lateNs
+				a.PTS(src)
+				now -= lateNs
+			}
+			const perWindow = TrackingWindow / 1800
+			for range (TrackingSettle + 1) * perWindow {
+				frame(0)
+			}
+			settled := a.Stats()
+			period := ProgramPeriod()
+			under, over := period-TrackingDriftMargin-10, period+10
+			for range 5 * perWindow {
+				frame(under)
+			}
+			if s := a.Stats(); s != settled {
+				t.Fatalf("after five windows %d ticks late, period %d: %+v, want the settled %+v", under, period, s, settled)
+			}
+			for range 3 * perWindow {
+				frame(over)
+			}
+			if s := a.Stats(); s.Raises != settled.Raises+1 || s.Offset < settled.Offset+over-1 || s.Offset > settled.Offset+over+1 {
+				t.Fatalf("after three windows %d ticks late, period %d: %+v, want one raise of %d ticks over %+v", over, period, s, over, settled)
+			}
+		})
+	}
+}
+
+// The slack is a program period less TrackingDriftMargin at the read
+// delay of two periods, at every program rate: audio is read for the
+// period after the read point. With a longer read delay, video's half of
+// it is the lesser bound.
+func TestTrackingSlackFollowsTheProgramPeriodAndReadDelay(t *testing.T) {
+	want := map[Rate]int64{ // period - TrackingDriftMargin, in ticks
+		{24000, 1001}: 3664, {24, 1}: 3660, {25, 1}: 3510, {30000, 1001}: 2913, {30, 1}: 2910,
+		{50, 1}: 1710, {60000, 1001}: 1412, {60, 1}: 1410, {120, 1}: 660, {240, 1}: 285,
+	}
+	for _, r := range programRates {
+		t.Run(fmt.Sprintf("%d/%d", r.Num, r.Den), func(t *testing.T) {
+			programRate(t, r)
+			if got := TrackingSlack(); got != want[r] {
+				t.Fatalf("slack %d ticks at period %d, want %d", got, ProgramPeriod(), want[r])
+			}
+		})
+	}
+	for _, c := range []struct{ period, delay, want int64 }{
+		{750, 5, 1785},  // 120 fps read 5 periods behind: video's 2.5 periods
+		{375, 10, 1785}, // 240 fps read 10 periods behind
+		{1800, 3, 2610}, // 50 fps read 3 periods behind
+	} {
+		if got := trackingSlack(c.period, c.delay); got != c.want {
+			t.Errorf("period %d read %d periods behind: slack %d, want %d", c.period, c.delay, got, c.want)
+		}
+	}
+}
+
+// Once settled, SettledPTS reports each move of the offset by half a
+// program period or more once, a raise and the lowering a minute later
+// alike: the caller places the source's audio on its stamps again, as the
+// move places its video, and a move under a period is one the mixer never
+// realigns. A smaller lowering, as a sender clock's drift brings, is not
+// reported: placing the audio again would splice it. Holds at every rate.
+func TestTrackingAnchorReportsEachMoveOnce(t *testing.T) {
+	for _, r := range programRates {
+		t.Run(fmt.Sprintf("%d/%d", r.Num, r.Den), func(t *testing.T) {
+			programRate(t, r)
+			now := int64(1_798_000_000_000_000_000)
+			fixedTAI(t, &now)
+			var a TrackingAnchor
+			src := int64(1_000_000)
+			reports := 0
+			frames := func(count int, late int64) { // late in 90 kHz ticks
+				lateNs := late * 100_000 / 9
+				for range count {
+					now += 20_000_000
+					src += 1800
+					now += lateNs
+					if _, moved := a.SettledPTS(src); moved {
+						reports++
+					}
+					now -= lateNs
+				}
+			}
+			const perWindow = TrackingWindow / 1800
+			frames((TrackingSettle+1)*perWindow, 0)
+			if reports != 1 {
+				t.Fatalf("%d reports after the settle, want 1", reports)
+			}
+			late := ProgramPeriod() - TrackingDriftMargin/2 // past the slack, under a period
+			frames(3*perWindow, late)
+			if s := a.Stats(); s.Raises != 1 || reports != 2 {
+				t.Fatalf("after three windows %d ticks late: %+v, %d reports, want 1 raise and 2 reports", late, s, reports)
+			}
+			frames((TrackingHistory+3)*perWindow, 0)
+			if s := a.Stats(); s.Offset != 0 || reports != 3 {
+				t.Fatalf("a minute on time again: %+v, %d reports, want the offset back and 3 reports", s, reports)
+			}
+			small := ProgramPeriod()/2 - 10
+			frames(1, -small) // a window whose latest frame came early, never matched again
+			frames((TrackingHistory+3)*perWindow, -small)
+			if s := a.Stats(); s.Offset != -small || reports != 3 {
+				t.Fatalf("a minute %d ticks earlier: %+v, %d reports, want the offset lowered by it and still 3 reports", small, s, reports)
+			}
+		})
 	}
 }
 
