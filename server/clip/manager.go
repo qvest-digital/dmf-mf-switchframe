@@ -757,7 +757,9 @@ func (m *Manager) newPlayer(idx int, slot *playerSlot, speed float64, loop, cued
 		decoderCloser = dec.Close
 	}
 
-	var outNum, outDen int
+	// Without an output rate a player plays at its clip's, which noteStart
+	// times its start against too.
+	outNum, outDen := clipRational(estimateFPSFromClipFrames(slot.frames))
 	if m.config.OutputRate != nil {
 		outNum, outDen = m.config.OutputRate()
 	}

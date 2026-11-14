@@ -1023,9 +1023,7 @@ func (p *Player) emitAudioForVideoFrame(outputIdx, totalFrames int) {
 	for p.audioIdx < targetAudioIdx {
 		af := &audioClip[p.audioIdx]
 		p.config.AudioOutput(af.data, p.outputAudioPTS, af.sampleRate, af.channels)
-		if af.sampleRate > 0 {
-			p.outputAudioPTS += int64(1024) * 90000 / int64(af.sampleRate)
-		}
+		p.outputAudioPTS += audioStep(&p.audioRem, af.sampleRate)
 		p.audioIdx++
 	}
 }
@@ -1105,8 +1103,8 @@ func (p *Player) emitTimedAudio(speed float64, pic, total int, until int64) {
 	if p.audioResync {
 		p.audioResync = false
 		p.audioIdx = pic * len(audioClip) / total
-		p.outputAudioPTS, p.audioRem = until, 0
-		p.audioPassStart = until - p.audioClipTicks(p.audioIdx)
+		ticks, rem := p.audioClipTicks(p.audioIdx)
+		p.outputAudioPTS, p.audioPassStart, p.audioRem = until, until-ticks, rem
 	}
 	passTicks := int64(p.totalOutputFrames) * 90000 * p.rate.Den / p.rate.Num
 	frame := aacFrameTicks(audioClip[0])
@@ -1132,7 +1130,7 @@ func (p *Player) emitTimedAudio(speed float64, pic, total int, until int64) {
 			p.audioOut = true
 			p.noteStart("audio")
 		}
-		p.outputAudioPTS += p.audioStep(af.sampleRate)
+		p.outputAudioPTS += audioStep(&p.audioRem, af.sampleRate)
 		p.audioIdx++
 	}
 }
@@ -1234,30 +1232,24 @@ func (p *Player) audioRate() int {
 }
 
 // audioStep returns the 90 kHz duration of the next AAC frame at
-// sampleRate (48 kHz when unknown), carrying the remainder so a rate that
-// does not divide 90000*1024 does not drift.
-func (p *Player) audioStep(sampleRate int) int64 {
-	if sampleRate <= 0 {
-		sampleRate = 48000
-	}
-	p.audioRem += 1024 * 90000
-	d := p.audioRem / int64(sampleRate)
-	p.audioRem -= d * int64(sampleRate)
+// sampleRate, carrying the remainder in rem so a rate that does not
+// divide 90000*1024 does not drift. The demuxers give every frame its
+// rate.
+func audioStep(rem *int64, sampleRate int) int64 {
+	*rem += 1024 * 90000
+	d := *rem / int64(sampleRate)
+	*rem -= d * int64(sampleRate)
 	return d
 }
 
-// audioClipTicks is the 90 kHz duration of the first n AAC frames of the
-// audio clip.
-func (p *Player) audioClipTicks(n int) int64 {
-	var ticks int64
+// audioClipTicks returns the 90 kHz duration of the first n AAC frames of
+// the audio clip, as the steps of a pass over them add up, and the
+// remainder carried after them.
+func (p *Player) audioClipTicks(n int) (ticks, rem int64) {
 	for _, af := range p.config.AudioClip[:n] {
-		rate := int64(af.sampleRate)
-		if rate <= 0 {
-			rate = 48000
-		}
-		ticks += 1024 * 90000 / rate
+		ticks += audioStep(&rem, af.sampleRate)
 	}
-	return ticks
+	return ticks, rem
 }
 
 // startMargin is the least time a start leaves before the next program
