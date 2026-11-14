@@ -52,7 +52,7 @@ func (c backlogRun) run(t *testing.T) backlogResult {
 	clock.Epoch()
 	clock.SetTAISource(func() int64 { return now })
 	t.Cleanup(func() { clock.SetTAISource(nil) })
-	clock.SetProgramRate(clock.Rate{Num: 50, Den: 1})
+	programRate(t, clock.Rate{Num: 50, Den: 1})
 
 	const (
 		key    = "srt:cam"

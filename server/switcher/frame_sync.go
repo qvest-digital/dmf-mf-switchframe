@@ -10,13 +10,7 @@ import (
 )
 
 // syncRingSize is how many frames each source buffers beyond its delay and
-// its hold. A tick reads clock.ReaderDelayGrains behind the clock, so a
-// source at k times the program rate needs k*(ReaderDelayGrains+1) frames
-// for one to be due; 16 covers five times the program rate and a reader's
-// burst. Frames older than the due one are released on every tick, so a
-// source at the program rate holds about ReaderDelayGrains+1 of them. A
-// source placed ahead of its arrival, as an SRT stream is by its
-// clock.TrackingAnchor, holds the frames that arrive in its hold as well.
+// its hold while no realtime clock has set the program rate.
 const syncRingSize = 16
 
 // FrameSynchronizer buffers each source's decoded frames by media time.
@@ -40,11 +34,12 @@ type syncSource struct {
 	lostAt time.Time
 	// delay is the source's extra delay in 90 kHz ticks (SetSourceDelay).
 	delay atomic.Int64
-	// capacity is syncRingSize plus the frames the delay holds back; 0
-	// means syncRingSize.
-	capacity int
+	// delayFrames is how many frames the delay holds back at the program
+	// rate, counted while no realtime clock has set it.
+	delayFrames int
 	// hold adds the frames not yet read: those the source's delay and its
-	// placement ahead of its arrival hold back.
+	// placement ahead of its arrival hold back, counted while no realtime
+	// clock has set the program rate.
 	hold clock.SourceHold
 
 	overflows atomic.Int64 // frames released unread because the ring was full
@@ -64,7 +59,7 @@ func (fs *FrameSynchronizer) AddSource(key string) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	if _, ok := fs.sources[key]; !ok {
-		fs.sources[key] = &syncSource{ring: make([]*ProcessingFrame, 0, syncRingSize), capacity: syncRingSize}
+		fs.sources[key] = &syncSource{ring: make([]*ProcessingFrame, 0, syncRingSize)}
 	}
 }
 
@@ -138,9 +133,9 @@ func (fs *FrameSynchronizer) SetSourceDelay(sourceKey string, delayMs int, frame
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	ss.delay.Store(int64(delayMs) * 90)
-	ss.capacity = syncRingSize
+	ss.delayFrames = 0
 	if frameDur > 0 {
-		ss.capacity += int((time.Duration(delayMs)*time.Millisecond + frameDur - 1) / frameDur)
+		ss.delayFrames = int((time.Duration(delayMs)*time.Millisecond + frameDur - 1) / frameDur)
 	}
 	return true
 }
@@ -150,8 +145,20 @@ func (fs *FrameSynchronizer) SetSourceDelay(sourceKey string, delayMs int, frame
 // TrackingAnchor lowered its offset. The buffered frames placed at or after
 // pf came before it and are dropped, so the source's frames stay in their
 // own order; those placed before it are still shown before it, so a small
-// step costs the frames it skips and not a wait for pf. A full ring, at
-// its capacity plus the source's hold, drops its oldest frame.
+// step costs the frames it skips and not a wait for pf.
+//
+// Once a realtime clock runs, the ring keeps the frames a tick still to
+// come may show: the newest one at or before the oldest read point such a
+// tick has, the current time less the read lag and the source's delay,
+// and every one after it. The clock delivers a tick late after a stall,
+// but the sync loop sheds the video of a tick taken after its grain ended,
+// so no tick reads further back. A full ring drops its oldest frame. It
+// holds, at the faster of the program rate and the source's, which the
+// ring's PTS give, the frames from that read point to the furthest a
+// TrackingAnchor places a frame after its arrival, clock.MaxSourceHold
+// past the current time, and one more. Before a realtime clock sets the
+// program rate it holds syncRingSize frames, those the delay holds back
+// and those the source's hold counts.
 func (ss *syncSource) push(pf *ProcessingFrame) {
 	if n := len(ss.ring); n > 0 && pf.PTS <= ss.ring[n-1].PTS {
 		ss.reordered.Add(1)
@@ -165,18 +172,41 @@ func (ss *syncSource) push(pf *ProcessingFrame) {
 		clear(ss.ring[i:])
 		ss.ring = ss.ring[:i]
 	}
-	limit := ss.capacity
-	if limit == 0 {
-		limit = syncRingSize
+	ss.ring = append(ss.ring, pf)
+	delay := ss.delay.Load()
+	var limit int
+	if lag, period := clock.ReadLag(), clock.ProgramPeriod(); lag > 0 && period > 0 {
+		oldest := clock.NowPTS() - lag - delay
+		i := 0
+		for i+1 < len(ss.ring) && ss.ring[i+1].PTS <= oldest {
+			i++
+		}
+		ss.release(i)
+		window := lag + delay + clock.MaxSourceHold
+		frames := (window + period - 1) / period
+		if n := len(ss.ring); n > 1 {
+			if span := ss.ring[n-1].PTS - ss.ring[0].PTS; span > 0 {
+				frames = max(frames, (window*int64(n-1)+span-1)/span)
+			}
+		}
+		limit = int(frames) + 1
+	} else {
+		limit = syncRingSize + ss.delayFrames + ss.hold.Frames(pf.PTS, delay)
 	}
-	limit += ss.hold.Frames(pf.PTS, ss.delay.Load())
-	for len(ss.ring) >= limit {
-		ss.ring[0].ReleaseYUV()
-		n := copy(ss.ring, ss.ring[1:])
-		ss.ring = ss.ring[:n]
+	for len(ss.ring) > limit {
+		ss.release(1)
 		ss.overflows.Add(1)
 	}
-	ss.ring = append(ss.ring, pf)
+}
+
+// release releases the ring's oldest n frames.
+func (ss *syncSource) release(n int) {
+	for _, f := range ss.ring[:n] {
+		f.ReleaseYUV()
+	}
+	k := copy(ss.ring, ss.ring[n:])
+	clear(ss.ring[k:])
+	ss.ring = ss.ring[:k]
 }
 
 // popAt returns the newest buffered frame with PTS <= limit and releases

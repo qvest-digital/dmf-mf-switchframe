@@ -123,3 +123,22 @@ func TestSourceHoldKeepsABurstWholeUntilItIsRead(t *testing.T) {
 		}
 	}
 }
+
+// ResetProgramRate leaves every value SetProgramRate records unset, as
+// before a realtime clock starts, and its restore puts each back.
+func TestResetProgramRateResetsAndRestoresEveryValue(t *testing.T) {
+	restoreOuter := ResetProgramRate()
+	t.Cleanup(restoreOuter)
+	SetProgramRate(Rate{Num: 240, Den: 1})
+	lag, period := ReadLag(), ProgramPeriod()
+
+	restore := ResetProgramRate()
+	if ReadLag() != 0 || ProgramPeriod() != 0 {
+		t.Fatalf("after a reset: read lag %d, program period %d; want both 0", ReadLag(), ProgramPeriod())
+	}
+	SetProgramRate(Rate{Num: 25, Den: 1})
+	restore()
+	if ReadLag() != lag || ProgramPeriod() != period {
+		t.Fatalf("restored: read lag %d, program period %d; want %d and %d", ReadLag(), ProgramPeriod(), lag, period)
+	}
+}

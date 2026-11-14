@@ -18,6 +18,7 @@ func TestFrameSyncKeepsTheFramesAnAnchoredSRTSourceHolds(t *testing.T) {
 	clock.Epoch()
 	clock.SetTAISource(func() int64 { return now })
 	t.Cleanup(func() { clock.SetTAISource(nil) })
+	programRate(t, clock.Rate{Num: 50, Den: 1})
 
 	const (
 		period  = int64(20_000_000)
