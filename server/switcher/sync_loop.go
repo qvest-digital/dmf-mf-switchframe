@@ -137,6 +137,12 @@ func (s *Switcher) processTick(tick clock.Tick) {
 
 // noteProgramTick calls the SetOnProgramTick callback with the sources hs
 // shows as program that the tick before did not.
+//
+// Cut publishes hotState before it hands the cut to the mixer, outside
+// configMu, so the first tick that shows the source cut to can run before
+// the mixer has taken the cut. The source starts on that tick all the
+// same; whether the mixer airs it on that tick is up to Cut's ordering,
+// not to this call. StartTransition hands the mix to the mixer first.
 func (s *Switcher) noteProgramTick(hs *hotState, tick clock.Tick) {
 	shown := [2]string{hs.programSource}
 	if hs.state.isInTransition() && hs.transEngine != nil {
