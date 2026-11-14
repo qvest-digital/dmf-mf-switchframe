@@ -85,8 +85,8 @@ const gainLevel = 0.5
 // records the gain one source airs at: only that source delivers a level,
 // so each sample aired over the level is its gain. Every source delivers
 // two periods ahead of the read point, as a live source does, in blocks
-// whose 90 kHz PTS and length in nanoseconds both fall on a sample, so
-// the mixer places them to the sample.
+// whose length in nanoseconds is whole and whose 90 kHz PTS stands for
+// the block's first sample, so the mixer places them to the sample.
 type gainRig struct {
 	t        *testing.T
 	m        *Mixer
@@ -110,11 +110,10 @@ func newGainRig(t *testing.T, fps clock.Rate, sr int, sources []string, measured
 	t.Cleanup(func() { _ = m.Close() })
 	ra := clock.Rate{Num: int64(sr), Den: 1}
 	block := sr / gcd(sr, 10000)
-	base := clock.TimestampToIndex(ra, clock.TAINow())
 	r := &gainRig{
 		t: t, m: m, ra: ra,
 		starts: periodStarts(fps, sr, 64),
-		base:   base - base%uint64(block), block: block,
+		base:   placeableIndex(t, ra, block), block: block,
 		sources: sources, measured: measured, interleave: interleave,
 	}
 	for _, key := range sources {
@@ -127,6 +126,27 @@ func newGainRig(t *testing.T, fps clock.Rate, sr int, sources []string, measured
 	}
 	r.deliver(2)
 	return r
+}
+
+// placeableIndex returns a sample index near now at rate ra whose 90 kHz
+// PTS stands for it, and so does the PTS of every index block samples on
+// from it. A PTS is the process epoch plus whole ticks, so it can sit half
+// a tick off a sample: more than half a sample at 96 kHz, depending on
+// where the epoch fell. A block stamped so is placed a sample late or
+// early, and the first read of a source on air then airs one sample of
+// silence, a step no switcher action made.
+func placeableIndex(t *testing.T, ra clock.Rate, block int) uint64 {
+	t.Helper()
+	i := clock.TimestampToIndex(ra, clock.TAINow())
+	i -= i % uint64(block)
+	for range block {
+		if clock.PTSIndex(ra, clock.IndexPTS(ra, i)) == i {
+			return i
+		}
+		i++
+	}
+	t.Fatalf("no index of a %d-sample block at %d Hz has a PTS that stands for it", block, ra.Num)
+	return 0
 }
 
 // deliver ingests every source's audio up to the end of period k.
