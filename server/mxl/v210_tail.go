@@ -124,5 +124,21 @@ func yuv422P10ToV210PartialInto(yuv, out []byte, width, height int) error {
 		v210PackRow10(v210Row, yPlane[yOff:], cbPlane[cOff:], crPlane[cOff:], groups)
 		packV210Tail10(v210Row[groups*16:], yPlane[yOff+groups*6:], cbPlane[cOff+groups*3:], crPlane[cOff+groups*3:], n)
 	}
+	zeroV210Padding(out, width, height)
 	return nil
+}
+
+// zeroV210Padding zeroes the bytes of each line of a v210 frame past its
+// last group, up to the 128-byte line stride, as the CUDA packers do. A
+// buffer reused across frames would otherwise carry whatever it held there
+// before into every grain.
+func zeroV210Padding(out []byte, width, height int) {
+	stride := V210LineStride(width)
+	used := (width + 5) / 6 * 16
+	if used == stride {
+		return
+	}
+	for row := 0; row < height; row++ {
+		clear(out[row*stride+used : (row+1)*stride])
+	}
 }
