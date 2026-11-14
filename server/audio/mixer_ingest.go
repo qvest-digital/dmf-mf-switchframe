@@ -1,6 +1,8 @@
 package audio
 
 import (
+	"time"
+
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
@@ -329,13 +331,25 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 const arrivalSlack = 2
 
 // arrivalLate is how far behind its arrival a source's audio may be placed
-// to continue the audio before it once that audio has all been read: 256
-// samples, 5.3 ms. The read point is two frame periods behind the clock,
-// and a read reaches up to one frame period (16.7 ms at 60 fps) before it;
-// audio placed further behind its arrival than that would be missing when
-// read. While an active channel holds audio before it that is due and
-// unread, a push continues it up to arrivalSlack late.
-const arrivalLate = 256
+// to continue the audio before it once that audio has all been read: 5.3
+// ms, and no more than half a program period, so audio placed by its
+// arrival stays within half a picture of the video that arrived with it
+// at any program rate. Both are well inside the audio budget, the read
+// delay less the period a tick reads (clock.ReadDelay), past which audio
+// placed behind its arrival would be missing when read. While an active
+// channel holds audio before it that is due and unread, a push continues
+// it up to arrivalSlack late.
+const arrivalLate = 16 * time.Millisecond / 3
+
+// lateArrival returns arrivalLate at the running program rate in
+// nanoseconds, or arrivalLate before a program clock runs.
+func lateArrival() int64 {
+	late := int64(arrivalLate)
+	if p := clock.ProgramPeriod(); p > 0 {
+		late = min(late, p*1_000_000_000/(2*90000))
+	}
+	return late
+}
 
 // stampArrival places the n samples just pushed for a source without a
 // media clock right after the source's audio before them, when they
@@ -349,7 +363,7 @@ func (m *Mixer) stampArrival(ch *Channel, n, sampleRate int) {
 	if ch.ringEnd != 0 {
 		ns := func(samples int64) int64 { return samples * 1_000_000_000 / int64(m.sampleRate) }
 		slack := ns(arrivalSlack * m.primingSamples(sampleRate))
-		late := ns(arrivalLate)
+		late := lateArrival()
 		if ch.active && ch.ringBuf.FrameCount()-m.delaySamples(ch) > n {
 			// Audio before this push is due and unread, so no read has
 			// passed the place that continues it: a push that came late

@@ -302,9 +302,12 @@ func ringEnd(m *Mixer, key string) (end int64, frames int) {
 }
 
 // arrivalBound is the most a source's audio is placed behind its arrival
-// at program rate r once the audio before it has been read: 5.3 ms.
-func arrivalBound(clock.Rate) int64 {
-	return int64(16*time.Millisecond/3) + 11_112
+// at program rate r once the audio before it has been read: 5.3 ms, or
+// half a period where that is shorter, so it stays within half a picture
+// of the video that arrived with it. One 90 kHz tick more for the
+// program period, which the program clock rounds up to one.
+func arrivalBound(r clock.Rate) int64 {
+	return min(int64(16*time.Millisecond/3), clock.IndexToTimestamp(r, 1)/2) + 11_112
 }
 
 // A push that arrives late while the audio before it is still unread
@@ -513,7 +516,8 @@ func TestMixer_IngestFrame_DelayedSourceRealignsAfterLostAudio(t *testing.T) {
 // always unread, and that does not make a late push jitter either. A
 // source whose clock runs slow arrives later and later against the audio
 // before it, and off program stays within arrivalBound of its arrival,
-// and of the arrival-stamped video it plays with, as it does on program.
+// and of the arrival-stamped video it plays with, as it does on program:
+// within half a picture at every program rate.
 func TestMixer_IngestFrame_SlowSourceOffProgramStaysOnItsArrival(t *testing.T) {
 	for _, r := range programRates {
 		for _, sr := range longSourceRates() {
