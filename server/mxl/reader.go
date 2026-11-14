@@ -50,8 +50,8 @@ type ReaderConfig struct {
 	Width  int
 	Height int
 
-	// Audio samples per read (required for audio flows). Defaults to
-	// defaultSamplesPerRead.
+	// Audio samples per read. Zero reads audioReadSize at the program's
+	// rate of the time.
 	SamplesPerRead int
 
 	// Logger. Defaults to slog.Default().
@@ -72,12 +72,33 @@ const videoMaxLag = 3
 // resync to.
 const grainLookBack = 2
 
-// defaultSamplesPerRead is what the audio loop reads at a time, 10 ms at
-// 48 kHz, the batch GStreamer MXL writers commit. A read is handed over
-// only once its last sample is written, so its first sample reaches the
-// mixer at least the read's duration after its media time. A read ends at
-// its index, so after a resync to the head it reads the samples before.
-const defaultSamplesPerRead = 480
+// audioReadSize is the most samples of a flow at sampleRate the audio
+// loop reads at a time, the program period being period 90 kHz ticks, 0
+// without a program clock: 10 ms, the batch GStreamer MXL writers commit,
+// or the audio's budget where that is shorter. A read is handed over only
+// once its last sample is written, so its first sample reaches the mixer
+// at least the read's duration after its media time, and the mixer reads
+// audio clock.ReaderDelayGrains-1 periods after it: 8.3 ms at 120 fps,
+// 4.2 ms at 240. period is rounded up to a whole tick, so the budget is
+// taken one tick short per period and a read never exceeds it. A read
+// takes no more than the producer has committed (committed), so a batch
+// longer than the budget is split rather than waited for. A producer that
+// commits 10 ms at a time still overruns a budget under 10 ms; what keeps
+// it in is a read delay of more periods.
+func audioReadSize(sampleRate int, period int64) int {
+	n := sampleRate / 100
+	if period > 0 {
+		budget := (clock.ReaderDelayGrains - 1) * (period - 1)
+		n = min(n, int(budget*int64(sampleRate)/90000))
+	}
+	return max(n, 1)
+}
+
+// maxAudioReadSize is the most samples of a flow at sampleRate a read of
+// audioReadSize takes.
+func maxAudioReadSize(sampleRate int) int {
+	return audioReadSize(sampleRate, 0)
+}
 
 // audioLeadPeriods is how many program periods ahead of its first sample's
 // media time the audio loop hands a read over, and minAudioLead the least
@@ -116,9 +137,6 @@ func (c *ReaderConfig) defaults() {
 	}
 	if c.TimeoutMs <= 0 {
 		c.TimeoutMs = 100
-	}
-	if c.SamplesPerRead <= 0 {
-		c.SamplesPerRead = defaultSamplesPerRead
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -372,28 +390,32 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 	// release the SDK quickly and retry from Go-land with fine-grained control.
 	const audioTimeoutNs = 5_000_000 // 5ms
 
-	sampleRate := int(config.GrainRate.Numerator)
-	if config.GrainRate.Denominator > 1 {
-		sampleRate = int(config.GrainRate.Float64())
-	}
+	sampleRate := flowSampleRate(config)
 	channels := int(config.ChannelCount)
-	samplesPerRead := r.config.SamplesPerRead
+	// maxRead is the most samples a read takes: SamplesPerRead when set,
+	// which every read then takes, or audioReadSize at the program's rate of
+	// the time.
+	maxRead := func() uint64 {
+		if r.config.SamplesPerRead > 0 {
+			return uint64(r.config.SamplesPerRead)
+		}
+		return uint64(audioReadSize(sampleRate, programPeriod()))
+	}
 
 	// Read position: start from the ring buffer's current write head so we
 	// don't read stale samples that have already been overwritten.
-	index, err := flow.HeadIndex()
+	head, err := flow.HeadIndex()
 	if err != nil {
 		// Fallback to wall-clock approximation.
-		index = CurrentIndex(config.GrainRate)
+		head = CurrentIndex(config.GrainRate)
 		log.Warn("mxl audio reader: HeadIndex unavailable, using wall-clock", "error", err)
 	}
-	// A read ending at index holds [index-samplesPerRead, index); its PTS
-	// is the TAI of the first of them, so a resync moves it by exactly the
-	// samples skipped.
+	// start is the first sample of the next read, which ends at
+	// start+n and holds [start, start+n); its PTS is the TAI of start, so a
+	// resync moves it by exactly the samples skipped. The first read
+	// ends at the head.
 	cr := clock.Rate{Num: config.GrainRate.Numerator, Den: config.GrainRate.Denominator}
-	if index < uint64(samplesPerRead) {
-		index = uint64(samplesPerRead)
-	}
+	start := head - min(head, maxRead())
 
 	fatalErrors := 0
 	const maxFatalErrors = 50
@@ -406,13 +428,21 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 		default:
 		}
 
-		pcm, err := flow.ReadSamples(index, samplesPerRead, audioTimeoutNs)
+		n := maxRead()
+		var pcm [][]float32
+		var err error
+		if r.config.SamplesPerRead <= 0 {
+			n, err = committed(flow, start, n, audioTimeoutNs)
+		}
+		if err == nil {
+			pcm, err = flow.ReadSamples(start+n, int(n), audioTimeoutNs)
+		}
 		if err != nil {
 			// On "too late" errors, re-sync to the current write head
 			// instead of dying. The ring buffer moved past our position.
 			if errors.Is(err, ErrTooLate) {
-				if head, hErr := flow.HeadIndex(); hErr == nil && head >= uint64(samplesPerRead) {
-					index = head
+				if head, hErr := flow.HeadIndex(); hErr == nil && head >= maxRead() {
+					start = head - maxRead()
 					r.resyncs.Add(1)
 					fatalErrors = 0
 					continue
@@ -443,8 +473,8 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 			PCM:        pcm,
 			SampleRate: sampleRate,
 			Channels:   channels,
-			Start:      index - uint64(samplesPerRead),
-			PTS:        clock.IndexPTS(cr, index-uint64(samplesPerRead)),
+			Start:      start,
+			PTS:        clock.IndexPTS(cr, start),
 		}
 
 		// A producer may commit its audio well ahead of TAI. Handed over
@@ -480,8 +510,44 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 			return
 		}
 
-		index += uint64(samplesPerRead)
+		start += n
 	}
+}
+
+// committed returns how many samples from start on the next read takes:
+// what the producer has committed, up to max. A producer commits a batch
+// at a time, 10 ms for a GStreamer MXL writer, and a read that ends past
+// the head waits for the next batch, so its first sample would reach the
+// mixer that much later than it could. Read to the head, a read's first
+// sample is no later than the producer's own batch makes it, whatever
+// the batch's size.
+//
+// With nothing committed past start it waits up to timeoutNs for the next
+// commit, with a read of its first sample, and returns that read's error.
+// A head that does not move past a sample that could be read is not
+// trusted, and max is read.
+func committed(flow ContinuousReader, start, max uint64, timeoutNs uint64) (uint64, error) {
+	head, err := flow.HeadIndex()
+	if err != nil {
+		return max, nil
+	}
+	if head <= start {
+		if _, err := flow.ReadSamples(start+1, 1, timeoutNs); err != nil {
+			return 0, err
+		}
+		if head, err = flow.HeadIndex(); err != nil || head <= start {
+			return max, nil
+		}
+	}
+	return min(max, head-start), nil
+}
+
+// flowSampleRate is the sample rate of an audio flow.
+func flowSampleRate(config FlowConfig) int {
+	if config.GrainRate.Denominator > 1 {
+		return int(config.GrainRate.Float64())
+	}
+	return int(config.GrainRate.Numerator)
 }
 
 func (r *Reader) dataLoop(ctx context.Context, flow DiscreteReader) {

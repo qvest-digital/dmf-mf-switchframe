@@ -449,8 +449,9 @@ func TestSource_RelayAudioIsCollectedIntoAACFrames(t *testing.T) {
 		k := videoGrains(r.video, shift)
 		a := clock.Rate{Num: int64(r.audio), Den: 1}
 		first := nowIndex(a)
-		n := uint64(r.audio / 100)
-		const reads = 50
+		// Reads of what the reader takes at a time at this program rate.
+		n := uint64(audioReadSize(r.audio, programPeriodAt(r.video)))
+		const reads = 100
 		for i := uint64(0); i < reads; i++ {
 			start := first + i*n
 			pcm := [][]float32{make([]float32, n), make([]float32, n)}

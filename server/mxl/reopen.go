@@ -47,9 +47,9 @@ type reopener[T flowHandle] struct {
 	cur       T
 	isOpen    bool
 	nextRetry time.Time
-	// lookBack is how far behind the head a reader loop moved to this flow
+	// lookBack is how far behind the head a reader loop moved to a flow
 	// reads first: grains for a discrete flow, samples for a continuous one.
-	lookBack uint64
+	lookBack func(FlowConfig) uint64
 
 	// fresh is set when a new handle was opened and no read has gone
 	// through it yet. The reader loop's index belongs to the flow that was
@@ -306,6 +306,12 @@ func (r *reopener[T]) prepare(ctx context.Context, id string, gen uint64) error 
 	return nil
 }
 
+// grainsBack is the lookBack of a discrete flow, samplesBack that of a
+// continuous one: the most an audio read takes.
+func grainsBack(FlowConfig) uint64 { return grainLookBack }
+
+func samplesBack(c FlowConfig) uint64 { return uint64(maxAudioReadSize(flowSampleRate(c))) }
+
 // waitWritten returns once h holds what a reader loop taking it over reads
 // first, lookBack behind the head. A flow mirrored onto this node by its
 // first open has nothing at first, and then starts at the writer's index
@@ -323,7 +329,7 @@ func (r *reopener[T]) waitWritten(ctx context.Context, h T, gen uint64) error {
 			if first == 0 {
 				first = head
 			}
-			if head >= first+r.lookBack {
+			if head >= first+r.lookBack(h.ConfigInfo()) {
 				return nil
 			}
 		}
@@ -434,7 +440,7 @@ func NewReopeningReader(flowID string, first DiscreteReader, open func(string) (
 		log = slog.Default()
 	}
 	return &reopeningReader{r: reopener[DiscreteReader]{
-		flowID: flowID, open: open, log: log, lookBack: grainLookBack,
+		flowID: flowID, open: open, log: log, lookBack: grainsBack,
 		want: first.ConfigInfo(), hasWant: true, cur: first, isOpen: true,
 		reading: flowID, done: make(chan struct{}),
 	}}
@@ -485,7 +491,7 @@ func NewRetargetableReader(open func(string) (DiscreteReader, error), expect fun
 	if log == nil {
 		log = slog.Default()
 	}
-	return &reopeningReader{r: reopener[DiscreteReader]{open: open, expect: expect, log: log, lookBack: grainLookBack, done: make(chan struct{})}}
+	return &reopeningReader{r: reopener[DiscreteReader]{open: open, expect: expect, log: log, lookBack: grainsBack, done: make(chan struct{})}}
 }
 
 // reopeningAudioReader is the ContinuousReader counterpart of
@@ -502,7 +508,7 @@ func NewReopeningAudioReader(flowID string, first ContinuousReader, open func(st
 		log = slog.Default()
 	}
 	return &reopeningAudioReader{r: reopener[ContinuousReader]{
-		flowID: flowID, open: open, log: log, lookBack: defaultSamplesPerRead,
+		flowID: flowID, open: open, log: log, lookBack: samplesBack,
 		want: first.ConfigInfo(), hasWant: true, cur: first, isOpen: true,
 		reading: flowID, done: make(chan struct{}),
 	}}
@@ -546,7 +552,7 @@ func NewRetargetableAudioReader(open func(string) (ContinuousReader, error), exp
 	if log == nil {
 		log = slog.Default()
 	}
-	return &reopeningAudioReader{r: reopener[ContinuousReader]{open: open, expect: expect, log: log, lookBack: defaultSamplesPerRead, done: make(chan struct{})}}
+	return &reopeningAudioReader{r: reopener[ContinuousReader]{open: open, expect: expect, log: log, lookBack: samplesBack, done: make(chan struct{})}}
 }
 
 // Retargetable is a reader that can be moved to another flow while its
