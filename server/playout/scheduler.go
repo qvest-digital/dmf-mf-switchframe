@@ -65,7 +65,7 @@ type Scheduler struct {
 
 	// Signals from the channel or operator.
 	itemComplete bool // channel signaled the current clip/slate finished
-	advancePend  bool // Next() / JumpTo() / Previous() requested an advance
+	advancePend  int  // Next() presses not applied yet, see pendingFrom
 	holdComplete bool // hold item got its complete signal, waiting for Next()
 	loopExit     bool // EndLoop: the looping item plays its pass out, then ends
 
@@ -75,6 +75,7 @@ type Scheduler struct {
 	transOutgoing   *PlaylistItem
 	transIncoming   *PlaylistItem
 	transConfig     TransitionConfig
+	transTarget     int // index of transIncoming
 
 	// Flags.
 	started bool
@@ -126,7 +127,7 @@ func (s *Scheduler) Start() {
 	s.startAt = 0
 	s.itemStartTime = time.Time{} // will be set on first Tick
 	s.itemComplete = false
-	s.advancePend = false
+	s.advancePend = 0
 	s.holdComplete = false
 	s.loopExit = false
 	s.idleWaiting = false
@@ -189,9 +190,13 @@ func (s *Scheduler) Tick(now time.Time) SchedulerDecision {
 	// 6. Check if we should advance.
 	shouldAdvance := false
 
-	// Explicit advance request (Next / JumpTo / Previous).
-	if s.advancePend {
-		s.advancePend = false
+	// Every Next pressed since the last tick, applied as one move: N
+	// presses land N items ahead with one item change, so no item between
+	// them goes to air for a frame.
+	steps := 1
+	if s.advancePend > 0 {
+		steps = s.advancePend
+		s.advancePend = 0
 		shouldAdvance = true
 	}
 
@@ -241,7 +246,7 @@ func (s *Scheduler) Tick(now time.Time) SchedulerDecision {
 	}
 
 	if shouldAdvance {
-		return s.advance(now)
+		return s.advance(now, steps)
 	}
 
 	return s.playingDecision(item)
@@ -255,25 +260,34 @@ func (s *Scheduler) SignalItemComplete() {
 	s.itemComplete = true
 }
 
-// Next signals the scheduler to advance to the next item.
+// Next signals the scheduler to advance to the next item. Presses before
+// the next tick add up, each one item further, up to the end of the
+// playlist; a press past it is ignored.
 func (s *Scheduler) Next() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.started || s.stopped {
 		return ErrNotOnAir
 	}
-	s.advancePend = true
+	if s.pendingFrom()+s.advancePend < len(s.playlist.Items) {
+		s.advancePend++
+	}
 	s.holdComplete = false
 	s.itemComplete = false
 	return nil
 }
 
-// Previous moves the cursor back one item.
+// Previous takes back a Next not applied yet, or else moves the cursor
+// back one item.
 func (s *Scheduler) Previous() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.started || s.stopped {
 		return ErrNotOnAir
+	}
+	if s.advancePend > 0 {
+		s.advancePend--
+		return nil
 	}
 	if s.cursor > 0 {
 		s.cursor--
@@ -445,7 +459,7 @@ func (s *Scheduler) SetCursor(index int, mode OnAirMode, elapsed time.Duration) 
 	s.state = SchedPlaying
 	s.itemStartTime = time.Now().Add(-elapsed)
 	s.itemComplete = false
-	s.advancePend = false
+	s.advancePend = 0
 	s.holdComplete = false
 	// A loop release belongs to the item it was given for and to the engine
 	// state the cursor is taken from; the snapshot carries it separately.
@@ -493,6 +507,12 @@ func (s *Scheduler) LiveSourcesAhead() (cur, next string) {
 		}
 		return s.playlist.Items[i].Source
 	}
+	switch {
+	case s.advancePend > 0:
+		return liveSource(s.cursor), liveSource(s.pendingFrom() + s.advancePend)
+	case s.state == SchedTransitioning:
+		return liveSource(s.cursor), liveSource(s.transTarget)
+	}
 	return liveSource(s.cursor), liveSource(s.cursor + 1)
 }
 
@@ -537,9 +557,22 @@ func (s *Scheduler) resetItemState() {
 	s.itemStartTime = time.Time{}
 	s.itemDurationMs = 0
 	s.itemComplete = false
-	s.advancePend = false
+	s.advancePend = 0
 	s.holdComplete = false
 	s.loopExit = false
+}
+
+// pendingFrom returns the index the pending Next presses count from: the
+// item a transition in progress brings in, the one before an item waiting
+// for its scheduled time, which one press starts, or else the cursor.
+func (s *Scheduler) pendingFrom() int {
+	switch {
+	case s.state == SchedTransitioning:
+		return s.transTarget
+	case s.idleWaiting:
+		return s.cursor - 1
+	}
+	return s.cursor
 }
 
 // resolvedDuration returns the effective duration for an item.
@@ -578,10 +611,10 @@ func (s *Scheduler) nextScheduledTimeReached(now time.Time) bool {
 	return !now.Before(*nextItem.ScheduledTime)
 }
 
-// advance moves to the next item. It may start a transition if one is
+// advance moves steps items ahead. It may start a transition if one is
 // configured, or do a hard cut. Returns the decision for this tick.
-func (s *Scheduler) advance(now time.Time) SchedulerDecision {
-	nextCursor := s.cursor + 1
+func (s *Scheduler) advance(now time.Time, steps int) SchedulerDecision {
+	nextCursor := s.cursor + steps
 
 	// Playlist exhausted.
 	if nextCursor >= len(s.playlist.Items) {
@@ -618,6 +651,7 @@ func (s *Scheduler) advance(now time.Time) SchedulerDecision {
 		s.transOutgoing = &outgoing
 		s.transIncoming = nextItem
 		s.transConfig = *tc
+		s.transTarget = nextCursor
 		s.transStartTime = now
 		s.transDurationMs = int64(tc.DurationMs)
 		s.state = SchedTransitioning
@@ -666,9 +700,13 @@ func (s *Scheduler) tickTransition(now time.Time) SchedulerDecision {
 	}
 
 	if progress >= 1.0 {
-		// Transition complete — commit to the incoming item.
-		s.cursor++
+		// Transition complete: commit to the incoming item. A Next
+		// pressed during the transition counts from it and applies on the
+		// next tick.
+		s.cursor = s.transTarget
+		pend := s.advancePend
 		s.resetItemState()
+		s.advancePend = pend
 		s.state = SchedPlaying
 		incoming := s.transIncoming
 		s.transOutgoing = nil
@@ -704,13 +742,23 @@ func (s *Scheduler) tickIdleWaiting(now time.Time) SchedulerDecision {
 
 	item := &s.playlist.Items[s.cursor]
 
-	// An explicit operator advance (Next) overrides the schedule wait: start
-	// the waiting item immediately. The flag must be consumed here — leaving
-	// it latched used to make the scheduled item play for exactly one tick
-	// and then be skipped on air by the stale advancePend.
-	if s.advancePend {
-		s.advancePend = false
+	// An explicit operator advance (Next) overrides the schedule wait: one
+	// press starts the waiting item immediately, each further one an item
+	// after it. The count must be consumed here: leaving it latched used
+	// to make the scheduled item play for exactly one tick and then be
+	// skipped on air by the stale advancePend.
+	if s.advancePend > 0 {
+		s.cursor += s.advancePend - 1
+		s.advancePend = 0
 		s.idleWaiting = false
+		if s.cursor >= len(s.playlist.Items) {
+			s.state = SchedIdle
+			return SchedulerDecision{
+				State:     SchedIdle,
+				Completed: true,
+			}
+		}
+		item = &s.playlist.Items[s.cursor]
 		s.state = SchedPlaying
 		s.itemStartTime = now
 		s.itemDurationMs = s.resolvedDuration(item)
