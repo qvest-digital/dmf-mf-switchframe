@@ -89,15 +89,20 @@ func (a *App) registerSubsystemCollectors() {
 // is ready to accept traffic. The /ready endpoint returns 503 until this is set.
 var readyFlag atomic.Bool
 
+// readyLogged is what /ready last answered, so a change is logged once.
+var readyLogged atomic.Pointer[string]
+
 // StartAdminServer launches an HTTP server on addr that exposes operational
 // endpoints: Prometheus metrics, health/readiness probes, Go pprof, and the
 // cert-hash endpoint for dev bootstrapping (Vite proxy can reach TCP :9090).
 // If adminToken is non-empty, /metrics and /debug/* require a matching
 // Bearer token; /health, /ready, and /api/cert-hash remain unauthenticated
 // so that k8s probes and browser bootstrapping always work.
+// /ready also asks producing, when set, why the engine does not produce
+// its program yet.
 // It returns a stop function and the actual listen address (useful when
 // adminAddr uses port 0 for auto-assignment).
-func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string, trusted bool, adminToken string) (stop func(), listenAddr string) {
+func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string, trusted bool, adminToken string, producing func() error) (stop func(), listenAddr string) {
 	mux := http.NewServeMux()
 
 	// Admin auth middleware: protects sensitive endpoints when a token is configured.
@@ -126,14 +131,28 @@ func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string,
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
-	// Readiness probe — 503 until readyFlag is set, then 200, and 503 again
-	// once ctx is done: Run's ctx ends on SIGTERM, before anything drains,
-	// so a terminating engine is never taken for a ready one. No auth.
+	// Readiness probe: 503 until readyFlag is set and producing reports
+	// nothing missing, then 200, and 503 again once ctx is done: Run's ctx
+	// ends on SIGTERM, before anything drains, so a terminating engine is
+	// never taken for a ready one. A ready engine of a pair carries the
+	// program on its own, so its peer may be taken down. No auth.
 	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if !readyFlag.Load() || ctx.Err() != nil {
+		reason := ""
+		switch {
+		case ctx.Err() != nil:
+			reason = "shutting down"
+		case !readyFlag.Load():
+			reason = "starting"
+		case producing != nil:
+			if err := producing(); err != nil {
+				reason = err.Error()
+			}
+		}
+		logReadiness(reason)
+		if reason != "" {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]string{"status": "not_ready"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "not_ready", "reason": reason})
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -188,4 +207,18 @@ func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string,
 			slog.Error("admin server shutdown error", "err", err)
 		}
 	}, actualAddr
+}
+
+// logReadiness logs when /ready turns ready or not ready, with the reason.
+func logReadiness(reason string) {
+	ready := reason == ""
+	prev := readyLogged.Swap(&reason)
+	if prev != nil && (*prev == "") == ready {
+		return
+	}
+	if ready {
+		slog.Info("ready")
+	} else {
+		slog.Warn("not ready", "reason", reason)
+	}
 }

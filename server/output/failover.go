@@ -143,6 +143,25 @@ func (m *Manager) PairDestinationIDs() (all, armed []string) {
 	return all, armed
 }
 
+// UnstartedDestinations lists the armed destinations this engine sends
+// whose adapter does not run, such as one --outputs-config declares while
+// the engine still waits for a view of its peer. A destination the peer
+// sends is not listed.
+func (m *Manager) UnstartedDestinations() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var ids []string
+	for id, d := range m.destinations {
+		d.mu.Lock()
+		if d.armed && !d.active && m.sendsLocked(d) {
+			ids = append(ids, id)
+		}
+		d.mu.Unlock()
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // ReconcileDestinations moves destinations between the engines of a pair
 // from the latest view of the peer, and starts or stops adapters to match:
 //
