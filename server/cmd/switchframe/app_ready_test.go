@@ -286,7 +286,7 @@ func TestReady_MXLWriterStalled(t *testing.T) {
 			rate := clock.Rate{Num: int64(f.FPSNum), Den: int64(f.FPSDen)}
 			lag := clock.IndexToTimestamp(rate, mxl.CurrentIndex(mxl.Rational{Numerator: rate.Num, Denominator: rate.Den})) -
 				clock.IndexToTimestamp(rate, grains.last.Load()+1)
-			if since := time.Duration(lag); since < readyMaxLag-grainPeriod(f) {
+			if since := time.Duration(lag); since <= readyMaxLag {
 				t.Fatalf("behind the clock %s after the last grain written, before readyMaxLag", since)
 			}
 		})
@@ -312,11 +312,6 @@ func TestReady_MXLWriterStalled(t *testing.T) {
 			t.Fatalf("producing() = %v with the program flow behind the clock", err)
 		}
 	})
-}
-
-// grainPeriod is one frame of f.
-func grainPeriod(f switcher.PipelineFormat) time.Duration {
-	return time.Duration(int64(time.Second) * int64(f.FPSDen) / int64(f.FPSNum))
 }
 
 // An MXL output whose flows did not open, which initMXL only logs, is not
