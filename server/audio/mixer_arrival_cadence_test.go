@@ -40,17 +40,20 @@ func TestMixer_IngestFrame_ClipCadenceIsNeverSpliced(t *testing.T) {
 	// 60 fps: those are all the start phases there are. The test runs on
 	// one goroutine, so the race detector finds nothing in it: under it,
 	// where the audio package already takes most of CI's time limit, one
-	// phase each; the build without it runs them all.
+	// phase each, at the largest jitter only; the build without it runs
+	// them all.
 	step := 1
+	jitters := []int64{0, 3_000_000, 10_000_000}
 	if raceDetector {
 		step = 32
+		jitters = jitters[2:]
 	}
 	for _, rate := range []struct {
 		fps       int64
 		aacFrames int // over 512 pictures, as long as they are
 		cycle     int
 	}{{50, 480, 16}, {60, 400, 32}} {
-		for _, jitterNs := range []int64{0, 3_000_000, 10_000_000} {
+		for _, jitterNs := range jitters {
 			for phase := 0; phase < rate.cycle; phase += step {
 				name := fmt.Sprintf("%dfps/jitter%dms/phase%d", rate.fps, jitterNs/1_000_000, phase)
 				t.Run(name, func(t *testing.T) {
@@ -348,10 +351,16 @@ func TestMixer_IngestFrame_DelayedSourceRealignsAfterLostAudio(t *testing.T) {
 // always unread, and that does not make a late push jitter either. A
 // source whose clock runs slow arrives later and later against the audio
 // before it, and off program stays within arrivalLate of its arrival, and
-// of the arrival-stamped video it plays with, as it does on program.
+// of the arrival-stamped video it plays with, as it does on program. It runs
+// 30 s at 2000 ppm, 60 ms of drift; under the race detector, which finds
+// nothing in its one goroutine, the same 60 ms goes by as 10 s at 6000 ppm.
 func TestMixer_IngestFrame_SlowSourceOffProgramStaysOnItsArrival(t *testing.T) {
+	ppm, secs := int64(2000), int64(30)
+	if raceDetector {
+		ppm, secs = 6000, 10
+	}
 	worst := int64(0)
-	arrivalRun(t, false, 0, 2000, 30, 0, 0, func(_, before int64) { worst = max(worst, before) })
+	arrivalRun(t, false, 0, ppm, secs, 0, 0, func(_, before int64) { worst = max(worst, before) })
 	if limit := int64(arrivalLate) * 1_000_000_000 / 48000; worst > limit {
 		t.Fatalf("audio placed up to %.1f ms before its arrival, want at most %.1f ms",
 			float64(worst)/1e6, float64(limit)/1e6)

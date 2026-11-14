@@ -24,7 +24,13 @@ func TestResamplerOutputLength(t *testing.T) {
 	t.Parallel()
 	r := NewResampler(44100, 48000, 1)
 
-	const frames = 1000
+	// 1024 samples in a frame come out as 1024*160/147, so the frame
+	// lengths repeat every 147 frames. Under the race detector, which runs
+	// this many times slower, one cycle of them is checked.
+	frames := 1000
+	if raceDetector {
+		frames = 147
+	}
 	const samplesPerFrame = 1024
 	totalIn, totalOut := 0, 0
 
@@ -494,8 +500,14 @@ func TestResamplerFrameAligned(t *testing.T) {
 	const frameSize = 1024
 	r := NewResampler(44100, 48000, 2)
 
-	// Process 500 frames — every output must be exactly 1024*2 = 2048 samples
-	for i := 0; i < 500; i++ {
+	// Every output must be exactly 1024*2 = 2048 samples. The input frames'
+	// phases against the output repeat every 147 frames; under the race
+	// detector one cycle of them is checked.
+	frames := 500
+	if raceDetector {
+		frames = 147
+	}
+	for i := 0; i < frames; i++ {
 		input := makeSine(frameSize*2, 1000, 44100) // 1024 stereo samples
 		output := r.ResampleFrameAligned(input, frameSize)
 		require.Equal(t, frameSize*2, len(output),
