@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/zsiec/switchframe/server/clip"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal/filepcm"
 )
@@ -706,32 +707,14 @@ func isBuffering(err error) bool {
 	return strings.Contains(err.Error(), "buffering")
 }
 
-// estimateFPSFromEncodedFrames estimates FPS from encoded frame PTS values.
+// estimateFPSFromEncodedFrames estimates FPS from encoded frame PTS values
+// (clock.EstimateRate).
 func estimateFPSFromEncodedFrames(frames []encodedFrame) float64 {
-	if len(frames) < 2 {
-		return 30.0
+	pts := make([]int64, len(frames))
+	for i, f := range frames {
+		pts[i] = f.pts
 	}
-	minPTS, maxPTS := frames[0].pts, frames[0].pts
-	for _, f := range frames[1:] {
-		if f.pts < minPTS {
-			minPTS = f.pts
-		}
-		if f.pts > maxPTS {
-			maxPTS = f.pts
-		}
-	}
-	ptsSpan := maxPTS - minPTS
-	if ptsSpan <= 0 {
-		return 30.0
-	}
-	fps := float64(len(frames)-1) * 90000.0 / float64(ptsSpan)
-	if fps < 10 {
-		fps = 10
-	}
-	if fps > 120 {
-		fps = 120
-	}
-	return fps
+	return clock.EstimateRate(pts).FPS
 }
 
 // estimateFPSFromDecoded is an alias for estimateFPS in channel.go.

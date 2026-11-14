@@ -13,6 +13,7 @@ import (
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -305,8 +306,9 @@ func (p *replayPlayer) run(ctx context.Context) {
 	p.preStretchAudio()
 
 	// Estimate source FPS from all clip frames' PTS values.
-	sourceFPS := estimateFPSFromClip(clip)
-	fpsNum, fpsDen := fpsToRational(sourceFPS)
+	est := estimateFPSFromClip(clip)
+	sourceFPS, rate := est.FPS, est.Rate()
+	fpsNum, fpsDen := int(rate.Num), int(rate.Den)
 	ptsPerFrame := int64(90000) * int64(fpsDen) / int64(fpsNum)
 
 	// Create encoder(s). In dual-encode mode (ProxyEncoderFactory set):
@@ -1023,32 +1025,14 @@ func decodeGOP(gop []bufferedFrame, factory transition.DecoderFactory) ([]decode
 	return decoded, nil
 }
 
-// estimateFPSFromClip estimates the source FPS from buffered frame PTS values.
-func estimateFPSFromClip(clip []bufferedFrame) float64 {
-	if len(clip) < 2 {
-		return 30.0
+// estimateFPSFromClip estimates the source FPS from buffered frame PTS
+// values (clock.EstimateRate).
+func estimateFPSFromClip(clip []bufferedFrame) clock.RateEstimate {
+	pts := make([]int64, len(clip))
+	for i, f := range clip {
+		pts[i] = f.pts
 	}
-	minPTS, maxPTS := clip[0].pts, clip[0].pts
-	for _, f := range clip[1:] {
-		if f.pts < minPTS {
-			minPTS = f.pts
-		}
-		if f.pts > maxPTS {
-			maxPTS = f.pts
-		}
-	}
-	ptsSpan := maxPTS - minPTS
-	if ptsSpan <= 0 {
-		return 30.0
-	}
-	fps := float64(len(clip)-1) * 90000.0 / float64(ptsSpan)
-	if fps < 10 {
-		fps = 10
-	}
-	if fps > 120 {
-		fps = 120
-	}
-	return fps
+	return clock.EstimateRate(pts)
 }
 
 // estimateBitrate returns a reasonable bitrate for the given resolution.
@@ -1079,34 +1063,4 @@ func computeReplayTiming(speed, sourceFPS float64, totalClipFrames int) (dupCoun
 	//              = 1.0 / (sourceFPS * speed * dupCount)
 	frameDuration = time.Duration(float64(time.Second) / (sourceFPS * speed * float64(dupCount)))
 	return
-}
-
-// fpsToRational converts a float64 FPS to a rational fpsNum/fpsDen pair.
-// Snaps to standard broadcast rates (23.976, 24, 25, 29.97, 30, 50, 59.94, 60).
-func fpsToRational(fps float64) (int, int) {
-	type rate struct {
-		num, den int
-		nominal  float64
-	}
-	standards := []rate{
-		{24000, 1001, 23.976},
-		{24, 1, 24},
-		{25, 1, 25},
-		{30000, 1001, 29.97},
-		{30, 1, 30},
-		{50, 1, 50},
-		{60000, 1001, 59.94},
-		{60, 1, 60},
-	}
-	bestNum, bestDen := 30000, 1001
-	bestDist := math.Abs(fps - 29.97)
-	for _, s := range standards {
-		d := math.Abs(fps - s.nominal)
-		if d < bestDist {
-			bestDist = d
-			bestNum = s.num
-			bestDen = s.den
-		}
-	}
-	return bestNum, bestDen
 }

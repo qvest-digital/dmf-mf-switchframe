@@ -17,14 +17,8 @@ var programRates = []Rate{
 // programRate has the ticks read at r for the test's duration.
 func programRate(t *testing.T, r Rate) {
 	t.Helper()
-	lag, period, delay, hold := readLag.Load(), programPeriod.Load(), programDelay.Load(), holdPeriod.Load()
+	t.Cleanup(ResetProgramRate())
 	SetProgramRate(r)
-	t.Cleanup(func() {
-		readLag.Store(lag)
-		programPeriod.Store(period)
-		programDelay.Store(delay)
-		holdPeriod.Store(hold)
-	})
 }
 
 // programRate50 has the ticks read at 50 fps for the test's duration.
@@ -184,5 +178,33 @@ func TestSourceHoldKeepsABurstWholeUntilItIsRead(t *testing.T) {
 				push(20_000_000)
 			}
 		}
+	}
+}
+
+// ResetProgramRate leaves every value SetProgramRate records unset, as
+// before a realtime clock starts, and its restore puts each back. 240 fps
+// reads 10 periods behind, so a read delay left set would read as 10.
+func TestResetProgramRateResetsAndRestoresEveryValue(t *testing.T) {
+	t.Cleanup(ResetProgramRate())
+	SetProgramRate(Rate{Num: 240, Den: 1})
+	read := func() programState {
+		return programState{readLag.Load(), programPeriod.Load(), holdPeriod.Load(), programDelay.Load()}
+	}
+	set := read()
+	if set.readLag == 0 || set.period == 0 || set.holdPeriod == 0 || set.delay != 10 {
+		t.Fatalf("240 fps recorded %+v", set)
+	}
+
+	restore := ResetProgramRate()
+	if got := read(); got != (programState{}) {
+		t.Fatalf("after a reset: %+v, want every value 0", got)
+	}
+	if ReadLag() != 0 || ProgramPeriod() != 0 || ProgramReadDelay() != ReaderDelayGrains {
+		t.Fatalf("after a reset: read lag %d, period %d, read delay %d", ReadLag(), ProgramPeriod(), ProgramReadDelay())
+	}
+	SetProgramRate(Rate{Num: 25, Den: 1})
+	restore()
+	if got := read(); got != set {
+		t.Fatalf("restored %+v, want %+v", got, set)
 	}
 }

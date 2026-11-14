@@ -109,3 +109,33 @@ func (h *SourceHold) Frames(pts, delay int64) int {
 	}
 	return min(n, int((MaxSourceHold+lag+delay)/period))
 }
+
+// ReadLag returns how far behind the current time a frame can still be
+// unread, in 90 kHz ticks; 0 until a realtime ReferenceClock starts.
+func ReadLag() int64 {
+	return readLag.Load()
+}
+
+// programState is what SetProgramRate records.
+type programState struct {
+	readLag, period, holdPeriod int64
+	delay                       uint64
+}
+
+// ResetProgramRate returns the program rate to unset, as before a
+// realtime ReferenceClock starts, and returns a function that restores the
+// rate set before, for a test that must not depend on the tests before it.
+func ResetProgramRate() (restore func()) {
+	saved := programState{
+		readLag:    readLag.Swap(0),
+		period:     programPeriod.Swap(0),
+		holdPeriod: holdPeriod.Swap(0),
+		delay:      programDelay.Swap(0),
+	}
+	return func() {
+		readLag.Store(saved.readLag)
+		programPeriod.Store(saved.period)
+		holdPeriod.Store(saved.holdPeriod)
+		programDelay.Store(saved.delay)
+	}
+}

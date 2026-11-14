@@ -19,6 +19,7 @@ func TestFrameSyncKeepsTheFramesAnAnchoredSRTSourceHolds(t *testing.T) {
 	clock.Epoch()
 	clock.SetTAISource(func() int64 { return now })
 	t.Cleanup(func() { clock.SetTAISource(nil) })
+	programRate(t, clock.Rate{Num: 50, Den: 1})
 
 	const (
 		period  = int64(20_000_000)
@@ -103,8 +104,7 @@ func TestFrameSyncKeepsAWholeHoldAtEveryRate(t *testing.T) {
 			clock.Epoch()
 			clock.SetTAISource(func() int64 { return now })
 			t.Cleanup(func() { clock.SetTAISource(nil) })
-			clock.SetProgramRate(r)
-			t.Cleanup(func() { clock.SetProgramRate(clock.Rate{Num: 50, Den: 1}) })
+			programRate(t, r)
 
 			fs := NewFrameSynchronizer()
 			fs.AddSource("srt:cam")

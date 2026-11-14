@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/zsiec/prism/media"
 
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
@@ -1277,33 +1279,6 @@ func TestReplayPlayer_AudioPTSMonotonic(t *testing.T) {
 	}
 }
 
-func TestFpsToRational(t *testing.T) {
-	tests := []struct {
-		name    string
-		fps     float64
-		wantNum int
-		wantDen int
-	}{
-		{"29.97 NTSC", 29.97, 30000, 1001},
-		{"exact 30", 30.0, 30, 1},
-		{"23.976 film", 23.976, 24000, 1001},
-		{"exact 24", 24.0, 24, 1},
-		{"exact 25 PAL", 25.0, 25, 1},
-		{"exact 50", 50.0, 50, 1},
-		{"59.94", 59.94, 60000, 1001},
-		{"exact 60", 60.0, 60, 1},
-		{"non-standard 15fps snaps to nearest", 15.0, 24000, 1001},
-		{"non-standard 120fps snaps to nearest", 120.0, 60, 1},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			num, den := fpsToRational(tt.fps)
-			require.Equal(t, tt.wantNum, num, "fpsNum")
-			require.Equal(t, tt.wantDen, den, "fpsDen")
-		})
-	}
-}
-
 func TestReplayPlayer_LoopDoesNotResetPTS(t *testing.T) {
 	clip := buildTestClip(1, 3) // 3 frames
 	var outputFrames []*media.VideoFrame
@@ -1703,11 +1678,11 @@ func TestDecodeGOP_PTSAssignmentOnFrameDrop(t *testing.T) {
 func TestEstimateFPSFromClip(t *testing.T) {
 	t.Run("single frame returns default 30fps", func(t *testing.T) {
 		clip := []bufferedFrame{{pts: 1000}}
-		assert.Equal(t, 30.0, estimateFPSFromClip(clip))
+		assert.Equal(t, 30.0, estimateFPSFromClip(clip).FPS)
 	})
 
 	t.Run("empty clip returns default 30fps", func(t *testing.T) {
-		assert.Equal(t, 30.0, estimateFPSFromClip(nil))
+		assert.Equal(t, 30.0, estimateFPSFromClip(nil).FPS)
 	})
 
 	t.Run("frames in PTS order at 30fps", func(t *testing.T) {
@@ -1718,7 +1693,7 @@ func TestEstimateFPSFromClip(t *testing.T) {
 			{pts: 6000},
 			{pts: 9000},
 		}
-		fps := estimateFPSFromClip(clip)
+		fps := estimateFPSFromClip(clip).FPS
 		assert.InDelta(t, 30.0, fps, 0.1)
 	})
 
@@ -1731,7 +1706,7 @@ func TestEstimateFPSFromClip(t *testing.T) {
 			{pts: 3000},                // B-frame (display order 1)
 			{pts: 6000},                // B-frame (display order 2)
 		}
-		fps := estimateFPSFromClip(clip)
+		fps := estimateFPSFromClip(clip).FPS
 		// With the bug (last-first): (6000-0)/3 = 2000 ticks/frame = 45fps — WRONG.
 		// With the fix (min/max): (9000-0)/3 = 3000 ticks/frame = 30fps — CORRECT.
 		assert.InDelta(t, 30.0, fps, 0.1)
@@ -1750,7 +1725,7 @@ func TestEstimateFPSFromClip(t *testing.T) {
 		}
 		// PTS span = 15000 - 3750 = 11250, frames-1 = 3
 		// fps = 3 * 90000 / 11250 = 24.0
-		fps := estimateFPSFromClip(clip)
+		fps := estimateFPSFromClip(clip).FPS
 		assert.InDelta(t, 24.0, fps, 0.1)
 	})
 
@@ -1759,18 +1734,33 @@ func TestEstimateFPSFromClip(t *testing.T) {
 			{pts: 0},
 			{pts: 900000}, // 10 seconds for 1 interval = 0.1fps
 		}
-		fps := estimateFPSFromClip(clip)
+		fps := estimateFPSFromClip(clip).FPS
 		assert.Equal(t, 10.0, fps)
 	})
+}
 
-	t.Run("clamps above 120fps", func(t *testing.T) {
-		clip := []bufferedFrame{
-			{pts: 0},
-			{pts: 100}, // absurdly small interval
-		}
-		fps := estimateFPSFromClip(clip)
-		assert.Equal(t, 120.0, fps)
-	})
+// A clip at any program rate, its PTS rounded to 90 kHz ticks and one of
+// its frames dropped, is estimated at its own rate and replayed one frame
+// period of it apart: a clip at 239.76 fps stamped 1/60 s apart plays at a
+// quarter speed.
+func TestEstimateFPSFromClipAtEveryRate(t *testing.T) {
+	for _, r := range []struct{ num, den int64 }{
+		{24000, 1001}, {24, 1}, {25, 1}, {30000, 1001}, {30, 1}, {50, 1},
+		{60000, 1001}, {60, 1}, {100, 1}, {120000, 1001}, {120, 1},
+		{240000, 1001}, {240, 1},
+	} {
+		t.Run(fmt.Sprintf("%d_%d", r.num, r.den), func(t *testing.T) {
+			var clip []bufferedFrame
+			for i := int64(0); i < 30; i++ {
+				if i != 15 {
+					clip = append(clip, bufferedFrame{pts: (i*90000*r.den + r.num/2) / r.num})
+				}
+			}
+			est := estimateFPSFromClip(clip)
+			require.InEpsilon(t, float64(r.num)/float64(r.den), est.FPS, 0.0002)
+			require.Equal(t, clock.Rate{Num: r.num, Den: r.den}, est.Rate(), "fraction of %v fps", est.FPS)
+		})
+	}
 }
 
 // verySlowMockDecoderFactory creates a decoder with 40ms delay per Decode(),
