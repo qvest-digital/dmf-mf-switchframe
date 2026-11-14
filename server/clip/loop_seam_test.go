@@ -28,10 +28,16 @@ type threadedDecoder struct {
 	cost  time.Duration
 	queue [][]byte
 	eos   bool
+	// clock, when set, takes the cost instead of the wall clock.
+	clock *scriptedClock
 }
 
 func (d *threadedDecoder) Decode(annexB []byte) ([]byte, int, int, error) {
-	time.Sleep(d.cost)
+	if d.clock != nil {
+		d.clock.advance(d.cost)
+	} else {
+		time.Sleep(d.cost)
+	}
 	d.queue = append(d.queue, []byte{annexB[len(annexB)-1]})
 	if len(d.queue) <= d.depth {
 		return nil, 0, 0, errors.New("no output frame yet (buffering)")
@@ -56,14 +62,60 @@ func (d *threadedDecoder) ReceiveFrame() ([]byte, int, int, error) {
 func (d *threadedDecoder) Flush() { d.queue, d.eos = nil, false }
 func (d *threadedDecoder) Close() {}
 
+// scriptedClock is a paceClock whose time moves only while the player
+// waits for a slot or a decoder works, so output times depend on the
+// player alone and not on how the host schedules the test.
+type scriptedClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *scriptedClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *scriptedClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+func (c *scriptedClock) wait(ctx context.Context, _ *time.Timer, d time.Duration) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	c.advance(d)
+	return false
+}
+
 // A looping clip keeps its cadence across the wrap: every picture once per
 // pass, one output period apart, audio included. Restarting the decoder at
 // the wrap held the last picture while a frame-threaded decoder refilled,
 // and left the slots of that time without audio.
 func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
+	// Not 240 fps: estimateFPSFromClipFrames caps a clip's rate at 120.
+	rates := [][2]int{
+		{24000, 1001}, {24, 1}, {25, 1}, {30000, 1001}, {30, 1}, {50, 1}, {60000, 1001}, {60, 1},
+		{120, 1},
+	}
+	for _, r := range rates {
+		t.Run(fmt.Sprintf("%d/%d", r[0], r[1]), func(t *testing.T) { loopWrapKeepsCadence(t, r[0], r[1]) })
+	}
+}
+
+// loopWrapKeepsCadence plays a 20-picture clip at num/den fps, looping, on
+// an output at the same rate, with the 48 kHz AAC frames of its length: at
+// 120 fps one spans more than two pictures.
+func loopWrapKeepsCadence(t *testing.T, num, den int) {
 	const pictures = 20
+	period := time.Second * time.Duration(den) / time.Duration(num)
 	clip := make([]BufferedFrame, pictures)
-	audio := make([]BufferedAudioFrame, pictures)
+	audio := make([]BufferedAudioFrame, (pictures*48000*den+1024*num-1)/(1024*num))
+	for i := range audio {
+		audio[i] = BufferedAudioFrame{data: []byte{byte(i)}, sampleRate: 48000, channels: 2}
+	}
 	for i := range clip {
 		// Length-prefixed NAL {0x41, i}, an IDR {0x65, 0} first: the
 		// decoder sees i as its last byte.
@@ -71,11 +123,19 @@ func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
 		if i == 0 {
 			nal = 0x65
 		}
-		clip[i] = BufferedFrame{wireData: []byte{0, 0, 0, 2, nal, byte(i)}, pts: int64(i) * 1800, isKeyframe: i == 0}
-		audio[i] = BufferedAudioFrame{data: []byte{byte(i)}, sampleRate: 48000, channels: 2}
+		pts := int64(i) * 90000 * int64(den) / int64(num)
+		clip[i] = BufferedFrame{wireData: []byte{0, 0, 0, 2, nal, byte(i)}, pts: pts, isKeyframe: i == 0}
 	}
-	dec := &threadedDecoder{depth: 4, cost: 6 * time.Millisecond}
+	// On a scripted clock, the output times depend on the player alone:
+	// a host that pauses the test delays none of them.
+	clk := &scriptedClock{t: time.Unix(0, 0)}
+	// A decode takes 0.3 of a period: 6 ms at 50 fps.
+	dec := &threadedDecoder{depth: 4, cost: period * 3 / 10, clock: clk}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
+	// Two wraps: 2.5 passes of 20 pictures.
+	const outputs = 2*pictures + pictures/2
 	var mu sync.Mutex
 	var shown []byte
 	var at []time.Time
@@ -85,15 +145,19 @@ func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
 		AudioClip:    audio,
 		Speed:        1,
 		Loop:         true,
-		OutputFPSNum: 50,
-		OutputFPSDen: 1,
+		OutputFPSNum: num,
+		OutputFPSDen: den,
 		Decoder:      dec,
 		DecodeFrame:  dec.Decode,
 		RawVideoOutput: func(yuv []byte, _, _ int, _ int64, _ bool) {
 			mu.Lock()
+			defer mu.Unlock()
+			if len(shown) == outputs {
+				cancel()
+				return
+			}
 			shown = append(shown, yuv[0])
-			at = append(at, time.Now())
-			mu.Unlock()
+			at = append(at, clk.now())
 		},
 		AudioOutput: func([]byte, int64, int, int) {
 			mu.Lock()
@@ -101,16 +165,13 @@ func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
 			mu.Unlock()
 		},
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	p.clock = clk
 	p.Start(ctx)
-	// Two wraps: 2.5 passes of 20 pictures at 50 fps.
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(shown) >= 2*pictures+pictures/2
-	}, 5*time.Second, 5*time.Millisecond)
-	cancel()
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("no two wraps in 5s")
+	}
 	p.Wait()
 
 	mu.Lock()
@@ -121,10 +182,8 @@ func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
 	// Output i is due i periods after output 0, which anchors the pacing,
 	// and comes out a decode call after that. Measured against that grid,
 	// no output is ahead of its slot or held far past it, and a wrap costs
-	// no time: each pass sits where the first one does. A pass's median
-	// offset ignores the odd output a busy host delays; a decoder refill at
-	// the wrap moves every output after it.
-	period := 20 * time.Millisecond
+	// no time: each pass sits where the first one does. A decoder refill
+	// at the wrap moves every output after it.
 	offset := make([]time.Duration, len(at))
 	for i := range at {
 		offset[i] = at[i].Sub(at[0]) - time.Duration(i)*period
@@ -137,7 +196,7 @@ func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
 		assert.Less(t, later-first, period/2, "pass %d behind the first by %v", pass, later-first)
 		assert.Greater(t, later-first, -period/2, "pass %d ahead of the first by %v", pass, first-later)
 	}
-	assert.GreaterOrEqual(t, audioOut, 2*pictures, "audio frames emitted over two passes")
+	assert.GreaterOrEqual(t, audioOut, 2*len(audio), "audio frames emitted over two passes")
 }
 
 func medianDuration(d []time.Duration) time.Duration {

@@ -160,6 +160,8 @@ type Player struct {
 	// to the decoder carries both over, so the wrap keeps the cadence.
 	paceStart time.Time
 	paceIdx   int
+	// clock is the time pacing reads and waits on; nil is the wall clock.
+	clock paceClock
 
 	// pts advances the output PTS by one output period per slot.
 	pts ptsStep
@@ -551,7 +553,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 			// calls in, and slots counted from before that would be spent
 			// already and go out back to back.
 			if p.paceIdx == 0 {
-				p.paceStart = time.Now()
+				p.paceStart = p.paceClock().now()
 			}
 			if p.outputFrame(ctx, frameData, fw, fh, srcKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, outputPTS, ptsStep, frameDuration, timer, &p.paceStart, &p.paceIdx) {
 				return true
@@ -944,7 +946,7 @@ func (p *Player) outputFrame(
 				// so pacing restarts from this one, and the PCM handed
 				// over ahead of the pause has played.
 				p.pcmResync = true
-				*playbackStart = time.Now().Add(-time.Duration(*pacingIdx) * frameDuration)
+				*playbackStart = p.paceClock().now().Add(-time.Duration(*pacingIdx) * frameDuration)
 			case <-ctx.Done():
 				return true
 			}
@@ -990,20 +992,42 @@ func (p *Player) outputFrame(
 	// Pace using absolute time to prevent drift from callback overhead. The
 	// frame just output is on screen until the next slot starts.
 	deadline := (*playbackStart).Add(time.Duration(*pacingIdx+1) * frameDuration)
-	wait := time.Until(deadline)
-	if wait > 0 {
-		timer.Reset(wait)
-		select {
-		case <-ctx.Done():
-			return true
-		case <-timer.C:
-		}
+	if wait := deadline.Sub(p.paceClock().now()); wait > 0 && p.paceClock().wait(ctx, timer, wait) {
+		return true
 	}
 
 	*outputPTS += pts.next()
 	*pacingIdx++
 
 	return false
+}
+
+// paceClock is the time a player paces its output slots by.
+type paceClock interface {
+	now() time.Time
+	// wait returns after d, on timer, or true as soon as ctx is done.
+	wait(ctx context.Context, timer *time.Timer, d time.Duration) bool
+}
+
+type wallClock struct{}
+
+func (wallClock) now() time.Time { return time.Now() }
+
+func (wallClock) wait(ctx context.Context, timer *time.Timer, d time.Duration) bool {
+	timer.Reset(d)
+	select {
+	case <-ctx.Done():
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func (p *Player) paceClock() paceClock {
+	if p.clock == nil {
+		return wallClock{}
+	}
+	return p.clock
 }
 
 // emitAudioForVideoFrame distributes audio frames proportionally across
