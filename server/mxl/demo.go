@@ -24,7 +24,7 @@ const (
 
 // DemoVideoReader generates V210 test pattern frames at a fixed frame rate.
 // Implements DiscreteReader for use with Source orchestrator in demo mode.
-// Width must be divisible by 6, height must be even.
+// Width and height must be even.
 type DemoVideoReader struct {
 	width, height int
 	colorIdx      int // base hue index (different per source)

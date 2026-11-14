@@ -57,10 +57,11 @@ func UploadV210(ctx *Context, dst *GPUFrame, v210 []byte, width, height int) err
 	if ctx == nil || ctx.mtl == nil || dst == nil {
 		return ErrGPUNotAvailable
 	}
-	// Match the CUDA UploadV210 input contract: width must be a multiple of 6
-	// (one V210 group = 6 luma pixels) and height even (4:2:0/4:2:2 chroma).
-	// Without this the shader silently leaves the trailing 1-5 luma pixels of
-	// each row unwritten and truncates the bottom row's chroma averaging.
+	// The Metal shader converts whole V210 groups of 6 luma pixels only, so
+	// width must be a multiple of 6, unlike CUDA's; height must be even
+	// (4:2:0/4:2:2 chroma). Without this the shader silently leaves the
+	// trailing 1-5 luma pixels of each row unwritten and truncates the bottom
+	// row's chroma averaging.
 	if width%6 != 0 {
 		return fmt.Errorf("gpu: V210 width %d not divisible by 6", width)
 	}

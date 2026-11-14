@@ -144,16 +144,15 @@ func V210ToYUV422P10Into(v210, out []byte, srcStride, width, height int) error {
 // YUV422P10ToV210 converts a YUV422P10LE (10-bit 4:2:2 planar) frame to
 // V210 (10-bit 4:2:2 packed) format LOSSLESSLY.
 //
-// Width must be divisible by 6 (V210 group constraint) and even (4:2:2).
-// Height must be >= 1.
+// Width must be even (4:2:2). Height must be >= 1.
 //
 // Input layout (all samples are uint16 LE):
 //   - Y plane:  w * h samples  (offset 0)
 //   - Cb plane: w/2 * h samples (offset w*h*2)
 //   - Cr plane: w/2 * h samples (offset w*h*2 + w/2*h*2)
 func YUV422P10ToV210(yuv []byte, width, height int) ([]byte, error) {
-	if width < 6 || width%6 != 0 {
-		return nil, fmt.Errorf("v210_10bit: width %d must be divisible by 6 and >= 6", width)
+	if err := v210CheckWidth(width); err != nil {
+		return nil, err
 	}
 	if height < 1 {
 		return nil, fmt.Errorf("v210_10bit: height %d must be >= 1", height)
@@ -171,8 +170,13 @@ func YUV422P10ToV210(yuv []byte, width, height int) ([]byte, error) {
 // hot path (Writer.WriteVideo10bit), so callers should reuse out across
 // frames to avoid ~5.5 MB/frame of garbage at 1080p.
 func YUV422P10ToV210Into(yuv, out []byte, width, height int) error {
-	if width < 6 || width%6 != 0 {
-		return fmt.Errorf("v210_10bit: width %d must be divisible by 6 and >= 6", width)
+	// A width that ends each row in a partial group takes a path of its
+	// own, so this one compiles as it did when no width had one.
+	if width%6 != 0 {
+		return yuv422P10ToV210PartialInto(yuv, out, width, height)
+	}
+	if width < 6 {
+		return fmt.Errorf("v210_10bit: width %d must be even and >= 2", width)
 	}
 	if height < 1 {
 		return fmt.Errorf("v210_10bit: height %d must be >= 1", height)

@@ -33,13 +33,13 @@ func V210LineStride(width int) int {
 
 // V210ToNV12 converts a GPU-resident V210 buffer to an NV12 GPUFrame.
 // v210DevPtr is a CUdeviceptr to the V210 data in VRAM.
-// width must be divisible by 6, height must be even.
+// width and height must be even.
 func V210ToNV12(ctx *Context, dst *GPUFrame, v210DevPtr uintptr, v210Stride, width, height int) error {
 	if ctx == nil || dst == nil {
 		return ErrGPUNotAvailable
 	}
-	if width%6 != 0 {
-		return fmt.Errorf("gpu: V210 width %d not divisible by 6", width)
+	if width < 2 || width%2 != 0 {
+		return fmt.Errorf("gpu: V210 width %d must be even and >= 2", width)
 	}
 	if height%2 != 0 {
 		return fmt.Errorf("gpu: V210 height %d not even", height)
@@ -60,13 +60,13 @@ func V210ToNV12(ctx *Context, dst *GPUFrame, v210DevPtr uintptr, v210Stride, wid
 
 // NV12ToV210 converts an NV12 GPUFrame to a GPU-resident V210 buffer.
 // v210DevPtr is a CUdeviceptr to the destination V210 buffer in VRAM.
-// width must be divisible by 6, height must be even.
+// width and height must be even.
 func NV12ToV210(ctx *Context, v210DevPtr uintptr, v210Stride int, src *GPUFrame, width, height int) error {
 	if ctx == nil || src == nil {
 		return ErrGPUNotAvailable
 	}
-	if width%6 != 0 {
-		return fmt.Errorf("gpu: V210 width %d not divisible by 6", width)
+	if width < 2 || width%2 != 0 {
+		return fmt.Errorf("gpu: V210 width %d must be even and >= 2", width)
 	}
 	if height%2 != 0 {
 		return fmt.Errorf("gpu: V210 height %d not even", height)

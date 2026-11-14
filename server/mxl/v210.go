@@ -20,7 +20,7 @@ func V210LineStride(width int) int {
 }
 
 // V210ToYUV420p converts a V210 (10-bit 4:2:2 packed) frame to YUV420p (8-bit 4:2:0 planar).
-// Width must be divisible by 6 and height must be even.
+// Width and height must be even.
 //
 // V210 packing (per 6 horizontal pixels = 4 x 32-bit words):
 //
@@ -52,8 +52,8 @@ func V210ToYUV420p(v210 []byte, width, height int) ([]byte, error) {
 // into a single pass that processes two rows at a time, averaging their chroma
 // values directly into the 4:2:0 output without full-frame intermediate buffers.
 func V210ToYUV420pInto(v210, out, cb422Tmp, cr422Tmp []byte, width, height int) error {
-	if width%6 != 0 {
-		return fmt.Errorf("v210: width %d is not divisible by 6", width)
+	if err := v210CheckWidth(width); err != nil {
+		return err
 	}
 	if height%2 != 0 || height < 2 {
 		return fmt.Errorf("v210: height %d must be even and >= 2", height)
@@ -65,7 +65,7 @@ func V210ToYUV420pInto(v210, out, cb422Tmp, cr422Tmp []byte, width, height int) 
 		return fmt.Errorf("v210: buffer size %d too small, need %d for %dx%d", len(v210), requiredSize, width, height)
 	}
 
-	groups := width / 6
+	groups, tail := width/6, width%6
 	ySize := width * height
 	chromaW := width / 2
 	chromaH := height / 2
@@ -102,6 +102,10 @@ func V210ToYUV420pInto(v210, out, cb422Tmp, cr422Tmp []byte, width, height int) 
 		v210asm.V210UnpackRow(&yPlane[topRow*width], &cbTop[0], &crTop[0], &v210[topRow*stride], groups)
 		// Unpack bottom row
 		v210asm.V210UnpackRow(&yPlane[botRow*width], &cbBot[0], &crBot[0], &v210[botRow*stride], groups)
+		if tail != 0 {
+			unpackV210Tail8(yPlane[topRow*width+groups*6:], cbTop[groups*3:], crTop[groups*3:], v210[topRow*stride+groups*16:], tail)
+			unpackV210Tail8(yPlane[botRow*width+groups*6:], cbBot[groups*3:], crBot[groups*3:], v210[botRow*stride+groups*16:], tail)
+		}
 
 		// Downsample: average top and bottom chroma rows → 4:2:0
 		dstCb := cbPlane[rowPair*chromaW:]
@@ -114,7 +118,7 @@ func V210ToYUV420pInto(v210, out, cb422Tmp, cr422Tmp []byte, width, height int) 
 }
 
 // YUV420pToV210 converts a YUV420p (8-bit 4:2:0 planar) frame to V210 (10-bit 4:2:2 packed).
-// Width must be divisible by 6 and height must be even.
+// Width and height must be even.
 //
 // 8-bit to 10-bit conversion: left shift by 2.
 // 4:2:0 to 4:2:2 chroma upsampling: duplicate each chroma row for the row below.
@@ -132,8 +136,8 @@ func YUV420pToV210(yuv []byte, width, height int) ([]byte, error) {
 // YUV420pToV210Into converts YUV420p to V210 writing into a caller-provided buffer.
 // out must be at least V210LineStride(width)*height bytes.
 func YUV420pToV210Into(yuv, out []byte, width, height int) error {
-	if width%6 != 0 {
-		return fmt.Errorf("v210: width %d is not divisible by 6", width)
+	if err := v210CheckWidth(width); err != nil {
+		return err
 	}
 	if height%2 != 0 || height < 2 {
 		return fmt.Errorf("v210: height %d must be even and >= 2", height)
@@ -148,7 +152,7 @@ func YUV420pToV210Into(yuv, out []byte, width, height int) error {
 		return fmt.Errorf("v210: YUV420p buffer size %d too small, need %d for %dx%d", len(yuv), requiredSize, width, height)
 	}
 
-	groups := width / 6
+	groups, tail := width/6, width%6
 	stride := V210LineStride(width)
 	outSize := stride * height
 	if len(out) < outSize {
@@ -166,6 +170,9 @@ func YUV420pToV210Into(yuv, out []byte, width, height int) error {
 			crRow := crPlane[(row/2)*chromaW:]
 			v210Row := out[row*stride:]
 			v210asm.V210PackRow(&v210Row[0], &yRow[0], &cbRow[0], &crRow[0], groups)
+			if tail != 0 {
+				packV210Tail8(v210Row[groups*16:], yRow[groups*6:], cbRow[groups*3:], crRow[groups*3:], tail)
+			}
 		}
 	}
 	bands := min(v210PackBands, height)

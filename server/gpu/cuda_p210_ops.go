@@ -262,8 +262,8 @@ func UploadV210ToP210(ctx *Context, dst *GPUFrame, v210 []byte, width, height in
 	if ctx == nil || dst == nil {
 		return ErrGPUNotAvailable
 	}
-	if width%6 != 0 {
-		return fmt.Errorf("gpu: V210 width %d not divisible by 6", width)
+	if width < 2 || width%2 != 0 {
+		return fmt.Errorf("gpu: V210 width %d must be even and >= 2", width)
 	}
 
 	v210Stride := V210LineStride(width)
@@ -312,8 +312,8 @@ func DownloadP210ToV210(ctx *Context, v210 []byte, src *GPUFrame, width, height 
 	if ctx == nil || src == nil {
 		return ErrGPUNotAvailable
 	}
-	if width%6 != 0 {
-		return fmt.Errorf("gpu: V210 width %d not divisible by 6", width)
+	if width < 2 || width%2 != 0 {
+		return fmt.Errorf("gpu: V210 width %d must be even and >= 2", width)
 	}
 
 	v210Stride := V210LineStride(width)
