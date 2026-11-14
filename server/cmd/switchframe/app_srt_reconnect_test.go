@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -113,21 +114,22 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 	}
 
 	// The mixer is read on the clock, two periods behind, as the sync loop
-	// reads it; loud records whether a read carried the source's audio. A
+	// reads it; loud is the TAI of the first sample of a read that carried
+	// the source's audio, zero for none: where the program placed it. A
 	// host that cannot keep the reads within half a second of the clock
 	// cannot run the test: catching up from further behind takes it longer
 	// than the clock moves, and the reads fall behind without end.
 	rate := clock.Rate{Num: 48000, Den: 1}
 	next := clock.TimestampToIndex(rate, clock.TAINow()) - 3*samples
-	read := func() (loud bool) {
+	read := func() (loud int64) {
 		target := clock.TimestampToIndex(rate, clock.TAINow()) - 2*samples
 		if lag := target - min(next, target); lag > 24000 {
 			t.Fatalf("mixer reads fell %d samples behind the clock, want at most 24000: host too slow", lag)
 		}
 		for ; next+samples <= target; next += samples {
 			for _, v := range m.ProduceSamples(next, samples, 0) {
-				if math.Abs(float64(v)) > 0.01 {
-					loud = true
+				if math.Abs(float64(v)) > 0.01 && loud == 0 {
+					loud = clock.IndexToTimestamp(rate, next)
 				}
 			}
 		}
@@ -136,18 +138,22 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 
 	// A connection feeds the source through the app's ingest paths; send
 	// gives it n frames of luma y with their audio, one per frame period,
-	// from source PTS srcPTS on, and returns when the program first carried
-	// the audio.
+	// from source PTS srcPTS on, and returns where the program first carried
+	// the audio. arrived is the TAI its first audio frame was ingested at,
+	// sent the TAI its first video frame was handed over at.
 	type conn struct {
-		video chan srtVideoJob
-		audio chan srtAudioJob
-		done  sync.WaitGroup
+		video   chan srtVideoJob
+		audio   chan srtAudioJob
+		done    sync.WaitGroup
+		arrived atomic.Int64
+		sent    int64
 	}
 	open := func(anchor *clock.TrackingAnchor) *conn {
 		c := &conn{video: make(chan srtVideoJob, 4), audio: make(chan srtAudioJob, 8)}
 		a.startSRTPipelineIngest(key, anchor, c.video, nil)
 		c.done.Go(func() {
 			for job := range c.audio {
+				c.arrived.CompareAndSwap(0, clock.TAINow())
 				a.ingestSRTAudio(key, anchor, job)
 			}
 		})
@@ -165,11 +171,14 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 		}
 	}
 	period := 1001 * time.Millisecond / 30
-	send := func(c *conn, n int, y byte, srcPTS int64) (heard time.Time) {
+	send := func(c *conn, n int, y byte, srcPTS int64) (heard int64) {
 		for i := range n {
 			yuv := make([]byte, w*h*3/2)
 			for j := range yuv[:w*h] {
 				yuv[j] = y
+			}
+			if c.sent == 0 {
+				c.sent = clock.TAINow()
 			}
 			select {
 			case c.video <- srtVideoJob{yuv: yuv, w: w, h: h, pts: srcPTS + int64(i)*3003}:
@@ -186,8 +195,8 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 				t.Fatalf("audio ingest took no frame for 1s at frame %d", i)
 			}
 			time.Sleep(period)
-			if read() && heard.IsZero() {
-				heard = time.Now()
+			if loud := read(); loud != 0 && heard == 0 {
+				heard = loud
 			}
 		}
 		return heard
@@ -196,7 +205,7 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 	// Connection 1: half a second of luma 50.
 	c1 := open(anchor)
 	srcPTS := int64(20 * 90000)
-	if send(c1, 15, 50, srcPTS).IsZero() {
+	if send(c1, 15, 50, srcPTS) == 0 {
 		t.Fatal("the source's audio never reached the program before the drop")
 	}
 	srcPTS += 15 * 3003
@@ -217,19 +226,19 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 		t.Fatal("the source's audio channel is off air after the reconnect")
 	}
 	c2 := open(anchor)
-	reconnected := time.Now()
 	heard := send(c2, 15, 90, srcPTS+135000)
 	hangUp(c2)
 
 	if got := sw.ProgramSource(); got != key {
 		t.Fatalf("program is %q after the new connection's frames, want %q", got, key)
 	}
-	if heard.IsZero() {
+	if heard == 0 {
 		t.Fatal("the new connection's audio never reached the program")
 	}
-	if heard.Sub(reconnected) > 400*time.Millisecond {
-		t.Fatalf("the new connection's audio reached the program %v after it started, want within 400ms",
-			heard.Sub(reconnected))
+	// Where the program placed the audio against when it arrived, both on
+	// the TAI clock: how late the test's own reads came does not count.
+	if placed := time.Duration(heard - c2.arrived.Load()); placed > 400*time.Millisecond {
+		t.Fatalf("the new connection's audio was placed %v after it arrived, want within 400ms", placed)
 	}
 	gpuSources.mu.Lock()
 	removed := gpuSources.removed
@@ -259,8 +268,10 @@ func TestSRTReconnectFreezesThroughOnProgram(t *testing.T) {
 				i, rec.luma[i])
 		}
 	}
-	if d := rec.at[first90].Sub(reconnected); d > 400*time.Millisecond {
-		t.Fatalf("the new connection's first frame reached the program %v after it was sent, want within 400ms", d)
+	// The program PTS is the tick that showed the frame, on the engine
+	// timeline: how late the sync loop or the recorder ran does not count.
+	if d := time.Duration(clock.TimestampOf(rec.pts[first90]) - c2.sent); d > 400*time.Millisecond {
+		t.Fatalf("the new connection's first frame was shown %v after it was sent, want within 400ms", d)
 	}
 	for i := 1; i < len(rec.pts); i++ {
 		if rec.pts[i] <= rec.pts[i-1] {
