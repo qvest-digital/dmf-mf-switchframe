@@ -155,7 +155,9 @@ func TestCuedPlayerReleasedEarlyReportsWaited(t *testing.T) {
 // the one before it without a gap or an overlap, across every loop, and
 // each pass of it starts within half an AAC frame of the video's pass,
 // although the clip's audio runs an AAC frame past its video. Placed by
-// these PTS, the program audio of the clip has no discontinuity.
+// these PTS, the program audio of the clip has no discontinuity. The
+// player runs on a scripted clock: a host that stalls it puts it back on
+// the clock, a move this does not test.
 func TestTimedPlayerAudioRunsOnUnbrokenAcrossLoops(t *testing.T) {
 	// 32 pictures at 50 fps are 0.64 s, 30 AAC frames at 48 kHz; the
 	// clip carries 31.
@@ -163,14 +165,11 @@ func TestTimedPlayerAudioRunsOnUnbrokenAcrossLoops(t *testing.T) {
 	rec := &cueRecorder{}
 	cfg := rec.config(frames, audio)
 	cfg.Loop = true
-	p := NewPlayer(cfg)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	p.Start(ctx)
-	defer func() { p.Stop(); p.Wait() }()
+	c := newScriptedClock(t, 2100*time.Millisecond)
+	c.run(t, NewPlayer(cfg))
 
-	require.Eventually(t, func() bool { v, _, _ := rec.snapshot(); return len(v) >= 3*32+4 }, 5*time.Second, 5*time.Millisecond)
 	v, a, _ := rec.snapshot()
+	require.GreaterOrEqual(t, len(v), 3*32+4)
 
 	for i := 1; i < len(v); i++ {
 		require.Equal(t, v[i-1].pts+1800, v[i].pts, "video frame %d", i)

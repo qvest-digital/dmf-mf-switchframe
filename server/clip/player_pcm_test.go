@@ -112,6 +112,8 @@ func TestPlayerPCMStartsOnTheFirstPicture(t *testing.T) {
 // priming: every pass is the sound from its first sample, on the first
 // picture of the pass. The AAC frames, played as they are, put the
 // priming in again at every wrap and lost the last 1024 samples to it.
+// The player runs on a scripted clock and stalls for 100 ms in its first
+// pass, which its video catches up on without leaving its sound.
 func TestPlayerPCMLoopIsGapless(t *testing.T) {
 	for _, ext := range []string{".ts", ".mp4"} {
 		t.Run(ext, func(t *testing.T) {
@@ -122,19 +124,17 @@ func TestPlayerPCMLoopIsGapless(t *testing.T) {
 				OutputFPSNum: 50, OutputFPSDen: 1, Timed: true, PCMCodec: testPCMCodec,
 			}
 			rec.wire(&cfg)
-			p := NewPlayer(cfg)
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			p.Start(ctx)
-			defer func() { p.Stop(); p.Wait() }()
+			c := newScriptedClock(t, 3500*time.Millisecond)
+			video := cfg.RawVideoOutput
+			outputs := 0
+			cfg.RawVideoOutput = func(yuv []byte, w, h int, pts int64, kf bool) {
+				video(yuv, w, h, pts, kf)
+				if outputs++; outputs == 10 {
+					c.advance(100 * time.Millisecond)
+				}
+			}
+			c.run(t, NewPlayer(cfg))
 			const passes = 3
-			require.Eventually(t, func() bool {
-				rec.mu.Lock()
-				defer rec.mu.Unlock()
-				return len(rec.firstPTS) > passes
-			}, 10*time.Second, 10*time.Millisecond)
-			p.Stop()
-			p.Wait()
 
 			got := rec.samples(t, 2)
 			rec.mu.Lock()
@@ -159,7 +159,8 @@ func TestPlayerPCMLoopIsGapless(t *testing.T) {
 // runs on without a step and the read point never reaches its end. The
 // audio was handed over an AAC frame past the next picture and moved with
 // the video, so a stall of more than two periods drained the mixer and
-// stepped the audio by the stall.
+// stepped the audio by the stall. The player runs on a scripted clock,
+// which the stall advances.
 func TestPlayerPCMRunsOnThroughAStall(t *testing.T) {
 	audio, _ := fixtureAudio(t, aacfixture.Clip{Ext: ".ts", Channels: 2, Seconds: 2})
 	for _, stall := range []time.Duration{60 * time.Millisecond, 100 * time.Millisecond} {
@@ -173,6 +174,7 @@ func TestPlayerPCMRunsOnThroughAStall(t *testing.T) {
 				OutputFPSNum: 50, OutputFPSDen: 1, Timed: true, PCMCodec: testPCMCodec,
 			}
 			rec.wire(&cfg)
+			c := newScriptedClock(t, time.Hour)
 			video, pcm := cfg.RawVideoOutput, cfg.PCMOutput
 			stalled := false
 			cfg.RawVideoOutput = func(yuv []byte, w, h int, pts int64, kf bool) {
@@ -182,7 +184,7 @@ func TestPlayerPCMRunsOnThroughAStall(t *testing.T) {
 				stalled = stalled || first
 				mu.Unlock()
 				if first {
-					time.Sleep(stall)
+					c.advance(stall)
 					mu.Lock()
 					// What the read point, two periods behind the clock,
 					// still has ahead of it.
@@ -197,6 +199,7 @@ func TestPlayerPCMRunsOnThroughAStall(t *testing.T) {
 				mu.Unlock()
 			}
 			p := NewPlayer(cfg)
+			p.clk = c
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			p.Start(ctx)

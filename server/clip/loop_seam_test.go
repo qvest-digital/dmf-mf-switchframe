@@ -26,12 +26,17 @@ import (
 type threadedDecoder struct {
 	depth int
 	cost  time.Duration
+	clk   *scriptedClock // takes the cost on it, if set
 	queue [][]byte
 	eos   bool
 }
 
 func (d *threadedDecoder) Decode(annexB []byte) ([]byte, int, int, error) {
-	time.Sleep(d.cost)
+	if d.clk != nil {
+		d.clk.advance(d.cost)
+	} else {
+		time.Sleep(d.cost)
+	}
 	d.queue = append(d.queue, []byte{annexB[len(annexB)-1]})
 	if len(d.queue) <= d.depth {
 		return nil, 0, 0, errors.New("no output frame yet (buffering)")
@@ -59,7 +64,8 @@ func (d *threadedDecoder) Close() {}
 // A looping clip keeps its cadence across the wrap: every picture once per
 // pass, one output period apart, audio included. Restarting the decoder at
 // the wrap held the last picture while a frame-threaded decoder refilled,
-// and left the slots of that time without audio.
+// and left the slots of that time without audio. The player runs on a
+// scripted clock, which a decode call advances by its cost.
 func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
 	const pictures = 20
 	clip := make([]BufferedFrame, pictures)
@@ -74,7 +80,10 @@ func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
 		clip[i] = BufferedFrame{wireData: []byte{0, 0, 0, 2, nal, byte(i)}, pts: int64(i) * 1800, isKeyframe: i == 0}
 		audio[i] = BufferedAudioFrame{data: []byte{byte(i)}, sampleRate: 48000, channels: 2}
 	}
-	dec := &threadedDecoder{depth: 4, cost: 6 * time.Millisecond}
+	// Two wraps: 2.5 passes of 20 pictures at 50 fps, and the decoder's
+	// fill before the first.
+	c := newScriptedClock(t, 1100*time.Millisecond)
+	dec := &threadedDecoder{depth: 4, cost: 6 * time.Millisecond, clk: c}
 
 	var mu sync.Mutex
 	var shown []byte
@@ -92,7 +101,7 @@ func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
 		RawVideoOutput: func(yuv []byte, _, _ int, _ int64, _ bool) {
 			mu.Lock()
 			shown = append(shown, yuv[0])
-			at = append(at, time.Now())
+			at = append(at, c.now())
 			mu.Unlock()
 		},
 		AudioOutput: func([]byte, int64, int, int) {
@@ -101,29 +110,19 @@ func TestPlayerLoopWrapKeepsCadence(t *testing.T) {
 			mu.Unlock()
 		},
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	p.Start(ctx)
-	// Two wraps: 2.5 passes of 20 pictures at 50 fps.
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(shown) >= 2*pictures+pictures/2
-	}, 5*time.Second, 5*time.Millisecond)
-	cancel()
-	p.Wait()
+	c.run(t, p)
 
 	mu.Lock()
 	defer mu.Unlock()
+	require.GreaterOrEqual(t, len(shown), 2*pictures+pictures/2)
 	for i, v := range shown[:2*pictures] {
 		require.Equal(t, byte(i%pictures), v, "picture %d of %v", i, shown)
 	}
 	// Output i is due i periods after output 0, which anchors the pacing,
 	// and comes out a decode call after that. Measured against that grid,
 	// no output is ahead of its slot or held far past it, and a wrap costs
-	// no time: each pass sits where the first one does. A pass's median
-	// offset ignores the odd output a busy host delays; a decoder refill at
-	// the wrap moves every output after it.
+	// no time: each pass sits where the first one does. A decoder refill
+	// at the wrap moves every output after it.
 	period := 20 * time.Millisecond
 	offset := make([]time.Duration, len(at))
 	for i := range at {
