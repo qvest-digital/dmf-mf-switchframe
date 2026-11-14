@@ -39,6 +39,7 @@ func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- descPlayerSpeed
 	c.m.starts.starts.Describe(ch)
 	c.m.starts.delay.Describe(ch)
+	c.m.starts.catchUps.Describe(ch)
 }
 
 // Collect implements prometheus.Collector.
@@ -48,6 +49,7 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 	c.m.starts.starts.Collect(ch)
 	c.m.starts.delay.Collect(ch)
+	c.m.starts.catchUps.Collect(ch)
 	for _, p := range c.m.PlayerStates() {
 		id := strconv.Itoa(p.ID)
 		for _, s := range playerStates {
@@ -72,10 +74,12 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 var startDelayBuckets = []float64{0.001, 0.005, 0.01, 0.02, 0.04, 0.1, 0.25, 0.5, 1, 2.5, 5}
 
 // startStats counts how clip players started and how long their first
-// frame and audio took.
+// frame and audio took, and how often a player's video caught up with its
+// audio.
 type startStats struct {
-	starts *prometheus.CounterVec
-	delay  *prometheus.HistogramVec
+	starts   *prometheus.CounterVec
+	delay    *prometheus.HistogramVec
+	catchUps *prometheus.CounterVec
 }
 
 func newStartStats() *startStats {
@@ -89,6 +93,10 @@ func newStartStats() *startStats {
 			Help:    "Time from a clip player's start to its first video frame (media=video) and its first audio (media=audio).",
 			Buckets: startDelayBuckets,
 		}, []string{"player", "media"}),
+		catchUps: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "switchframe_clip_player_catch_ups_total",
+			Help: "Times a clip player's video, decoded slower than real time, caught up with its audio: by skipping its decode to a later keyframe (how=skip), or by placing video and audio on the clock again, which steps the audio once (how=replace).",
+		}, []string{"player", "how"}),
 	}
 }
 

@@ -29,7 +29,7 @@ type threadedDecoder struct {
 	queue [][]byte
 	eos   bool
 	// clock, when set, takes the cost instead of the wall clock.
-	clock *scriptedClock
+	clock interface{ advance(time.Duration) }
 }
 
 func (d *threadedDecoder) Decode(annexB []byte) ([]byte, int, int, error) {

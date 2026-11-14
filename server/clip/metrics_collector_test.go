@@ -137,3 +137,21 @@ func (l lockedWriter) Write(b []byte) (int, error) {
 	defer l.mu.Unlock()
 	return l.w.Write(b)
 }
+
+// A player's catch-ups are counted per player and by how it caught up.
+func TestMetricsCollector_CatchUps(t *testing.T) {
+	m := NewManager(nil, ManagerConfig{OutputRate: func() (int, int) { return 50, 1 }})
+	defer m.Close()
+	m.mu.Lock()
+	p, closer, err := m.newPlayer(0, &playerSlot{clip: &Clip{}, frames: []BufferedFrame{{wireData: []byte{0}, isKeyframe: true}}}, 1, false, false)
+	m.mu.Unlock()
+	require.NoError(t, err)
+	if closer != nil {
+		defer closer()
+	}
+	p.noteCatchUp("skip")
+	p.noteCatchUp("skip")
+	p.noteCatchUp("replace")
+	f := metricstest.Series(t, NewMetricsCollector(m))
+	require.Equal(t, map[string]float64{"skip/1": 2, "replace/1": 1}, f["switchframe_clip_player_catch_ups_total"])
+}
