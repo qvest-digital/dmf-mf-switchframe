@@ -214,8 +214,11 @@ type Channel struct {
 	pcmPTSFrac int64
 
 	// transitionAudioFrom is the ID of the incoming item of a transition
-	// whose audio the transition has started to carry.
+	// whose encoded audio the transition has started to carry.
 	transitionAudioFrom string
+
+	// xfade crossfades the PCM of a transition under way.
+	xfade *transitionPCM
 
 	// Run control.
 	cancel context.CancelFunc
@@ -504,6 +507,7 @@ func (c *Channel) Start() error {
 	c.outputAudioPTSFrac = 0
 	c.audioSrcSet = false
 	c.pcmSet = false
+	c.xfade = nil
 
 	// Seed PTS from provider if available.
 	if c.ptsProvider != nil {
@@ -1252,8 +1256,18 @@ func (c *Channel) tick(now time.Time) bool {
 
 	var frame *DecodedFrame
 
+	// From the tick a transition completes on the incoming item's PCM
+	// fades in the rest of the way, and on that tick the outgoing item's
+	// fades out, read on from the outgoing clip before it is closed.
+	finishing := false
 	if decision.Transition == nil {
 		c.transitionAudioFrom = ""
+		if x := c.xfade; x != nil && decision.Item != nil && decision.Item.ID == x.incoming {
+			if !x.final {
+				c.readOutgoingTail(x)
+			}
+			finishing = true
+		}
 	}
 	if decision.Transition != nil {
 		frame = c.transitionFrame(decision.Transition)
@@ -1275,7 +1289,16 @@ func (c *Channel) tick(now time.Time) bool {
 	if frame != nil {
 		pts, frac := c.outputPTS, c.outputPTSFrac
 		c.emitFrame(frame, outputFn, audioFn, sc)
-		c.emitPCM(frame, pcmFn, pts, frac)
+		if x := c.xfade; x != nil && (x.queued || finishing) {
+			c.emitTransitionPCM(pcmFn, pts, frac, !x.queued, framePCM(frame))
+		} else {
+			if x != nil {
+				// The transition cut, as for a GPU-aliased side, or was
+				// left for another item: the audio cuts with the pictures.
+				c.dropTransitionPCM()
+			}
+			c.emitPCM(frame, pcmFn, pts, frac)
+		}
 	}
 
 	return false
@@ -1299,11 +1322,20 @@ func (c *Channel) transitionFrame(t *TransitionReq) *DecodedFrame {
 	}
 	if outFrame != nil && inFrame != nil {
 		frame := c.compositor.Blend(outFrame, inFrame, t.Progress, t.Config)
+		if frame == inFrame {
+			// A hard cut: the audio cuts with the pictures.
+			return frame
+		}
 		if hasAudio(inFrame) {
 			c.transitionAudioFrom = t.Incoming.ID
 		}
 		attachTransitionAudio(frame, outFrame, inFrame, c.transitionAudioFrom == t.Incoming.ID)
+		c.queueTransitionPCM(t, outFrame, inFrame)
 		return frame
+	}
+	if c.xfade != nil {
+		// A side without a picture this tick has no audio either.
+		c.queueTransitionPCM(t, outFrame, inFrame)
 	}
 	if inFrame != nil {
 		return inFrame
@@ -1362,20 +1394,19 @@ func (c *Channel) itemFrame(decision SchedulerDecision, secScheduler *SecondaryE
 	}
 }
 
-// attachTransitionAudio attaches audio to a blended transition frame.
-// Compositor.Blend returns a video-only frame, but both source iterators keep
-// consuming audio for every transition tick; without reattaching it here every
-// configured dissolve/dip/wipe would silently drop ALL program audio for its
-// duration (the consumed audio is permanently lost, not delayed). Encoded
-// (AAC) audio frames cannot be cross-faded, so the incoming item's audio is
-// used as soon as it is available — in the common case the outgoing clip has
-// already played out fully when the transition starts, so its audio stream is
-// finished anyway — falling back to the outgoing item's audio (e.g. a manual
-// mid-clip Next into a slate keeps the tail audio under the fade). Once the
-// incoming item has supplied audio (inStarted), a tick on which it has none
-// carries none: AAC frames do not fall on every picture, and going back to
-// the outgoing item there would alternate between two streams, each placed
-// on the timeline afresh.
+// attachTransitionAudio attaches the encoded audio of one item to a blended
+// transition frame. Compositor.Blend returns a video-only frame, but both
+// source iterators keep consuming audio for every transition tick; without
+// reattaching it here every configured dissolve/dip/wipe would silently drop
+// the encoded audio for its duration. The PCM of both items is crossfaded by
+// transitionPCM instead; the PCM attached here does not go out. Encoded (AAC)
+// frames cannot be crossfaded, so the incoming item's audio is used as soon
+// as it is available, falling back to the outgoing item's (a manual mid-clip
+// Next into a slate keeps the tail audio under the fade). Once the incoming
+// item has supplied audio (inStarted), a tick on which it has none carries
+// none: AAC frames do not fall on every picture, and going back to the
+// outgoing item there would alternate between two streams, each placed on
+// the timeline afresh.
 func attachTransitionAudio(blended, out, in *DecodedFrame, inStarted bool) {
 	if blended == nil || blended == out || blended == in {
 		// Hard-cut path (Compositor.Cut for unknown transition types) returns
