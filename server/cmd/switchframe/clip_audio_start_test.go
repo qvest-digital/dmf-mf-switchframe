@@ -169,7 +169,7 @@ func TestClipSoundStartsOnItsFirstPicture(t *testing.T) {
 				if mode == "tick" {
 					// The tick after the one running.
 					r50 := clock.Rate{Num: 50, Den: 1}
-					mgr.StartCuedAt(1, clock.IndexPTS(r50, clock.TimestampToIndex(r50, released)+1-clock.ReaderDelayGrains))
+					mgr.StartCuedAt(1, clock.IndexPTS(r50, clock.TimestampToIndex(r50, released)+1-clock.ReadDelay(r50)))
 				} else {
 					require.True(t, mgr.StartCued(1))
 				}

@@ -76,7 +76,7 @@ func (r *cueRecorder) snapshot() ([]outRec, []outRec, []string) {
 // read point of the next program tick, before that tick, so the tick
 // shows the clip's first picture and plays its first audio. Without the
 // cue the start decodes first and lands ticks later; on the arrival
-// timeline it lands ReaderDelayGrains ticks later.
+// timeline it lands the read delay later.
 func TestCuedPlayerAirsItsFirstFrameAndAudioOnTheNextTick(t *testing.T) {
 	r := clock.Rate{Num: 50, Den: 1}
 	period := clock.IndexToTimestamp(r, 1) - clock.IndexToTimestamp(r, 0)
@@ -109,9 +109,9 @@ func TestCuedPlayerAirsItsFirstFrameAndAudioOnTheNextTick(t *testing.T) {
 	assert.Equal(t, byte(0), first.id)
 	// The tick that reads the first frame: at most the one after next,
 	// and only when the next was within half a period of the release.
-	tick := clock.PTSIndex(r, first.pts) + clock.ReaderDelayGrains
+	tick := clock.PTSIndex(r, first.pts) + clock.ReadDelay(r)
 	tickAt := clock.IndexToTimestamp(r, tick)
-	assert.Equal(t, first.pts, clock.IndexPTS(r, tick-clock.ReaderDelayGrains), "the first frame is on a tick's read point")
+	assert.Equal(t, first.pts, clock.IndexPTS(r, tick-clock.ReadDelay(r)), "the first frame is on a tick's read point")
 	assert.Greater(t, tickAt, released, "the tick reading the first frame comes after the release")
 	assert.LessOrEqual(t, tickAt, first.at+period+period/2, "the first frame is read by the next tick, or the one after when the next is too close")
 	assert.Less(t, first.at, tickAt, "the first frame is there before its tick")
@@ -361,7 +361,7 @@ func TestTimelineStartLeavesHalfAPeriodBeforeTheTick(t *testing.T) {
 				got := timelineStart(r, tick-tc.before*period/64)
 				// The read point of tick want, however far behind its
 				// grain the program reads at rate r.
-				want := timelineRead(r, clock.IndexToTimestamp(r, tc.want))
+				want := clock.IndexPTS(r, tc.want-clock.ReadDelay(r))
 				assert.Equal(t, want, got)
 			})
 		}
