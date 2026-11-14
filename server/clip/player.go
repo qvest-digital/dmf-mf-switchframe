@@ -106,6 +106,12 @@ type PlayerConfig struct {
 	// picture was decoded before the start, "waited" when the start waited
 	// for it and "missed" for a player not cued.
 	OnStart func(media string, delay time.Duration, preroll string)
+
+	// OnCatchUp, on a Timed player with PCM, reports how a player whose
+	// video fell behind its audio for longer than pcmLead caught up:
+	// "skip" when it skipped its decode to a later keyframe, "replace" when
+	// it placed its video and its audio on the clock again.
+	OnCatchUp func(how string)
 }
 
 // Player plays back a pre-demuxed clip with support for pause, seek,
@@ -225,6 +231,15 @@ type Player struct {
 	audioRem       int64
 	audioPassStart int64
 	audioResync    bool
+	// dropSince is the TAI the video started dropping slots at to stay on
+	// its PCM (keepOnTimeline), 0 while it is not; catchUp asks the play
+	// loop to catch the video up once it has dropped for longer than
+	// pcmLead.
+	dropSince int64
+	catchUp   bool
+	// decodeTime is how long, in TAI nanoseconds, the last picture took
+	// to decode.
+	decodeTime int64
 
 	// PCM audio (PCMOutput). pcmBase is the PTS of the stream's first
 	// sample and pcmPut the samples handed over since; pcmFirst asks the
@@ -757,6 +772,25 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 	}
 
 	for frameIdx := startFrame; frameIdx < totalClipFrames; {
+		if p.catchUp {
+			p.catchUp, p.dropSince = false, 0
+			if k, ok := p.keyframeAhead(clip, frameIdx, *outputPTS, cad.start(pic), cad); ok {
+				// The decode goes on at keyframe k, the PTS to its slot.
+				if fd, ok := p.config.Decoder.(FlushableDecoder); ok {
+					fd.Flush()
+				}
+				for outputIdx < cad.start(k) {
+					*outputPTS += ptsStep.next()
+					outputIdx++
+				}
+				frameIdx, pic, held = k, k, 0
+				p.noteCatchUp("skip")
+				continue
+			}
+			p.replaceOnClock(outputPTS, cad.start(pic))
+			p.noteCatchUp("replace")
+		}
+
 		// Check for seek requests (non-blocking).
 		select {
 		case pos := <-p.seekCh:
@@ -1018,7 +1052,9 @@ func (p *Player) decodeClipFrame(f BufferedFrame, frameIdx int) (frameData []byt
 			}
 
 			p.decodeAttempts++
+			began := clock.TAINow()
 			decoded, dw, dh, err := p.config.DecodeFrame(decoderInput)
+			p.decodeTime = clock.TAINow() - began
 			if err == nil {
 				p.decodeSuccesses++
 				// Deep-copy: decoder may reuse its output buffer.
@@ -1100,12 +1136,31 @@ func (p *Player) outputFrame(
 	default:
 	}
 
-	if p.config.Timed {
-		p.keepOnTimeline(outputPTS)
+	drop := p.config.Timed && p.keepOnTimeline(outputPTS)
+
+	// Timed, a frame goes out once its PTS is due, so the decode of the
+	// next picture runs while this one is on screen. A running PCM is kept
+	// handed over through a wait longer than its lead, as for a keyframe a
+	// catch-up skipped to.
+	if p.config.Timed && !drop {
+		running := p.pcm != nil && !p.pcmFirst && !p.pcmResync && !p.pcmEnded
+		for left := time.Duration(clock.TimestampOf(*outputPTS) - clock.TAINow()); left > 0; {
+			wait := left
+			if running {
+				wait = min(wait, pcmLead/2)
+			}
+			if p.paceClock().wait(ctx, timer, wait) {
+				return true
+			}
+			left -= wait
+			if running {
+				p.handPCM(clock.NowPTS())
+			}
+		}
 	}
 
 	// Output decoded YUV video to switcher pipeline (only when decode succeeded).
-	if frameData != nil && p.config.RawVideoOutput != nil {
+	if frameData != nil && p.config.RawVideoOutput != nil && !drop {
 		p.config.RawVideoOutput(frameData, fw, fh, *outputPTS, srcKeyframe)
 	}
 
@@ -1114,18 +1169,9 @@ func (p *Player) outputFrame(
 		p.config.VideoOutput(wireData, *outputPTS, isKeyframe, sps, pps)
 	}
 
-	// Timed, the next frame is due at its PTS.
 	if p.config.Timed {
 		*outputPTS += pts.next()
 		*pacingIdx++
-		if wait := time.Duration(clock.TimestampOf(*outputPTS) - clock.TAINow()); wait > 0 {
-			timer.Reset(wait)
-			select {
-			case <-ctx.Done():
-				return true
-			case <-timer.C:
-			}
-		}
 		return false
 	}
 
@@ -1199,13 +1245,7 @@ func (p *Player) awaitDue(ctx context.Context, pts int64, timer *time.Timer) boo
 	if wait <= 0 {
 		return false
 	}
-	timer.Reset(wait)
-	select {
-	case <-ctx.Done():
-		return true
-	case <-timer.C:
-		return false
-	}
+	return p.paceClock().wait(ctx, timer, wait)
 }
 
 // start starts the playback on its first slot h. A cued player holds h
@@ -1336,22 +1376,99 @@ func (p *Player) noteStart(media string) {
 	p.config.OnStart(media, d, p.preroll)
 }
 
-// keepOnTimeline moves a timed player's PTS, its video and its AAC, onto
-// the clock when the frame about to go out is due more than
-// ReadDelay periods ago, as after a pause or a decoder that fell
-// behind, or more than a period ahead, as after a seek whose decode-only
-// frames advanced the PTS: the tick due to show such a frame has passed
-// or is still far off. Otherwise the PTS run on unbroken. The PCM is not
-// moved: it runs ahead of the video by itself (emitTimedPCM).
-func (p *Player) keepOnTimeline(outputPTS *int64) {
+// keepOnTimeline keeps a timed player's video on the clock when the
+// frame about to go out is due more than ReadDelay periods ago,
+// as after a pause, a stall or a decoder that fell behind, or more than a
+// period ahead, as after a seek whose decode-only frames advanced the
+// PTS: the tick due to show such a frame has passed or is still far off.
+// Otherwise the PTS run on unbroken. It reports whether the frame is
+// dropped.
+//
+// Its PCM running (emitTimedPCM), a player that fell behind drops the
+// slots whose ticks passed and stays on the timeline of its PCM, which
+// runs on by itself: moved instead, the video would play the time it
+// fell behind after its audio from then on. One ahead waits for its slot. Otherwise, and after a
+// pause, a seek or a speed change, which place the PCM on the video
+// again, the PTS, its video's and its AAC's, move onto the clock. Dropping
+// catches up only a decoder faster than real time; one that has dropped
+// for longer than pcmLead has the play loop catch it up (catchUpVideo).
+func (p *Player) keepOnTimeline(outputPTS *int64) (drop bool) {
 	period := 90000 * p.rate.Den / p.rate.Num
 	off := clock.NowPTS() - *outputPTS
 	if off <= int64(clock.ReadDelay(p.rate))*period && off >= -period {
-		return
+		p.dropSince = 0
+		return false
 	}
+	if p.pcm != nil && !p.pcmResync {
+		if off < 0 {
+			// Ahead, as after a skip to a keyframe: the frame waits for
+			// its slot.
+			p.dropSince = 0
+			return false
+		}
+		now := clock.TAINow()
+		if p.dropSince == 0 {
+			p.dropSince = now
+		} else if now-p.dropSince > int64(pcmLead) {
+			p.catchUp = true
+		}
+		return true
+	}
+	p.dropSince = 0
 	*outputPTS += off
 	p.outputAudioPTS += off
 	p.audioPassStart += off
+	return false
+}
+
+// keyframeAhead returns the first keyframe after frame from whose slot
+// is at least a period and the time a picture takes to decode ahead of
+// the clock, the slot of the picture at frame from being next, at pts,
+// so the keyframe's picture is due once it is decoded. False when the
+// pass has none.
+func (p *Player) keyframeAhead(clip []BufferedFrame, from int, pts int64, next int, cad cadence) (int, bool) {
+	period := 90000 * p.rate.Den / p.rate.Num
+	now := clock.NowPTS() + p.decodeTime*9/100_000
+	for k := from + 1; k < len(clip); k++ {
+		if !clip[k].isKeyframe {
+			continue
+		}
+		if pts+int64(cad.start(k)-next)*period >= now+period {
+			return k, true
+		}
+	}
+	return 0, false
+}
+
+// replaceOnClock places a player whose video fell behind its PCM and has
+// no keyframe left to skip to back on the clock with its PCM: the PCM
+// handed over so far plays on, the video goes on with its next slot, slot
+// of the pass, where that PCM ends, and the PCM starts again there at
+// that slot's share of the pass, which steps the audio once.
+func (p *Player) replaceOnClock(outputPTS *int64, slot int) {
+	rate := int64(p.audioRate())
+	// The PTS of the first sample not handed over, rounded up, so the
+	// video does not start on the last one handed over.
+	end := max(p.pcmBase+(p.pcmPut*90000+rate-1)/rate, clock.NowPTS())
+	off := end - *outputPTS
+	*outputPTS += off
+	p.outputAudioPTS += off
+	p.audioPassStart += off
+	// The stream goes on from the samples handed over, so its stamps run
+	// on to the sample.
+	base, put := p.pcmBase, p.pcmPut
+	if end > base+(put*90000+rate-1)/rate {
+		base, put = end, 0
+	}
+	p.startPCM(base, int64(slot)*p.pcmPass(false)/int64(max(p.totalOutputFrames, 1)))
+	p.pcmPut = put
+}
+
+// noteCatchUp reports a catch-up to OnCatchUp.
+func (p *Player) noteCatchUp(how string) {
+	if p.config.OnCatchUp != nil {
+		p.config.OnCatchUp(how)
+	}
 }
 
 // emitTimedAudio hands over a timed player's audio up to an AAC frame past
@@ -1415,12 +1532,13 @@ const pcmLead = 150 * time.Millisecond
 
 // emitTimedPCM hands over a timed player's PCM up to pcmLead past the
 // clock. pic is the pictures of the pass put out so far, of total. The
-// audio runs on by itself: a video that falls behind and is put back on
-// the clock (keepOnTimeline) leaves it where it is. At a speed other
-// than 1 none goes out; on the return to 1, after a seek or a pause, and
-// when the audio itself fell behind the read point, the stream starts
-// again at the picture's share of the pass, on until, the PTS of the
-// next video slot.
+// audio runs on by itself, and a video that falls behind drops slots to
+// stay on it (keepOnTimeline). Audio that itself fell behind the read
+// point, as after a stall longer than pcmLead, skips the samples whose
+// time passed and runs on from there, on the same timeline. At a speed
+// other than 1 none goes out; on the return to 1, after a seek or a
+// pause, the stream starts again at the picture's share of the pass, on
+// until, the PTS of the next video slot.
 func (p *Player) emitTimedPCM(speed float64, pic, total int, until int64) {
 	s := p.pcm
 	if s == nil || total == 0 {
@@ -1440,10 +1558,30 @@ func (p *Player) emitTimedPCM(speed float64, pic, total int, until int64) {
 	case p.pcmFirst:
 		p.pcmFirst, p.pcmResync = false, false
 		p.startPCM(p.pcmBase, 0)
-	case p.pcmResync, p.pcmBase+p.pcmPut*90000/rate < now-int64(clock.ReadDelay(p.rate))*period:
+	case p.pcmResync:
 		p.pcmResync = false
 		p.startPCM(until, int64(pic)*p.pcmPass(false)/int64(total))
+	default:
+		// The samples before the read point are past; the first one
+		// after it is where the stream runs on.
+		read := now - int64(clock.ReadDelay(p.rate))*period
+		for skip := ((read-p.pcmBase)*rate+89999)/90000 - p.pcmPut; skip > 0; {
+			pcm := s.Read(int(min(skip, 1024)))
+			if len(pcm) == 0 {
+				p.pcmEnded = true
+				return
+			}
+			n := int64(len(pcm) / s.Channels())
+			p.pcmPut += n
+			skip -= n
+		}
 	}
+	p.handPCM(now)
+}
+
+// handPCM hands over the running PCM up to pcmLead past now, a PTS.
+func (p *Player) handPCM(now int64) {
+	s, rate := p.pcm, int64(p.audioRate())
 	want := (now + pcmLead.Milliseconds()*90 - p.pcmBase) * rate / 90000
 	for p.pcmPut < want {
 		pcm := s.Read(int(min(want-p.pcmPut, 1024)))

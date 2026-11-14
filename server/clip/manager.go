@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -865,6 +866,10 @@ func (m *Manager) newPlayer(idx int, slot *playerSlot, speed float64, loop, cued
 		PCMCodec:  m.config.PCMCodec,
 		OnStart: func(media string, delay time.Duration, preroll string) {
 			m.noteStart(playerID, media, delay, preroll, outNum, outDen)
+		},
+		OnCatchUp: func(how string) {
+			m.starts.catchUps.WithLabelValues(strconv.Itoa(playerID), how).Inc()
+			slog.Warn("clip: video caught up with its audio", "player", playerID, "how", how)
 		},
 		OnDone: func() {
 			// Playback finished — clean up decoder (not needed for hold loop)
