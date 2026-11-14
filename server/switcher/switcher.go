@@ -647,6 +647,7 @@ type Switcher struct {
 	clockStopped     bool // set by stopClock under configMu; a replaced clock is not restarted
 	aacBuffer        *clock.AACFrameBuffer
 	syncMixer        syncMixerInterface
+	arrivalHold      atomic.Pointer[arrivalHolderRef] // the sync mixer, when it holds arrival-stamped sources
 	syncLoopWg       sync.WaitGroup
 	ticksBehind      int                             // ticks whose video the sync loop sheds; set for a tick taken after its grain ended
 	audioStamped     bool                            // sync-loop goroutine only
@@ -3033,7 +3034,8 @@ func (s *Switcher) IngestReplayVideo(sourceKey string, pf *ProcessingFrame) {
 // consumes pf. An MXL, ST 2110, SRT or playout source's producer stamps its
 // frames on the engine timeline; any other source's frame is stamped with
 // the TAI of its arrival, so every frame in the synchronizer is on one
-// timeline.
+// timeline, plus the hold the mixer places its audio with (arrivalHolder),
+// so the two stay together.
 func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 	s.health.recordFrame(sourceKey, time.Now())
 	ss := (*s.sourcesAtomic.Load())[sourceKey]
@@ -3044,6 +3046,9 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 	}
 	if !ss.mediaTimed {
 		pf.PTS = clock.NowPTS()
+		if h := s.arrivalHold.Load(); h != nil {
+			pf.PTS += h.ArrivalHold(sourceKey)
+		}
 	}
 	pf.DTS = pf.PTS
 	if pf.ArrivalNano == 0 {
