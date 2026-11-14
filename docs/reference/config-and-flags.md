@@ -234,9 +234,11 @@ switchframe --mxl-domain /run/mxl/domain \
 |---|---|---|---|
 | `--peer-engine-url` | string | `""` (env `SWITCHFRAME_PEER_ENGINE_URL`) | URL of peer engine for inter-engine health polling |
 | `--peer-public-url` | string | `""` (env `SWITCHFRAME_PEER_PUBLIC_URL`) | Peer engine origin as the browser reaches it, handed to the UI as its second engine. Empty: `--peer-engine-url`. Set when engines poll each other on an internal address |
-| `--engine-label` | string | `""` (env `SWITCHFRAME_ENGINE_LABEL`) | `"a"`, `"b"`, or `""` (single-engine). Other values rejected |
+| `--engine-label` | string | `""` (env `SWITCHFRAME_ENGINE_LABEL`) | `"a"`, `"b"`, `"pod-index"`, or `""` (single-engine). Other values rejected. `pod-index` takes the label of a StatefulSet pod's ordinal, 0 = `a` and 1 = `b`, from `SWITCHFRAME_POD_INDEX`, set from the pod's `apps.kubernetes.io/pod-index` label through the downward API. The host name is not read: with `hostNetwork` or a `hostname` in the pod spec it is not the pod's name. `SWITCHFRAME_POD_INDEX` unset, or an ordinal other than 0 or 1, fails startup |
 | `--control-plane-secret` | string | `""` (env `SWITCHFRAME_CONTROL_PLANE_SECRET`) | Shared secret authorizing `POST /api/peer/force-leader`. Empty disables endpoint |
 | `--initial-program-source` | string | `""` (env `SWITCHFRAME_INITIAL_PROGRAM_SOURCE`) | Source key put on air at start when no peer engine is on air to follow, e.g. `mxl:cam1` or `source:colorbars`. Empty, or no frames from it within 10s: the first input delivering frames, in source order. An engine whose peer is on air takes the peer's state instead, read with this engine's API token, so both engines need the same `--api-token` |
+
+With an engine label, `{engine}` and `{peer}` in a per-engine setting become this engine's label and its peer's at start, so both engines of a pair can run from one set of flags: `--peer-engine-url`, `--peer-public-url`, `--webtransport-host`, `--tls-cert`, `--tls-key`, `--mxl-output`, `--mxl-output-video-def`, `--mxl-output-audio-def`, `--mxl-nmos-host`, `--mxl-nmos-peer-output-video-def`, `--mxl-nmos-peer-output-audio-def`, `--outputs-config`, `--oidc-redirect-url` and `SWITCHFRAME_STATE_DIR`. A placeholder without an engine label fails startup. A literal `{engine}` or `{peer}` cannot be written in these settings.
 
 ### Single sign-on (OpenID Connect)
 
@@ -274,6 +276,7 @@ Most env vars are flag overrides or fallbacks. A few are low-level runtime knobs
 | `SWITCHFRAME_MXL_SOURCES` | `--mxl-sources` | Comma-separated MXL source specs |
 | `SWITCHFRAME_PEER_ENGINE_URL` | `--peer-engine-url` | Peer engine URL for active-active |
 | `SWITCHFRAME_ENGINE_LABEL` | `--engine-label` | Engine label for active-active pairs |
+| `SWITCHFRAME_POD_INDEX` | -- | StatefulSet pod ordinal `--engine-label=pod-index` reads; required with it |
 | `SWITCHFRAME_AUDIO_CHANNEL_PAIRS` | `--audio-channel-pairs` | First channel of the pair each named source feeds program at start |
 | `SWITCHFRAME_INITIAL_PROGRAM_SOURCE` | `--initial-program-source` | Source put on air at start with no peer to follow |
 
@@ -369,7 +372,7 @@ See [file-formats.md](./file-formats.md) for field-level schemas.
 
 - **Demo mode disables API auth.** `--demo` causes `initInfra` to install a no-op auth middleware. Never run `--demo` on a public-reachable address.
 - **Auto-generated API tokens print to stdout, not stderr.** The token is printed once at startup to stdout so operators can capture it without log routing capturing it. Pipe stderr but preserve stdout.
-- **`--engine-label` only accepts `""`, `"a"`, or `"b"`.** Any other value is rejected at startup. This prevents silent split-brain from typos.
+- **`--engine-label` only accepts `""`, `"a"`, `"b"`, or `"pod-index"`.** Any other value, or a pod ordinal other than 0 or 1, is rejected at startup. This prevents silent split-brain from typos.
 - **Flag precedence is flag → env → default.** An empty flag value uses the env var; a set flag wins even if the env var is also set. `resolveEnvOrFlag` encodes this.
 - **Auto-enabled in demo mode:** `--srt-listen` (`:6464`), `--playout`, `--scte35`. These are set if unset when `--demo` is true.
 - **Build tag combinations are additive.** You cannot build `cuda,darwin` simultaneously (the files are mutually exclusive). Cross-compilation paths: on macOS, build Linux binaries via a container (see the `Dockerfile` and `Dockerfile.cuda`).
