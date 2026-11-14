@@ -122,9 +122,11 @@ type Channel struct {
 	realigned bool
 	realigns  int64
 	// dry is set while the ring holds less than a read needs;
-	// underruns counts entries.
-	dry       bool
-	underruns int64
+	// underruns counts entries. shortReads counts reads that played
+	// silence for part or all of a period while the ring held audio.
+	dry        bool
+	underruns  int64
+	shortReads int64
 
 	// Reusable work buffers (hot-path allocation elimination)
 	trimBuf    []float32
@@ -483,6 +485,9 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 	case off < -tol:
 		skip = int(-off)
 		if skip >= n {
+			if have > 0 {
+				ch.shortReads++
+			}
 			return make([]float32, n*c)
 		}
 	}
@@ -495,6 +500,9 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 		out := make([]float32, n*c)
 		copy(out[skip*c:], ch.ringBuf.Pop(got*c))
 		ch.placed = false
+		if got > 0 {
+			ch.shortReads++
+		}
 		if !ch.dry {
 			ch.underruns++
 		}
@@ -505,6 +513,7 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 	if skip == 0 {
 		return ch.ringBuf.Pop(n * c)
 	}
+	ch.shortReads++
 	out := make([]float32, n*c)
 	copy(out[skip*c:], ch.ringBuf.Pop(need*c))
 	return out
@@ -869,6 +878,21 @@ func (m *Mixer) ChannelUnderruns() map[string]int64 {
 	result := make(map[string]int64, len(m.channels))
 	for key, ch := range m.channels {
 		result[key] = ch.underruns
+	}
+	return result
+}
+
+// ChannelShortReads returns, per source, how many reads played silence for
+// part or all of a period while the source had audio buffered: audio that
+// reached a read only in part, or that starts after the read point. A
+// source short on every read is one underrun and a short read per period;
+// a read that finds nothing buffered counts as an underrun only.
+func (m *Mixer) ChannelShortReads() map[string]int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]int64, len(m.channels))
+	for key, ch := range m.channels {
+		result[key] = ch.shortReads
 	}
 	return result
 }

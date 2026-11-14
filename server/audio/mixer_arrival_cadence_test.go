@@ -140,6 +140,66 @@ func TestMixer_CountsDryReads(t *testing.T) {
 	if got := m.ChannelUnderruns()["cam1"]; got != 2 {
 		t.Fatalf("underruns = %d over two stretches without audio, want 2", got)
 	}
+	if got := m.ChannelShortReads()["cam1"]; got != 0 {
+		t.Fatalf("short reads = %d over reads that found nothing, want 0: a source that stopped counts underruns only", got)
+	}
+}
+
+// Audio that starts after the read point plays silence before it: the
+// read is short whether the ring starts within the period or a period
+// or more later.
+func TestMixer_CountsReadsBeforeTheRingsAudio(t *testing.T) {
+	m := NewMixer(MixerConfig{SampleRate: 48000, Channels: 2})
+	defer func() { _ = m.Close() }()
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	pcm := make([]float32, 2*3*960)
+	start := clock.TimestampToIndex(rate48k, clock.TAINow())
+	m.IngestPCM("cam1", pcm, clock.IndexPTS(rate48k, start+1440), 2)
+	m.ProduceSamples(start, 960, 0) // all of it before the ring's audio
+	if got := m.ChannelShortReads()["cam1"]; got != 1 {
+		t.Fatalf("short reads = %d after a period before the ring's audio, want 1", got)
+	}
+	m.ProduceSamples(start+960, 960, 0) // half of it before the ring's audio
+	if got := m.ChannelShortReads()["cam1"]; got != 2 {
+		t.Fatalf("short reads = %d after a read starting before the ring's audio, want 2", got)
+	}
+	m.ProduceSamples(start+1920, 960, 0)
+	if got := m.ChannelShortReads()["cam1"]; got != 2 {
+		t.Fatalf("short reads = %d after a full read, want 2", got)
+	}
+	if got := m.ChannelUnderruns()["cam1"]; got != 0 {
+		t.Fatalf("underruns = %d, want 0", got)
+	}
+}
+
+// A source whose audio reaches each read only in part is short on every
+// read: one underrun that never ends, and a short read per period.
+func TestMixer_CountsEveryShortRead(t *testing.T) {
+	m := NewMixer(MixerConfig{SampleRate: 48000, Channels: 2})
+	defer func() { _ = m.Close() }()
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	half := make([]float32, 2*480)
+	for i := range half {
+		half[i] = 0.25
+	}
+	start := clock.TimestampToIndex(rate48k, clock.TAINow())
+	const periods = 50
+	for p := uint64(0); p < periods; p++ {
+		// Only the first half of each period has arrived when it is read.
+		m.IngestPCM("cam1", half, clock.IndexPTS(rate48k, start+p*960), 2)
+		m.ProduceSamples(start+p*960, 960, 0)
+		m.IngestPCM("cam1", half, clock.IndexPTS(rate48k, start+p*960+480), 2)
+	}
+	if got := m.ChannelUnderruns()["cam1"]; got != 1 {
+		t.Fatalf("underruns = %d, want 1", got)
+	}
+	if got := m.ChannelShortReads()["cam1"]; got != periods {
+		t.Fatalf("short reads = %d over %d short periods, want %d", got, periods, periods)
+	}
 }
 
 // A source that reconnects starts afresh: a read that finds its new

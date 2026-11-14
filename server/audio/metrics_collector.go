@@ -23,6 +23,9 @@ var (
 	descChannelUnderruns = prometheus.NewDesc("switchframe_audio_source_underruns_total",
 		"Times a read of a source's audio found less buffered than it needed and played silence for the rest: a source that stopped, or audio placed earlier than it arrived.",
 		[]string{"source"}, nil)
+	descChannelShortReads = prometheus.NewDesc("switchframe_audio_source_short_reads_total",
+		"Reads of a source's audio that played silence for part or all of a period while the source had audio buffered: audio that reached the read only in part, or that starts after the read point. A source short on every read counts one underrun and a short read per period; a read that finds nothing buffered counts as an underrun only.",
+		[]string{"source"}, nil)
 	descMixCycle = prometheus.NewDesc("switchframe_audio_mix_cycle_seconds",
 		"Time the most recent mix cycle took.", nil, nil)
 	descMaxFrameGap = prometheus.NewDesc("switchframe_audio_max_frame_gap_seconds",
@@ -51,7 +54,7 @@ func NewMetricsCollector(m *Mixer) *MetricsCollector {
 func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		descLoudness, descProgramPeak, descChannelPeak, descChannelLevel, descChannelMuted,
-		descChannelRealigns, descChannelUnderruns, descMixCycle, descMaxFrameGap, descDecodeErrors,
+		descChannelRealigns, descChannelUnderruns, descChannelShortReads, descMixCycle, descMaxFrameGap, descDecodeErrors,
 	} {
 		ch <- d
 	}
@@ -94,6 +97,9 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 	for key, n := range c.m.ChannelUnderruns() {
 		ch <- prometheus.MustNewConstMetric(descChannelUnderruns, prometheus.CounterValue, float64(n), metrics.SourceLabel(key))
+	}
+	for key, n := range c.m.ChannelShortReads() {
+		ch <- prometheus.MustNewConstMetric(descChannelShortReads, prometheus.CounterValue, float64(n), metrics.SourceLabel(key))
 	}
 	for key, n := range c.m.ChannelRealigns() {
 		ch <- prometheus.MustNewConstMetric(descChannelRealigns, prometheus.CounterValue, float64(n), metrics.SourceLabel(key))
