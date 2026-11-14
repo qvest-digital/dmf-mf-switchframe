@@ -3,6 +3,7 @@ package mxl
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,78 +36,90 @@ func (*refusingContinuousWriter) WriteSamples(uint64, [][]float32) error {
 // also through a stall of the frames it is fed, which it fills with
 // repeats: what a merge of the program flow sees is a head that moves. It
 // is not once its grains stop landing, which a reader of the flow sees as
-// a head that stands still.
+// a head that stands still. At every frame rate the engine takes, the
+// slowest's grains 42 ms apart.
 func TestWriter_AtClockFollowsTheVideoWritten(t *testing.T) {
-	rate := Rational{10, 1}
 	const maxLag = 300 * time.Millisecond
+	for _, rate := range []Rational{{24000, 1001}, {24, 1}, {25, 1}, {30000, 1001}, {30, 1}, {50, 1}, {60000, 1001}, {60, 1}, {120, 1}, {240, 1}} {
+		t.Run(fmt.Sprintf("%d/%d", rate.Numerator, rate.Denominator), func(t *testing.T) {
+			t.Parallel()
+			mock := &stoppingDiscreteWriter{}
+			w := NewWriter(WriterConfig{Width: 12, Height: 2})
+			w.SetVideoWriter(mock, rate)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			w.Start(ctx)
 
-	mock := &stoppingDiscreteWriter{}
-	w := NewWriter(WriterConfig{Width: 12, Height: 2})
-	w.SetVideoWriter(mock, rate)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
+			if err := w.AtClock(maxLag); err == nil {
+				t.Fatal("at the clock before a grain was written")
+			}
+			w.WriteVideo(frameYUV(16), 12, 2, framePTS(rate, CurrentIndex(rate)))
+			deadline := time.Now().Add(2 * time.Second)
+			for w.AtClock(maxLag) != nil {
+				if time.Now().After(deadline) {
+					t.Fatalf("not at the clock after a grain was written: %v", w.AtClock(maxLag))
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
 
-	if err := w.AtClock(maxLag); err == nil {
-		t.Fatal("at the clock before a grain was written")
-	}
-	w.WriteVideo(frameYUV(16), 12, 2, framePTS(rate, CurrentIndex(rate)))
-	deadline := time.Now().Add(2 * time.Second)
-	for w.AtClock(maxLag) != nil {
-		if time.Now().After(deadline) {
-			t.Fatalf("not at the clock after a grain was written: %v", w.AtClock(maxLag))
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+			// No frame for three times maxLag: the writer repeats the last one.
+			for end := time.Now().Add(3 * maxLag); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+				if err := w.AtClock(maxLag); err != nil {
+					t.Fatalf("a stall of the frames fed counts as a stalled writer: %v", err)
+				}
+			}
 
-	// No frame for three times maxLag: the writer repeats the last one.
-	time.Sleep(3 * maxLag)
-	if err := w.AtClock(maxLag); err != nil {
-		t.Fatalf("a stall of the frames fed counts as a stalled writer: %v", err)
-	}
-
-	mock.fail.Store(true)
-	time.Sleep(3 * maxLag)
-	if err := w.AtClock(maxLag); err == nil {
-		t.Fatal("at the clock with no grain written for three times maxLag")
+			mock.fail.Store(true)
+			time.Sleep(3 * maxLag)
+			if err := w.AtClock(maxLag); err == nil {
+				t.Fatal("at the clock with no grain written for three times maxLag")
+			}
+		})
 	}
 }
 
 // Audio counts as written up to the end of the last batch written, and
-// only once the flow took it.
+// only once the flow took it, at every sample rate a flow carries.
 func TestWriter_AtClockFollowsTheAudioWritten(t *testing.T) {
-	var now atomic.Uint64
-	saved := CurrentIndex
-	CurrentIndex = func(Rational) uint64 { return now.Load() }
-	t.Cleanup(func() { CurrentIndex = saved })
 	const maxLag = 100 * time.Millisecond
-	const batch = 1024
-	start := clock.TimestampToIndex(audioRate, clock.TAINow())
-	now.Store(start + batch)
-	pcm := make([]float32, batch*2)
+	for _, sr := range []int64{32000, 44100, 48000, 96000} {
+		t.Run(fmt.Sprint(sr), func(t *testing.T) {
+			var now atomic.Uint64
+			saved := CurrentIndex
+			CurrentIndex = func(Rational) uint64 { return now.Load() }
+			t.Cleanup(func() { CurrentIndex = saved })
+			rate := clock.Rate{Num: sr, Den: 1}
+			lag := uint64(sr / 10) // maxLag in samples
+			const batch = 1024
+			start := clock.TimestampToIndex(rate, clock.TAINow())
+			now.Store(start + batch)
+			pcm := make([]float32, batch*2)
 
-	w, _ := audioWriter(t)
-	if err := w.AtClock(maxLag); err == nil {
-		t.Fatal("at the clock before audio was written")
-	}
-	w.WriteAudio(pcm, clock.IndexPTS(audioRate, start), 48000, 2)
-	if err := w.AtClock(maxLag); err != nil {
-		t.Fatalf("not at the clock with the audio written up to it: %v", err)
-	}
-	now.Store(start + batch + 4800) // 100 ms later
-	if err := w.AtClock(maxLag); err != nil {
-		t.Fatalf("100 ms behind with maxLag 100 ms: %v", err)
-	}
-	now.Store(start + batch + 4800 + 48)
-	if err := w.AtClock(maxLag); err == nil {
-		t.Fatal("at the clock 101 ms behind with maxLag 100 ms")
-	}
+			w := NewWriter(WriterConfig{SampleRate: int(sr), Channels: 2})
+			w.SetAudioWriter(&mockContinuousWriter{}, Rational{sr, 1})
+			if err := w.AtClock(maxLag); err == nil {
+				t.Fatal("at the clock before audio was written")
+			}
+			w.WriteAudio(pcm, clock.IndexPTS(rate, start), int(sr), 2)
+			if err := w.AtClock(maxLag); err != nil {
+				t.Fatalf("not at the clock with the audio written up to it: %v", err)
+			}
+			now.Store(start + batch + lag)
+			if err := w.AtClock(maxLag); err != nil {
+				t.Fatalf("maxLag behind: %v", err)
+			}
+			now.Store(start + batch + lag + uint64(sr/1000))
+			if err := w.AtClock(maxLag); err == nil {
+				t.Fatal("at the clock 1 ms past maxLag behind")
+			}
 
-	failing := NewWriter(WriterConfig{SampleRate: 48000, Channels: 2})
-	failing.SetAudioWriter(&refusingContinuousWriter{}, Rational{48000, 1})
-	now.Store(start + batch)
-	failing.WriteAudio(pcm, clock.IndexPTS(audioRate, start), 48000, 2)
-	if err := failing.AtClock(maxLag); err == nil {
-		t.Fatal("at the clock with audio the flow refused")
+			failing := NewWriter(WriterConfig{SampleRate: int(sr), Channels: 2})
+			failing.SetAudioWriter(&refusingContinuousWriter{}, Rational{sr, 1})
+			now.Store(start + batch)
+			failing.WriteAudio(pcm, clock.IndexPTS(rate, start), int(sr), 2)
+			if err := failing.AtClock(maxLag); err == nil {
+				t.Fatal("at the clock with audio the flow refused")
+			}
+		})
 	}
 }

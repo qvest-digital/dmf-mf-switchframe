@@ -24,14 +24,47 @@ import (
 // and producing its program but for the one thing it takes away, and
 // /ready must then report not ready.
 
-// onAirApp returns an initialised engine on air on the built-in colour
-// bars, once its reference clock, rc, has ticked.
-func onAirApp(t *testing.T) (a *App, rc *clock.ReferenceClock) {
+// readyFormats are the programs the timing tests run at: every frame
+// rate the engine's formats take, from 23.976, whose ticks lie furthest
+// apart, to 60, at 1080 and 2160 lines, and 120 and 240, whose ticks lie
+// 8.3 and 4.2 ms apart.
+var readyFormats = []string{
+	"1080p23.976", "1080p24", "1080p25", "1080p29.97", "1080p30",
+	"1080p50", "1080p59.94", "1080p60", "1080p120", "1080p240",
+	"2160p25", "2160p59.94",
+}
+
+// readyFormat returns the format named: a preset, or 1080p at 120 or 240
+// frames a second.
+func readyFormat(t *testing.T, name string) switcher.PipelineFormat {
+	t.Helper()
+	if f, ok := switcher.FormatPresets[name]; ok {
+		return f
+	}
+	f := switcher.FormatPresets["1080p60"]
+	switch name {
+	case "1080p120":
+		f.FPSNum = 120
+	case "1080p240":
+		f.FPSNum = 240
+	default:
+		t.Fatalf("no format %s", name)
+	}
+	f.Name = name
+	return f
+}
+
+// onAirApp returns an initialised engine running format on air on the
+// built-in colour bars, once its reference clock, rc, has ticked.
+func onAirApp(t *testing.T, format string) (a *App, rc *clock.ReferenceClock) {
 	t.Helper()
 	sw := switcher.New(distribution.NewRelay())
 	t.Cleanup(sw.Close)
 	a = &App{sw: sw, outputMgr: output.NewManager()}
 	t.Cleanup(func() { _ = a.outputMgr.Close() })
+	if err := sw.SetPipelineFormat(readyFormat(t, format)); err != nil {
+		t.Fatal(err)
+	}
 	if err := sw.Cut(context.Background(), switcher.BuiltinSourceKeyColorbars); err != nil {
 		t.Fatal(err)
 	}
@@ -105,14 +138,28 @@ func requireNotReady(t *testing.T, got readyAnswer, reason string) {
 }
 
 func TestReady_OnAir(t *testing.T) {
-	a, _ := onAirApp(t)
-	get := startReady(t, a)
-	waitReady(t, get, http.StatusOK, 2*time.Second)
+	for _, format := range readyFormats {
+		t.Run(format, func(t *testing.T) {
+			a, _ := onAirApp(t, format)
+			get := startReady(t, a)
+			waitReady(t, get, http.StatusOK, 2*time.Second)
+		})
+	}
+}
+
+// requireStaysReady fails unless get answers 200 throughout d.
+func requireStaysReady(t *testing.T, get func() readyAnswer, d time.Duration) {
+	t.Helper()
+	for end := time.Now().Add(d); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if got := get(); got.code != http.StatusOK {
+			t.Fatalf("GET /ready = %d (%q) within %s of the stall, want 200 until readyMaxLag", got.code, got.reason, d)
+		}
+	}
 }
 
 func TestReady_NotOnAir(t *testing.T) {
 	t.Run("startup not settled", func(t *testing.T) {
-		a, _ := onAirApp(t)
+		a, _ := onAirApp(t, "1080p29.97")
 		a.startupDone.Store(false)
 		requireNotReady(t, startReady(t, a)(), "startup has not settled")
 	})
@@ -128,14 +175,23 @@ func TestReady_NotOnAir(t *testing.T) {
 		t.Cleanup(func() { readyFlag.Store(false) })
 		requireNotReady(t, startReady(t, a)(), "program clock has not ticked")
 	})
-	t.Run("clock stopped", func(t *testing.T) {
-		a, rc := onAirApp(t)
-		get := startReady(t, a)
-		waitReady(t, get, http.StatusOK, 2*time.Second)
-		rc.Stop()
-		got := waitReady(t, get, http.StatusServiceUnavailable, readyMaxLag+2*time.Second)
-		requireNotReady(t, got, "program clock has not ticked for")
-	})
+	// Ready while the clock ticks at any rate, not ready readyMaxLag after
+	// it stops.
+	for _, format := range readyFormats {
+		t.Run("clock stopped/"+format, func(t *testing.T) {
+			a, rc := onAirApp(t, format)
+			get := startReady(t, a)
+			waitReady(t, get, http.StatusOK, 2*time.Second)
+			requireStaysReady(t, get, readyMaxLag)
+			rc.Stop()
+			stopped := time.Now()
+			got := waitReady(t, get, http.StatusServiceUnavailable, readyMaxLag+2*time.Second)
+			requireNotReady(t, got, "program clock has not ticked for")
+			if since := time.Since(stopped); since < readyMaxLag/2 {
+				t.Fatalf("not ready %s after the clock stopped, before readyMaxLag", since)
+			}
+		})
+	}
 }
 
 // gatedGrainWriter takes video grains until refuse is set.
@@ -152,28 +208,35 @@ func (*gatedGrainWriter) Close() error { return nil }
 
 func TestReady_MXLWriterStalled(t *testing.T) {
 	const width, height = 12, 2
-	rate := mxl.Rational{Numerator: 25, Denominator: 1}
-	a, _ := onAirApp(t)
-	a.mxlOutput = mxl.NewOutput(mxl.OutputConfig{Width: width, Height: height, VideoRate: rate})
-	grains := &gatedGrainWriter{}
-	a.mxlOutput.StartLifecycle(context.Background(), grains, nil)
-	t.Cleanup(a.mxlOutput.Stop)
-	get := startReady(t, a)
+	for _, format := range readyFormats {
+		t.Run(format, func(t *testing.T) {
+			a, _ := onAirApp(t, format)
+			pf := a.sw.PipelineFormat()
+			rate := mxl.Rational{Numerator: int64(pf.FPSNum), Denominator: int64(pf.FPSDen)}
+			a.mxlOutput = mxl.NewOutput(mxl.OutputConfig{Width: width, Height: height, VideoRate: rate})
+			grains := &gatedGrainWriter{}
+			a.mxlOutput.StartLifecycle(context.Background(), grains, nil)
+			t.Cleanup(a.mxlOutput.Stop)
+			get := startReady(t, a)
 
-	requireNotReady(t, get(), "mxl output: program video: nothing written")
+			requireNotReady(t, get(), "mxl output: program video: nothing written")
 
-	yuv := make([]byte, width*height*3/2)
-	a.mxlOutput.Writer().WriteVideo(yuv, width, height,
-		clock.IndexPTS(clock.Rate{Num: rate.Numerator, Den: rate.Denominator}, mxl.CurrentIndex(rate)))
-	waitReady(t, get, http.StatusOK, 2*time.Second)
+			yuv := make([]byte, width*height*3/2)
+			a.mxlOutput.Writer().WriteVideo(yuv, width, height,
+				clock.IndexPTS(clock.Rate{Num: rate.Numerator, Den: rate.Denominator}, mxl.CurrentIndex(rate)))
+			waitReady(t, get, http.StatusOK, 2*time.Second)
+			// No frame fed for readyMaxLag: the writer repeats the last.
+			requireStaysReady(t, get, readyMaxLag)
 
-	grains.refuse.Store(true)
-	got := waitReady(t, get, http.StatusServiceUnavailable, readyMaxLag+2*time.Second)
-	requireNotReady(t, got, "behind the clock")
+			grains.refuse.Store(true)
+			got := waitReady(t, get, http.StatusServiceUnavailable, readyMaxLag+2*time.Second)
+			requireNotReady(t, got, "behind the clock")
+		})
+	}
 }
 
 func TestReady_DestinationNotStarted(t *testing.T) {
-	a, _ := onAirApp(t)
+	a, _ := onAirApp(t, "1080p29.97")
 	a.outputMgr.SetEngineLabel("a")
 	a.outputMgr.EnablePeerFailover()
 	err := a.outputMgr.ApplyStartup(output.StartupConfig{
@@ -214,7 +277,7 @@ func TestReady_PeerAbsentDestinationDeclared(t *testing.T) {
 	const poll, tick = 100 * time.Millisecond, 50 * time.Millisecond
 	for _, label := range []string{"a", "b"} {
 		t.Run(label, func(t *testing.T) {
-			a, _ := onAirApp(t)
+			a, _ := onAirApp(t, "1080p29.97")
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
 			p := peer.NewHealthPoller(absentPeerURL(t), peer.WithPollInterval(poll),
