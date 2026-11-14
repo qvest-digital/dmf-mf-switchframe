@@ -1447,3 +1447,185 @@ func TestScheduler_NextPressesCompleteFromIdleWait(t *testing.T) {
 	require.NoError(t, s.Next())
 	require.True(t, s.Tick(now.Add(200*time.Millisecond)).Completed)
 }
+
+func nextNowScheduler(t *testing.T, tc *TransitionConfig) *Scheduler {
+	t.Helper()
+	s := NewScheduler()
+	pl := schedPlaylist(
+		schedLiveItem("a", "cam-1"), schedLiveItem("b", "cam-2"),
+		schedLiveItem("c", "cam-3"), schedLiveItem("d", "cam-4"),
+	)
+	if tc != nil {
+		pl.DefaultTransition = *tc
+	}
+	require.NoError(t, s.LoadPlaylist(pl))
+	s.Start()
+	return s
+}
+
+// TestScheduler_NextNowDropsQueuedNexts: NextNow moves the cursor before
+// the tick and takes the item after the one on air, whatever Next presses
+// were queued.
+func TestScheduler_NextNowDropsQueuedNexts(t *testing.T) {
+	s := nextNowScheduler(t, nil)
+	now := time.Now()
+	s.Tick(now)
+
+	require.NoError(t, s.Next())
+	require.NoError(t, s.Next())
+	require.NoError(t, s.NextNow())
+	require.Equal(t, 1, s.Cursor(), "the cursor moves before the tick")
+	d := s.Tick(now.Add(time.Millisecond))
+	require.Equal(t, "b", d.Item.ID)
+	d = s.Tick(now.Add(2 * time.Millisecond))
+	require.Equal(t, "b", d.Item.ID, "a queued Next survived NextNow")
+
+	// A Next after it counts from the item it took.
+	require.NoError(t, s.Next())
+	require.Equal(t, "c", s.Tick(now.Add(3*time.Millisecond)).Item.ID)
+}
+
+// TestScheduler_NextNowTransitionsFromTheItemOnAir: the item NextNow takes
+// comes in through the playlist's transition, from the item on air.
+func TestScheduler_NextNowTransitionsFromTheItemOnAir(t *testing.T) {
+	s := nextNowScheduler(t, &TransitionConfig{Type: "dissolve", DurationMs: 500})
+	now := time.Now()
+	s.Tick(now)
+
+	require.NoError(t, s.NextNow())
+	d := s.Tick(now)
+	require.NotNil(t, d.Transition)
+	require.Equal(t, "a", d.Transition.Outgoing.ID)
+	require.Equal(t, "b", d.Transition.Incoming.ID)
+	require.Equal(t, 2, s.StatusSnapshot().Next, "the item after the one coming in airs next")
+	d = s.Tick(now.Add(501 * time.Millisecond))
+	require.Nil(t, d.Transition)
+	require.Equal(t, "b", d.Item.ID)
+	require.Equal(t, 1, s.Cursor())
+}
+
+// TestScheduler_LoadPlaylistForgetsTheItemOnAir: a playlist loaded on air
+// starts from its first item, and a Next before the first tick goes out
+// from that item, not from the index the old playlist had on air.
+func TestScheduler_LoadPlaylistForgetsTheItemOnAir(t *testing.T) {
+	s := nextNowScheduler(t, &TransitionConfig{Type: "dissolve", DurationMs: 500})
+	now := time.Now()
+	require.NoError(t, s.JumpTo("c"))
+	require.Equal(t, "c", s.Tick(now).Item.ID)
+
+	pl := schedPlaylist(schedLiveItem("w", "cam-1"), schedLiveItem("x", "cam-2"),
+		schedLiveItem("y", "cam-3"), schedLiveItem("z", "cam-4"))
+	pl.DefaultTransition = TransitionConfig{Type: "dissolve", DurationMs: 500}
+	require.NoError(t, s.LoadPlaylist(pl))
+	require.NoError(t, s.Next())
+	d := s.Tick(now.Add(time.Millisecond))
+	require.NotNil(t, d.Transition)
+	require.Equal(t, "w", d.Transition.Outgoing.ID)
+	require.Equal(t, "x", d.Transition.Incoming.ID)
+}
+
+// TestScheduler_NextNowDuringTransitionCuts: during a transition NextNow
+// takes the item after the one coming in, at once and as a cut.
+func TestScheduler_NextNowDuringTransitionCuts(t *testing.T) {
+	s := nextNowScheduler(t, &TransitionConfig{Type: "dissolve", DurationMs: 500})
+	now := time.Now()
+	s.Tick(now)
+	require.NoError(t, s.Next())
+	require.NotNil(t, s.Tick(now).Transition)
+
+	require.NoError(t, s.NextNow())
+	d := s.Tick(now.Add(100 * time.Millisecond))
+	require.Nil(t, d.Transition)
+	require.Equal(t, "c", d.Item.ID)
+	require.Equal(t, SchedPlaying, s.State())
+}
+
+// TestScheduler_NextNowAtLastItemCompletes: past the last item there is
+// nothing to take, so the playlist completes, as Next would.
+func TestScheduler_NextNowAtLastItemCompletes(t *testing.T) {
+	s := nextNowScheduler(t, nil)
+	now := time.Now()
+	s.Tick(now)
+	require.NoError(t, s.JumpTo("d"))
+	s.Tick(now)
+
+	require.NoError(t, s.NextNow())
+	require.True(t, s.Tick(now.Add(time.Millisecond)).Completed)
+}
+
+// TestScheduler_NextNowDuringIdleWait starts the item waiting for its
+// scheduled time.
+func TestScheduler_NextNowDuringIdleWait(t *testing.T) {
+	s := NewScheduler()
+	now := time.Now()
+	future := now.Add(10 * time.Second)
+	b := schedSlateItem("b", 5000)
+	b.ScheduledTime = &future
+	require.NoError(t, s.LoadPlaylist(schedPlaylist(schedSlateItem("a", 100), b)))
+	s.Start()
+	s.Tick(now)
+	require.True(t, s.Tick(now.Add(101*time.Millisecond)).IsIdle)
+
+	require.NoError(t, s.NextNow())
+	d := s.Tick(now.Add(200 * time.Millisecond))
+	require.False(t, d.IsIdle)
+	require.Equal(t, "b", d.Item.ID)
+}
+
+func TestScheduler_NextNowWhenStopped(t *testing.T) {
+	s := NewScheduler()
+	require.ErrorIs(t, s.NextNow(), ErrNotOnAir)
+}
+
+// TestScheduler_MovesBeforeATickGoOutFromTheItemOnAir: when the cursor
+// moved off the item on air before a tick, the item at the cursor has not
+// aired, so the transition to where the presses land runs from the item on
+// air, and presses that come back to it leave it playing.
+func TestScheduler_MovesBeforeATickGoOutFromTheItemOnAir(t *testing.T) {
+	cases := []struct {
+		name     string
+		from     string
+		presses  string // N = NextNow, n = Next, p = Previous, j = JumpTo b
+		outgoing string // "" = no transition
+		want     string // incoming item, or the item playing
+	}{
+		{"NextNow twice", "a", "NN", "a", "c"},
+		{"NextNow then Next", "a", "Nn", "a", "c"},
+		{"Previous then Next", "b", "pn", "", "b"},
+		{"Previous then Next twice", "b", "pnn", "b", "c"},
+		{"JumpTo then Next", "d", "jn", "d", "c"},
+		{"NextNow then JumpTo cuts", "a", "Nj", "", "b"},
+		{"NextNow twice then Previous cuts", "b", "NNp", "", "c"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := nextNowScheduler(t, &TransitionConfig{Type: "dissolve", DurationMs: 500})
+			now := time.Now()
+			require.NoError(t, s.JumpTo(tc.from))
+			require.Equal(t, tc.from, s.Tick(now).Item.ID)
+			for _, p := range tc.presses {
+				switch p {
+				case 'N':
+					require.NoError(t, s.NextNow())
+				case 'n':
+					require.NoError(t, s.Next())
+				case 'p':
+					require.NoError(t, s.Previous())
+				case 'j':
+					require.NoError(t, s.JumpTo("b"))
+				}
+			}
+			d := s.Tick(now.Add(time.Millisecond))
+			if tc.outgoing == "" {
+				require.Nil(t, d.Transition)
+				require.Equal(t, tc.want, d.Item.ID)
+				return
+			}
+			require.NotNil(t, d.Transition)
+			require.Equal(t, tc.outgoing, d.Transition.Outgoing.ID)
+			require.Equal(t, tc.want, d.Transition.Incoming.ID)
+			d = s.Tick(now.Add(502 * time.Millisecond))
+			require.Equal(t, tc.want, d.Item.ID)
+		})
+	}
+}

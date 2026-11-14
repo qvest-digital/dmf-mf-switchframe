@@ -284,6 +284,7 @@ func TestPlayoutRoutes_InvalidChannel(t *testing.T) {
 		{"POST", "/api/playout/channels/99/start"},
 		{"POST", "/api/playout/channels/99/stop"},
 		{"POST", "/api/playout/channels/99/next"},
+		{"POST", "/api/playout/channels/99/next-now"},
 		{"POST", "/api/playout/channels/99/previous"},
 		{"POST", "/api/playout/channels/99/jump"},
 		{"POST", "/api/playout/channels/99/manual"},
@@ -414,6 +415,39 @@ func TestPlayoutRoutes_NextWithoutOnAir(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// Next now moves the cursor before it answers, so the status it returns
+// already names the item it took.
+func TestPlayoutRoutes_NextNow(t *testing.T) {
+	api := setupTestPlayoutAPI(t)
+	post := func(path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+		return rec
+	}
+
+	require.Equal(t, http.StatusBadRequest, post("/api/playout/channels/1/next-now", "").Code, "not on air")
+
+	body := `{
+		"id": "pl-1",
+		"name": "Next Now",
+		"items": [
+			{"id": "item-1", "type": "live", "title": "Live 1", "source": "camera1"},
+			{"id": "item-2", "type": "live", "title": "Live 2", "source": "camera2"}
+		]
+	}`
+	require.Equal(t, http.StatusOK, post("/api/playout/channels/1/load", body).Code)
+	require.Equal(t, http.StatusOK, post("/api/playout/channels/1/start", "").Code)
+	t.Cleanup(func() { post("/api/playout/channels/1/stop", "") })
+
+	rec := post("/api/playout/channels/1/next-now", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	var st playout.ChannelStatus
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&st))
+	require.Equal(t, "item-2", st.CurrentItemID)
 }
 
 func TestPlayoutRoutes_PreviousWithoutOnAir(t *testing.T) {

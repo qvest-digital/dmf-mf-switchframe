@@ -75,7 +75,7 @@ const TIMED_PATH_PATTERNS = [
 	/^\/api\/dve\/slots\/\d+\/(on|off)$/,
 	/^\/api\/dve\/slots\/\d+$/,
 	/^\/api\/clips\/players\/\d+\/(play|pause|stop)$/,
-	/^\/api\/playout\/channels\/\d+\/(start|stop|next|previous)$/,
+	/^\/api\/playout\/channels\/\d+\/(start|stop|next|next-now|previous)$/,
 	/^\/api\/playout\/channels\/\d+\/pods\/[^/]+\/(fire|dump|hold|extend)$/,
 	/^\/api\/audio\/.+$/,
 	/^\/api\/macros\/[^/]+\/run$/,

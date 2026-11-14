@@ -4,7 +4,7 @@
 > **Read this first:** [api.md](../api.md)
 > **See also:** [playout.md](../../subsystems/playout.md) · [subsystems/playout.md](../../subsystems/playout.md)
 
-**TL;DR** Forty-seven endpoints drive the playout channel engine: channel transport (start/stop/next/previous/jump), manual vs. auto mode, playlist loading, pod boards (20 endpoints for pod CRUD and lifecycle), pod templates (CRUD), BXF import, as-run logs (query / export / reset), asset-cache inspection and eviction, health and recovery, and sample/clip/template/saved-playlist discovery. Channels are addressed as `1..N` (capped by `playout.MaxChannels`); pod IDs are strings assigned by the pod board.
+**TL;DR** Fifty endpoints drive the playout channel engine: channel transport (start/stop/next/next-now/previous/jump/end-loop), manual vs. auto mode, playlist loading, pod boards (20 endpoints for pod CRUD and lifecycle), pod templates (CRUD), BXF import, as-run logs (query / export / reset), asset-cache inspection and eviction, health and recovery, and sample/clip/template/saved-playlist discovery. Channels are addressed as `1..N` (capped by `playout.MaxChannels`); pod IDs are strings assigned by the pod board.
 
 ## Channel transport
 
@@ -51,10 +51,24 @@
 
 ---
 
+### `POST /api/playout/channels/{n}/next-now`
+
+**Purpose:** take the item after the one on air at once. The cursor moves before the response, which already names the item, and every `next` not applied yet is dropped. A further `next-now` or `next` before the tick moves one item on from there, and `previous` one item back. The next frame tick airs the item the cursor ends on through the transition configured into it, from the item on air, as an advance from it would; when the cursor ends on the item on air, that item plays on. During a transition it takes the item after the one coming in and cuts to it; in a wait for a scheduled item it starts that item; at the last item it completes the playlist.
+**Handler:** `(*API).handlePlayoutNextNow`. **Errors:** 400 (`playout.ErrNotOnAir`).
+
+---
+
 ### `POST /api/playout/channels/{n}/previous`
 
 **Purpose:** take back one `next` not applied yet; with none pending, move back one item at once.
 **Handler:** `(*API).handlePlayoutPrevious`.
+
+---
+
+### `POST /api/playout/channels/{n}/end-loop`
+
+**Purpose:** let the looping clip on air finish its current pass, then end as a clip that does not loop.
+**Handler:** `(*API).handlePlayoutEndLoop`. **Errors:** 400 (`playout.ErrNotOnAir`), 409 (`playout.ErrNotLooping`).
 
 ---
 

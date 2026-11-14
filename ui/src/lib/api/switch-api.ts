@@ -2604,6 +2604,14 @@ export function playoutNext(channelId: number): Promise<void> {
 	return post(`/api/playout/channels/${channelId}/next`, {});
 }
 
+/**
+ * Take the item after the one on air at once, dropping Next presses the
+ * channel has not applied yet.
+ */
+export function playoutNextNow(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/next-now`, {});
+}
+
 /** Let the looping clip on air finish its current pass, then move on. */
 export function playoutEndLoop(channelId: number): Promise<void> {
 	return post(`/api/playout/channels/${channelId}/end-loop`, {});

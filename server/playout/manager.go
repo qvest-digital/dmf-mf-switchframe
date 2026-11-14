@@ -301,6 +301,20 @@ func (m *Manager) Next(channelID int) error {
 	return ch.Next()
 }
 
+// NextNow moves the given channel to the item after the one on air at
+// once, dropping the Next presses not applied yet.
+func (m *Manager) NextNow(channelID int) error {
+	if err := m.validateChannelID(channelID); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	ch := m.channels[channelID-1]
+	m.mu.Unlock()
+
+	return ch.NextNow()
+}
+
 // Previous moves the given channel back to the previous playlist item.
 func (m *Manager) Previous(channelID int) error {
 	if err := m.validateChannelID(channelID); err != nil {
