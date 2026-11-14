@@ -2,6 +2,7 @@ package playout
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2174,5 +2175,38 @@ func TestFileFrameIterator_Integration_MP4BFramesKeepsAudio(t *testing.T) {
 			got = append(got, a.PTS)
 		}
 		t.Fatalf("first picture (PTS %d) audio PTS %v, want the audio from 0", iter.encodedFrames[0].pts, got)
+	}
+}
+
+// A file or a decoded clip at any program rate, its PTS rounded to 90 kHz
+// ticks and one of its frames dropped, is estimated at its own rate: one
+// at 239.76 fps taken for 120 fps is paced at half speed.
+func TestEstimateFPSAtEveryRate(t *testing.T) {
+	for _, r := range []struct{ num, den int64 }{
+		{24000, 1001}, {24, 1}, {25, 1}, {30000, 1001}, {30, 1}, {50, 1},
+		{60000, 1001}, {60, 1}, {100, 1}, {120000, 1001}, {120, 1},
+		{240000, 1001}, {240, 1},
+	} {
+		t.Run(fmt.Sprintf("%d_%d", r.num, r.den), func(t *testing.T) {
+			var encoded []encodedFrame
+			var decoded []DecodedFrame
+			for i := int64(0); i < 30; i++ {
+				if i == 15 {
+					continue
+				}
+				pts := (i*90000*r.den + r.num/2) / r.num
+				encoded = append(encoded, encodedFrame{pts: pts})
+				decoded = append(decoded, DecodedFrame{PTS: pts})
+			}
+			want := float64(r.num) / float64(r.den)
+			for name, got := range map[string]float64{
+				"encoded": estimateFPSFromEncodedFrames(encoded),
+				"decoded": estimateFPS(decoded),
+			} {
+				if math.Abs(got-want) > want/5000 {
+					t.Errorf("%s estimate = %f, want %f", name, got, want)
+				}
+			}
+		})
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/internal/video"
 )
 
@@ -2528,33 +2529,11 @@ func (c *Channel) cleanup() {
 	}
 }
 
-// estimateFPS estimates frames per second from PTS values.
+// estimateFPS estimates frames per second from PTS values (clock.EstimateRate).
 func estimateFPS(frames []DecodedFrame) float64 {
-	if len(frames) < 2 {
-		return 30.0
+	pts := make([]int64, len(frames))
+	for i, f := range frames {
+		pts[i] = f.PTS
 	}
-
-	minPTS, maxPTS := frames[0].PTS, frames[0].PTS
-	for _, f := range frames[1:] {
-		if f.PTS < minPTS {
-			minPTS = f.PTS
-		}
-		if f.PTS > maxPTS {
-			maxPTS = f.PTS
-		}
-	}
-
-	ptsSpan := maxPTS - minPTS
-	if ptsSpan <= 0 {
-		return 30.0
-	}
-
-	fps := float64(len(frames)-1) * 90000.0 / float64(ptsSpan)
-	if fps < 10 {
-		fps = 10
-	}
-	if fps > 120 {
-		fps = 120
-	}
-	return fps
+	return clock.EstimateRate(pts).FPS
 }

@@ -436,8 +436,8 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 	// Phase 2: Create NVENC encoder.
 	// ----------------------------------------------------------------
 	w, h := decoded[0].frame.Width, decoded[0].frame.Height
-	sourceFPS := estimateFPSFromClip(clip)
-	fpsNum, fpsDen := fpsToRational(sourceFPS)
+	rate := estimateFPSFromClip(clip).Rate()
+	fpsNum, fpsDen := int(rate.Num), int(rate.Den)
 	bitrate := estimateBitrate(w, h)
 
 	gpuEnc, err := gpu.NewGPUEncoder(gpuCtx, w, h, fpsNum, fpsDen, bitrate)

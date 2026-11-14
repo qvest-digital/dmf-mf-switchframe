@@ -2,7 +2,6 @@ package clip
 
 import (
 	"fmt"
-	"math"
 	"path/filepath"
 	"strings"
 
@@ -195,8 +194,8 @@ func Validate(path string) (*ProbeResult, error) {
 	}
 
 	// Estimate FPS from PTS span.
-	fps := estimateFPS(videoFrames)
-	fpsNum, fpsDen := fpsToRational(fps)
+	rate := estimateFPSFromClipFrames(videoFrames).Rate()
+	fpsNum, fpsDen := int(rate.Num), int(rate.Den)
 
 	result := &ProbeResult{
 		Codec:      codecName,
@@ -380,66 +379,6 @@ func detectCodecFromFrames(frames []BufferedFrame) bool {
 		}
 	}
 	return false
-}
-
-// estimateFPS estimates the source FPS from buffered frame PTS values.
-// This mirrors the logic in replay/player.go estimateFPSFromClip.
-func estimateFPS(frames []BufferedFrame) float64 {
-	if len(frames) < 2 {
-		return 30.0
-	}
-	// Frames may be in decode order (B-frames), so scan for min/max PTS.
-	minPTS, maxPTS := frames[0].pts, frames[0].pts
-	for _, f := range frames[1:] {
-		if f.pts < minPTS {
-			minPTS = f.pts
-		}
-		if f.pts > maxPTS {
-			maxPTS = f.pts
-		}
-	}
-	ptsSpan := maxPTS - minPTS
-	if ptsSpan <= 0 {
-		return 30.0
-	}
-	fps := float64(len(frames)-1) * 90000.0 / float64(ptsSpan)
-	if fps < 10 {
-		fps = 10
-	}
-	if fps > 120 {
-		fps = 120
-	}
-	return fps
-}
-
-// fpsToRational converts a float64 FPS to a rational fpsNum/fpsDen pair.
-// Snaps to standard broadcast rates.
-func fpsToRational(fps float64) (int, int) {
-	type rate struct {
-		num, den int
-		nominal  float64
-	}
-	standards := []rate{
-		{24000, 1001, 23.976},
-		{24, 1, 24},
-		{25, 1, 25},
-		{30000, 1001, 29.97},
-		{30, 1, 30},
-		{50, 1, 50},
-		{60000, 1001, 59.94},
-		{60, 1, 60},
-	}
-	bestNum, bestDen := 30000, 1001
-	bestDist := math.Abs(fps - 29.97)
-	for _, s := range standards {
-		d := math.Abs(fps - s.nominal)
-		if d < bestDist {
-			bestDist = d
-			bestNum = s.num
-			bestDen = s.den
-		}
-	}
-	return bestNum, bestDen
 }
 
 // ParseSPSDimensions extracts width and height from an H.264 SPS NALU.
