@@ -121,6 +121,66 @@ func TestTickAudioRangesTileTheSampleTimeline(t *testing.T) {
 	}
 }
 
+// Up to 60 fps a tick reads every input two grains behind the clock, as
+// it always has. Above, two periods are less time than video transit and
+// scheduling take, and part of what the read delay covers, AAC frames
+// delivered whole among it, is a time that does not shrink with the
+// period: a tick reads at least 40 ms behind, in the fewest grains that
+// cover it.
+func TestTicksReadTwoGrainsUpTo60FpsAnd40msAbove(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	const floor = 40 * 90 // 40 ms in 90 kHz ticks
+	for _, r := range programRates {
+		c := NewReferenceClock(int(r.Num), int(r.Den), 48000, PTSBase, true)
+		n := TimestampToIndex(r, now)
+		tk := c.tickAt(n)
+		k := uint64(1)
+		for IndexPTS(r, n-k) > tk.ReadPTS {
+			k++
+		}
+		if IndexPTS(r, n-k) != tk.ReadPTS {
+			t.Fatalf("%d/%d: read point %d is not on the grain grid", r.Num, r.Den, tk.ReadPTS)
+		}
+		lag := tk.VideoPTS - tk.ReadPTS
+		if r.Num <= 60*r.Den {
+			if k != 2 {
+				t.Errorf("%d/%d: reads %d grains behind the clock, want 2", r.Num, r.Den, k)
+			}
+			continue
+		}
+		if lag < floor {
+			t.Errorf("%d/%d: reads %d grains, %.1f ms, behind the clock, under 40 ms",
+				r.Num, r.Den, k, float64(lag)/90)
+		}
+		if k > 2 && tk.VideoPTS-IndexPTS(r, n-k+1) >= floor {
+			t.Errorf("%d/%d: reads %d grains behind the clock, where %d cover 40 ms", r.Num, r.Den, k, k-1)
+		}
+	}
+}
+
+// A settled TrackingAnchor's source may arrive up to TrackingSlack later
+// than its offset without raising it, so a tick has to read the audio of
+// such a frame on time: a tick mixes the period after its read point, so
+// audio has a period less than the read delay to arrive in. At 240 fps
+// two periods left 4.2 ms of it, under the slack, and a lateness between
+// the two ran the audio dry read after read without ever raising.
+func TestTrackingSlackIsInsideTheAudioReadBudgetAtEveryRate(t *testing.T) {
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	for _, r := range programRates {
+		programRate(t, r)
+		c := NewReferenceClock(int(r.Num), int(r.Den), 48000, PTSBase, true)
+		n := TimestampToIndex(r, now)
+		tk := c.tickAt(n)
+		period := IndexPTS(r, n+1) - tk.VideoPTS
+		if budget := tk.VideoPTS - tk.ReadPTS - period; budget <= TrackingSlack() {
+			t.Errorf("%d/%d: audio has %.1f ms to arrive in, under the %.1f ms TrackingSlack",
+				r.Num, r.Den, float64(budget)/90, float64(TrackingSlack())/90)
+		}
+	}
+}
+
 // A tick that starts late but still within its own grain is delivered: only
 // a grain that has passed completely is dropped. Rounding the current time
 // to the nearest grain dropped every tick that woke more than half a frame
@@ -236,25 +296,33 @@ func TestTrackingAnchorPlacesABacklogNoFurtherThanAHoldAhead(t *testing.T) {
 	}
 }
 
+// senderPTS is the 90 kHz timestamp of frame i of a sender at rate r
+// whose clock runs ppm fast (negative: slow).
+func senderPTS(r Rate, i, ppm int64) int64 {
+	return 1_000_000 + roundDiv(i*90000*r.Den*(1_000_000+ppm), r.Num*1_000_000)
+}
+
 // A source whose sender clock runs fast is followed: its timestamps stay
 // within TrackingHistory windows' drift of their arrival rather than
-// running ahead without bound.
+// running ahead without bound, at any frame rate.
 func TestTrackingAnchorFollowsAFastSender(t *testing.T) {
-	now := int64(1_798_000_000_000_000_000)
-	fixedTAI(t, &now)
-	var a TrackingAnchor
-	const ppm = 1000
-	src := int64(1_000_000)
-	for i := 0; i < 360*50; i++ { // 6 minutes of 20 ms frames
-		now += 20_000_000
-		src += 1800 + 1800*ppm/1_000_000
-		ahead := a.PTS(src) - PTS(now)
-		if ahead < 0 {
-			t.Fatalf("frame %d placed %d ticks before it arrived", i, -ahead)
-		}
-		// The drift over the settle and history windows at 1000 ppm: 64 ms.
-		if ahead > (TrackingSettle+TrackingHistory)*TrackingWindow*ppm/1_000_000+1 {
-			t.Fatalf("frame %d placed %d ticks after it arrived: the anchor does not follow the sender", i, ahead)
+	for _, r := range programRates {
+		now := int64(1_798_000_000_000_000_000)
+		fixedTAI(t, &now)
+		start := now
+		var a TrackingAnchor
+		const ppm = 1000
+		for i := int64(1); i <= 360*r.Num/r.Den; i++ { // 6 minutes
+			now = start + IndexToTimestamp(r, uint64(i))
+			ahead := a.PTS(senderPTS(r, i, ppm)) - PTS(now)
+			if ahead < 0 {
+				t.Fatalf("%d/%d: frame %d placed %d ticks before it arrived", r.Num, r.Den, i, -ahead)
+			}
+			// The drift over the settle and history windows at 1000 ppm: 64 ms.
+			if ahead > (TrackingSettle+TrackingHistory)*TrackingWindow*ppm/1_000_000+1 {
+				t.Fatalf("%d/%d: frame %d placed %d ticks after it arrived: the anchor does not follow the sender",
+					r.Num, r.Den, i, ahead)
+			}
 		}
 	}
 }
@@ -263,22 +331,24 @@ func TestTrackingAnchorFollowsAFastSender(t *testing.T) {
 // Once settled, the anchor raises its offset each time two windows in a
 // row arrived more than TrackingSlack later than it, so no frame is placed
 // after its arrival nor more than that and two windows' drift before it,
-// however long the drift runs.
+// however long the drift runs, at any frame rate.
 func TestTrackingAnchorFollowsASlowSender(t *testing.T) {
-	now := int64(1_798_000_000_000_000_000)
-	fixedTAI(t, &now)
-	var a TrackingAnchor
-	const ppm = 1000
-	src := int64(1_000_000)
-	for i := 0; i < 360*50; i++ { // 6 minutes of 20 ms frames
-		now += 20_000_000
-		src += 1800 - 1800*ppm/1_000_000
-		if ahead := a.PTS(src) - PTS(now); ahead > 0 || ahead < -(TrackingSlack()+2*TrackingWindow*ppm/1_000_000+1) {
-			t.Fatalf("frame %d placed %d ticks off its arrival", i, ahead)
+	for _, r := range programRates {
+		programRate(t, r)
+		now := int64(1_798_000_000_000_000_000)
+		fixedTAI(t, &now)
+		start := now
+		var a TrackingAnchor
+		const ppm = -1000
+		for i := int64(1); i <= 360*r.Num/r.Den; i++ { // 6 minutes
+			now = start + IndexToTimestamp(r, uint64(i))
+			if ahead := a.PTS(senderPTS(r, i, ppm)) - PTS(now); ahead > 0 || ahead < -(TrackingSlack()-2*TrackingWindow*ppm/1_000_000+1) {
+				t.Fatalf("%d/%d: frame %d placed %d ticks off its arrival", r.Num, r.Den, i, ahead)
+			}
 		}
-	}
-	if a.Moves() != 0 {
-		t.Fatalf("%d moves for a source that drifted 0.36 s and never jumped", a.Moves())
+		if a.Moves() != 0 {
+			t.Fatalf("%d/%d: %d moves for a source that drifted 0.36 s and never jumped", r.Num, r.Den, a.Moves())
+		}
 	}
 }
 
@@ -328,31 +398,16 @@ func TestTrackingAnchorMovesOnlyOnALastingLateness(t *testing.T) {
 	}
 }
 
-// programRates are the program frame rates the timing tests run at: every
-// preset rate from 23.976 to 60 fps, and 120 and 240 fps, which a custom
-// format can set.
-var programRates = []Rate{
-	{24000, 1001}, {24, 1}, {25, 1}, {30000, 1001}, {30, 1},
-	{50, 1}, {60000, 1001}, {60, 1}, {120, 1}, {240, 1},
-}
-
-// programRate has the ticks read at r for the test's duration.
-func programRate(t *testing.T, r Rate) {
-	t.Helper()
-	lag, period := readLag.Load(), programPeriod.Load()
-	SetProgramRate(r)
-	t.Cleanup(func() { readLag.Store(lag); programPeriod.Store(period) })
-}
-
 // A settled source whose frames arrive later than its offset for good,
-// by less than a program period, is read on time where it is, its audio
+// by less than its slack, is read on time where it is, its audio
 // included. A raise would move its video that much later and leave its
 // audio, which the mixer realigns only past a period, so the two would
-// sit apart until the offset came down a minute later. A lateness past a
-// period would have its audio run dry at reads, so two windows of it
-// raise the offset, once. Both hold at every program rate; a slack fixed
-// in time would have to be under the 4.2 ms period at 240 fps, and would
-// then raise for a lateness under the period at every slower rate.
+// sit apart until the offset came down a minute later. A lateness past
+// the audio budget, ReadDelay-1 periods, a period up to 60 fps, would
+// have its audio run dry at reads, so two windows of it raise the offset,
+// once. Both hold at every program rate; a slack fixed in time would have
+// to be under the 4.2 ms period at 240 fps read two periods behind, and
+// would then raise for a lateness under the period at every slower rate.
 func TestTrackingAnchorRaisesOnlyPastAnAudioPeriod(t *testing.T) {
 	for _, r := range programRates {
 		t.Run(fmt.Sprintf("%d/%d", r.Num, r.Den), func(t *testing.T) {
@@ -374,8 +429,9 @@ func TestTrackingAnchorRaisesOnlyPastAnAudioPeriod(t *testing.T) {
 				frame(0)
 			}
 			settled := a.Stats()
+			// Past the audio budget, ReadDelay-1 periods, audio runs dry.
 			period := ProgramPeriod()
-			under, over := period-TrackingDriftMargin-10, period+10
+			under, over := TrackingSlack()-10, (int64(ProgramReadDelay())-1)*period+10
 			for range 5 * perWindow {
 				frame(under)
 			}
@@ -393,13 +449,16 @@ func TestTrackingAnchorRaisesOnlyPastAnAudioPeriod(t *testing.T) {
 }
 
 // The slack is a program period less TrackingDriftMargin at the read
-// delay of two periods, at every program rate: audio is read for the
-// period after the read point. With a longer read delay, video's half of
-// it is the lesser bound.
+// delay of two periods, every rate up to 60 fps: audio is read for the
+// period after the read point. Above, the read delay is longer, and
+// video's half of it is the lesser bound.
 func TestTrackingSlackFollowsTheProgramPeriodAndReadDelay(t *testing.T) {
-	want := map[Rate]int64{ // period - TrackingDriftMargin, in ticks
+	// Up to 60 fps a period less TrackingDriftMargin; above, the read
+	// delay is longer and video's half of it is the lesser bound.
+	want := map[Rate]int64{
 		{24000, 1001}: 3664, {24, 1}: 3660, {25, 1}: 3510, {30000, 1001}: 2913, {30, 1}: 2910,
-		{50, 1}: 1710, {60000, 1001}: 1412, {60, 1}: 1410, {120, 1}: 660, {240, 1}: 285,
+		{50, 1}: 1710, {60000, 1001}: 1412, {60, 1}: 1410, {100, 1}: 1710, {120000, 1001}: 1787,
+		{120, 1}: 1785, {240000, 1001}: 1790, {240, 1}: 1785,
 	}
 	for _, r := range programRates {
 		t.Run(fmt.Sprintf("%d/%d", r.Num, r.Den), func(t *testing.T) {
@@ -452,7 +511,7 @@ func TestTrackingAnchorReportsEachMoveOnce(t *testing.T) {
 			if reports != 1 {
 				t.Fatalf("%d reports after the settle, want 1", reports)
 			}
-			late := ProgramPeriod() - TrackingDriftMargin/2 // past the slack, under a period
+			late := TrackingSlack() + TrackingDriftMargin/2 // past the slack, inside the audio budget
 			frames(3*perWindow, late)
 			if s := a.Stats(); s.Raises != 1 || reports != 2 {
 				t.Fatalf("after three windows %d ticks late: %+v, %d reports, want 1 raise and 2 reports", late, s, reports)

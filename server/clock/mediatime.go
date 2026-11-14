@@ -49,14 +49,41 @@ func IndexToTimestamp(r Rate, i uint64) int64 {
 // consumers take a zero PTS for "none yet".
 const PTSBase = 90000
 
-// ReaderDelayGrains is how far behind the clock every input is read, in
+// ReaderDelayGrains is the least delay every input is read with, in
 // program frame periods: a tick at TAI t takes the newest frame of each
-// source whose media time is at or before t - ReaderDelayGrains frames.
+// source whose media time is at or before t - ReadDelay(rate) frames.
 // It is the budget for a producer committing a grain up to its period
 // late, mirror transit to this node and the mirror's grain pacing. A
 // grain that arrives later than that is shown one tick late, so the
 // choice of frame does not flip between two grains from tick to tick.
 const ReaderDelayGrains = 2
+
+// ReadDelayFloor is the least time behind the clock every input is read
+// above 60 fps. Part of what the read delay covers does not shrink with
+// the period: mirror transit and scheduling, the 10 ms batches an MXL
+// audio producer commits, and the 21.3 ms AAC frames a source without a
+// media clock delivers whole. A tick mixes the audio of the period after
+// its read point, so a source's audio has one period less than the delay
+// to arrive in: two periods leave 10 ms of it at 100 fps and 4.2 ms at
+// 240, where an AAC source arriving on its own cadence runs dry until the
+// delay is 4 periods at 100 and 120 fps and 7 at 240.
+const ReadDelayFloor = 40 * time.Millisecond
+
+// readDelayFloorFrom is the frame rate above which ReadDelayFloor applies.
+// Up to it two periods are 33.3 ms or more, the delay the program has
+// always been read with.
+var readDelayFloorFrom = Rate{Num: 60, Den: 1}
+
+// ReadDelay returns how many program frame periods behind the clock a
+// tick at rate r reads: ReaderDelayGrains up to 60 fps, and above it as
+// many as ReadDelayFloor takes, never fewer.
+func ReadDelay(r Rate) uint64 {
+	if r.Num <= 0 || r.Den <= 0 || r.Num*readDelayFloorFrom.Den <= readDelayFloorFrom.Num*r.Den {
+		return ReaderDelayGrains
+	}
+	unit := int64(time.Second) * r.Den
+	return max(ReaderDelayGrains, uint64((int64(ReadDelayFloor)*r.Num+unit-1)/unit))
+}
 
 var (
 	taiNowMu sync.RWMutex
@@ -237,10 +264,10 @@ const TrackingSettle = 3
 
 // TrackingSlack returns how much later than its offset a settled
 // TrackingAnchor's source may arrive without raising it, in 90 kHz ticks,
-// at the program rate the ticks read at. Until a program rate is set, the
-// period is the shortest a hold is kept for.
+// at the program rate and read delay the ticks read at. Until a program
+// rate is set, the period is the shortest a hold is kept for.
 func TrackingSlack() int64 {
-	return trackingSlack(programPeriodOr(), ReaderDelayGrains)
+	return trackingSlack(programPeriodOr(), int64(ProgramReadDelay()))
 }
 
 // programPeriodOr is ProgramPeriod, or the shortest period a hold is kept

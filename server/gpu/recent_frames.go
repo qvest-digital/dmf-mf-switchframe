@@ -10,7 +10,7 @@ type refCounted interface {
 
 // recentFrames is a source's last published frames, oldest first, each
 // under the PTS a tick looks it up by and with a reference of its own. The
-// program is read behind a source's newest frame (clock.ReaderDelayGrains),
+// program is read behind a source's newest frame (clock.ReadDelay),
 // so the frame a tick shows is usually one of these rather than the newest.
 // A source placed ahead of its arrival, such as an SRT stream by its
 // clock.TrackingAnchor, is read further behind its newest frame, and the

@@ -16,12 +16,12 @@ type Tick struct {
 	AudioStart    uint64        // first sample index of this period: I(Ra, T(Rv, Index))
 	AudioSamples  int           // I(Ra, T(Rv, Index+1)) - AudioStart
 	AudioPTS      int64         // 90 kHz PTS of sample AudioStart
-	ReadSample    uint64        // sample index of the read point: I(Ra, T(Rv, Index-ReaderDelayGrains))
+	ReadSample    uint64        // sample index of the read point: I(Ra, T(Rv, Index-ReadDelay(Rv)))
 	FrameDuration time.Duration // nominal frame duration (for overload detection)
 }
 
 // ReferenceClock produces one tick per program frame. In realtime mode the
-// ticks are the grains of the program rate on TAI (ReaderDelayGrains
+// ticks are the grains of the program rate on TAI (ReadDelay grains
 // behind is what each tick reads); otherwise they are produced on demand
 // from index 0, for deterministic tests.
 //
@@ -35,6 +35,7 @@ type Tick struct {
 // tick taken after its grain ended and keeps its audio).
 type ReferenceClock struct {
 	rate         Rate
+	delay        uint64 // grains behind its own a tick reads (ReadDelay)
 	sampleRate   Rate
 	basePTS      int64
 	tickCount    atomic.Int64
@@ -55,6 +56,7 @@ type ReferenceClock struct {
 func NewReferenceClock(fpsNum, fpsDen, sampleRate int, basePTS int64, realtime bool) *ReferenceClock {
 	c := &ReferenceClock{
 		rate:       Rate{int64(fpsNum), int64(fpsDen)},
+		delay:      ReadDelay(Rate{int64(fpsNum), int64(fpsDen)}),
 		sampleRate: Rate{int64(sampleRate), 1},
 		basePTS:    basePTS,
 		stop:       make(chan struct{}),
@@ -89,15 +91,15 @@ func (c *ReferenceClock) tickAt(n uint64) Tick {
 }
 
 // timestamps returns the TAI of grain n, of grain n+1 and of the grain the
-// tick reads, n - ReaderDelayGrains. Non-realtime timestamps are offset so
-// that index 0 is time 0 and the read grain of the first ticks exists.
+// tick reads, n - c.delay. Non-realtime timestamps are offset so that
+// index 0 is time 0 and the read grain of the first ticks exists.
 func (c *ReferenceClock) timestamps(n uint64) (ts, next, read int64) {
 	if c.realtime {
 		return IndexToTimestamp(c.rate, n), IndexToTimestamp(c.rate, n+1),
-			IndexToTimestamp(c.rate, n-ReaderDelayGrains)
+			IndexToTimestamp(c.rate, n-c.delay)
 	}
-	off := IndexToTimestamp(c.rate, ReaderDelayGrains)
-	s := n + ReaderDelayGrains
+	off := IndexToTimestamp(c.rate, c.delay)
+	s := n + c.delay
 	return IndexToTimestamp(c.rate, s) - off, IndexToTimestamp(c.rate, s+1) - off,
 		IndexToTimestamp(c.rate, n) - off
 }

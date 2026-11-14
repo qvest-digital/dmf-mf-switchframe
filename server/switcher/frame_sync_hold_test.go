@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/zsiec/switchframe/server/clock"
@@ -82,5 +83,57 @@ func TestFrameSyncKeepsTheFramesAnAnchoredSRTSourceHolds(t *testing.T) {
 	if empty > 0 || skipped > 0 || ss.overflows.Load() > 0 {
 		t.Fatalf("%d ticks found no frame due and %d showed one, skipping %d; %d dropped by a full ring",
 			empty, shown, skipped, ss.overflows.Load())
+	}
+}
+
+// A source at the program rate that its TrackingAnchor places a whole hold
+// after its arrival, the most it places any frame, has every frame waiting
+// from then until a tick reads it: about 131 frames at 240 fps. Each tick
+// shows the next one, none skipped and none dropped by a full ring, at any
+// program rate. A hold kept for 120 fps at most let the ring keep 76 of
+// them at 240 fps.
+func TestFrameSyncKeepsAWholeHoldAtEveryRate(t *testing.T) {
+	for _, r := range []clock.Rate{
+		{Num: 24000, Den: 1001}, {Num: 25, Den: 1}, {Num: 30000, Den: 1001}, {Num: 50, Den: 1},
+		{Num: 60000, Den: 1001}, {Num: 60, Den: 1}, {Num: 100, Den: 1}, {Num: 120000, Den: 1001},
+		{Num: 120, Den: 1}, {Num: 240000, Den: 1001}, {Num: 240, Den: 1},
+	} {
+		t.Run(fmt.Sprintf("%d/%d", r.Num, r.Den), func(t *testing.T) {
+			now := clock.TAINow()
+			clock.Epoch()
+			clock.SetTAISource(func() int64 { return now })
+			t.Cleanup(func() { clock.SetTAISource(nil) })
+			clock.SetProgramRate(r)
+			t.Cleanup(func() { clock.SetProgramRate(clock.Rate{Num: 50, Den: 1}) })
+
+			fs := NewFrameSynchronizer()
+			fs.AddSource("srt:cam")
+			ss := fs.source("srt:cam")
+			first := clock.TimestampToIndex(r, clock.TAINow()) + 1
+			delay := clock.ReadDelay(r)
+			var last int64
+			shown := 0
+			for i := uint64(0); i < 3*uint64(r.Num/r.Den); i++ {
+				n := first + i
+				now = clock.IndexToTimestamp(r, n)
+				fs.IngestRawVideo("srt:cam", &ProcessingFrame{PTS: clock.NowPTS() + clock.MaxSourceHold})
+				ss.mu.Lock()
+				pf := ss.popAt(clock.IndexPTS(r, n-delay))
+				ss.mu.Unlock()
+				if pf == nil {
+					continue
+				}
+				if shown > 0 {
+					if step := pf.PTS - last; step > clock.IndexPTS(r, n)-clock.IndexPTS(r, n-1)+1 {
+						t.Fatalf("tick %d showed a frame %d ticks after the last one shown: frames were skipped", i, step)
+					}
+				}
+				last = pf.PTS
+				shown++
+			}
+			if shown == 0 || ss.overflows.Load() > 0 {
+				t.Fatalf("%d frames shown, %d dropped by a full ring", shown, ss.overflows.Load())
+			}
+		})
 	}
 }

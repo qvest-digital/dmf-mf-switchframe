@@ -72,7 +72,7 @@ func (s *Switcher) tickNow() {
 	pf := s.pipelineFormat.Load()
 	r := clock.Rate{Num: int64(pf.FPSNum), Den: int64(pf.FPSDen)}
 	read := clock.TimestampToIndex(r, clock.TAINow()) + 1
-	n := read + clock.ReaderDelayGrains
+	n := read + clock.ReadDelay(r)
 	s.processVideoTick(clock.Tick{
 		Index:         n,
 		VideoPTS:      clock.IndexPTS(r, n),
