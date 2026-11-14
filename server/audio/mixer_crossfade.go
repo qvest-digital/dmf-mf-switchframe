@@ -214,6 +214,12 @@ func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMo
 	m.cutTotalFrames = 0
 	m.cutSpans = nil
 	m.mixStarts = nil
+	// A fade from black unmutes the program in the same step that starts
+	// it from silence: unmuted on its own first, a period produced in
+	// between would air every channel at full gain.
+	if mode == FadeIn {
+		m.setProgramMuteLocked(false)
+	}
 
 	// Activate the incoming source's channel, placed again at the next
 	// read as on a cut.

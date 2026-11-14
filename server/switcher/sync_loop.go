@@ -110,6 +110,12 @@ func (s *Switcher) processTick(tick clock.Tick) {
 	// One snapshot of what is on program serves the whole tick, so its
 	// audio and its video agree on it.
 	hs := s.hotState.Load()
+	// A cut this snapshot shows for the first time reaches the mixer
+	// before the tick's audio, so its crossfade starts on this tick, and
+	// before a source the cut puts on air starts on it.
+	if pc := hs.programCut; pc != nil {
+		pc.take()
+	}
 	s.noteProgramTick(hs, tick)
 
 	// A transition advances before the tick's audio is produced, so the
@@ -138,11 +144,9 @@ func (s *Switcher) processTick(tick clock.Tick) {
 // noteProgramTick calls the SetOnProgramTick callback with the sources hs
 // shows as program that the tick before did not.
 //
-// Cut publishes hotState before it hands the cut to the mixer, outside
-// configMu, so the first tick that shows the source cut to can run before
-// the mixer has taken the cut. The source starts on that tick all the
-// same; whether the mixer airs it on that tick is up to Cut's ordering,
-// not to this call. StartTransition hands the mix to the mixer first.
+// processTick hands a cut to the mixer before this call, so the mixer airs
+// the source cut to from the same tick it starts on. StartTransition hands
+// the mix to the mixer before it publishes it.
 func (s *Switcher) noteProgramTick(hs *hotState, tick clock.Tick) {
 	shown := [2]string{hs.programSource}
 	if hs.state.isInTransition() && hs.transEngine != nil {
@@ -914,6 +918,8 @@ func (s *Switcher) stopClock() {
 	rc.Stop()
 	s.syncLoopWg.Wait()
 	s.syncLoopRunning.Store(false)
+	// A cut no tick took any more still reaches the mixer.
+	s.takeProgramCut()
 }
 
 // restartClockAt replaces a realtime clock whose rate is not the pipeline's.

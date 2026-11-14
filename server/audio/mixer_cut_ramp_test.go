@@ -571,7 +571,6 @@ var gainScenarios = []gainScenario{
 			r.periods(1)
 			r.cut("a", "b")
 			r.periods(1)
-			r.m.SetProgramMute(false)
 			r.transition(FadeIn, "b", "", 8, 8)
 			r.calls(r.m.OnTransitionComplete)
 		},

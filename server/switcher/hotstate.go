@@ -1,6 +1,9 @@
 package switcher
 
 import (
+	"sync"
+	"sync/atomic"
+
 	"math"
 
 	"github.com/zsiec/switchframe/server/transition"
@@ -19,6 +22,53 @@ type hotState struct {
 	transTypeOrig        string
 	transitionMaxForward float64
 	transEngine          *transition.Engine
+	// programCut is the last cut made while the sync loop runs. The tick
+	// whose snapshot first carries it hands it to the mixer, before its
+	// audio, so the cut's crossfade starts on the first tick that shows
+	// the cut.
+	programCut *programCut
+}
+
+// programCut is a cut for the mixer: the source that aired before it, the
+// source it puts on program, and the transitions it aborted, whose audio
+// is released after it.
+type programCut struct {
+	from, to string
+	handler  audioCutHandler
+	aborts   []transitionAbort
+	// once hands the cut over exactly once, to whoever comes first: the
+	// tick, a transition starting, the clock stopping, or a later cut
+	// that takes it over. Whoever comes second waits until the hand-over
+	// is complete.
+	once  sync.Once
+	taken atomic.Bool // set once the cut is with the mixer or taken over
+}
+
+// take hands the cut to the mixer, unless that has happened already, and
+// returns once the mixer has it.
+func (pc *programCut) take() {
+	pc.once.Do(func() {
+		pc.apply()
+		pc.taken.Store(true)
+	})
+}
+
+// claim takes the cut over for a later cut, which hands it to the mixer
+// in its place. It reports false when the cut is with the mixer already.
+func (pc *programCut) claim() bool {
+	claimed := false
+	pc.once.Do(func() {
+		claimed = true
+		pc.taken.Store(true)
+	})
+	return claimed
+}
+
+// transitionAbort is an aborted transition's audio, released with the
+// token its OnTransitionStart returned.
+type transitionAbort struct {
+	handler audioTransitionHandler
+	token   uint64
 }
 
 // updateHotState publishes a new hotState snapshot via copy-on-write. The

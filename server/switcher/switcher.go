@@ -2224,6 +2224,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		if tt == transition.Dip {
 			audioMode = audio.DipToSilence
 		}
+		s.takeProgramCut()
 		audioToken = audioHandler.OnTransitionStart(fromSource, sourceKey, audioMode, durationMs)
 
 		// Pass stinger audio to mixer for additive overlay
@@ -2416,7 +2417,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		audioHandler := s.audioHandlers.Load().audioTransition
 		var ftbRevAudioToken uint64
 		if audioHandler != nil {
-			audioHandler.SetProgramMute(false)
+			s.takeProgramCut()
 			ftbRevAudioToken = audioHandler.OnTransitionStart(fromSource, "", audio.FadeIn, ftbRevDurMs)
 		}
 
@@ -2491,6 +2492,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	audioHandler := s.audioHandlers.Load().audioTransition
 	var ftbFwdAudioToken uint64
 	if audioHandler != nil {
+		s.takeProgramCut()
 		ftbFwdAudioToken = audioHandler.OnTransitionStart(fromSource, "", audio.FadeOut, ftbFwdDurMs)
 	}
 
@@ -3247,13 +3249,37 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		}
 		newPreview := s.previewSource
 		newState := s.state
+		audioCut = s.audioCut
+		// While the sync loop runs, the cut reaches the mixer through the
+		// snapshot that puts it on program, so the tick that first shows
+		// it starts its crossfade. Handed over from here, it would land
+		// at any point of a tick: amid the tick's audio it starts one
+		// step on, and before the audio of a tick still showing the old
+		// source it airs a period early.
+		// Decided under configMu, which stopClock sets clockStopped under
+		// before it takes the cut no tick took: a cut published here is
+		// either taken by a tick or by stopClock.
+		var pc *programCut
+		if s.syncLoopRunning.Load() && !s.clockStopped && audioCut != nil {
+			pc = &programCut{from: oldProgram, to: sourceKey, handler: audioCut}
+			if prev := s.hotState.Load().programCut; prev != nil && prev.claim() {
+				pc.from = prev.from
+				pc.aborts = prev.aborts
+			}
+			if abortEngine != nil && abortAudioHandler != nil {
+				pc.aborts = append(slices.Clip(pc.aborts), transitionAbort{abortAudioHandler, abortAudioToken})
+			}
+			audioCut, abortAudioHandler = nil, nil
+		}
 		s.updateHotState(func(hs *hotState) {
 			hs.state = newState
 			hs.transEngine = nil
 			hs.programSource = sourceKey
 			hs.previewSource = newPreview
+			if pc != nil {
+				hs.programCut = pc
+			}
 		})
-		audioCut = s.audioCut
 		s.seq.Add(1)
 		snapshot = s.buildStateLocked()
 		changed = true
@@ -3280,24 +3306,42 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 			dveComp.AutoDissolveSource(sourceKey)
 		}
 
-		// Notify mixer of program change (AFV + crossfade) outside the lock.
+		// Without the sync loop, notify the mixer of the program change
+		// (AFV + crossfade) here, outside the lock.
 		if audioCut != nil {
-			if oldProgram != "" {
-				audioCut.OnCut(oldProgram, sourceKey)
+			pc := &programCut{from: oldProgram, to: sourceKey, handler: audioCut}
+			if abortEngine != nil && abortAudioHandler != nil {
+				pc.aborts = []transitionAbort{{abortAudioHandler, abortAudioToken}}
 			}
-			audioCut.OnProgramChange(sourceKey)
-		}
-		// The aborted transition's audio is released after the cut: the
-		// cut's crossfade takes over from the gains the transition left,
-		// and the abort, stale then, leaves it alone. Released first, it
-		// would put the program back on the old source at full gain for
-		// any period produced before the cut.
-		if abortEngine != nil && abortAudioHandler != nil {
-			abortAudioHandler.OnTransitionAbort(abortAudioToken)
+			pc.apply()
 		}
 		s.notifyStateChange(snapshot)
 	}
 	return nil
+}
+
+// takeProgramCut hands a cut no tick has taken yet to the mixer at once,
+// or waits for the tick handing it over to finish, so a transition that
+// starts on it finds the mixer past the cut.
+func (s *Switcher) takeProgramCut() {
+	if pc := s.hotState.Load().programCut; pc != nil {
+		pc.take()
+	}
+}
+
+// apply hands the cut to the mixer. The aborted transitions' audio is
+// released after the cut: the cut's crossfade takes over from the gains
+// they left, and the aborts, stale then, leave it alone. Released first,
+// they would put the program back on the old source at full gain for any
+// period produced before the cut.
+func (pc *programCut) apply() {
+	if pc.from != "" && pc.from != pc.to {
+		pc.handler.OnCut(pc.from, pc.to)
+	}
+	pc.handler.OnProgramChange(pc.to)
+	for _, a := range pc.aborts {
+		a.handler.OnTransitionAbort(a.token)
+	}
 }
 
 // SetPreview sets the preview source. This does not affect the program output.

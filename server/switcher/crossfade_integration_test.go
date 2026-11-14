@@ -59,6 +59,7 @@ func TestIntegration_DissolveAudioMatchesVideo(t *testing.T) {
 
 	// Cut to cam1 to establish the program source.
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	waitCutTaken(t, sw)
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
 
 	// Verify initial state: cam1 active, no transition crossfade.
@@ -154,6 +155,7 @@ func TestIntegration_CutCrossfadeDuration(t *testing.T) {
 
 	// Cut to cam1.
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	waitCutTaken(t, sw)
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
 
 	// Before the second cut, verify no transition crossfade.
@@ -163,6 +165,7 @@ func TestIntegration_CutCrossfadeDuration(t *testing.T) {
 	// Cut to cam2: this triggers OnCut (a cut crossfade of a few ticks),
 	// NOT OnTransitionStart (multi-frame dissolve crossfade).
 	require.NoError(t, sw.Cut(context.Background(), "cam2"))
+	waitCutTaken(t, sw)
 	require.True(t, mixer.IsInTransitionCrossfade(), "a cut starts a cut crossfade")
 
 	// The sync loop advances the cut crossfade once per tick; it completes
@@ -311,6 +314,16 @@ func TestIntegration_DissolveAudioPositionMonotonic(t *testing.T) {
 func driveProgramAudio(sw *Switcher, m *audio.Mixer, encode func([]float32) ([]byte, error)) {
 	sw.SetSyncMixer(m)
 	sw.SetAACBuffer(clock.NewAACFrameBuffer(2, 48000, encode))
+}
+
+// waitCutTaken waits for the sync loop to hand the last cut to the mixer,
+// which it does on the first tick that shows the cut.
+func waitCutTaken(t *testing.T, sw *Switcher) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		pc := sw.hotState.Load().programCut
+		return pc == nil || pc.taken.Load()
+	}, 10*sw.pipelineFormat.Load().FrameDuration(), time.Millisecond, "no tick took the cut within ten frame periods")
 }
 
 // fdkEncode returns the Encode of an FDK AAC encoder closed at test end.
