@@ -81,8 +81,8 @@ func v210ToYUV422P10SIMD(v210 []byte, srcStride, width, height int) ([]byte, err
 // yuv422P10ToV210SIMD converts YUV422P10LE to V210 using SIMD-accelerated row kernels.
 // Output is bit-identical to YUV422P10ToV210 (the Go reference implementation).
 func yuv422P10ToV210SIMD(yuv []byte, width, height int) ([]byte, error) {
-	if width < 6 || width%6 != 0 {
-		return nil, fmt.Errorf("v210_10bit: width %d must be divisible by 6 and >= 6", width)
+	if err := v210CheckWidth(width); err != nil {
+		return nil, err
 	}
 	if height < 1 {
 		return nil, fmt.Errorf("v210_10bit: height %d must be >= 1", height)
@@ -100,7 +100,7 @@ func yuv422P10ToV210SIMD(yuv []byte, width, height int) ([]byte, error) {
 
 	stride := V210LineStride(width)
 	out := make([]byte, stride*height)
-	groups := width / 6
+	groups, tail := width/6, width%6
 
 	// Create uint16 slice views directly over the input byte buffer.
 	yPlane := unsafe.Slice((*uint16)(unsafe.Pointer(&yuv[0])), ySize)
@@ -113,6 +113,9 @@ func yuv422P10ToV210SIMD(yuv []byte, width, height int) ([]byte, error) {
 		v210Row := out[row*stride:]
 
 		v210PackRow10(v210Row, yPlane[yOff:], cbPlane[cOff:], crPlane[cOff:], groups)
+		if tail != 0 {
+			packV210Tail10(v210Row[groups*16:], yPlane[yOff+groups*6:], cbPlane[cOff+groups*3:], crPlane[cOff+groups*3:], tail)
+		}
 	}
 
 	return out, nil

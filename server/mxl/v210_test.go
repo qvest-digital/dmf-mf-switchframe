@@ -330,15 +330,15 @@ func TestYUV420pToV210_RoundTrip(t *testing.T) {
 }
 
 func TestV210ToYUV420p_InvalidWidth(t *testing.T) {
-	// Width not divisible by 6 should return an error
+	// v210 is 4:2:2: an odd width has no chroma sample for its last pixel.
 	_, err := V210ToYUV420p(make([]byte, 1024), 7, 2)
 	if err == nil {
-		t.Fatal("expected error for width not divisible by 6, got nil")
+		t.Fatal("expected error for odd width 7, got nil")
 	}
 
 	_, err = V210ToYUV420p(make([]byte, 1024), 1921, 2)
 	if err == nil {
-		t.Fatal("expected error for width 1921 (not divisible by 6), got nil")
+		t.Fatal("expected error for odd width 1921, got nil")
 	}
 }
 
@@ -405,7 +405,7 @@ func TestV210ToYUV420p_1080p(t *testing.T) {
 func TestYUV420pToV210_InvalidWidth(t *testing.T) {
 	_, err := YUV420pToV210(make([]byte, 1024), 7, 2)
 	if err == nil {
-		t.Fatal("expected error for width not divisible by 6, got nil")
+		t.Fatal("expected error for odd width 7, got nil")
 	}
 }
 

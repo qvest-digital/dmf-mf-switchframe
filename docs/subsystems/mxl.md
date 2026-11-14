@@ -169,7 +169,7 @@ flowchart TB
 ## Gotchas and invariants
 
 - The `mxl` build tag is required for the real implementation. Without it, `NewInstance` and all open calls return `ErrMXLNotAvailable`. Error-check at startup and fall through to a non-MXL ingest path rather than panicking.
-- V210 width must be divisible by 6. V210 packs 6 pixels into 16 bytes; non-multiple-of-6 widths don't round-trip. The pack/unpack routines return an explicit error. Pipeline format selection should enforce this at configuration time.
+- V210 width must be even. V210 packs 6 pixels into 16 bytes and pads each line to 128 bytes, so a width that is not a multiple of 6, such as 1280, ends each line in a partial group whose unused samples are zero. The CPU converters and the CUDA kernels carry it; the Metal shaders take whole groups only and return an error for any other width.
 - Reader timeouts are load-bearing. The audio 5 ms timeout is NOT a latency budget — it's a cgo-thread-yield budget. Raising it starves concurrent flow readers. The video 100 ms timeout is a latency budget; increasing it delays `ctx.Done()` response by up to that much.
 - `Writer.videoTickLoop` publishes at exactly one grain per tick. Do NOT call `WriteVideo` from multiple goroutines expecting all calls to land in MXL — only the latest wins between ticks. The pipeline deliberately produces at-most-one frame per tick so this is never an issue.
 - Audio `WriteSamples` indices must be monotonic. The writer clamps `index` to `lastAudioIndex + samplesPerCh` to prevent overlap, but a caller providing indices going backwards still confuses readers. `CurrentIndex(rate)` is the right source.

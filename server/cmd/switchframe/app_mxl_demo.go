@@ -23,7 +23,7 @@ import (
 // path: RawVideoSink→YUV420p→V210.
 func (a *App) startMXLDemo(ctx context.Context) func() {
 	const (
-		// 360 is divisible by 6 (V210 requirement), 240 is even (YUV420p requirement).
+		// Both even, as V210 (4:2:2) and YUV420p need.
 		width  = 360
 		height = 240
 	)

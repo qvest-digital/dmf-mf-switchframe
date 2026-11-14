@@ -277,11 +277,6 @@ func TestYUV422P10ToV210_WidthValidation(t *testing.T) {
 		t.Fatal("should reject odd width")
 	}
 
-	// Width not divisible by 6 (required for V210)
-	_, err = YUV422P10ToV210(make([]byte, 10000), 8, 1)
-	if err == nil {
-		t.Fatal("should reject width not divisible by 6")
-	}
 }
 
 func TestYUV422P10ToV210_HeightValidation(t *testing.T) {

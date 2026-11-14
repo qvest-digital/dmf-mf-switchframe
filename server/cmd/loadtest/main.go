@@ -231,8 +231,8 @@ func parseResolution(s string) (int, int, error) {
 	if err != nil {
 		return 0, 0, fmt.Errorf("resolution height %q: %w", parts[1], err)
 	}
-	if w <= 0 || h <= 0 || w%6 != 0 || h%2 != 0 {
-		return 0, 0, fmt.Errorf("resolution %dx%d invalid: width must be positive multiple of 6, height must be positive and even", w, h)
+	if w <= 0 || h <= 0 || w%2 != 0 || h%2 != 0 {
+		return 0, 0, fmt.Errorf("resolution %dx%d invalid: width and height must be positive and even", w, h)
 	}
 	return w, h, nil
 }

@@ -9,6 +9,109 @@
 // 10-bit to 8-bit: >> 2
 // 4:2:2 to NV12: process two rows at a time, average chroma vertically
 
+// A row whose width is not a multiple of six ends in a partial group of 2
+// or 4 pixels. It still takes four words; the samples of the pixels past
+// the width are zero (the layout ffmpeg's v210 encoder writes). The thread
+// past the whole groups handles it, so the threads of the whole groups run
+// the code they always ran. The packing kernels run one thread per group
+// of the padded line, and the threads past the partial group write zeros,
+// so the line padding never carries what the buffer held before. The
+// helpers are host-callable too, so their layout can be checked without a
+// GPU.
+
+__host__ __device__ __forceinline__ void v210_unpack_group(
+    const uint32_t* __restrict__ g, uint32_t ys[6], uint32_t cbs[3], uint32_t crs[3])
+{
+    uint32_t w0 = g[0], w1 = g[1], w2 = g[2], w3 = g[3];
+    ys[0] = (w0 >> 10) & 0x3FF; ys[1] = w1 & 0x3FF; ys[2] = (w1 >> 20) & 0x3FF;
+    ys[3] = (w2 >> 10) & 0x3FF; ys[4] = w3 & 0x3FF; ys[5] = (w3 >> 20) & 0x3FF;
+    cbs[0] = w0 & 0x3FF; cbs[1] = (w1 >> 10) & 0x3FF; cbs[2] = (w2 >> 20) & 0x3FF;
+    crs[0] = (w0 >> 20) & 0x3FF; crs[1] = w2 & 0x3FF; crs[2] = (w3 >> 10) & 0x3FF;
+}
+
+__host__ __device__ __forceinline__ void v210_pack_group(
+    uint32_t* __restrict__ g, const uint32_t ys[6], const uint32_t cbs[3], const uint32_t crs[3])
+{
+    g[0] = (cbs[0] & 0x3FF) | ((ys[0] & 0x3FF) << 10) | ((crs[0] & 0x3FF) << 20);
+    g[1] = (ys[1]  & 0x3FF) | ((cbs[1] & 0x3FF) << 10) | ((ys[2] & 0x3FF) << 20);
+    g[2] = (crs[1] & 0x3FF) | ((ys[3]  & 0x3FF) << 10) | ((cbs[2] & 0x3FF) << 20);
+    g[3] = (ys[4]  & 0x3FF) | ((crs[2] & 0x3FF) << 10) | ((ys[5] & 0x3FF) << 20);
+}
+
+// Partial group of a V210 row -> NV12, as v210_to_nv12_kernel does for a
+// whole group: 8-bit by >> 2, chroma averaged with the next row on even rows.
+__host__ __device__ void v210_to_nv12_tail(
+    uint8_t* __restrict__ nv12, const uint32_t* __restrict__ v210,
+    int height, int nv12Pitch, int v210Stride32, int y, int groupX, int n)
+{
+    uint32_t ys[6], cbs[3], crs[3];
+    v210_unpack_group(v210 + y * v210Stride32 + groupX * 4, ys, cbs, crs);
+    int px = groupX * 6;
+    for (int i = 0; i < n; i++)
+        nv12[y * nv12Pitch + px + i] = (uint8_t)(ys[i] >> 2);
+    if ((y & 1) == 0 && y + 1 < height) {
+        uint32_t nys[6], ncbs[3], ncrs[3];
+        v210_unpack_group(v210 + (y + 1) * v210Stride32 + groupX * 4, nys, ncbs, ncrs);
+        int uv = nv12Pitch * height + (y / 2) * nv12Pitch + groupX * 3 * 2;
+        for (int i = 0; i < n / 2; i++) {
+            nv12[uv + 2 * i]     = (uint8_t)(((int)(cbs[i] >> 2) + (int)(ncbs[i] >> 2) + 1) >> 1);
+            nv12[uv + 2 * i + 1] = (uint8_t)(((int)(crs[i] >> 2) + (int)(ncrs[i] >> 2) + 1) >> 1);
+        }
+    }
+}
+
+// Partial group of an NV12 row -> V210, as nv12_to_v210_kernel does for a
+// whole group: 10-bit by << 2, 4:2:0 chroma repeated for both rows.
+__host__ __device__ void nv12_to_v210_tail(
+    uint32_t* __restrict__ v210, const uint8_t* __restrict__ nv12,
+    int height, int nv12Pitch, int v210Stride32, int y, int groupX, int n)
+{
+    uint32_t ys[6] = {0, 0, 0, 0, 0, 0}, cbs[3] = {0, 0, 0}, crs[3] = {0, 0, 0};
+    int px = groupX * 6;
+    for (int i = 0; i < n; i++)
+        ys[i] = (uint32_t)nv12[y * nv12Pitch + px + i] << 2;
+    int uv = nv12Pitch * height + (y / 2) * nv12Pitch + groupX * 3 * 2;
+    for (int i = 0; i < n / 2; i++) {
+        cbs[i] = (uint32_t)nv12[uv + 2 * i] << 2;
+        crs[i] = (uint32_t)nv12[uv + 2 * i + 1] << 2;
+    }
+    v210_pack_group(v210 + y * v210Stride32 + groupX * 4, ys, cbs, crs);
+}
+
+// Partial group of a V210 row -> P210, lossless.
+__host__ __device__ void v210_to_p210_tail(
+    uint16_t* __restrict__ p210, const uint32_t* __restrict__ v210,
+    int height, int p210Pitch16, int v210Stride32, int y, int groupX, int n)
+{
+    uint32_t ys[6], cbs[3], crs[3];
+    v210_unpack_group(v210 + y * v210Stride32 + groupX * 4, ys, cbs, crs);
+    int px = groupX * 6;
+    for (int i = 0; i < n; i++)
+        p210[y * p210Pitch16 + px + i] = (uint16_t)ys[i];
+    int uv = p210Pitch16 * height + y * p210Pitch16 + groupX * 3 * 2;
+    for (int i = 0; i < n / 2; i++) {
+        p210[uv + 2 * i]     = (uint16_t)cbs[i];
+        p210[uv + 2 * i + 1] = (uint16_t)crs[i];
+    }
+}
+
+// Partial group of a P210 row -> V210, lossless.
+__host__ __device__ void p210_to_v210_tail(
+    uint32_t* __restrict__ v210, const uint16_t* __restrict__ p210,
+    int height, int p210Pitch16, int v210Stride32, int y, int groupX, int n)
+{
+    uint32_t ys[6] = {0, 0, 0, 0, 0, 0}, cbs[3] = {0, 0, 0}, crs[3] = {0, 0, 0};
+    int px = groupX * 6;
+    for (int i = 0; i < n; i++)
+        ys[i] = p210[y * p210Pitch16 + px + i];
+    int uv = p210Pitch16 * height + y * p210Pitch16 + groupX * 3 * 2;
+    for (int i = 0; i < n / 2; i++) {
+        cbs[i] = p210[uv + 2 * i];
+        crs[i] = p210[uv + 2 * i + 1];
+    }
+    v210_pack_group(v210 + y * v210Stride32 + groupX * 4, ys, cbs, crs);
+}
+
 // V210 → NV12 conversion kernel
 // Each thread processes one 6-pixel V210 group for one row.
 // Produces: 6 Y values in Y plane, and (for even rows only) 3 UV pairs in UV plane.
@@ -26,8 +129,13 @@ __global__ void v210_to_nv12_kernel(
 {
     int groupX = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int groupsPerRow = width / 6;
-    if (groupX >= groupsPerRow || y >= height) return;
+    int wholeGroups = width / 6;
+    if (groupX > wholeGroups || y >= height) return;
+    if (groupX == wholeGroups) {
+        if (width % 6 != 0)
+            v210_to_nv12_tail(nv12, v210, height, nv12Pitch, v210Stride32, y, groupX, width - groupX * 6);
+        return;
+    }
 
     // Read 4 words for this 6-pixel group
     int v210Idx = y * v210Stride32 + groupX * 4;
@@ -120,8 +228,13 @@ __global__ void nv12_to_v210_kernel(
 {
     int groupX = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int groupsPerRow = width / 6;
-    if (groupX >= groupsPerRow || y >= height) return;
+    int wholeGroups = width / 6;
+    if (groupX >= v210Stride32 / 4 || y >= height) return;
+    if (groupX >= wholeGroups) {
+        // The partial group, then zeros up to the end of the line.
+        nv12_to_v210_tail(v210, nv12, height, nv12Pitch, v210Stride32, y, groupX, max(width - groupX * 6, 0));
+        return;
+    }
 
     int px = groupX * 6;
 
@@ -173,8 +286,13 @@ __global__ void v210_to_p210_kernel(
 {
     int groupX = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int groupsPerRow = width / 6;
-    if (groupX >= groupsPerRow || y >= height) return;
+    int wholeGroups = width / 6;
+    if (groupX > wholeGroups || y >= height) return;
+    if (groupX == wholeGroups) {
+        if (width % 6 != 0)
+            v210_to_p210_tail(p210, v210, height, p210Pitch16, v210Stride32, y, groupX, width - groupX * 6);
+        return;
+    }
 
     // Read 4 words for this 6-pixel group
     int v210Idx = y * v210Stride32 + groupX * 4;
@@ -237,8 +355,13 @@ __global__ void p210_to_v210_kernel(
 {
     int groupX = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int groupsPerRow = width / 6;
-    if (groupX >= groupsPerRow || y >= height) return;
+    int wholeGroups = width / 6;
+    if (groupX >= v210Stride32 / 4 || y >= height) return;
+    if (groupX >= wholeGroups) {
+        // The partial group, then zeros up to the end of the line.
+        p210_to_v210_tail(v210, p210, height, p210Pitch16, v210Stride32, y, groupX, max(width - groupX * 6, 0));
+        return;
+    }
 
     int px = groupX * 6;
 
@@ -281,7 +404,7 @@ cudaError_t v210_to_nv12(
     int width, int height, int nv12Pitch, int v210StrideBytes,
     cudaStream_t stream)
 {
-    int groupsPerRow = width / 6;
+    int groupsPerRow = (width + 5) / 6; // the last one partial when width % 6 != 0
     int v210Stride32 = v210StrideBytes / 4;
     dim3 block(32, 8);
     dim3 grid((groupsPerRow + block.x - 1) / block.x, (height + block.y - 1) / block.y);
@@ -295,7 +418,7 @@ cudaError_t nv12_to_v210(
     int width, int height, int nv12Pitch, int v210StrideBytes,
     cudaStream_t stream)
 {
-    int groupsPerRow = width / 6;
+    int groupsPerRow = v210StrideBytes / 16; // every group of the padded line
     int v210Stride32 = v210StrideBytes / 4;
     dim3 block(32, 8);
     dim3 grid((groupsPerRow + block.x - 1) / block.x, (height + block.y - 1) / block.y);
@@ -311,7 +434,7 @@ cudaError_t v210_to_p210(
     int width, int height, int p210Pitch, int v210StrideBytes,
     cudaStream_t stream)
 {
-    int groupsPerRow = width / 6;
+    int groupsPerRow = (width + 5) / 6; // the last one partial when width % 6 != 0
     int v210Stride32 = v210StrideBytes / 4;
     int p210Pitch16 = p210Pitch / 2;
     dim3 block(32, 8);
@@ -326,7 +449,7 @@ cudaError_t p210_to_v210(
     int width, int height, int p210Pitch, int v210StrideBytes,
     cudaStream_t stream)
 {
-    int groupsPerRow = width / 6;
+    int groupsPerRow = v210StrideBytes / 16; // every group of the padded line
     int v210Stride32 = v210StrideBytes / 4;
     int p210Pitch16 = p210Pitch / 2;
     dim3 block(32, 8);
