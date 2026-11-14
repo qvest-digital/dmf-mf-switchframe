@@ -599,3 +599,84 @@ func TestTimedManagerTakesACueTheTickStarted(t *testing.T) {
 	require.NoError(t, mgr.Stop(1), "and stops")
 	assert.Equal(t, StateLoaded, mgr.PlayerStates()[0].State)
 }
+
+// stagedCount counts the put and drop calls of each frame a player
+// staged (StageVideo).
+type stagedCount struct {
+	mu    sync.Mutex
+	calls []int
+}
+
+func (s *stagedCount) stage(on func()) func([]byte, int, int, bool) (func(int64), func()) {
+	return func([]byte, int, int, bool) (func(int64), func()) {
+		s.mu.Lock()
+		k := len(s.calls)
+		s.calls = append(s.calls, 0)
+		s.mu.Unlock()
+		if k == 0 && on != nil {
+			on()
+		}
+		done := func() { s.mu.Lock(); s.calls[k]++; s.mu.Unlock() }
+		return func(int64) { done() }, done
+	}
+}
+
+// A frame a player stages is a pool buffer: it goes to the pipeline (put)
+// or back (drop), once, however the start comes, a release or a tick
+// landing while the cue still stages its picture included. Released
+// then, the cue took the start without a still and kept the staged
+// buffer for good.
+func TestCuedPlayerPutsOrDropsEveryStagedFrameOnce(t *testing.T) {
+	r := clock.Rate{Num: 50, Den: 1}
+	for _, tc := range []struct {
+		name    string
+		staging func(p *Player) // runs as the cue stages its picture
+		after   func(p *Player) // runs once the cue is out
+	}{
+		{"release while staging", func(p *Player) { p.Release() }, nil},
+		{"tick while staging", func(p *Player) { p.StartAt(timelineRead(r, clock.TAINow())) }, nil},
+		{"release after the cue", nil, func(p *Player) { p.Release() }},
+		{"tick after the cue", nil, func(p *Player) { p.StartAt(timelineRead(r, clock.TAINow())) }},
+		{"stop while cued", nil, func(*Player) {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frames, audio := startClip(r, 48000, 8)
+			rec := &startRec{}
+			cfg := rec.config(r, 48000, frames, audio)
+			var p *Player
+			sc := &stagedCount{}
+			cfg.StageVideo = sc.stage(func() {
+				if tc.staging != nil {
+					tc.staging(p)
+				}
+			})
+			p = NewPlayer(cfg)
+			ctx, cancel := context.WithCancel(context.Background())
+			p.Start(ctx)
+			if tc.staging == nil {
+				// The still goes out staged: the first frame staged is the
+				// one held for the start, the second the still's.
+				require.Eventually(t, func() bool {
+					sc.mu.Lock()
+					defer sc.mu.Unlock()
+					return len(sc.calls) > 1 && sc.calls[1] > 0
+				}, 2*time.Second, time.Millisecond)
+				tc.after(p)
+			}
+			if tc.name != "stop while cued" {
+				// The playback goes on through RawVideoOutput.
+				require.Eventually(t, func() bool { v, _, _ := rec.snapshot(); return len(v) >= 2 }, 2*time.Second, time.Millisecond)
+			}
+			cancel()
+			p.Stop()
+			p.Wait()
+
+			sc.mu.Lock()
+			defer sc.mu.Unlock()
+			require.NotEmpty(t, sc.calls)
+			for k, n := range sc.calls {
+				assert.Equal(t, 1, n, "staged frame %d is put out or dropped once", k)
+			}
+		})
+	}
+}

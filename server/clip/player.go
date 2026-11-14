@@ -1240,8 +1240,14 @@ func (p *Player) awaitRelease(ctx context.Context, h *heldSlot) (onTick, cancell
 	}
 	p.startMu.Lock()
 	if p.released() {
+		// Released while the picture was staged: the start puts it out
+		// through RawVideoOutput, so the staged copy goes back.
 		p.preroll = "waited"
 		p.startMu.Unlock()
+		if h.drop != nil {
+			h.drop()
+			h.put, h.drop = nil, nil
+		}
 		return false, false
 	}
 	p.held = h
