@@ -78,6 +78,37 @@ const grainLookBack = 2
 // its index, so after a resync to the head it reads the samples before.
 const defaultSamplesPerRead = 480
 
+// audioLeadPeriods is how many program periods ahead of its first sample's
+// media time the audio loop hands a read over, and minAudioLead the least
+// it hands it over by. The mixer reads clock.ReaderDelayGrains periods
+// behind the clock; at 240 fps two periods are 8.3 ms, and with every core
+// busy a read held to that reached the mixer up to 5.3 ms after its read
+// point. The floor covers that scheduling delay, which does not depend on
+// any rate. Either way a read waits in the source's ring for a few tens of
+// ms, far less than the 30720 mixer samples, 640 ms, the ring holds.
+const (
+	audioLeadPeriods = 2
+	minAudioLead     = 20 * time.Millisecond
+)
+
+// audioReleaseLead is how far ahead of its first sample's media time a held
+// read is handed over, for a program period in 90 kHz ticks; zero without a
+// program clock, when nothing is held.
+func audioReleaseLead(period int64) time.Duration {
+	if period <= 0 {
+		return 0
+	}
+	return max(audioLeadPeriods*time.Duration(period)*time.Second/90000, minAudioLead)
+}
+
+// maxAudioHold is the longest the audio loop holds one read. A producer's
+// lead is some tens of its own grains, under 2 s at the lowest frame rate
+// accepted, and does not depend on the program's rate. A flow stamped
+// further ahead is not on the program's timeline at all, a wrong epoch or
+// misstamped indices (TAI against UTC alone is 37 s), and is handed over as
+// read rather than parking the loop.
+const maxAudioHold = 4 * time.Second
+
 func (c *ReaderConfig) defaults() {
 	if c.BufSize <= 0 {
 		c.BufSize = 4
@@ -364,6 +395,7 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 
 	fatalErrors := 0
 	const maxFatalErrors = 50
+	farAhead := false // reads are stamped beyond maxAudioHold; warned once per run
 
 	for {
 		select {
@@ -411,6 +443,33 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 			Channels:   channels,
 			Start:      index - uint64(samplesPerRead),
 			PTS:        clock.IndexPTS(cr, index-uint64(samplesPerRead)),
+		}
+
+		// A producer may commit its audio well ahead of TAI. Handed over
+		// as soon as it is read, audio more than the mixer's channel ring
+		// ahead of the mixer's read point overwrites itself there and the
+		// source plays silence for as long as it stays that far ahead.
+		// Without a program clock there is no read point to hold for.
+		var wait time.Duration
+		if lead := audioReleaseLead(programPeriod()); lead > 0 {
+			wait = time.Duration(NsUntilIndex(grain.Start, config.GrainRate)) - lead
+		}
+		switch {
+		case wait > maxAudioHold:
+			if !farAhead {
+				log.Warn("mxl audio reader: audio stamped too far ahead of TAI to hold, handing it over as read",
+					"ahead_ms", (time.Duration(NsUntilIndex(grain.Start, config.GrainRate))).Milliseconds())
+			}
+			farAhead = true
+		case wait > 0:
+			farAhead = false
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return
+			}
+		default:
+			farAhead = false
 		}
 
 		select {
