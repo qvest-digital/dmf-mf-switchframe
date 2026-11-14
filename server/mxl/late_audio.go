@@ -44,9 +44,10 @@ const lateAudioMargin = 5 * lateAudioStep
 // later by the smaller of the two windows' largest overruns, less the
 // delay the mixer already reads the source with, plus lateAudioMargin, in
 // whole milliseconds. Its video is shown later by the nearest whole number
-// of periods, so the program's A/V stays within half a period of the
-// source's own. Each change of the shift splices the source's audio, so it
-// comes down only after lateAudioHistory windows in a row needed more than
+// of its grains (videoGrains), so the program's A/V stays within half a
+// grain of the source's own. Each change of the shift splices the
+// source's audio, so it comes down only after lateAudioHistory windows in
+// a row needed more than
 // lateAudioMargin less, as after a start-up whose first seconds arrive
 // later than the rest. A window in which no grain arrived counts as
 // needing none, and a source that needs none is mixed at its media time.
@@ -82,15 +83,16 @@ func (p *audioPlacement) pts(pts, delay int64) int64 {
 	return pts + p.shift
 }
 
-// videoShift is how much later than its media time the source's video is
-// shown to stay with its audio: the audio's shift in whole periods,
-// rounded to the nearest.
-func (p *audioPlacement) videoShift() int64 {
-	period := programPeriod()
-	if period <= 0 {
+// videoGrains is how many grains of a video at rate r a source's video is
+// shown later than its media time to stay with audio mixed shift ticks
+// late: the shift in whole grains, rounded to the nearest. A frame moved
+// by whole grains lands on the PTS of a later grain of its own rate, the
+// read point of a later tick when the rate is the program's.
+func videoGrains(r clock.Rate, shift int64) uint64 {
+	if shift <= 0 || r.Num <= 0 || r.Den <= 0 {
 		return 0
 	}
-	return (p.shift + period/2) / period * period
+	return uint64((2*shift*r.Num + 90000*r.Den) / (2 * 90000 * r.Den))
 }
 
 func (p *audioPlacement) closeWindow() {
