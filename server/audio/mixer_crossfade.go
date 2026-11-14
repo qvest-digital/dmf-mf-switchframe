@@ -216,8 +216,16 @@ func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMo
 	m.mixStarts = nil
 	// A fade from black unmutes the program in the same step that starts
 	// it from silence: unmuted on its own first, a period produced in
-	// between would air every channel at full gain.
+	// between would air every channel at full gain. A muted program airs
+	// every channel silent, so the fade takes each on from there; one
+	// started while an aborted fade from black takes the program back
+	// down takes each on from the gain it aired.
 	if mode == FadeIn {
+		if m.programMuted {
+			for _, ch := range m.channels {
+				ch.xfGain = 0
+			}
+		}
 		m.setProgramMuteLocked(false)
 	}
 
@@ -329,7 +337,7 @@ func (m *Mixer) OnTransitionAbort(token uint64) {
 	// which is otherwise the only thing that deactivates it. Never the
 	// current program AFV source (e.g. a cut landed on that source
 	// mid-transition).
-	from, to := m.transCrossfadeFrom, m.transCrossfadeTo
+	from, to, mode := m.transCrossfadeFrom, m.transCrossfadeTo, m.transCrossfadeMode
 	if key := m.transAbortActivated; key != "" && key != m.programAFVSource {
 		if _, ok := m.channels[key]; ok {
 			m.deactivateOnCompleteLocked(key)
@@ -351,12 +359,22 @@ func (m *Mixer) OnTransitionAbort(token uint64) {
 	m.stingerOffset = 0
 	m.stingerChannels = 0
 
+	// An aborted fade from black returns to black: the ramp takes every
+	// channel down to silence and the program is muted where it ends.
+	// Muted at once, the program would step from the gains aired to
+	// silence.
+	m.muteAtRampEnd = mode == FadeIn
+
 	// Pulled back before any gain moved, as a T-bar pulled back to 0 at
 	// once leaves it, the channels are where the abort puts them: the
-	// incoming one goes off and the rest stay on. Otherwise a cut ramp
-	// takes each channel on from the gain it aired, so none steps.
+	// incoming one goes off and the rest stay on, or the program is muted
+	// after a fade from black. Otherwise a cut ramp takes each channel on
+	// from the gain it aired, so none steps.
 	if m.cutTargetsAiredLocked() {
 		m.deactivateQueuedLocked()
+		if m.muteAtRampEnd {
+			m.setProgramMuteLocked(true)
+		}
 		return
 	}
 	m.transCrossfadeActive = true

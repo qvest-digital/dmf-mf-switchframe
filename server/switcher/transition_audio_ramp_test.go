@@ -337,9 +337,9 @@ func (r *mixRig) checkContinuous(want float64) {
 	}
 }
 
-// fadeToBlack fades the program to black, or back from black, and runs
-// ticks until the switcher reaches state.
-func (r *mixRig) fadeToBlack(state State) {
+// startFade starts a fade to black, or back from black, lasting mixTicks
+// ticks or the shortest fade allowed, and returns how many ticks it lasts.
+func (r *mixRig) startFade() int {
 	r.t.Helper()
 	pf := r.s.pipelineFormat.Load()
 	ms := max(int(math.Round(mixTicks*1000*float64(pf.FPSDen)/float64(pf.FPSNum))), minFTBDurationMs)
@@ -349,6 +349,14 @@ func (r *mixRig) fadeToBlack(state State) {
 	if err := r.s.FadeToBlack(r.t.Context()); err != nil {
 		r.t.Fatal(err)
 	}
+	return int(int64(ms) * int64(pf.FPSNum) / (1000 * int64(pf.FPSDen)))
+}
+
+// fadeToBlack fades the program to black, or back from black, and runs
+// ticks until the switcher reaches state.
+func (r *mixRig) fadeToBlack(state State) {
+	r.t.Helper()
+	r.startFade()
 	for range 1000 {
 		r.tick()
 		if r.s.hotState.Load().state == state {
@@ -437,8 +445,9 @@ func TestMixAudioFollowsTheTicksVideoPosition(t *testing.T) {
 }
 
 // No switcher action steps a source's audio: a mix run to completion, a
-// cut to the mix's incoming source during it and a cut to a third source
-// during it each carry every source on from the gain it aired, also when
+// cut to the mix's incoming source during it, a cut to a third source
+// during it and a fade to or from black aborted part way each carry every
+// source on from the gain it aired, also when
 // the sync loop produces a period between the calls an action makes, and
 // leave each source where the action puts it.
 func TestSwitcherActionsNeverStepTheAudio(t *testing.T) {
@@ -464,6 +473,37 @@ func TestSwitcherActionsNeverStepTheAudio(t *testing.T) {
 			r.ticks(ticks)
 			r.s.AbortTransition()
 			r.ticks(rampPeriods + 2)
+		}
+	}
+	// abortFade aborts the fade under way after the given share of its
+	// ticks, by AbortTransition or, as a T-bar pulled back to 0 or the
+	// frame watchdog does, from the transition engine, and checks that it
+	// was still running.
+	abortFade := func(r *mixRig, ticks func(n int) int, engine bool) {
+		n := r.startFade()
+		r.ticks(ticks(n))
+		hs := r.s.hotState.Load()
+		if !hs.state.isInTransition() || hs.transEngine == nil {
+			r.t.Fatalf("the fade ended before its abort, after %d of %d ticks", ticks(n), n)
+		}
+		if engine {
+			hs.transEngine.Abort()
+		} else {
+			r.s.AbortTransition()
+		}
+	}
+	first := func(int) int { return 1 }
+	half := func(n int) int { return n / 2 }
+	almostAll := func(n int) int { return n - 1 }
+	fromBlackAborted := func(ticks func(n int) int, engine bool) func(r *mixRig) {
+		return func(r *mixRig) {
+			r.fadeToBlack(StateFTB)
+			r.ticks(1)
+			abortFade(r, ticks, engine)
+			r.ticks(rampPeriods + 2)
+			if !r.m.IsProgramMuted() {
+				r.t.Fatal("the program is not muted after the aborted fade from black")
+			}
 		}
 	}
 	cutThenMix := func(ticks int) func(r *mixRig) {
@@ -517,6 +557,48 @@ func TestSwitcherActionsNeverStepTheAudio(t *testing.T) {
 		// midway: every source goes on from the gain it aired.
 		{"cut_then_mix_aborted_at_once", cutThenAbort(0), "mxl:b", []string{"mxl:a"}},
 		{"cut_then_mix_aborted_midway", cutThenAbort(mixTicks / 2), "mxl:b", []string{"mxl:a"}},
+		// A fade from black aborted after its first tick, halfway or
+		// almost at its end, by the operator or by the transition engine,
+		// returns to black: every source fades back down from the gain it
+		// aired, and the program is muted once it is silent.
+		{"ftb_reverse_aborted_first", fromBlackAborted(first, false), "", nil},
+		{"ftb_reverse_aborted_half", fromBlackAborted(half, false), "", nil},
+		{"ftb_reverse_aborted_almost_all", fromBlackAborted(almostAll, false), "", nil},
+		{"ftb_reverse_engine_aborted_first", fromBlackAborted(first, true), "", nil},
+		{"ftb_reverse_engine_aborted_half", fromBlackAborted(half, true), "", nil},
+		{"ftb_reverse_engine_aborted_almost_all", fromBlackAborted(almostAll, true), "", nil},
+		// A cut while the aborted fade from black takes the program back
+		// down leaves it black; a fade from black started then rises from
+		// the gains aired.
+		{"ftb_reverse_aborted_then_cut", func(r *mixRig) {
+			fromBlackAborted(half, true)(r)
+			cut(r, "mxl:b")
+			r.ticks(rampPeriods + 2)
+		}, "", nil},
+		{"ftb_reverse_aborted_then_ftb_in", func(r *mixRig) {
+			r.fadeToBlack(StateFTB)
+			r.ticks(1)
+			abortFade(r, half, false)
+			r.tick()
+			r.fadeToBlack(StateIdle)
+			r.ticks(rampPeriods + 2)
+		}, "mxl:a", nil},
+		// A fade to black aborted halfway takes every source back up from
+		// the gain it aired.
+		{"ftb_aborted_half", func(r *mixRig) {
+			abortFade(r, half, false)
+			r.ticks(rampPeriods + 2)
+		}, "mxl:a", nil},
+		// A cut during a fade from black takes every source on from the
+		// gain it aired.
+		{"cut_during_ftb_reverse", func(r *mixRig) {
+			r.fadeToBlack(StateFTB)
+			r.ticks(1)
+			n := r.startFade()
+			r.ticks(n / 2)
+			cut(r, "mxl:b")
+			r.ticks(rampPeriods + 2)
+		}, "mxl:b", []string{"mxl:a"}},
 		// A mix to a source already on does not dip it.
 		{"mix_to_a_source_already_on", func(r *mixRig) {
 			r.m.SetActive("mxl:b", true)

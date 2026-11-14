@@ -2828,9 +2828,10 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 
 	if audioHandler != nil {
 		if aborted {
-			// FTB reverse aborted — screen stays black, re-mute audio
+			// FTB reverse aborted: the screen stays black, and the mixer
+			// takes the audio back down from the gains it aired and mutes
+			// the program once it is silent.
 			audioHandler.OnTransitionAbort(audioToken)
-			audioHandler.SetProgramMute(true)
 		} else {
 			audioHandler.OnTransitionComplete()
 		}
