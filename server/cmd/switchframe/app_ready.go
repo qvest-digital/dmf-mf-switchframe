@@ -34,6 +34,15 @@ func (a *App) producing() error {
 		return fmt.Errorf("program clock has not ticked for %s", since.Round(time.Millisecond))
 	}
 	if a.mxlOutput != nil {
+		// A flow that did not open is only logged at start: the engine
+		// runs, and its program flow is missing.
+		video, audio := a.mxlOutput.Writer().Flows()
+		if !video {
+			return errors.New("mxl output: program video: no flow")
+		}
+		if a.cfg.MXLOutputAudioDef != "" && !audio {
+			return errors.New("mxl output: program audio: no flow")
+		}
 		if err := a.mxlOutput.Writer().AtClock(readyMaxLag); err != nil {
 			return fmt.Errorf("mxl output: %w", err)
 		}

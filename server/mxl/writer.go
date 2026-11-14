@@ -121,6 +121,11 @@ type Writer struct {
 	videoHead atomic.Uint64
 	audioHead atomic.Uint64
 
+	// audioFlowRate is the audio flow's sample rate while an audio flow is
+	// set, nil otherwise: AtClock reads it without w.mu, which a write
+	// holds across the cgo call into the flow.
+	audioFlowRate atomic.Pointer[Rational]
+
 	// clock, when set, is the clock AtClock reads instead of CurrentIndex.
 	// Tests set it per writer, where swapping CurrentIndex would race with
 	// the writers other tests leave running.
@@ -191,6 +196,11 @@ func (w *Writer) SetAudioWriter(cw ContinuousWriter, sampleRate Rational) {
 	defer w.mu.Unlock()
 	w.audioWriter = cw
 	w.audioRate = sampleRate
+	if cw != nil {
+		w.audioFlowRate.Store(&sampleRate)
+	} else {
+		w.audioFlowRate.Store(nil)
+	}
 }
 
 // SetDataWriter sets the discrete writer for data output (e.g., SCTE-104).
@@ -588,6 +598,13 @@ func (w *Writer) WriteAudio(pcm []float32, pts int64, sampleRate, channels int) 
 	w.audioHead.Store(index)
 }
 
+// Flows reports whether the writer has a video flow and an audio flow to
+// write to.
+func (w *Writer) Flows() (video, audio bool) {
+	ref := w.videoRef.Load()
+	return ref != nil && ref.writer != nil, w.audioFlowRate.Load() != nil
+}
+
 // AtClock returns nil when each program flow the writer writes has been
 // written up to within maxLag of the clock, else what lags. A flow with no
 // writer set is not looked at.
@@ -604,11 +621,8 @@ func (w *Writer) AtClock(maxLag time.Duration) error {
 			return err
 		}
 	}
-	w.mu.Lock()
-	audio, rate := w.audioWriter != nil, w.audioRate
-	w.mu.Unlock()
-	if audio {
-		if err := headAtClock("audio", w.audioHead.Load(), rate, now(rate), maxLag); err != nil {
+	if rate := w.audioFlowRate.Load(); rate != nil {
+		if err := headAtClock("audio", w.audioHead.Load(), *rate, now(*rate), maxLag); err != nil {
 			return err
 		}
 	}
@@ -668,6 +682,7 @@ func (w *Writer) Close() error {
 			firstErr = err
 		}
 		w.audioWriter = nil
+		w.audioFlowRate.Store(nil)
 	}
 	if ref := w.dataRef.Load(); ref != nil && ref.writer != nil {
 		if err := ref.writer.Close(); err != nil && firstErr == nil {

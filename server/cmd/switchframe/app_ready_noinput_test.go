@@ -57,8 +57,13 @@ func TestReady_NoInputsIsReady(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			// Released as closeSubsystems releases them: the encoders hold
+			// memory outside the Go heap.
 			t.Cleanup(func() {
 				a.sw.Close()
+				if a.refClockEncoder != nil {
+					_ = a.refClockEncoder.Close()
+				}
 				_ = a.mixer.Close()
 			})
 			color := a.sw.PipelineFormat().Color

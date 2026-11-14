@@ -147,13 +147,25 @@ func TestReady_OnAir(t *testing.T) {
 	}
 }
 
-// requireStaysReady fails unless get answers 200 throughout d.
-func requireStaysReady(t *testing.T, get func() readyAnswer, d time.Duration) {
+// requireReadyWhileTicking fails unless get answers 200 throughout d, or
+// 503 only for a clock that has truly not ticked for readyMaxLag: on a
+// loaded host, under the race detector, a 2160p tick can take that long,
+// and the engine is then rightly not ready.
+func requireReadyWhileTicking(t *testing.T, a *App, get func() readyAnswer, d time.Duration) {
 	t.Helper()
 	for end := time.Now().Add(d); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
-		if got := get(); got.code != http.StatusOK {
-			t.Fatalf("GET /ready = %d (%q) within %s of the stall, want 200 until readyMaxLag", got.code, got.reason, d)
+		last := a.sw.LastTick()
+		got := get()
+		if got.code == http.StatusOK {
+			continue
 		}
+		// /ready answered from a tick no older than last, so it can have
+		// seen one more than readyMaxLag old only if last is.
+		if strings.Contains(got.reason, "program clock has not ticked") && time.Since(last) > readyMaxLag {
+			continue
+		}
+		t.Fatalf("GET /ready = %d (%q), the last tick %s ago, want 200 until a stall of readyMaxLag",
+			got.code, got.reason, time.Since(last).Round(time.Millisecond))
 	}
 }
 
@@ -181,14 +193,26 @@ func TestReady_NotOnAir(t *testing.T) {
 		t.Run("clock stopped/"+format, func(t *testing.T) {
 			a, rc := onAirApp(t, format)
 			get := startReady(t, a)
-			waitReady(t, get, http.StatusOK, 2*time.Second)
-			requireStaysReady(t, get, readyMaxLag)
+			waitReady(t, get, http.StatusOK, 10*time.Second)
+			requireReadyWhileTicking(t, a, get, readyMaxLag)
 			rc.Stop()
-			stopped := time.Now()
-			got := waitReady(t, get, http.StatusServiceUnavailable, readyMaxLag+2*time.Second)
-			requireNotReady(t, got, "program clock has not ticked for")
-			if since := time.Since(stopped); since < readyMaxLag/2 {
-				t.Fatalf("not ready %s after the clock stopped, before readyMaxLag", since)
+			// Ready until readyMaxLag after the last tick, then not ready.
+			for {
+				got := get()
+				answered := time.Now()
+				last := a.sw.LastTick()
+				if got.code == http.StatusOK {
+					if answered.Sub(last) > readyMaxLag+5*time.Second {
+						t.Fatalf("still ready %s after the last tick", answered.Sub(last).Round(time.Millisecond))
+					}
+					time.Sleep(20 * time.Millisecond)
+					continue
+				}
+				requireNotReady(t, got, "program clock has not ticked for")
+				if since := answered.Sub(last); since < readyMaxLag {
+					t.Fatalf("not ready %s after the last tick, before readyMaxLag", since.Round(time.Millisecond))
+				}
+				break
 			}
 		})
 	}
@@ -206,33 +230,100 @@ func (g *gatedGrainWriter) WriteGrain(uint64, []byte) error {
 
 func (*gatedGrainWriter) Close() error { return nil }
 
+// The MXL writer's own check at every frame rate, then /ready through it.
 func TestReady_MXLWriterStalled(t *testing.T) {
 	const width, height = 12, 2
+	start := func(t *testing.T, rate mxl.Rational) (*mxl.Output, *gatedGrainWriter) {
+		out := mxl.NewOutput(mxl.OutputConfig{Width: width, Height: height, VideoRate: rate})
+		grains := &gatedGrainWriter{}
+		out.StartLifecycle(context.Background(), grains, nil)
+		t.Cleanup(out.Stop)
+		yuv := make([]byte, width*height*3/2)
+		out.Writer().WriteVideo(yuv, width, height,
+			clock.IndexPTS(clock.Rate{Num: rate.Numerator, Den: rate.Denominator}, mxl.CurrentIndex(rate)))
+		return out, grains
+	}
+	// waitAtClock waits until AtClock gives what want says.
+	waitAtClock := func(t *testing.T, w *mxl.Writer, want func(error) bool, timeout time.Duration) error {
+		t.Helper()
+		deadline := time.Now().Add(timeout)
+		for {
+			err := w.AtClock(readyMaxLag)
+			if want(err) {
+				return err
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("AtClock = %v after %s", err, timeout)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 	for _, format := range readyFormats {
 		t.Run(format, func(t *testing.T) {
-			a, _ := onAirApp(t, format)
-			pf := a.sw.PipelineFormat()
-			rate := mxl.Rational{Numerator: int64(pf.FPSNum), Denominator: int64(pf.FPSDen)}
-			a.mxlOutput = mxl.NewOutput(mxl.OutputConfig{Width: width, Height: height, VideoRate: rate})
-			grains := &gatedGrainWriter{}
-			a.mxlOutput.StartLifecycle(context.Background(), grains, nil)
-			t.Cleanup(a.mxlOutput.Stop)
-			get := startReady(t, a)
-
-			requireNotReady(t, get(), "mxl output: program video: nothing written")
-
-			yuv := make([]byte, width*height*3/2)
-			a.mxlOutput.Writer().WriteVideo(yuv, width, height,
-				clock.IndexPTS(clock.Rate{Num: rate.Numerator, Den: rate.Denominator}, mxl.CurrentIndex(rate)))
-			waitReady(t, get, http.StatusOK, 2*time.Second)
+			f := readyFormat(t, format)
+			out, grains := start(t, mxl.Rational{Numerator: int64(f.FPSNum), Denominator: int64(f.FPSDen)})
+			w := out.Writer()
+			_ = waitAtClock(t, w, func(err error) bool { return err == nil }, 2*time.Second)
 			// No frame fed for readyMaxLag: the writer repeats the last.
-			requireStaysReady(t, get, readyMaxLag)
-
+			for end := time.Now().Add(readyMaxLag); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+				if err := w.AtClock(readyMaxLag); err != nil {
+					t.Fatalf("a stall of the frames fed counts as a stalled writer: %v", err)
+				}
+			}
 			grains.refuse.Store(true)
-			got := waitReady(t, get, http.StatusServiceUnavailable, readyMaxLag+2*time.Second)
-			requireNotReady(t, got, "behind the clock")
+			refused := time.Now()
+			err := waitAtClock(t, w, func(err error) bool { return err != nil }, readyMaxLag+2*time.Second)
+			if !strings.Contains(err.Error(), "behind the clock") {
+				t.Fatalf("AtClock = %v, want behind the clock", err)
+			}
+			if since := time.Since(refused); since < readyMaxLag-grainPeriod(f) {
+				t.Fatalf("behind the clock %s after the writes stopped, before readyMaxLag", since)
+			}
 		})
 	}
+	t.Run("ready", func(t *testing.T) {
+		a, _ := onAirApp(t, "1080p29.97")
+		pf := a.sw.PipelineFormat()
+		rate := mxl.Rational{Numerator: int64(pf.FPSNum), Denominator: int64(pf.FPSDen)}
+		a.mxlOutput = mxl.NewOutput(mxl.OutputConfig{Width: width, Height: height, VideoRate: rate})
+		grains := &gatedGrainWriter{}
+		a.mxlOutput.StartLifecycle(context.Background(), grains, nil)
+		t.Cleanup(a.mxlOutput.Stop)
+		get := startReady(t, a)
+		requireNotReady(t, get(), "mxl output: program video: nothing written")
+		yuv := make([]byte, width*height*3/2)
+		a.mxlOutput.Writer().WriteVideo(yuv, width, height,
+			clock.IndexPTS(clock.Rate{Num: rate.Numerator, Den: rate.Denominator}, mxl.CurrentIndex(rate)))
+		waitReady(t, get, http.StatusOK, 10*time.Second)
+		grains.refuse.Store(true)
+		_ = waitAtClock(t, a.mxlOutput.Writer(), func(err error) bool { return err != nil }, readyMaxLag+2*time.Second)
+		if err := a.producing(); err == nil || !strings.Contains(err.Error(), "mxl output") &&
+			!strings.Contains(err.Error(), "program clock has not ticked") {
+			t.Fatalf("producing() = %v with the program flow behind the clock", err)
+		}
+	})
+}
+
+// grainPeriod is one frame of f.
+func grainPeriod(f switcher.PipelineFormat) time.Duration {
+	return time.Duration(int64(time.Second) * int64(f.FPSDen) / int64(f.FPSNum))
+}
+
+// An MXL output whose flows did not open, which initMXL only logs, is not
+// a program this engine writes: video always, audio when one is configured.
+func TestReady_MXLFlowNotOpened(t *testing.T) {
+	a, _ := onAirApp(t, "1080p29.97")
+	a.mxlOutput = mxl.NewOutput(mxl.OutputConfig{Width: 12, Height: 2, VideoRate: mxl.Rational{Numerator: 30000, Denominator: 1001}})
+	a.mxlOutput.StartLifecycle(context.Background(), nil, nil)
+	t.Cleanup(a.mxlOutput.Stop)
+	requireNotReady(t, startReady(t, a)(), "mxl output: program video: no flow")
+
+	b, _ := onAirApp(t, "1080p29.97")
+	b.cfg.MXLOutputAudioDef = "/config/program-audio.json"
+	b.mxlOutput = mxl.NewOutput(mxl.OutputConfig{Width: 12, Height: 2, VideoRate: mxl.Rational{Numerator: 30000, Denominator: 1001}})
+	b.mxlOutput.StartLifecycle(context.Background(), &gatedGrainWriter{}, nil)
+	t.Cleanup(b.mxlOutput.Stop)
+	requireNotReady(t, startReady(t, b)(), "mxl output: program audio: no flow")
 }
 
 func TestReady_DestinationNotStarted(t *testing.T) {
