@@ -139,6 +139,7 @@ type sampleRing struct {
 	tail, head uint64
 	start      uint64 // HeadIndex: where the reader begins
 	reads      [][2]uint64
+	rate       int64 // sample rate; 48 kHz when zero
 }
 
 func (r *sampleRing) ReadSamples(index uint64, count int, _ uint64) ([][]float32, error) {
@@ -155,7 +156,11 @@ func (r *sampleRing) ReadSamples(index uint64, count int, _ uint64) ([][]float32
 }
 
 func (r *sampleRing) ConfigInfo() FlowConfig {
-	return FlowConfig{Format: DataFormatAudio, GrainRate: Rational{48000, 1}, ChannelCount: 2}
+	rate := r.rate
+	if rate == 0 {
+		rate = 48000
+	}
+	return FlowConfig{Format: DataFormatAudio, GrainRate: Rational{rate, 1}, ChannelCount: 2}
 }
 
 func (r *sampleRing) HeadIndex() (uint64, error) {
@@ -208,7 +213,9 @@ func TestAudioReadPTSIsItsFirstSampleOnTAI(t *testing.T) {
 // skipped time and lip sync with video is kept.
 func TestAudioResyncKeepsMediaTime(t *testing.T) {
 	ra := clock.Rate{Num: 48000, Den: 1}
-	head := clock.TimestampToIndex(ra, clock.TAINow())
+	// The reader starts 2 s behind the clock, where the producer's ring
+	// still holds audio.
+	head := clock.TimestampToIndex(ra, clock.TAINow()) - 2*48000
 	flow := &sampleRing{tail: head - 48000, head: head + 48000, start: head}
 
 	rd := NewAudioReader(ReaderConfig{BufSize: 64, TimeoutMs: 1, SamplesPerRead: 1024})
@@ -216,7 +223,8 @@ func TestAudioResyncKeepsMediaTime(t *testing.T) {
 	defer cancel()
 	rd.StartAudio(ctx, flow)
 	first := <-rd.Audio()
-	// The producer runs 2 s ahead: the reader's next window is gone.
+	// The producer is at the clock and holds nothing older: the reader's
+	// next window is gone.
 	flow.mu.Lock()
 	flow.tail = first.Start + 96000
 	flow.head = first.Start + 96000 + 4800
@@ -252,5 +260,155 @@ func requireIndexPTS(t *testing.T, flow DiscreteReader, grains ...VideoGrain) {
 		if want := clock.IndexPTS(cr, g.Index); g.PTS != want {
 			t.Fatalf("grain %d (index %d): PTS %d, want %d", i, g.Index, g.PTS, want)
 		}
+	}
+}
+
+// holdRates are the program frame rates and flow sample rates the hold is
+// tested at, paired so each frame rate and each sample rate appears.
+var holdRates = []struct {
+	name   string
+	frame  clock.Rate
+	sample int64
+}{
+	{"23.976p/44.1k", clock.Rate{Num: 24000, Den: 1001}, 44100},
+	{"25p/48k", clock.Rate{Num: 25, Den: 1}, 48000},
+	{"29.97p/48k", clock.Rate{Num: 30000, Den: 1001}, 48000},
+	{"50p/96k", clock.Rate{Num: 50, Den: 1}, 96000},
+	{"59.94p/44.1k", clock.Rate{Num: 60000, Den: 1001}, 44100},
+	{"120p/48k", clock.Rate{Num: 120, Den: 1}, 48000},
+	{"240p/48k", clock.Rate{Num: 240, Den: 1}, 48000},
+	{"240p/96k", clock.Rate{Num: 240, Den: 1}, 96000},
+}
+
+// withProgramRate runs the program clock at frame for the test.
+func withProgramRate(t *testing.T, frame clock.Rate) time.Duration {
+	t.Helper()
+	ticks := (90000*frame.Den + frame.Num - 1) / frame.Num
+	saved := programPeriod
+	programPeriod = func() int64 { return ticks }
+	t.Cleanup(func() { programPeriod = saved })
+	return time.Duration(ticks) * time.Second / 90000
+}
+
+// receive reads n grains from rd, failing the test if they do not come.
+func receive(t *testing.T, ctx context.Context, rd *Reader, n int) []AudioGrain {
+	t.Helper()
+	var got []AudioGrain
+	for len(got) < n {
+		select {
+		case g := <-rd.Audio():
+			got = append(got, g)
+		case <-ctx.Done():
+			t.Fatalf("read %d never handed over", len(got))
+		}
+	}
+	return got
+}
+
+// A producer may commit its audio well ahead of TAI, 40 of its grains or
+// more. Its reads reach the mixer no earlier than audioReleaseLead before
+// their media time, all of them, rather than as soon as they are committed.
+func TestAudioFarAheadIsHandedOverNearItsMediaTime(t *testing.T) {
+	for _, tc := range holdRates {
+		t.Run(tc.name, func(t *testing.T) {
+			period := withProgramRate(t, tc.frame)
+			ra := clock.Rate{Num: tc.sample, Den: 1}
+			now := clock.TimestampToIndex(ra, clock.TAINow())
+			ahead := uint64(12 * period * time.Duration(tc.sample) / time.Second)
+			flow := &sampleRing{rate: tc.sample, tail: now - uint64(tc.sample), head: now + 3*ahead, start: now + ahead}
+
+			rd := NewAudioReader(ReaderConfig{BufSize: 64, TimeoutMs: 1, SamplesPerRead: 1024})
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			rd.StartAudio(ctx, flow)
+			var prev AudioGrain
+			for i, g := range receive(t, ctx, rd, 3) {
+				lead := time.Duration(clock.IndexToTimestamp(ra, g.Start) - clock.TAINow())
+				if want := audioReleaseLead(int64(period * 90000 / time.Second)); lead > want+2*time.Millisecond {
+					t.Fatalf("read %d handed over %v before its media time, want at most %v", i, lead, want)
+				}
+				if i > 0 && g.Start != prev.Start+1024 {
+					t.Fatalf("read %d starts at %d, want %d: held reads are not skipped", i, g.Start, prev.Start+1024)
+				}
+				prev = g
+			}
+			cancel()
+			rd.Wait()
+		})
+	}
+}
+
+// Audio already at or behind its media time is handed over as soon as it
+// is read: the hold costs a producer near TAI nothing.
+func TestAudioNearTAIIsHandedOverAtOnce(t *testing.T) {
+	for _, tc := range holdRates {
+		t.Run(tc.name, func(t *testing.T) {
+			withProgramRate(t, tc.frame)
+			ra := clock.Rate{Num: tc.sample, Den: 1}
+			now := clock.TimestampToIndex(ra, clock.TAINow())
+			flow := &sampleRing{rate: tc.sample, tail: now - uint64(tc.sample), head: now + uint64(tc.sample)/10, start: now - 3*1024}
+
+			rd := NewAudioReader(ReaderConfig{BufSize: 64, TimeoutMs: 1, SamplesPerRead: 1024})
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			begin := time.Now()
+			rd.StartAudio(ctx, flow)
+			receive(t, ctx, rd, 3)
+			if took := time.Since(begin); took > 20*time.Millisecond {
+				t.Fatalf("three reads of audio already due took %v to hand over, want at most 20ms", took)
+			}
+			cancel()
+			rd.Wait()
+		})
+	}
+}
+
+// A flow stamped far further ahead than any producer's lead, a wrong epoch
+// or misstamped indices, does not park the audio loop: its reads are
+// handed over as read.
+func TestAudioStampedFarAheadDoesNotParkTheReader(t *testing.T) {
+	for _, tc := range holdRates {
+		t.Run(tc.name, func(t *testing.T) {
+			withProgramRate(t, tc.frame)
+			ra := clock.Rate{Num: tc.sample, Den: 1}
+			now := clock.TimestampToIndex(ra, clock.TAINow())
+			ahead := now + uint64(2*maxAudioHold*time.Duration(tc.sample)/time.Second)
+			flow := &sampleRing{rate: tc.sample, tail: ahead - uint64(tc.sample), head: ahead + uint64(tc.sample), start: ahead}
+
+			rd := NewAudioReader(ReaderConfig{BufSize: 64, TimeoutMs: 1, SamplesPerRead: 1024})
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			begin := time.Now()
+			rd.StartAudio(ctx, flow)
+			receive(t, ctx, rd, 3)
+			if took := time.Since(begin); took > 100*time.Millisecond {
+				t.Fatalf("three reads of a flow %v ahead took %v", 2*maxAudioHold, took)
+			}
+			cancel()
+			rd.Wait()
+		})
+	}
+}
+
+// A held read is handed over early enough to make the mixer's read point,
+// ReaderDelayGrains-1 periods after its first sample's media time, even when
+// it takes as long to get there as measured at 240 fps with every core
+// busy: 17.8 ms from the end of the hold. Decided from the hold itself, so
+// it does not depend on how loaded the machine running the test is.
+func TestAudioReleaseLeadMakesTheReadPointUnderLoad(t *testing.T) {
+	const loaded = 18 * time.Millisecond
+	for _, tc := range holdRates {
+		t.Run(tc.name, func(t *testing.T) {
+			ticks := (90000*tc.frame.Den + tc.frame.Num - 1) / tc.frame.Num
+			period := time.Duration(ticks) * time.Second / 90000
+			lead := audioReleaseLead(ticks)
+			if margin := lead + (clock.ReaderDelayGrains-1)*period; margin < loaded+2*time.Millisecond {
+				t.Fatalf("a read handed over %v early makes its read point by %v, want at least %v",
+					lead, margin, loaded+2*time.Millisecond)
+			}
+		})
+	}
+	if audioReleaseLead(0) != 0 {
+		t.Fatal("a read is held without a program clock")
 	}
 }
