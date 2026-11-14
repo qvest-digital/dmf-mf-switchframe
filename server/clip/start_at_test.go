@@ -565,3 +565,35 @@ func TestCuedPlayerHandsItsStagedPictureToTheTick(t *testing.T) {
 	defer mu.Unlock()
 	assert.Equal(t, staged, len(put)+dropped, "every staged picture is put out or dropped")
 }
+
+// A program tick starts a slot's cue before the manager makes it the
+// slot's player (playCue): a stop, a pause or a seek in between finds
+// the clip playing, and the slot reads as playing.
+func TestTimedManagerTakesACueTheTickStarted(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir, 1<<30)
+	require.NoError(t, err)
+	mgr := NewManager(store, ManagerConfig{
+		DemuxFunc: func(string) ([]BufferedFrame, []BufferedAudioFrame, error) {
+			f, a := cueClip(50, 47)
+			return f, a, nil
+		},
+		OutputRate: func() (int, int) { return 50, 1 },
+		Timed:      true,
+	})
+	defer mgr.Close()
+	c := addTestClip(t, store, dir)
+	var stills atomic.Int64
+	mgr.SetRawVideoOutput(func(string, []byte, int, int, int64, bool) { stills.Add(1) })
+	require.NoError(t, mgr.Load(1, c.ID))
+	require.Eventually(t, func() bool { return stills.Load() > 0 }, 2*time.Second, time.Millisecond)
+
+	// The start StartCuedAt makes, without the playCue it leaves to run.
+	cue := mgr.cue[0].Load()
+	require.NotNil(t, cue)
+	require.True(t, cue.StartAt(timelineRead(clock.Rate{Num: 50, Den: 1}, clock.TAINow())))
+	assert.Equal(t, StatePlaying, mgr.PlayerStates()[0].State, "the slot reads as playing")
+	require.NoError(t, mgr.Pause(1), "the clip the tick started pauses")
+	require.NoError(t, mgr.Stop(1), "and stops")
+	assert.Equal(t, StateLoaded, mgr.PlayerStates()[0].State)
+}

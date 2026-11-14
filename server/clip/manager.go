@@ -713,25 +713,36 @@ func (m *Manager) StartCuedAt(playerID int, readPTS int64) {
 }
 
 // playCue makes p, the cue of a slot StartCuedAt started, the slot's
-// player, as StartCued does. A slot that started or dropped the cue
-// meanwhile is left alone.
+// player, as StartCued does, and reports the start. A slot that dropped
+// the cue meanwhile is left alone.
 func (m *Manager) playCue(playerID int, p *Player) {
 	idx := playerID - 1
 	m.mu.Lock()
 	slot := m.players[idx]
-	if slot == nil || slot.cue != p {
-		m.mu.Unlock()
+	ours := slot != nil && (slot.cue == p || slot.player == p)
+	m.promoteCueLocked(idx)
+	m.mu.Unlock()
+	if ours {
+		m.notifyStateChange()
+	}
+}
+
+// promoteCueLocked makes the cue of slot idx its player once a program
+// tick started it (StartCuedAt): until playCue runs, the slot would read
+// as loaded and refuse a stop, a pause or a seek of the clip it plays.
+// Caller holds m.mu.
+func (m *Manager) promoteCueLocked(idx int) {
+	slot := m.players[idx]
+	if slot == nil || slot.player != nil || slot.cue == nil || !slot.cue.released() {
 		return
 	}
-	slot.player, slot.cancel, slot.decoderCloser = p, slot.cueCancel, slot.cueCloser
+	slot.player, slot.cancel, slot.decoderCloser = slot.cue, slot.cueCancel, slot.cueCloser
 	slot.cue, slot.cueCancel, slot.cueCloser = nil, nil, nil
 	m.cue[idx].Store(nil)
 	if slot.speed < 0.25 || slot.speed > 2.0 {
 		slot.speed = 1.0
 	}
-	m.log.Info("clip playback started", "player", playerID, "speed", slot.speed, "loop", slot.loop, "cued", true)
-	m.mu.Unlock()
-	m.notifyStateChange()
+	m.log.Info("clip playback started", "player", idx+1, "speed", slot.speed, "loop", slot.loop, "cued", true)
 }
 
 // cueLocked gives a slot that holds a clip and plays none a cued player,
@@ -882,6 +893,7 @@ func (m *Manager) Pause(playerID int) error {
 	idx := playerID - 1
 
 	m.mu.Lock()
+	m.promoteCueLocked(idx)
 	slot := m.players[idx]
 	if slot == nil || slot.player == nil {
 		m.mu.Unlock()
@@ -904,6 +916,7 @@ func (m *Manager) Resume(playerID int) error {
 	idx := playerID - 1
 
 	m.mu.Lock()
+	m.promoteCueLocked(idx)
 	slot := m.players[idx]
 	if slot == nil || slot.player == nil {
 		m.mu.Unlock()
@@ -926,6 +939,7 @@ func (m *Manager) Stop(playerID int) error {
 	idx := playerID - 1
 
 	m.mu.Lock()
+	m.promoteCueLocked(idx)
 	slot := m.players[idx]
 	if slot == nil || slot.player == nil {
 		m.mu.Unlock()
@@ -978,6 +992,7 @@ func (m *Manager) SetSpeed(playerID int, speed float64) error {
 	idx := playerID - 1
 
 	m.mu.Lock()
+	m.promoteCueLocked(idx)
 	slot := m.players[idx]
 	if slot == nil || slot.player == nil {
 		m.mu.Unlock()
@@ -1028,6 +1043,7 @@ func (m *Manager) Seek(playerID int, position float64) error {
 	idx := playerID - 1
 
 	m.mu.Lock()
+	m.promoteCueLocked(idx)
 	slot := m.players[idx]
 	if slot == nil || slot.player == nil {
 		m.mu.Unlock()
@@ -1062,6 +1078,7 @@ func (m *Manager) PlayerStates() []ClipPlayerState {
 			continue
 		}
 
+		m.promoteCueLocked(i)
 		states[i].ClipID = slot.clipID
 		states[i].ClipName = slot.clipName
 
