@@ -246,12 +246,19 @@ func TestSRTAudioLandsOnItsStampsOnceTheAnchorSettles(t *testing.T) {
 // again, or the two sit apart until the offset comes down a minute later.
 // Past the budget, its audio misses reads until the anchor raises once. In
 // every case the audio lands where its video is once the lateness lasts,
-// at every program rate and for every audio frame length.
+// at every program rate and for every audio frame length. Each case reads
+// 26 s of audio on one goroutine, where the race detector finds nothing;
+// under it, which runs a case about 4 s, the cases run at 23.976, 59.94
+// and 240 fps: the longest period, the last read two periods behind, and
+// the shortest, read ten.
 func TestSRTAudioStaysOnItsVideoThroughALastingLateness(t *testing.T) {
 	rates := []clock.Rate{
 		{Num: 24000, Den: 1001}, {Num: 24, Den: 1}, {Num: 25, Den: 1}, {Num: 30000, Den: 1001}, {Num: 30, Den: 1},
 		{Num: 50, Den: 1}, {Num: 60000, Den: 1001}, {Num: 60, Den: 1}, {Num: 100, Den: 1},
 		{Num: 120000, Den: 1001}, {Num: 120, Den: 1}, {Num: 240000, Den: 1001}, {Num: 240, Den: 1},
+	}
+	if raceDetector {
+		rates = []clock.Rate{{Num: 24000, Den: 1001}, {Num: 60000, Den: 1001}, {Num: 240, Den: 1}}
 	}
 	for _, r := range rates {
 		for _, frame := range []int{1024, 1536} {
