@@ -117,6 +117,9 @@ type Channel struct {
 	// placed is set once the ring was put exactly on the read point, at its
 	// first read after being empty, reset or PlaceChannel.
 	placed bool
+	// hold places a source without a media clock later than its arrival
+	// where its audio would run dry (stampArrival).
+	hold arrivalHold
 	// realigned is set while the ring's audio is off the read point by
 	// more than popAt allows and was moved onto it; realigns counts
 	// entries.
@@ -154,6 +157,12 @@ type Mixer struct {
 	sampleRate   int
 	numChannels  int
 	config       MixerConfig
+	// readEnd is the sample index just after the last read
+	// (ProduceSamples), 0 before the first.
+	readEnd uint64
+	// holds maps a channel's source key to its arrivalHold's ticks, which
+	// ArrivalHold reads without a lock.
+	holds sync.Map
 
 	// Audio forwarding: when set, audio ingested for srcKey is also
 	// ingested for dstKey. Used by playout to route live source audio
@@ -325,6 +334,7 @@ func (m *Mixer) ProduceSamples(start uint64, sampleCount int, pts int64) []float
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	begin := time.Now()
+	m.readEnd = start + uint64(sampleCount)
 	mixed := m.produceSamplesLocked(start, sampleCount*m.numChannels)
 	m.applyMasterChain(mixed, pts)
 
@@ -417,6 +427,7 @@ func (m *Mixer) AddChannel(sourceKey string) {
 	}
 	ch := m.channels[sourceKey]
 	ch.ringBuf = m.newChannelRingBuf(m.delaySamples(ch))
+	m.holds.Store(sourceKey, &ch.hold.ticks)
 }
 
 // maxAudioDelayMs bounds SetAudioDelay and SetSourceDelay each.
@@ -559,7 +570,8 @@ func (ch *Channel) noteRealign(off bool) {
 // ResetChannelInput drops what a channel holds from its source's previous
 // connection, for a source that reconnects under the same key: buffered
 // audio and its placement, decoder and resampler. Fader, processing,
-// AFV, program state and delays stay. False when there is no channel.
+// AFV, program state, delays and the arrival hold stay: a reconnect of
+// the same source arrives as it did. False when there is no channel.
 func (m *Mixer) ResetChannelInput(sourceKey string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -578,6 +590,7 @@ func (m *Mixer) ResetChannelInput(sourceKey string) bool {
 	ch.resampler, ch.resamplerSrcRate = nil, 0
 	ch.ringBuf = m.newChannelRingBuf(m.delaySamples(ch))
 	ch.ringEnd, ch.placed, ch.realigned, ch.dry = 0, false, false, false
+	ch.hold.prev, ch.hold.counting = 0, false
 	if ch.active {
 		m.initChannelDecoder(ch)
 	}
@@ -593,6 +606,7 @@ func (m *Mixer) RemoveChannel(sourceKey string) {
 			_ = ch.decoder.Close()
 		}
 		delete(m.channels, sourceKey)
+		m.holds.Delete(sourceKey)
 	}
 }
 

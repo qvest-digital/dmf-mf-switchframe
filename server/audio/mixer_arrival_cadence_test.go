@@ -191,6 +191,11 @@ func playClipCadence(t *testing.T, r clock.Rate, sampleRate, phase int, jitterNs
 			}
 		}
 	}
+	// A source handing its AAC over with its video reads clean as it is:
+	// it is never held (arrivalHold).
+	if h := m.ArrivalHold("clip:1"); h != 0 {
+		t.Errorf("held %d ticks", h)
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return silent, realigns + m.channels["clip:1"].realigns, underruns + m.channels["clip:1"].underruns

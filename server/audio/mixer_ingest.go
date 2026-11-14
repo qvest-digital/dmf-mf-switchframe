@@ -42,13 +42,16 @@ func (m *Mixer) ingestFrame(sourceKey string, frame *media.AudioFrame, timed boo
 		fwdFrame := *frame
 		// Deep-copy Data to prevent aliasing — both paths decode/modify the slice.
 		fwdFrame.Data = append([]byte(nil), frame.Data...)
-		m.ingestFrameInner(fwdDst, &fwdFrame, timed)
+		m.ingestFrameInner(fwdDst, &fwdFrame, timed, true)
 	}
 
-	m.ingestFrameInner(sourceKey, frame, timed)
+	m.ingestFrameInner(sourceKey, frame, timed, false)
 }
 
-func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame, timed bool) {
+// ingestFrameInner ingests frame for sourceKey; forwarded is set for a
+// copy forwarded to another channel, whose video does not arrive with it
+// and is not held (arrivalHold).
+func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame, timed, forwarded bool) {
 	m.mu.Lock()
 
 	ch, ok := m.channels[sourceKey]
@@ -187,7 +190,7 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame, time
 		delay := int64(ch.primingSkipCount) * m.primingSamples(frame.SampleRate)
 		m.stampRing(ch, frame.PTS-delay*90000/int64(m.sampleRate), n)
 	} else {
-		m.stampArrival(ch, n, frame.SampleRate)
+		m.stampArrival(ch, n, frame.SampleRate, !forwarded)
 	}
 	m.mu.Unlock()
 }
@@ -357,14 +360,35 @@ func lateArrival() int64 {
 // arrivalSlack after while some of it is due and unread, and otherwise at
 // their arrival. A source whose rate is off the mixer's by more than those
 // bounds allow is placed again at its arrival each time it leaves them.
-// sampleRate is the source's (0: the mixer rate).
-func (m *Mixer) stampArrival(ch *Channel, n, sampleRate int) {
-	pts := clock.ArrivalPTS(n, m.sampleRate)
+// Arrival is the source's arrival plus its hold (arrivalHold) when held
+// is set. sampleRate is the source's (0: the mixer rate).
+func (m *Mixer) stampArrival(ch *Channel, n, sampleRate int, held bool) {
+	ns := func(samples int64) int64 { return samples * 1_000_000_000 / int64(m.sampleRate) }
+	now := clock.TAINow()
+	var hold int64
+	if held {
+		var readEnd int64
+		if m.readEnd != 0 {
+			readEnd = clock.IndexToTimestamp(clock.Rate{Num: int64(m.sampleRate), Den: 1}, m.readEnd-uint64(m.delaySamples(ch)))
+		}
+		ch.hold.note(now, ns(int64(n)), readEnd, ch.underruns, ch.placed)
+		hold = ch.hold.ticks.Load()
+	}
+	moved := held && ch.hold.moved != 0
+	if moved {
+		// The audio before this push moves with the hold, onto the
+		// arrival of the pushes on the source's cadence plus the hold, so
+		// the push continues it, late or not, and the next read places it
+		// again: the source steps once, and a placement a late push left
+		// behind is undone with it.
+		ch.ringEnd += ticksNs(ch.hold.moved) - ch.hold.lastOff
+		ch.hold.moved, ch.placed = 0, false
+	}
+	pts := clock.ArrivalPTS(n, m.sampleRate) + hold
 	if ch.ringEnd != 0 {
-		ns := func(samples int64) int64 { return samples * 1_000_000_000 / int64(m.sampleRate) }
 		slack := ns(arrivalSlack * m.primingSamples(sampleRate))
 		late := lateArrival()
-		if ch.active && ch.ringBuf.FrameCount()-m.delaySamples(ch) > n {
+		if moved || ch.active && ch.ringBuf.FrameCount()-m.delaySamples(ch) > n {
 			// Audio before this push is due and unread, so no read has
 			// passed the place that continues it: a push that came late
 			// is jitter, and placed at its arrival it would move all of
@@ -378,10 +402,12 @@ func (m *Mixer) stampArrival(ch *Channel, n, sampleRate int) {
 		}
 		if d := clock.TimestampOf(pts) - ch.ringEnd; d <= late && d >= -slack {
 			ch.ringEnd += ns(int64(n))
+			ch.hold.placed(now, ch.ringEnd)
 			return
 		}
 	}
 	m.stampRing(ch, pts, n)
+	ch.hold.placed(now, ch.ringEnd)
 }
 
 // primingSamples is one AAC frame at the mixer rate, for a source at

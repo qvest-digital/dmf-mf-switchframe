@@ -925,7 +925,21 @@ func (s *Switcher) SetSyncMixer(m syncMixerInterface) {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
 	s.syncMixer = m
+	if h, ok := m.(arrivalHolder); ok {
+		s.arrivalHold.Store(&arrivalHolderRef{h})
+	} else {
+		s.arrivalHold.Store(nil)
+	}
 }
+
+// arrivalHolder is a mixer that places the audio of a source without a
+// media clock a hold after its arrival (audio.Mixer), which the source's
+// video, stamped at its arrival as well, takes too.
+type arrivalHolder interface {
+	ArrivalHold(sourceKey string) int64
+}
+
+type arrivalHolderRef struct{ arrivalHolder }
 
 // syncMixerInterface is the subset of audio.Mixer that the sync loop needs.
 type syncMixerInterface interface {
