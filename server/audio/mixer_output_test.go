@@ -192,13 +192,18 @@ func TestMixer_CutCrossfade(t *testing.T) {
 	assert.Equal(t, 4, m.cutTotalFrames, "total frames should be 4")
 	m.mu.RUnlock()
 
-	// Period 1: crossfade at position 0.0, then advances to 0.25
+	// The cut period itself ramps the new source from silence to 0.25.
+	m.mu.RLock()
+	assert.InDelta(t, 0.25, m.transCrossfadePosition, 0.01, "the cut period ramps to 0.25")
+	m.mu.RUnlock()
+
+	// Period 1: ramps 0 -> 0.25, then advances to 0.5
 	out := produceAndAdvance(m, tl, 1024)
 	require.Len(t, out, 1024*2, "first period should produce output")
 
 	m.mu.RLock()
 	assert.Equal(t, 3, m.cutFramesRemaining, "should have 3 frames remaining after first period")
-	assert.InDelta(t, 0.25, m.transCrossfadePosition, 0.01, "position should be 0.25 after first period")
+	assert.InDelta(t, 0.5, m.transCrossfadePosition, 0.01, "position should be 0.5 after first period")
 	assert.True(t, m.transCrossfadeActive, "should still be active after first period")
 	m.mu.RUnlock()
 
@@ -209,11 +214,11 @@ func TestMixer_CutCrossfade(t *testing.T) {
 
 	m.mu.RLock()
 	assert.Equal(t, 1, m.cutFramesRemaining, "should have 1 frame remaining after period 3")
-	assert.InDelta(t, 0.75, m.transCrossfadePosition, 0.01, "position should be 0.75 after period 3")
+	assert.InDelta(t, 1.0, m.transCrossfadePosition, 0.01, "position should be 1.0 after period 3")
 	assert.True(t, m.transCrossfadeActive, "should still be active after period 3")
 	m.mu.RUnlock()
 
-	// Period 4: crossfade at position 0.75, then advances to 1.0 and completes
+	// Period 4: ramps 0.75 -> 1.0, then completes
 	produceAndAdvance(m, tl, 1024)
 
 	m.mu.RLock()
@@ -303,12 +308,10 @@ func TestMixer_TransitionCrossfade(t *testing.T) {
 
 func TestMixer_CutCrossfade_GainProgression(t *testing.T) {
 	t.Parallel()
-	// This test verifies that cut crossfade position progresses correctly:
-	// Period 1: position starts at 0.0, advances to 0.25
-	// Period 2: position at 0.25, advances to 0.50
-	// Period 3: position at 0.50, advances to 0.75
-	// Period 4: position at 0.75, advances to 1.0, crossfade completes
-
+	// A cut ramps the incoming source over cutRampPeriods periods, the cut
+	// period included: period k ramps the position from k/4 to (k+1)/4.
+	// The cut period starts at silence and ends at the first step, so no
+	// period of the ramp is silent.
 	m, tl := newProduceTestMixer(t), newTimeline()
 
 	m.AddChannel("cam1")
@@ -316,45 +319,29 @@ func TestMixer_CutCrossfade_GainProgression(t *testing.T) {
 	m.SetActive("cam1", true)
 	m.SetActive("cam2", true)
 
-	// Pre-fill ring buffers
-	for i := 0; i < 6; i++ {
-		tl.push(m, "cam1", constPCM(1024, 0.5), i*1024)
-		tl.push(m, "cam2", constPCM(1024, 0.5), i*1024)
+	const n, level = 1024, 0.5
+	for i := 0; i < cutRampPeriods+2; i++ {
+		tl.push(m, "cam1", constPCM(n, 0), i*n)
+		tl.push(m, "cam2", constPCM(n, level), i*n)
 	}
 
 	m.OnCut("cam1", "cam2")
 
-	// Track positions across periods
-	type posSnapshot struct {
-		active    bool
-		pos       float64
-		audioPos  float64
-		remaining int
+	for k := 0; k < cutRampPeriods; k++ {
+		out := produceAndAdvance(m, tl, n)
+		first := level * transitionToGain(Crossfade, float64(k)/cutRampPeriods)
+		last := level * transitionToGain(Crossfade, float64(k+1)/cutRampPeriods)
+		assert.InDelta(t, first, out[0], 1e-6, "period %d starts at position %d/4", k, k)
+		assert.InDelta(t, last, out[2*(n-1)], 1e-6, "period %d ends at position %d/4", k, k+1)
+		peakL, _ := PeakLevel(out, 2)
+		assert.Greater(t, peakL, 0.0, "period %d of the ramp is silent", k)
 	}
 
-	var snapshots []posSnapshot
-
-	// Periods 1-4
-	for i := 0; i < 4; i++ {
-		produceAndAdvance(m, tl, 1024)
-		m.mu.RLock()
-		snapshots = append(snapshots, posSnapshot{
-			active:    m.transCrossfadeActive,
-			pos:       m.transCrossfadePosition,
-			audioPos:  m.transCrossfadeAudioPos,
-			remaining: m.cutFramesRemaining,
-		})
-		m.mu.RUnlock()
-	}
-
-	// After period 1: position should be 0.25, 3 frames remaining
-	assert.True(t, snapshots[0].active, "should still be active after period 1")
-	assert.InDelta(t, 0.25, snapshots[0].pos, 0.01, "position should be 0.25 after period 1")
-	assert.Equal(t, 3, snapshots[0].remaining, "should have 3 frames remaining after period 1")
-
-	// After period 4: crossfade should be complete (position cleared to 0.0)
-	assert.False(t, snapshots[3].active, "should be complete after period 4")
-	assert.Equal(t, 0, snapshots[3].remaining, "no frames remaining after period 4")
+	out := tl.produce(m, n)
+	assert.InDelta(t, level, out[0], 1e-6, "full gain once the ramp is done")
+	m.mu.RLock()
+	assert.False(t, m.transCrossfadeActive, "the ramp completes after its last period")
+	m.mu.RUnlock()
 }
 
 func TestMixer_OnTransitionAbort(t *testing.T) {

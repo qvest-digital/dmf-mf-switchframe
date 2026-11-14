@@ -50,11 +50,7 @@ func (m *Mixer) OnProgramChange(newProgramSource string) {
 			m.transCrossfadeFrom = oldSource
 			m.transCrossfadeTo = newProgramSource
 			m.transCrossfadeMode = Crossfade
-			m.transCrossfadePosition = 0.0
-			m.transCrossfadeAudioPos = 0.0
-			m.mixCycleTransPos = 0.0
-			m.cutFramesRemaining = 4
-			m.cutTotalFrames = 4
+			m.startCutRampLocked()
 		}
 	}
 
@@ -120,13 +116,7 @@ func (m *Mixer) OnCut(oldSource, newSource string) {
 	m.transCrossfadeFrom = oldSource
 	m.transCrossfadeTo = newSource
 	m.transCrossfadeMode = Crossfade
-	m.transCrossfadePosition = 0.0
-	m.transCrossfadeAudioPos = 0.0
-	m.mixCycleTransPos = 0.0
-
-	// Set up cut crossfade: AdvanceCrossfade advances position over 4 periods.
-	m.cutFramesRemaining = 4
-	m.cutTotalFrames = 4
+	m.startCutRampLocked()
 
 	// Place the new source's ring again at the next read. That read drops
 	// what the ring holds from before the read point, so audio buffered
