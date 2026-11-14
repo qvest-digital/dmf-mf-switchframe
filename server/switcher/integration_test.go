@@ -140,6 +140,7 @@ func TestIntegrationMixerPassthrough(t *testing.T) {
 
 	// Cut to cam1 — AFV activates it (Switcher auto-calls OnProgramChange).
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	waitCutTaken(t, sw)
 
 	// Clear IDR gate.
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true})
@@ -188,6 +189,7 @@ func TestIntegrationMixerAFVOnCut(t *testing.T) {
 
 	// Cut to cam1 (Switcher auto-calls OnProgramChange + OnCut).
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	waitCutTaken(t, sw)
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true})
 
 	require.True(t, mixer.IsChannelActive("cam1"))
@@ -208,6 +210,7 @@ func TestIntegrationMixerAFVOnCut(t *testing.T) {
 	// Cut to cam2 — cam2 activates, cam1 deactivation is deferred until
 	// the cut crossfade ramp completes (4 ticks, ~85ms).
 	require.NoError(t, sw.Cut(context.Background(), "cam2"))
+	waitCutTaken(t, sw)
 	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 150, IsKeyframe: true})
 
 	require.True(t, mixer.IsChannelActive("cam2"))

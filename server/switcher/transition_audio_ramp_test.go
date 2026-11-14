@@ -2,10 +2,14 @@ package switcher
 
 import (
 	"fmt"
+	"hash/fnv"
 	"math"
+	"slices"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/clock"
 )
@@ -46,7 +50,8 @@ type rampFormat struct {
 // every sample rate, and under the race detector, where CI's coverage
 // counting makes each sample many times dearer and the race detector
 // finds nothing in tests on one goroutine, the slowest frame rate at the
-// lowest sample rate and the fastest at the highest.
+// lowest sample rate and the fastest at the highest. The CI job without
+// the race detector runs the full matrix.
 func mixFormats() []rampFormat {
 	if raceDetector {
 		return []rampFormat{
@@ -63,9 +68,23 @@ func mixFormats() []rampFormat {
 	return fs
 }
 
+// interleaveModes returns, for a scenario, whether the sync loop produces
+// a period between the calls of one action: both ways, and under the race
+// detector one way, chosen by the scenario's name. The CI job without the
+// race detector runs both.
+func interleaveModes(name string) []bool {
+	if raceDetector {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(name))
+		return []bool{h.Sum32()%2 == 1}
+	}
+	return []bool{false, true}
+}
+
 // afvModes returns whether the sources follow video, for each run: both
 // ways, and under the race detector following video only, as MXL, SRT and
-// camera sources do by default.
+// camera sources do by default. The CI job without the race detector runs
+// both.
 func afvModes() []bool {
 	if raceDetector {
 		return []bool{true}
@@ -97,6 +116,16 @@ func (m *interleavedMixer) OnProgramChange(source string) {
 func (m *interleavedMixer) OnTransitionComplete() {
 	m.between()
 	m.Mixer.OnTransitionComplete()
+}
+
+func (m *interleavedMixer) SetProgramMute(muted bool) {
+	m.between()
+	m.Mixer.SetProgramMute(muted)
+}
+
+func (m *interleavedMixer) OnTransitionStart(from, to string, mode audio.TransitionMode, durationMs int) uint64 {
+	m.between()
+	return m.Mixer.OnTransitionStart(from, to, mode, durationMs)
 }
 
 func (m *interleavedMixer) OnTransitionAbort(token uint64) {
@@ -137,14 +166,13 @@ var mixSources = []string{"mxl:a", "mxl:b", "mxl:c"}
 
 func newMixRig(t *testing.T, fps clock.Rate, sr int, measured string, afv, interleave bool) *mixRig {
 	t.Helper()
-	s := tickSwitcher(t)
+	s := newTestSwitcherDirect(distribution.NewRelay())
 	f := *s.pipelineFormat.Load()
 	f.FPSNum, f.FPSDen = int(fps.Num), int(fps.Den)
 	s.pipelineFormat.Store(&f)
 	recordPipeline(t, s)
 
 	m := audio.NewMixer(audio.MixerConfig{SampleRate: sr, Channels: 2})
-	t.Cleanup(func() { _ = m.Close() })
 	r := &mixRig{t: t, s: s, m: m, sr: sr, measured: measured}
 	m.SetRawAudioSink(func(pcm []float32, _ int64, _, ch int) {
 		gain := make([]float64, len(pcm)/ch)
@@ -189,7 +217,22 @@ func newMixRig(t *testing.T, fps clock.Rate, sr int, measured string, afv, inter
 	}
 	first := audioTickAt(s, sr, r.g)
 	r.sent = (first.ReadSample - 2*uint64(first.AudioSamples)) / r.block * r.block
+	// The rig is the sync loop: a cut reaches the mixer on the first tick
+	// that shows it, as it does while the loop runs.
+	s.syncLoopRunning.Store(true)
+	// One tick airs the program before any action, as a running switcher
+	// has: the mixer takes every channel on from the gain it aired.
+	r.tick()
+	r.aired = nil
 	return r
+}
+
+// close releases the rig's switcher and mixer. A rig is closed as soon as
+// its run ends rather than by t.Cleanup, which would keep thousands of
+// them alive until the whole test ends.
+func (r *mixRig) close() {
+	r.s.Close()
+	_ = r.m.Close()
 }
 
 // deliver ingests every source's audio up to two periods past the next
@@ -239,6 +282,11 @@ func (r *mixRig) ticks(n int) {
 // between produces the next tick's audio alone, as the sync loop does
 // while a switcher action is under way.
 func (r *mixRig) between() {
+	// Within a tick the calls run on the sync loop, as a cut the tick
+	// hands to the mixer does: no period comes between them.
+	if r.inTick {
+		return
+	}
 	wasTick := r.inTick
 	r.inTick = false
 	r.deliver()
@@ -289,15 +337,40 @@ func (r *mixRig) checkContinuous(want float64) {
 	}
 }
 
+// fadeToBlack fades the program to black, or back from black, and runs
+// ticks until the switcher reaches state.
+func (r *mixRig) fadeToBlack(state State) {
+	r.t.Helper()
+	pf := r.s.pipelineFormat.Load()
+	ms := max(int(math.Round(mixTicks*1000*float64(pf.FPSDen)/float64(pf.FPSNum))), minFTBDurationMs)
+	if err := r.s.SetFTBDuration(ms); err != nil {
+		r.t.Fatal(err)
+	}
+	if err := r.s.FadeToBlack(r.t.Context()); err != nil {
+		r.t.Fatal(err)
+	}
+	for range 1000 {
+		r.tick()
+		if r.s.hotState.Load().state == state {
+			return
+		}
+	}
+	r.t.Fatalf("the fade did not reach state %v", state)
+}
+
 // mixTicks is the length of the mixes the tests run, in ticks.
 const mixTicks = 8
+
+// mixMs is the length of mixTicks ticks in milliseconds.
+func mixMs(r *mixRig) int {
+	pf := r.s.pipelineFormat.Load()
+	return int(math.Round(mixTicks * 1000 * float64(pf.FPSDen) / float64(pf.FPSNum)))
+}
 
 // startMix starts a mix to key lasting mixTicks ticks.
 func (r *mixRig) startMix(key string) {
 	r.t.Helper()
-	pf := r.s.pipelineFormat.Load()
-	durationMs := int(math.Round(mixTicks * 1000 * float64(pf.FPSDen) / float64(pf.FPSNum)))
-	if err := r.s.StartTransition(r.t.Context(), key, "mix", durationMs, ""); err != nil {
+	if err := r.s.StartTransition(r.t.Context(), key, "mix", mixMs(r), ""); err != nil {
 		r.t.Fatal(err)
 	}
 }
@@ -318,6 +391,7 @@ func TestMixAudioFollowsTheTicksVideoPosition(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					t.Parallel()
 					r := newMixRig(t, fps, sr, measured, afv, false)
+					t.Cleanup(r.close)
 					r.startMix("mxl:b")
 					var shown []float64 // the position each tick's video shows, while mixing
 					for range mixTicks + 4 {
@@ -369,52 +443,110 @@ func TestMixAudioFollowsTheTicksVideoPosition(t *testing.T) {
 // leave each source where the action puts it.
 func TestSwitcherActionsNeverStepTheAudio(t *testing.T) {
 	t.Parallel()
+	cut := func(r *mixRig, key string) {
+		if err := r.s.Cut(r.t.Context(), key); err != nil {
+			r.t.Fatal(err)
+		}
+	}
+	cutThenFTB := func(ticks int) func(r *mixRig) {
+		return func(r *mixRig) {
+			cut(r, "mxl:b")
+			r.ticks(ticks)
+			r.fadeToBlack(StateFTB)
+			r.ticks(rampPeriods + 2)
+		}
+	}
+	cutThenAbort := func(ticks int) func(r *mixRig) {
+		return func(r *mixRig) {
+			cut(r, "mxl:b")
+			r.ticks(1)
+			r.startMix("mxl:a")
+			r.ticks(ticks)
+			r.s.AbortTransition()
+			r.ticks(rampPeriods + 2)
+		}
+	}
+	cutThenMix := func(ticks int) func(r *mixRig) {
+		return func(r *mixRig) {
+			cut(r, "mxl:b")
+			r.ticks(ticks)
+			r.startMix("mxl:a")
+			r.ticks(mixTicks + 4)
+		}
+	}
 	scenarios := []struct {
 		name string
 		run  func(r *mixRig)
-		on   string // the source on program at the end
+		on   string   // the source on program at the end, "" when black
+		kept []string // the sources still on without AFV besides it
 	}{
-		{"mix", func(r *mixRig) { r.startMix("mxl:b"); r.ticks(mixTicks + 4) }, "mxl:b"},
+		{"mix", func(r *mixRig) { r.startMix("mxl:b"); r.ticks(mixTicks + 4) }, "mxl:b", []string{"mxl:a"}},
 		{"cut_to_the_preview_during_a_mix", func(r *mixRig) {
 			r.startMix("mxl:b")
 			r.ticks(mixTicks / 2)
-			if err := r.s.Cut(r.t.Context(), "mxl:b"); err != nil {
-				r.t.Fatal(err)
-			}
+			cut(r, "mxl:b")
 			r.ticks(rampPeriods + 2)
-		}, "mxl:b"},
+		}, "mxl:b", []string{"mxl:a"}},
 		{"cut_elsewhere_during_a_mix", func(r *mixRig) {
 			r.startMix("mxl:b")
 			r.ticks(mixTicks / 2)
-			if err := r.s.Cut(r.t.Context(), "mxl:c"); err != nil {
-				r.t.Fatal(err)
-			}
+			cut(r, "mxl:c")
 			r.ticks(rampPeriods + 2)
-		}, "mxl:c"},
+		}, "mxl:c", []string{"mxl:a"}},
+		// A mix as a cut lands or during its ramp takes every source on
+		// from the gain it aired.
+		{"cut_then_mix_0", cutThenMix(0), "mxl:a", []string{"mxl:b"}},
+		{"cut_then_mix_1", cutThenMix(1), "mxl:a", []string{"mxl:b"}},
+		{"cut_then_mix_2", cutThenMix(2), "mxl:a", []string{"mxl:b"}},
+		{"cut_then_mix_3", cutThenMix(3), "mxl:a", []string{"mxl:b"}},
+		// A fade to black as a cut lands or during its ramp takes every
+		// source down from the gain it aired.
+		{"cut_then_ftb_0", cutThenFTB(0), "", nil},
+		{"cut_then_ftb_1", cutThenFTB(1), "", nil},
+		{"cut_then_ftb_2", cutThenFTB(2), "", nil},
+		{"cut_then_ftb_3", cutThenFTB(3), "", nil},
+		// A cut while black and the fade back from black.
+		{"cut_while_black_then_ftb_in", func(r *mixRig) {
+			r.fadeToBlack(StateFTB)
+			cut(r, "mxl:b")
+			r.ticks(1)
+			r.fadeToBlack(StateIdle)
+			r.ticks(rampPeriods + 2)
+		}, "mxl:b", []string{"mxl:a"}},
+		// A mix back to the source a cut is taking off, aborted at once or
+		// midway: every source goes on from the gain it aired.
+		{"cut_then_mix_aborted_at_once", cutThenAbort(0), "mxl:b", []string{"mxl:a"}},
+		{"cut_then_mix_aborted_midway", cutThenAbort(mixTicks / 2), "mxl:b", []string{"mxl:a"}},
+		// A mix to a source already on does not dip it.
+		{"mix_to_a_source_already_on", func(r *mixRig) {
+			r.m.SetActive("mxl:b", true)
+			r.tick()
+			r.startMix("mxl:b")
+			r.ticks(mixTicks + 4)
+		}, "mxl:b", []string{"mxl:a"}},
 	}
 	for _, sc := range scenarios {
 		for _, f := range mixFormats() {
 			fps, sr := f.fps, f.sr
 			for _, afv := range afvModes() {
-				for _, interleave := range []bool{false, true} {
+				for _, interleave := range interleaveModes(sc.name) {
 					name := fmt.Sprintf("%s/%dHz_%d_%d/afv=%v/interleave=%v", sc.name, sr, fps.Num, fps.Den, afv, interleave)
 					t.Run(name, func(t *testing.T) {
 						t.Parallel()
 						for _, measured := range mixSources {
-							r := newMixRig(t, fps, sr, measured, afv, interleave)
-							sc.run(r)
-							// With AFV only the program source is on;
-							// without it the old program stays on, and
-							// the mix's incoming source goes off when a
-							// cut takes the program elsewhere.
-							want := 0.0
-							switch {
-							case measured == sc.on:
-								want = 1
-							case !afv && measured == "mxl:a":
-								want = 1
-							}
-							r.checkContinuous(want)
+							func() {
+								r := newMixRig(t, fps, sr, measured, afv, interleave)
+								defer r.close()
+								sc.run(r)
+								// With AFV only the program source is on;
+								// without it the sources the scenario
+								// keeps on stay on too.
+								want := 0.0
+								if sc.on != "" && (measured == sc.on || !afv && slices.Contains(sc.kept, measured)) {
+									want = 1
+								}
+								r.checkContinuous(want)
+							}()
 						}
 					})
 				}
@@ -428,21 +560,27 @@ func TestSwitcherActionsNeverStepTheAudio(t *testing.T) {
 // showed, and the next tick advances it again.
 func TestShedTickDoesNotAdvanceTheTransition(t *testing.T) {
 	t.Parallel()
-	r := newMixRig(t, clock.Rate{Num: 50, Den: 1}, 48000, "mxl:b", true, false)
-	r.startMix("mxl:b")
-	r.tick()
-	pos := r.m.TransitionPosition()
-	if pos <= 0 {
-		t.Fatalf("the first tick of the mix shows position %v", pos)
-	}
-	r.s.ticksBehind = 1
-	r.tick()
-	if got := r.m.TransitionPosition(); got != pos {
-		t.Fatalf("a shed tick moved the transition from %v to %v", pos, got)
-	}
-	r.tick()
-	if got := r.m.TransitionPosition(); got <= pos {
-		t.Fatalf("the tick after a shed one left the transition at %v", got)
+	for _, f := range mixFormats() {
+		t.Run(fmt.Sprintf("%dHz_%d_%d", f.sr, f.fps.Num, f.fps.Den), func(t *testing.T) {
+			t.Parallel()
+			r := newMixRig(t, f.fps, f.sr, "mxl:b", true, false)
+			t.Cleanup(r.close)
+			r.startMix("mxl:b")
+			r.tick()
+			pos := r.m.TransitionPosition()
+			if pos <= 0 {
+				t.Fatalf("the first tick of the mix shows position %v", pos)
+			}
+			r.s.ticksBehind = 1
+			r.tick()
+			if got := r.m.TransitionPosition(); got != pos {
+				t.Fatalf("a shed tick moved the transition from %v to %v", pos, got)
+			}
+			r.tick()
+			if got := r.m.TransitionPosition(); got <= pos {
+				t.Fatalf("the tick after a shed one left the transition at %v", got)
+			}
+		})
 	}
 }
 
@@ -453,4 +591,219 @@ func constPCM(n int, v float32) []float32 {
 		pcm[i] = v
 	}
 	return pcm
+}
+
+// hookedSyncMixer is the mixer as the sync loop drives it, with a hook at
+// each point a tick's audio passes: before the period is produced, after
+// it is produced and before the ramp advances, and after the ramp
+// advances, before the tick's video.
+type hookedSyncMixer struct {
+	*audio.Mixer
+	at func(point int)
+}
+
+func (m *hookedSyncMixer) ProduceSamples(start uint64, n int, pts int64) []float32 {
+	m.at(0)
+	pcm := m.Mixer.ProduceSamples(start, n, pts)
+	m.at(1)
+	return pcm
+}
+
+func (m *hookedSyncMixer) AdvanceCrossfade() {
+	m.Mixer.AdvanceCrossfade()
+	m.at(2)
+}
+
+// A cut can land at any point of a tick while the sync loop runs: early
+// in the period, before the tick produces its audio; amid it, between
+// producing the audio and advancing the ramp; or late, after the audio,
+// while the video runs. Wherever it lands, the
+// first tick whose video shows the cut airs the ramp's first step, from
+// silence to the first increment, and no tick before it airs the new
+// source.
+func TestCutRampStartsOnTheTickThatShowsTheCut(t *testing.T) {
+	t.Parallel()
+	for _, f := range mixFormats() {
+		for point, at := range []string{"before_the_audio", "amid_the_audio", "after_the_audio"} {
+			t.Run(fmt.Sprintf("%dHz_%d_%d/%s", f.sr, f.fps.Num, f.fps.Den, at), func(t *testing.T) {
+				t.Parallel()
+				r := newMixRig(t, f.fps, f.sr, "mxl:b", true, false)
+				t.Cleanup(r.close)
+				shown := -1
+				r.s.SetOnProgramTick(func(key string, _ int64) {
+					if key == "mxl:b" && shown < 0 {
+						r.mu.Lock()
+						shown = len(r.aired)
+						r.mu.Unlock()
+					}
+				})
+				armed := false
+				r.s.SetSyncMixer(&hookedSyncMixer{Mixer: r.m, at: func(p int) {
+					if armed && p == point {
+						armed = false
+						if err := r.s.Cut(r.t.Context(), "mxl:b"); err != nil {
+							r.t.Error(err)
+						}
+					}
+				}})
+				r.ticks(2)
+				armed = true
+				r.ticks(rampPeriods + 3)
+
+				r.mu.Lock()
+				aired := r.aired
+				r.mu.Unlock()
+				if shown < 0 {
+					t.Fatal("no tick showed the cut")
+				}
+				for k := 0; k < shown; k++ {
+					if g := aired[k].gain; g[len(g)-1] != 0 {
+						t.Fatalf("period %d airs the new source at %.6f, before the tick that shows the cut (%d)", k, g[len(g)-1], shown)
+					}
+				}
+				first := aired[shown].gain
+				if want := math.Sin(math.Pi / 2 / rampPeriods); first[0] > 1e-3 || math.Abs(first[len(first)-1]-want) > 1e-6 {
+					t.Fatalf("the tick that shows the cut airs the new source from %.6f to %.6f, want from 0 to %.6f",
+						first[0], first[len(first)-1], want)
+				}
+				r.checkContinuous(1)
+			})
+		}
+	}
+}
+
+// handOverMixer is the mixer with a hook inside OnProgramChange, the last
+// call a cut makes, and one that reports each OnTransitionStart.
+type handOverMixer struct {
+	*audio.Mixer
+	inProgramChange func()
+	started         chan string
+}
+
+func (m *handOverMixer) OnProgramChange(source string) {
+	if f := m.inProgramChange; f != nil {
+		m.inProgramChange = nil
+		f()
+	}
+	m.Mixer.OnProgramChange(source)
+}
+
+func (m *handOverMixer) OnTransitionStart(from, to string, mode audio.TransitionMode, durationMs int) uint64 {
+	m.started <- to
+	return m.Mixer.OnTransitionStart(from, to, mode, durationMs)
+}
+
+// A mix started while the tick that takes a cut is handing it to the
+// mixer waits until the mixer has all of it: the mix's audio starts after
+// the cut's program change, which would otherwise start a cut ramp over
+// the mix, and every source goes on from the gain it aired.
+func TestTransitionWaitsForTheCutBeingHandedOver(t *testing.T) {
+	t.Parallel()
+	for _, f := range mixFormats() {
+		t.Run(fmt.Sprintf("%dHz_%d_%d", f.sr, f.fps.Num, f.fps.Den), func(t *testing.T) {
+			t.Parallel()
+			for _, measured := range mixSources {
+				func() {
+					r := newMixRig(t, f.fps, f.sr, measured, true, false)
+					defer r.close()
+					hm := &handOverMixer{Mixer: r.m, started: make(chan string, 1)}
+					r.s.SetMixer(hm)
+					if err := r.s.Cut(r.t.Context(), "mxl:b"); err != nil {
+						t.Fatal(err)
+					}
+					mixed := make(chan error, 1)
+					early := false
+					hm.inProgramChange = func() {
+						go func() { mixed <- r.s.StartTransition(r.t.Context(), "mxl:c", "mix", mixMs(r), "") }()
+						// Long enough for a mix that does not wait to
+						// reach the mixer.
+						select {
+						case <-hm.started:
+							early = true
+							t.Error("the mix reached the mixer while the cut was being handed over")
+						case <-time.After(50 * time.Millisecond):
+						}
+					}
+					r.tick()
+					if err := <-mixed; err != nil {
+						t.Fatal(err)
+					}
+					if !early {
+						<-hm.started
+					}
+					r.ticks(mixTicks + 4)
+					want := 0.0
+					if measured == "mxl:c" {
+						want = 1
+					}
+					r.checkContinuous(want)
+				}()
+			}
+		})
+	}
+}
+
+// A cut made while the clock is stopping, its loop not yet ended, reaches
+// the mixer at once: no tick will take it, and stopClock may have taken
+// the cuts before it already.
+func TestCutWhileTheClockStopsReachesTheMixer(t *testing.T) {
+	t.Parallel()
+	r := newMixRig(t, clock.Rate{Num: 50, Den: 1}, 48000, "mxl:b", true, false)
+	t.Cleanup(r.close)
+	r.s.configMu.Lock()
+	r.s.clockStopped = true
+	r.s.configMu.Unlock()
+	if err := r.s.Cut(r.t.Context(), "mxl:b"); err != nil {
+		t.Fatal(err)
+	}
+	if !r.m.IsChannelActive("mxl:b") || !r.m.IsInTransitionCrossfade() {
+		t.Fatal("a cut while the clock stops did not reach the mixer")
+	}
+}
+
+// A cut made before a tick took the one before it hands both to the mixer
+// as one, from the source on air before the first.
+func TestCutOverAnUntakenCutKeepsItsOutgoingSource(t *testing.T) {
+	t.Parallel()
+	r := newMixRig(t, clock.Rate{Num: 50, Den: 1}, 48000, "mxl:a", true, false)
+	t.Cleanup(r.close)
+	for _, key := range []string{"mxl:b", "mxl:c"} {
+		if err := r.s.Cut(r.t.Context(), key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pc := r.s.hotState.Load().programCut
+	if pc.from != "mxl:a" || pc.to != "mxl:c" {
+		t.Fatalf("the cut runs from %s to %s, want mxl:a to mxl:c", pc.from, pc.to)
+	}
+	r.ticks(rampPeriods + 2)
+	r.checkContinuous(0)
+}
+
+// A cut made while the tick hands the cut before it to the mixer waits
+// for that hand-over and runs from the source it put on air: the cut
+// before it is not handed over twice, nor taken over half done.
+func TestCutWaitsForTheCutBeingHandedOver(t *testing.T) {
+	t.Parallel()
+	r := newMixRig(t, clock.Rate{Num: 50, Den: 1}, 48000, "mxl:c", true, false)
+	t.Cleanup(r.close)
+	hm := &handOverMixer{Mixer: r.m, started: make(chan string, 1)}
+	r.s.SetMixer(hm)
+	if err := r.s.Cut(r.t.Context(), "mxl:b"); err != nil {
+		t.Fatal(err)
+	}
+	cut := make(chan error, 1)
+	hm.inProgramChange = func() {
+		go func() { cut <- r.s.Cut(r.t.Context(), "mxl:c") }()
+		time.Sleep(50 * time.Millisecond)
+	}
+	r.tick()
+	if err := <-cut; err != nil {
+		t.Fatal(err)
+	}
+	if pc := r.s.hotState.Load().programCut; pc.from != "mxl:b" || pc.to != "mxl:c" {
+		t.Fatalf("the second cut runs from %s to %s, want mxl:b to mxl:c", pc.from, pc.to)
+	}
+	r.ticks(rampPeriods + 2)
+	r.checkContinuous(1)
 }

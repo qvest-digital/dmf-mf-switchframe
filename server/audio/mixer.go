@@ -135,6 +135,9 @@ type Channel struct {
 	// xfGain is the transition gain the channel aired at the end of the
 	// last period, 0 while inactive. A cut ramp starts from it.
 	xfGain float64
+	// aired is set once the channel has aired a period since it was last
+	// activated.
+	aired bool
 
 	// Reusable work buffers (hot-path allocation elimination)
 	trimBuf    []float32
@@ -207,6 +210,10 @@ type Mixer struct {
 	// cutSpans holds, by source key, the gains a cut ramp moves each
 	// active channel between.
 	cutSpans map[string]cutSpan
+	// mixStarts holds, by source key, the gain each active channel aired
+	// when a mix or dip started, which its gain over the transition starts
+	// from.
+	mixStarts map[string]float64
 
 	// programAFVSource is the source key of the AFV channel currently on
 	// program. Tracked explicitly so OnProgramChange picks the outgoing source
@@ -709,6 +716,11 @@ func (m *Mixer) IsChannelActive(sourceKey string) bool {
 func (m *Mixer) SetProgramMute(muted bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.setProgramMuteLocked(muted)
+}
+
+// setProgramMuteLocked is SetProgramMute with m.mu held.
+func (m *Mixer) setProgramMuteLocked(muted bool) {
 	wasMuted := m.programMuted
 	m.programMuted = muted
 	if muted {

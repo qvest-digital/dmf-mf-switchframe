@@ -264,6 +264,10 @@ func TestMixer_TransitionCrossfade(t *testing.T) {
 	m.SetActive("cam1", true)
 	// cam2 starts inactive -- OnTransitionStart should activate it
 
+	// cam1 airs a period before the dissolve, which takes it on from there.
+	tl.push(m, "cam1", constPCM(1024, 0.5), 0)
+	tl.produce(m, 1024)
+
 	// Start a dissolve transition
 	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
 
@@ -281,13 +285,13 @@ func TestMixer_TransitionCrossfade(t *testing.T) {
 	}
 
 	// Period at position 0.0 (fully old source)
-	push(0)
+	push(1024)
 	out := tl.produce(m, 1024)
 	assert.InDelta(t, 0.5, out[0], 0.01, "position 0.0 should carry only the old source")
 
 	// Advance position to 0.5
 	m.OnTransitionPosition(0.5)
-	push(1024)
+	push(2048)
 	out = tl.produce(m, 1024)
 	// The gain ramps from position 0.0 to 0.5 across the period; at its end
 	// both sources contribute ~0.707 * 0.5 = 0.354 each, ~0.707 in sum.
@@ -296,7 +300,7 @@ func TestMixer_TransitionCrossfade(t *testing.T) {
 
 	// Advance position to 1.0
 	m.OnTransitionPosition(1.0)
-	push(2048)
+	push(3072)
 	out = tl.produce(m, 1024)
 	assert.InDelta(t, 0.5, out[len(out)-1], 0.01, "position 1.0 should end on the new source alone")
 
