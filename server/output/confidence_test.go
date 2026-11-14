@@ -69,8 +69,11 @@ func TestConfidenceMonitor_RateLimitsTo1fps(t *testing.T) {
 	}
 
 	cm := NewConfidenceMonitor(decoderFactory)
-	cm.minInterval = 100 * time.Millisecond // speed up for test
 	defer cm.Close()
+	// The rate limit reads a scripted clock: the time a decode or the host
+	// takes between two frames does not count.
+	at := time.Unix(0, 0)
+	cm.now = func() time.Time { return at }
 
 	keyframe := &media.VideoFrame{
 		PTS:        1000,
@@ -83,15 +86,14 @@ func TestConfidenceMonitor_RateLimitsTo1fps(t *testing.T) {
 	cm.inFlight.Wait() // join the background decode/encode worker
 	require.Equal(t, 1, decodeCount)
 
-	// Immediate second frame should be rate-limited (skipped)
+	// A frame within the interval is rate-limited (skipped), up to its end.
+	at = at.Add(time.Second - time.Nanosecond)
 	cm.IngestVideo(keyframe)
 	cm.inFlight.Wait()
 	require.Equal(t, 1, decodeCount, "should rate-limit and skip second frame")
 
-	// Wait past the interval
-	time.Sleep(150 * time.Millisecond)
-
-	// Third frame should be processed
+	// Third frame, a whole interval after the first, should be processed
+	at = at.Add(time.Nanosecond)
 	cm.IngestVideo(keyframe)
 	cm.inFlight.Wait()
 	require.Equal(t, 2, decodeCount, "should process frame after interval")

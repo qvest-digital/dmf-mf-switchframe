@@ -30,6 +30,7 @@ type ConfidenceMonitor struct {
 	latestJPEG     []byte
 	lastUpdate     time.Time
 	minInterval    time.Duration
+	now            func() time.Time // the clock the rate limit reads
 	decoderFactory transition.DecoderFactory
 	decoder        transition.VideoDecoder
 	decoding       bool // true while a Decode is in flight; blocks concurrent Decode on the shared decoder
@@ -52,6 +53,7 @@ type ConfidenceMonitor struct {
 func NewConfidenceMonitor(decoderFactory transition.DecoderFactory) *ConfidenceMonitor {
 	return &ConfidenceMonitor{
 		minInterval:    time.Second, // 1fps
+		now:            time.Now,
 		decoderFactory: decoderFactory,
 	}
 }
@@ -83,7 +85,7 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 		cm.mu.Unlock()
 		return
 	}
-	if time.Since(cm.lastUpdate) < cm.minInterval {
+	if cm.now().Sub(cm.lastUpdate) < cm.minInterval {
 		cm.mu.Unlock()
 		return
 	}
@@ -98,7 +100,7 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 	}
 	decoder := cm.decoder
 	// Stamp now to prevent re-entry while we decode outside the lock.
-	cm.lastUpdate = time.Now()
+	cm.lastUpdate = cm.now()
 	cm.decoding = true
 	cm.inFlight.Add(1)
 	cm.mu.Unlock()

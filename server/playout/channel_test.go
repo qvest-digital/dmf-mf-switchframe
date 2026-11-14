@@ -334,32 +334,55 @@ func TestChannel_Previous(t *testing.T) {
 	if err := ch.LoadPlaylist(pl); err != nil {
 		t.Fatalf("LoadPlaylist: %v", err)
 	}
-	if err := ch.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
+	// The run loop's ticks are driven here, one frame period at a time on a
+	// scripted clock: Next only marks an advance for the next tick, so two
+	// calls with no tick between them would count as one.
+	ch.mu.Lock()
+	ch.state = StateOnAir
+	ch.scheduler.Start()
+	ch.mu.Unlock()
+	ch.prepareLiveSources()
+	wall := time.Unix(0, 0)
+	now := func() time.Time { return wall }
+	period := ch.frameDuration
+	k := tickClock{period: period, next: wall.Add(period)}
+	completed := false
+	tick := func(want string) {
+		t.Helper()
+		wall = wall.Add(period)
+		completed = ch.runDue(&k, now)
+		if got := ch.Status().CurrentItemID; want != "" && got != want {
+			t.Fatalf("on air: %q, want %q", got, want)
+		}
 	}
-	defer ch.Stop()
 
-	// Advance to second item.
-	time.Sleep(50 * time.Millisecond)
-	_ = ch.Next()
-
-	// Let the second item start.
-	time.Sleep(50 * time.Millisecond)
+	tick("first")
+	if err := ch.Next(); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	tick("second")
 
 	// Go back to first.
 	if err := ch.Previous(); err != nil {
 		t.Fatalf("Previous: %v", err)
 	}
+	tick("first")
 
 	// Now advance through both to complete.
-	time.Sleep(50 * time.Millisecond)
-	_ = ch.Next()
-	time.Sleep(50 * time.Millisecond)
-	_ = ch.Next()
-
-	waitFor(t, 5*time.Second, func() bool {
-		return ch.State() == StateCompleted
-	})
+	if err := ch.Next(); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	tick("second")
+	if completed {
+		t.Fatal("completed on the second item")
+	}
+	if err := ch.Next(); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	tick("")
+	if !completed || ch.State() != StateCompleted {
+		t.Fatalf("after the last item: completed %v, state %v", completed, ch.State())
+	}
 }
 
 func TestChannel_LiveItem_HoldsUntilAdvance(t *testing.T) {
