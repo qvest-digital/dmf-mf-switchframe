@@ -108,6 +108,7 @@ func (m *Mixer) produceSamplesLocked(start uint64, totalValues int) []float32 {
 			gEnd = m.transGainLocked(sourceKey, ch, m.mixCycleTransPos)
 		}
 		ch.xfGain = gEnd
+		ch.aired = ch.active
 		if !ch.active || ch.muted || ch.ringBuf == nil {
 			continue
 		}
@@ -183,16 +184,19 @@ func (s cutSpan) at(p float64) float64 {
 }
 
 // transGainLocked returns the transition gain of an active channel at
-// position p: its cut span during a cut ramp, the transition's curve for
-// the two sources of a transition, and full gain otherwise. A mix or dip
-// does not fade out a source that does not follow video: it stays on
-// after the transition, as after a cut. Caller must hold m.mu.
+// position p: its cut span during a cut ramp, its gain over the
+// transition during a mix, dip or fade (mixGainLocked), the transition's
+// curve for the two sources otherwise, and full gain outside a
+// transition. Caller must hold m.mu.
 func (m *Mixer) transGainLocked(sourceKey string, ch *Channel, p float64) float64 {
 	if !m.transCrossfadeActive {
 		return 1
 	}
 	if s, ok := m.cutSpans[sourceKey]; ok {
 		return s.at(p)
+	}
+	if start, ok := m.mixStarts[sourceKey]; ok {
+		return m.mixGainLocked(sourceKey, ch, start, p)
 	}
 	switch sourceKey {
 	case m.transCrossfadeFrom:
@@ -204,6 +208,40 @@ func (m *Mixer) transGainLocked(sourceKey string, ch *Channel, p float64) float6
 		return transitionToGain(m.transCrossfadeMode, p)
 	}
 	return 1
+}
+
+// mixGainLocked returns the gain of an active channel at position p of a
+// transition that started with the channel at gain start. A fade to black
+// takes every channel down from there to silence, so the program is
+// silent when it is muted at the end; a fade from black, which starts from
+// a muted program, brings every channel up from silence but the ones
+// queued to go off. In a mix or dip the incoming source rises from its
+// start to full gain on the transition's curve, the outgoing source, when
+// it follows video, and the channels queued to go off fall from theirs to
+// silence on it, and every other channel, a source on before the mix that
+// does not follow video among them, eases to full gain, staying there
+// when it starts there. With the outgoing source at full gain and the
+// incoming one silent, these are the transitions' own curves. Caller must
+// hold m.mu.
+func (m *Mixer) mixGainLocked(sourceKey string, ch *Channel, start, p float64) float64 {
+	mode := m.transCrossfadeMode
+	_, queued := m.afvDeactivateOnComplete[sourceKey]
+	switch {
+	case mode == FadeOut:
+		return start * transitionFromGain(mode, p)
+	case mode == FadeIn && queued:
+		return 0
+	case mode == FadeIn:
+		return transitionFromGain(mode, p)
+	case sourceKey == m.transCrossfadeTo && (ch.afv || m.transAbortActivated == sourceKey):
+		if mode == DipToSilence {
+			return start*transitionFromGain(mode, p) + transitionToGain(mode, p)
+		}
+		return cutSpan{start, 1}.at(p)
+	case sourceKey == m.transCrossfadeFrom && ch.afv, queued:
+		return start * transitionFromGain(mode, p)
+	}
+	return cutSpan{start, 1}.at(p)
 }
 
 // cutTargetLocked returns the gain a channel airs once a cut ramp ends:
@@ -239,6 +277,7 @@ func (m *Mixer) cutTargetsMatchLocked() bool {
 // channels instead of stepping. Must be called with m.mu held, after the
 // channels the ramp puts on are active and the ones it takes off queued.
 func (m *Mixer) startCutRampLocked() {
+	m.mixStarts = nil
 	m.cutSpans = make(map[string]cutSpan, len(m.channels))
 	for key, ch := range m.channels {
 		if ch.active {
@@ -275,22 +314,10 @@ func (m *Mixer) advanceCutCrossfade() {
 		m.cutFramesRemaining = 0
 		m.cutTotalFrames = 0
 
-		// Deferred AFV deactivation: the outgoing AFV channel(s) were
-		// kept active during the crossfade ramp so their audio could
-		// fade out smoothly. Now that the ramp is complete, deactivate them.
-		if len(m.afvDeactivateOnComplete) > 0 {
-			for key := range m.afvDeactivateOnComplete {
-				// Never deactivate the channel currently on program: a
-				// queued channel may have been put back on program (e.g.
-				// re-activated by OnCut) after it was deferred here.
-				if key == m.programAFVSource {
-					continue
-				}
-				if ch, ok := m.channels[key]; ok {
-					ch.active = false
-				}
-			}
-			m.afvDeactivateOnComplete = nil
-		}
+		// Deferred deactivation: the channels queued to go off were kept
+		// active during the ramp so they could fade out. Never the channel
+		// on program: a queued channel may have been put back on program
+		// (e.g. re-activated by OnCut) after it was queued.
+		m.deactivateQueuedLocked()
 	}
 }
