@@ -101,10 +101,7 @@ func (m *Manager) noteStart(playerID int, media string, delay time.Duration, pre
 		m.starts.starts.WithLabelValues(id, preroll).Inc()
 	}
 	m.starts.delay.WithLabelValues(id, media).Observe(delay.Seconds())
-	period := 40 * time.Millisecond
-	if fpsNum > 0 && fpsDen > 0 {
-		period = time.Second * time.Duration(fpsDen) / time.Duration(fpsNum)
-	}
+	period := time.Second * time.Duration(fpsDen) / time.Duration(fpsNum)
 	switch {
 	case media == "video" && delay > period:
 		slog.Warn("clip: late start", "player", playerID, "preroll", preroll, "first_frame_ms", delay.Milliseconds())
