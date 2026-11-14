@@ -49,6 +49,11 @@ func Write(t testing.TB, dir string, c Clip) (string, []float32) {
 	t.Helper()
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
+		// CI installs the CLI (setup-cgo-deps): a skip there would pass
+		// every test built on a fixture without running it.
+		if os.Getenv("CI") != "" {
+			t.Fatal("aacfixture: the ffmpeg CLI is not installed")
+		}
 		t.Skip("ffmpeg not available")
 	}
 	if c.Rate == 0 {
