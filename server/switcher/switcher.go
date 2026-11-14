@@ -676,9 +676,11 @@ type Switcher struct {
 	outputAudioCallback       atomic.Pointer[func(*media.AudioFrame)]
 	outputAudioCallbackDirect atomic.Pointer[func(*media.AudioFrame)]
 
-	// onAir is called with the source a cut or a transition takes to
-	// program, once the mixer has taken the change (SetOnAir).
-	onAir atomic.Pointer[func(sourceKey string)]
+	// onProgramTick is called with each source a tick shows as program
+	// that the tick before did not (SetOnProgramTick). tickProgram is
+	// what the last tick showed; the sync loop alone uses it.
+	onProgramTick atomic.Pointer[func(sourceKey string, readPTS int64)]
+	tickProgram   [2]string
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -707,19 +709,15 @@ func New(programRelay *distribution.Relay) *Switcher {
 	return s
 }
 
-// SetOnAir registers fn to be called with the source a cut or a
-// transition takes to program. It is called after the mixer has taken the
-// change, which flushes the source's audio: a source that starts on the
-// call, as a cued clip player does, keeps the audio it then delivers.
-func (s *Switcher) SetOnAir(fn func(sourceKey string)) {
-	s.onAir.Store(&fn)
-}
-
-// notifyOnAir calls the SetOnAir callback, if any, with sourceKey.
-func (s *Switcher) notifyOnAir(sourceKey string) {
-	if fn := s.onAir.Load(); fn != nil && *fn != nil {
-		(*fn)(sourceKey)
-	}
+// SetOnProgramTick registers fn to be called with each source a program
+// tick shows that the tick before did not: the program source and, in a
+// transition, the source it goes to, so the one a cut or a transition
+// puts on air. fn gets the tick's read point and runs on the sync loop
+// before the tick's audio and video, so a source that starts on it, as a
+// cued clip player does, has what the tick reads there before the tick
+// reads it. fn must return at once and must not wait on the switcher.
+func (s *Switcher) SetOnProgramTick(fn func(sourceKey string, readPTS int64)) {
+	s.onProgramTick.Store(&fn)
 }
 
 // SetMixer attaches an audio mixer to the switcher for state broadcasts.
@@ -2271,7 +2269,6 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 	s.log.Info("transition started",
 		"type", string(tt), "from", fromSource, "to", sourceKey, "duration_ms", durationMs)
-	s.notifyOnAir(sourceKey)
 
 	s.notifyStateChange(snapshot)
 	return nil
@@ -3298,7 +3295,6 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		if abortEngine != nil && abortAudioHandler != nil {
 			abortAudioHandler.OnTransitionAbort(abortAudioToken)
 		}
-		s.notifyOnAir(sourceKey)
 		s.notifyStateChange(snapshot)
 	}
 	return nil

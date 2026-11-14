@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,6 +31,9 @@ type Manager struct {
 	store   *Store
 	config  ManagerConfig
 	players [MaxPlayers]*playerSlot
+	// cue[idx] is players[idx].cue, set and cleared with it under mu, for
+	// StartCuedAt, which runs on a program tick and does not wait for mu.
+	cue [MaxPlayers]atomic.Pointer[Player]
 	// loading[idx] is the clip a Load on the slot is demuxing, nil when none.
 	// Reported in PlayerStates so a peer engine that already shows the clip
 	// loaded reads this slot as catching up rather than diverged.
@@ -185,7 +189,7 @@ func (m *Manager) Load(playerID int, clipID string) error {
 	// If slot already has content, eject first. Timed, its source stays.
 	hadClip := m.players[idx] != nil
 	if slot := m.players[idx]; slot != nil {
-		if stopCue := takeCueLocked(slot); stopCue != nil {
+		if stopCue := m.takeCueLocked(idx); stopCue != nil {
 			m.mu.Unlock()
 			stopCue()
 			m.mu.Lock()
@@ -267,14 +271,16 @@ func (m *Manager) Load(playerID int, clipID string) error {
 	return nil
 }
 
-// takeCueLocked takes the cued player out of slot and returns what stops
-// it, to run without m.mu, or nil when the slot has none.
-func takeCueLocked(slot *playerSlot) func() {
+// takeCueLocked takes the cued player out of slot idx and returns what
+// stops it, to run without m.mu, or nil when the slot has none.
+func (m *Manager) takeCueLocked(idx int) func() {
+	slot := m.players[idx]
 	p, cancel, closer := slot.cue, slot.cueCancel, slot.cueCloser
 	if p == nil {
 		return nil
 	}
 	slot.cue, slot.cueCancel, slot.cueCloser = nil, nil, nil
+	m.cue[idx].Store(nil)
 	return func() {
 		cancel()
 		p.Stop()
@@ -556,7 +562,7 @@ func (m *Manager) Eject(playerID int) error {
 	cancel := slot.cancel
 	closer := slot.decoderCloser
 	stopCb := m.onPlayerStop
-	stopCue := takeCueLocked(slot)
+	stopCue := m.takeCueLocked(idx)
 	m.players[idx] = nil
 	m.mu.Unlock()
 
@@ -629,6 +635,7 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 
 	p, cancel, closer := slot.cue, slot.cueCancel, slot.cueCloser
 	slot.cue, slot.cueCancel, slot.cueCloser = nil, nil, nil
+	m.cue[idx].Store(nil)
 	cued := p != nil
 	var ctx context.Context
 	if cued {
@@ -690,6 +697,42 @@ func (m *Manager) StartCued(playerID int) bool {
 	return m.Play(playerID, speed, loop) == nil
 }
 
+// StartCuedAt starts a slot's cue as StartCued does, on the program tick
+// whose read point is readPTS (Player.StartAt). It runs on that tick, so
+// it waits for no lock of the manager: the slot takes the started player
+// as its own, and the state change is reported, apart. A slot without a
+// cue starts nothing.
+func (m *Manager) StartCuedAt(playerID int, readPTS int64) {
+	if validatePlayerID(playerID) != nil {
+		return
+	}
+	if p := m.cue[playerID-1].Load(); p != nil && p.StartAt(readPTS) {
+		go m.playCue(playerID, p)
+	}
+}
+
+// playCue makes p, the cue of a slot StartCuedAt started, the slot's
+// player, as StartCued does. A slot that started or dropped the cue
+// meanwhile is left alone.
+func (m *Manager) playCue(playerID int, p *Player) {
+	idx := playerID - 1
+	m.mu.Lock()
+	slot := m.players[idx]
+	if slot == nil || slot.cue != p {
+		m.mu.Unlock()
+		return
+	}
+	slot.player, slot.cancel, slot.decoderCloser = p, slot.cueCancel, slot.cueCloser
+	slot.cue, slot.cueCancel, slot.cueCloser = nil, nil, nil
+	m.cue[idx].Store(nil)
+	if slot.speed < 0.25 || slot.speed > 2.0 {
+		slot.speed = 1.0
+	}
+	m.log.Info("clip playback started", "player", playerID, "speed", slot.speed, "loop", slot.loop, "cued", true)
+	m.mu.Unlock()
+	m.notifyStateChange()
+}
+
 // cueLocked gives a slot that holds a clip and plays none a cued player,
 // which decodes the clip's first picture and holds it. Caller holds m.mu.
 func (m *Manager) cueLocked(idx int, slot *playerSlot) {
@@ -707,6 +750,7 @@ func (m *Manager) cueLocked(idx int, slot *playerSlot) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	slot.cue, slot.cueCancel, slot.cueCloser = p, cancel, closer
+	m.cue[idx].Store(p)
 	p.Start(ctx)
 }
 
@@ -1121,7 +1165,7 @@ func (m *Manager) Close() {
 	var cues []func()
 	for i := range m.players {
 		if m.players[i] != nil {
-			if stop := takeCueLocked(m.players[i]); stop != nil {
+			if stop := m.takeCueLocked(i); stop != nil {
 				cues = append(cues, stop)
 			}
 		}

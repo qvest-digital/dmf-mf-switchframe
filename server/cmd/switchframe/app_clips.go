@@ -75,9 +75,9 @@ func (a *App) initClips() error {
 			return pf.FPSNum, pf.FPSDen
 		},
 		EncoderFactory: clipRelayEncoderFactory(previewW, previewH, a.cfg.PreviewBitrate),
-		// A loaded slot is a source, cued on its first picture, and a cut
-		// or a transition to it starts it (SetOnAir below) on the next
-		// program tick.
+		// A loaded slot is a source, cued on its first picture, and the
+		// first program tick that shows it starts it (SetOnProgramTick
+		// below) on that tick.
 		Timed:    true,
 		PCMCodec: filepcm.Codec(),
 	})
@@ -320,8 +320,9 @@ func (a *App) initClips() error {
 
 	a.wireClipAudio(mgr)
 
-	// A cut or a transition to a slot's source starts the clip it holds.
-	a.sw.SetOnAir(startClipOnAir(mgr))
+	// The first program tick that shows a slot's source, after a cut or
+	// as a transition starts, starts the clip it holds.
+	a.sw.SetOnProgramTick(startClipOnProgramTick(mgr))
 
 	// State change broadcasts.
 	mgr.SetOnStateChange(func() {
@@ -396,13 +397,13 @@ func acquireClipFrameBuf(pool *switcher.FramePool, size int) ([]byte, bool) {
 	return make([]byte, size), false
 }
 
-// startClipOnAir returns the switcher's on-air callback for the clip
-// players: a cut or a transition to a slot's source starts the clip it
-// holds and does not play, from its cue.
-func startClipOnAir(mgr *clip.Manager) func(key string) {
-	return func(key string) {
+// startClipOnProgramTick returns the switcher's program tick callback for
+// the clip players: the first tick that shows a slot's source starts the
+// clip it holds and does not play, from its cue, on that tick.
+func startClipOnProgramTick(mgr *clip.Manager) func(key string, readPTS int64) {
+	return func(key string, readPTS int64) {
 		if strings.HasPrefix(key, "clip:") {
-			mgr.StartCued(clipPlayerIDFromKey(key))
+			mgr.StartCuedAt(clipPlayerIDFromKey(key), readPTS)
 		}
 	}
 }
