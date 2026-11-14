@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.0-rc.51](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.50...mxl-v1.0.0-rc.51) (2026-11-14)
+
+
+### Features
+
+* **dve:** add a squeezeback stage for L-frame layouts ([#211](https://github.com/qvest-digital/dmf-mf-switchframe/issues/211)) ([396c545](https://github.com/qvest-digital/dmf-mf-switchframe/commit/396c545e350c891457b6e4e00fadbc513ef7cdc4))
+
+
+### Bug Fixes
+
+* **audio:** keep the incoming source's ring on a cut or transition ([#240](https://github.com/qvest-digital/dmf-mf-switchframe/issues/240)) ([35ac623](https://github.com/qvest-digital/dmf-mf-switchframe/commit/35ac6230ddcbfe81d3fdfa0e8b4617811011e8a5))
+* **codec:** mix custom-order speaker layouts on swresample before 8.0 ([#231](https://github.com/qvest-digital/dmf-mf-switchframe/issues/231)) ([c26ea67](https://github.com/qvest-digital/dmf-mf-switchframe/commit/c26ea67147439df4018c007520ac5bbdb3816d5b))
+* **dve:** round the axis projection's product as the GPU kernel does ([#232](https://github.com/qvest-digital/dmf-mf-switchframe/issues/232)) ([c6e505b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/c6e505bcd686f0b6443745dd3c9406cb71474b72))
+* **transition:** scale large planes in row bands on several cores ([#233](https://github.com/qvest-digital/dmf-mf-switchframe/issues/233)) ([c08721e](https://github.com/qvest-digital/dmf-mf-switchframe/commit/c08721e9511d80e2b3c0bad7fd11265fb71e7258))
+
 ## [1.0.0-rc.50](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.49...mxl-v1.0.0-rc.50) (2026-11-13)
 
 
