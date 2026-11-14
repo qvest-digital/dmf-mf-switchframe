@@ -104,6 +104,14 @@ func (s *Switcher) processTick(tick clock.Tick) {
 	// take effect at the frame boundary of this tick.
 	s.drainCommandQueue()
 
+	// A transition advances before the tick's audio is produced, so the
+	// audio ramps to the position the tick's video shows instead of one
+	// period behind it. A tick whose video is shed does not advance it.
+	var step *transitionStep
+	if s.ticksBehind == 0 {
+		step = s.advanceTransition(tick)
+	}
+
 	// === AUDIO FIRST (never skipped) ===
 	s.processAudioTick(tick)
 
@@ -116,7 +124,35 @@ func (s *Switcher) processTick(tick clock.Tick) {
 		return
 	}
 
-	s.processVideoTick(tick)
+	s.processVideoTickAt(tick, step)
+}
+
+// transitionStep is a transition's position for one tick.
+type transitionStep struct {
+	engine   *transition.Engine
+	pos      float64
+	complete bool
+}
+
+// advanceTransition advances the transition in progress by one tick and
+// hands the position to the audio. It returns nil outside a transition.
+func (s *Switcher) advanceTransition(tick clock.Tick) *transitionStep {
+	hs := s.hotState.Load()
+	if !hs.state.isInTransition() || hs.transEngine == nil {
+		return nil
+	}
+	return s.advanceEngine(tick, hs.transEngine)
+}
+
+// advanceEngine advances engine by one tick and hands the position to the
+// audio.
+func (s *Switcher) advanceEngine(tick clock.Tick, engine *transition.Engine) *transitionStep {
+	frameDurationMs := float64(tick.FrameDuration) / float64(time.Millisecond)
+	pos, complete := engine.AutoAdvancePosition(frameDurationMs)
+	if ah := s.audioHandlers.Load().audioTransition; ah != nil {
+		ah.OnTransitionPosition(pos)
+	}
+	return &transitionStep{engine: engine, pos: pos, complete: complete}
 }
 
 // processAudioTick produces mixed PCM samples and feeds them to the AAC frame buffer.
@@ -184,6 +220,12 @@ func (s *Switcher) processAudioTick(tick clock.Tick) {
 // configurations without an encoder. Every tick runs a frame: with no
 // program source it is black, as during an FTB hold.
 func (s *Switcher) processVideoTick(tick clock.Tick) {
+	s.processVideoTickAt(tick, nil)
+}
+
+// processVideoTickAt is processVideoTick with the transition position
+// processTick advanced the tick to, or nil to advance it here.
+func (s *Switcher) processVideoTickAt(tick clock.Tick, step *transitionStep) {
 	hs := s.hotState.Load()
 	fs := s.frameSync
 	programSource := hs.programSource
@@ -193,7 +235,10 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 
 	// === TRANSITION PATH ===
 	if inTrans && engine != nil {
-		s.processTransitionTick(tick, fs, programSource, previewSource, engine, hs.transTypeOrig)
+		if step == nil || step.engine != engine {
+			step = s.advanceEngine(tick, engine)
+		}
+		s.processTransitionTick(tick, fs, programSource, previewSource, engine, hs.transTypeOrig, step.pos, step.complete)
 		return
 	}
 
@@ -238,7 +283,7 @@ func (s *Switcher) pipelineSize() (int, int) {
 
 // processTransitionTick handles a video tick during an active transition.
 // Pops frames from both program and preview sources, blends them, and
-// broadcasts the result. Auto-advances the transition position.
+// broadcasts the result at the tick's transition position pos.
 //
 // transTypeOrig is the original transition type string captured from the
 // hotState snapshot loaded by the caller (processVideoTick). It must be passed
@@ -247,7 +292,7 @@ func (s *Switcher) pipelineSize() (int, int) {
 // goroutines, so a lockless read here would be a data race (torn string
 // header). The snapshot value is published to hotState by both writers, so it
 // is consistent and lock-free.
-func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer, programSource, previewSource string, engine *transition.Engine, transTypeOrig string) {
+func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer, programSource, previewSource string, engine *transition.Engine, transTypeOrig string, pos float64, complete bool) {
 	// Determine the transition's from/to sources.
 	fromSource := engine.FromSource()
 	toSource := engine.ToSource()
@@ -265,13 +310,6 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 	fromFrame = s.normalizeResolution(fromFrame)
 	if toFrame != nil {
 		toFrame = s.normalizeResolution(toFrame)
-	}
-
-	// Auto-advance the transition position.
-	frameDurationMs := float64(tick.FrameDuration) / float64(time.Millisecond)
-	pos, complete := engine.AutoAdvancePosition(frameDurationMs)
-	if ah := s.audioHandlers.Load().audioTransition; ah != nil {
-		ah.OnTransitionPosition(pos)
 	}
 
 	// GPU-native transition path: blend on GPU using cached source frames,
