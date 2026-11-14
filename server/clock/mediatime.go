@@ -194,8 +194,7 @@ func (a *Anchor) Moves() int64 {
 // than TrackingSlack later than it, to the smaller of their largest
 // latenesses, and lowered only when TrackingHistory windows in a row
 // arrived earlier, to their largest. A frame up to TrackingSlack later
-// than its placement is still read on time: every input is read
-// ReaderDelayGrains behind the clock. A
+// than its placement is still read on time, its audio included. A
 // single late burst, as a stalled sender or decode loop delivers, leaves
 // the offset where it is: its frames are shown late and its audio that
 // arrives after its read point is lost, once, rather than moving the rest
@@ -223,8 +222,9 @@ type TrackingAnchor struct {
 	windowEnd int64                  // engine PTS at which the current window ends
 	moves     int64
 	raises    int64
-	settles   int64 // times the offset settled after a placement
+	settles   int64 // times the offset settled after a placement, or moved once settled
 	told      int64 // settles SettledPTS has reported
+	settledAt int64 // offset at the last settle or reported move
 }
 
 // TrackingWindow is the span over which a TrackingAnchor takes a
@@ -235,11 +235,51 @@ const TrackingWindow = 2 * 90000
 // follows every lateness at once, before its offset settles.
 const TrackingSettle = 3
 
-// TrackingSlack is how much later than its offset a settled
-// TrackingAnchor's source may arrive without raising it: well inside the
-// ReaderDelayGrains a tick reads behind the clock at any program rate up
-// to 60 fps.
-const TrackingSlack = 900
+// TrackingSlack returns how much later than its offset a settled
+// TrackingAnchor's source may arrive without raising it, in 90 kHz ticks,
+// at the program rate the ticks read at. Until a program rate is set, the
+// period is the shortest a hold is kept for.
+func TrackingSlack() int64 {
+	return trackingSlack(programPeriodOr(), ReaderDelayGrains)
+}
+
+// programPeriodOr is ProgramPeriod, or the shortest period a hold is kept
+// for until a program rate is set.
+func programPeriodOr() int64 {
+	if p := ProgramPeriod(); p > 0 {
+		return p
+	}
+	return minFramePeriod
+}
+
+func abs(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// trackingSlack is the slack for a program frame period of period ticks
+// read delay periods behind the clock. A tick reads video delay periods
+// behind the clock, but audio from there for one period, so an audio
+// frame that starts just before that period ends is on hand only if it
+// arrives within delay-1 periods of its placement, however long the frame
+// is. Video gets half its delay periods, which also cover a producer's
+// commit and transit. The slack is the lesser of the two, less
+// TrackingDriftMargin. Within it a raise moves
+// only the source's video, since the mixer realigns audio only past a
+// period, and leaves the two apart until the offset comes down; a lasting
+// lateness past it that is not raised for runs the audio dry read after
+// read.
+func trackingSlack(period, delay int64) int64 {
+	return max(min((delay-1)*period, delay*period/2)-TrackingDriftMargin, 0)
+}
+
+// TrackingDriftMargin is how far a lasting lateness may grow past
+// TrackingSlack before the two windows that raise for it end, in 90 kHz
+// ticks: a sender clock 250 ppm slow drifts 1 ms over two windows. It is
+// a time, not a share of the period, since drift is.
+const TrackingDriftMargin = 90
 
 // TrackingHistory is how many windows in a row a settled TrackingAnchor's
 // source must arrive earlier than its offset for the offset to come down:
@@ -254,11 +294,15 @@ func (a *TrackingAnchor) PTS(src int64) int64 {
 	return a.place(src)
 }
 
-// SettledPTS is PTS that also reports whether the offset settled since
-// the last SettledPTS call: true for the first timestamp it maps on the
-// settled offset. The settle can move the source by less than a period,
-// which the mixer never realigns, so the source's audio is placed on its
-// timestamps again from that one on.
+// SettledPTS is PTS that also reports whether the offset settled, or
+// moved half a program period or more from where it was last reported,
+// since the last SettledPTS call: true for the first timestamp it maps on
+// the new offset. A settle, raise or lowering can move the source by less
+// than a period, which the mixer never realigns, so the source's audio is
+// placed on its timestamps again from that one on, as its video is. A
+// smaller move is left to add up: placing the audio again splices it, and
+// the lowerings a sender clock's drift brings are fractions of a
+// millisecond.
 func (a *TrackingAnchor) SettledPTS(src int64) (int64, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -272,7 +316,7 @@ func (a *TrackingAnchor) SettledPTS(src int64) (int64, bool) {
 func (a *TrackingAnchor) place(src int64) int64 {
 	now := NowPTS()
 	late := now - src
-	was, placed := a.offset, false
+	was, placed, settled := a.offset, false, false
 	switch {
 	case !a.set || late-a.offset > MaxAnchorSkew || a.offset-late > MaxAnchorSkew:
 		if a.set {
@@ -293,7 +337,8 @@ func (a *TrackingAnchor) place(src int64) int64 {
 		case a.windows == TrackingSettle:
 			a.offset = slices.Max(a.maxes[:TrackingSettle-1])
 			a.settles++
-		case min(a.maxes[0], a.maxes[1]) > a.offset+TrackingSlack:
+			settled = true
+		case min(a.maxes[0], a.maxes[1]) > a.offset+TrackingSlack():
 			a.offset = min(a.maxes[0], a.maxes[1])
 		case a.windows >= TrackingSettle+TrackingHistory && slices.Max(a.maxes[:]) < a.offset:
 			a.offset = slices.Max(a.maxes[:])
@@ -313,6 +358,12 @@ func (a *TrackingAnchor) place(src int64) int64 {
 		a.placedAt = a.offset
 	} else if a.offset > was {
 		a.raises++
+	}
+	if settled {
+		a.settledAt = a.offset
+	} else if !placed && a.windows > TrackingSettle && 2*abs(a.offset-a.settledAt) >= programPeriodOr() {
+		a.settles++
+		a.settledAt = a.offset
 	}
 	return src + a.offset
 }

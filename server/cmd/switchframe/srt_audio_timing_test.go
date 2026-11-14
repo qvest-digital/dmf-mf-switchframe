@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"sync/atomic"
 	"testing"
@@ -234,4 +235,128 @@ func TestSRTAudioLandsOnItsStampsOnceTheAnchorSettles(t *testing.T) {
 	}
 	require.NotZero(t, onsets, "no loud job was read after the anchor settled")
 	require.Zero(t, m.ChannelRealigns()[key], "the source was realigned")
+}
+
+// Once its anchor settled, an SRT source's frames arrive later for good,
+// as a longer network path delivers them. Under a program period less
+// clock.TrackingDriftMargin, its audio is still read on time where it is,
+// and the anchor leaves it there. A little more, still under a period,
+// raises the anchor: its video moves that much later, and its audio, which
+// the mixer realigns only past a period, has to be placed on its stamps
+// again, or the two sit apart until the offset comes down a minute later.
+// Past a period, its audio misses reads until the anchor raises once. In
+// every case the audio lands where its video is once the lateness lasts,
+// at every program rate and for every audio frame length.
+func TestSRTAudioStaysOnItsVideoThroughALastingLateness(t *testing.T) {
+	rates := []clock.Rate{
+		{Num: 24000, Den: 1001}, {Num: 24, Den: 1}, {Num: 25, Den: 1}, {Num: 30000, Den: 1001}, {Num: 30, Den: 1},
+		{Num: 50, Den: 1}, {Num: 60000, Den: 1001}, {Num: 60, Den: 1}, {Num: 120, Den: 1}, {Num: 240, Den: 1},
+	}
+	for _, r := range rates {
+		for _, frame := range []int{1024, 1536} {
+			for _, c := range []struct {
+				name   string
+				late   func(period int64) int64
+				raises int64
+			}{
+				{"under-slack", func(p int64) int64 { return p - clock.TrackingDriftMargin - 10 }, 0},
+				{"under-period", func(p int64) int64 { return p - clock.TrackingDriftMargin/2 }, 1},
+				{"past-period", func(p int64) int64 { return p + 45 }, 1},
+			} {
+				t.Run(fmt.Sprintf("%d/%d/%d/%s", r.Num, r.Den, frame, c.name), func(t *testing.T) {
+					srtLastingLateness(t, r, frame, c.late, c.raises)
+				})
+			}
+		}
+	}
+}
+
+// srtLastingLateness runs one SRT source at program rate r, in audio
+// frames of frame samples, that settles on time and from 8 s on arrives
+// late(period) ticks later for good, and checks the anchor raised raises
+// times and the audio lands on its video from 16 s on.
+func srtLastingLateness(t *testing.T, r clock.Rate, frame int, lateness func(int64) int64, raises int64) {
+	const key = "srt:later"
+	var now atomic.Int64
+	scriptTAI(t, &now)
+	clock.SetProgramRate(r)
+	m := audio.NewMixer(audio.MixerConfig{SampleRate: 48000, Channels: 2})
+	t.Cleanup(func() { _ = m.Close() })
+	m.AddChannel(key)
+	m.SetActive(key, true)
+	a := &App{mixer: m}
+	var anchor clock.TrackingAnchor
+
+	period := clock.ProgramPeriod()
+	late := lateness(period)
+	sr := clock.Rate{Num: 48000, Den: 1}
+	start := now.Load()
+	step := int64(frame) * 90000 / 48000 // frame length in 90 kHz ticks
+	src0 := clock.PTS(start)
+	const lateFrom, checkFrom, end = 8_000_000_000, 16_000_000_000, 26_000_000_000
+	// Job k carries the samples from src0+k*step and arrives as its last
+	// sample has passed, later by late from lateFrom on. Every 10th job is
+	// loud, and the video frame of its time, mapped through the same
+	// anchor as it arrives, names the index the loud audio belongs at.
+	video := map[int64]bool{}
+	arrival := func(k int) int64 {
+		at := clock.TimestampOf(src0+int64(k+1)*step) - start
+		if at >= lateFrom {
+			at += late * 100_000 / 9
+		}
+		return start + at
+	}
+	deliver := func(k int) {
+		pcm := make([]float32, frame*2)
+		level := float32(0.1)
+		if k%10 == 0 {
+			level = 0.5
+		}
+		for j := range pcm {
+			pcm[j] = level
+		}
+		pts := src0 + int64(k)*step
+		a.ingestSRTAudio(key, &anchor, srtAudioJob{pcm: pcm, pts: pts, sampleRate: 48000, channels: 2})
+		if k%10 == 0 {
+			video[int64(clock.PTSIndex(sr, anchor.PTS(pts)))] = true
+		}
+	}
+
+	next := 0
+	var prev float32
+	var onsets int
+	var realigns, underruns int64
+	g0 := clock.TimestampToIndex(r, start) + 3
+	for g := g0; clock.IndexToTimestamp(r, g)-start < end; g++ {
+		at := clock.IndexToTimestamp(r, g)
+		for arrival(next) <= at {
+			now.Store(arrival(next))
+			deliver(next)
+			next++
+		}
+		now.Store(at)
+		read := clock.TimestampToIndex(sr, clock.IndexToTimestamp(r, g-clock.ReaderDelayGrains))
+		n := int(clock.TimestampToIndex(sr, clock.IndexToTimestamp(r, g-clock.ReaderDelayGrains+1)) - read)
+		if at-start < checkFrom {
+			realigns, underruns = m.ChannelRealigns()[key], m.ChannelUnderruns()[key]
+		}
+		out := m.ProduceSamples(read, n, 0)
+		for i := 0; i < n; i++ {
+			v := out[2*i]
+			if v > 0.3 && prev <= 0.3 && at-start >= checkFrom {
+				onsets++
+				idx := int64(read) + int64(i)
+				for vi := range video {
+					if off := idx - vi; off > -5*int64(frame) && off < 5*int64(frame) {
+						require.Zerof(t, off, "late %d ticks, period %d: a loud frame lands %d samples off its video", late, period, off)
+					}
+				}
+			}
+			prev = v
+		}
+	}
+	require.NotZero(t, onsets, "no loud frame was read once the lateness lasted")
+	require.Equal(t, realigns, m.ChannelRealigns()[key], "late %d ticks, period %d: realigned once the lateness lasted", late, period)
+	require.Equal(t, underruns, m.ChannelUnderruns()[key], "late %d ticks, period %d: ran dry once the lateness lasted", late, period)
+	require.Equal(t, raises, anchor.Stats().Raises, "late %d ticks, period %d: anchor raises", late, period)
 }
