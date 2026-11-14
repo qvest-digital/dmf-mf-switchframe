@@ -51,8 +51,14 @@ jobs:
           go-version: '1.25'
           cache-dependency-path: server/go.sum
       - uses: ./.github/actions/setup-cgo-deps
+      # The audio and switchframe packages run in test-go-media: under the
+      # race detector, sharing a runner's cores with every other package,
+      # each took up to 840 s of the 15 min limit.
       - name: Run tests with coverage
-        run: cd server && go test ./... -race -coverprofile=coverage.out -timeout=15m
+        run: |
+          cd server
+          go test $(go list ./... | grep -v -e '/server/audio$' -e '/server/cmd/switchframe$') \
+            -race -coverprofile=coverage.out -timeout=15m
       # A module of its own, so ./... above leaves it out.
       - name: Run tests of the patched prism package
         run: cd server/third_party/prism && go test ./distribution/ -race -timeout=5m
@@ -61,6 +67,31 @@ jobs:
         with:
           name: go-coverage
           path: server/coverage.out
+
+  test-go-media:
+    # One package a job: run side by side, audio and switchframe still
+    # took 505 and 315 s, audio's own parallel tests short of cores.
+    strategy:
+      matrix:
+        package: [audio, cmd/switchframe]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: server/go.sum
+      - uses: ./.github/actions/setup-cgo-deps
+      - name: Run the ${{ matrix.package }} tests with coverage
+        run: cd server && go test ./${{ matrix.package }}/ -race -coverprofile=coverage-media.out -timeout=15m
+      - name: Name the coverage artifact
+        id: artifact
+        run: echo "name=go-coverage-$(echo '${{ matrix.package }}' | tr / -)" >> "$GITHUB_OUTPUT"
+      - name: Upload Go coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: server/coverage-media.out
 
   test-go-nocgo:
     runs-on: ubuntu-latest
@@ -95,7 +126,7 @@ jobs:
         run: cd ui && npx playwright test
 
   docker:
-    needs: [test-go, test-ui]
+    needs: [test-go, test-go-media, test-ui]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
