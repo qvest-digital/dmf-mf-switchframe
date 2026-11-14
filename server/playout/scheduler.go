@@ -428,6 +428,7 @@ type SchedulerSnapshot struct {
 	State         SchedulerState
 	Mode          OnAirMode
 	Cursor        int
+	Next          int       // the item Next or the schedule airs next
 	ItemStartTime time.Time // when the current item started playing
 	LoopExit      bool      // the looping item ends after this pass
 }
@@ -440,6 +441,7 @@ func (s *Scheduler) StatusSnapshot() SchedulerSnapshot {
 		State:         s.state,
 		Mode:          s.mode,
 		Cursor:        s.cursor,
+		Next:          s.nextIndex(),
 		ItemStartTime: s.itemStartTime,
 		LoopExit:      s.loopExit,
 	}
@@ -507,13 +509,7 @@ func (s *Scheduler) LiveSourcesAhead() (cur, next string) {
 		}
 		return s.playlist.Items[i].Source
 	}
-	switch {
-	case s.advancePend > 0:
-		return liveSource(s.cursor), liveSource(s.pendingFrom() + s.advancePend)
-	case s.state == SchedTransitioning:
-		return liveSource(s.cursor), liveSource(s.transTarget)
-	}
-	return liveSource(s.cursor), liveSource(s.cursor + 1)
+	return liveSource(s.cursor), liveSource(s.nextIndex())
 }
 
 // ClipsAhead returns the clip items the channel airs next: cur holds the
@@ -560,6 +556,19 @@ func (s *Scheduler) resetItemState() {
 	s.advancePend = 0
 	s.holdComplete = false
 	s.loopExit = false
+}
+
+// nextIndex returns the index of the item that airs next: the one the
+// pending Next presses land on, the one a transition in progress brings
+// in, or else the one after the cursor.
+func (s *Scheduler) nextIndex() int {
+	switch {
+	case s.advancePend > 0:
+		return s.pendingFrom() + s.advancePend
+	case s.state == SchedTransitioning:
+		return s.transTarget
+	}
+	return s.cursor + 1
 }
 
 // pendingFrom returns the index the pending Next presses count from: the

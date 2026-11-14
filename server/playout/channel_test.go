@@ -767,9 +767,6 @@ func TestChannel_NextWhileStopped(t *testing.T) {
 	}
 }
 
-// programRates are the frame rates a playout channel runs at.
-var programRates = []float64{24000.0 / 1001, 24, 25, 30000.0 / 1001, 30, 50, 60000.0 / 1001, 60, 100, 120, 240}
-
 // TestChannel_NavigationBeforeTick presses Next and Previous several times
 // between two ticks of the run loop. Each Next counts, a Previous takes back
 // one Next not applied yet, and presses past the end of the playlist are
@@ -790,7 +787,7 @@ func TestChannel_NavigationBeforeTick(t *testing.T) {
 		{"next at the last item", "d", "nnp", "d"},
 		{"next at the last item completes", "d", "nn", ""},
 	}
-	for _, fps := range programRates {
+	for _, fps := range channelRates {
 		for _, tc := range cases {
 			t.Run(fmt.Sprintf("%.3f/%s", fps, tc.name), func(t *testing.T) {
 				ch := NewChannel(1, ChannelConfig{
@@ -857,6 +854,49 @@ func TestChannel_NavigationBeforeTick(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestChannel_StatusNamesTheItemAiringNext: the status's next item is the
+// one the pending Next presses land on, or the one a transition brings
+// in, not the one after the cursor.
+func TestChannel_StatusNamesTheItemAiringNext(t *testing.T) {
+	for _, fps := range channelRates {
+		t.Run(fmt.Sprintf("%.3f", fps), func(t *testing.T) {
+			ch := NewChannel(1, ChannelConfig{
+				FPS:                  fps,
+				AssetProvider:        fakeProvider(3),
+				AllowedLocalPrefixes: []string{"/"},
+			})
+			pl := testPlaylist(liveItem("a", "cam-1"), liveItem("b", "cam-2"),
+				liveItem("c", "cam-3"), liveItem("d", "cam-4"))
+			pl.DefaultTransition = TransitionConfig{Type: "dissolve", DurationMs: 1000}
+			require.NoError(t, ch.LoadPlaylist(pl))
+			ch.mu.Lock()
+			ch.state = StateOnAir
+			ch.scheduler.Start()
+			ch.mu.Unlock()
+			wall := time.Unix(0, 0)
+			now := func() time.Time { return wall }
+			k := tickClock{period: ch.frameDuration, next: wall.Add(ch.frameDuration)}
+			tick := func() {
+				wall = wall.Add(ch.frameDuration)
+				ch.runDue(&k, now)
+			}
+			tick()
+			require.Equal(t, "b", ch.Status().NextItemID)
+
+			require.NoError(t, ch.Next())
+			require.NoError(t, ch.Next())
+			require.Equal(t, "c", ch.Status().NextItemID, "pending presses")
+			tick()
+			require.Equal(t, SchedTransitioning, ch.scheduler.State())
+			st := ch.Status()
+			require.Equal(t, "a", st.CurrentItemID)
+			require.Equal(t, "c", st.NextItemID, "during the transition")
+			require.NoError(t, ch.Next())
+			require.Equal(t, "d", ch.Status().NextItemID, "a press during the transition")
+		})
 	}
 }
 

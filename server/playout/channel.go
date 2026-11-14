@@ -326,8 +326,8 @@ func (c *Channel) Status() ChannelStatus {
 				st.LoopExit = snap.LoopExit
 			}
 		}
-		if snap.Cursor+1 < len(pl.Items) {
-			next := pl.Items[snap.Cursor+1]
+		if snap.Next < len(pl.Items) {
+			next := pl.Items[snap.Next]
 			st.NextItemID = next.ID
 			st.NextTitle = next.Title
 		}

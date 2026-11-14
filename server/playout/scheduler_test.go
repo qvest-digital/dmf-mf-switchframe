@@ -1401,3 +1401,49 @@ func TestScheduler_NextPressesStopAtPlaylistEnd(t *testing.T) {
 	require.NoError(t, s.Next())
 	require.True(t, s.Tick(now.Add(2*time.Millisecond)).Completed)
 }
+
+// TestScheduler_NextPressesBoundedFromTheIncomingItem: during a transition
+// into the last item, presses count from that item, so the playlist end
+// bounds them there: two presses keep one, which a Previous takes back,
+// and the last item stays on air.
+func TestScheduler_NextPressesBoundedFromTheIncomingItem(t *testing.T) {
+	s := NewScheduler()
+	pl := schedPlaylist(schedLiveItem("a", "cam-1"), schedLiveItem("b", "cam-2"), schedLiveItem("c", "cam-3"))
+	pl.DefaultTransition = TransitionConfig{Type: "dissolve", DurationMs: 500}
+	require.NoError(t, s.LoadPlaylist(pl))
+	s.Start()
+	now := time.Now()
+	s.Tick(now)
+	require.NoError(t, s.Next())
+	require.NoError(t, s.Next())
+	d := s.Tick(now)
+	require.NotNil(t, d.Transition)
+	require.Equal(t, "c", d.Transition.Incoming.ID)
+
+	require.NoError(t, s.Next())
+	require.NoError(t, s.Next())
+	require.NoError(t, s.Previous())
+	d = s.Tick(now.Add(501 * time.Millisecond))
+	require.Equal(t, "c", d.Item.ID)
+	d = s.Tick(now.Add(502 * time.Millisecond))
+	require.False(t, d.Completed, "a press past the end survived the bound")
+	require.Equal(t, "c", d.Item.ID)
+}
+
+// TestScheduler_NextPressesCompleteFromIdleWait: in a wait for the last
+// item, a press past it completes the playlist.
+func TestScheduler_NextPressesCompleteFromIdleWait(t *testing.T) {
+	s := NewScheduler()
+	now := time.Now()
+	future := now.Add(10 * time.Second)
+	b := schedSlateItem("b", 5000)
+	b.ScheduledTime = &future
+	require.NoError(t, s.LoadPlaylist(schedPlaylist(schedSlateItem("a", 100), b)))
+	s.Start()
+	s.Tick(now)
+	require.True(t, s.Tick(now.Add(101*time.Millisecond)).IsIdle)
+
+	require.NoError(t, s.Next())
+	require.NoError(t, s.Next())
+	require.True(t, s.Tick(now.Add(200*time.Millisecond)).Completed)
+}
