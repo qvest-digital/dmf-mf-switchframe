@@ -322,30 +322,41 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 // arrivalSlack is how far ahead of its arrival a source's audio may be
 // placed to continue the audio it delivered before: two AAC frames. A
 // source that hands over its AAC frames with its video frames, as the
-// clip player and the replay player do, delivers 1024 samples a frame
-// period, none in some periods; placed by each arrival, its audio steps
-// back and forth by about an AAC frame, and a step past a period, which
-// scheduling jitter makes likely, is spliced.
+// replay player does, delivers 1024 samples a frame period, none in some
+// periods; placed by each arrival, its audio steps back and forth by
+// about an AAC frame, and a step past a period, which scheduling jitter
+// makes likely, is spliced.
 const arrivalSlack = 2 * 1024
 
 // arrivalLate is how far behind its arrival a source's audio may be placed
-// to continue the audio before it: 256 samples, 5.3 ms. The read point is
-// two frame periods behind the clock, and a read reaches up to one frame
-// period (16.7 ms at 60 fps) before it; audio placed further behind its
-// arrival than that would be missing when read.
+// to continue the audio before it once that audio has all been read: 256
+// samples, 5.3 ms. The read point is two frame periods behind the clock,
+// and a read reaches up to one frame period (16.7 ms at 60 fps) before it;
+// audio placed further behind its arrival than that would be missing when
+// read. While an active channel holds audio before it that is due and
+// unread, a push continues it up to arrivalSlack late.
 const arrivalLate = 256
 
 // stampArrival places the n samples just pushed for a source without a
 // media clock right after the source's audio before them, when they
-// arrive between arrivalSlack before and arrivalLate after that ends, and
-// otherwise at their arrival. A source whose rate is off the mixer's by
-// more than those bounds allow is placed again at its arrival each time it
-// leaves them.
+// arrive between arrivalSlack before and arrivalLate after that ends, or
+// arrivalSlack after while some of it is due and unread, and otherwise at
+// their arrival. A source whose rate is off the mixer's by more than those
+// bounds allow is placed again at its arrival each time it leaves them.
 func (m *Mixer) stampArrival(ch *Channel, n int) {
 	pts := clock.ArrivalPTS(n, m.sampleRate)
 	if ch.ringEnd != 0 {
 		ns := func(samples int) int64 { return int64(samples) * 1_000_000_000 / int64(m.sampleRate) }
-		if d := clock.TimestampOf(pts) - ch.ringEnd; d <= ns(arrivalLate) && d >= -ns(arrivalSlack) {
+		late := ns(arrivalLate)
+		if ch.active && ch.ringBuf.FrameCount()-m.delaySamples(ch) > n {
+			// Audio before this push is due and unread, so no read has
+			// passed the place that continues it: a push that came late
+			// is jitter, and placed at its arrival it would move all of
+			// that audio later. A channel's delay is held unread and an
+			// inactive channel is never read, so neither shows that.
+			late = ns(arrivalSlack)
+		}
+		if d := clock.TimestampOf(pts) - ch.ringEnd; d <= late && d >= -ns(arrivalSlack) {
 			ch.ringEnd += ns(n)
 			return
 		}
