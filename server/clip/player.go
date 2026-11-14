@@ -211,6 +211,12 @@ type Player struct {
 	held     *heldSlot
 	onTick   bool
 	tickNext int64
+	// tickNotes holds the starts StartAt made, measured on the tick, for
+	// the goroutine to report (noteStart): reporting logs and updates
+	// metrics, which the tick does not wait for.
+	tickNotes  [2]startNote
+	tickNoted  int
+	onTickNote bool
 
 	// Timed audio. audioRem carries the remainder of the 90 kHz audio
 	// steps; audioPassStart is where the pass of the audio clip under way
@@ -380,6 +386,8 @@ func (p *Player) putOut(h *heldSlot, pts int64, put func(int64)) {
 // nothing: the picture is staged and the start tick's PCM decoded while
 // the player waits (StageVideo, cuePCM).
 func (p *Player) startOnTick(h *heldSlot, readPTS int64) {
+	p.onTickNote = true
+	defer func() { p.onTickNote = false }()
 	p.placeAudio(readPTS)
 	p.noteStart("video")
 	p.putOut(h, readPTS, h.put)
@@ -1204,6 +1212,10 @@ func (p *Player) start(ctx context.Context, h *heldSlot, outputPTS *int64) (onTi
 	p.started = true
 	if onTick {
 		*outputPTS = p.tickNext
+		for _, n := range p.tickNotes[:p.tickNoted] {
+			p.config.OnStart(n.media, n.delay, p.preroll)
+		}
+		p.tickNoted = 0
 		return true, false
 	}
 	if p.config.Timed {
@@ -1292,12 +1304,28 @@ func (p *Player) awaitRelease(ctx context.Context, h *heldSlot) (onTick, cancell
 	}
 }
 
-// noteStart reports the first output of media to OnStart.
+// startNote is a start noteStart measured and has not reported yet.
+type startNote struct {
+	media string
+	delay time.Duration
+}
+
+// noteStart reports the first output of media to OnStart, timed from the
+// release. On a tick (startOnTick) it only measures it, and the
+// goroutine reports it as it goes on.
 func (p *Player) noteStart(media string) {
 	if p.config.OnStart == nil {
 		return
 	}
-	p.config.OnStart(media, time.Since(time.Unix(0, p.releasedAt.Load())), p.preroll)
+	d := time.Since(time.Unix(0, p.releasedAt.Load()))
+	if p.onTickNote {
+		if p.tickNoted < len(p.tickNotes) {
+			p.tickNotes[p.tickNoted] = startNote{media, d}
+			p.tickNoted++
+		}
+		return
+	}
+	p.config.OnStart(media, d, p.preroll)
 }
 
 // keepOnTimeline moves a timed player's PTS, its video and its AAC, onto

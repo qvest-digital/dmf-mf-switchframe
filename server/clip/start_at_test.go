@@ -680,3 +680,54 @@ func TestCuedPlayerPutsOrDropsEveryStagedFrameOnce(t *testing.T) {
 		})
 	}
 }
+
+// The start on a program tick reports itself (OnStart) from the player's
+// goroutine, as it goes on, not on the tick: a report logs and updates
+// metrics. The delay each report carries is still the one from the
+// release to the tick that started the clip, not to the report.
+func TestCuedPlayerReportsATickStartOffTheTick(t *testing.T) {
+	r := clock.Rate{Num: 50, Den: 1}
+	frames, audio := startClip(r, 48000, 8)
+	rec := &startRec{}
+	cfg := rec.config(r, 48000, frames, audio)
+	const slow = 30 * time.Millisecond
+	type report struct {
+		media   string
+		delay   time.Duration
+		onStart bool // on the goroutine that called StartAt
+	}
+	var mu sync.Mutex
+	var starter string
+	var reports []report
+	cfg.OnStart = func(media string, delay time.Duration, _ string) {
+		mu.Lock()
+		reports = append(reports, report{media, delay, goid() == starter})
+		first := len(reports) == 1
+		mu.Unlock()
+		if first {
+			// A report measured as it is made would carry this.
+			time.Sleep(slow)
+		}
+	}
+	p := NewPlayer(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	p.Start(ctx)
+	t.Cleanup(func() { cancel(); p.Stop(); p.Wait() })
+	require.Eventually(t, func() bool { v, _, _ := rec.snapshot(); return len(v) == 1 }, 2*time.Second, time.Millisecond)
+
+	mu.Lock()
+	starter = goid()
+	mu.Unlock()
+	t0 := time.Now()
+	require.True(t, p.StartAt(timelineRead(r, clock.TAINow())))
+	onTick := time.Since(t0)
+	require.Eventually(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(reports) == 2 }, 2*time.Second, time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	for _, rp := range reports {
+		assert.False(t, rp.onStart, "%s is reported on the tick", rp.media)
+		assert.LessOrEqual(t, rp.delay, onTick, "%s delay runs to the tick, not to the report", rp.media)
+	}
+	assert.Equal(t, "video", reports[0].media)
+	assert.Equal(t, "audio", reports[1].media)
+}
