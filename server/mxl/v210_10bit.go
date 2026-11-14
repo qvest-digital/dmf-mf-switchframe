@@ -243,5 +243,6 @@ func YUV422P10ToV210Into(yuv, out []byte, width, height int) error {
 		}
 	}
 
+	zeroV210Padding(out, width, height)
 	return nil
 }

@@ -182,6 +182,7 @@ func YUV420pToV210Into(yuv, out []byte, width, height int) error {
 	}
 	packRows(0, height/bands)
 	wg.Wait()
+	zeroV210Padding(out, width, height)
 
 	return nil
 }
