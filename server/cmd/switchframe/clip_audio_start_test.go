@@ -142,10 +142,11 @@ func newClipAudioRig(t *testing.T, path string) (*audio.Mixer, *clip.Manager, *s
 // decoder's own delay. The start does not rest on the cut flushing the
 // channel: with the channel only activated, and the audio the previous
 // playback handed over ahead of the clock still in it, the start lands
-// the same.
+// the same. Started on a program tick, as a cut is, the start hands over
+// the PCM it decoded with its cue, and lands the same.
 func TestClipSoundStartsOnItsFirstPicture(t *testing.T) {
 	path, ref := aacfixture.Write(t, t.TempDir(), aacfixture.Clip{Ext: ".ts", Channels: 2, Seconds: 2})
-	for _, mode := range []string{"cut", "mix", "no flush"} {
+	for _, mode := range []string{"cut", "mix", "no flush", "tick"} {
 		t.Run(mode, func(t *testing.T) {
 			m, mgr, rec, c := newClipAudioRig(t, path)
 			for load := 0; load < 2; load++ {
@@ -156,7 +157,7 @@ func TestClipSoundStartsOnItsFirstPicture(t *testing.T) {
 				require.NoError(t, mgr.Load(1, c.ID))
 				rec.cued(t)
 				switch mode {
-				case "cut":
+				case "cut", "tick":
 					m.OnCut("cam", "clip:1")
 				case "mix":
 					m.OnTransitionStart("cam", "clip:1", audio.Crossfade, 1000)
@@ -165,7 +166,13 @@ func TestClipSoundStartsOnItsFirstPicture(t *testing.T) {
 					m.SetActive("clip:1", true)
 				}
 				released := clock.TAINow()
-				require.True(t, mgr.StartCued(1))
+				if mode == "tick" {
+					// The tick after the one running.
+					r50 := clock.Rate{Num: 50, Den: 1}
+					mgr.StartCuedAt(1, clock.IndexPTS(r50, clock.TimestampToIndex(r50, released)+1-clock.ReadDelay(r50)))
+				} else {
+					require.True(t, mgr.StartCued(1))
+				}
 				first := rec.firstPicture(t, released)
 				idx := clock.TimestampToIndex(rate48, clock.TimestampOf(first))
 				const lead = 1920

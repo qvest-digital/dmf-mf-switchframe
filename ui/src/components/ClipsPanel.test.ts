@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, waitFor, fireEvent, screen } from '@testing-library/svelte';
 import ClipsPanel from './ClipsPanel.svelte';
 import type { ControlRoomState, ClipInfo } from '$lib/api/types';
-import { listClipsOnEveryEngine, deleteClip, listRecordingsDualEngine, recordingDownloadUrl } from '$lib/api/switch-api';
+import { listClipsOnEveryEngine, deleteClip, listRecordingsDualEngine, recordingDownloadUrl, clipPlayerLoop } from '$lib/api/switch-api';
 
 vi.mock('$lib/api/switch-api', () => ({
 	listClipsOnEveryEngine: vi.fn().mockResolvedValue([]),
@@ -18,6 +18,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	clipPlayerPause: vi.fn(),
 	clipPlayerStop: vi.fn(),
 	clipPlayerSeek: vi.fn(),
+	clipPlayerLoop: vi.fn(),
 	apiCall: vi.fn(),
 }));
 
@@ -58,6 +59,26 @@ describe('ClipsPanel', () => {
 		expect(container.textContent).toContain('Uploaded');
 		expect(container.textContent).toContain('Replay');
 		expect(container.textContent).toContain('Recordings');
+	});
+
+	// A cut or a mix starts a loaded slot in the loop mode the engine holds
+	// for it, so ticking Loop on a loaded slot sends it there at once; it
+	// went out only with a play before, and the next state put the box back.
+	it('sends the loop mode of a loaded slot to the engine', async () => {
+		const state = makeState({
+			clipPlayers: [
+				{ id: 1, clipId: 'c1', clipName: 'Intro Bumper', state: 'loaded', speed: 1.0, loop: false },
+				{ id: 2, state: 'empty' },
+				{ id: 3, state: 'empty' },
+				{ id: 4, state: 'empty' },
+			],
+		});
+		const { container } = render(ClipsPanel, { props: { state } });
+		const box = container.querySelector('.player-card .loop-tick input') as HTMLInputElement;
+		await fireEvent.click(box);
+		expect(clipPlayerLoop).toHaveBeenCalledWith(1, true);
+		await fireEvent.click(box);
+		expect(clipPlayerLoop).toHaveBeenLastCalledWith(1, false);
 	});
 
 	it('shows player state from ControlRoomState', () => {

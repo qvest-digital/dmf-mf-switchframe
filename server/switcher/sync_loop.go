@@ -107,12 +107,17 @@ func (s *Switcher) processTick(tick clock.Tick) {
 	// take effect at the frame boundary of this tick.
 	s.drainCommandQueue()
 
+	// One snapshot of what is on program serves the whole tick, so its
+	// audio and its video agree on it.
+	hs := s.hotState.Load()
+	s.noteProgramTick(hs, tick)
+
 	// A transition advances before the tick's audio is produced, so the
 	// audio ramps to the position the tick's video shows instead of one
 	// period behind it. A tick whose video is shed does not advance it.
 	var step *transitionStep
 	if s.ticksBehind == 0 {
-		step = s.advanceTransition(tick)
+		step = s.advanceTransition(tick, hs)
 	}
 
 	// === AUDIO (never skipped) ===
@@ -127,7 +132,33 @@ func (s *Switcher) processTick(tick clock.Tick) {
 		return
 	}
 
-	s.processVideoTickAt(tick, step)
+	s.processVideoTickAt(tick, hs, step)
+}
+
+// noteProgramTick calls the SetOnProgramTick callback with the sources hs
+// shows as program that the tick before did not.
+//
+// Cut publishes hotState before it hands the cut to the mixer, outside
+// configMu, so the first tick that shows the source cut to can run before
+// the mixer has taken the cut. The source starts on that tick all the
+// same; whether the mixer airs it on that tick is up to Cut's ordering,
+// not to this call. StartTransition hands the mix to the mixer first.
+func (s *Switcher) noteProgramTick(hs *hotState, tick clock.Tick) {
+	shown := [2]string{hs.programSource}
+	if hs.state.isInTransition() && hs.transEngine != nil {
+		shown[1] = hs.transEngine.ToSource()
+	}
+	prev := s.tickProgram
+	s.tickProgram = shown
+	fn := s.onProgramTick.Load()
+	if fn == nil || *fn == nil {
+		return
+	}
+	for _, key := range shown {
+		if key != "" && key != prev[0] && key != prev[1] {
+			(*fn)(key, tick.ReadPTS)
+		}
+	}
 }
 
 // transitionStep is a transition's position for one tick.
@@ -137,10 +168,10 @@ type transitionStep struct {
 	complete bool
 }
 
-// advanceTransition advances the transition in progress by one tick and
-// hands the position to the audio. It returns nil outside a transition.
-func (s *Switcher) advanceTransition(tick clock.Tick) *transitionStep {
-	hs := s.hotState.Load()
+// advanceTransition advances the transition in progress in hs by one
+// tick and hands the position to the audio. It returns nil outside a
+// transition.
+func (s *Switcher) advanceTransition(tick clock.Tick, hs *hotState) *transitionStep {
 	if !hs.state.isInTransition() || hs.transEngine == nil {
 		return nil
 	}
@@ -223,13 +254,13 @@ func (s *Switcher) processAudioTick(tick clock.Tick) {
 // configurations without an encoder. Every tick runs a frame: with no
 // program source it is black, as during an FTB hold.
 func (s *Switcher) processVideoTick(tick clock.Tick) {
-	s.processVideoTickAt(tick, nil)
+	s.processVideoTickAt(tick, s.hotState.Load(), nil)
 }
 
-// processVideoTickAt is processVideoTick with the transition position
-// processTick advanced the tick to, or nil to advance it here.
-func (s *Switcher) processVideoTickAt(tick clock.Tick, step *transitionStep) {
-	hs := s.hotState.Load()
+// processVideoTickAt is processVideoTick on the program snapshot hs, with
+// the transition position processTick advanced the tick to, or nil to
+// advance it here.
+func (s *Switcher) processVideoTickAt(tick clock.Tick, hs *hotState, step *transitionStep) {
 	fs := s.frameSync
 	programSource := hs.programSource
 	previewSource := hs.previewSource

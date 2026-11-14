@@ -75,9 +75,9 @@ func (a *App) initClips() error {
 			return pf.FPSNum, pf.FPSDen
 		},
 		EncoderFactory: clipRelayEncoderFactory(previewW, previewH, a.cfg.PreviewBitrate),
-		// A loaded slot is a source, cued on its first picture, and a cut
-		// or a transition to it starts it (SetOnAir below) on the next
-		// program tick.
+		// A loaded slot is a source, cued on its first picture, and the
+		// first program tick that shows it starts it (SetOnProgramTick
+		// below) on that tick.
 		Timed:    true,
 		PCMCodec: filepcm.Codec(),
 	})
@@ -195,43 +195,11 @@ func (a *App) initClips() error {
 			}
 		}
 
-		// Copy (and scale, if the clip resolution differs from the pipeline
-		// format) into a frame buffer acquired per frame. The ingested frame
-		// is retained by the frame-sync ring — and as the freeze-repeat
-		// lastRawVideo — across ticks, so it must not alias any buffer the
-		// decode goroutine reuses (the decoder's scratch/hold buffers, or the
-		// per-player persistent scale buffer this path previously used, which
-		// produced torn frames whenever the next decode overwrote pixels
-		// under the sync loop).
-		pf := a.sw.PipelineFormat()
-		pool := a.sw.GetFramePool()
-		outW, outH := w, h
-		var outYUV []byte
-		var pooled bool
-		if w != pf.Width || h != pf.Height {
-			outYUV, pooled = scaleClipFrame(pool, yuv, w, h, pf.Width, pf.Height)
-			outW, outH = pf.Width, pf.Height
-		} else {
-			outYUV, pooled = acquireClipFrameBuf(pool, len(yuv))
-			copy(outYUV, yuv)
-		}
-
-		frame := &switcher.ProcessingFrame{
-			Data:       outYUV,
-			Width:      outW,
-			Height:     outH,
-			PTS:        pts,
-			DTS:        pts,
-			IsKeyframe: isKeyframe,
-		}
-		if pooled {
-			frame.SetPool(pool)
-		}
-		// Managed lifecycle: the ring owns this reference and sync-loop
-		// consumers borrow their own (see ProcessingFrame.Ref invariant).
-		frame.SetRefs(1)
-		a.sw.IngestReplayVideo(key, frame)
+		a.sw.IngestReplayVideo(key, clipFrame(a.sw, yuv, w, h, pts, isKeyframe))
 	})
+	// A cued slot's first picture is copied and scaled while it waits, so
+	// the program tick that starts it only hands the frame over.
+	mgr.SetRawVideoStage(stageClipFrame(a.sw))
 
 	// Video output: forward H.264 wire data from clip players to per-player
 	// MoQ relays for browser playback. The player may re-encode (8-bit) or
@@ -320,8 +288,9 @@ func (a *App) initClips() error {
 
 	a.wireClipAudio(mgr)
 
-	// A cut or a transition to a slot's source starts the clip it holds.
-	a.sw.SetOnAir(startClipOnAir(mgr))
+	// The first program tick that shows a slot's source, after a cut or
+	// as a transition starts, starts the clip it holds.
+	a.sw.SetOnProgramTick(startClipOnProgramTick(mgr))
 
 	// State change broadcasts.
 	mgr.SetOnStateChange(func() {
@@ -370,6 +339,57 @@ func (a *App) wireClipAudio(mgr *clip.Manager) {
 	})
 }
 
+// clipFrame copies a decoded clip picture, and scales it when the clip's
+// size is not the pipeline's, into a frame buffer acquired per frame. The
+// ingested frame is retained by the frame-sync ring, and as the
+// freeze-repeat lastRawVideo, across ticks, so it must not alias any
+// buffer the decode goroutine reuses (the decoder's scratch and hold
+// buffers, or a per-player scale buffer, which tore frames whenever the
+// next decode overwrote pixels under the sync loop).
+func clipFrame(sw *switcher.Switcher, yuv []byte, w, h int, pts int64, isKeyframe bool) *switcher.ProcessingFrame {
+	pf := sw.PipelineFormat()
+	pool := sw.GetFramePool()
+	outW, outH := w, h
+	var outYUV []byte
+	var pooled bool
+	if w != pf.Width || h != pf.Height {
+		outYUV, pooled = scaleClipFrame(pool, yuv, w, h, pf.Width, pf.Height)
+		outW, outH = pf.Width, pf.Height
+	} else {
+		outYUV, pooled = acquireClipFrameBuf(pool, len(yuv))
+		copy(outYUV, yuv)
+	}
+	frame := &switcher.ProcessingFrame{
+		Data:       outYUV,
+		Width:      outW,
+		Height:     outH,
+		PTS:        pts,
+		DTS:        pts,
+		IsKeyframe: isKeyframe,
+	}
+	if pooled {
+		frame.SetPool(pool)
+	}
+	// Managed lifecycle: the ring owns this reference and sync-loop
+	// consumers borrow their own (see ProcessingFrame.Ref invariant).
+	frame.SetRefs(1)
+	return frame
+}
+
+// stageClipFrame returns the clip manager's stage for a cued player's
+// first picture: the frame is made at once, and put hands it to sw
+// stamped pts.
+func stageClipFrame(sw *switcher.Switcher) func(key string, yuv []byte, w, h int, isKeyframe bool) (func(int64), func()) {
+	return func(key string, yuv []byte, w, h int, isKeyframe bool) (func(int64), func()) {
+		frame := clipFrame(sw, yuv, w, h, 0, isKeyframe)
+		put := func(pts int64) {
+			frame.PTS, frame.DTS = pts, pts
+			sw.IngestReplayVideo(key, frame)
+		}
+		return put, frame.ReleaseYUV
+	}
+}
+
 // scaleClipFrame scales a decoded clip frame to the target dimensions into a
 // freshly acquired buffer and reports whether that buffer is pool-owned.
 //
@@ -396,13 +416,13 @@ func acquireClipFrameBuf(pool *switcher.FramePool, size int) ([]byte, bool) {
 	return make([]byte, size), false
 }
 
-// startClipOnAir returns the switcher's on-air callback for the clip
-// players: a cut or a transition to a slot's source starts the clip it
-// holds and does not play, from its cue.
-func startClipOnAir(mgr *clip.Manager) func(key string) {
-	return func(key string) {
+// startClipOnProgramTick returns the switcher's program tick callback for
+// the clip players: the first tick that shows a slot's source starts the
+// clip it holds and does not play, from its cue, on that tick.
+func startClipOnProgramTick(mgr *clip.Manager) func(key string, readPTS int64) {
+	return func(key string, readPTS int64) {
 		if strings.HasPrefix(key, "clip:") {
-			mgr.StartCued(clipPlayerIDFromKey(key))
+			mgr.StartCuedAt(clipPlayerIDFromKey(key), readPTS)
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,6 +31,9 @@ type Manager struct {
 	store   *Store
 	config  ManagerConfig
 	players [MaxPlayers]*playerSlot
+	// cue[idx] is players[idx].cue, set and cleared with it under mu, for
+	// StartCuedAt, which runs on a program tick and does not wait for mu.
+	cue [MaxPlayers]atomic.Pointer[Player]
 	// loading[idx] is the clip a Load on the slot is demuxing, nil when none.
 	// Reported in PlayerStates so a peer engine that already shows the clip
 	// loaded reads this slot as catching up rather than diverged.
@@ -43,6 +47,7 @@ type Manager struct {
 	onPlayerStart  func(playerID int, key string)
 	onPlayerStop   func(playerID int, key string)
 	rawVideoOutput func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool)
+	rawVideoStage  func(key string, yuv []byte, w, h int, isKeyframe bool) (put func(pts int64), drop func())
 	videoOutput    func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte)
 	audioOutput    func(key string, data []byte, pts int64, sampleRate, channels int)
 	pcmOutput      func(key string, pcm []float32, pts int64, channels int, start bool)
@@ -185,7 +190,7 @@ func (m *Manager) Load(playerID int, clipID string) error {
 	// If slot already has content, eject first. Timed, its source stays.
 	hadClip := m.players[idx] != nil
 	if slot := m.players[idx]; slot != nil {
-		if stopCue := takeCueLocked(slot); stopCue != nil {
+		if stopCue := m.takeCueLocked(idx); stopCue != nil {
 			m.mu.Unlock()
 			stopCue()
 			m.mu.Lock()
@@ -267,14 +272,16 @@ func (m *Manager) Load(playerID int, clipID string) error {
 	return nil
 }
 
-// takeCueLocked takes the cued player out of slot and returns what stops
-// it, to run without m.mu, or nil when the slot has none.
-func takeCueLocked(slot *playerSlot) func() {
+// takeCueLocked takes the cued player out of slot idx and returns what
+// stops it, to run without m.mu, or nil when the slot has none.
+func (m *Manager) takeCueLocked(idx int) func() {
+	slot := m.players[idx]
 	p, cancel, closer := slot.cue, slot.cueCancel, slot.cueCloser
 	if p == nil {
 		return nil
 	}
 	slot.cue, slot.cueCancel, slot.cueCloser = nil, nil, nil
+	m.cue[idx].Store(nil)
 	return func() {
 		cancel()
 		p.Stop()
@@ -556,7 +563,7 @@ func (m *Manager) Eject(playerID int) error {
 	cancel := slot.cancel
 	closer := slot.decoderCloser
 	stopCb := m.onPlayerStop
-	stopCue := takeCueLocked(slot)
+	stopCue := m.takeCueLocked(idx)
 	m.players[idx] = nil
 	m.mu.Unlock()
 
@@ -629,6 +636,7 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 
 	p, cancel, closer := slot.cue, slot.cueCancel, slot.cueCloser
 	slot.cue, slot.cueCancel, slot.cueCloser = nil, nil, nil
+	m.cue[idx].Store(nil)
 	cued := p != nil
 	var ctx context.Context
 	if cued {
@@ -690,6 +698,53 @@ func (m *Manager) StartCued(playerID int) bool {
 	return m.Play(playerID, speed, loop) == nil
 }
 
+// StartCuedAt starts a slot's cue as StartCued does, on the program tick
+// whose read point is readPTS (Player.StartAt). It runs on that tick, so
+// it waits for no lock of the manager: the slot takes the started player
+// as its own, and the state change is reported, apart. A slot without a
+// cue starts nothing.
+func (m *Manager) StartCuedAt(playerID int, readPTS int64) {
+	if validatePlayerID(playerID) != nil {
+		return
+	}
+	if p := m.cue[playerID-1].Load(); p != nil && p.StartAt(readPTS) {
+		go m.playCue(playerID, p)
+	}
+}
+
+// playCue makes p, the cue of a slot StartCuedAt started, the slot's
+// player, as StartCued does, and reports the start. A slot that dropped
+// the cue meanwhile is left alone.
+func (m *Manager) playCue(playerID int, p *Player) {
+	idx := playerID - 1
+	m.mu.Lock()
+	slot := m.players[idx]
+	ours := slot != nil && (slot.cue == p || slot.player == p)
+	m.promoteCueLocked(idx)
+	m.mu.Unlock()
+	if ours {
+		m.notifyStateChange()
+	}
+}
+
+// promoteCueLocked makes the cue of slot idx its player once a program
+// tick started it (StartCuedAt): until playCue runs, the slot would read
+// as loaded and refuse a stop, a pause or a seek of the clip it plays.
+// Caller holds m.mu.
+func (m *Manager) promoteCueLocked(idx int) {
+	slot := m.players[idx]
+	if slot == nil || slot.player != nil || slot.cue == nil || !slot.cue.released() {
+		return
+	}
+	slot.player, slot.cancel, slot.decoderCloser = slot.cue, slot.cueCancel, slot.cueCloser
+	slot.cue, slot.cueCancel, slot.cueCloser = nil, nil, nil
+	m.cue[idx].Store(nil)
+	if slot.speed < 0.25 || slot.speed > 2.0 {
+		slot.speed = 1.0
+	}
+	m.log.Info("clip playback started", "player", idx+1, "speed", slot.speed, "loop", slot.loop, "cued", true)
+}
+
 // cueLocked gives a slot that holds a clip and plays none a cued player,
 // which decodes the clip's first picture and holds it. Caller holds m.mu.
 func (m *Manager) cueLocked(idx int, slot *playerSlot) {
@@ -707,6 +762,7 @@ func (m *Manager) cueLocked(idx int, slot *playerSlot) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	slot.cue, slot.cueCancel, slot.cueCloser = p, cancel, closer
+	m.cue[idx].Store(p)
 	p.Start(ctx)
 }
 
@@ -725,6 +781,7 @@ func (m *Manager) newPlayer(idx int, slot *playerSlot, speed float64, loop, cued
 
 	// Capture output callbacks once under lock — avoids per-frame mutex in hot path.
 	rawVideoFn := m.rawVideoOutput
+	stageFn := m.rawVideoStage
 	videoFn := m.videoOutput
 	audioFn := m.audioOutput
 	pcmFn := m.pcmOutput
@@ -793,6 +850,7 @@ func (m *Manager) newPlayer(idx int, slot *playerSlot, speed float64, loop, cued
 				rawVideoFn(key, yuv, w, h, pts, isKeyframe)
 			}
 		},
+		StageVideo: stageVideo(key, stageFn),
 		VideoOutput: func(wireData []byte, pts int64, isKeyframe bool, sps, pps []byte) {
 			if videoFn != nil {
 				videoFn(key, wireData, pts, isKeyframe, sps, pps)
@@ -835,6 +893,7 @@ func (m *Manager) Pause(playerID int) error {
 	idx := playerID - 1
 
 	m.mu.Lock()
+	m.promoteCueLocked(idx)
 	slot := m.players[idx]
 	if slot == nil || slot.player == nil {
 		m.mu.Unlock()
@@ -857,6 +916,7 @@ func (m *Manager) Resume(playerID int) error {
 	idx := playerID - 1
 
 	m.mu.Lock()
+	m.promoteCueLocked(idx)
 	slot := m.players[idx]
 	if slot == nil || slot.player == nil {
 		m.mu.Unlock()
@@ -879,6 +939,7 @@ func (m *Manager) Stop(playerID int) error {
 	idx := playerID - 1
 
 	m.mu.Lock()
+	m.promoteCueLocked(idx)
 	slot := m.players[idx]
 	if slot == nil || slot.player == nil {
 		m.mu.Unlock()
@@ -931,6 +992,7 @@ func (m *Manager) SetSpeed(playerID int, speed float64) error {
 	idx := playerID - 1
 
 	m.mu.Lock()
+	m.promoteCueLocked(idx)
 	slot := m.players[idx]
 	if slot == nil || slot.player == nil {
 		m.mu.Unlock()
@@ -981,6 +1043,7 @@ func (m *Manager) Seek(playerID int, position float64) error {
 	idx := playerID - 1
 
 	m.mu.Lock()
+	m.promoteCueLocked(idx)
 	slot := m.players[idx]
 	if slot == nil || slot.player == nil {
 		m.mu.Unlock()
@@ -1015,6 +1078,7 @@ func (m *Manager) PlayerStates() []ClipPlayerState {
 			continue
 		}
 
+		m.promoteCueLocked(i)
 		states[i].ClipID = slot.clipID
 		states[i].ClipName = slot.clipName
 
@@ -1064,6 +1128,26 @@ func (m *Manager) SetRawVideoOutput(fn func(key string, yuv []byte, w, h int, pt
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rawVideoOutput = fn
+}
+
+// SetRawVideoStage registers what readies a cued player's held picture
+// for the start on a program tick (PlayerConfig.StageVideo), with the
+// player's source key. Without it the start puts the picture out through
+// SetRawVideoOutput.
+func (m *Manager) SetRawVideoStage(fn func(key string, yuv []byte, w, h int, isKeyframe bool) (put func(pts int64), drop func())) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rawVideoStage = fn
+}
+
+// stageVideo binds fn to key, nil without fn.
+func stageVideo(key string, fn func(string, []byte, int, int, bool) (func(int64), func())) func([]byte, int, int, bool) (func(int64), func()) {
+	if fn == nil {
+		return nil
+	}
+	return func(yuv []byte, w, h int, isKeyframe bool) (func(int64), func()) {
+		return fn(key, yuv, w, h, isKeyframe)
+	}
 }
 
 // SetVideoOutput registers a callback for forwarding original H.264 wire data
@@ -1121,7 +1205,7 @@ func (m *Manager) Close() {
 	var cues []func()
 	for i := range m.players {
 		if m.players[i] != nil {
-			if stop := takeCueLocked(m.players[i]); stop != nil {
+			if stop := m.takeCueLocked(i); stop != nil {
 				cues = append(cues, stop)
 			}
 		}

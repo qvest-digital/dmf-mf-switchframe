@@ -226,6 +226,7 @@ type PCMStream struct {
 	inPass   int64 // of those, read
 	nextPass func() (int64, bool)
 	ended    bool
+	later    bool // a pass after the first is under way
 
 	// Since the last start: source samples fed, output samples
 	// returned, output samples still to drop.
@@ -271,7 +272,7 @@ func (s *PCMStream) Samples() int64 { return s.t.samples() }
 // the pass nextPass gives the next one's length, which starts at clip
 // sample 0, or false to end the stream; nil ends it.
 func (s *PCMStream) Start(pos, passLen int64, nextPass func() (int64, bool)) {
-	s.passLen, s.inPass, s.nextPass, s.ended = passLen, pos, nextPass, false
+	s.passLen, s.inPass, s.nextPass, s.ended, s.later = passLen, pos, nextPass, false, false
 	s.fed, s.put, s.drop, s.out = 0, 0, 0, s.out[:0]
 	if s.rs == nil {
 		s.t.seek(pos)
@@ -291,6 +292,18 @@ func (s *PCMStream) Start(pos, passLen int64, nextPass func() (int64, bool)) {
 	if h > 0 {
 		s.push(s.rs.Resample(s.t.read(int(h))))
 	}
+}
+
+// SetPassLen changes the length of the stream's first pass, which Start
+// set, to passLen without a new start: what the pass read so far reads
+// the same at either length. It reports false, and changes nothing, once
+// the read passed passLen or the pass ended.
+func (s *PCMStream) SetPassLen(passLen int64) bool {
+	if s.later || s.ended || s.inPass > passLen {
+		return false
+	}
+	s.passLen = passLen
+	return true
 }
 
 // Read returns the next n samples per channel, interleaved, fewer only at
@@ -359,7 +372,7 @@ func (s *PCMStream) source(n int) []float32 {
 		if !ok {
 			return nil
 		}
-		s.passLen, s.inPass = next, 0
+		s.passLen, s.inPass, s.later = next, 0, true
 		s.t.seek(0)
 	}
 	n = int(min(int64(n), s.passLen-s.inPass))
