@@ -438,6 +438,29 @@ func TestExtractViewport_BoundaryOverflow(t *testing.T) {
 	}
 }
 
+// startTickerAndWait starts a ticker and returns once its layer is active.
+// The engine renders the strip on its own goroutine and installs the
+// scroll state before it activates the layer, so a frame processed before
+// that does not advance the ticker.
+func startTickerAndWait(t *testing.T, c *Compositor, te *TickerEngine, id int, cfg TickerConfig) {
+	t.Helper()
+	active := make(chan struct{})
+	var once sync.Once
+	c.OnStateChange(func(s State) {
+		for _, l := range s.Layers {
+			if l.ID == id && l.Active {
+				once.Do(func() { close(active) })
+			}
+		}
+	})
+	require.NoError(t, te.Start(id, cfg))
+	select {
+	case <-active:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the ticker never activated its layer")
+	}
+}
+
 func TestTickerEngine_FrameLockedAdvancement(t *testing.T) {
 	// The ticker position must advance by exactly (speed * fpsDen / fpsNum) pixels
 	// per ProcessYUV call, producing perfectly smooth scrolling regardless of
@@ -461,17 +484,13 @@ func TestTickerEngine_FrameLockedAdvancement(t *testing.T) {
 	id, err := c.AddLayer()
 	require.NoError(t, err)
 
-	err = te.Start(id, TickerConfig{
+	startTickerAndWait(t, c, te, id, TickerConfig{
 		Text:     "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789 The quick brown fox",
 		FontSize: 20,
 		Speed:    speed,
 		Loop:     true,
 	})
-	require.NoError(t, err)
 	defer func() { _ = te.Stop(id) }()
-
-	// Give the goroutine time to render the strip and set up state.
-	time.Sleep(50 * time.Millisecond)
 
 	yuv := make([]byte, video.YUV420FrameSize(progW, progH))
 	// Fill Y with 128 (mid-gray) so we can detect overlay changes.
@@ -536,16 +555,13 @@ func TestTickerEngine_FrameLockedMultipleFPS(t *testing.T) {
 			id, err := c.AddLayer()
 			require.NoError(t, err)
 
-			err = te.Start(id, TickerConfig{
+			startTickerAndWait(t, c, te, id, TickerConfig{
 				Text:     "Test text for frame rate verification",
 				FontSize: 20,
 				Speed:    tc.speed,
 				Loop:     true,
 			})
-			require.NoError(t, err)
 			defer func() { _ = te.Stop(id) }()
-
-			time.Sleep(50 * time.Millisecond)
 
 			yuv := make([]byte, video.YUV420FrameSize(320, 240))
 

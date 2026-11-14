@@ -949,7 +949,7 @@ func TestManagerLoadErrorOutlastsLaterFormatCheck(t *testing.T) {
 	waitForStatus(t, mgr, other, "stopped", 2*time.Second)
 
 	require.Equal(t, "error", mgr.BrowserStates()[id].Status)
-	require.Equal(t, 1, countUpdates(mock.getCommands()), "no replay into a failed page")
+	require.Equal(t, 1, countUpdates(commandsSent(t, mgr, mock, id)), "no replay into a failed page")
 
 	// The next load starts afresh.
 	require.NoError(t, mgr.LoadURL(id, "https://templates.test/other.html"))
