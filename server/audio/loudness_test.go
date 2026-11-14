@@ -322,8 +322,14 @@ func TestLoudnessMeterIntegratedBlocksCompaction(t *testing.T) {
 		chunk[i] = float32(0.5 * math.Sin(2*math.Pi*1000*float64(i)/48000))
 	}
 
-	// Phase 1: feed 2,000 blocks (20 calls * 100 blocks/call)
-	for i := 0; i < 20; i++ {
+	// Phase 1: feed 2,000 blocks (20 calls * 100 blocks/call). The test
+	// runs on one goroutine, so the race detector finds nothing in it:
+	// under it, 500 blocks a phase.
+	calls := 20
+	if raceDetector {
+		calls = 5
+	}
+	for i := 0; i < calls; i++ {
 		m.Process(chunk)
 	}
 
@@ -335,8 +341,8 @@ func TestLoudnessMeterIntegratedBlocksCompaction(t *testing.T) {
 		t.Errorf("phase 1: expected LUFS between -30 and 0, got %f", lufs1)
 	}
 
-	// Phase 2: feed another 2,000 blocks — meter should remain stable
-	for i := 0; i < 20; i++ {
+	// Phase 2: feed as many blocks again; the meter should remain stable
+	for i := 0; i < calls; i++ {
 		m.Process(chunk)
 	}
 

@@ -8,6 +8,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// raceFrames returns how many frames of n samples a test resampling from
+// src to dst feeds: frames, or under the race detector, which finds
+// nothing in a test on one goroutine, one cycle of output lengths, after
+// which n*dst/src comes back to a whole number of samples and every
+// rounding of a frame's length has come round.
+func raceFrames(frames, src, dst, n int) int {
+	if raceDetector {
+		return src / gcd(src, n*dst)
+	}
+	return frames
+}
+
 // ============================================================================
 // Core resampler tests
 // ============================================================================
@@ -24,8 +36,8 @@ func TestResamplerOutputLength(t *testing.T) {
 	t.Parallel()
 	r := NewResampler(44100, 48000, 1)
 
-	const frames = 1000
 	const samplesPerFrame = 1024
+	frames := raceFrames(1000, 44100, 48000, samplesPerFrame)
 	totalIn, totalOut := 0, 0
 
 	expectedPerFrame := float64(samplesPerFrame) * 48000.0 / 44100.0
@@ -213,7 +225,7 @@ func TestResamplerMultipleRatePairs(t *testing.T) {
 			t.Parallel()
 			r := NewResampler(tc.src, tc.dst, 1)
 			totalIn, totalOut := 0, 0
-			for i := 0; i < 500; i++ {
+			for i := 0; i < raceFrames(500, tc.src, tc.dst, 1024); i++ {
 				totalOut += len(r.Resample(make([]float32, 1024)))
 				totalIn += 1024
 			}
@@ -494,8 +506,8 @@ func TestResamplerFrameAligned(t *testing.T) {
 	const frameSize = 1024
 	r := NewResampler(44100, 48000, 2)
 
-	// Process 500 frames — every output must be exactly 1024*2 = 2048 samples
-	for i := 0; i < 500; i++ {
+	// Every output must be exactly 1024*2 = 2048 samples
+	for i := 0; i < raceFrames(500, 44100, 48000, frameSize); i++ {
 		input := makeSine(frameSize*2, 1000, 44100) // 1024 stereo samples
 		output := r.ResampleFrameAligned(input, frameSize)
 		require.Equal(t, frameSize*2, len(output),

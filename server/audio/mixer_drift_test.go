@@ -13,14 +13,18 @@ import (
 // the source back onto the read point each time it runs more than one
 // period off, and counts it. The test runs an hour of drift at +100 ppm,
 // 0.36 s, as 6 minutes at +1000 ppm: 0.36 s / 40 ms periods = about 9
-// moves, as many as the hour makes, in a tenth of the ticks.
+// moves, as many as the hour makes, in a tenth of the ticks. It runs on
+// one goroutine, so the race detector finds nothing in it: under it, the
+// same drift runs at +10000 ppm in 36 s.
 func TestDriftingSourceOverAnHour(t *testing.T) {
 	const (
 		fps    = 25
 		period = 48000 / fps // samples per program frame
-		ppm    = 1000
-		ticks  = 360 * fps
 	)
+	ppm, ticks := int64(1000), 360*fps
+	if raceDetector {
+		ppm, ticks = 10_000, 36*fps
+	}
 	start := clock.TAINow()
 	now := start
 	clock.SetTAISource(func() int64 { return now })
@@ -70,10 +74,10 @@ func TestDriftingSourceOverAnHour(t *testing.T) {
 	}
 	moves := m.ChannelRealigns()["srt:cam"]
 	if moves < 8 || moves > 10 {
-		t.Errorf("%d realigns in 100 s at +%d ppm, want about 9 (one per %d-sample period of drift)",
-			moves, ppm, period)
+		t.Errorf("%d realigns in %d s at +%d ppm, want about 9 (one per %d-sample period of drift)",
+			moves, ticks/fps, ppm, period)
 	}
-	t.Logf("+%d ppm for 6 minutes: %d realigns, max ring depth %d samples", ppm, moves, maxDepth)
+	t.Logf("+%d ppm for %d s: %d realigns, max ring depth %d samples", ppm, ticks/fps, moves, maxDepth)
 }
 
 // The same hour of +100 ppm drift, 0.36 s, for a source placed by its own
