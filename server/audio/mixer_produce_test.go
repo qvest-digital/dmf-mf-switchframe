@@ -88,6 +88,8 @@ func TestProduceSamplesCrossfade(t *testing.T) {
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
+	// cam1 is on program and follows video, so the cut fades it out.
+	require.NoError(t, m.SetAFV("cam1", true))
 	m.SetActive("cam1", true)
 	m.SetActive("cam2", true)
 

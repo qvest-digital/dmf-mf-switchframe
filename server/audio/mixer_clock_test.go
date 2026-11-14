@@ -229,13 +229,15 @@ func TestMixer_ProgramMuteProducesSilence(t *testing.T) {
 }
 
 // TestMixer_DipMidpointSilence verifies that at the dip midpoint
-// (position 0.5), both sources produce silent output.
+// (position 0.5), both sources produce silent output. The outgoing source
+// follows video, as a source on program does: one that does not stays on.
 func TestMixer_DipMidpointSilence(t *testing.T) {
 	t.Parallel()
 	m := newProduceTestMixer(t)
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
+	require.NoError(t, m.SetAFV("cam1", true))
 	m.SetActive("cam1", true)
 	m.SetActive("cam2", true)
 

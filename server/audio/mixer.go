@@ -128,6 +128,10 @@ type Channel struct {
 	underruns  int64
 	shortReads int64
 
+	// xfGain is the transition gain the channel aired at the end of the
+	// last period, 0 while inactive. A cut ramp starts from it.
+	xfGain float64
+
 	// Reusable work buffers (hot-path allocation elimination)
 	trimBuf    []float32
 	gainBuf    []float32
@@ -189,7 +193,10 @@ type Mixer struct {
 	// Cut crossfade state: driven by AdvanceCrossfade, once per period.
 	// When cutFramesRemaining > 0, each call advances transCrossfadePosition.
 	cutFramesRemaining int // >0 means cut crossfade in progress
-	cutTotalFrames     int // total frames in cut crossfade (usually 2)
+	cutTotalFrames     int // total frames in cut crossfade (cutRampPeriods)
+	// cutSpans holds, by source key, the gains a cut ramp moves each
+	// active channel between.
+	cutSpans map[string]cutSpan
 
 	// programAFVSource is the source key of the AFV channel currently on
 	// program. Tracked explicitly so OnProgramChange picks the outgoing source
@@ -198,12 +205,13 @@ type Mixer struct {
 	// the rest, causing a click and a nondeterministic mix).
 	programAFVSource string
 
-	// AFV deferred deactivation: when OnProgramChange sets up a crossfade, the
-	// outgoing AFV channel(s) stay active during the ramp and are deactivated
-	// when the cut crossfade completes. A set (not a single key) so that if
-	// several AFV channels are active at once — e.g. OnProgramChange is
-	// re-invoked mid-crossfade — every one of them fades out with the transition
-	// rather than only the first being ramped and the others hard-cut.
+	// Deferred deactivation: when a cut or OnProgramChange sets up a
+	// crossfade, the outgoing AFV channel(s), and a channel put on by a
+	// transition the cut took over, stay active during the ramp, fade out on
+	// it and are deactivated when the cut crossfade completes. A set (not a
+	// single key) so that if several are active at once, after a second cut
+	// mid-crossfade, every one of them fades out rather than only the first
+	// being ramped and the others hard-cut.
 	afvDeactivateOnComplete map[string]struct{}
 
 	// Stinger audio overlay (optional, active during stinger transitions)

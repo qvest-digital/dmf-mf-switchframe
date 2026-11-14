@@ -259,6 +259,8 @@ func TestMixer_TransitionCrossfade(t *testing.T) {
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
+	// cam1 is on program and follows video, so the dissolve fades it out.
+	require.NoError(t, m.SetAFV("cam1", true))
 	m.SetActive("cam1", true)
 	// cam2 starts inactive -- OnTransitionStart should activate it
 

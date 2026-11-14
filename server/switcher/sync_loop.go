@@ -97,8 +97,9 @@ func (s *Switcher) flushAACBuffer() {
 	}
 }
 
-// processTick handles one reference clock tick: audio first (never skipped),
-// then video, skipped while ticksBehind sheds late ticks.
+// processTick handles one reference clock tick: a transition in progress
+// advances, unless the tick's video is shed, then the tick's audio (never
+// skipped), then its video, skipped while ticksBehind sheds late ticks.
 func (s *Switcher) processTick(tick clock.Tick) {
 	s.lastTickAt.Store(time.Now().UnixNano())
 
@@ -114,7 +115,7 @@ func (s *Switcher) processTick(tick clock.Tick) {
 		step = s.advanceTransition(tick)
 	}
 
-	// === AUDIO FIRST (never skipped) ===
+	// === AUDIO (never skipped) ===
 	s.processAudioTick(tick)
 
 	// === VIDEO ===
@@ -288,7 +289,7 @@ func (s *Switcher) pipelineSize() (int, int) {
 // broadcasts the result at the tick's transition position pos.
 //
 // transTypeOrig is the original transition type string captured from the
-// hotState snapshot loaded by the caller (processVideoTick). It must be passed
+// hotState snapshot loaded by the caller (processVideoTickAt). It must be passed
 // in rather than re-read from s.transTypeOrig: that plain field is written
 // under configMu by StartTransition/handleTransitionComplete on API-handler
 // goroutines, so a lockless read here would be a data race (torn string

@@ -3267,9 +3267,6 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	if abortEngine != nil {
 		abortEngine.Stop()
 		s.log.Warn("transition aborted", "reason", "cut override")
-		if abortAudioHandler != nil {
-			abortAudioHandler.OnTransitionAbort(abortAudioToken)
-		}
 	}
 
 	if changed {
@@ -3292,6 +3289,14 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 				audioCut.OnCut(oldProgram, sourceKey)
 			}
 			audioCut.OnProgramChange(sourceKey)
+		}
+		// The aborted transition's audio is released after the cut: the
+		// cut's crossfade takes over from the gains the transition left,
+		// and the abort, stale then, leaves it alone. Released first, it
+		// would put the program back on the old source at full gain for
+		// any period produced before the cut.
+		if abortEngine != nil && abortAudioHandler != nil {
+			abortAudioHandler.OnTransitionAbort(abortAudioToken)
 		}
 		s.notifyOnAir(sourceKey)
 		s.notifyStateChange(snapshot)
