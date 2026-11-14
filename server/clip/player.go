@@ -1168,7 +1168,7 @@ func (p *Player) emitTimedPCM(speed float64, pic, total int, until int64) {
 	case p.pcmFirst:
 		p.pcmFirst, p.pcmResync = false, false
 		p.startPCM(p.pcmBase, 0)
-	case p.pcmResync, p.pcmBase+p.pcmPut*90000/rate < now-clock.ReaderDelayGrains*period:
+	case p.pcmResync, p.pcmBase+p.pcmPut*90000/rate < now-int64(clock.ReadDelay(p.rate))*period:
 		p.pcmResync = false
 		p.startPCM(until, int64(pic)*p.pcmPass(false)/int64(total))
 	}

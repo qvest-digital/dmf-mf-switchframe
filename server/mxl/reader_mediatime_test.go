@@ -221,17 +221,19 @@ func TestAudioReadPTSIsItsFirstSampleOnTAI(t *testing.T) {
 func TestAudioReadFitsTheAudioBudget(t *testing.T) {
 	eachRate(t, func(t *testing.T, lr lateRate) {
 		var period atomic.Int64
-		saved := programPeriod
+		saved, savedDelay := programPeriod, programReadDelay
 		programPeriod = func() int64 { return period.Load() }
-		t.Cleanup(func() { programPeriod = saved })
+		programReadDelay = func() uint64 { return clock.ReadDelay(lr.video) }
+		t.Cleanup(func() { programPeriod, programReadDelay = saved, savedDelay })
 
 		rate := int64(lr.audio)
 		v := lr.video
-		// The budget, (ReaderDelayGrains-1) periods, in samples, and
-		// what a read takes at least: up to a tick per period short of
-		// it, and of a whole sample.
-		budget := float64(rate*(clock.ReaderDelayGrains-1)*v.Den) / float64(v.Num)
-		low := min(float64(rate/100), budget-float64(rate*(clock.ReaderDelayGrains-1))/90000) - 1
+		// The budget, ReadDelay-1 periods, in samples, and what a read
+		// takes at least: up to a tick per period short of it, and of a
+		// whole sample.
+		d := int64(clock.ReadDelay(v)) - 1
+		budget := float64(rate*d*v.Den) / float64(v.Num)
+		low := min(float64(rate/100), budget-float64(rate*d)/90000) - 1
 		reads := func(n int, started func(i int)) []AudioGrain {
 			ra := clock.Rate{Num: rate, Den: 1}
 			head := clock.TimestampToIndex(ra, clock.TAINow())
@@ -365,9 +367,10 @@ var holdRates = []struct {
 func withProgramRate(t *testing.T, frame clock.Rate) time.Duration {
 	t.Helper()
 	ticks := (90000*frame.Den + frame.Num - 1) / frame.Num
-	saved := programPeriod
+	saved, savedDelay := programPeriod, programReadDelay
 	programPeriod = func() int64 { return ticks }
-	t.Cleanup(func() { programPeriod = saved })
+	programReadDelay = func() uint64 { return clock.ReadDelay(frame) }
+	t.Cleanup(func() { programPeriod, programReadDelay = saved, savedDelay })
 	return time.Duration(ticks) * time.Second / 90000
 }
 
@@ -472,7 +475,7 @@ func TestAudioStampedFarAheadDoesNotParkTheReader(t *testing.T) {
 }
 
 // A held read is handed over early enough to make the mixer's read point,
-// ReaderDelayGrains-1 periods after its first sample's media time, even when
+// clock.ReadDelay-1 periods after its first sample's media time, even when
 // it takes as long to get there as measured at 240 fps with every core
 // busy: 17.8 ms from the end of the hold. Decided from the hold itself, so
 // it does not depend on how loaded the machine running the test is.
@@ -483,7 +486,7 @@ func TestAudioReleaseLeadMakesTheReadPointUnderLoad(t *testing.T) {
 			ticks := (90000*tc.frame.Den + tc.frame.Num - 1) / tc.frame.Num
 			period := time.Duration(ticks) * time.Second / 90000
 			lead := audioReleaseLead(ticks)
-			if margin := lead + (clock.ReaderDelayGrains-1)*period; margin < loaded+2*time.Millisecond {
+			if margin := lead + time.Duration(clock.ReadDelay(tc.frame)-1)*period; margin < loaded+2*time.Millisecond {
 				t.Fatalf("a read handed over %v early makes its read point by %v, want at least %v",
 					lead, margin, loaded+2*time.Millisecond)
 			}
