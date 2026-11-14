@@ -131,33 +131,34 @@ func TestProduceSamplesCrossfade(t *testing.T) {
 
 func TestAdvanceCrossfade(t *testing.T) {
 	t.Parallel()
-	m := newProduceTestMixer(t)
+	// AdvanceCrossfade moves a cut ramp on by one period. Each period
+	// starts at the gain the one before ended on and the ramp ends at full
+	// gain, so the incoming source airs with no step anywhere.
+	m, tl := newProduceTestMixer(t), newTimeline()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
-	// Set up a cut crossfade
 	m.OnCut("cam1", "cam2")
 
 	m.mu.RLock()
-	assert.Equal(t, 4, m.cutFramesRemaining)
+	assert.Equal(t, cutRampPeriods, m.cutFramesRemaining)
 	assert.True(t, m.transCrossfadeActive)
 	m.mu.RUnlock()
 
-	// AdvanceCrossfade should advance by one period
-	m.AdvanceCrossfade()
-
-	m.mu.RLock()
-	assert.Equal(t, 3, m.cutFramesRemaining)
-	assert.InDelta(t, 0.25, m.transCrossfadePosition, 0.01)
-	assert.True(t, m.transCrossfadeActive)
-	m.mu.RUnlock()
-
-	// Advance 3 more times to complete
-	for i := 0; i < 3; i++ {
+	const n, level = 960, 0.5
+	for i := 0; i <= cutRampPeriods; i++ {
+		tl.push(m, "cam2", constPCM(n, level), i*n)
+	}
+	var prev float32
+	for k := 0; k <= cutRampPeriods; k++ {
+		out := tl.produce(m, n)
+		assert.InDelta(t, prev, out[0], 1e-6, "period %d starts where the period before ended", k)
+		prev = out[2*(n-1)]
 		m.AdvanceCrossfade()
 	}
+	assert.InDelta(t, level, prev, 1e-6, "the ramp ends at full gain")
 
 	m.mu.RLock()
 	assert.Equal(t, 0, m.cutFramesRemaining)
@@ -224,7 +225,7 @@ func TestMixerCrossfade_ProduceSamplesAndAdvance(t *testing.T) {
 	m.OnCut("cam1", "cam2")
 
 	m.mu.RLock()
-	assert.Equal(t, 4, m.cutFramesRemaining)
+	assert.Equal(t, cutRampPeriods, m.cutFramesRemaining)
 	assert.True(t, m.transCrossfadeActive)
 	m.mu.RUnlock()
 

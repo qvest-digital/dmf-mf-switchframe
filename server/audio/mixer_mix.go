@@ -167,15 +167,31 @@ func (m *Mixer) produceSamplesLocked(start uint64, totalValues int) []float32 {
 	return m.mixAccum[:totalValues]
 }
 
-// advanceCutCrossfade advances the cut crossfade state machine by one period.
-// Must be called with m.mu held.
+// cutRampPeriods is the length of the crossfade a cut starts, in periods.
+const cutRampPeriods = 4
+
+// startCutRampLocked starts the cut crossfade. The period a cut lands on
+// already ramps the incoming source from silence to the first step, so
+// its first sample airs on the cut tick, and the ramp reaches full gain
+// at the end of its last period. Must be called with m.mu held.
+func (m *Mixer) startCutRampLocked() {
+	m.transCrossfadeAudioPos = 0.0
+	m.mixCycleTransPos = 0.0
+	m.transCrossfadePosition = 1.0 / cutRampPeriods
+	m.cutFramesRemaining = cutRampPeriods
+	m.cutTotalFrames = cutRampPeriods
+}
+
+// advanceCutCrossfade advances the cut crossfade state machine by one period:
+// it sets the position the next period ramps to. Must be called with m.mu
+// held.
 func (m *Mixer) advanceCutCrossfade() {
 	if m.cutFramesRemaining <= 0 {
 		return
 	}
 	m.cutFramesRemaining--
 	frameIdx := m.cutTotalFrames - m.cutFramesRemaining
-	m.transCrossfadePosition = float64(frameIdx) / float64(m.cutTotalFrames)
+	m.transCrossfadePosition = min(1.0, float64(frameIdx+1)/float64(m.cutTotalFrames))
 	if m.cutFramesRemaining <= 0 {
 		// Cut crossfade complete: clear all transition state.
 		m.transCrossfadeActive = false
