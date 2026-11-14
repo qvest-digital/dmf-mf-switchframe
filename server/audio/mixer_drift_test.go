@@ -13,14 +13,16 @@ import (
 // the source back onto the read point each time it runs more than one
 // period off, and counts it. The test runs an hour of drift at +100 ppm,
 // 0.36 s, as 6 minutes at +1000 ppm: 0.36 s / 40 ms periods = about 9
-// moves, as many as the hour makes, in a tenth of the ticks.
+// moves, as many as the hour makes, in a tenth of the ticks. Under the race
+// detector, which finds nothing in this one goroutine and runs it many
+// times slower, the same 0.36 s goes by as 36 s at +10000 ppm.
 func TestDriftingSourceOverAnHour(t *testing.T) {
-	const (
-		fps    = 25
-		period = 48000 / fps // samples per program frame
-		ppm    = 1000
-		ticks  = 360 * fps
-	)
+	const fps = 25
+	const period = 48000 / fps // samples per program frame
+	ppm, ticks := int64(1000), 360*fps
+	if raceDetector {
+		ppm, ticks = 10000, 36*fps
+	}
 	start := clock.TAINow()
 	now := start
 	clock.SetTAISource(func() int64 { return now })
@@ -41,7 +43,7 @@ func TestDriftingSourceOverAnHour(t *testing.T) {
 	for tick := 0; tick < ticks; tick++ {
 		now = start + int64(tick)*1_000_000_000/fps
 		// The sender delivers one period of its clock, which runs ppm fast.
-		frac += period * ppm
+		frac += int64(period) * ppm
 		n := int64(period) + frac/1_000_000
 		frac %= 1_000_000
 		m.IngestPCM("srt:cam", pcm[:2*n], clock.ArrivalPTS(int(n), 48000), 2)
@@ -70,10 +72,10 @@ func TestDriftingSourceOverAnHour(t *testing.T) {
 	}
 	moves := m.ChannelRealigns()["srt:cam"]
 	if moves < 8 || moves > 10 {
-		t.Errorf("%d realigns in 100 s at +%d ppm, want about 9 (one per %d-sample period of drift)",
-			moves, ppm, period)
+		t.Errorf("%d realigns in %d s at +%d ppm, want about 9 (one per %d-sample period of drift)",
+			moves, ticks/fps, ppm, period)
 	}
-	t.Logf("+%d ppm for 6 minutes: %d realigns, max ring depth %d samples", ppm, moves, maxDepth)
+	t.Logf("+%d ppm for %d s: %d realigns, max ring depth %d samples", ppm, ticks/fps, moves, maxDepth)
 }
 
 // The same hour of +100 ppm drift, 0.36 s, for a source placed by its own
@@ -149,8 +151,8 @@ func TestDriftingAnchoredSourceOverAnHour(t *testing.T) {
 	// Each move places the ring exactly, so the drift takes no more moves
 	// than placing every batch at its arrival does.
 	if moves < 1 || moves > 10 {
-		t.Errorf("%d realigns in 100 s at +%d ppm, want 1 to 10 (at most one per %d-sample period of drift)",
-			moves, ppm, period)
+		t.Errorf("%d realigns in %d s at +%d ppm, want 1 to 10 (at most one per %d-sample period of drift)",
+			moves, ticks/fps, ppm, period)
 	}
-	t.Logf("+%d ppm for 100 s in bursts: %d realigns, max ring depth %d samples", ppm, moves, maxDepth)
+	t.Logf("+%d ppm for %d s in bursts: %d realigns, max ring depth %d samples", ppm, ticks/fps, moves, maxDepth)
 }
