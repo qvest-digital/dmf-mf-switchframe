@@ -221,3 +221,39 @@ func TestInitCommandQueue_AudioChannelPair(t *testing.T) {
 	require.ErrorIs(t, app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: "audio_channel_pair", Payload: bad}), audio.ErrInvalidChannelPair)
 	require.Equal(t, 3, m.ChannelPair("mxl:cam1"))
 }
+
+// A timed squeeze-back replays what the REST call would have done.
+func TestInitCommandQueue_Squeezeback(t *testing.T) {
+	relay := distribution.NewRelay()
+	sw := switcher.New(relay)
+	defer sw.Close()
+	sw.RegisterSource("cam2", distribution.NewRelay())
+
+	sq := dve.NewSqueeze(1920, 1080)
+	app := &App{sw: sw, squeeze: sq}
+	require.NoError(t, app.initCommandQueue())
+
+	dispatch := func(action string, body map[string]any) error {
+		payload, _ := json.Marshal(body)
+		return app.cmdDispatcher.Dispatch(cmdqueue.Command{Action: action, Payload: payload})
+	}
+	require.Error(t, dispatch("squeezeback_set", map[string]any{
+		"rect": map[string]any{"x": 480, "y": 0, "w": 1440, "h": 810}, "durationMs": dve.MaxMorphDurationMs + 1,
+	}), "durationMs above the cap")
+	require.NoError(t, dispatch("squeezeback_set", map[string]any{
+		"rect": map[string]any{"x": 480, "y": 0, "w": 1440, "h": 810}, "background": "cam2", "durationMs": dve.MaxMorphDurationMs,
+		"executeAt": 1,
+	}))
+	require.NoError(t, dispatch("squeezeback_on", map[string]any{"executeAt": 1}))
+	st := sq.Snapshot()
+	require.True(t, st.On)
+	require.True(t, st.Animating, "on takes the configured duration")
+	require.Equal(t, "cam2", sq.BackgroundOnAir())
+
+	require.NoError(t, dispatch("squeezeback_off", map[string]any{"durationMs": 0}))
+	require.False(t, sq.Active())
+
+	require.Error(t, dispatch("squeezeback_set", map[string]any{
+		"rect": map[string]any{"x": 0, "y": 0, "w": 960, "h": 540}, "background": "nope",
+	}))
+}

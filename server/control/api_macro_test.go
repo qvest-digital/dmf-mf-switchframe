@@ -696,3 +696,33 @@ func TestMacroLayoutPreset_DurationAnimates(t *testing.T) {
 	require.Len(t, snaps, 1)
 	require.Greater(t, snaps[0].RectX, 1000, "no durationMs cuts")
 }
+
+func TestMacroSqueezeback(t *testing.T) {
+	_, sw := setupTestAPI(t)
+	sq := dve.NewSqueeze(1920, 1080)
+	target := &apiMacroTarget{switcher: sw, squeeze: sq}
+	run := func(steps ...macro.Step) error {
+		return macro.Run(context.Background(), macro.Macro{Name: "lframe", Steps: steps}, target, nil)
+	}
+
+	require.NoError(t, run(
+		macro.Step{Action: macro.ActionSqueezebackSet, Params: map[string]any{
+			"x": float64(480), "y": float64(0), "w": float64(1440), "h": float64(810),
+			"background": "camera2", "durationMs": float64(dve.MaxMorphDurationMs),
+		}},
+		macro.Step{Action: macro.ActionSqueezebackOn, Params: map[string]any{}},
+	))
+	st := sq.Snapshot()
+	require.Equal(t, dve.Rect{X: 480, W: 1440, H: 810}, st.Rect)
+	require.Equal(t, "camera2", st.Background)
+	require.True(t, st.On)
+	require.True(t, st.Animating, "on without durationMs takes the configured one")
+
+	require.NoError(t, run(macro.Step{Action: macro.ActionSqueezebackOff, Params: map[string]any{"durationMs": float64(0)}}))
+	require.False(t, sq.Active(), "durationMs 0 cuts")
+
+	err := run(macro.Step{Action: macro.ActionSqueezebackSet, Params: map[string]any{
+		"x": float64(0), "y": float64(0), "w": float64(960), "h": float64(540), "background": "nope",
+	}})
+	require.ErrorContains(t, err, "unknown background source")
+}

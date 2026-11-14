@@ -230,6 +230,7 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	keyAdapter := &keyBridgeAdapter{bridge: app.keyBridge, sourceMgr: sourceMgr}
 	compositorAdapter := &compositorStateAdapter{compositor: app.compositor}
 	dveLayoutAdapter := &dveLayoutStateAdapter{dveComp: app.dveCompositor, sourceMgr: sourceMgr}
+	squeezeAdapter := &squeezeStateAdapter{squeeze: app.squeeze, sourceMgr: sourceMgr}
 
 	// Raw sinks — GPU raw sink nodes download to CPU only when active.
 	var gpuRawVideoSink atomic.Pointer[gpu.RawSinkFunc]
@@ -446,7 +447,7 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	}
 
 	// Build GPU pipeline node chain:
-	//   gpu_key → [gpu_neural_key] → gpu_dve → gpu_compositor → [gpu_ai_segment] → gpu_colorgrade → gpu_stmap → raw_sink → gpu_preview_encode → gpu_encode
+	//   gpu_key -> [gpu_neural_key] -> gpu_dve -> gpu_squeezeback -> gpu_compositor -> [gpu_ai_segment] -> gpu_colorgrade -> gpu_stmap -> raw_sink -> gpu_preview_encode -> gpu_encode
 	// Some nodes return nil on unsupported builds (e.g. AI segment on non-TensorRT).
 	neuralKeyNode := gpu.NewGPUNeuralKeyNode(gs.ctx, gs.pool, neuralKeyAdapter, app.cfg.NeuralKeyModelPath)
 	// Inject TensorRT engine into the neural key node if available.
@@ -462,6 +463,7 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 		gpu.NewGPUKeyNode(gs.ctx, gs.pool, keyAdapter),
 		neuralKeyNode,
 		gpu.NewGPULayoutNode(gs.ctx, gs.pool, dveLayoutAdapter),
+		gpu.NewGPUSqueezeNode(gs.ctx, gs.pool, squeezeAdapter),
 		dskNode,
 		gpu.NewGPUAISegmentNode(gs.ctx, gs.pool, segAdapter),
 		gpu.NewGPUColorGradeNode(gs.ctx, colorGradeAdapter),
@@ -1275,6 +1277,31 @@ func (a *compositorStateAdapter) SnapshotVisibleLayers() []gpu.VisibleLayerSnaps
 		}
 	}
 	return result
+}
+
+// squeezeStateAdapter adapts dve.Squeeze to gpu.SqueezeState; the
+// background comes from the GPU source cache.
+type squeezeStateAdapter struct {
+	squeeze   *dve.Squeeze // nil without a squeezeback: the node passes frames through
+	sourceMgr *gpu.GPUSourceManager
+}
+
+func (a *squeezeStateAdapter) Squeeze(width, height int) (gpu.Rect, string, bool) {
+	if a.squeeze == nil {
+		return gpu.Rect{}, "", false
+	}
+	r, ok := a.squeeze.Frame(width, height)
+	if !ok {
+		return gpu.Rect{}, "", false
+	}
+	return gpu.Rect{X: r.Min.X, Y: r.Min.Y, W: r.Dx(), H: r.Dy()}, a.squeeze.Background(), true
+}
+
+func (a *squeezeStateAdapter) GPUFill(sourceKey string) *gpu.GPUFrame {
+	if a.sourceMgr == nil {
+		return nil
+	}
+	return a.sourceMgr.GetFrame(sourceKey)
 }
 
 // dveLayoutStateAdapter adapts dve.Compositor to gpu.LayoutState.

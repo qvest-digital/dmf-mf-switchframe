@@ -53,6 +53,7 @@ const pipelineNodeLabels: Record<string, string> = {
 	// GPU nodes
 	'gpu_key': 'GPU Key',
 	'gpu_layout': 'GPU Layout',
+	'gpu_squeezeback': 'GPU Squeezeback',
 	'gpu_dsk': 'GPU DSK',
 	'gpu_stmap': 'GPU ST Map',
 	'gpu_raw_sink': 'GPU Raw Sink',
@@ -77,6 +78,7 @@ const pipelineNodeOrder = [
 const gpuPipelineNodeOrder = [
 	'gpu_key',
 	'gpu_layout',
+	'gpu_squeezeback',
 	'gpu_dsk',
 	'gpu_stmap',
 	'gpu_raw_sink',

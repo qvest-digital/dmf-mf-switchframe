@@ -373,6 +373,7 @@ type ControlRoomState struct {
 	Presets                []PresetInfo            `json:"presets,omitempty"`
 	Graphics               *GraphicsState          `json:"graphics,omitempty"`
 	Layout                 *LayoutState            `json:"layout,omitempty"`
+	Squeezeback            *SqueezebackState       `json:"squeezeback,omitempty"`
 	Replay                 *ReplayState            `json:"replay,omitempty"`
 	ClipPlayers            []ClipPlayerInfo        `json:"clipPlayers,omitempty"`
 	ClipCount              int                     `json:"clipCount,omitempty"`
@@ -584,6 +585,25 @@ type ClipInfo struct {
 	Height     int    `json:"height"`
 	Ephemeral  bool   `json:"ephemeral,omitempty"`
 	Loop       bool   `json:"loop"`
+}
+
+// SqueezebackState is the squeeze-back (L-frame) for state broadcast. On
+// is the state an on or off moves to; Animating is true until it arrives.
+type SqueezebackState struct {
+	Rect       SqueezebackRect `json:"rect"`
+	Background string          `json:"background,omitempty"`
+	DurationMs int             `json:"durationMs,omitempty"`
+	Easing     string          `json:"easing,omitempty"`
+	On         bool            `json:"on"`
+	Animating  bool            `json:"animating"`
+}
+
+// SqueezebackRect is where the program goes, in pixels of the program frame.
+type SqueezebackRect struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	W float64 `json:"w"`
+	H float64 `json:"h"`
 }
 
 // LayoutState represents the current layout configuration for state broadcast.

@@ -52,7 +52,7 @@ func nodeCategory(name string) string {
 		return "output"
 	case strings.HasPrefix(name, "gpu_"):
 		return "gpu"
-	case name == "dve-compositor" || name == "compositor":
+	case name == "dve-compositor" || name == "squeezeback" || name == "compositor":
 		return "gpu"
 	default:
 		return "decode"

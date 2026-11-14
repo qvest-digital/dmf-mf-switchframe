@@ -673,7 +673,7 @@ func (e *failingEncoder) Close() {}
 
 func TestBuildNodeList_Ordering(t *testing.T) {
 	// The node ordering is architecturally critical:
-	// upstream-key -> dve-compositor -> compositor -> colorgrade -> stmap-program -> raw-sink-mxl -> raw-sink-preview -> h264-encode
+	// upstream-key -> dve-compositor -> squeezeback -> compositor -> colorgrade -> stmap-program -> raw-sink-mxl -> raw-sink-preview -> h264-encode
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(t, programRelay)
 
@@ -692,17 +692,20 @@ func TestBuildNodeList_Ordering(t *testing.T) {
 	defer sw.Close()
 
 	nodes := sw.buildNodeList()
-	require.Len(t, nodes, 8)
+	require.Len(t, nodes, 9)
 	require.Equal(t, "upstream-key", nodes[0].Name())
 	require.Equal(t, "dve-compositor", nodes[1].Name())
-	require.Equal(t, "compositor", nodes[2].Name())
+	// Squeeze-back shrinks keys and PiPs with the program; downstream
+	// graphics stay full frame.
+	require.Equal(t, "squeezeback", nodes[2].Name())
+	require.Equal(t, "compositor", nodes[3].Name())
 	// Where gpu_colorgrade sits: after the downstream keyers, before the
 	// program ST map and every output tap.
-	require.Equal(t, "colorgrade", nodes[3].Name())
-	require.Equal(t, "stmap-program", nodes[4].Name())
-	require.Equal(t, "raw-sink-mxl", nodes[5].Name())
-	require.Equal(t, "raw-sink-preview", nodes[6].Name())
-	require.Equal(t, "h264-encode", nodes[7].Name())
+	require.Equal(t, "colorgrade", nodes[4].Name())
+	require.Equal(t, "stmap-program", nodes[5].Name())
+	require.Equal(t, "raw-sink-mxl", nodes[6].Name())
+	require.Equal(t, "raw-sink-preview", nodes[7].Name())
+	require.Equal(t, "h264-encode", nodes[8].Name())
 }
 
 func TestSetGPUPipeline(t *testing.T) {
@@ -728,7 +731,7 @@ func TestSetGPUPipeline(t *testing.T) {
 	sw.configMu.Unlock()
 
 	// CPU nodes are unchanged — GPU pipeline is a separate path.
-	require.Len(t, nodes, 8)
+	require.Len(t, nodes, 9)
 	require.Equal(t, "upstream-key", nodes[0].Name())
 
 	// Verify GPU pipeline runner is stored.

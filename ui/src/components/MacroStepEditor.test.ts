@@ -280,4 +280,32 @@ describe('MacroStepEditor', () => {
 		await fireEvent.input(duration, { target: { value: '800' } });
 		expect(onupdate).toHaveBeenCalledWith('durationMs', 800);
 	});
+
+	it('edits the squeezeback_set rect and background', async () => {
+		const onupdate = vi.fn();
+		const { container } = renderEditor(
+			{ action: 'squeezeback_set', params: { x: 480, y: 0, w: 1440, h: 810 } },
+			{ onupdate },
+		);
+		const x = container.querySelector('.squeeze-x-input') as HTMLInputElement;
+		expect(x.value).toBe('480');
+		const bg = container.querySelector('.squeeze-background-select') as HTMLSelectElement;
+		expect(bg.value).toBe(''); // no background is black
+
+		await fireEvent.change(bg, { target: { value: 'cam2' } });
+		expect(onupdate).toHaveBeenCalledWith('background', 'cam2');
+	});
+
+	it('leaves squeezeback_on duration unset to take the configured one', async () => {
+		const onupdate = vi.fn();
+		const { container } = renderEditor({ action: 'squeezeback_on', params: {} }, { onupdate });
+		expect(container.querySelector('.squeeze-x-input')).toBeFalsy();
+		const duration = container.querySelector('.squeeze-duration-input') as HTMLInputElement;
+		expect(duration.value).toBe('');
+
+		await fireEvent.input(duration, { target: { value: '0' } });
+		expect(onupdate).toHaveBeenCalledWith('durationMs', 0);
+		await fireEvent.input(duration, { target: { value: '' } });
+		expect(onupdate).toHaveBeenLastCalledWith('durationMs', undefined);
+	});
 });

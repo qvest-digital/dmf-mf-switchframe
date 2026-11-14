@@ -86,6 +86,7 @@ func (a *App) initCommandQueue() error {
 	a.registerGraphicsActions(dispatcher)
 	a.registerKeyActions(dispatcher)
 	a.registerDVEActions(dispatcher)
+	a.registerSqueezeActions(dispatcher)
 	a.registerSourceActions(dispatcher)
 	a.registerFormatActions(dispatcher)
 	a.registerEncoderActions(dispatcher)
@@ -673,6 +674,38 @@ func (a *App) registerDVEActions(d *cmdqueue.Dispatcher) {
 		a.dveCompositor.RecallLayout(dveLayoutFromPreset(preset), req.DurationMs, ease.Ease)
 		return nil
 	})
+}
+
+// registerSqueezeActions registers squeeze-back set, on and off dispatch actions.
+func (a *App) registerSqueezeActions(d *cmdqueue.Dispatcher) {
+	d.Register("squeezeback_set", func(payload json.RawMessage) error {
+		if a.squeeze == nil {
+			return nil
+		}
+		var cfg dve.SqueezeConfig
+		if err := json.Unmarshal(payload, &cfg); err != nil {
+			return err
+		}
+		if cfg.Background != "" && !a.sw.HasSource(cfg.Background) {
+			return fmt.Errorf("unknown background source: %s", cfg.Background)
+		}
+		return a.squeeze.Set(cfg)
+	})
+	for action, move := range map[string]func(*dve.Squeeze, dve.SqueezeMove) error{
+		"squeezeback_on":  (*dve.Squeeze).On,
+		"squeezeback_off": (*dve.Squeeze).Off,
+	} {
+		d.Register(action, func(payload json.RawMessage) error {
+			if a.squeeze == nil {
+				return nil
+			}
+			var m dve.SqueezeMove
+			if err := json.Unmarshal(payload, &m); err != nil {
+				return err
+			}
+			return move(a.squeeze, m)
+		})
+	}
 }
 
 // registerSourceActions registers source label, delay, and position dispatch actions.

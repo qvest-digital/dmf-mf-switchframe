@@ -150,6 +150,7 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		aiSegmentMgr:   a.aiSegmentMgr,
 		colorGradeMgr:  a.colorGradeMgr,
 		dveCompositor:  a.dveCompositor,
+		squeeze:        a.squeeze,
 		stmapRegistry:  a.stmapRegistry,
 		textAnimEngine: a.textAnimEngine,
 		tickerEngine:   a.tickerEngine,
@@ -273,6 +274,7 @@ type apiMacroTarget struct {
 	aiSegmentMgr   AISegmentManager
 	colorGradeMgr  ColorGradeManager
 	dveCompositor  *dve.Compositor
+	squeeze        *dve.Squeeze
 	stmapRegistry  *stmap.Registry
 	textAnimEngine *graphics.TextAnimationEngine
 	tickerEngine   *graphics.TickerEngine
@@ -501,6 +503,14 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 		return t.execLayoutSlotSource(params)
 	case macro.ActionLayoutClear:
 		return t.execLayoutClear()
+
+	// Squeeze-back
+	case macro.ActionSqueezebackSet:
+		return t.execSqueezebackSet(params)
+	case macro.ActionSqueezebackOn:
+		return t.execSqueezebackMove(params, true)
+	case macro.ActionSqueezebackOff:
+		return t.execSqueezebackMove(params, false)
 
 	// ST Map
 	case macro.ActionSTMapAssignSource:
@@ -1545,6 +1555,61 @@ func (t *apiMacroTarget) execLayoutClear() error {
 	}
 	t.dveCompositor.SetLayout(nil)
 	return nil
+}
+
+// --- Squeeze-back helpers ---
+
+func (t *apiMacroTarget) execSqueezebackSet(params map[string]any) error {
+	if t.squeeze == nil {
+		return nil
+	}
+	var cfg dve.SqueezeConfig
+	var err error
+	for _, f := range []struct {
+		key string
+		dst *float64
+	}{{"x", &cfg.Rect.X}, {"y", &cfg.Rect.Y}, {"w", &cfg.Rect.W}, {"h", &cfg.Rect.H}} {
+		if *f.dst, err = floatParam(params, f.key, 0); err != nil {
+			return err
+		}
+	}
+	if cfg.Background, err = stringParam(params, "background"); err != nil {
+		return err
+	}
+	if cfg.Background != "" && !t.switcher.HasSource(cfg.Background) {
+		return fmt.Errorf("unknown background source: %s", cfg.Background)
+	}
+	if cfg.DurationMs, err = intParam(params, "durationMs", 0); err != nil {
+		return err
+	}
+	if cfg.Easing, err = stringParam(params, "easing"); err != nil {
+		return err
+	}
+	return t.squeeze.Set(cfg)
+}
+
+// execSqueezebackMove runs On or Off; without durationMs or easing the
+// configured ones apply.
+func (t *apiMacroTarget) execSqueezebackMove(params map[string]any, on bool) error {
+	if t.squeeze == nil {
+		return nil
+	}
+	var m dve.SqueezeMove
+	if _, ok := params["durationMs"]; ok {
+		d, err := intParam(params, "durationMs", 0)
+		if err != nil {
+			return err
+		}
+		m.DurationMs = &d
+	}
+	var err error
+	if m.Easing, err = stringParam(params, "easing"); err != nil {
+		return err
+	}
+	if on {
+		return t.squeeze.On(m)
+	}
+	return t.squeeze.Off(m)
 }
 
 // --- ST Map helpers ---

@@ -178,6 +178,7 @@ type App struct {
 	wipeMapStore   *wipemap.WipeMapStore
 	dveCompositor  *dve.Compositor
 	dvePresetStore *dve.PresetStore
+	squeeze        *dve.Squeeze
 	fastCtrl       *fastctrl.Dispatcher
 	stmapRegistry  *stmap.Registry
 	stmapStore     *stmap.Store
@@ -813,6 +814,10 @@ func (a *App) initSubsystems() error {
 	format := a.sw.PipelineFormat()
 	a.dveCompositor = dve.NewCompositor(format.Width, format.Height)
 	a.sw.SetDVECompositor(a.dveCompositor)
+
+	// Squeeze-back (L-frame), after the DVE compositor.
+	a.squeeze = dve.NewSqueeze(format.Width, format.Height)
+	a.sw.SetSqueeze(a.squeeze)
 
 	// DVE preset store (user-created presets).
 	dvePresetDir := a.statePath("dve_presets")
@@ -1617,6 +1622,7 @@ func (a *App) initAPI() error {
 		control.WithWipeMapStore(a.wipeMapStore),
 		control.WithDVECompositor(a.dveCompositor),
 		control.WithDVEPresetStore(a.dvePresetStore),
+		control.WithSqueeze(a.squeeze),
 		control.WithPerfSampler(a.perfSampler),
 		control.WithSTMapRegistry(a.stmapRegistry),
 		control.WithSTMapStore(a.stmapStore),

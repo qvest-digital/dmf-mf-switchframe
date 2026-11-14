@@ -1,6 +1,7 @@
 package macro
 
 import (
+	"math"
 	"path/filepath"
 	"testing"
 
@@ -783,5 +784,47 @@ func TestValidateSteps_LayoutPresetRecallParams(t *testing.T) {
 		result := ValidateSteps([]Step{{Action: ActionLayoutPreset, Params: p}})
 		require.True(t, result.HasErrors(), "params %v should be rejected", p)
 		require.Contains(t, result.Errors[0].Message, "layout_preset")
+	}
+}
+
+func TestValidateSteps_SqueezebackParams(t *testing.T) {
+	t.Parallel()
+	rect := func(extra map[string]any) map[string]any {
+		p := map[string]any{"x": float64(480), "y": float64(0), "w": float64(1440), "h": float64(810)}
+		for k, v := range extra {
+			p[k] = v
+		}
+		return p
+	}
+	ok := []Step{
+		{Action: ActionSqueezebackSet, Params: rect(nil)},
+		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"background": "cam2", "durationMs": float64(500), "easing": "ease-in-out"})},
+		{Action: ActionSqueezebackOn, Params: map[string]any{}},
+		{Action: ActionSqueezebackOn, Params: map[string]any{"durationMs": float64(0)}},
+		{Action: ActionSqueezebackOff, Params: map[string]any{"durationMs": float64(800), "easing": "ease-out"}},
+	}
+	for _, s := range ok {
+		result := ValidateSteps([]Step{s})
+		require.False(t, result.HasErrors(), "%s %v: %v", s.Action, s.Params, result.Errors)
+	}
+
+	bad := []Step{
+		{Action: ActionSqueezebackSet, Params: map[string]any{"x": float64(0), "y": float64(0), "w": float64(960)}},
+		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"x": float64(1)})},
+		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"w": float64(0)})},
+		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"y": float64(-2)})},
+		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"h": "810"})},
+		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"w": float64(1 << 40)})},
+		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"x": math.Inf(1)})},
+		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"y": math.NaN()})},
+		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"background": float64(2)})},
+		{Action: ActionSqueezebackSet, Params: rect(map[string]any{"easing": "wobble"})},
+		{Action: ActionSqueezebackOn, Params: map[string]any{"durationMs": float64(-1)}},
+		{Action: ActionSqueezebackOff, Params: map[string]any{"easing": "wobble"}},
+	}
+	for _, s := range bad {
+		result := ValidateSteps([]Step{s})
+		require.True(t, result.HasErrors(), "%s %v should be rejected", s.Action, s.Params)
+		require.Contains(t, result.Errors[0].Message, string(s.Action))
 	}
 }

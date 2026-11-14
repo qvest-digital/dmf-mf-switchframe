@@ -4,7 +4,7 @@
 > **Read this first:** [api.md](../api.md)
 > **See also:** [subsystems/graphics-and-dve.md](../../subsystems/graphics-and-dve.md) · [fast-control.md](../fast-control.md)
 
-**TL;DR** Eight endpoints configure the Digital Video Effects (DVE) compositor: get/set/delete the current layout, per-slot update and on/off, and preset CRUD. Real-time transform scrubbing (during drag) flows through fast-control datagrams; the REST endpoints here are used for discrete changes and preset recall.
+**TL;DR** Ten endpoints configure the Digital Video Effects (DVE) compositor: get/set/delete the current layout, per-slot update and on/off, and preset CRUD and recall. Real-time transform scrubbing (during drag) flows through fast-control datagrams; the REST endpoints here are used for discrete changes and preset recall. Four more drive the [squeezeback](#squeezeback), which shrinks the whole program into an L-frame.
 
 ## Endpoints
 
@@ -130,7 +130,61 @@ Slots of the preset without a `sourceKey`, such as every built-in, keep the sour
 
 **Response 204.** **Errors:** 404.
 
+## Squeezeback
+
+A squeezeback is an L-frame: the whole composited program, upstream keys and DVE slots included, shrinks into a rect while a background source or black fills the rest of the frame. Downstream graphics stay full frame on top. It runs after the DVE compositor in both the CPU and the GPU pipeline. Not to be confused with the `dve-squeeze` transition type.
+
+The background is any registered source (`clip:N`, `playout:N`, an MXL source, ...) and tallies as program while it shows.
+
+### `GET /api/squeezeback`
+
+**Purpose:** return the squeezeback.
+**Handler:** [`control/api_squeeze.go`](../../../server/control/api_squeeze.go) -> `(*API).handleGetSqueeze`.
+
+**Response 200:** `dve.SqueezeState`: the configuration, `configured`, `on` (what the last on or off moves to) and `animating`.
+
+---
+
+### `PUT /api/squeezeback`
+
+**Purpose:** configure the rect, background and default timing. While on, the program moves to the new rect over the new duration.
+**Handler:** `(*API).handleSetSqueezeInner` (`timedHandler`).
+
+**Request body** (`dve.SqueezeConfig`):
+
+```json
+{ "rect": { "x": 480, "y": 0, "w": 1440, "h": 810 }, "background": "clip:1", "durationMs": 800, "easing": "ease-in-out" }
+```
+
+`rect` is in pixels of the program frame, every value an even whole number, with a positive size, inside the frame. `background` is a source key; omitted or `""` is black. `durationMs` and `easing` are the defaults of on and off; `durationMs` is at most 5000 (`dve.MaxMorphDurationMs`) and `easing` takes the values of [preset recall](#put-apidvepresetsidrecall).
+
+**Response 200:** `dve.SqueezeState`.
+
+**Errors:** 400 (invalid JSON, odd or out-of-frame rect, unknown background source, `durationMs` outside 0..5000, unknown easing).
+
+---
+
+### `POST /api/squeezeback/on`
+
+**Purpose:** squeeze the program into the rect, from wherever it is.
+**Handler:** `(*API).handleSqueezeOnInner` (`timedHandler`).
+
+**Request body** (`dve.SqueezeMove`), optional: `{ "durationMs": 800, "easing": "ease-out" }`. Each field left out takes the configured one; `durationMs` 0 cuts.
+
+**Response 204.** **Errors:** 400 (not configured, invalid JSON, `durationMs` outside 0..5000, unknown easing).
+
+---
+
+### `POST /api/squeezeback/off`
+
+**Purpose:** return the program to full frame, from wherever it is. The background leaves the air, and tally, when the program arrives.
+**Handler:** `(*API).handleSqueezeOffInner` (`timedHandler`).
+
+**Request body:** as for on.
+
+**Response 204.** **Errors:** 400 (invalid JSON, `durationMs` outside 0..5000, unknown easing).
+
 ## Related docs
 
-- **Reference:** [api.md](../api.md) · [fast-control.md](../fast-control.md) · [state-broadcast.md](../state-broadcast.md#graphics-and-composition)
+- **Reference:** [api.md](../api.md), [fast-control.md](../fast-control.md), [macro.md](macro.md), [state-broadcast.md](../state-broadcast.md#graphics-and-composition)
 - **Subsystems:** [graphics-and-dve.md](../../subsystems/graphics-and-dve.md)
