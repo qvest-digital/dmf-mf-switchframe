@@ -67,7 +67,7 @@ func TestDriftingSourceOverAnHour(t *testing.T) {
 	if underruns > 0 {
 		t.Errorf("%d ticks with silence from a source that never stopped", underruns)
 	}
-	if limit := channelRingFrames; maxDepth >= limit {
+	if limit := m.channelRingFrames(); maxDepth >= limit {
 		t.Errorf("ring reached %d samples, its capacity is %d: overrun", maxDepth, limit)
 	}
 	moves := m.ChannelRealigns()["srt:cam"]
@@ -144,7 +144,7 @@ func TestDriftingAnchoredSourceOverAnHour(t *testing.T) {
 	if underruns > 0 {
 		t.Errorf("%d ticks with silence from a source that never stopped", underruns)
 	}
-	if limit := channelRingFrames; maxDepth >= limit {
+	if limit := m.channelRingFrames(); maxDepth >= limit {
 		t.Errorf("ring reached %d samples, its capacity is %d: overrun", maxDepth, limit)
 	}
 	moves := m.ChannelRealigns()["srt:cam"]

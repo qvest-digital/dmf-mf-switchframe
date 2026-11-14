@@ -5,6 +5,7 @@ import (
 	"math"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
@@ -25,16 +26,48 @@ func scriptTAI(t *testing.T, now *atomic.Int64) {
 	t.Cleanup(func() { clock.SetTAISource(nil) })
 }
 
+// timingRates are the program frame rates the timing tests run at. The
+// SRT decoder hands the mixer 48 kHz whatever the stream carries, so the
+// mixer side runs at 48 kHz only.
+var timingRates = []clock.Rate{
+	{Num: 24000, Den: 1001}, {Num: 24, Den: 1}, {Num: 25, Den: 1}, {Num: 30000, Den: 1001},
+	{Num: 30, Den: 1}, {Num: 50, Den: 1}, {Num: 60000, Den: 1001}, {Num: 60, Den: 1},
+	{Num: 100, Den: 1}, {Num: 120000, Den: 1001}, {Num: 120, Den: 1},
+	{Num: 240000, Den: 1001}, {Num: 240, Den: 1},
+}
+
+// forEachTimingRate runs f at every program rate.
+func forEachTimingRate(t *testing.T, f func(t *testing.T, r clock.Rate)) {
+	for _, r := range timingRates {
+		t.Run(fmt.Sprintf("%d_%dfps", r.Num, r.Den), func(t *testing.T) { f(t, r) })
+	}
+}
+
+// tickRead returns the 48 kHz samples the tick at program index n reads
+// at rate r, as the sync loop does: the period clock.ReadDelay(r) periods
+// behind it.
+func tickRead(r clock.Rate, n uint64) (start uint64, samples int) {
+	sr := clock.Rate{Num: 48000, Den: 1}
+	d := clock.ReadDelay(r)
+	start = clock.TimestampToIndex(sr, clock.IndexToTimestamp(r, n-d))
+	return start, int(clock.TimestampToIndex(sr, clock.IndexToTimestamp(r, n-d+1)) - start)
+}
+
 // An MPEG-TS muxer packs a stream's AAC frames into PES packets of several
 // frames, so an SRT stream's audio reaches the decoder in bursts, here 180
 // ms of audio every 180 ms, while its own PTS run on without a gap. Placed
 // by those PTS no earlier than they arrive, the audio is on hand at every
-// read of the program, two periods behind the clock; each burst placed at
-// its arrival ends the moment it arrives, the read point runs out of it
-// before the next burst, and the mixer splices the source on every burst.
+// read of the program, clock.ReadDelay periods behind the clock at every
+// program rate; each burst placed at its arrival ends the moment it
+// arrives, the read point runs out of it before the next burst, and the
+// mixer splices the source on every burst.
 func TestSRTAudioBurstsStayOnTheReadPoint(t *testing.T) {
-	const n = 960 // one 20 ms period at 48 kHz
-	const period = int64(20_000_000)
+	forEachTimingRate(t, srtAudioBursts)
+}
+
+func srtAudioBursts(t *testing.T, r clock.Rate) {
+	const n = 960 // 20 ms of audio a job
+	const job = int64(20_000_000)
 	const perBurst, bursts = 9, 40
 	var now atomic.Int64
 	scriptTAI(t, &now)
@@ -46,14 +79,18 @@ func TestSRTAudioBurstsStayOnTheReadPoint(t *testing.T) {
 	a := &App{mixer: m}
 	var anchor clock.TrackingAnchor
 
-	rate := clock.Rate{Num: 48000, Den: 1}
 	start := now.Load()
 	srcPTS := int64(5_000_000)
-	const warmup = 2 * perBurst
+	warmup := start + 2*perBurst*job
 	var placed int64
-	for i := 1; i <= perBurst*bursts; i++ {
-		now.Store(start + int64(i)*period)
-		if i%perBurst == 0 { // a burst once its last period has passed
+	burst := int64(1) // a burst once its last job has passed
+	for tick := clock.TimestampToIndex(r, start) + 1; ; tick++ {
+		ts := clock.IndexToTimestamp(r, tick)
+		if ts > start+bursts*perBurst*job {
+			break
+		}
+		for ; start+burst*perBurst*job <= ts; burst++ {
+			now.Store(start + burst*perBurst*job)
 			for k := 0; k < perBurst; k++ {
 				pcm := make([]float32, n*2)
 				for j := range pcm {
@@ -63,10 +100,12 @@ func TestSRTAudioBurstsStayOnTheReadPoint(t *testing.T) {
 				srcPTS += 1800
 			}
 		}
-		if i == warmup {
-			placed = m.ChannelRealigns()[key]
+		now.Store(ts)
+		if warmup != 0 && ts >= warmup {
+			placed, warmup = m.ChannelRealigns()[key], 0
 		}
-		m.ProduceSamples(clock.TimestampToIndex(rate, now.Load())-2*n, n, 0)
+		read, count := tickRead(r, tick)
+		m.ProduceSamples(read, count, 0)
 	}
 
 	require.Zero(t, m.ChannelRealigns()[key]-placed,
@@ -79,10 +118,15 @@ func TestSRTAudioBurstsStayOnTheReadPoint(t *testing.T) {
 // kept the old connection's lateness would place its audio more than a
 // second ahead of its arrival, beyond what the mixer's ring holds, and the
 // read point would get silence. Placed afresh, the new audio is read on
-// its stamps from the first reads that reach it, with no realign.
+// its stamps from the first reads that reach it, with no realign, at
+// every program rate.
 func TestSRTReconnectPlacesTheNewConnectionsAudioAfresh(t *testing.T) {
-	const n = 960 // one 20 ms period at 48 kHz
-	const period = int64(20_000_000)
+	forEachTimingRate(t, srtReconnect)
+}
+
+func srtReconnect(t *testing.T, r clock.Rate) {
+	const n = 960 // 20 ms of audio a job
+	const job = int64(20_000_000)
 	const key = "srt:reconnect"
 	var now atomic.Int64
 	scriptTAI(t, &now)
@@ -97,76 +141,91 @@ func TestSRTReconnectPlacesTheNewConnectionsAudioAfresh(t *testing.T) {
 
 	rate := clock.Rate{Num: 48000, Den: 1}
 	start := now.Load()
-	step := 0
-	// tick advances the clock one period, delivers pts's audio if pts is
-	// not nil, and reads the mixer two periods behind the clock, as the
-	// sync loop does. It reports whether every sample read carried audio.
-	tick := func(anchor *clock.TrackingAnchor, pts *int64) (full bool) {
-		step++
-		now.Store(start + int64(step)*period)
-		if pts != nil {
+	tick := clock.TimestampToIndex(r, start) + 1
+	// readUntil reads the mixer at every tick up to ts, as the sync loop
+	// does. It reports whether every sample read from the timestamp from
+	// on carried audio.
+	readUntil := func(ts, from int64) (full bool) {
+		full = true
+		for ; clock.IndexToTimestamp(r, tick) <= ts; tick++ {
+			now.Store(clock.IndexToTimestamp(r, tick))
+			read, count := tickRead(r, tick)
+			out := m.ProduceSamples(read, count, 0)
+			if clock.IndexToTimestamp(rate, read) < from {
+				continue
+			}
+			if len(out) != 2*count {
+				full = false
+			}
+			for _, v := range out {
+				if math.Abs(float64(v)) < 0.01 {
+					full = false
+				}
+			}
+		}
+		return full
+	}
+	// connect delivers 100 jobs of 20 ms through anchor, each as its last
+	// sample has passed and the i-th stamped pts(i), and fails on a read
+	// from 60 ms into the connection on that is not full audio.
+	at := start
+	connect := func(name string, anchor *clock.TrackingAnchor, pts func(i int) int64) {
+		from := at + 60_000_000
+		for i := range 100 {
+			at += job
+			if !readUntil(at-1, from) {
+				t.Fatalf("%s read before job %d is not full audio", name, i)
+			}
+			now.Store(at)
 			pcm := make([]float32, n*2)
 			for j := range pcm {
 				pcm[j] = 0.1
 			}
-			a.ingestSRTAudio(key, anchor, srtAudioJob{pcm: pcm, pts: *pts, sampleRate: 48000, channels: 2})
+			a.ingestSRTAudio(key, anchor, srtAudioJob{pcm: pcm, pts: pts(i), sampleRate: 48000, channels: 2})
 		}
-		out := m.ProduceSamples(clock.TimestampToIndex(rate, now.Load())-2*n, n, 0)
-		full = len(out) == 2*n
-		for _, v := range out {
-			if math.Abs(float64(v)) < 0.01 {
-				full = false
-			}
+		if !readUntil(at, from) {
+			t.Fatalf("%s last read is not full audio", name)
 		}
-		return full
 	}
 
 	// Connection 1: two seconds.
 	anchor := a.bindSRTSource(key)
 	m.SetActive(key, true)
 	srcPTS := int64(5_000_000)
-	for i := range 100 {
-		if full := tick(anchor, &srcPTS); i >= 4 && !full {
-			t.Fatalf("connection 1 read %d is not full audio", i)
-		}
-		srcPTS += 1800
-	}
+	connect("connection 1", anchor, func(i int) int64 { return srcPTS + int64(i)*1800 })
 	require.Zero(t, m.ChannelRealigns()[key], "connection 1 was realigned")
 
 	// It drops for 300 ms. The read that finds the ring empty past its
 	// end counts as one realign.
 	a.releaseSRTConnection(key, srt.ModeListener)
-	for range 15 {
-		tick(nil, nil)
-	}
+	at += 300_000_000
+	readUntil(at, math.MaxInt64)
 
 	// Connection 2: its PTS 1.5 s ahead, for two seconds.
 	anchor = a.bindSRTSource(key)
 	before := m.ChannelRealigns()[key]
-	srcPTS += 135000
-	for i := range 100 {
-		pts := srcPTS + newConnectionJitter(i)
-		if full := tick(anchor, &pts); i >= 4 && !full {
-			t.Fatalf("connection 2 read %d after the reconnect is not full audio", i)
-		}
-		srcPTS += 1800
-	}
+	srcPTS += 100*1800 + 135000
+	connect("connection 2", anchor, func(i int) int64 { return srcPTS + int64(i)*1800 + newConnectionJitter(i) })
 	require.Zero(t, m.ChannelRealigns()[key]-before, "the new connection's audio was realigned")
 }
 
 // newConnectionJitter offsets the reconnected source's i-th audio PTS.
 var newConnectionJitter = func(int) int64 { return 0 }
 
-// An SRT connection's first audio arrives 10 ms later than the rest, as a
-// backlog the socket built before the first frame was decoded. The anchor
-// places it at that lateness, and the mixer's first read puts it on those
-// stamps; the windows after the first arrive on time, and the anchor
-// settles 10 ms earlier. Ten milliseconds is less than the period the
+// An SRT connection's first audio arrives later than the rest, as a
+// backlog the socket built before the first frame was decoded: 10 ms, or
+// half a period at a program rate whose period is not longer than that.
+// The anchor places it at that lateness, and the mixer's first read puts
+// it on those stamps; the windows after the first arrive on time, and the
+// anchor settles that much earlier. That is less than the period the
 // mixer realigns at, so without placing the audio again on its stamps
-// once the anchor settles, it would stay 10 ms later than its video for
-// the rest of the connection.
+// once the anchor settles, it would stay that much later than its video
+// for the rest of the connection.
 func TestSRTAudioLandsOnItsStampsOnceTheAnchorSettles(t *testing.T) {
-	const n = 960   // one 20 ms read period at 48 kHz
+	forEachTimingRate(t, srtAudioSettles)
+}
+
+func srtAudioSettles(t *testing.T, r clock.Rate) {
 	const job = 480 // 10 ms of audio per delivery
 	const step = int64(10_000_000)
 	const key = "srt:settle"
@@ -199,39 +258,41 @@ func TestSRTAudioLandsOnItsStampsOnceTheAnchorSettles(t *testing.T) {
 		a.ingestSRTAudio(key, &anchor, srtAudioJob{pcm: pcm, pts: pts, sampleRate: 48000, channels: 2})
 	}
 
-	// The first 1.9 s each job arrives one step late, then on time.
-	const lateUntil, steps = 190, 1000
+	// The jobs before 1.9 s arrive late, the rest on time. The program
+	// reads at its own ticks, each after the jobs that arrived before it.
+	const lateUntil, jobs = 190, 1000
+	late := 10 * time.Millisecond
+	if period := time.Duration(clock.IndexToTimestamp(r, 1)); period <= late {
+		late = period / 2
+	}
 	settled := clock.TrackingSettle * clock.TrackingWindow / 900
 	var prev float32
 	var onsets int
-	for s := 1; s <= steps; s++ {
-		now.Store(start + int64(s)*step)
-		switch {
-		case s < lateUntil:
-			deliver(s - 1)
-		case s == lateUntil:
-			deliver(s - 1)
-			deliver(s)
-		default:
-			deliver(s)
+	tick := clock.TimestampToIndex(r, start) + 1
+	for k := 0; k <= jobs; k++ {
+		at := start + int64(k)*step
+		if k < lateUntil {
+			at += int64(late)
 		}
-		if s%2 != 0 {
-			continue
-		}
-		at := clock.TimestampToIndex(rate, now.Load()) - 2*n
-		out := m.ProduceSamples(at, n, 0)
-		for i := 0; i < n; i++ {
-			v := out[2*i]
-			if v > 0.3 && prev <= 0.3 && s > settled+4 {
-				onsets++
-				off := int64(at+uint64(i)-startIdx) % (20 * job)
-				if off > 10*job {
-					off -= 20 * job
+		for ; clock.IndexToTimestamp(r, tick) < at; tick++ {
+			ts := clock.IndexToTimestamp(r, tick)
+			read, n := tickRead(r, tick)
+			out := m.ProduceSamples(read, n, 0)
+			for i := 0; i < n; i++ {
+				v := out[2*i]
+				if v > 0.3 && prev <= 0.3 && ts > start+int64(settled+4)*step {
+					onsets++
+					off := int64(read+uint64(i)-startIdx) % (20 * job)
+					if off > 10*job {
+						off -= 20 * job
+					}
+					require.Zerof(t, off, "a loud job lands %d samples off its stamps after the anchor settled", off)
 				}
-				require.Zerof(t, off, "a loud job lands %d samples off its stamps after the anchor settled", off)
+				prev = v
 			}
-			prev = v
 		}
+		now.Store(at)
+		deliver(k)
 	}
 	require.NotZero(t, onsets, "no loud job was read after the anchor settled")
 	require.Zero(t, m.ChannelRealigns()[key], "the source was realigned")
