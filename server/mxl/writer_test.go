@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -606,6 +607,12 @@ func frameYUV(value byte) []byte {
 	return yuv
 }
 
+// videoRates are the grain rates the video timing tests run at.
+var videoRates = []Rational{
+	{24000, 1001}, {24, 1}, {25, 1}, {30000, 1001}, {30, 1}, {50, 1}, {60000, 1001}, {60, 1},
+	{120, 1}, {240, 1},
+}
+
 // A producer at the grain rate, its frames jittering around the instants
 // the writer would sample on, must get exactly one grain per frame. A
 // writer sampling the latest frame on a ticker of its own loses a frame
@@ -613,9 +620,16 @@ func frameYUV(value byte) []byte {
 // twice in the next; that is how a 50p clip played at 50p reached the
 // program flow with a seventh of its frames repeated.
 func TestWriter_GrainRateProducerGetsOneGrainPerFrame(t *testing.T) {
-	const frames = 100
-	rate := Rational{50, 1}
-	period := 20 * time.Millisecond
+	for _, rate := range videoRates {
+		t.Run(fmt.Sprintf("%d/%d", rate.Numerator, rate.Denominator), func(t *testing.T) {
+			grainRateProducer(t, rate)
+		})
+	}
+}
+
+func grainRateProducer(t *testing.T, rate Rational) {
+	const frames = 50
+	period := time.Duration(rate.Denominator) * time.Second / time.Duration(rate.Numerator)
 
 	mock := &mockDiscreteWriter{}
 	w := NewWriter(WriterConfig{Width: 12, Height: 2})
@@ -625,46 +639,156 @@ func TestWriter_GrainRateProducerGetsOneGrainPerFrame(t *testing.T) {
 
 	// Start the producer on the instant the writer starts, so a writer on
 	// a ticker of its own samples right where the frames arrive. Frame k
-	// is the program frame of grain first+k, delivered around that grain.
+	// is the program frame of grain first+k, delivered around that grain:
+	// up to a fifth of a period early, and up to 0.6 of one late, where
+	// the clock already names the next grain, so a writer that takes a
+	// frame's grain from the clock rather than its PTS writes it a grain
+	// off.
 	first := CurrentIndex(rate) + 1
 	time.Sleep(time.Duration(NsUntilIndex(first, rate)))
 	start := time.Now()
 	w.Start(ctx)
+	sent := make([]int64, frames) // TAI once frame k was handed over
 	for k := 0; k < frames; k++ {
-		jitter := time.Duration((k*7)%9-4) * time.Millisecond // -4..+4 ms
+		jitter := time.Duration((k*7)%9-2) * period / 10 // -0.2..+0.6 periods
 		time.Sleep(time.Until(start.Add(time.Duration(k)*period + jitter)))
 		w.WriteVideo(frameYUV(byte(16+k%200)), 12, 2, framePTS(rate, first+uint64(k)))
+		sent[k] = clock.TAINow()
 	}
 	time.Sleep(period / 2)
 	cancel()
 	_ = w.Close()
 
-	// Each frame's grains, in index order, between the first frame and
-	// the last.
+	// A host that pauses the process can hand a frame over a period or
+	// more after its grain starts, and a producer catching up after a
+	// pause hands frames over faster than the writer runs, while the
+	// writer, delayed past a grain, resumes at the grain before the clock
+	// and repeats the last frame there. A frame around such a pause can
+	// lose its grain to a repeat or be skipped, by design, as can one the
+	// writer was held off for a period after. Two tardy frames
+	// in a row also make the writer count the source as stalled, and it
+	// then fills the next grains with repeats as they start. Every other
+	// frame must take its own grain.
 	grains := mock.getGrains()
-	var runs []int
-	for i, g := range grains {
-		if i > 0 && g.index != grains[i-1].index+1 {
-			t.Fatalf("grain %d follows %d", g.index, grains[i-1].index)
+	r := clock.Rate{Num: rate.Numerator, Den: rate.Denominator}
+	frameOf := make(map[string]int, frames)
+	for k := 0; k < frames; k++ {
+		v210 := make([]byte, V210LineStride(12)*2)
+		if err := YUV420pToV210Into(frameYUV(byte(16+k%200)), v210, 12, 2); err != nil {
+			t.Fatal(err)
 		}
-		if i > 0 && bytes.Equal(g.data, grains[i-1].data) {
-			runs[len(runs)-1]++
+		frameOf[string(v210)] = k
+	}
+	// tardy reports frame k handed over a period or more after its grain
+	// started, or within half a period of the frame before or after it.
+	// The producer hands frames over at least 0.8 of a period apart, so
+	// only a pause makes a frame tardy.
+	tardy := func(k int) bool {
+		if k < 0 || k >= frames {
+			return false
+		}
+		return sent[k] > clock.IndexToTimestamp(r, first+uint64(k))+period.Nanoseconds() ||
+			(k+1 < frames && sent[k+1]-sent[k] < period.Nanoseconds()/2) ||
+			(k > 0 && sent[k]-sent[k-1] < period.Nanoseconds()/2)
+	}
+	late := func(index uint64) bool {
+		k := int(index - first)
+		if index < first || k >= frames {
+			return false
+		}
+		if tardy(k) || tardy(k-1) || tardy(k+1) {
+			return true
+		}
+		// A writer that wrote nothing for a period after the frame was
+		// handed over was not running: a later frame can replace this one
+		// before it wakes. One woken by each frame, or at each grain start,
+		// writes within a period.
+		idle := true
+		for _, g := range grains {
+			idle = idle && (g.at <= sent[k] || g.at > sent[k]+period.Nanoseconds())
+		}
+		if idle {
+			return true
+		}
+		// A writer resuming behind the clock repeats the last frame at
+		// the grain before it, deciding that before it loads a frame
+		// handed over meanwhile.
+		for _, g := range grains {
+			if g.index == index && frameOf[string(g.data)] != k && clock.TimestampToIndex(r, g.at) > g.index {
+				return true
+			}
+		}
+		// Further after a tardy frame, the writer may take this frame's
+		// grain with a repeat only once it counts the source as stalled.
+		stalled := false
+		for j := max(k-stallRepeats, 0); j < k; j++ {
+			stalled = stalled || tardy(j)
+		}
+		if !stalled {
+			return false
+		}
+		for _, g := range grains {
+			if g.index >= index && g.at < sent[k] {
+				return true
+			}
+		}
+		return false
+	}
+	reached := make([]bool, frames)
+	for _, g := range grains {
+		reached[frameOf[string(g.data)]] = true
+	}
+	// A writer the host delays by less than a period between two
+	// handovers loses the first of them as well. That happens once or
+	// twice in a run; a writer not woken by each frame does it whenever
+	// two frames arrive between its wakeups.
+	missed := map[uint64]bool{}
+	for k, ok := range reached {
+		if ok || late(first+uint64(k)) {
 			continue
 		}
-		runs = append(runs, 1)
+		unattended := k+1 < frames
+		for _, g := range grains {
+			unattended = unattended && (g.at <= sent[k] || g.at >= sent[k+1])
+		}
+		if !unattended {
+			t.Fatalf("frame %d, handed over in time, never reached the flow", k)
+		}
+		missed[first+uint64(k)] = true
 	}
-	// The last frame repeats until the writer stops; the first frame may
-	// meet a grain that is already late.
-	if len(runs) != frames {
-		t.Fatalf("%d frames produced, %d reached the flow", frames, len(runs))
+	if len(missed) > 2 {
+		t.Fatalf("%d frames, handed over in time, replaced before the writer ran", len(missed))
 	}
 	repeated := 0
-	for _, n := range runs[1 : len(runs)-1] {
-		repeated += n - 1
+	for i, g := range grains {
+		if i == 0 {
+			continue
+		}
+		prev := grains[i-1].index
+		if g.index <= prev {
+			t.Fatalf("grain %d follows %d", g.index, prev)
+		}
+		behind := clock.TimestampToIndex(r, g.at) > g.index
+		for skipped := prev + 1; skipped < g.index && !behind; skipped++ {
+			if !late(skipped) && !missed[skipped] {
+				t.Fatalf("grain %d follows %d", g.index, prev)
+			}
+		}
+		// The last frame repeats until the writer stops; the first may meet
+		// a grain that is already late.
+		if g.index < first+frames && bytes.Equal(g.data, grains[i-1].data) && !late(g.index) && !missed[g.index] && frameOf[string(g.data)] != 0 {
+			repeated++
+			continue
+		}
+		// A new frame handed over in time goes out at its own grain.
+		if k := frameOf[string(g.data)]; g.index >= first && g.index < first+frames &&
+			!bytes.Equal(g.data, grains[i-1].data) && !late(first+uint64(k)) && g.index != first+uint64(k) {
+			t.Fatalf("frame %d, handed over in time, written at grain %d, not %d", k, g.index, first+uint64(k))
+		}
 	}
-	// A host scheduling hiccup can still cost a repeat or two.
+	// A frame handed over just as its grain is written can still miss it.
 	if repeated > 2 {
-		t.Fatalf("%d grains repeat a frame; runs %v", repeated, runs)
+		t.Fatalf("%d grains repeat a frame handed over in time", repeated)
 	}
 }
 
