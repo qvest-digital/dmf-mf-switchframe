@@ -200,9 +200,12 @@ type Source struct {
 	// Where the mixer gets the audio, later than its media time when it
 	// keeps arriving after the read point. Used from audioFanOut only.
 	audioPlace audioPlacement
-	// How much later than its media time the video is shown to stay with
-	// the audio, in 90 kHz ticks; audioPlace's videoShift.
-	videoShift atomic.Int64
+	// audioPlace's shift, for the video, data and relay audio, which move
+	// with the video.
+	audioShift atomic.Int64
+	// Grain rate of the video, which the video moves by whole grains of;
+	// nil before the first video grain.
+	videoRate atomic.Pointer[clock.Rate]
 
 	// Relay audio waiting for a whole AAC frame: interleaved PCM of
 	// relayChannels channels from sample index relayStart on.
@@ -439,7 +442,11 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 		yuv = s.v210Bufs.yuvOut
 	}
 
-	pts := grain.PTS + s.videoShift.Load()
+	if r := s.videoRate.Load(); r == nil || *r != grain.Rate {
+		rate := grain.Rate
+		s.videoRate.Store(&rate)
+	}
+	pts := s.shifted(grain.PTS)
 
 	// 2. Deliver raw YUV to switcher pipeline.
 	// Allocate a fresh copy because the pooled conversion buffer
@@ -607,10 +614,16 @@ func (s *Source) dataFanOut(ctx context.Context) {
 			if !ok {
 				return
 			}
-			if s.config.OnDataGrain != nil {
-				s.config.OnDataGrain(s.config.FlowName, grain.Data, grain.PTS)
-			}
+			s.processDataGrain(grain)
 		}
+	}
+}
+
+// processDataGrain hands a data grain on, moved with the video it
+// belongs to.
+func (s *Source) processDataGrain(grain DataGrain) {
+	if s.config.OnDataGrain != nil {
+		s.config.OnDataGrain(s.config.FlowName, grain.Data, s.shifted(grain.PTS))
 	}
 }
 
@@ -630,10 +643,14 @@ func (s *Source) processAudioGrain(grain AudioGrain) {
 		shift := s.audioPlace.shift
 		mixPTS := s.audioPlace.pts(pts, delay)
 		if s.audioPlace.shift != shift {
-			s.videoShift.Store(s.audioPlace.videoShift())
+			s.audioShift.Store(s.audioPlace.shift)
+			var grains uint64
+			if r := s.videoRate.Load(); r != nil {
+				grains = videoGrains(*r, s.audioPlace.shift)
+			}
 			s.log.Warn("mxl source: audio arrives after the mixer's read point, mixing it later",
 				"source", s.config.FlowName, "audio_shift_ms", s.audioPlace.shift/90,
-				"video_shift_ms", s.videoShift.Load()/90)
+				"video_shift_grains", grains)
 			if s.config.PlaceAudio != nil {
 				s.config.PlaceAudio()
 			}
@@ -681,10 +698,28 @@ func (s *Source) queueRelayAudio(pcm []float32, sampleRate, channels int, start 
 	n := aacFrameSamples * channels
 	for len(s.relayPCM) >= n {
 		s.encodeAndBroadcastAudio(s.relayPCM[:n], sampleRate, channels,
-			clock.IndexPTS(r, s.relayStart)+s.videoShift.Load())
+			s.shifted(clock.IndexPTS(r, s.relayStart)))
 		s.relayPCM = append(s.relayPCM[:0], s.relayPCM[n:]...)
 		s.relayStart += aacFrameSamples
 	}
+}
+
+// shifted returns pts moved as much later as the source's video is shown
+// to stay with its audio: by whole grains of the video, so a video frame
+// lands on exactly the PTS of a later grain and the program's ticks take
+// it whole ticks later, never between two. Data and relay audio of the
+// source move by the same grains.
+func (s *Source) shifted(pts int64) int64 {
+	r := s.videoRate.Load()
+	if r == nil {
+		return pts
+	}
+	k := videoGrains(*r, s.audioShift.Load())
+	if k == 0 {
+		return pts
+	}
+	i := clock.PTSIndex(*r, pts)
+	return pts + clock.IndexPTS(*r, i+k) - clock.IndexPTS(*r, i)
 }
 
 // maxRelayAudioChannels is the widest layout the AAC encoder accepts.

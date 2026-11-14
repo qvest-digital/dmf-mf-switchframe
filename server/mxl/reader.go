@@ -16,8 +16,9 @@ type VideoGrain struct {
 	V210   []byte // V210 packed pixel data
 	Width  int
 	Height int
-	Index  uint64 // grain index on TAI
-	PTS    int64  // 90 kHz PTS of the index's TAI on the engine timeline
+	Index  uint64     // grain index on TAI
+	Rate   clock.Rate // grain rate of the flow
+	PTS    int64      // 90 kHz PTS of the index's TAI on the engine timeline
 }
 
 // AudioGrain carries raw float32 PCM audio read from an MXL flow.
@@ -333,6 +334,7 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 			Width:  r.config.Width,
 			Height: r.config.Height,
 			Index:  index,
+			Rate:   cr,
 			PTS:    clock.IndexPTS(cr, index),
 		}
 
