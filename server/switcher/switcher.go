@@ -576,6 +576,10 @@ type Switcher struct {
 	lastSyncWaitNs    atomic.Int64 // T3 - T2: frame_sync tick alignment wait
 	lastTickLagNs     atomic.Int64 // tick grain start to the end of its pipeline run
 
+	// lastTickAt is when the sync loop last took a reference clock tick,
+	// in Unix nanoseconds, 0 before the first.
+	lastTickAt atomic.Int64
+
 	// Program epoch — monotonically increasing counter incremented on every
 	// program source change (Cut, transition complete). Frames stamped with
 	// a stale epoch are discarded in videoProcessingLoop to prevent wrong-source
@@ -1558,6 +1562,17 @@ func (s *Switcher) setPipelineFormat(f PipelineFormat) error {
 // PTS to the program timeline.
 func (s *Switcher) LastBroadcastVideoPTS() int64 {
 	return s.lastBroadcastPTS.Load()
+}
+
+// LastTick returns when the sync loop last took a reference clock tick, the
+// zero time before the first: a program whose clock has stopped ticking is
+// no longer produced, whatever source is on air.
+func (s *Switcher) LastTick() time.Time {
+	ns := s.lastTickAt.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
 }
 
 // ProgramSource returns the key of the current program source.

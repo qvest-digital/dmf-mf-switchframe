@@ -100,6 +100,8 @@ func (s *Switcher) flushAACBuffer() {
 // processTick handles one reference clock tick: audio first (never skipped),
 // then video, skipped while ticksBehind sheds late ticks.
 func (s *Switcher) processTick(tick clock.Tick) {
+	s.lastTickAt.Store(time.Now().UnixNano())
+
 	// Drain PTP-timed commands before any processing so timed commands
 	// take effect at the frame boundary of this tick.
 	s.drainCommandQueue()

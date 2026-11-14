@@ -162,7 +162,7 @@ func TestAdminServer_DefaultBindLocalhost(t *testing.T) {
 
 func startTestAdminServer(t *testing.T, adminToken string) (stop func(), addr string) {
 	t.Helper()
-	stop, addr = StartAdminServer(context.Background(), "127.0.0.1:0", ":8080", "testhash", false, adminToken)
+	stop, addr = StartAdminServer(context.Background(), "127.0.0.1:0", ":8080", "testhash", false, adminToken, nil)
 	// Wait briefly for the server to start accepting connections.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -186,7 +186,7 @@ func TestAdminServer_ReadyFailsOnSIGTERM(t *testing.T) {
 	readyFlag.Store(true)
 	defer readyFlag.Store(false)
 
-	stop, addr := StartAdminServer(ctx, "127.0.0.1:0", ":8080", "testhash", false, "")
+	stop, addr := StartAdminServer(ctx, "127.0.0.1:0", ":8080", "testhash", false, "", nil)
 	defer stop()
 	get := func(path string) int {
 		t.Helper()

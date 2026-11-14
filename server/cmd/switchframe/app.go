@@ -2026,7 +2026,7 @@ func (a *App) Run(ctx context.Context) error {
 	}()
 
 	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).
-	stopAdmin, _ := StartAdminServer(ctx, a.cfg.AdminAddr, a.advertisedAddr(), a.cert.FingerprintBase64(), a.externalCert, a.cfg.AdminToken)
+	stopAdmin, _ := StartAdminServer(ctx, a.cfg.AdminAddr, a.advertisedAddr(), a.cert.FingerprintBase64(), a.externalCert, a.cfg.AdminToken, a.producing)
 	defer stopAdmin()
 
 	// Take what the peer's stores hold before the API serves, then keep the

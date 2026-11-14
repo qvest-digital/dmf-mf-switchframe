@@ -656,3 +656,38 @@ func TestApplyStartup_SharedIDsAndDeferredStart(t *testing.T) {
 	a.ReconcileDestinations(viewOf(b, true))
 	require.Equal(t, []string{da[0].ID}, a.SendingDestinationIDs())
 }
+
+// A destination --outputs-config declares counts as not started while the
+// returning engine waits for a view of its peer and while it sends it with
+// no adapter running; one the peer sends does not count, nor does one an
+// operator stopped.
+func TestDestinationPair_UnstartedDestinations(t *testing.T) {
+	b := pairEngine(t, "b")
+	_, err := b.AddDestinationWithID(pairID, callerConfig)
+	require.NoError(t, err)
+	require.NoError(t, b.ApplyDestinationState(pairID, "b", true))
+
+	a := pairEngine(t, "a")
+	a.EnablePeerFailover()
+	_, err = a.AddDestinationWithID(pairID, callerConfig)
+	require.NoError(t, err)
+	require.NoError(t, a.armDestination(pairID))
+	require.Empty(t, a.SendingDestinationIDs())
+	require.Equal(t, []string{pairID}, a.UnstartedDestinations(), "no view of the peer yet")
+
+	a.ReconcileDestinations(viewOf(b, true))
+	requireState(t, a, "standby", "b")
+	require.Empty(t, a.UnstartedDestinations(), "the peer sends it")
+
+	c := pairEngine(t, "a")
+	c.EnablePeerFailover()
+	_, err = c.AddDestinationWithID(pairID, callerConfig)
+	require.NoError(t, err)
+	require.NoError(t, c.armDestination(pairID))
+	c.ReconcileDestinations(PeerView{Known: true, Label: "b", Grace: time.Hour})
+	requireState(t, c, string(StateActive), "a")
+	require.Empty(t, c.UnstartedDestinations(), "its adapter runs")
+
+	require.NoError(t, c.StopDestination(pairID))
+	require.Empty(t, c.UnstartedDestinations(), "an operator stopped it")
+}

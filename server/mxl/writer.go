@@ -3,6 +3,7 @@ package mxl
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -113,6 +114,12 @@ type Writer struct {
 	// lastDataIndex is the index of the last data grain committed, 0 before
 	// the first. Guarded by mu, like the write itself.
 	lastDataIndex uint64
+
+	// videoHead and audioHead are the index after the last video grain and
+	// after the last audio sample written, 0 before the first; AtClock
+	// reads them from another goroutine.
+	videoHead atomic.Uint64
+	audioHead atomic.Uint64
 
 	// Reusable de-interleave buffers to avoid per-frame allocation.
 	deinterleaveBuf [][]float32
@@ -447,6 +454,7 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 					w.log.Error("mxl writer: failed to write video grain",
 						"error", err, "index", index)
 				} else {
+					w.videoHead.Store(index + 1)
 					if haveLast && frame.seq == writtenSeq {
 						repeats++
 					} else {
@@ -570,7 +578,52 @@ func (w *Writer) WriteAudio(pcm []float32, pts int64, sampleRate, channels int) 
 	if err := aw.WriteSamples(index, deinterleaved); err != nil {
 		w.log.Error("mxl writer: failed to write audio samples",
 			"error", err, "index", index)
+		return
 	}
+	w.audioHead.Store(index)
+}
+
+// AtClock returns nil when each program flow the writer writes has been
+// written up to within maxLag of the clock, else what lags. A flow with no
+// writer set is not looked at.
+func (w *Writer) AtClock(maxLag time.Duration) error {
+	if CurrentIndex == nil {
+		return errors.New("mxl: no clock")
+	}
+	if ref := w.videoRef.Load(); ref != nil && ref.writer != nil {
+		if err := headAtClock("video", w.videoHead.Load(), ref.rate, maxLag); err != nil {
+			return err
+		}
+	}
+	w.mu.Lock()
+	audio, rate := w.audioWriter != nil, w.audioRate
+	w.mu.Unlock()
+	if audio {
+		if err := headAtClock("audio", w.audioHead.Load(), rate, maxLag); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// headAtClock checks that head, the index after the last one written at
+// rate, is no more than maxLag behind the clock's current index.
+func headAtClock(essence string, head uint64, rate Rational, maxLag time.Duration) error {
+	if head == 0 {
+		return fmt.Errorf("program %s: nothing written", essence)
+	}
+	if rate.Numerator <= 0 || rate.Denominator <= 0 {
+		return fmt.Errorf("program %s: no rate", essence)
+	}
+	now := CurrentIndex(rate)
+	if now <= head {
+		return nil
+	}
+	behind := time.Duration(float64(now-head) * float64(rate.Denominator) * 1e9 / float64(rate.Numerator))
+	if behind > maxLag {
+		return fmt.Errorf("program %s: last written %s behind the clock", essence, behind.Round(time.Millisecond))
+	}
+	return nil
 }
 
 // AudioOverlaps returns how many audio batches were dropped for
