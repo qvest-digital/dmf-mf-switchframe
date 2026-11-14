@@ -4,6 +4,7 @@ package clip
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -64,6 +65,21 @@ func (r *pcmRecorder) samples(t *testing.T, channels int) []float32 {
 	return out
 }
 
+// restart returns the first chunk at which the PCM started again: one
+// not continuing the audio before it, or a second start. 0 when none did.
+func (r *pcmRecorder) restart(channels int) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var at int64
+	for i, c := range r.chunks {
+		if i > 0 && (c.start || c.pts != r.chunks[0].pts+at*90000/48000) {
+			return i
+		}
+		at += int64(len(c.pcm) / channels)
+	}
+	return 0
+}
+
 // pictures returns n pictures at 25 fps, each carrying its index.
 func pictures(n int) []BufferedFrame {
 	frames := make([]BufferedFrame, n)
@@ -112,44 +128,83 @@ func TestPlayerPCMStartsOnTheFirstPicture(t *testing.T) {
 // priming: every pass is the sound from its first sample, on the first
 // picture of the pass. The AAC frames, played as they are, put the
 // priming in again at every wrap and lost the last 1024 samples to it.
+//
+// A host that stalls the player for more than two periods has it put its
+// video back on the clock while its PCM runs on, and for more than its
+// PCM lead start the PCM again (TestPlayerPCMRunsOnThroughAStall): either
+// moves a pass off its audio for reasons that are not the loop's. A play
+// that shows either is played again, a few times at most.
 func TestPlayerPCMLoopIsGapless(t *testing.T) {
+	const attempts = 10
 	for _, ext := range []string{".ts", ".mp4"} {
 		t.Run(ext, func(t *testing.T) {
 			audio, ref := fixtureAudio(t, aacfixture.Clip{Ext: ext, Channels: 2})
-			var rec pcmRecorder
-			cfg := PlayerConfig{
-				Clip: pictures(25), AudioClip: audio, Speed: 1, Loop: true,
-				OutputFPSNum: 50, OutputFPSDen: 1, Timed: true, PCMCodec: testPCMCodec,
-			}
-			rec.wire(&cfg)
-			p := NewPlayer(cfg)
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			p.Start(ctx)
-			defer func() { p.Stop(); p.Wait() }()
-			const passes = 3
-			require.Eventually(t, func() bool {
-				rec.mu.Lock()
-				defer rec.mu.Unlock()
-				return len(rec.firstPTS) > passes
-			}, 10*time.Second, 10*time.Millisecond)
-			p.Stop()
-			p.Wait()
-
-			got := rec.samples(t, 2)
-			rec.mu.Lock()
-			firsts := append([]int64(nil), rec.firstPTS...)
-			base := rec.chunks[0].pts
-			rec.mu.Unlock()
-			const pass = 48000 // 25 pictures at 25 fps
-			require.GreaterOrEqual(t, len(got)/2, passes*pass)
-			for k := 0; k < passes; k++ {
-				assert.Equal(t, firsts[k], base+int64(k*pass)*90000/48000, "pass %d starts on its first picture", k)
-				seg := got[2*k*pass : 2*(k+1)*pass]
-				assert.Zero(t, aacfixture.Lag(seg, ref, 2, 0, 1500, 15000), "pass %d", k)
-				assert.Less(t, aacfixture.RMS(seg, ref, 2, 0, 0), 0.02, "pass %d is not the sound", k)
+			for attempt := 1; ; attempt++ {
+				rec, moves := playLoop(t, audio)
+				stall := ""
+				if moves > 0 {
+					stall = fmt.Sprintf("the video was put back on the clock %d times", moves)
+				} else if i := rec.restart(2); i > 0 {
+					stall = fmt.Sprintf("the PCM started again at chunk %d", i)
+				}
+				if stall == "" {
+					checkLoopPasses(t, rec, ref)
+					return
+				}
+				if attempt == attempts {
+					t.Fatalf("the host stalled the player in all %d plays, the last time: %s", attempts, stall)
+				}
+				t.Logf("play %d: %s; playing again", attempt, stall)
 			}
 		})
+	}
+}
+
+// loopPasses is how many passes of a loop playLoop records past the first.
+const loopPasses = 3
+
+// playLoop plays 25 pictures at 25 fps with audio in a loop at 50 fps
+// until the pictures' fourth pass starts, and returns what it put out and
+// how often it put its video back on the clock.
+func playLoop(t *testing.T, audio []BufferedAudioFrame) (*pcmRecorder, int) {
+	t.Helper()
+	rec := &pcmRecorder{}
+	cfg := PlayerConfig{
+		Clip: pictures(25), AudioClip: audio, Speed: 1, Loop: true,
+		OutputFPSNum: 50, OutputFPSDen: 1, Timed: true, PCMCodec: testPCMCodec,
+	}
+	rec.wire(&cfg)
+	p := NewPlayer(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+	defer func() { p.Stop(); p.Wait() }()
+	require.Eventually(t, func() bool {
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		return len(rec.firstPTS) > loopPasses
+	}, 10*time.Second, 10*time.Millisecond)
+	p.Stop()
+	p.Wait()
+	return rec, p.timelineMoves
+}
+
+// checkLoopPasses checks that every pass of a loop rec recorded is the
+// sound from its first sample, on the first picture of the pass.
+func checkLoopPasses(t *testing.T, rec *pcmRecorder, ref []float32) {
+	t.Helper()
+	got := rec.samples(t, 2)
+	rec.mu.Lock()
+	firsts := append([]int64(nil), rec.firstPTS...)
+	base := rec.chunks[0].pts
+	rec.mu.Unlock()
+	const pass = 48000 // 25 pictures at 25 fps
+	require.GreaterOrEqual(t, len(got)/2, loopPasses*pass)
+	for k := 0; k < loopPasses; k++ {
+		assert.Equal(t, firsts[k], base+int64(k*pass)*90000/48000, "pass %d starts on its first picture", k)
+		seg := got[2*k*pass : 2*(k+1)*pass]
+		assert.Zero(t, aacfixture.Lag(seg, ref, 2, 0, 1500, 15000), "pass %d", k)
+		assert.Less(t, aacfixture.RMS(seg, ref, 2, 0, 0), 0.02, "pass %d is not the sound", k)
 	}
 }
 

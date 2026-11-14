@@ -201,6 +201,9 @@ type Player struct {
 	audioRem       int64
 	audioPassStart int64
 	audioResync    bool
+	// timelineMoves counts the times keepOnTimeline put the player back on
+	// the clock.
+	timelineMoves int
 
 	// PCM audio (PCMOutput). pcmBase is the PTS of the stream's first
 	// sample and pcmPut the samples handed over since; pcmFirst asks the
@@ -1080,6 +1083,7 @@ func (p *Player) keepOnTimeline(outputPTS *int64) {
 	*outputPTS += off
 	p.outputAudioPTS += off
 	p.audioPassStart += off
+	p.timelineMoves++
 }
 
 // emitTimedAudio hands over a timed player's audio up to an AAC frame past
