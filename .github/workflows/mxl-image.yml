@@ -43,7 +43,7 @@ jobs:
           cache-to: type=gha,scope=build-base,mode=max
       - name: Test with the mxl build tag
         run: |
-          docker run --rm switchframe-build:test \
+          docker run --rm -e CI switchframe-build:test \
             go test -tags mxl -race -count=1 ./mxl/... ./output/... ./clip/... ./codec/...
 
   # The sidecar's own tests build without CEF; nothing upstream runs them.
