@@ -437,7 +437,8 @@ func (f *anyRateAudioEncoderFactory) create(int, int) (AudioEnc, error) {
 
 // The relay's AAC encoder takes whole 1024-sample frames, which the source
 // collects from shorter reads, stamped with their first sample's media
-// time and moved with the video, by its whole grains.
+// time and moved with the video, by its whole grains to the nearest tick,
+// the same for every frame: a step between frames would be a click.
 func TestSource_RelayAudioIsCollectedIntoAACFrames(t *testing.T) {
 	eachRate(t, func(t *testing.T, r lateRate) {
 		relay := &mockMediaBroadcasterForTest{}
@@ -467,11 +468,14 @@ func TestSource_RelayAudioIsCollectedIntoAACFrames(t *testing.T) {
 		}
 		for j, f := range frames {
 			s := first + uint64(j)*aacFrameSamples
-			// k grains are no whole number of ticks: within one of the
-			// video's own move, rounded to its grid.
-			moved := (f.PTS - clock.IndexPTS(a, s)) * r.video.Num
-			if d := moved - int64(k)*90000*r.video.Den; max(d, -d) > r.video.Num {
-				t.Fatalf("frame %d moved %d ticks, want %d grains", j, f.PTS-clock.IndexPTS(a, s), k)
+			// k grains are no whole number of ticks at a rate such as
+			// 60000/1001: within half a tick of them.
+			moved := f.PTS - clock.IndexPTS(a, s)
+			if d := 2 * (moved*r.video.Num - int64(k)*90000*r.video.Den); max(d, -d) > r.video.Num {
+				t.Fatalf("frame %d moved %d ticks, want %d grains", j, moved, k)
+			}
+			if first := frames[0].PTS - clock.IndexPTS(a, first); moved != first {
+				t.Fatalf("frame %d moved %d ticks, frame 0 %d", j, moved, first)
 			}
 			if pcm := factory.enc.pcm[j]; len(pcm) != 2*aacFrameSamples || pcm[0] != float32(s-first) || pcm[2*aacFrameSamples-2] != float32(s-first+aacFrameSamples-1) {
 				t.Fatalf("frame %d does not hold samples %d to %d", j, s, s+aacFrameSamples-1)
