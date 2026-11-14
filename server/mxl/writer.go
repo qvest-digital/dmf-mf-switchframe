@@ -121,6 +121,11 @@ type Writer struct {
 	videoHead atomic.Uint64
 	audioHead atomic.Uint64
 
+	// clock, when set, is the clock AtClock reads instead of CurrentIndex.
+	// Tests set it per writer, where swapping CurrentIndex would race with
+	// the writers other tests leave running.
+	clock func(Rational) uint64
+
 	// Reusable de-interleave buffers to avoid per-frame allocation.
 	deinterleaveBuf [][]float32
 
@@ -587,11 +592,15 @@ func (w *Writer) WriteAudio(pcm []float32, pts int64, sampleRate, channels int) 
 // written up to within maxLag of the clock, else what lags. A flow with no
 // writer set is not looked at.
 func (w *Writer) AtClock(maxLag time.Duration) error {
-	if CurrentIndex == nil {
+	now := w.clock
+	if now == nil {
+		now = CurrentIndex
+	}
+	if now == nil {
 		return errors.New("mxl: no clock")
 	}
 	if ref := w.videoRef.Load(); ref != nil && ref.writer != nil {
-		if err := headAtClock("video", w.videoHead.Load(), ref.rate, maxLag); err != nil {
+		if err := headAtClock("video", w.videoHead.Load(), ref.rate, now(ref.rate), maxLag); err != nil {
 			return err
 		}
 	}
@@ -599,7 +608,7 @@ func (w *Writer) AtClock(maxLag time.Duration) error {
 	audio, rate := w.audioWriter != nil, w.audioRate
 	w.mu.Unlock()
 	if audio {
-		if err := headAtClock("audio", w.audioHead.Load(), rate, maxLag); err != nil {
+		if err := headAtClock("audio", w.audioHead.Load(), rate, now(rate), maxLag); err != nil {
 			return err
 		}
 	}
@@ -607,15 +616,14 @@ func (w *Writer) AtClock(maxLag time.Duration) error {
 }
 
 // headAtClock checks that head, the index after the last one written at
-// rate, is no more than maxLag behind the clock's current index.
-func headAtClock(essence string, head uint64, rate Rational, maxLag time.Duration) error {
+// rate, is no more than maxLag behind now, the clock's current index.
+func headAtClock(essence string, head uint64, rate Rational, now uint64, maxLag time.Duration) error {
 	if head == 0 {
 		return fmt.Errorf("program %s: nothing written", essence)
 	}
 	if rate.Numerator <= 0 || rate.Denominator <= 0 {
 		return fmt.Errorf("program %s: no rate", essence)
 	}
-	now := CurrentIndex(rate)
 	if now <= head {
 		return nil
 	}

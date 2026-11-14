@@ -47,8 +47,9 @@ func TestWriter_AtClockFollowsTheVideoWritten(t *testing.T) {
 			w := NewWriter(WriterConfig{Width: 12, Height: 2})
 			w.SetVideoWriter(mock, rate)
 			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
 			w.Start(ctx)
+			// Its video goroutine has ended once Close returns.
+			t.Cleanup(func() { cancel(); _ = w.Close() })
 
 			if err := w.AtClock(maxLag); err == nil {
 				t.Fatal("at the clock before a grain was written")
@@ -85,9 +86,7 @@ func TestWriter_AtClockFollowsTheAudioWritten(t *testing.T) {
 	for _, sr := range []int64{32000, 44100, 48000, 96000} {
 		t.Run(fmt.Sprint(sr), func(t *testing.T) {
 			var now atomic.Uint64
-			saved := CurrentIndex
-			CurrentIndex = func(Rational) uint64 { return now.Load() }
-			t.Cleanup(func() { CurrentIndex = saved })
+			fakeClock := func(Rational) uint64 { return now.Load() }
 			rate := clock.Rate{Num: sr, Den: 1}
 			lag := uint64(sr / 10) // maxLag in samples
 			const batch = 1024
@@ -96,24 +95,31 @@ func TestWriter_AtClockFollowsTheAudioWritten(t *testing.T) {
 			pcm := make([]float32, batch*2)
 
 			w := NewWriter(WriterConfig{SampleRate: int(sr), Channels: 2})
-			w.SetAudioWriter(&mockContinuousWriter{}, Rational{sr, 1})
+			w.clock = fakeClock
+			flow := &mockContinuousWriter{}
+			w.SetAudioWriter(flow, Rational{sr, 1})
 			if err := w.AtClock(maxLag); err == nil {
 				t.Fatal("at the clock before audio was written")
 			}
 			w.WriteAudio(pcm, clock.IndexPTS(rate, start), int(sr), 2)
+			// The end of the batch as the flow took it: a 90 kHz PTS
+			// cannot name every sample at 44.1 or 96 kHz, so it may lie a
+			// sample off start+batch.
+			head := flow.getSamples()[0].index
 			if err := w.AtClock(maxLag); err != nil {
 				t.Fatalf("not at the clock with the audio written up to it: %v", err)
 			}
-			now.Store(start + batch + lag)
+			now.Store(head + lag)
 			if err := w.AtClock(maxLag); err != nil {
 				t.Fatalf("maxLag behind: %v", err)
 			}
-			now.Store(start + batch + lag + uint64(sr/1000))
+			now.Store(head + lag + uint64(sr/1000))
 			if err := w.AtClock(maxLag); err == nil {
 				t.Fatal("at the clock 1 ms past maxLag behind")
 			}
 
 			failing := NewWriter(WriterConfig{SampleRate: int(sr), Channels: 2})
+			failing.clock = fakeClock
 			failing.SetAudioWriter(&refusingContinuousWriter{}, Rational{sr, 1})
 			now.Store(start + batch)
 			failing.WriteAudio(pcm, clock.IndexPTS(rate, start), int(sr), 2)
