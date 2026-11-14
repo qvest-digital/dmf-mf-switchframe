@@ -421,17 +421,22 @@ func (m *Mixer) AddChannel(sourceKey string) {
 // maxAudioDelayMs bounds SetAudioDelay and SetSourceDelay each.
 const maxAudioDelayMs = 500
 
-// channelRingFrames is how many sample frames a channel's ring holds
-// beyond its delay, 640 ms at 48 kHz: a source's audio placed ahead of its
-// arrival for as long as the video stores keep a source's frames for
-// (clock.MaxSourceHold, 500 ms), as a TrackingAnchor raised by a late video
-// frame places it, plus the read delay at 24 fps and an AAC frame.
-const channelRingFrames = 30 * 1024
+// channelRingTime is how much audio a channel's ring holds beyond its
+// delay: a source's audio placed ahead of its arrival for as long as the
+// video stores keep a source's frames for (clock.MaxSourceHold, 500 ms),
+// as a TrackingAnchor raised by a late video frame places it, plus the
+// read delay at 24 fps and an AAC frame.
+const channelRingTime = 640 * time.Millisecond
+
+// channelRingFrames is channelRingTime in sample frames at the mixer rate.
+func (m *Mixer) channelRingFrames() int {
+	return int(int64(channelRingTime) * int64(m.sampleRate) / int64(time.Second))
+}
 
 // newChannelRingBuf creates a PCM ring buffer for a mixer channel that
 // holds delay samples beyond the read window.
 func (m *Mixer) newChannelRingBuf(delay int) *PCMRingBuffer {
-	return NewPCMRingBufferWithChannels((channelRingFrames+delay)*m.numChannels, m.numChannels)
+	return NewPCMRingBufferWithChannels((m.channelRingFrames()+delay)*m.numChannels, m.numChannels)
 }
 
 // delaySamples is how far behind the tick's read point ch is read.

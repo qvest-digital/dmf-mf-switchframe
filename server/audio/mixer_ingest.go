@@ -185,7 +185,7 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame, time
 		delay := int64(ch.primingSkipCount) * m.primingSamples(frame.SampleRate)
 		m.stampRing(ch, frame.PTS-delay*90000/int64(m.sampleRate), n)
 	} else {
-		m.stampArrival(ch, n)
+		m.stampArrival(ch, n, frame.SampleRate)
 	}
 	m.mu.Unlock()
 }
@@ -320,13 +320,13 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 }
 
 // arrivalSlack is how far ahead of its arrival a source's audio may be
-// placed to continue the audio it delivered before: two AAC frames. A
-// source that hands over its AAC frames with its video frames, as the
-// replay player does, delivers 1024 samples a frame period, none in some
-// periods; placed by each arrival, its audio steps back and forth by
-// about an AAC frame, and a step past a period, which scheduling jitter
+// placed to continue the audio it delivered before, in AAC frames of the
+// source. A source that hands over its AAC frames with its video frames,
+// as the replay player does, delivers one AAC frame a frame period, none
+// in some periods; placed by each arrival, its audio steps back and forth
+// by about an AAC frame, and a step past a period, which scheduling jitter
 // makes likely, is spliced.
-const arrivalSlack = 2 * 1024
+const arrivalSlack = 2
 
 // arrivalLate is how far behind its arrival a source's audio may be placed
 // to continue the audio before it once that audio has all been read: 256
@@ -343,10 +343,12 @@ const arrivalLate = 256
 // arrivalSlack after while some of it is due and unread, and otherwise at
 // their arrival. A source whose rate is off the mixer's by more than those
 // bounds allow is placed again at its arrival each time it leaves them.
-func (m *Mixer) stampArrival(ch *Channel, n int) {
+// sampleRate is the source's (0: the mixer rate).
+func (m *Mixer) stampArrival(ch *Channel, n, sampleRate int) {
 	pts := clock.ArrivalPTS(n, m.sampleRate)
 	if ch.ringEnd != 0 {
-		ns := func(samples int) int64 { return int64(samples) * 1_000_000_000 / int64(m.sampleRate) }
+		ns := func(samples int64) int64 { return samples * 1_000_000_000 / int64(m.sampleRate) }
+		slack := ns(arrivalSlack * m.primingSamples(sampleRate))
 		late := ns(arrivalLate)
 		if ch.active && ch.ringBuf.FrameCount()-m.delaySamples(ch) > n {
 			// Audio before this push is due and unread, so no read has
@@ -354,10 +356,10 @@ func (m *Mixer) stampArrival(ch *Channel, n int) {
 			// is jitter, and placed at its arrival it would move all of
 			// that audio later. A channel's delay is held unread and an
 			// inactive channel is never read, so neither shows that.
-			late = ns(arrivalSlack)
+			late = slack
 		}
-		if d := clock.TimestampOf(pts) - ch.ringEnd; d <= late && d >= -ns(arrivalSlack) {
-			ch.ringEnd += ns(n)
+		if d := clock.TimestampOf(pts) - ch.ringEnd; d <= late && d >= -slack {
+			ch.ringEnd += ns(int64(n))
 			return
 		}
 	}
