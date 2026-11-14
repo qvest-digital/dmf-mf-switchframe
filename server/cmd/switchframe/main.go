@@ -194,6 +194,7 @@ type AppConfig struct {
 
 	// EngineLabel identifies this engine in an active-active pair ("a" or "b").
 	// Empty means single-engine mode; all peer-role logic no-ops in that mode.
+	// --engine-label=pod-index is resolved to a or b by parseConfig.
 	EngineLabel string // --engine-label or SWITCHFRAME_ENGINE_LABEL
 
 	// ControlPlaneSecret enables POST /api/peer/force-leader. The control
@@ -465,7 +466,7 @@ func parseConfig() (AppConfig, error) {
 	peerEngineURLFlag := flag.String("peer-engine-url", "", "URL of the peer engine for inter-engine health monitoring (e.g., https://engine-b:8080)")
 	peerPublicURLFlag := flag.String("peer-public-url", "", "Peer engine origin as the browser reaches it, when it differs from --peer-engine-url (e.g. https://engine-b.example.com)")
 	peerCertHashFlag := flag.String("peer-cert-hash", "", "SHA-256 hex of the peer engine's leaf cert DER (comma-separated pair during rotation); required when --peer-engine-url uses a private IP")
-	engineLabelFlag := flag.String("engine-label", "", "engine label for active-active pairs (\"a\" or \"b\"); empty = single-engine")
+	engineLabelFlag := flag.String("engine-label", "", "engine label for active-active pairs (\"a\" or \"b\"), or \"pod-index\" for the label of the StatefulSet pod's ordinal, 0 = a and 1 = b, read from SWITCHFRAME_POD_INDEX; {engine} and {peer} in a per-engine setting become this engine's label and its peer's; empty = single-engine")
 	controlPlaneSecretFlag := flag.String("control-plane-secret", "", "shared secret authorizing POST /api/peer/force-leader; empty disables the endpoint")
 	audioChannelPairsFlag := flag.String("audio-channel-pairs", "", "first channel of the pair a source feeds program at start, as <source key>=<first channel>,..., e.g. mxl:cam1=3,srt:cam2=5; the first channel is odd, 1 to 15 (env: SWITCHFRAME_AUDIO_CHANNEL_PAIRS)")
 	initialProgramSourceFlag := flag.String("initial-program-source", "", "source key put on air at start when no peer engine is on air to follow, e.g. mxl:cam1; empty = the first input delivering frames (env: SWITCHFRAME_INITIAL_PROGRAM_SOURCE)")
@@ -580,11 +581,20 @@ func parseConfig() (AppConfig, error) {
 		}
 	}
 
+	engineLabel, err := resolveEngineLabel(resolveEnvOrFlag(*engineLabelFlag, "SWITCHFRAME_ENGINE_LABEL"), os.Getenv)
+	if err != nil {
+		return AppConfig{}, err
+	}
+	oidcRedirectURL, err := expandEngine("--oidc-redirect-url", resolveEnvOrFlag(*oidcRedirectURLFlag, "SWITCHFRAME_OIDC_REDIRECT_URL"), engineLabel)
+	if err != nil {
+		return AppConfig{}, err
+	}
+
 	oidcCfg, err := oidcSettings{
 		Issuer:           resolveEnvOrFlag(*oidcIssuerFlag, "SWITCHFRAME_OIDC_ISSUER"),
 		ClientID:         resolveEnvOrFlag(*oidcClientIDFlag, "SWITCHFRAME_OIDC_CLIENT_ID"),
 		ClientSecretFile: resolveEnvOrFlag(*oidcClientSecretFileFlag, "SWITCHFRAME_OIDC_CLIENT_SECRET_FILE"),
-		RedirectURL:      resolveEnvOrFlag(*oidcRedirectURLFlag, "SWITCHFRAME_OIDC_REDIRECT_URL"),
+		RedirectURL:      oidcRedirectURL,
 		Scopes:           resolveEnvOrFlag(*oidcScopesFlag, "SWITCHFRAME_OIDC_SCOPES"),
 		RoleClaim:        resolveEnvOrFlag(*oidcRoleClaimFlag, "SWITCHFRAME_OIDC_ROLE_CLAIM"),
 		RoleMap:          resolveEnvOrFlag(*oidcRoleMapFlag, "SWITCHFRAME_OIDC_ROLE_MAP"),
@@ -614,7 +624,7 @@ func parseConfig() (AppConfig, error) {
 		allowedOrigins = splitAndTrim(*allowedOriginsFlag)
 	}
 
-	return AppConfig{
+	cfg := AppConfig{
 		Demo:                 *demoFlag,
 		Format:               *formatFlag,
 		ColorFormat:          *colorFormatFlag,
@@ -711,12 +721,16 @@ func parseConfig() (AppConfig, error) {
 		},
 		PeerCertHash:         resolveEnvOrFlag(*peerCertHashFlag, "SWITCHFRAME_PEER_CERT_HASH"),
 		PeerPublicURL:        resolveEnvOrFlag(*peerPublicURLFlag, "SWITCHFRAME_PEER_PUBLIC_URL"),
-		EngineLabel:          resolveEnvOrFlag(*engineLabelFlag, "SWITCHFRAME_ENGINE_LABEL"),
+		EngineLabel:          engineLabel,
 		ControlPlaneSecret:   resolveEnvOrFlag(*controlPlaneSecretFlag, "SWITCHFRAME_CONTROL_PLANE_SECRET"),
 		InitialProgramSource: resolveEnvOrFlag(*initialProgramSourceFlag, "SWITCHFRAME_INITIAL_PROGRAM_SOURCE"),
 		AudioChannelPairs:    audioChannelPairs,
 		WarmCache:            *warmCacheFlag,
-	}, nil
+	}
+	if err := cfg.expandEngineSettings(); err != nil {
+		return AppConfig{}, err
+	}
+	return cfg, nil
 }
 
 // validateEngineLabel returns an error if label is not one of "", "a", "b".
