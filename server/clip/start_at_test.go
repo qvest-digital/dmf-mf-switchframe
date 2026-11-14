@@ -731,3 +731,63 @@ func TestCuedPlayerReportsATickStartOffTheTick(t *testing.T) {
 	assert.Equal(t, "video", reports[0].media)
 	assert.Equal(t, "audio", reports[1].media)
 }
+
+// Each manager call that acts on a playing slot takes a cue a tick
+// started as the slot's player, without a state read first: before
+// playCue runs, every one of them found the slot empty.
+func TestTimedManagerCallsReachACueTheTickStarted(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(*Manager) error
+	}{
+		{"pause", func(m *Manager) error { return m.Pause(1) }},
+		{"resume", func(m *Manager) error { return m.Resume(1) }},
+		{"stop", func(m *Manager) error { return m.Stop(1) }},
+		{"speed", func(m *Manager) error { return m.SetSpeed(1, 1.5) }},
+		{"seek", func(m *Manager) error { return m.Seek(1, 0.5) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := NewStore(dir, 1<<30)
+			require.NoError(t, err)
+			mgr := NewManager(store, ManagerConfig{
+				DemuxFunc: func(string) ([]BufferedFrame, []BufferedAudioFrame, error) {
+					f, a := cueClip(50, 47)
+					return f, a, nil
+				},
+				OutputRate: func() (int, int) { return 50, 1 },
+				Timed:      true,
+			})
+			defer mgr.Close()
+			c := addTestClip(t, store, dir)
+			var stills atomic.Int64
+			mgr.SetRawVideoOutput(func(string, []byte, int, int, int64, bool) { stills.Add(1) })
+			require.NoError(t, mgr.Load(1, c.ID))
+			require.Eventually(t, func() bool { return stills.Load() > 0 }, 2*time.Second, time.Millisecond)
+
+			// The start StartCuedAt makes, without the playCue it leaves
+			// to run.
+			cue := mgr.cue[0].Load()
+			require.NotNil(t, cue)
+			require.True(t, cue.StartAt(timelineRead(clock.Rate{Num: 50, Den: 1}, clock.TAINow())))
+			require.NoError(t, tc.call(mgr), "the clip the tick started takes the call")
+		})
+	}
+}
+
+// A PCM stream's first pass can be given another end while it is read
+// (SetPassLen), and only then: once a later pass is under way, the end
+// of the first is passed and moving it would cut the pass under way.
+func TestPCMStreamMovesOnlyTheFirstPassEnd(t *testing.T) {
+	_, audio := startClip(clock.Rate{Num: 50, Den: 1}, 48000, 50)
+	s, err := NewPCMStream(PresentedAudio(audio), 48000, startRampCodec)
+	require.NoError(t, err)
+	defer s.Close()
+	const pass = 4800
+	s.Start(0, pass, func() (int64, bool) { return pass, true })
+	s.Read(1000)
+	assert.True(t, s.SetPassLen(pass), "the first pass, read short of its end, takes an end")
+	assert.False(t, s.SetPassLen(999), "an end before what was read is refused")
+	s.Read(pass)
+	assert.False(t, s.SetPassLen(10*pass), "the second pass under way, the first has ended")
+}
