@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/internal/video"
 )
 
@@ -848,14 +849,14 @@ func TestEstimateFPSFromClipFramesBFrameOrder(t *testing.T) {
 		{pts: 12000},
 	}
 
-	fps := estimateFPSFromClipFrames(frames)
+	fps := estimateFPSFromClipFrames(frames).FPS
 	// PTS span = 12000 - 0 = 12000, intervals = 4, FPS = 4 * 90000 / 12000 = 30
 	assert.InDelta(t, 30.0, fps, 1.0, "should correctly estimate FPS from B-frame ordered content")
 }
 
 func TestEstimateFPSSingleFrame(t *testing.T) {
 	frames := []BufferedFrame{{pts: 90000, isKeyframe: true}}
-	fps := estimateFPSFromClipFrames(frames)
+	fps := estimateFPSFromClipFrames(frames).FPS
 	assert.Equal(t, 30.0, fps, "single frame should default to 30fps")
 }
 
@@ -865,26 +866,38 @@ func TestEstimateFPSZeroPTSSpan(t *testing.T) {
 		{pts: 90000},
 		{pts: 90000},
 	}
-	fps := estimateFPSFromClipFrames(frames)
+	fps := estimateFPSFromClipFrames(frames).FPS
 	assert.Equal(t, 30.0, fps, "zero PTS span should default to 30fps")
 }
 
 func TestEstimateFPSClampRange(t *testing.T) {
-	// Very high FPS (small PTS span).
-	highFPS := []BufferedFrame{
-		{pts: 0},
-		{pts: 100}, // 90000/100 = 900fps
-	}
-	fps := estimateFPSFromClipFrames(highFPS)
-	assert.Equal(t, 120.0, fps, "should clamp to 120fps max")
-
 	// Very low FPS (large PTS span).
 	lowFPS := []BufferedFrame{
 		{pts: 0},
 		{pts: 900000}, // 90000/900000 = 0.1fps
 	}
-	fps = estimateFPSFromClipFrames(lowFPS)
+	fps := estimateFPSFromClipFrames(lowFPS).FPS
 	assert.Equal(t, 10.0, fps, "should clamp to 10fps min")
+}
+
+// A clip at any program rate, its PTS rounded to 90 kHz ticks and one of
+// its frames dropped, is estimated at its own rate and read back as its
+// exact fraction: a clip at 239.76 fps played as 120 fps runs at half
+// speed, and a 25 fps clip taken for 24.975 drifts against its audio.
+func TestEstimateFPSAtEveryRate(t *testing.T) {
+	for _, r := range programRates {
+		t.Run(fmt.Sprintf("%d_%d", r.Num, r.Den), func(t *testing.T) {
+			var frames []BufferedFrame
+			for i := int64(0); i < 30; i++ {
+				if i != 15 {
+					frames = append(frames, BufferedFrame{pts: (i*90000*r.Den + r.Num/2) / r.Num})
+				}
+			}
+			est := estimateFPSFromClipFrames(frames)
+			require.InEpsilon(t, float64(r.Num)/float64(r.Den), est.FPS, 0.0002, "estimate")
+			require.Equal(t, r, est.Rate(), "fraction of %v fps", est.FPS)
+		})
+	}
 }
 
 func TestPlayerEncoderFactoryReceivesRationalFPS(t *testing.T) {
@@ -1184,7 +1197,7 @@ func TestPlayerReencodeReturnsCopy(t *testing.T) {
 				return mockEncoder, nil
 			},
 		},
-		sourceFPS: 30.0,
+		source: clock.RateEstimate{FPS: 30},
 	}
 
 	// Initialize avc1Buf scratch buffer.
@@ -1443,7 +1456,7 @@ func TestPlayerReencodeAVC1BufferNotAliased(t *testing.T) {
 				}, nil
 			},
 		},
-		sourceFPS: 30.0,
+		source: clock.RateEstimate{FPS: 30},
 	}
 
 	yuv := make([]byte, video.YUV420FrameSize(320, 240))

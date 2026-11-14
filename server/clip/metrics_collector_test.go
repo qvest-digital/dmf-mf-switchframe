@@ -72,10 +72,7 @@ func TestManagerStartIsLateAgainstThePlayerPeriod(t *testing.T) {
 			output:   func() (int, int) { return int(r.Num), int(r.Den) },
 			want:     r,
 		})
-		// estimateFPSFromClipFrames caps a clip's rate at 120 fps.
-		if r.Num/r.Den <= 120 {
-			cases = append(cases, tc{name: fmt.Sprintf("clip_%d_%d", r.Num, r.Den), clipRate: r, want: r})
-		}
+		cases = append(cases, tc{name: fmt.Sprintf("clip_%d_%d", r.Num, r.Den), clipRate: r, want: r})
 	}
 
 	var mu sync.Mutex
