@@ -1374,3 +1374,24 @@ func TestProduceSamples_NoSourceData(t *testing.T) {
 		requireSilent(t, out, "no source audio")
 	}
 }
+
+// A channel's read delay is its audio delay and its source delay together,
+// what popAt reads it behind the read point by.
+func TestMixerReadDelayMs(t *testing.T) {
+	m := NewMixer(MixerConfig{SampleRate: 48000, Channels: 2})
+	defer func() { _ = m.Close() }()
+	m.AddChannel("cam1")
+	if got := m.ReadDelayMs("cam1"); got != 0 {
+		t.Fatalf("read delay %d ms with no delay set", got)
+	}
+	if err := m.SetAudioDelay("cam1", 30); err != nil {
+		t.Fatal(err)
+	}
+	m.SetSourceDelay("cam1", 40)
+	if got := m.ReadDelayMs("cam1"); got != 70 {
+		t.Fatalf("read delay %d ms, want 70", got)
+	}
+	if got := m.ReadDelayMs("missing"); got != 0 {
+		t.Fatalf("read delay %d ms for no channel", got)
+	}
+}
