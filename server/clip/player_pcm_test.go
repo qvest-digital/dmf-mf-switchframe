@@ -4,6 +4,7 @@ package clip
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -208,6 +209,62 @@ func TestPlayerPCMRunsOnThroughAStall(t *testing.T) {
 			defer mu.Unlock()
 			require.True(t, stalled)
 			assert.Greater(t, drained, int64(0), "the read point ran past the audio during the stall")
+		})
+	}
+}
+
+// A player that stalls until the clock is further past the end of its
+// audio than a period but less than the read delay runs on: the read
+// point, ReadDelay periods behind the clock, has not reached the end, so
+// the mixer has the audio. Above 60 fps the read delay is more than two
+// periods, and a player that took two for it started its audio again at
+// the picture after the stall, a step back over audio the mixer still had.
+// The player's PCM is driven on a scripted clock, so the stall is exact.
+func TestPlayerPCMRunsOnWhileTheReadPointHasNotPassedIt(t *testing.T) {
+	audio, _ := fixtureAudio(t, aacfixture.Clip{Ext: ".ts", Channels: 2, Seconds: 2})
+	now := clock.TAINow()
+	clock.Epoch()
+	clock.SetTAISource(func() int64 { return now })
+	t.Cleanup(func() { clock.SetTAISource(nil) })
+	for _, r := range []clock.Rate{
+		{Num: 24000, Den: 1001}, {Num: 24, Den: 1}, {Num: 25, Den: 1}, {Num: 30000, Den: 1001},
+		{Num: 30, Den: 1}, {Num: 50, Den: 1}, {Num: 60000, Den: 1001}, {Num: 60, Den: 1},
+		{Num: 100, Den: 1}, {Num: 120000, Den: 1001}, {Num: 120, Den: 1},
+		{Num: 240000, Den: 1001}, {Num: 240, Den: 1},
+	} {
+		t.Run(fmt.Sprintf("%d/%d", r.Num, r.Den), func(t *testing.T) {
+			period := 90000 * r.Den / r.Num
+			delay := int64(clock.ReadDelay(r)) * period
+			var rec pcmRecorder
+			cfg := PlayerConfig{AudioClip: audio, Speed: 1, Timed: true, PCMCodec: testPCMCodec}
+			rec.wire(&cfg)
+			p := NewPlayer(cfg)
+			s, err := NewPCMStream(p.pcmClip, p.audioRate(), testPCMCodec)
+			require.NoError(t, err)
+			t.Cleanup(s.Close)
+			p.pcm, p.rate, p.totalOutputFrames = s, r, 50
+			p.pcmBase, p.pcmFirst = clock.NowPTS(), true
+
+			// A picture a period: the PCM runs pcmLead ahead of the clock.
+			const total = 50
+			pic := 0
+			tick := func() {
+				p.emitTimedPCM(1, pic, total, clock.NowPTS()+period)
+				pic++
+				now += int64(period) * 1_000_000_000 / 90000
+			}
+			for range 10 {
+				tick()
+			}
+			handed := p.pcmBase + p.pcmPut*90000/int64(p.audioRate())
+			// The stall: the clock ends up past the end of the audio by
+			// halfway between a period and the read delay, the middle of
+			// what the read point has not reached and, above 60 fps,
+			// past two periods.
+			now = clock.TimestampOf(handed + (period+delay)/2)
+			tick()
+			require.Greater(t, p.pcmPut*90000/int64(p.audioRate())+p.pcmBase, handed, "no PCM handed over after the stall")
+			rec.samples(t, 2) // contiguous PTS, one start
 		})
 	}
 }

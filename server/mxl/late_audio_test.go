@@ -63,10 +63,11 @@ type handover struct {
 func feed(t *testing.T, rate clock.Rate, sampleRate, secs int, late func(i int) (int64, bool), config func(*SourceConfig)) (*Source, []handover) {
 	t.Helper()
 	var now int64
-	savedPeriod, savedNow := programPeriod, nowPTS
+	savedPeriod, savedDelay, savedNow := programPeriod, programReadDelay, nowPTS
 	programPeriod = func() int64 { return programPeriodAt(rate) }
+	programReadDelay = func() uint64 { return clock.ReadDelay(rate) }
 	nowPTS = func() int64 { return now }
-	t.Cleanup(func() { programPeriod, nowPTS = savedPeriod, savedNow })
+	t.Cleanup(func() { programPeriod, programReadDelay, nowPTS = savedPeriod, savedDelay, savedNow })
 
 	var got []handover
 	var start int64
@@ -96,19 +97,19 @@ func feed(t *testing.T, rate clock.Rate, sampleRate, secs int, late func(i int) 
 	return src, got
 }
 
-// deadline is when a grain placed at placed has to reach the mixer: the
-// tick that mixes its first sample reads ReaderDelayGrains periods behind
-// itself, a period's audio at a time.
-func deadline(placed, period int64) int64 {
-	return placed + (clock.ReaderDelayGrains-1)*period
+// deadline is when a grain placed at placed has to reach the mixer at
+// program rate r: the tick that mixes its first sample reads
+// clock.ReadDelay periods behind itself, a period's audio at a time.
+func deadline(r clock.Rate, placed int64) int64 {
+	return placed + (int64(clock.ReadDelay(r))-1)*programPeriodAt(r)
 }
 
 // wantShift is how much later a source whose reads are handed over lag
 // after their last sample is mixed at program period period: what its
 // reads overrun their read point by and lateAudioMargin, up to the next
 // millisecond, or nothing when they reach it.
-func wantShift(lag, period int64) int64 {
-	need := readTicks + lag - (clock.ReaderDelayGrains-1)*period
+func wantShift(r clock.Rate, lag int64) int64 {
+	need := readTicks + lag - deadline(r, 0)
 	if need <= 0 {
 		return 0
 	}
@@ -132,17 +133,16 @@ func always(l int64) func(int) (int64, bool) { return func(int) (int64, bool) { 
 // grain of the audio.
 func TestSource_LateAudioReachesTheMixerByItsReadPoint(t *testing.T) {
 	eachRate(t, func(t *testing.T, r lateRate) {
-		period := programPeriodAt(r.video)
 		for _, lag := range []int64{20 * 90, 27 * 90, 34 * 90, 60 * 90} {
 			src, got := feed(t, r.video, r.audio, 6, always(lag), nil)
-			want := wantShift(lag, period)
+			want := wantShift(r.video, lag)
 			for _, h := range got {
 				if h.at < got[0].at+3*90000 {
 					continue
 				}
-				if h.at > deadline(h.placed, period) {
+				if h.at > deadline(r.video, h.placed) {
 					t.Fatalf("lag %d: read at %d handed over %d ticks after its read point",
-						lag, h.start, h.at-deadline(h.placed, period))
+						lag, h.start, h.at-deadline(r.video, h.placed))
 				}
 				if shift := h.placed - h.start; shift != want {
 					t.Fatalf("lag %d: mixed %d ticks late, want %d", lag, shift, want)
@@ -166,7 +166,7 @@ func TestSource_LateAudioShiftLeavesOutTheReadDelay(t *testing.T) {
 			src, _ := feed(t, r.video, r.audio, 6, always(lag), func(c *SourceConfig) {
 				c.AudioReadDelayMs = func() int { return delayMs }
 			})
-			want := wantShift(lag-int64(delayMs)*90, programPeriodAt(r.video))
+			want := wantShift(r.video, lag-int64(delayMs)*90)
 			if got := src.audioPlace.shift; got != want {
 				t.Fatalf("delay %d ms: shift %d ticks, want %d", delayMs, got, want)
 			}
@@ -202,7 +202,6 @@ func TestSource_TimelyAudioKeepsItsMediaTime(t *testing.T) {
 func TestSource_LateStartUpComesBackAfterAMinute(t *testing.T) {
 	const lag, startUp = 60 * 90, 3 * 100
 	eachRate(t, func(t *testing.T, r lateRate) {
-		period := programPeriodAt(r.video)
 		_, got := feed(t, r.video, r.audio, 75, func(i int) (int64, bool) {
 			if i < startUp {
 				return lag + 5400, true
@@ -210,15 +209,15 @@ func TestSource_LateStartUpComesBackAfterAMinute(t *testing.T) {
 			return lag, true
 		}, nil)
 		for _, h := range got {
-			if h.at >= got[0].at+3*90000 && h.at > deadline(h.placed, period) {
+			if h.at >= got[0].at+3*90000 && h.at > deadline(r.video, h.placed) {
 				t.Fatalf("read at %d handed over %d ticks after its read point",
-					h.start, h.at-deadline(h.placed, period))
+					h.start, h.at-deadline(r.video, h.placed))
 			}
 		}
-		if s, want := got[startUp+200].placed-got[startUp+200].start, wantShift(lag+5400, period); s != want {
+		if s, want := got[startUp+200].placed-got[startUp+200].start, wantShift(r.video, lag+5400); s != want {
 			t.Fatalf("after the start-up mixed %d ticks late, want %d", s, want)
 		}
-		if s, want := got[len(got)-1].placed-got[len(got)-1].start, wantShift(lag, period); s != want {
+		if s, want := got[len(got)-1].placed-got[len(got)-1].start, wantShift(r.video, lag); s != want {
 			t.Fatalf("a minute on mixed %d ticks late, want %d", s, want)
 		}
 	})
@@ -270,7 +269,6 @@ func TestSource_LateAudioShiftAbsorbsAStepWithinTheMargin(t *testing.T) {
 // less leaves it.
 func TestSource_LateAudioShiftComesDownOnlyForADropBeyondTheMargin(t *testing.T) {
 	eachRate(t, func(t *testing.T, r lateRate) {
-		period := programPeriodAt(r.video)
 		for _, drop := range []int64{4, 7} {
 			n, shift := moves(t, r.video, r.audio, 75, func(i int) int64 {
 				if window(i) < 5 {
@@ -278,7 +276,7 @@ func TestSource_LateAudioShiftComesDownOnlyForADropBeyondTheMargin(t *testing.T)
 				}
 				return 60 * 90
 			})
-			high, low := wantShift((60+drop)*90, period), wantShift(60*90, period)
+			high, low := wantShift(r.video, (60+drop)*90), wantShift(r.video, 60*90)
 			switch {
 			case drop < lateAudioMargin/90 && (n != 1 || shift != high):
 				t.Fatalf("a %d ms drop: %d moves, shift %d, want 1 and %d", drop, n, shift, high)
@@ -451,7 +449,7 @@ func TestSource_RelayAudioIsCollectedIntoAACFrames(t *testing.T) {
 		a := clock.Rate{Num: int64(r.audio), Den: 1}
 		first := nowIndex(a)
 		// Reads of what the reader takes at a time at this program rate.
-		n := uint64(audioReadSize(r.audio, programPeriodAt(r.video)))
+		n := uint64(audioReadSize(r.audio, programPeriodAt(r.video), clock.ReadDelay(r.video)))
 		const reads = 100
 		for i := uint64(0); i < reads; i++ {
 			start := first + i*n

@@ -1090,7 +1090,7 @@ func (p *Player) noteStart(media string) {
 
 // keepOnTimeline moves a timed player's PTS, its video and its AAC, onto
 // the clock when the frame about to go out is due more than
-// ReaderDelayGrains periods ago, as after a pause or a decoder that fell
+// ReadDelay periods ago, as after a pause or a decoder that fell
 // behind, or more than a period ahead, as after a seek whose decode-only
 // frames advanced the PTS: the tick due to show such a frame has passed
 // or is still far off. Otherwise the PTS run on unbroken. The PCM is not
@@ -1098,7 +1098,7 @@ func (p *Player) noteStart(media string) {
 func (p *Player) keepOnTimeline(outputPTS *int64) {
 	period := 90000 * p.rate.Den / p.rate.Num
 	off := clock.NowPTS() - *outputPTS
-	if off <= clock.ReaderDelayGrains*period && off >= -period {
+	if off <= int64(clock.ReadDelay(p.rate))*period && off >= -period {
 		return
 	}
 	*outputPTS += off
@@ -1192,7 +1192,7 @@ func (p *Player) emitTimedPCM(speed float64, pic, total int, until int64) {
 	case p.pcmFirst:
 		p.pcmFirst, p.pcmResync = false, false
 		p.startPCM(p.pcmBase, 0)
-	case p.pcmResync, p.pcmBase+p.pcmPut*90000/rate < now-clock.ReaderDelayGrains*period:
+	case p.pcmResync, p.pcmBase+p.pcmPut*90000/rate < now-int64(clock.ReadDelay(p.rate))*period:
 		p.pcmResync = false
 		p.startPCM(until, int64(pic)*p.pcmPass(false)/int64(total))
 	}
@@ -1289,13 +1289,13 @@ func timelineStart(r clock.Rate, now int64) int64 {
 	if clock.IndexToTimestamp(r, i)-now < int64(startMargin) {
 		i++
 	}
-	return clock.IndexPTS(r, i-clock.ReaderDelayGrains)
+	return clock.IndexPTS(r, i-clock.ReadDelay(r))
 }
 
 // timelineRead returns the read point of the program tick running at TAI
 // now, on an output at rate r.
 func timelineRead(r clock.Rate, now int64) int64 {
-	return clock.IndexPTS(r, tickAt(r, now)-clock.ReaderDelayGrains)
+	return clock.IndexPTS(r, tickAt(r, now)-clock.ReadDelay(r))
 }
 
 // tickAt returns the program tick running at TAI now: the grain that

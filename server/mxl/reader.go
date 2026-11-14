@@ -74,21 +74,20 @@ const grainLookBack = 2
 
 // audioReadSize is the most samples of a flow at sampleRate the audio
 // loop reads at a time, the program period being period 90 kHz ticks, 0
-// without a program clock: 10 ms, the batch GStreamer MXL writers commit,
+// without a program clock, and the ticks reading delay periods behind the
+// clock (clock.ReadDelay): 10 ms, the batch GStreamer MXL writers commit,
 // or the audio's budget where that is shorter. A read is handed over only
 // once its last sample is written, so its first sample reaches the mixer
 // at least the read's duration after its media time, and the mixer reads
-// audio clock.ReaderDelayGrains-1 periods after it: 8.3 ms at 120 fps,
-// 4.2 ms at 240. period is rounded up to a whole tick, so the budget is
+// audio delay-1 periods after it: 16.7 ms at 60 fps, 30 ms at 100 and
+// 37.5 ms at 240. period is rounded up to a whole tick, so the budget is
 // taken one tick short per period and a read never exceeds it. A read
 // takes no more than the producer has committed (committed), so a batch
-// longer than the budget is split rather than waited for. A producer that
-// commits 10 ms at a time still overruns a budget under 10 ms; what keeps
-// it in is a read delay of more periods.
-func audioReadSize(sampleRate int, period int64) int {
+// longer than the budget is split rather than waited for.
+func audioReadSize(sampleRate int, period int64, delay uint64) int {
 	n := sampleRate / 100
 	if period > 0 {
-		budget := (clock.ReaderDelayGrains - 1) * (period - 1)
+		budget := (int64(delay) - 1) * (period - 1)
 		n = min(n, int(budget*int64(sampleRate)/90000))
 	}
 	return max(n, 1)
@@ -97,15 +96,14 @@ func audioReadSize(sampleRate int, period int64) int {
 // maxAudioReadSize is the most samples of a flow at sampleRate a read of
 // audioReadSize takes.
 func maxAudioReadSize(sampleRate int) int {
-	return audioReadSize(sampleRate, 0)
+	return audioReadSize(sampleRate, 0, 0)
 }
 
 // audioLeadPeriods is how many program periods ahead of its first sample's
 // media time the audio loop hands a read over, and minAudioLead the least
-// it hands it over by. The mixer reads clock.ReaderDelayGrains periods
-// behind the clock; at 240 fps two periods are 8.3 ms, and with every core
-// busy a read held to that reached the mixer up to 5.3 ms after its read
-// point. The floor covers that scheduling delay, which does not depend on
+// it hands it over by. The mixer reads clock.ReadDelay periods behind the
+// clock; two periods at 240 fps are 8.3 ms, and with every core busy a
+// read held to that reached the mixer up to 5.3 ms after its read point. The floor covers that scheduling delay, which does not depend on
 // any rate. Either way a read waits in the source's ring for a few tens of
 // ms, far less than the 30720 mixer samples, 640 ms, the ring holds.
 const (
@@ -399,7 +397,7 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 		if r.config.SamplesPerRead > 0 {
 			return uint64(r.config.SamplesPerRead)
 		}
-		return uint64(audioReadSize(sampleRate, programPeriod()))
+		return uint64(audioReadSize(sampleRate, programPeriod(), programReadDelay()))
 	}
 
 	// Read position: start from the ring buffer's current write head so we

@@ -10,11 +10,10 @@ import (
 )
 
 // syncRingSize is how many frames each source buffers beyond its delay and
-// its hold. A tick reads clock.ReaderDelayGrains behind the clock, so a
-// source at k times the program rate needs k*(ReaderDelayGrains+1) frames
-// for one to be due; 16 covers five times the program rate and a reader's
-// burst. Frames older than the due one are released on every tick, so a
-// source at the program rate holds about ReaderDelayGrains+1 of them. A
+// its hold. A tick reads clock.ReadDelay periods behind the clock, frames
+// the hold counts as well (clock.SourceHold); 16 covers a reader's burst
+// on top. Frames older than the due one are released on every tick, so a
+// source at the program rate holds about ReadDelay+1 of them. A
 // source placed ahead of its arrival, as an SRT stream is by its
 // clock.TrackingAnchor, holds the frames that arrive in its hold as well.
 const syncRingSize = 16

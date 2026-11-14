@@ -238,30 +238,31 @@ func TestSRTAudioLandsOnItsStampsOnceTheAnchorSettles(t *testing.T) {
 }
 
 // Once its anchor settled, an SRT source's frames arrive later for good,
-// as a longer network path delivers them. Under a program period less
-// clock.TrackingDriftMargin, its audio is still read on time where it is,
-// and the anchor leaves it there. A little more, still under a period,
+// as a longer network path delivers them. Under the anchor's slack its
+// audio is still read on time where it is, and the anchor leaves it there.
+// A little more, still inside the audio budget, ReadDelay-1 periods,
 // raises the anchor: its video moves that much later, and its audio, which
 // the mixer realigns only past a period, has to be placed on its stamps
 // again, or the two sit apart until the offset comes down a minute later.
-// Past a period, its audio misses reads until the anchor raises once. In
+// Past the budget, its audio misses reads until the anchor raises once. In
 // every case the audio lands where its video is once the lateness lasts,
 // at every program rate and for every audio frame length.
 func TestSRTAudioStaysOnItsVideoThroughALastingLateness(t *testing.T) {
 	rates := []clock.Rate{
 		{Num: 24000, Den: 1001}, {Num: 24, Den: 1}, {Num: 25, Den: 1}, {Num: 30000, Den: 1001}, {Num: 30, Den: 1},
-		{Num: 50, Den: 1}, {Num: 60000, Den: 1001}, {Num: 60, Den: 1}, {Num: 120, Den: 1}, {Num: 240, Den: 1},
+		{Num: 50, Den: 1}, {Num: 60000, Den: 1001}, {Num: 60, Den: 1}, {Num: 100, Den: 1},
+		{Num: 120000, Den: 1001}, {Num: 120, Den: 1}, {Num: 240000, Den: 1001}, {Num: 240, Den: 1},
 	}
 	for _, r := range rates {
 		for _, frame := range []int{1024, 1536} {
 			for _, c := range []struct {
 				name   string
-				late   func(period int64) int64
+				late   func(slack, budget int64) int64
 				raises int64
 			}{
-				{"under-slack", func(p int64) int64 { return p - clock.TrackingDriftMargin - 10 }, 0},
-				{"under-period", func(p int64) int64 { return p - clock.TrackingDriftMargin/2 }, 1},
-				{"past-period", func(p int64) int64 { return p + 45 }, 1},
+				{"under-slack", func(slack, _ int64) int64 { return slack - 10 }, 0},
+				{"past-slack", func(slack, _ int64) int64 { return slack + clock.TrackingDriftMargin/2 }, 1},
+				{"past-budget", func(_, budget int64) int64 { return budget + 45 }, 1},
 			} {
 				t.Run(fmt.Sprintf("%d/%d/%d/%s", r.Num, r.Den, frame, c.name), func(t *testing.T) {
 					srtLastingLateness(t, r, frame, c.late, c.raises)
@@ -273,13 +274,15 @@ func TestSRTAudioStaysOnItsVideoThroughALastingLateness(t *testing.T) {
 
 // srtLastingLateness runs one SRT source at program rate r, in audio
 // frames of frame samples, that settles on time and from 8 s on arrives
-// late(period) ticks later for good, and checks the anchor raised raises
-// times and the audio lands on its video from 16 s on.
-func srtLastingLateness(t *testing.T, r clock.Rate, frame int, lateness func(int64) int64, raises int64) {
+// late(slack, budget) ticks later for good, slack being the anchor's and
+// budget the audio's, ReadDelay-1 periods, and checks the anchor raised
+// raises times and the audio lands on its video from 16 s on.
+func srtLastingLateness(t *testing.T, r clock.Rate, frame int, lateness func(int64, int64) int64, raises int64) {
 	const key = "srt:later"
 	var now atomic.Int64
 	scriptTAI(t, &now)
 	clock.SetProgramRate(r)
+	t.Cleanup(func() { clock.SetProgramRate(clock.Rate{Num: 50, Den: 1}) })
 	m := audio.NewMixer(audio.MixerConfig{SampleRate: 48000, Channels: 2})
 	t.Cleanup(func() { _ = m.Close() })
 	m.AddChannel(key)
@@ -288,7 +291,8 @@ func srtLastingLateness(t *testing.T, r clock.Rate, frame int, lateness func(int
 	var anchor clock.TrackingAnchor
 
 	period := clock.ProgramPeriod()
-	late := lateness(period)
+	d := clock.ReadDelay(r)
+	late := lateness(clock.TrackingSlack(), (int64(d)-1)*period)
 	sr := clock.Rate{Num: 48000, Den: 1}
 	start := now.Load()
 	step := int64(frame) * 90000 / 48000 // frame length in 90 kHz ticks
@@ -335,8 +339,8 @@ func srtLastingLateness(t *testing.T, r clock.Rate, frame int, lateness func(int
 			next++
 		}
 		now.Store(at)
-		read := clock.TimestampToIndex(sr, clock.IndexToTimestamp(r, g-clock.ReaderDelayGrains))
-		n := int(clock.TimestampToIndex(sr, clock.IndexToTimestamp(r, g-clock.ReaderDelayGrains+1)) - read)
+		read := clock.TimestampToIndex(sr, clock.IndexToTimestamp(r, g-d))
+		n := int(clock.TimestampToIndex(sr, clock.IndexToTimestamp(r, g-d+1)) - read)
 		if at-start < checkFrom {
 			realigns, underruns = m.ChannelRealigns()[key], m.ChannelUnderruns()[key]
 		}

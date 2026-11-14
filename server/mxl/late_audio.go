@@ -8,8 +8,9 @@ import (
 
 // Replaced by tests.
 var (
-	programPeriod = clock.ProgramPeriod
-	nowPTS        = clock.NowPTS
+	programPeriod    = clock.ProgramPeriod
+	programReadDelay = clock.ProgramReadDelay
+	nowPTS           = clock.NowPTS
 )
 
 // lateAudioWindow is the span, in 90 kHz ticks, over which an
@@ -79,7 +80,7 @@ func (p *audioPlacement) pts(pts, delay int64) int64 {
 		p.closeWindow()
 		p.end += lateAudioWindow
 	}
-	p.cur = max(p.cur, now-pts-(clock.ReaderDelayGrains-1)*period-delay)
+	p.cur = max(p.cur, now-pts-(int64(programReadDelay())-1)*period-delay)
 	return pts + p.shift
 }
 
