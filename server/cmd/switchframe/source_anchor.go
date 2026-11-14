@@ -2,6 +2,7 @@ package main
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/zsiec/switchframe/server/clock"
 )
@@ -12,12 +13,17 @@ import (
 // and again only after a jump.
 var playoutAnchors sync.Map // source key -> *gridAnchor
 
-// playoutRate is the program rate playout anchors place on, set by
-// initPlayout; nil places on 50 fps.
-var playoutRate func() clock.Rate
+// playoutRate returns the program rate playout anchors place on. initPlayout
+// sets it; until then they place on 50 fps.
+var playoutRate atomic.Pointer[func() clock.Rate]
 
 func playoutAnchor(key string) *gridAnchor {
-	a, _ := playoutAnchors.LoadOrStore(key, &gridAnchor{rate: playoutRate})
+	a, _ := playoutAnchors.LoadOrStore(key, &gridAnchor{rate: func() clock.Rate {
+		if fn := playoutRate.Load(); fn != nil {
+			return (*fn)()
+		}
+		return clock.Rate{}
+	}})
 	return a.(*gridAnchor)
 }
 
@@ -29,21 +35,24 @@ func playoutAnchor(key string) *gridAnchor {
 // source placed between two grid points had its pictures shown up to a
 // period after their stamps and its audio played on them: up to a period
 // ahead of its pictures. A source whose frames step by the program
-// period, as a playout channel's do, stays on the grid.
+// period, as a playout channel's do, stays on the grid. A change of the
+// program rate places the source again, on the new grid.
 type gridAnchor struct {
 	rate   func() clock.Rate
 	mu     sync.Mutex
 	offset int64
 	set    bool
+	placed clock.Rate // the rate the offset is on the grid of
 }
 
 // PTS maps the source timestamp src to the engine timeline.
 func (a *gridAnchor) PTS(src int64) int64 {
 	now := clock.NowPTS()
+	r := a.programRate()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if d := src + a.offset - now; !a.set || d > clock.MaxAnchorSkew || d < -clock.MaxAnchorSkew {
-		a.offset, a.set = onGrid(a.programRate(), now)-src, true
+	if d := src + a.offset - now; !a.set || r != a.placed || d > clock.MaxAnchorSkew || d < -clock.MaxAnchorSkew {
+		a.offset, a.set, a.placed = onGrid(r, now)-src, true, r
 	}
 	return src + a.offset
 }

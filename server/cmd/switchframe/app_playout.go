@@ -103,10 +103,11 @@ func (a *App) initPlayout() error {
 
 	// PTS anchoring.
 	mgr.SetPTSProvider(a.sw.LastBroadcastVideoPTS)
-	playoutRate = func() clock.Rate {
+	rate := func() clock.Rate {
 		pf := a.sw.PipelineFormat()
 		return clock.Rate{Num: int64(pf.FPSNum), Den: int64(pf.FPSDen)}
 	}
+	playoutRate.Store(&rate)
 
 	// Register MoQ relays for playout channels (same pattern as clips).
 	for i := 0; i < playout.MaxChannels; i++ {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -27,9 +28,8 @@ var programRates = []clock.Rate{
 // of the start within a period, the tick that shows the first picture
 // plays the first sample on its read point.
 func TestPlayoutRunStartsOnTheProgramGrid(t *testing.T) {
-	tai := clock.TAINow()
-	clock.SetTAISource(func() int64 { return tai })
-	t.Cleanup(func() { clock.SetTAISource(nil) })
+	var tai atomic.Int64
+	scriptTAI(t, &tai)
 	for _, r := range programRates {
 		for _, sr := range []int64{44100, 48000, 96000} {
 			t.Run(fmt.Sprintf("%d_%d/%d", r.Num, r.Den, sr), func(t *testing.T) {
@@ -37,7 +37,7 @@ func TestPlayoutRunStartsOnTheProgramGrid(t *testing.T) {
 					base := clock.TimestampToIndex(r, clock.TAINow()) + 10
 					start := clock.IndexToTimestamp(r, base)
 					period := clock.IndexToTimestamp(r, base+1) - start
-					tai = start + phase*period/8
+					tai.Store(start + phase*period/8)
 
 					var a gridAnchor
 					a.rate = func() clock.Rate { return r }
@@ -75,3 +75,37 @@ func TestPlayoutRunStartsOnTheProgramGrid(t *testing.T) {
 }
 
 const pcmTestKey = "playout:grid"
+
+// A change of the program rate puts the playout channels' frames on
+// another grid. A run placed on the old one keeps its offset unless it is
+// placed again: its next picture would sit between two frame starts of the
+// new rate, and its audio ahead of the picture. Every rate change from
+// every rate places the next timestamp on the new grid.
+func TestPlayoutAnchorMovesOntoTheGridOfANewRate(t *testing.T) {
+	var tai atomic.Int64
+	scriptTAI(t, &tai)
+	for _, from := range programRates {
+		for _, to := range programRates {
+			if from == to {
+				continue
+			}
+			t.Run(fmt.Sprintf("%d_%d_to_%d_%d", from.Num, from.Den, to.Num, to.Den), func(t *testing.T) {
+				rate := from
+				a := gridAnchor{rate: func() clock.Rate { return rate }}
+				base := clock.TimestampToIndex(from, clock.TAINow()) + 10
+				tai.Store(clock.IndexToTimestamp(from, base) + 1_000_000)
+				const src = 900_000
+				a.PTS(src)
+
+				rate = to
+				// One old period later, in source and in clock time, plus a
+				// third of a new period off the new grid.
+				step := int64(90000) * from.Den / from.Num
+				tai.Store(clock.TimestampOf(clock.PTS(tai.Load())+step) + clock.IndexToTimestamp(to, 1)/3)
+				pts := a.PTS(src + step)
+				require.Equal(t, clock.IndexPTS(to, clock.PTSIndex(to, pts)), pts,
+					"the timestamp after the rate change is on the new grid")
+			})
+		}
+	}
+}
