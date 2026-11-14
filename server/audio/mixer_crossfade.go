@@ -155,6 +155,20 @@ func (m *Mixer) OnCut(oldSource, newSource string) {
 	m.startCutRampLocked()
 }
 
+// deactivateQueuedLocked switches off every channel queued to go off,
+// except the one on program, and empties the queue. Caller must hold m.mu.
+func (m *Mixer) deactivateQueuedLocked() {
+	for key := range m.afvDeactivateOnComplete {
+		if key == m.programAFVSource {
+			continue
+		}
+		if ch, ok := m.channels[key]; ok {
+			ch.active = false
+		}
+	}
+	m.afvDeactivateOnComplete = nil
+}
+
 // deactivateOnCompleteLocked queues a channel to go off when the cut ramp
 // completes. Caller must hold m.mu.
 func (m *Mixer) deactivateOnCompleteLocked(sourceKey string) {
@@ -193,21 +207,36 @@ func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMo
 	m.transCrossfadeMode = mode
 	m.transCrossfadeAudioPos = 0.0
 	m.mixCycleTransPos = 0.0
+	// A cut ramp still running ends here: the transition takes every
+	// channel on from the gain it aired, and a channel the ramp was taking
+	// off keeps fading under the transition and goes off when it ends.
+	m.cutFramesRemaining = 0
+	m.cutTotalFrames = 0
+	m.cutSpans = nil
+	m.mixStarts = nil
 
 	// Activate the incoming source's channel, placed again at the next
 	// read as on a cut.
 	m.transAbortActivated = ""
 	if ch, ok := m.channels[newSource]; ok {
 		ch.placed = false
-		if !ch.active {
+		_, queued := m.afvDeactivateOnComplete[newSource]
+		if !ch.active || queued {
 			// Remember that this transition is what activated the channel
-			// so OnTransitionAbort can roll the activation back.
+			// or kept it on, so OnTransitionAbort can roll that back.
 			m.transAbortActivated = newSource
 		}
+		delete(m.afvDeactivateOnComplete, newSource)
 		ch.active = true
 		// Pre-warm the decoder so the first frame from this source
 		// doesn't produce warmup transients in the mix output.
 		m.initChannelDecoder(ch)
+	}
+	m.mixStarts = make(map[string]float64, len(m.channels))
+	for key, ch := range m.channels {
+		if ch.active {
+			m.mixStarts[key] = ch.xfGain
+		}
 	}
 
 	return token
@@ -226,9 +255,17 @@ func (m *Mixer) OnTransitionPosition(position float64) {
 // Called by the switcher when the video transition finishes. The
 // transition's new source is on program from here: an outgoing source that
 // follows video, faded out, goes off, and the program change the switcher
-// sends after this finds nothing left to crossfade.
+// sends after this finds nothing left to crossfade. A fade to black mutes
+// the program.
 func (m *Mixer) OnTransitionComplete() {
 	m.mu.Lock()
+	// A completed fade to black leaves the program silent, so it is muted
+	// here, in the same step: muted only by the switcher's SetProgramMute
+	// after this, a period produced between the two would air every
+	// channel at full gain again.
+	if m.transCrossfadeMode == FadeOut && m.transCrossfadeActive {
+		m.setProgramMuteLocked(true)
+	}
 	if to := m.transCrossfadeTo; to != "" {
 		if from, ok := m.channels[m.transCrossfadeFrom]; ok && from.afv && m.transCrossfadeFrom != to {
 			from.active = false
@@ -240,6 +277,7 @@ func (m *Mixer) OnTransitionComplete() {
 			m.programAFVSource = to
 		}
 	}
+	m.deactivateQueuedLocked()
 	m.transCrossfadeActive = false
 	m.transCrossfadeFrom = ""
 	m.transCrossfadeTo = ""
@@ -250,10 +288,10 @@ func (m *Mixer) OnTransitionComplete() {
 	m.cutFramesRemaining = 0
 	m.cutTotalFrames = 0
 	m.cutSpans = nil
+	m.mixStarts = nil
 	m.stingerAudio = nil
 	m.stingerOffset = 0
 	m.stingerChannels = 0
-	m.afvDeactivateOnComplete = nil
 	m.transAbortActivated = "" // the incoming source is on program now -- keep it active
 	m.mu.Unlock()
 }
@@ -272,21 +310,23 @@ func (m *Mixer) OnTransitionComplete() {
 // concurrent cut or newer transition.
 func (m *Mixer) OnTransitionAbort(token uint64) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if uint64(m.transCrossfades.Load()) != token {
 		// Stale abort: the transition state currently in the mixer was
 		// established by a newer owner. Leave it untouched.
-		m.mu.Unlock()
 		return
 	}
-	// Deactivate the incoming channel if (and only if) OnTransitionStart was
-	// what activated it. The transition never completed, so leaving it active
-	// would mix the preview source into program at full fader gain forever —
-	// the switcher's abort path skips OnProgramChange, which is otherwise the
-	// only thing that deactivates it. Never touch the current program AFV
-	// source (e.g. a cut landed on that source mid-transition).
-	if m.transAbortActivated != "" && m.transAbortActivated != m.programAFVSource {
-		if ch, ok := m.channels[m.transAbortActivated]; ok {
-			ch.active = false
+	// The incoming channel goes off if (and only if) OnTransitionStart was
+	// what activated it or kept it on. The transition never completed, so
+	// leaving it active would mix the preview source into program at full
+	// fader gain forever: the switcher's abort path skips OnProgramChange,
+	// which is otherwise the only thing that deactivates it. Never the
+	// current program AFV source (e.g. a cut landed on that source
+	// mid-transition).
+	from, to := m.transCrossfadeFrom, m.transCrossfadeTo
+	if key := m.transAbortActivated; key != "" && key != m.programAFVSource {
+		if _, ok := m.channels[key]; ok {
+			m.deactivateOnCompleteLocked(key)
 		}
 	}
 	m.transAbortActivated = ""
@@ -300,11 +340,36 @@ func (m *Mixer) OnTransitionAbort(token uint64) {
 	m.cutFramesRemaining = 0
 	m.cutTotalFrames = 0
 	m.cutSpans = nil
+	m.mixStarts = nil
 	m.stingerAudio = nil
 	m.stingerOffset = 0
 	m.stingerChannels = 0
-	m.afvDeactivateOnComplete = nil
-	m.mu.Unlock()
+
+	// Pulled back before any gain moved, as a T-bar pulled back to 0 at
+	// once leaves it, the channels are where the abort puts them: the
+	// incoming one goes off and the rest stay on. Otherwise a cut ramp
+	// takes each channel on from the gain it aired, so none steps.
+	if m.cutTargetsAiredLocked() {
+		m.deactivateQueuedLocked()
+		return
+	}
+	m.transCrossfadeActive = true
+	m.transCrossfadeFrom = to
+	m.transCrossfadeTo = from
+	m.transCrossfadeMode = Crossfade
+	m.startCutRampLocked()
+}
+
+// cutTargetsAiredLocked reports whether every active channel that has
+// aired since it was activated aired, at the end of the last period, the
+// gain a cut ramp would take it to. Caller must hold m.mu.
+func (m *Mixer) cutTargetsAiredLocked() bool {
+	for key, ch := range m.channels {
+		if ch.active && ch.aired && math.Abs(ch.xfGain-m.cutTargetLocked(key)) > 1e-9 {
+			return false
+		}
+	}
+	return true
 }
 
 // IsInTransitionCrossfade returns whether a multi-frame transition crossfade is active.

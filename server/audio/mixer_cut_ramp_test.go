@@ -2,7 +2,9 @@ package audio
 
 import (
 	"fmt"
+	"hash/fnv"
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/zsiec/switchframe/server/clock"
@@ -30,7 +32,8 @@ type rampFormat struct {
 // every sample rate, and under the race detector, where CI's coverage
 // counting makes each sample many times dearer and the race detector
 // finds nothing in tests on one goroutine, the slowest frame rate at the
-// lowest sample rate and the fastest at the highest.
+// lowest sample rate and the fastest at the highest. The CI job without
+// the race detector runs the full matrix.
 func rampFormats() []rampFormat {
 	if raceDetector {
 		return []rampFormat{
@@ -49,12 +52,45 @@ func rampFormats() []rampFormat {
 
 // afvModes returns whether the sources follow video, for each run: both
 // ways, and under the race detector following video only, as MXL, SRT and
-// camera sources do by default.
+// camera sources do by default. The CI job without the race detector runs
+// both.
 func afvModes() []bool {
 	if raceDetector {
 		return []bool{true}
 	}
 	return []bool{false, true}
+}
+
+// raceChoice returns a number fixed by a scenario's name, so a choice
+// made by it does not move when another scenario is added.
+func raceChoice(name string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(name))
+	return h.Sum32()
+}
+
+// interleaveModes returns, for a scenario, whether a period is produced
+// between the calls of one action: both ways, and under the race detector
+// one way, chosen by the scenario's name. The CI job without the race
+// detector runs both.
+func interleaveModes(name string) []bool {
+	if raceDetector {
+		return []bool{raceChoice(name)%2 == 1}
+	}
+	return []bool{false, true}
+}
+
+// scenarioFormats returns the formats a scenario runs at: rampFormats, and
+// under the race detector one of its two, chosen by the scenario's name
+// apart from its interleave mode. The CI job without the race detector
+// runs every format.
+func scenarioFormats(name string) []rampFormat {
+	fs := rampFormats()
+	if raceDetector {
+		k := raceChoice(name) / 2 % uint32(len(fs))
+		return fs[k : k+1]
+	}
+	return fs
 }
 
 // periodStarts returns the sample offsets of the first n+1 period starts
@@ -100,14 +136,19 @@ type gainRig struct {
 	// interleave produces a period between the calls a switcher action
 	// makes in a row, as the sync loop can.
 	interleave bool
-	k          int       // the next period
-	gain       []float64 // the measured source's gain, sample by sample
+	// steep is the fewest periods any gain change of the run takes from
+	// silence to full gain: cutRampPeriods unless a shorter mix runs.
+	steep int
+	k     int       // the next period
+	gain  []float64 // the measured source's gain, sample by sample
 }
 
 func newGainRig(t *testing.T, fps clock.Rate, sr int, sources []string, measured string, afv, interleave bool) *gainRig {
 	t.Helper()
+	// The mixer has PCM channels only, so it holds no decoder to close. A
+	// t.Cleanup would keep it, and its rings, alive until the whole test
+	// ends: thousands of mixers across the matrix.
 	m := NewMixer(MixerConfig{SampleRate: sr, Channels: 2})
-	t.Cleanup(func() { _ = m.Close() })
 	ra := clock.Rate{Num: int64(sr), Den: 1}
 	block := sr / gcd(sr, 10000)
 	base := clock.TimestampToIndex(ra, clock.TAINow())
@@ -116,6 +157,7 @@ func newGainRig(t *testing.T, fps clock.Rate, sr int, sources []string, measured
 		starts: periodStarts(fps, sr, 64),
 		base:   base - base%uint64(block), block: block,
 		sources: sources, measured: measured, interleave: interleave,
+		steep: cutRampPeriods,
 	}
 	for _, key := range sources {
 		m.AddChannel(key)
@@ -195,7 +237,12 @@ func (r *gainRig) cut(from, to string) {
 // handing the position to the mixer before its audio, without completing
 // it. It returns the transition's token.
 func (r *gainRig) mix(from, to string, n, run int) uint64 {
-	token := r.m.OnTransitionStart(from, to, Crossfade, 0)
+	return r.transition(Crossfade, from, to, n, run)
+}
+
+// transition is mix with the transition's mode.
+func (r *gainRig) transition(mode TransitionMode, from, to string, n, run int) uint64 {
+	token := r.m.OnTransitionStart(from, to, mode, 0)
 	for k := 1; k <= run; k++ {
 		r.m.OnTransitionPosition(float64(k) / float64(n))
 		r.period()
@@ -205,13 +252,13 @@ func (r *gainRig) mix(from, to string, n, run int) uint64 {
 
 // stepBound returns the largest step from one sample to the next a gain
 // ramping by one ramp increment per period takes: the steepest period of
-// the equal-power curve over the shortest period.
+// the equal-power curve over steep periods, over the shortest period.
 func (r *gainRig) stepBound() float64 {
 	minN := r.starts[1]
 	for k := 1; k < r.k; k++ {
 		minN = min(minN, r.starts[k+1]-r.starts[k])
 	}
-	return math.Sin(math.Pi/2/cutRampPeriods)/float64(minN-1) + 1e-6
+	return math.Sin(math.Pi/2/float64(r.steep))/float64(minN-1) + 1e-6
 }
 
 // checkContinuous fails when the measured gain steps by more than a ramp
@@ -251,10 +298,13 @@ func TestCutRampStartsOnTheCutPeriod(t *testing.T) {
 	for _, f := range rampFormats() {
 		fps, sr := f.fps, f.sr
 		for _, afv := range afvModes() {
-			for _, measured := range []string{"program", "clip"} {
-				name := fmt.Sprintf("%s/afv=%v/%s", formatName(fps, sr), afv, measured)
-				t.Run(name, func(t *testing.T) {
-					t.Parallel()
+			name := fmt.Sprintf("%s/afv=%v", formatName(fps, sr), afv)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				gains := map[string][]float64{}
+				var cut, end int
+				var starts []int
+				for _, measured := range []string{"program", "clip"} {
 					r := newGainRig(t, fps, sr, []string{"program", "clip"}, measured, afv, false)
 					if afv {
 						r.m.OnProgramChange("program")
@@ -266,8 +316,10 @@ func TestCutRampStartsOnTheCutPeriod(t *testing.T) {
 					r.cut("program", "clip")
 					r.periods(cutRampPeriods + 2)
 					r.checkContinuous()
+					gains[measured] = r.gain
+					starts = r.starts[cutAt : cutAt+cutRampPeriods+1]
+					cut, end = starts[0], starts[cutRampPeriods]
 
-					cut, end := r.starts[cutAt], r.starts[cutAt+cutRampPeriods]
 					if measured == "clip" {
 						if r.gain[cut+1] <= 0 {
 							t.Fatalf("cut period: sample 1 airs at %v, the clip does not air on the cut tick", r.gain[cut+1])
@@ -287,8 +339,22 @@ func TestCutRampStartsOnTheCutPeriod(t *testing.T) {
 							t.Fatalf("sample %d after the ramp airs at %v, want %v", i, r.gain[i], want)
 						}
 					}
-				})
-			}
+				}
+				if !afv {
+					return
+				}
+				// Where the program fades out, the ramp is equal-power: at
+				// every period boundary the two gains' squares sum to 1, so
+				// the program's loudness does not dip across the cut.
+				for k, at := range starts {
+					for _, i := range []int{at - 1, at} {
+						a, b := gains["program"][i], gains["clip"][i]
+						if p := a*a + b*b; math.Abs(p-1) > 1e-5 {
+							t.Fatalf("period boundary %d, sample %d: program %.6f and clip %.6f, power %.6f, want 1", k, i, a, b, p)
+						}
+					}
+				}
+			})
 		}
 	}
 }
@@ -301,6 +367,15 @@ type gainScenario struct {
 	afvOnly bool
 	// also is a source on besides a before the actions start.
 	also string
+	// steep is the fewest periods the scenario's mix takes, when shorter
+	// than a cut ramp.
+	steep int
+	// steady is a source that, when no source follows video, airs at full
+	// gain throughout.
+	steady string
+	// dips marks a scenario in which, when every source follows video,
+	// every source airs silence at some point.
+	dips bool
 	run  func(r *gainRig, afv bool)
 	end  func(afv bool) map[string]float64
 }
@@ -389,6 +464,193 @@ var gainScenarios = []gainScenario{
 		run:     func(r *gainRig, _ bool) { r.cut("a", "b") },
 		end:     afvEnd("b", nil),
 	},
+	// A mix started during a cut's ramp, or as the cut lands, takes every
+	// source on from the gain it aired: the ramp's end does not cut the
+	// mix short, and the source the ramp was taking off, the mix's target
+	// here, rises instead of going off.
+	cutThenMix(0),
+	cutThenMix(1),
+	cutThenMix(2),
+	cutThenMix(3),
+	// A mix of two periods, a period after the cut.
+	{
+		name:  "cut_then_short_mix",
+		steep: 2,
+		run: func(r *gainRig, _ bool) {
+			r.cut("a", "b")
+			r.periods(1)
+			r.mix("b", "a", 2, 2)
+			r.calls(r.m.OnTransitionComplete, func() { r.m.OnProgramChange("a") })
+		},
+		end: afvEnd("a", map[string]float64{"a": 1, "b": 1, "c": 0}),
+	},
+	// A mix during a cut's ramp to a third source: the source the ramp was
+	// taking off keeps fading under the mix and goes off when it ends.
+	{
+		name: "cut_then_mix_elsewhere",
+		run: func(r *gainRig, _ bool) {
+			r.cut("a", "b")
+			r.periods(1)
+			r.mix("b", "c", 8, 8)
+			r.calls(r.m.OnTransitionComplete, func() { r.m.OnProgramChange("c") })
+		},
+		end: afvEnd("c", map[string]float64{"a": 1, "b": 1, "c": 1}),
+	},
+	// A mix back to a source a transition had put on and a cut elsewhere
+	// is taking off again: it rises from where it is and stays on.
+	{
+		name: "mix_back_to_a_source_a_cut_takes_off",
+		run: func(r *gainRig, _ bool) {
+			token := r.mix("a", "b", 8, 4)
+			r.cut("a", "c")
+			r.calls(func() { r.m.OnTransitionAbort(token) })
+			r.periods(1)
+			r.mix("c", "b", 8, 8)
+			r.calls(r.m.OnTransitionComplete, func() { r.m.OnProgramChange("b") })
+		},
+		end: afvEnd("b", map[string]float64{"a": 1, "b": 1, "c": 1}),
+	},
+	// A dip to a source already on dips it only when it follows video.
+	{
+		name:   "dip_to_a_source_already_on",
+		also:   "b",
+		steady: "b",
+		run: func(r *gainRig, _ bool) {
+			r.transition(DipToSilence, "a", "b", 8, 8)
+			r.calls(r.m.OnTransitionComplete, func() { r.m.OnProgramChange("b") })
+		},
+		end: afvEnd("b", map[string]float64{"a": 1, "b": 1, "c": 0}),
+	},
+	// A mix to a source already on does not dip it.
+	{
+		name: "mix_to_a_source_already_on",
+		also: "b",
+		run: func(r *gainRig, _ bool) {
+			r.mix("a", "b", 8, 8)
+			r.calls(r.m.OnTransitionComplete, func() { r.m.OnProgramChange("b") })
+		},
+		end: afvEnd("b", map[string]float64{"a": 1, "b": 1, "c": 0}),
+	},
+	// A fade to black as a cut lands or during its ramp takes every source
+	// down from the gain it aired, and the program is muted at its end.
+	cutThenFTB(0),
+	cutThenFTB(1),
+	cutThenFTB(2),
+	cutThenFTB(3),
+	// A fade from black during a cut made while the program is black: the
+	// source the cut takes off stays silent and goes off, the rest rise.
+	{
+		name: "cut_while_black_then_ftb_in",
+		also: "c",
+		// The 5 ms unmute ramp the switcher starts with a fade from black
+		// steepens its first period.
+		steep: 2,
+		run: func(r *gainRig, _ bool) {
+			r.transition(FadeOut, "a", "", 8, 8)
+			r.calls(r.m.OnTransitionComplete, func() { r.m.SetProgramMute(true) })
+			r.periods(1)
+			r.cut("a", "b")
+			r.periods(1)
+			r.m.SetProgramMute(false)
+			r.transition(FadeIn, "b", "", 8, 8)
+			r.calls(r.m.OnTransitionComplete)
+		},
+		end: func(afv bool) map[string]float64 {
+			if afv {
+				return map[string]float64{"a": 0, "b": 1, "c": 0}
+			}
+			return map[string]float64{"a": 1, "b": 1, "c": 1}
+		},
+	},
+	// A dip back to a source a cut is taking off, a period after the cut,
+	// takes it through silence.
+	{
+		name: "cut_then_dip_1",
+		dips: true,
+		run: func(r *gainRig, _ bool) {
+			r.cut("a", "b")
+			r.periods(1)
+			r.transition(DipToSilence, "b", "a", 8, 8)
+			r.calls(r.m.OnTransitionComplete, func() { r.m.OnProgramChange("a") })
+		},
+		end: afvEnd("a", map[string]float64{"a": 1, "b": 1, "c": 0}),
+	},
+	// A mix back to the source a cut is taking off, aborted midway, at
+	// once, or with the T-bar pulled back first: every source goes on from
+	// the gain it aired to where the abort leaves it.
+	{
+		name: "cut_then_mix_aborted_midway",
+		run: func(r *gainRig, _ bool) {
+			r.cut("a", "b")
+			r.periods(1)
+			token := r.mix("b", "a", 8, 4)
+			r.calls(func() { r.m.OnTransitionAbort(token) })
+		},
+		end: afvEnd("b", map[string]float64{"a": 1, "b": 1, "c": 0}),
+	},
+	{
+		name: "cut_then_mix_aborted_at_once",
+		run: func(r *gainRig, _ bool) {
+			r.cut("a", "b")
+			r.periods(1)
+			token := r.mix("b", "a", 8, 0)
+			r.calls(func() { r.m.OnTransitionAbort(token) })
+		},
+		end: afvEnd("b", map[string]float64{"a": 1, "b": 1, "c": 0}),
+	},
+	{
+		name: "cut_then_mix_tbar_back",
+		run: func(r *gainRig, _ bool) {
+			r.cut("a", "b")
+			r.periods(1)
+			token := r.mix("b", "a", 8, 3)
+			for k := 2; k >= 1; k-- {
+				r.m.OnTransitionPosition(float64(k) / 8)
+				r.period()
+			}
+			r.calls(func() { r.m.OnTransitionAbort(token) })
+		},
+		end: afvEnd("b", map[string]float64{"a": 1, "b": 1, "c": 0}),
+	},
+	// A mix aborted before any of it aired leaves the program as it was.
+	{
+		name: "mix_aborted_at_once",
+		run: func(r *gainRig, _ bool) {
+			token := r.mix("a", "b", 8, 0)
+			r.calls(func() { r.m.OnTransitionAbort(token) })
+		},
+		end: func(bool) map[string]float64 { return map[string]float64{"a": 1, "b": 0, "c": 0} },
+	},
+}
+
+// cutThenFTB is a cut from a to b and, periods later, a fade to black
+// over 8 periods, run to completion and muted.
+func cutThenFTB(periods int) gainScenario {
+	return gainScenario{
+		name: fmt.Sprintf("cut_then_ftb_%d", periods),
+		run: func(r *gainRig, _ bool) {
+			r.cut("a", "b")
+			r.periods(periods)
+			r.transition(FadeOut, "b", "", 8, 8)
+			r.calls(r.m.OnTransitionComplete, func() { r.m.SetProgramMute(true) })
+		},
+		end: func(bool) map[string]float64 { return map[string]float64{"a": 0, "b": 0, "c": 0} },
+	}
+}
+
+// cutThenMix is a cut from a to b and, periods later, a mix back to a
+// over 8 periods, run to completion.
+func cutThenMix(periods int) gainScenario {
+	return gainScenario{
+		name: fmt.Sprintf("cut_then_mix_%d", periods),
+		run: func(r *gainRig, _ bool) {
+			r.cut("a", "b")
+			r.periods(periods)
+			r.mix("b", "a", 8, 8)
+			r.calls(r.m.OnTransitionComplete, func() { r.m.OnProgramChange("a") })
+		},
+		end: afvEnd("a", map[string]float64{"a": 1, "b": 1, "c": 0}),
+	}
 }
 
 // No switcher action makes a source's gain step: a cut, a second cut
@@ -399,13 +661,13 @@ var gainScenarios = []gainScenario{
 func TestCutGainsNeverStep(t *testing.T) {
 	t.Parallel()
 	for _, sc := range gainScenarios {
-		for _, f := range rampFormats() {
+		for _, f := range scenarioFormats(sc.name) {
 			fps, sr := f.fps, f.sr
 			for _, afv := range afvModes() {
 				if sc.afvOnly && !afv {
 					continue
 				}
-				for _, interleave := range []bool{false, true} {
+				for _, interleave := range interleaveModes(sc.name) {
 					name := fmt.Sprintf("%s/%s/afv=%v/interleave=%v", sc.name, formatName(fps, sr), afv, interleave)
 					t.Run(name, func(t *testing.T) {
 						t.Parallel()
@@ -419,11 +681,24 @@ func TestCutGainsNeverStep(t *testing.T) {
 							if sc.also != "" {
 								r.m.SetActive(sc.also, true)
 							}
+							if sc.steep != 0 {
+								r.steep = sc.steep
+							}
 							r.periods(2)
 							sc.run(r, afv)
 							r.periods(cutRampPeriods + 2)
 							r.checkContinuous()
 							r.checkEnd(sc.end(afv)[measured])
+							if afv && sc.dips && slices.Min(r.gain) > 1e-6 {
+								t.Fatalf("%s never airs silence, a dip through silence does", measured)
+							}
+							if !afv && measured == sc.steady {
+								for i, g := range r.gain {
+									if math.Abs(g-1) > 1e-6 {
+										t.Fatalf("%s: sample %d airs at %.6f, a source on that does not follow video stays at full gain", measured, i, g)
+									}
+								}
+							}
 						}
 					})
 				}
