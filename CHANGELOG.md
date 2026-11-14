@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.0.0-rc.52](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.51...mxl-v1.0.0-rc.52) (2026-11-14)
+
+
+### Features
+
+* **admin:** report ready only while the engine produces its program ([#247](https://github.com/qvest-digital/dmf-mf-switchframe/issues/247)) ([c1afd23](https://github.com/qvest-digital/dmf-mf-switchframe/commit/c1afd23591c932585c83346ff86090a7716030de))
+* **audio:** count every short read of a source's audio ([#242](https://github.com/qvest-digital/dmf-mf-switchframe/issues/242)) ([2155067](https://github.com/qvest-digital/dmf-mf-switchframe/commit/2155067119183e17a5e6e30c6259678ec091a971))
+* **config:** take the engine label from the StatefulSet pod index ([#248](https://github.com/qvest-digital/dmf-mf-switchframe/issues/248)) ([5e3f5c6](https://github.com/qvest-digital/dmf-mf-switchframe/commit/5e3f5c63c298558dbe0b07bdb472747840a8e4aa))
+
+
+### Bug Fixes
+
+* **admin:** report not ready from SIGTERM on ([#243](https://github.com/qvest-digital/dmf-mf-switchframe/issues/243)) ([6e06510](https://github.com/qvest-digital/dmf-mf-switchframe/commit/6e06510a27d7e5529222b6be4631aefadd211b49))
+* **audio:** air the incoming source on the cut and mix start tick ([#260](https://github.com/qvest-digital/dmf-mf-switchframe/issues/260)) ([41b6bbc](https://github.com/qvest-digital/dmf-mf-switchframe/commit/41b6bbc32af394d0b84b69fa4d73b10bb9696b04))
+* **audio:** carry every source's gain across cuts and mixes ([#264](https://github.com/qvest-digital/dmf-mf-switchframe/issues/264)) ([fe5f68d](https://github.com/qvest-digital/dmf-mf-switchframe/commit/fe5f68d53e439b9846c9ff33cd1eec5fdcf0a890))
+* **audio:** continue unread audio when a push arrives late ([#245](https://github.com/qvest-digital/dmf-mf-switchframe/issues/245)) ([49b4a03](https://github.com/qvest-digital/dmf-mf-switchframe/commit/49b4a03a92391447417c1d0328cee0a29658ec30))
+* **clip:** carry the 44.1 kHz audio remainder into the pass start ([fb12935](https://github.com/qvest-digital/dmf-mf-switchframe/commit/fb12935f77388ae08c9b6a613fbcfbfa5e68d630))
+* **clip:** start clip and playout sound on the first picture ([#241](https://github.com/qvest-digital/dmf-mf-switchframe/issues/241)) ([5dbd3a3](https://github.com/qvest-digital/dmf-mf-switchframe/commit/5dbd3a3878244ca82359808e22a28abf3c82675c))
+* **clip:** time a start report against the player's own rate ([fb12935](https://github.com/qvest-digital/dmf-mf-switchframe/commit/fb12935f77388ae08c9b6a613fbcfbfa5e68d630))
+* **clock:** derive the tracking slack from the program period ([#246](https://github.com/qvest-digital/dmf-mf-switchframe/issues/246)) ([8b5e22f](https://github.com/qvest-digital/dmf-mf-switchframe/commit/8b5e22fcc37bbae9a8881903bcb6ecb4149361d8))
+* **clock:** read inputs at least 40 ms behind above 60 fps ([#255](https://github.com/qvest-digital/dmf-mf-switchframe/issues/255)) ([6a487e6](https://github.com/qvest-digital/dmf-mf-switchframe/commit/6a487e67a93f7c13b070d5aa6fbdc7553c776707))
+* **mxl:** carry any even width in v210, partial last group included ([#253](https://github.com/qvest-digital/dmf-mf-switchframe/issues/253)) ([9e925f2](https://github.com/qvest-digital/dmf-mf-switchframe/commit/9e925f27caa953bff7f51f5de11439fcd9eccd19))
+* **mxl:** hand audio read far ahead over near its media time ([#250](https://github.com/qvest-digital/dmf-mf-switchframe/issues/250)) ([f63b2e7](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f63b2e7840740b4df74ebfb64d90affac7cfbe33))
+* **mxl:** mix late MXL audio later and move its video with it ([#234](https://github.com/qvest-digital/dmf-mf-switchframe/issues/234)) ([a5a048b](https://github.com/qvest-digital/dmf-mf-switchframe/commit/a5a048bc14c462eeb5c8c3dde15fa9b9cfb2c784))
+* **mxl:** move late-audio video by whole grains onto its grid ([#252](https://github.com/qvest-digital/dmf-mf-switchframe/issues/252)) ([ca0af06](https://github.com/qvest-digital/dmf-mf-switchframe/commit/ca0af067bbb9f8fb3f37920e38c866ba4f6fa3dd))
+* **mxl:** read MXL audio as far as its producer has committed ([2e836e0](https://github.com/qvest-digital/dmf-mf-switchframe/commit/2e836e0be395699a739c5ecf60a834ae06fb516c))
+* **mxl:** stamp relay audio by a constant shift for late audio ([2e836e0](https://github.com/qvest-digital/dmf-mf-switchframe/commit/2e836e0be395699a739c5ecf60a834ae06fb516c))
+* **mxl:** zero the v210 line padding the CPU packers leave ([#259](https://github.com/qvest-digital/dmf-mf-switchframe/issues/259)) ([9a76ff0](https://github.com/qvest-digital/dmf-mf-switchframe/commit/9a76ff02b6fff5a9cba471dcc54232d5a35ed9bb))
+* **playout:** place a channel's run on the program's frame grid ([#257](https://github.com/qvest-digital/dmf-mf-switchframe/issues/257)) ([c123d21](https://github.com/qvest-digital/dmf-mf-switchframe/commit/c123d21432b24d8faa744f2a603b6585f89e7538))
+* **srt:** stamp SRT listener ACKACKs on the connection epoch ([4aab7a2](https://github.com/qvest-digital/dmf-mf-switchframe/commit/4aab7a25bbfdf4e1b2d15f9639521def51f4e050))
+* **srt:** stop accepting once an SRT listener closes ([4aab7a2](https://github.com/qvest-digital/dmf-mf-switchframe/commit/4aab7a25bbfdf4e1b2d15f9639521def51f4e050))
+
 ## [1.0.0-rc.51](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.50...mxl-v1.0.0-rc.51) (2026-11-14)
 
 
