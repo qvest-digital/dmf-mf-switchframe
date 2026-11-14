@@ -1,6 +1,8 @@
 package audio
 
 import (
+	"time"
+
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
@@ -185,7 +187,7 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame, time
 		delay := int64(ch.primingSkipCount) * m.primingSamples(frame.SampleRate)
 		m.stampRing(ch, frame.PTS-delay*90000/int64(m.sampleRate), n)
 	} else {
-		m.stampArrival(ch, n)
+		m.stampArrival(ch, n, frame.SampleRate)
 	}
 	m.mu.Unlock()
 }
@@ -320,22 +322,34 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 }
 
 // arrivalSlack is how far ahead of its arrival a source's audio may be
-// placed to continue the audio it delivered before: two AAC frames. A
-// source that hands over its AAC frames with its video frames, as the
-// replay player does, delivers 1024 samples a frame period, none in some
-// periods; placed by each arrival, its audio steps back and forth by
-// about an AAC frame, and a step past a period, which scheduling jitter
+// placed to continue the audio it delivered before, in AAC frames of the
+// source. A source that hands over its AAC frames with its video frames,
+// as the replay player does, delivers one AAC frame a frame period, none
+// in some periods; placed by each arrival, its audio steps back and forth
+// by about an AAC frame, and a step past a period, which scheduling jitter
 // makes likely, is spliced.
-const arrivalSlack = 2 * 1024
+const arrivalSlack = 2
 
 // arrivalLate is how far behind its arrival a source's audio may be placed
-// to continue the audio before it once that audio has all been read: 256
-// samples, 5.3 ms. The read point is two frame periods behind the clock,
-// and a read reaches up to one frame period (16.7 ms at 60 fps) before it;
-// audio placed further behind its arrival than that would be missing when
-// read. While an active channel holds audio before it that is due and
-// unread, a push continues it up to arrivalSlack late.
-const arrivalLate = 256
+// to continue the audio before it once that audio has all been read: 5.3
+// ms, and no more than half a program period, so audio placed by its
+// arrival stays within half a picture of the video that arrived with it
+// at any program rate. Both are well inside the audio budget, the read
+// delay less the period a tick reads (clock.ReadDelay), past which audio
+// placed behind its arrival would be missing when read. While an active
+// channel holds audio before it that is due and unread, a push continues
+// it up to arrivalSlack late.
+const arrivalLate = 16 * time.Millisecond / 3
+
+// lateArrival returns arrivalLate at the running program rate in
+// nanoseconds, or arrivalLate before a program clock runs.
+func lateArrival() int64 {
+	late := int64(arrivalLate)
+	if p := clock.ProgramPeriod(); p > 0 {
+		late = min(late, p*1_000_000_000/(2*90000))
+	}
+	return late
+}
 
 // stampArrival places the n samples just pushed for a source without a
 // media clock right after the source's audio before them, when they
@@ -343,21 +357,27 @@ const arrivalLate = 256
 // arrivalSlack after while some of it is due and unread, and otherwise at
 // their arrival. A source whose rate is off the mixer's by more than those
 // bounds allow is placed again at its arrival each time it leaves them.
-func (m *Mixer) stampArrival(ch *Channel, n int) {
+// sampleRate is the source's (0: the mixer rate).
+func (m *Mixer) stampArrival(ch *Channel, n, sampleRate int) {
 	pts := clock.ArrivalPTS(n, m.sampleRate)
 	if ch.ringEnd != 0 {
-		ns := func(samples int) int64 { return int64(samples) * 1_000_000_000 / int64(m.sampleRate) }
-		late := ns(arrivalLate)
+		ns := func(samples int64) int64 { return samples * 1_000_000_000 / int64(m.sampleRate) }
+		slack := ns(arrivalSlack * m.primingSamples(sampleRate))
+		late := lateArrival()
 		if ch.active && ch.ringBuf.FrameCount()-m.delaySamples(ch) > n {
 			// Audio before this push is due and unread, so no read has
 			// passed the place that continues it: a push that came late
 			// is jitter, and placed at its arrival it would move all of
 			// that audio later. A channel's delay is held unread and an
-			// inactive channel is never read, so neither shows that.
-			late = ns(arrivalSlack)
+			// inactive channel is never read, so neither shows that. A
+			// lost AAC frame continued over plays the audio after it at
+			// most one frame early, and only from a source placed more
+			// than a frame ahead of its arrival: one on its own cadence
+			// has no audio left unread a lost frame later.
+			late = slack
 		}
-		if d := clock.TimestampOf(pts) - ch.ringEnd; d <= late && d >= -ns(arrivalSlack) {
-			ch.ringEnd += ns(n)
+		if d := clock.TimestampOf(pts) - ch.ringEnd; d <= late && d >= -slack {
+			ch.ringEnd += ns(int64(n))
 			return
 		}
 	}

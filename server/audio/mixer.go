@@ -118,7 +118,8 @@ type Channel struct {
 	// first read after being empty, reset or PlaceChannel.
 	placed bool
 	// realigned is set while the ring's audio is off the read point by
-	// more than a period and was moved onto it; realigns counts entries.
+	// more than popAt allows and was moved onto it; realigns counts
+	// entries.
 	realigned bool
 	realigns  int64
 	// dry is set while the ring holds less than a read needs;
@@ -421,17 +422,22 @@ func (m *Mixer) AddChannel(sourceKey string) {
 // maxAudioDelayMs bounds SetAudioDelay and SetSourceDelay each.
 const maxAudioDelayMs = 500
 
-// channelRingFrames is how many sample frames a channel's ring holds
-// beyond its delay, 640 ms at 48 kHz: a source's audio placed ahead of its
-// arrival for as long as the video stores keep a source's frames for
-// (clock.MaxSourceHold, 500 ms), as a TrackingAnchor raised by a late video
-// frame places it, plus the read delay at 24 fps and an AAC frame.
-const channelRingFrames = 30 * 1024
+// channelRingTime is how much audio a channel's ring holds beyond its
+// delay: a source's audio placed ahead of its arrival for as long as the
+// video stores keep a source's frames for (clock.MaxSourceHold, 500 ms),
+// as a TrackingAnchor raised by a late video frame places it, plus the
+// read delay at 24 fps and an AAC frame.
+const channelRingTime = 640 * time.Millisecond
+
+// channelRingFrames is channelRingTime in sample frames at the mixer rate.
+func (m *Mixer) channelRingFrames() int {
+	return int(int64(channelRingTime) * int64(m.sampleRate) / int64(time.Second))
+}
 
 // newChannelRingBuf creates a PCM ring buffer for a mixer channel that
 // holds delay samples beyond the read window.
 func (m *Mixer) newChannelRingBuf(delay int) *PCMRingBuffer {
-	return NewPCMRingBufferWithChannels((channelRingFrames+delay)*m.numChannels, m.numChannels)
+	return NewPCMRingBufferWithChannels((m.channelRingFrames()+delay)*m.numChannels, m.numChannels)
 }
 
 // delaySamples is how far behind the tick's read point ch is read.
@@ -464,7 +470,8 @@ func (m *Mixer) stampRing(ch *Channel, pts int64, n int) {
 // media timeline less ch's delay, as interleaved values. Audio buffered before start is
 // dropped and a start before the buffered audio gets silence: exactly on
 // the first read of a ring, and afterwards only when the ring is more than
-// a period (n) off, so a source's own jitter never splices its audio. Nil
+// a period (n) off, or above 60 fps half the audio budget, so a source's
+// own jitter never splices its audio. Nil
 // when ch has never been fed.
 func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 	if ch.ringEnd == 0 {
@@ -475,7 +482,10 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 	have := ch.ringBuf.FrameCount()
 	end := clock.TimestampToIndex(clock.Rate{Num: int64(m.sampleRate), Den: 1}, ch.ringEnd)
 	off := int64(start) - (int64(end) - int64(have)) // >0: ring holds older audio
-	tol := int64(n)
+	// A source runs off by sender drift and jitter, which are times; above
+	// 60 fps a period is less than the program has always allowed, and
+	// half the audio budget, ReadDelay-1 periods, is what it allows there.
+	tol := max(int64(n), (int64(clock.ProgramReadDelay())-1)*int64(n)/2)
 	if !ch.placed && have > 0 {
 		// Placed only by a read that reaches the ring's audio: a ring a
 		// period or more ahead is read as silence and placed again next

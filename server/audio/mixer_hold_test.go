@@ -12,21 +12,24 @@ import (
 // eight frames, is placed that much further ahead of its arrival and
 // waits in the channel's ring until the read point reaches it. The ring
 // must hold a hold as long as the video stores keep frames for
-// (clock.MaxSourceHold); a full ring drops its oldest samples, which are
-// the next ones to be read.
+// (clock.MaxSourceHold), at every program rate and mixer rate; a full
+// ring drops its oldest samples, which are the next ones to be read.
 func TestMixerRingHoldsAnAnchoredSourceThroughALatenessSpike(t *testing.T) {
+	forEachCutClock(t, ringHoldsALatenessSpike)
+}
+
+func ringHoldsALatenessSpike(t *testing.T, c cutClock) {
 	const (
-		n      = 960 // one 20 ms program period
 		lateV  = int64(30_000_000)
 		spike  = int64(400_000_000)
-		aacNs  = int64(1024) * 1_000_000_000 / 48000
 		perPES = 8
 	)
+	aacNs := int64(1024) * 1_000_000_000 / int64(c.sr)
 	start := clock.TAINow()
 	now := start
 	clock.SetTAISource(func() int64 { return now })
 	t.Cleanup(func() { clock.SetTAISource(nil) })
-	m := NewMixer(MixerConfig{SampleRate: 48000, Channels: 2})
+	m := NewMixer(MixerConfig{SampleRate: c.sr, Channels: 2})
 	t.Cleanup(func() { _ = m.Close() })
 	m.AddChannel("srt:cam")
 	m.SetActive("srt:cam", true)
@@ -42,9 +45,11 @@ func TestMixerRingHoldsAnAnchoredSourceThroughALatenessSpike(t *testing.T) {
 		defer m.mu.Unlock()
 		return m.channels["srt:cam"].ringBuf.FrameCount()
 	}
+	d := clock.ReadDelay(c.r)
+	n := clock.TimestampToIndex(c.r, start) + 1
 	nextV, nextA := int64(0), int64(0)
 	maxDepth, silent := 0, 0
-	for step := int64(0); step < 15_000; step++ { // 15 s in 1 ms steps
+	for step := int64(0); step < 8_000; step++ { // 8 s in 1 ms steps
 		now = start + step*1_000_000
 		for {
 			late := lateV
@@ -64,23 +69,23 @@ func TestMixerRingHoldsAnAnchoredSourceThroughALatenessSpike(t *testing.T) {
 			maxDepth = max(maxDepth, depth())
 			nextA += perPES * aacNs
 		}
-		if step%20 != 0 {
-			continue
-		}
-		read := clock.TimestampToIndex(rate48k, now) - 2*n
-		out := m.ProduceSamples(read, n, clock.IndexPTS(rate48k, read))
-		if step < 2000 {
-			continue
-		}
-		for _, v := range out {
-			if v == 0 {
-				silent++
-				break
+		for ; clock.IndexToTimestamp(c.r, n) <= now; n++ {
+			read := c.samples(n - d)
+			out := m.ProduceSamples(read, int(c.samples(n-d+1)-read), clock.IndexPTS(clock.Rate{Num: int64(c.sr), Den: 1}, read))
+			if step < 2000 {
+				continue
+			}
+			for _, v := range out {
+				if v == 0 {
+					silent++
+					break
+				}
 			}
 		}
 	}
-	t.Logf("max ring depth %d samples of %d, %d silent reads", maxDepth, channelRingFrames, silent)
-	if maxDepth >= channelRingFrames {
-		t.Fatalf("ring reached %d samples, its capacity is %d: the spike overran it", maxDepth, channelRingFrames)
+	limit := m.channelRingFrames()
+	t.Logf("max ring depth %d samples of %d, %d silent reads", maxDepth, limit, silent)
+	if maxDepth >= limit {
+		t.Fatalf("ring reached %d samples, its capacity is %d: the spike overran it", maxDepth, limit)
 	}
 }
