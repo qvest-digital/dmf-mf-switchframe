@@ -44,6 +44,18 @@ func longSourceRates() []int {
 	return sourceRates
 }
 
+// longProgramRates are programRates for a test that runs seconds of audio
+// on one goroutine: under the race detector, where the audio package
+// already takes most of CI's time limit, 23.976, 59.94 and 239.76 fps,
+// the lowest and highest rates and the last read two periods behind, each
+// with a period that is no whole number of 90 kHz ticks.
+func longProgramRates() []clock.Rate {
+	if raceDetector {
+		return []clock.Rate{{Num: 24000, Den: 1001}, {Num: 60000, Den: 1001}, {Num: 240000, Den: 1001}}
+	}
+	return programRates
+}
+
 func rateName(r clock.Rate) string {
 	if r.Den == 1 {
 		return fmt.Sprintf("%dfps", r.Num)
@@ -98,7 +110,7 @@ func TestMixer_IngestFrame_ClipCadenceIsNeverSpliced(t *testing.T) {
 	// detector finds nothing in it: under it, where the audio package
 	// already takes most of CI's time limit, one phase from 48 kHz at the
 	// largest jitter only.
-	for _, r := range programRates {
+	for _, r := range longProgramRates() {
 		for _, sr := range sourceRates {
 			phases, jitters := 4, []int64{0, 3_000_000, 10_000_000}
 			if raceDetector {
@@ -321,7 +333,7 @@ func arrivalBound(r clock.Rate) int64 {
 // audio. Each holds at every program rate, from a source at every sample
 // rate.
 func TestMixer_IngestFrame_LatePushContinuesUnreadAudio(t *testing.T) {
-	for _, r := range programRates {
+	for _, r := range longProgramRates() {
 		for _, sr := range sourceRates {
 			bound := arrivalBound(r)
 			for _, tc := range []struct {
@@ -381,7 +393,7 @@ func TestMixer_IngestFrame_LatePushContinuesUnreadAudio(t *testing.T) {
 // the slack is the same time at the mixer rate: 46.4 ms from a 44.1 kHz
 // source, 42.7 ms from 48 kHz and 21.3 ms from 96 kHz.
 func TestMixer_IngestFrame_ArrivalSlackIsTwoAACFramesOfTheSource(t *testing.T) {
-	for _, r := range programRates {
+	for _, r := range longProgramRates() {
 		for _, sr := range sourceRates {
 			for _, tc := range []struct {
 				name   string
@@ -478,7 +490,7 @@ func arrivalRun(t *testing.T, r clock.Rate, sampleRate int, active bool, delayMs
 // the reads have passed the audio before the loss, and both are placed at
 // their arrival.
 func TestMixer_IngestFrame_DelayedSourceRealignsAfterLostAudio(t *testing.T) {
-	for _, r := range programRates {
+	for _, r := range longProgramRates() {
 		for _, sr := range longSourceRates() {
 			for _, lost := range []int64{20, 30} {
 				t.Run(fmt.Sprintf("%s/%dHz/lost=%dms", rateName(r), sr, lost), func(t *testing.T) {
@@ -519,7 +531,7 @@ func TestMixer_IngestFrame_DelayedSourceRealignsAfterLostAudio(t *testing.T) {
 // and of the arrival-stamped video it plays with, as it does on program:
 // within half a picture at every program rate.
 func TestMixer_IngestFrame_SlowSourceOffProgramStaysOnItsArrival(t *testing.T) {
-	for _, r := range programRates {
+	for _, r := range longProgramRates() {
 		for _, sr := range longSourceRates() {
 			t.Run(fmt.Sprintf("%s/%dHz", rateName(r), sr), func(t *testing.T) {
 				worst := int64(0)

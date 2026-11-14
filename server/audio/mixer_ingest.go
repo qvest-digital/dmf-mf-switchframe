@@ -369,7 +369,11 @@ func (m *Mixer) stampArrival(ch *Channel, n, sampleRate int) {
 			// passed the place that continues it: a push that came late
 			// is jitter, and placed at its arrival it would move all of
 			// that audio later. A channel's delay is held unread and an
-			// inactive channel is never read, so neither shows that.
+			// inactive channel is never read, so neither shows that. A
+			// lost AAC frame continued over plays the audio after it at
+			// most one frame early, and only from a source placed more
+			// than a frame ahead of its arrival: one on its own cadence
+			// has no audio left unread a lost frame later.
 			late = slack
 		}
 		if d := clock.TimestampOf(pts) - ch.ringEnd; d <= late && d >= -slack {

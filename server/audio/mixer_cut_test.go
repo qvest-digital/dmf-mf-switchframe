@@ -122,7 +122,7 @@ func runCut(t *testing.T, c cutClock, src *cutSource, warm int, start func(now u
 
 // forEachCutClock runs f at every program rate and mixer rate.
 func forEachCutClock(t *testing.T, f func(t *testing.T, c cutClock)) {
-	for _, r := range programRates {
+	for _, r := range longProgramRates() {
 		for _, sr := range longSourceRates() {
 			c := cutClock{r, sr}
 			t.Run(fmt.Sprintf("%s/%dHz", rateName(r), sr), func(t *testing.T) { f(t, c) })
