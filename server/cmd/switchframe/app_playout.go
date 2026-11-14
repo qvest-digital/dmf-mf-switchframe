@@ -13,6 +13,7 @@ import (
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/caption"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/playout"
@@ -102,6 +103,10 @@ func (a *App) initPlayout() error {
 
 	// PTS anchoring.
 	mgr.SetPTSProvider(a.sw.LastBroadcastVideoPTS)
+	playoutRate = func() clock.Rate {
+		pf := a.sw.PipelineFormat()
+		return clock.Rate{Num: int64(pf.FPSNum), Den: int64(pf.FPSDen)}
+	}
 
 	// Register MoQ relays for playout channels (same pattern as clips).
 	for i := 0; i < playout.MaxChannels; i++ {
