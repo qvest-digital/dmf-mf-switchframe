@@ -52,26 +52,35 @@ func (r *startRecorder) cued(t *testing.T) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		return len(r.pts) > 0
-	}, 5*time.Second, time.Millisecond)
+	}, 20*time.Second, time.Millisecond)
 	r.forget()
 }
 
-// firstPicture waits for the first picture of the playback under way: the
-// first of a run of pictures a period apart.
-func (r *startRecorder) firstPicture(t *testing.T, period int64) int64 {
+// firstPicture waits for the first picture of the playback started at
+// TAI released on a 50 fps output: the first recorded with a PTS past the
+// read point of the tick running then. A cued player's stills are stamped
+// with the read point of the tick running when they go out, all before the
+// release; the playback's first picture is due on a later tick.
+func (r *startRecorder) firstPicture(t *testing.T, released int64) int64 {
 	t.Helper()
+	r50 := clock.Rate{Num: 50, Den: 1}
+	tick := clock.TimestampToIndex(r50, released)
+	if clock.IndexToTimestamp(r50, tick) > released {
+		tick--
+	}
+	read := clock.IndexPTS(r50, tick-clock.ReaderDelayGrains)
 	var first int64
 	require.Eventually(t, func() bool {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		for i := 0; i+2 < len(r.pts); i++ {
-			if r.pts[i+1]-r.pts[i] == period && r.pts[i+2]-r.pts[i+1] == period {
-				first = r.pts[i]
+		for _, pts := range r.pts {
+			if pts > read {
+				first = pts
 				return true
 			}
 		}
 		return false
-	}, 5*time.Second, time.Millisecond)
+	}, 20*time.Second, time.Millisecond)
 	return first
 }
 
@@ -84,7 +93,7 @@ func readProgram(t *testing.T, m *audio.Mixer, rec *startRecorder, from uint64, 
 	var out []float32
 	for at := from; at < from+uint64(n); at += period {
 		end := clock.IndexPTS(rate48, at+period)
-		require.Eventually(t, func() bool { return rec.pcmEnd.Load() >= end }, 5*time.Second, time.Millisecond)
+		require.Eventually(t, func() bool { return rec.pcmEnd.Load() >= end }, 20*time.Second, time.Millisecond)
 		out = append(out, m.ProduceSamples(at, period, clock.IndexPTS(rate48, at))...)
 		m.AdvanceCrossfade()
 	}
@@ -155,8 +164,9 @@ func TestClipSoundStartsOnItsFirstPicture(t *testing.T) {
 				default:
 					m.SetActive("clip:1", true)
 				}
+				released := clock.TAINow()
 				require.True(t, mgr.StartCued(1))
-				first := rec.firstPicture(t, 1800)
+				first := rec.firstPicture(t, released)
 				idx := clock.TimestampToIndex(rate48, clock.TimestampOf(first))
 				const lead = 1920
 				out := readProgram(t, m, rec, idx-lead, 30000)

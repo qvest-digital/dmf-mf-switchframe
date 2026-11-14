@@ -92,7 +92,7 @@ func TestPlayerPCMStartsOnTheFirstPicture(t *testing.T) {
 			defer cancel()
 			p.Start(ctx)
 			defer func() { p.Stop(); p.Wait() }()
-			require.Eventually(t, func() bool { return p.State() == StateHolding }, 5*time.Second, 10*time.Millisecond)
+			require.Eventually(t, func() bool { return p.State() == StateHolding }, 20*time.Second, 10*time.Millisecond)
 			time.Sleep(50 * time.Millisecond)
 
 			got := rec.samples(t, 2)
@@ -201,7 +201,7 @@ func TestPlayerPCMRunsOnThroughAStall(t *testing.T) {
 			defer cancel()
 			p.Start(ctx)
 			defer func() { p.Stop(); p.Wait() }()
-			require.Eventually(t, func() bool { return p.State() == StateHolding }, 5*time.Second, 10*time.Millisecond)
+			require.Eventually(t, func() bool { return p.State() == StateHolding }, 20*time.Second, 10*time.Millisecond)
 
 			rec.samples(t, 2) // contiguous PTS, one start
 			mu.Lock()

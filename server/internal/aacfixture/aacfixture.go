@@ -7,10 +7,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/cmplx"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -69,6 +71,46 @@ func Write(t testing.TB, dir string, c Clip) (string, []float32) {
 	if !ok {
 		t.Fatalf("aacfixture: no layout for %d channels", c.Channels)
 	}
+	// A clip is encoded once per test binary: tests that share one would
+	// otherwise each spend an encode on it.
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	f, ok := cache[c]
+	if !ok {
+		tmp, err := os.MkdirTemp("", "aacfixture-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.RemoveAll(tmp) }()
+		path, ref := encode(t, ffmpeg, tmp, c, layout)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f = fixture{name: filepath.Base(path), data: data, ref: ref}
+		cache[c] = f
+	}
+	path := filepath.Join(dir, f.name)
+	if err := os.WriteFile(path, f.data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path, f.ref
+}
+
+type fixture struct {
+	name string
+	data []byte
+	ref  []float32
+}
+
+var (
+	cacheMu sync.Mutex
+	cache   = map[Clip]fixture{}
+)
+
+// encode writes c into dir with ffmpeg and returns its path and sound.
+func encode(t testing.TB, ffmpeg, dir string, c Clip, layout string) (string, []float32) {
+	t.Helper()
 	// Every channel a chirp of its own: a correlation finds one place.
 	exprs := make([]string, c.Channels)
 	for ch := range exprs {
@@ -172,23 +214,73 @@ func addITunSMPB(t testing.TB, path, value string) {
 // Lag returns the shift, within maxLag samples, at which got best matches
 // ref on channel ch: got[i+lag] is ref[i]. Both are interleaved with
 // channels channels; the match runs over the first window samples of
-// ref past maxLag.
+// ref past maxLag. The correlation is taken by FFT: summed directly it
+// costs window products per lag, which the race detector slows to
+// minutes.
 func Lag(got, ref []float32, channels, ch, maxLag, window int) int {
-	best, bestLag := math.Inf(-1), 0
-	for lag := -maxLag; lag <= maxLag; lag++ {
-		var s float64
-		for i := maxLag; i < maxLag+window; i++ {
-			j := i + lag
-			if j < 0 || (j+1)*channels > len(got) || (i+1)*channels > len(ref) {
-				continue
-			}
-			s += float64(got[j*channels+ch]) * float64(ref[i*channels+ch])
+	sample := func(pcm []float32, i int) float64 {
+		if i < 0 || (i+1)*channels > len(pcm) {
+			return 0
 		}
-		if s > best {
-			best, bestLag = s, lag
+		return float64(pcm[i*channels+ch])
+	}
+	// c[k] = sum over i of a[i]*b[i+k], k = lag+maxLag.
+	n := 1
+	for n < window+2*maxLag {
+		n <<= 1
+	}
+	a := make([]complex128, n)
+	b := make([]complex128, n)
+	for i := range window {
+		a[i] = complex(sample(ref, i+maxLag), 0)
+	}
+	for j := range window + 2*maxLag {
+		b[j] = complex(sample(got, j), 0)
+	}
+	fft(a, false)
+	fft(b, false)
+	for i := range a {
+		a[i] = cmplx.Conj(a[i]) * b[i]
+	}
+	fft(a, true)
+	best, bestLag := math.Inf(-1), 0
+	for k := 0; k <= 2*maxLag; k++ {
+		if v := real(a[k]); v > best {
+			best, bestLag = v, k-maxLag
 		}
 	}
 	return bestLag
+}
+
+// fft transforms x in place, its length a power of two; inverse
+// transforms back without the 1/n scale, which Lag does not need.
+func fft(x []complex128, inverse bool) {
+	n := len(x)
+	for i, j := 1, 0; i < n; i++ {
+		bit := n >> 1
+		for ; j&bit != 0; bit >>= 1 {
+			j ^= bit
+		}
+		j ^= bit
+		if i < j {
+			x[i], x[j] = x[j], x[i]
+		}
+	}
+	sign := -1.0
+	if inverse {
+		sign = 1
+	}
+	for size := 2; size <= n; size <<= 1 {
+		w := cmplx.Rect(1, sign*2*math.Pi/float64(size))
+		for start := 0; start < n; start += size {
+			t := complex(1, 0)
+			for k := range size / 2 {
+				u, v := x[start+k], x[start+k+size/2]*t
+				x[start+k], x[start+k+size/2] = u+v, u-v
+				t *= w
+			}
+		}
+	}
 }
 
 // RMS returns the root mean square difference of got and ref over their
