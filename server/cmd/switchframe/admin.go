@@ -126,10 +126,12 @@ func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string,
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
-	// Readiness probe — 503 until readyFlag is set, then 200. No auth.
+	// Readiness probe — 503 until readyFlag is set, then 200, and 503 again
+	// once ctx is done: Run's ctx ends on SIGTERM, before anything drains,
+	// so a terminating engine is never taken for a ready one. No auth.
 	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if !readyFlag.Load() {
+		if !readyFlag.Load() || ctx.Err() != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": "not_ready"})
 			return
