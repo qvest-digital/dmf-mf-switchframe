@@ -5,6 +5,8 @@ import (
 	"flag"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -173,4 +175,54 @@ func startTestAdminServer(t *testing.T, adminToken string) (stop func(), addr st
 	}
 	t.Fatal("admin server did not start in time")
 	return stop, addr
+}
+
+func TestAdminServer_ReadyFailsOnSIGTERM(t *testing.T) {
+	// Run hands the admin server the context that SIGTERM ends. From the
+	// signal on /ready must report not ready, while the server still
+	// answers everything else until it is stopped.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+	defer cancel()
+	readyFlag.Store(true)
+	defer readyFlag.Store(false)
+
+	stop, addr := StartAdminServer(ctx, "127.0.0.1:0", ":8080", "testhash", false, "")
+	defer stop()
+	get := func(path string) int {
+		t.Helper()
+		resp, err := http.Get("http://" + addr + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for get("/ready") != http.StatusOK {
+		if time.Now().After(deadline) {
+			t.Fatal("/ready never reported ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	<-ctx.Done()
+
+	if code := get("/ready"); code != http.StatusServiceUnavailable {
+		t.Errorf("GET /ready after SIGTERM = %d, want 503", code)
+	}
+	if code := get("/health"); code != http.StatusOK {
+		t.Errorf("GET /health after SIGTERM = %d, want 200", code)
+	}
+	if code := get("/api/cert-hash"); code != http.StatusOK {
+		t.Errorf("GET /api/cert-hash after SIGTERM = %d, want 200", code)
+	}
+
+	stop()
+	if resp, err := http.Get("http://" + addr + "/health"); err == nil {
+		_ = resp.Body.Close()
+		t.Error("admin server still answered after stop")
+	}
 }
