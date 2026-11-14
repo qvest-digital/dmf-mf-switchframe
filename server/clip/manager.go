@@ -47,6 +47,7 @@ type Manager struct {
 	onPlayerStart  func(playerID int, key string)
 	onPlayerStop   func(playerID int, key string)
 	rawVideoOutput func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool)
+	rawVideoStage  func(key string, yuv []byte, w, h int, isKeyframe bool) (put func(pts int64), drop func())
 	videoOutput    func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte)
 	audioOutput    func(key string, data []byte, pts int64, sampleRate, channels int)
 	pcmOutput      func(key string, pcm []float32, pts int64, channels int, start bool)
@@ -769,6 +770,7 @@ func (m *Manager) newPlayer(idx int, slot *playerSlot, speed float64, loop, cued
 
 	// Capture output callbacks once under lock — avoids per-frame mutex in hot path.
 	rawVideoFn := m.rawVideoOutput
+	stageFn := m.rawVideoStage
 	videoFn := m.videoOutput
 	audioFn := m.audioOutput
 	pcmFn := m.pcmOutput
@@ -837,6 +839,7 @@ func (m *Manager) newPlayer(idx int, slot *playerSlot, speed float64, loop, cued
 				rawVideoFn(key, yuv, w, h, pts, isKeyframe)
 			}
 		},
+		StageVideo: stageVideo(key, stageFn),
 		VideoOutput: func(wireData []byte, pts int64, isKeyframe bool, sps, pps []byte) {
 			if videoFn != nil {
 				videoFn(key, wireData, pts, isKeyframe, sps, pps)
@@ -1108,6 +1111,26 @@ func (m *Manager) SetRawVideoOutput(fn func(key string, yuv []byte, w, h int, pt
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rawVideoOutput = fn
+}
+
+// SetRawVideoStage registers what readies a cued player's held picture
+// for the start on a program tick (PlayerConfig.StageVideo), with the
+// player's source key. Without it the start puts the picture out through
+// SetRawVideoOutput.
+func (m *Manager) SetRawVideoStage(fn func(key string, yuv []byte, w, h int, isKeyframe bool) (put func(pts int64), drop func())) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rawVideoStage = fn
+}
+
+// stageVideo binds fn to key, nil without fn.
+func stageVideo(key string, fn func(string, []byte, int, int, bool) (func(int64), func())) func([]byte, int, int, bool) (func(int64), func()) {
+	if fn == nil {
+		return nil
+	}
+	return func(yuv []byte, w, h int, isKeyframe bool) (func(int64), func()) {
+		return fn(key, yuv, w, h, isKeyframe)
+	}
 }
 
 // SetVideoOutput registers a callback for forwarding original H.264 wire data

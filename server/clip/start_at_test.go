@@ -315,7 +315,8 @@ func TestTimedManagerStartsACueOnTheTick(t *testing.T) {
 	read := timelineRead(r, clock.TAINow())
 	mgr.StartCuedAt(1, read)
 	v := got()
-	require.Len(t, v, 2, "the start puts the first picture out before it returns")
+	// The goroutine may put out the slot after once the start returns.
+	require.GreaterOrEqual(t, len(v), 2, "the start puts the first picture out before it returns")
 	assert.Equal(t, startOut{id: 0, pts: read}, v[1])
 	require.Eventually(t, func() bool { return mgr.PlayerStates()[0].State == StatePlaying }, 2*time.Second, time.Millisecond)
 	assert.True(t, mgr.PlayerStates()[0].Loop)
@@ -359,4 +360,208 @@ func TestCuedPlayerStartsItsSoundAnewAfterALoopChange(t *testing.T) {
 			assert.GreaterOrEqual(t, n, 960, "the start tick's audio goes out with the start")
 		})
 	}
+}
+
+// onStarter counts the decoder calls a goroutine makes, once it is set.
+type onStarter struct {
+	id    atomic.Value // string, the goroutine's ID
+	calls atomic.Int64
+}
+
+func (o *onStarter) note() {
+	if id, _ := o.id.Load().(string); id != "" && id == goid() {
+		o.calls.Add(1)
+	}
+}
+
+// codec is rampCodec with every decoder made and every frame decoded on
+// the goroutine counted.
+func (o *onStarter) codec() PCMCodec {
+	return PCMCodec{NewDecoder: func(sr, channels int) (PCMDecoder, error) {
+		o.note()
+		d, err := rampCodec.NewDecoder(sr, channels)
+		return countingDecoder{d, o}, err
+	}}
+}
+
+type countingDecoder struct {
+	PCMDecoder
+	o *onStarter
+}
+
+func (d countingDecoder) Decode(b []byte) ([]float32, error) {
+	d.o.note()
+	return d.PCMDecoder.Decode(b)
+}
+
+// A slot is loaded without a loop, and its loop is set while it is cued,
+// as an operator's loop tick or a peer engine's sync sets it. The start on
+// a program tick then hands over the PCM the cue decoded, in the loop
+// mode the start has, and decodes nothing on the tick: decoding there
+// opened a decoder and a resampler, which at a high rate costs the tick
+// more than its period. The start tick's PCM reaches the slot after
+// however its PTS rounds.
+func TestCuedPlayerStartsInTheLoopModeSetAfterItsCue(t *testing.T) {
+	now := fakeTAI(t)
+	for _, r := range startFrameRates {
+		for _, sr := range startSampleRates {
+			for _, loop := range []bool{true, false} {
+				t.Run(fmt.Sprintf("%d_%d/%dHz/loop_%v", r.Num, r.Den, sr, loop), func(t *testing.T) {
+					n := clock.TimestampToIndex(r, clock.TAINow()) + 8
+					now.Store(clock.IndexToTimestamp(r, n-1))
+					frames, audio := startClip(r, sr, 8)
+					rec := &startRec{}
+					cfg := rec.config(r, sr, frames, audio)
+					cfg.Loop = !loop
+					on := &onStarter{}
+					cfg.PCMCodec = on.codec()
+					// Where the audio's first pass ends, as the start hands
+					// over its PCM: the goroutine waits for the start then.
+					var p *Player
+					var audioEnd, passLen, want int64
+					pcmOut := cfg.PCMOutput
+					cfg.PCMOutput = func(pcm []float32, pts int64, channels int, start bool) {
+						if start && on.calls.Load() == 0 {
+							if id, _ := on.id.Load().(string); id == goid() {
+								audioEnd, passLen, want = p.pcmAudioEnd, p.pcm.passLen, p.pcm.Samples()
+								if loop {
+									want = p.pcmVideoEnd
+								}
+							}
+						}
+						pcmOut(pcm, pts, channels, start)
+					}
+					p = NewPlayer(cfg)
+					ctx, cancel := context.WithCancel(context.Background())
+					p.Start(ctx)
+					t.Cleanup(func() { cancel(); p.Stop(); p.Wait() })
+					require.Eventually(t, func() bool { v, _, _ := rec.snapshot(); return len(v) == 1 }, 2*time.Second, time.Millisecond)
+
+					p.SetLoop(loop)
+					now.Store(clock.IndexToTimestamp(r, n))
+					read := clock.IndexPTS(r, n-clock.ReaderDelayGrains)
+					rec.shut(t)
+					on.id.Store(goid())
+					require.True(t, p.StartAt(read))
+					assert.Zero(t, on.calls.Load(), "the start decodes nothing on the tick")
+					_, _, pcm := rec.snapshot()
+					rec.open()
+
+					require.NotEmpty(t, pcm, "the start hands over the start tick's PCM")
+					assert.Equal(t, startPCM{first: 1, pts: read, samples: pcm[0].samples, start: true, inStart: true}, pcm[0])
+					var handed int64
+					for _, c := range pcm {
+						handed += int64(c.samples)
+					}
+					period := int64(90000) * r.Den / r.Num
+					assert.Equal(t, (period+1)*int64(sr)/90000+2, handed, "the start hands over the cue's span")
+					ra := clock.Rate{Num: int64(sr), Den: 1}
+					next := clock.TimestampToIndex(ra, clock.TimestampOf(read+period+1))
+					assert.Greater(t, handed, int64(next-clock.TimestampToIndex(ra, clock.TimestampOf(read))), "the PCM reaches the slot after")
+
+					require.NotZero(t, want)
+					assert.Equal(t, want, audioEnd, "the audio's pass ends where the loop mode has it end")
+					assert.Equal(t, want, passLen)
+				})
+			}
+		}
+	}
+}
+
+// A clip shorter than about a period, cued without a loop and started
+// with one, has its cue read past where the looping pass ends. The start
+// then hands over no PCM and still decodes nothing on the tick: the
+// goroutine starts the clip's sound on the start's read point instead.
+func TestCuedPlayerOfAShortClipStartsItsSoundOffTheTick(t *testing.T) {
+	now := fakeTAI(t)
+	r := clock.Rate{Num: 24, Den: 1}
+	n := clock.TimestampToIndex(r, clock.TAINow()) + 8
+	now.Store(clock.IndexToTimestamp(r, n-1))
+	frames, audio := startClip(clock.Rate{Num: 30, Den: 1}, 48000, 1)
+	rec := &startRec{}
+	cfg := rec.config(r, 48000, frames, audio)
+	on := &onStarter{}
+	cfg.PCMCodec = on.codec()
+	p := NewPlayer(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	p.Start(ctx)
+	t.Cleanup(func() { cancel(); p.Stop(); p.Wait() })
+	require.Eventually(t, func() bool { v, _, _ := rec.snapshot(); return len(v) == 1 }, 2*time.Second, time.Millisecond)
+
+	p.SetLoop(true)
+	now.Store(clock.IndexToTimestamp(r, n))
+	read := clock.IndexPTS(r, n-clock.ReaderDelayGrains)
+	rec.shut(t)
+	on.id.Store(goid())
+	require.True(t, p.StartAt(read))
+	assert.Zero(t, on.calls.Load(), "the start decodes nothing on the tick")
+	_, _, pcm := rec.snapshot()
+	assert.Empty(t, pcm, "a cue read past the looping pass is not handed over")
+	rec.open()
+
+	require.Eventually(t, func() bool { _, _, pcm := rec.snapshot(); return len(pcm) > 0 }, 2*time.Second, time.Millisecond)
+	_, _, pcm = rec.snapshot()
+	assert.Equal(t, startPCM{first: 1, pts: read, samples: pcm[0].samples, start: true, inStart: false}, pcm[0])
+}
+
+// A staged picture (StageVideo) is copied while the player waits: the
+// start on a program tick hands it over stamped with the tick's read
+// point and copies nothing, and every still is staged too, so the start
+// never waits on a still's copy. Stills staged and not put out are
+// dropped.
+func TestCuedPlayerHandsItsStagedPictureToTheTick(t *testing.T) {
+	r := clock.Rate{Num: 50, Den: 1}
+	frames, audio := startClip(r, 48000, 8)
+	rec := &startRec{}
+	cfg := rec.config(r, 48000, frames, audio)
+	var mu sync.Mutex
+	var starter string
+	var copiedOnTick, staged, dropped int
+	var put []int64
+	raw := cfg.RawVideoOutput
+	cfg.RawVideoOutput = func(yuv []byte, w, h int, pts int64, kf bool) {
+		mu.Lock()
+		if goid() == starter {
+			copiedOnTick++
+		}
+		mu.Unlock()
+		raw(yuv, w, h, pts, kf)
+	}
+	cfg.StageVideo = func(yuv []byte, _, _ int, _ bool) (func(int64), func()) {
+		mu.Lock()
+		defer mu.Unlock()
+		if goid() == starter {
+			copiedOnTick++
+		}
+		staged++
+		return func(pts int64) {
+				mu.Lock()
+				put = append(put, pts)
+				mu.Unlock()
+			}, func() {
+				mu.Lock()
+				dropped++
+				mu.Unlock()
+			}
+	}
+	p := NewPlayer(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	p.Start(ctx)
+	t.Cleanup(func() { cancel(); p.Stop(); p.Wait() })
+	require.Eventually(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(put) == 1 }, 2*time.Second, time.Millisecond, "the still goes out staged")
+
+	read := timelineRead(r, clock.TAINow())
+	mu.Lock()
+	starter = goid()
+	mu.Unlock()
+	require.True(t, p.StartAt(read))
+	mu.Lock()
+	assert.Zero(t, copiedOnTick, "the start copies no picture on the tick")
+	require.Len(t, put, 2)
+	assert.Equal(t, read, put[1], "the staged picture goes out on the read point")
+	mu.Unlock()
+	require.Eventually(t, func() bool { v, _, _ := rec.snapshot(); return len(v) >= 2 }, 2*time.Second, time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, staged, len(put)+dropped, "every staged picture is put out or dropped")
 }

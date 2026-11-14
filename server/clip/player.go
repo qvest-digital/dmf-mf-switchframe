@@ -49,6 +49,13 @@ type PlayerConfig struct {
 	// Called for every output frame (including duplicates for slow-mo).
 	RawVideoOutput func(yuv []byte, w, h int, pts int64, isKeyframe bool)
 
+	// StageVideo, when set, readies a cued player's held picture for
+	// StartAt while the player waits: put then hands it to the pipeline
+	// stamped pts in place of RawVideoOutput, so the program tick that
+	// starts the clip copies and scales nothing. drop releases a picture
+	// no start put out. Each is called at most once.
+	StageVideo func(yuv []byte, w, h int, isKeyframe bool) (put func(pts int64), drop func())
+
 	// VideoOutput forwards H.264 wire data (AVC1 format) for browser relay.
 	// When EncoderFactory is set, this receives re-encoded 8-bit data.
 	// Otherwise, it receives original wire data from the clip file.
@@ -336,7 +343,8 @@ func (p *Player) StartAt(readPTS int64) bool {
 }
 
 // heldSlot is a cued player's first output slot: its picture, and what
-// the slot's audio is emitted with.
+// the slot's audio is emitted with. put and drop are its picture staged
+// (StageVideo).
 type heldSlot struct {
 	frameData   []byte
 	fw, fh      int
@@ -346,11 +354,16 @@ type heldSlot struct {
 	sps, pps    []byte
 	speed       float64
 	pic, total  int
+	put         func(pts int64)
+	drop        func()
 }
 
-// putOut puts the picture of h out stamped pts.
-func (p *Player) putOut(h *heldSlot, pts int64) {
-	if h.frameData != nil && p.config.RawVideoOutput != nil {
+// putOut puts the picture of h out stamped pts: through put when it was
+// staged, else through RawVideoOutput.
+func (p *Player) putOut(h *heldSlot, pts int64, put func(int64)) {
+	if put != nil {
+		put(pts)
+	} else if h.frameData != nil && p.config.RawVideoOutput != nil {
 		p.config.RawVideoOutput(h.frameData, h.fw, h.fh, pts, h.srcKeyframe)
 	}
 	if h.wireData != nil && p.config.VideoOutput != nil {
@@ -362,26 +375,51 @@ func (p *Player) putOut(h *heldSlot, pts int64) {
 // the playback goroutine emits after a slot. The goroutine waits in
 // awaitRelease meanwhile, and goes on from the slot after it. Caller
 // holds startMu.
+//
+// It runs on a program tick, so it decodes, resamples and copies
+// nothing: the picture is staged and the start tick's PCM decoded while
+// the player waits (StageVideo, cuePCM).
 func (p *Player) startOnTick(h *heldSlot, readPTS int64) {
 	p.placeAudio(readPTS)
 	p.noteStart("video")
-	p.putOut(h, readPTS)
+	p.putOut(h, readPTS, h.put)
+	h.put, h.drop = nil, nil
 	next := readPTS + p.pts.next()
 	p.emitTimedAudio(h.speed, h.pic, h.total, next)
-	// Only the start tick's PCM, decoded with the cue: decoding and
-	// resampling it here costs the tick milliseconds. The goroutine hands
-	// over the rest as it goes on with the slot after, which the next tick
-	// reads with it.
-	if p.pcmCue != nil && p.pcmCueLoop == p.loop.Load() {
+	// Only the start tick's PCM. Without a cue to hand over, the
+	// goroutine starts the PCM on the read point as it goes on with the
+	// slot after: the start tick may then read the clip's first period
+	// short, which only a speed other than 1, or a loop change on a clip
+	// shorter than about a period (rearmCue), leaves to happen.
+	if p.pcmCue != nil && p.rearmCue() {
 		p.pcmFirst = false
 		p.config.PCMOutput(p.pcmCue, readPTS, p.pcm.Channels(), !p.pcmStarted)
 		p.pcmStarted = true
 		p.pcmPut = int64(len(p.pcmCue) / p.pcm.Channels())
-	} else {
-		p.emitTimedPCM(h.speed, h.pic, h.total, next, next)
 	}
 	p.pcmCue = nil
 	p.onTick, p.tickNext = true, next
+}
+
+// rearmCue fits the PCM stream the cue was read from to the loop setting
+// the start has, which can have changed since the cue: only the end of
+// the stream's first pass depends on it, and the pass reads the same at
+// either end up to the shorter one. It reports false when the cue read
+// past the end the start needs.
+func (p *Player) rearmCue() bool {
+	loop := p.loop.Load()
+	if loop == p.pcmCueLoop {
+		return true
+	}
+	end := p.pcm.Samples()
+	if loop {
+		end = p.pcmVideoEnd
+	}
+	if !p.pcm.SetPassLen(end) {
+		return false
+	}
+	p.pcmAudioEnd = end
+	return true
 }
 
 // placeAudio starts a timed player's audio with its first frame, at pts.
@@ -646,7 +684,11 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 			}
 			onTick := false
 			if !p.started {
-				h := &heldSlot{frameData, fw, fh, srcKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, speed, pic, totalClipFrames}
+				h := &heldSlot{
+					frameData: frameData, fw: fw, fh: fh, srcKeyframe: srcKeyframe,
+					wireData: browserWireData, isKeyframe: browserKeyframe, sps: browserSPS, pps: browserPPS,
+					speed: speed, pic: pic, total: totalClipFrames,
+				}
 				var cancelled bool
 				if onTick, cancelled = p.start(ctx, h, outputPTS); cancelled {
 					return true
@@ -698,7 +740,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 			// Emit audio proportionally, or, timed, ahead of the slot.
 			if p.config.Timed {
 				p.emitTimedAudio(speed, pic, totalClipFrames, *outputPTS)
-				p.emitTimedPCM(speed, pic, totalClipFrames, *outputPTS, clock.NowPTS()+pcmLead.Milliseconds()*90)
+				p.emitTimedPCM(speed, pic, totalClipFrames, *outputPTS)
 			} else {
 				p.emitAudioForVideoFrame(outputIdx, totalFrames)
 			}
@@ -1174,8 +1216,8 @@ func (p *Player) start(ctx context.Context, h *heldSlot, outputPTS *int64) (onTi
 }
 
 // cuePCM decodes the PCM a start on a program tick hands over with its
-// first picture ahead of the start: a period of it, a 90 kHz tick and a
-// sample over, so it reaches the slot after however its PTS rounds.
+// first picture ahead of the start: a period of it, a 90 kHz tick and two
+// samples over, so it reaches the slot after however its PTS rounds.
 func (p *Player) cuePCM(speed float64) {
 	if p.pcm == nil || speed != 1 {
 		return
@@ -1192,6 +1234,9 @@ func (p *Player) cuePCM(speed float64) {
 func (p *Player) awaitRelease(ctx context.Context, h *heldSlot) (onTick, cancelled bool) {
 	if !p.released() {
 		p.cuePCM(h.speed)
+		if p.config.StageVideo != nil && h.frameData != nil {
+			h.put, h.drop = p.config.StageVideo(h.frameData, h.fw, h.fh, h.srcKeyframe)
+		}
 	}
 	p.startMu.Lock()
 	if p.released() {
@@ -1204,12 +1249,24 @@ func (p *Player) awaitRelease(ctx context.Context, h *heldSlot) (onTick, cancell
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
-		// Under startMu, so no still follows the slot StartAt put out.
+		// Put out under startMu, so no still follows the slot StartAt put
+		// out: the pipeline would take the still's older PTS for a step
+		// back and drop the slot. Staged first, so StartAt does not wait
+		// on its copy.
+		var put func(int64)
+		var drop func()
+		if p.config.StageVideo != nil && h.frameData != nil {
+			put, drop = p.config.StageVideo(h.frameData, h.fw, h.fh, h.srcKeyframe)
+		}
 		p.startMu.Lock()
 		if !p.released() {
-			p.putOut(h, timelineRead(p.rate, clock.TAINow()))
+			p.putOut(h, timelineRead(p.rate, clock.TAINow()), put)
+			drop = nil
 		}
 		p.startMu.Unlock()
+		if drop != nil {
+			drop()
+		}
 		select {
 		case <-ctx.Done():
 			cancelled = true
@@ -1220,6 +1277,10 @@ func (p *Player) awaitRelease(ctx context.Context, h *heldSlot) (onTick, cancell
 		p.startMu.Lock()
 		p.held = nil
 		onTick = p.onTick && !cancelled
+		if h.drop != nil {
+			h.drop()
+			h.put, h.drop = nil, nil
+		}
 		p.startMu.Unlock()
 		return onTick, cancelled
 	}
@@ -1310,16 +1371,15 @@ func (p *Player) emitTimedAudio(speed float64, pic, total int, until int64) {
 // of a source.
 const pcmLead = 150 * time.Millisecond
 
-// emitTimedPCM hands over a timed player's PCM up to upto, normally
-// pcmLead past the clock, and a sample past it, which a read ending on
-// upto may reach for its rounding. pic is the pictures of the pass put
-// out so far, of total. The audio runs on by itself: a video that falls
-// behind and is put back on the clock (keepOnTimeline) leaves it where
-// it is. At a speed other than 1 none goes out; on the return to 1,
-// after a seek or a pause, and when the audio itself fell behind the
-// read point, the stream starts again at the picture's share of the
-// pass, on until, the PTS of the next video slot.
-func (p *Player) emitTimedPCM(speed float64, pic, total int, until, upto int64) {
+// emitTimedPCM hands over a timed player's PCM up to pcmLead past the
+// clock. pic is the pictures of the pass put out so far, of total. The
+// audio runs on by itself: a video that falls behind and is put back on
+// the clock (keepOnTimeline) leaves it where it is. At a speed other
+// than 1 none goes out; on the return to 1, after a seek or a pause, and
+// when the audio itself fell behind the read point, the stream starts
+// again at the picture's share of the pass, on until, the PTS of the
+// next video slot.
+func (p *Player) emitTimedPCM(speed float64, pic, total int, until int64) {
 	s := p.pcm
 	if s == nil || total == 0 {
 		return
@@ -1342,7 +1402,7 @@ func (p *Player) emitTimedPCM(speed float64, pic, total int, until, upto int64) 
 		p.pcmResync = false
 		p.startPCM(until, int64(pic)*p.pcmPass(false)/int64(total))
 	}
-	want := (upto-p.pcmBase)*rate/90000 + 1
+	want := (now + pcmLead.Milliseconds()*90 - p.pcmBase) * rate / 90000
 	for p.pcmPut < want {
 		pcm := s.Read(int(min(want-p.pcmPut, 1024)))
 		if len(pcm) == 0 {
