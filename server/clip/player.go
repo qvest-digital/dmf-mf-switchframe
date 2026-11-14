@@ -1118,7 +1118,15 @@ func (p *Player) outputFrame(
 	if p.config.Timed {
 		*outputPTS += pts.next()
 		*pacingIdx++
-		return p.awaitDue(ctx, *outputPTS, timer)
+		if wait := time.Duration(clock.TimestampOf(*outputPTS) - clock.TAINow()); wait > 0 {
+			timer.Reset(wait)
+			select {
+			case <-ctx.Done():
+				return true
+			case <-timer.C:
+			}
+		}
+		return false
 	}
 
 	// Pace using absolute time to prevent drift from callback overhead. The
