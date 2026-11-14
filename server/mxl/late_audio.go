@@ -45,11 +45,11 @@ const lateAudioMargin = 5 * lateAudioStep
 // delay the mixer already reads the source with, plus lateAudioMargin, in
 // whole milliseconds. Its video is shown later by the nearest whole number
 // of its grains (videoGrains), so the program's A/V stays within half a
-// grain of the source's own. Each change of the shift splices the
-// source's audio, so it comes down only after lateAudioHistory windows in
-// a row needed more than
-// lateAudioMargin less, as after a start-up whose first seconds arrive
-// later than the rest. A window in which no grain arrived counts as
+// grain, at the source's rate, of the source's own. Each change of the
+// shift splices the source's audio, so it comes down only after
+// lateAudioHistory windows in a row needed more than lateAudioMargin
+// less, as after a start-up whose first seconds arrive later than the
+// rest. A window in which no grain arrived counts as
 // needing none, and a source that needs none is mixed at its media time.
 type audioPlacement struct {
 	shift   int64                   // 90 kHz ticks added to the mixer's audio PTS

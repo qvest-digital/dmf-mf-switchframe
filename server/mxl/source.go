@@ -262,10 +262,9 @@ func (s *Source) Start(ctx context.Context, videoFlow DiscreteReader, audioFlow 
 	if audioFlow != nil {
 		s.audioFlow = audioFlow
 		s.audioReader = NewAudioReader(ReaderConfig{
-			BufSize:        16,
-			TimeoutMs:      100, // overridden by audioLoop's 5ms for actual reads
-			SamplesPerRead: defaultSamplesPerRead,
-			Logger:         s.log,
+			BufSize:   16,
+			TimeoutMs: 100, // overridden by audioLoop's 5ms for actual reads
+			Logger:    s.log,
 		})
 		s.audioReader.StartAudio(ctx, audioFlow)
 		s.wg.Add(1)
@@ -698,7 +697,7 @@ func (s *Source) queueRelayAudio(pcm []float32, sampleRate, channels int, start 
 	n := aacFrameSamples * channels
 	for len(s.relayPCM) >= n {
 		s.encodeAndBroadcastAudio(s.relayPCM[:n], sampleRate, channels,
-			s.shifted(clock.IndexPTS(r, s.relayStart)))
+			clock.IndexPTS(r, s.relayStart)+s.relayShift())
 		s.relayPCM = append(s.relayPCM[:0], s.relayPCM[n:]...)
 		s.relayStart += aacFrameSamples
 	}
@@ -707,8 +706,8 @@ func (s *Source) queueRelayAudio(pcm []float32, sampleRate, channels int, start 
 // shifted returns pts moved as much later as the source's video is shown
 // to stay with its audio: by whole grains of the video, so a video frame
 // lands on exactly the PTS of a later grain and the program's ticks take
-// it whole ticks later, never between two. Data and relay audio of the
-// source move by the same grains.
+// it whole ticks later, never between two. Data grains of the source
+// move by the same grains; its relay audio by relayShift.
 func (s *Source) shifted(pts int64) int64 {
 	r := s.videoRate.Load()
 	if r == nil {
@@ -720,6 +719,24 @@ func (s *Source) shifted(pts int64) int64 {
 	}
 	i := clock.PTSIndex(*r, pts)
 	return pts + clock.IndexPTS(*r, i+k) - clock.IndexPTS(*r, i)
+}
+
+// relayShift is how much later the relay's audio is stamped to stay with
+// the video: its whole grains, in 90 kHz ticks to the nearest. A grain
+// at 60000/1001 is no whole number of ticks, so a frame moved onto the
+// video's grid moves by a tick more or less from grain to grain; the
+// audio, whose frames do not fall on that grid, moves by the same amount
+// throughout and plays without a step.
+func (s *Source) relayShift() int64 {
+	r := s.videoRate.Load()
+	if r == nil {
+		return 0
+	}
+	k := int64(videoGrains(*r, s.audioShift.Load()))
+	if k == 0 {
+		return 0
+	}
+	return (2*k*90000*r.Den + r.Num) / (2 * r.Num)
 }
 
 // maxRelayAudioChannels is the widest layout the AAC encoder accepts.

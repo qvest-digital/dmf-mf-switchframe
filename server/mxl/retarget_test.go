@@ -487,15 +487,18 @@ func TestRetargetableAudioReader_ReadsAfterFirstConnection(t *testing.T) {
 // a whole read before the head; the move waits until the node has received
 // that much of the new flow, or that read would carry samples it never got.
 func TestConnect_AudioWaitsForAWholeReadWritten(t *testing.T) {
-	shape := FlowConfig{Format: DataFormatAudio, GrainRate: Rational{48000, 1}, ChannelCount: 2}
-	b := newLiveFlow(2, shape)
-	flow := NewRetargetableAudioReader(func(id string) (ContinuousReader, error) { return b, nil }, nil, nil)
-	if err := flow.(Retargetable).Connect(context.Background(), "b"); err != nil {
-		t.Fatal(err)
-	}
-	// The first look saw 100+headStep; the move waited for a whole read more.
-	if got := b.lastHead() - (100 + headStep); got < defaultSamplesPerRead {
-		t.Errorf("moved after %d samples were written here, want at least %d", got, defaultSamplesPerRead)
+	for _, rate := range []int64{44100, 48000, 96000} {
+		shape := FlowConfig{Format: DataFormatAudio, GrainRate: Rational{rate, 1}, ChannelCount: 2}
+		b := newLiveFlow(2, shape)
+		flow := NewRetargetableAudioReader(func(id string) (ContinuousReader, error) { return b, nil }, nil, nil)
+		if err := flow.(Retargetable).Connect(context.Background(), "b"); err != nil {
+			t.Fatal(err)
+		}
+		// The first look saw 100+headStep; the move waited for a whole
+		// read more, 10 ms of the flow.
+		if got, want := b.lastHead()-(100+headStep), uint64(rate/100); got < want {
+			t.Errorf("%d Hz: moved after %d samples were written here, want at least %d", rate, got, want)
+		}
 	}
 }
 
