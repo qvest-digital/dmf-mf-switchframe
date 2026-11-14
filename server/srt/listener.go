@@ -75,6 +75,9 @@ func NewListener(cfg ListenerConfig) (*Listener, error) {
 	}, nil
 }
 
+// srtgoListen is srtgo.Listen, replaceable in tests.
+var srtgoListen = srtgo.Listen
+
 // Run starts the SRT listener and blocks until ctx is cancelled.
 // It accepts incoming connections, resolves source configs, and invokes
 // the OnSource callback for each.
@@ -95,7 +98,7 @@ func (l *Listener) Run(ctx context.Context) error {
 		}
 	}
 
-	ln, err := srtgo.Listen(l.cfg.Addr, srtCfg)
+	ln, err := srtgoListen(l.cfg.Addr, srtCfg)
 	if err != nil {
 		return fmt.Errorf("srt listen on %s: %w", l.cfg.Addr, err)
 	}
@@ -114,8 +117,9 @@ func (l *Listener) Run(ctx context.Context) error {
 				// Context cancelled — clean shutdown.
 				return nil
 			}
-			l.log.Warn("accept error", "error", err)
-			continue
+			// Accept fails only once the listener is closed, and from
+			// then on at once on every call.
+			return fmt.Errorf("srt accept on %s: %w", l.cfg.Addr, err)
 		}
 
 		// Check MaxSources and increment atomically.

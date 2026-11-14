@@ -246,7 +246,7 @@ func TestSourceStatsPolling(t *testing.T) {
 		t.Error("expected Stats() to be called on SRT conn")
 	}
 	if !mockConn.statsIntervalMode.Load() {
-		t.Error("expected Stats(true) for interval mode, got Stats(false)")
+		t.Error("expected Stats(true), which restarts the receive-rate window")
 	}
 }
 
@@ -402,13 +402,13 @@ func (m *mockSRTConn) Stats(clear bool) srtgo.ConnStats {
 	return m.stats
 }
 
-// TestSourceStatsAccumulateIntervalDeltas reproduces finding #58: updateStats
-// polls srtgo.Stats(true), which returns ~1-second INTERVAL DELTAS for the
-// packet counters, but the values were stored via plain assignment and
-// exposed as lifetime totals (packetsReceived, packetsLost, ...). Each poll
-// must therefore accumulate the deltas, otherwise a stream that has carried
-// millions of packets reports only the last second's worth.
-func TestSourceStatsAccumulateIntervalDeltas(t *testing.T) {
+// TestSourceStatsCountCumulativeCounters covers the packet totals of an SRT
+// input. srtgo reports packet counters cumulatively for a connection, also
+// under Stats(true), while the ConnStats behind a source key lives across
+// reconnects. Adding each reading as is counts every packet again on every
+// one-second poll, so an hour-old input reports billions of packets. Each
+// poll has to add only what changed, and a reconnect starts again from zero.
+func TestSourceStatsCountCumulativeCounters(t *testing.T) {
 	t.Parallel()
 
 	config := SourceConfig{
@@ -417,44 +417,107 @@ func TestSourceStatsAccumulateIntervalDeltas(t *testing.T) {
 		StreamID: "cam7",
 	}
 	stats := NewConnStats(ModeListener, "cam7", 120)
-
-	// Each Stats(true) call returns the same interval delta.
-	mockConn := &mockSRTConn{
-		stats: srtgo.ConnStats{
+	reading := func(n uint64) srtgo.ConnStats {
+		return srtgo.ConnStats{
 			RTT:          5 * time.Millisecond,
-			RecvPackets:  1000,
-			RecvLoss:     10,
-			RecvDropped:  4,
-			Retransmits:  6,
-			RecvBelated:  2,
+			RecvPackets:  1000 * n,
+			RecvLoss:     10 * n,
+			RecvDropped:  4 * n,
+			RecvRetrans:  6 * n,
+			RecvBelated:  2 * n,
 			MbpsRecvRate: 6.0,
-		},
+		}
 	}
-	src := NewSource(config, mockConn, stats, slog.Default())
 
+	mockConn := &mockSRTConn{}
+	src := NewSource(config, mockConn, stats, slog.Default())
 	ctx := context.Background()
-	src.updateStats(ctx)
-	src.updateStats(ctx)
-	src.updateStats(ctx)
+	for n := uint64(1); n <= 3; n++ {
+		mockConn.stats = reading(n)
+		src.updateStats(ctx)
+	}
+
+	// The next connection under the same key counts from zero again.
+	next := &mockSRTConn{stats: reading(1)}
+	NewSource(config, next, stats, slog.Default()).updateStats(ctx)
 
 	snap := stats.Snapshot()
-	if snap.PacketsReceived != 3000 {
-		t.Errorf("PacketsReceived = %d, want 3000 (3 polls x 1000 interval delta)", snap.PacketsReceived)
+	if snap.PacketsReceived != 4000 {
+		t.Errorf("PacketsReceived = %d, want 4000 (3000 on the first connection, 1000 on the second)", snap.PacketsReceived)
 	}
-	if snap.PacketsLost != 30 {
-		t.Errorf("PacketsLost = %d, want 30", snap.PacketsLost)
+	if snap.PacketsLost != 40 {
+		t.Errorf("PacketsLost = %d, want 40", snap.PacketsLost)
 	}
-	if snap.PacketsDropped != 12 {
-		t.Errorf("PacketsDropped = %d, want 12", snap.PacketsDropped)
+	if snap.PacketsDropped != 16 {
+		t.Errorf("PacketsDropped = %d, want 16", snap.PacketsDropped)
 	}
-	if snap.PacketsRetransmitted != 18 {
-		t.Errorf("PacketsRetransmitted = %d, want 18", snap.PacketsRetransmitted)
+	if snap.PacketsRetransmitted != 24 {
+		t.Errorf("PacketsRetransmitted = %d, want 24", snap.PacketsRetransmitted)
 	}
-	if snap.PacketsBelated != 6 {
-		t.Errorf("PacketsBelated = %d, want 6", snap.PacketsBelated)
+	if snap.PacketsBelated != 8 {
+		t.Errorf("PacketsBelated = %d, want 8", snap.PacketsBelated)
 	}
 	// Rate/gauge fields are window values and must NOT accumulate.
 	if snap.RecvRateMbps != 6.0 {
 		t.Errorf("RecvRateMbps = %f, want 6.0 (window value, not accumulated)", snap.RecvRateMbps)
+	}
+}
+
+// TestSourceStatsCountRealConnection polls a real srtgo connection the way
+// a running input does: the received total has to match what was sent, not
+// the sum of the cumulative readings.
+func TestSourceStatsCountRealConnection(t *testing.T) {
+	ln, err := srtgo.Listen("127.0.0.1:0", srtgo.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	accepted := make(chan *srtgo.Conn, 1)
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			accepted <- c
+		}
+	}()
+	tx, err := srtgo.Dial(ln.Addr().String(), srtgo.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Close() }()
+	var rx *srtgo.Conn
+	select {
+	case rx = <-accepted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no connection accepted")
+	}
+	defer func() { _ = rx.Close() }()
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			if _, err := rx.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	stats := NewConnStats(ModeListener, "loop", 120)
+	src := NewSource(SourceConfig{Key: "srt:loop", Mode: ModeListener, StreamID: "loop"}, rx, stats, slog.Default())
+	ctx := context.Background()
+	const perRound, rounds = 100, 3
+	payload := make([]byte, 1316)
+	for r := 1; r <= rounds; r++ {
+		for i := 0; i < perRound; i++ {
+			if _, err := tx.Write(payload); err != nil {
+				t.Fatal(err)
+			}
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for rx.Stats(false).RecvPackets < uint64(r*perRound) && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		src.updateStats(ctx)
+	}
+
+	if got, want := stats.Snapshot().PacketsReceived, int64(rounds*perRound); got != want {
+		t.Errorf("PacketsReceived = %d after %d packets sent", got, want)
 	}
 }

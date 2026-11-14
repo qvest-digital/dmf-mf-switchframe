@@ -492,3 +492,48 @@ func TestListenerShutdown(t *testing.T) {
 		t.Fatal("timeout waiting for Run to return after cancel")
 	}
 }
+
+// TestListenerReturnsWhenListenerCloses covers a listener that closes while
+// Run's context is still live. srtgo's Accept then fails at once on every
+// call, so a loop that logs the error and accepts again spins on a core
+// for as long as the process runs. Run has to return the error instead.
+func TestListenerReturnsWhenListenerCloses(t *testing.T) {
+	lns := make(chan *srtgo.Listener, 1)
+	srtgoListen = func(addr string, cfg srtgo.Config) (*srtgo.Listener, error) {
+		ln, err := srtgo.Listen(addr, cfg)
+		if err == nil {
+			lns <- ln
+		}
+		return ln, err
+	}
+	t.Cleanup(func() { srtgoListen = srtgo.Listen })
+
+	l, err := NewListener(ListenerConfig{
+		Addr:     "127.0.0.1:0",
+		Store:    tempStore(t),
+		OnSource: func(SourceConfig, *srtgo.Conn) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- l.Run(ctx) }()
+
+	select {
+	case ln := <-lns:
+		_ = ln.Close()
+	case <-time.After(5 * time.Second):
+		t.Fatal("listener never bound")
+	}
+
+	select {
+	case err := <-runDone:
+		if err == nil {
+			t.Error("Run returned nil for a listener that closed under a live context")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run kept accepting on a closed listener")
+	}
+}

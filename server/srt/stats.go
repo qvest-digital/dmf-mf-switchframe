@@ -123,9 +123,11 @@ func (cs *ConnStats) SetDisconnected() {
 }
 
 // StatsUpdate holds a batch of SRT connection metrics for ConnStats.Update.
-// The Packets* fields are per-poll INTERVAL DELTAS (srtgo Stats(true)
-// semantics); ConnStats accumulates them into lifetime totals. Rate and
-// buffer fields are window/gauge values that replace the previous reading.
+// The Packets* fields are what changed since the previous poll;
+// ConnStats accumulates them into lifetime totals. LossRatePct is the
+// connection's dropped share over its whole life, as srtgo reports it.
+// Rate and buffer fields are window/gauge values that replace the
+// previous reading.
 type StatsUpdate struct {
 	RTTMs           float64
 	RTTVarMs        float64
@@ -163,6 +165,8 @@ func (cs *ConnStats) Update(u StatsUpdate) {
 }
 
 // SendStatsUpdate holds a batch of SRT send-side metrics for ConnStats.UpdateSend.
+// The Packets* fields and SendLossRatePct are the connection's totals over
+// its whole life, as srtgo reports them.
 type SendStatsUpdate struct {
 	RTTMs           float64
 	RTTVarMs        float64
