@@ -4,6 +4,7 @@
 		listClipsOnEveryEngine, uploadClip, deleteClip, pinClip,
 		listRecordingsDualEngine, importRecordingFromEngine, recordingDownloadUrl,
 		clipPlayerLoadByName, clipPlayerEject, clipPlayerPlay, clipPlayerPause, clipPlayerStop, clipPlayerSeek,
+		clipPlayerLoop,
 		apiCall,
 	} from '$lib/api/switch-api';
 	import { resolveApiUrl } from '$lib/api/base-url';
@@ -311,6 +312,14 @@
 		const speed = playerSpeeds[playerID] ?? 1.0;
 		const loop = playerLoops[playerID] ?? false;
 		apiCall(clipPlayerPlay(playerID, speed, loop), 'Play clip');
+	}
+
+	// The engine holds a slot's loop mode, so a cut or a mix that starts a
+	// loaded slot plays it in that mode; the tick reaches it at once rather
+	// than with the next play. The state the engine sends back sets the
+	// box again.
+	function handleLoop(playerID: number, loop: boolean) {
+		apiCall(clipPlayerLoop(playerID, loop), 'Set clip loop');
 	}
 
 	function handlePause(playerID: number) {
@@ -675,6 +684,7 @@
 									<input
 										type="checkbox"
 										bind:checked={playerLoops[player.id]}
+										onchange={(e) => handleLoop(player.id, e.currentTarget.checked)}
 										disabled={player.state === 'playing'}
 									/>
 									<span>Loop</span>

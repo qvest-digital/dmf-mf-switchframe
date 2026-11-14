@@ -2,6 +2,7 @@ package clip
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -70,12 +71,12 @@ func (r *cueRecorder) snapshot() ([]outRec, []outRec, []string) {
 	return append([]outRec(nil), r.video...), append([]outRec(nil), r.audio...), append([]string(nil), r.starts...)
 }
 
-// A cued player shows its first picture and waits; released, it puts
-// that picture and its audio on the read point of the next program tick,
-// before that tick, so the tick shows the clip's first picture and plays
-// its first audio. Without the cue the start decodes first and lands
-// ticks later; on the arrival timeline it lands ReaderDelayGrains ticks
-// later.
+// A cued player shows its first picture and waits; released with no
+// program tick to start on, it puts that picture and its audio on the
+// read point of the next program tick, before that tick, so the tick
+// shows the clip's first picture and plays its first audio. Without the
+// cue the start decodes first and lands ticks later; on the arrival
+// timeline it lands the read delay later.
 func TestCuedPlayerAirsItsFirstFrameAndAudioOnTheNextTick(t *testing.T) {
 	r := clock.Rate{Num: 50, Den: 1}
 	period := clock.IndexToTimestamp(r, 1) - clock.IndexToTimestamp(r, 0)
@@ -107,12 +108,12 @@ func TestCuedPlayerAirsItsFirstFrameAndAudioOnTheNextTick(t *testing.T) {
 	first := v[1]
 	assert.Equal(t, byte(0), first.id)
 	// The tick that reads the first frame: at most the one after next,
-	// and only when the next was within startMargin of the release.
-	tick := clock.PTSIndex(r, first.pts) + clock.ReaderDelayGrains
+	// and only when the next was within half a period of the release.
+	tick := clock.PTSIndex(r, first.pts) + clock.ReadDelay(r)
 	tickAt := clock.IndexToTimestamp(r, tick)
-	assert.Equal(t, first.pts, clock.IndexPTS(r, tick-clock.ReaderDelayGrains), "the first frame is on a tick's read point")
+	assert.Equal(t, first.pts, clock.IndexPTS(r, tick-clock.ReadDelay(r)), "the first frame is on a tick's read point")
 	assert.Greater(t, tickAt, released, "the tick reading the first frame comes after the release")
-	assert.LessOrEqual(t, tickAt, first.at+period+int64(startMargin), "the first frame is read by the next tick, or the one after when the next is too close")
+	assert.LessOrEqual(t, tickAt, first.at+period+period/2, "the first frame is read by the next tick, or the one after when the next is too close")
 	assert.Less(t, first.at, tickAt, "the first frame is there before its tick")
 	assert.Equal(t, byte(1), v[2].id)
 	assert.Equal(t, first.pts+1800, v[2].pts)
@@ -335,26 +336,35 @@ func TestTimedPlayerHoldsItsLastFrameOnTheTickRunning(t *testing.T) {
 	}
 }
 
-// The start lands on the next tick's read point unless that tick is
-// closer than startMargin, which leaves too little time to put out the
-// first frame and audio before it; then it lands on the tick after.
-func TestTimelineStartLeavesAMarginBeforeTheTick(t *testing.T) {
-	r := clock.Rate{Num: 50, Den: 1}
+// A start on no program tick lands on the next tick's read point unless
+// that tick starts within half a period, which leaves too little time to
+// put out the first frame and audio before it; then it lands on the tick
+// after. The margin is a share of the period, so it neither skips a tick
+// at a high rate nor leaves a low one short.
+func TestTimelineStartLeavesHalfAPeriodBeforeTheTick(t *testing.T) {
 	const i = 1_000_000
-	tick := clock.IndexToTimestamp(r, i)
-	for _, tc := range []struct {
-		name   string
-		before time.Duration
-		want   uint64
-	}{
-		{"1 ms before a tick takes the one after", time.Millisecond, i + 1},
-		{"10 ms before a tick takes it", 10 * time.Millisecond, i},
-		{"on a tick takes the next", 0, i + 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := timelineStart(r, tick-int64(tc.before))
-			assert.Equal(t, clock.IndexPTS(r, tc.want-clock.ReaderDelayGrains), got)
-		})
+	for _, r := range startFrameRates {
+		tick := clock.IndexToTimestamp(r, i)
+		period := tick - clock.IndexToTimestamp(r, i-1)
+		for _, tc := range []struct {
+			name   string
+			before int64 // in 64ths of a period
+			want   uint64
+		}{
+			{"just before a tick takes the one after", 1, i + 1},
+			{"short of half a period before takes the one after", 31, i + 1},
+			{"past half a period before takes it", 33, i},
+			{"just after the tick before takes it", 63, i},
+			{"on a tick takes the next", 0, i + 1},
+		} {
+			t.Run(fmt.Sprintf("%d_%d/%s", r.Num, r.Den, tc.name), func(t *testing.T) {
+				got := timelineStart(r, tick-tc.before*period/64)
+				// The read point of tick want, however far behind its
+				// grain the program reads at rate r.
+				want := clock.IndexPTS(r, tc.want-clock.ReadDelay(r))
+				assert.Equal(t, want, got)
+			})
+		}
 	}
 }
 

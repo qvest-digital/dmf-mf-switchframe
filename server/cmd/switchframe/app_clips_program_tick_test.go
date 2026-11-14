@@ -5,16 +5,18 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
 // A clip loaded into a player and not playing is a source the switcher
-// cuts and transitions to, and the cut or the transition starts it, as
-// loaded: looping or not.
+// cuts and transitions to, and the first program tick that shows it
+// starts it, as loaded: looping or not.
 func TestCutToALoadedClipPlayerStartsIt(t *testing.T) {
 	dir := t.TempDir()
 	store, err := clip.NewStore(dir, 1<<30)
@@ -31,13 +33,14 @@ func TestCutToALoadedClipPlayerStartsIt(t *testing.T) {
 	})
 	defer mgr.Close()
 
-	sw := switcher.NewTestSwitcher(t, nil)
+	// The program ticks run until the clip starts: they need a relay.
+	sw := switcher.NewTestSwitcher(t, distribution.NewRelay())
 	defer sw.Close()
 	mgr.OnPlayerLifecycle(
 		func(_ int, key string) { sw.RegisterTimedReplaySource(key) },
 		func(_ int, key string) { sw.UnregisterSource(key) },
 	)
-	sw.SetOnAir(startClipOnAir(mgr))
+	sw.SetOnProgramTick(startClipOnProgramTick(mgr))
 
 	require.NoError(t, mgr.Load(1, c.ID))
 	require.NoError(t, mgr.SetLoop(1, true))
@@ -46,8 +49,8 @@ func TestCutToALoadedClipPlayerStartsIt(t *testing.T) {
 	require.True(t, sw.HasSource("clip:2"))
 
 	require.NoError(t, sw.Cut(context.Background(), "clip:1"))
+	require.Eventually(t, func() bool { return mgr.PlayerStates()[0].State == clip.StatePlaying }, 2*time.Second, time.Millisecond, "the cut started the clip")
 	st := mgr.PlayerStates()
-	assert.Equal(t, clip.StatePlaying, st[0].State, "the cut started the clip")
 	assert.True(t, st[0].Loop)
 	assert.Equal(t, clip.StateLoaded, st[1].State, "the clip not cut to stays cued")
 
