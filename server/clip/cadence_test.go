@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/clock"
 )
 
 // slotCounts returns how many output slots each of the first n pictures
@@ -46,7 +47,7 @@ func TestCadence_BroadcastRates(t *testing.T) {
 		{name: "30 on 50 at double speed", outNum: 50, outDen: 1, srcFPS: 30, speed: 2, cycle: []int{1, 1, 1, 1, 1, 0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			num, den := clipRational(tc.srcFPS)
+			num, den := clipRational(clock.RateEstimate{FPS: tc.srcFPS})
 			c := newCadence(tc.outNum, tc.outDen, num, den, tc.speed)
 			if tc.cycle != nil {
 				got := slotCounts(c, 10*len(tc.cycle))

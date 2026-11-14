@@ -148,7 +148,7 @@ type Player struct {
 	encoderW int // dimensions encoder was created with
 	encoderH int
 
-	sourceFPS float64
+	source clock.RateEstimate
 
 	// runOn is set when the clip starts with an IDR picture: the decoder
 	// then runs on from the end of a pass into the next one.
@@ -444,8 +444,7 @@ func (p *Player) run(ctx context.Context) {
 	}
 
 	// Estimate source FPS from clip PTS values.
-	sourceFPS := estimateFPSFromClipFrames(clip)
-	p.sourceFPS = sourceFPS
+	p.source = estimateFPSFromClipFrames(clip)
 	p.runOn = startsWithIDR(clip[0])
 
 	outputPTS := p.config.InitialPTS
@@ -453,7 +452,7 @@ func (p *Player) run(ctx context.Context) {
 
 	startFrame := 0
 	for {
-		cancelled, fedNext := p.playClip(ctx, clip, sourceFPS, &outputPTS, startFrame)
+		cancelled, fedNext := p.playClip(ctx, clip, p.source, &outputPTS, startFrame)
 		if cancelled {
 			return
 		}
@@ -498,10 +497,10 @@ func (p *Player) run(ctx context.Context) {
 // the frames before it the previous pass has already fed to the decoder.
 // Returns true if the context was cancelled, and how many frames of the next
 // pass it fed to the decoder to get its own last pictures out.
-func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS float64, outputPTS *int64, startFrame int) (cancelled bool, fedNext int) {
+func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, source clock.RateEstimate, outputPTS *int64, startFrame int) (cancelled bool, fedNext int) {
 	totalClipFrames := len(clip)
 
-	srcNum, srcDen := clipRational(sourceFPS)
+	srcNum, srcDen := clipRational(source)
 	outNum, outDen := p.config.OutputFPSNum, p.config.OutputFPSDen
 	if outNum <= 0 || outDen <= 0 {
 		outNum, outDen = srcNum, srcDen
@@ -808,7 +807,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 	// Log decode summary.
 	slog.Info("clip: playback complete",
 		"frames", len(clip),
-		"fps", p.sourceFPS,
+		"fps", p.source.FPS,
 		"decodeAttempts", p.decodeAttempts,
 		"decodeSuccesses", p.decodeSuccesses,
 		"decodeBuffering", p.decodeBuffering,
@@ -1346,8 +1345,8 @@ func (p *Player) reencodeForBrowser(yuv []byte, w, h int, pts int64, isKeyframe 
 
 	// Lazy-create encoder on first decoded frame or after dimension change.
 	if p.encoder == nil {
-		fpsNum, fpsDen := fpsToRational(p.sourceFPS)
-		enc, err := p.config.EncoderFactory(w, h, fpsNum, fpsDen)
+		rate := p.source.Rate()
+		enc, err := p.config.EncoderFactory(w, h, int(rate.Num), int(rate.Den))
 		if err != nil {
 			slog.Warn("clip: failed to create browser encoder", "error", err, "w", w, "h", h)
 			return nil, false, nil, nil
@@ -1390,34 +1389,14 @@ func (p *Player) reencodeForBrowser(yuv []byte, w, h int, pts int64, isKeyframe 
 	return wire, encKF, sps, pps
 }
 
-// estimateFPSFromClipFrames estimates FPS from buffered frame PTS values.
-// Frames may be in decode order (not PTS order) due to B-frames, so we
-// find the actual min/max PTS rather than assuming first/last ordering.
-func estimateFPSFromClipFrames(clip []BufferedFrame) float64 {
-	if len(clip) < 2 {
-		return 30.0
+// estimateFPSFromClipFrames estimates FPS from buffered frame PTS values,
+// in decode order or not (clock.EstimateRate).
+func estimateFPSFromClipFrames(clip []BufferedFrame) clock.RateEstimate {
+	pts := make([]int64, len(clip))
+	for i, f := range clip {
+		pts[i] = f.pts
 	}
-	minPTS, maxPTS := clip[0].pts, clip[0].pts
-	for _, f := range clip[1:] {
-		if f.pts < minPTS {
-			minPTS = f.pts
-		}
-		if f.pts > maxPTS {
-			maxPTS = f.pts
-		}
-	}
-	ptsSpan := maxPTS - minPTS
-	if ptsSpan <= 0 {
-		return 30.0
-	}
-	fps := float64(len(clip)-1) * 90000.0 / float64(ptsSpan)
-	if fps < 10 {
-		fps = 10
-	}
-	if fps > 120 {
-		fps = 120
-	}
-	return fps
+	return clock.EstimateRate(pts)
 }
 
 // ptsStep advances a 90 kHz PTS by one output period of den/num seconds,
@@ -1454,12 +1433,13 @@ func (c cadence) start(k int) int { return int((int64(k)*c.p + c.q - 1) / c.q) }
 // between two slots, as when 60 fps meets 50.
 func (c cadence) slots(k int) int { return c.start(k+1) - c.start(k) }
 
-// clipRational returns the clip's rate as a fraction: the broadcast rate it
-// is within 1% of, so 29.97 fps is exactly 30000/1001, else milli-fps.
-func clipRational(fps float64) (num, den int) {
-	num, den = fpsToRational(fps)
-	if math.Abs(float64(num)/float64(den)-fps) <= fps/100 {
-		return num, den
+// clipRational returns the clip's rate as a fraction: the rate the
+// estimate stands for when it is within 1% of it, so 29.97 fps is exactly
+// 30000/1001, else milli-fps.
+func clipRational(e clock.RateEstimate) (num, den int) {
+	r := e.Rate()
+	if math.Abs(float64(r.Num)/float64(r.Den)-e.FPS) <= e.FPS/100 {
+		return int(r.Num), int(r.Den)
 	}
-	return int(math.Round(fps * 1000)), 1000
+	return int(math.Round(e.FPS * 1000)), 1000
 }
