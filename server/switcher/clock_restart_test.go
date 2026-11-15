@@ -24,6 +24,9 @@ func TestTimedFormatSetRestartsClockFromSyncLoop(t *testing.T) {
 	// The clock sync sampler runs for the life of the process: started in
 	// the bubble, it would never end.
 	clock.GetSyncState()
+	// The format change starts a realtime clock, which sets the program
+	// rate for the package; the tests after this one start without it.
+	t.Cleanup(clock.ResetProgramRate())
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Now()
 		clock.SetTAISource(func() int64 { return at + int64(time.Since(start)) })
