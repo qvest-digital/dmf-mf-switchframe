@@ -392,3 +392,58 @@ func TestPlayoutTransitionAtItemEndKeepsTheIncomingSoundOnItsPictures(t *testing
 		})
 	}
 }
+
+// The secondary events of an item run on through the transition at its
+// end until the incoming item takes over: a transition overlapping the
+// item's last ticks used to stop them there, and the events due in that
+// time, as one anchored a little before the end, never fired.
+func TestPlayoutSecondaryEventsFireInTheTransitionAtItemEnd(t *testing.T) {
+	const durMs = 400
+	for _, fps := range channelRates {
+		t.Run(fmt.Sprintf("%.3ffps", fps), func(t *testing.T) {
+			n := int(math.Round(2 * fps))
+			// The clip's length as the channel reanchors its events to it.
+			endMs := int64(float64(n) * 1000 / fps)
+			a, b := clipItem("a"), clipItem("b")
+			a.SecondaryEvents = []SecondaryEvent{
+				{Type: "graphics_off", Layer: 1, OffsetMs: -100, Anchor: "end"},
+				{Type: "graphics_off", Layer: 2, OffsetMs: int(endMs) - 200, Anchor: "start"},
+			}
+			b.Transition = &TransitionConfig{Type: "mix", DurationMs: durMs}
+			ch, tick, _ := pcmChannelAt(t, fps, pcmAssets{
+				a.AssetURI: pcmClip(n, fps, 48000, 1, 0, math.MaxInt64),
+				b.AssetURI: pcmClip(2*n, fps, 48000, 0, 1, math.MaxInt64),
+			}, a, b)
+			h := &mockHandler{}
+			ch.SetSecondaryHandler(h)
+
+			// The first tick at which each event's time is up.
+			due := func(ms int64) int {
+				i := 0
+				for time.Duration(math.Round(float64(i)*1e9/fps)).Milliseconds() < ms {
+					i++
+				}
+				return i
+			}
+			want := map[string]int{"layer=1": due(endMs - 100), "layer=2": due(endMs - 200)}
+			got := map[string]int{}
+			first := -1
+			for i := 0; i < n+10; i++ {
+				tick(i)
+				if first < 0 && ch.scheduler.State() == SchedTransitioning {
+					first = i
+				}
+				for _, c := range h.getCalls() {
+					if _, ok := got[c.Args]; !ok {
+						got[c.Args] = i
+					}
+				}
+			}
+			require.GreaterOrEqual(t, first, 0, "the transition never ran")
+			for _, w := range want {
+				require.Greater(t, w, first, "the event is not due inside the transition")
+			}
+			require.Equal(t, want, got, "the ticks the events fired on")
+		})
+	}
+}

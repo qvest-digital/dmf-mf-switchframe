@@ -1382,6 +1382,9 @@ func (c *Channel) tick(now time.Time) bool {
 		}
 	}
 	if decision.Transition != nil {
+		// The outgoing item's secondary events run on through the
+		// transition, which overlaps its end, until it commits.
+		c.tickSecondaryEvents(decision.Transition.Outgoing, secScheduler, now)
 		frame = c.transitionFrame(decision.Transition)
 	} else if decision.IsIdle {
 		frame = c.idleLoop.NextFrame()
