@@ -265,16 +265,18 @@ func TestChannel_Preroll_ClipEndCutsOnTheSameTick(t *testing.T) {
 	}
 }
 
-// A clip that ends into a transition starts the transition on the same
-// tick: that tick blends the incoming clip's first frame and carries its
-// audio, rather than showing the outgoing clip's last frame once more.
+// A clip whose length is not known ahead, as a trimmed one's, and that
+// ends into a transition starts the transition on the same tick: that
+// tick already blends the incoming clip's first frame and carries its
+// audio. A clip of known length starts it before it ends instead.
 func TestChannel_Preroll_ClipEndStartsTransitionOnTheSameTick(t *testing.T) {
 	p := newSlowProvider(0, 0, 3)
 	var out []emitted
 	ch := prerollChannel(p, 1, &out)
-	b := clipItem("b")
+	a, b := clipItem("a"), clipItem("b")
+	a.OutPointMs = 10_000
 	b.Transition = &TransitionConfig{Type: "dissolve", DurationMs: 100}
-	require.NoError(t, ch.LoadPlaylist(testPlaylist(clipItem("a"), b)))
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(a, b)))
 	waitPrerolled(t, ch, 1)
 	onAir(ch)
 	waitPrerolled(t, ch, 2)

@@ -1,6 +1,7 @@
 package playout
 
 import (
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -62,6 +63,11 @@ type Scheduler struct {
 	// Item timing — set when an item begins playing.
 	itemStartTime  time.Time
 	itemDurationMs int64 // resolved duration for current item (slates)
+	// ticksLeft is how many ticks, from the next one on, at frame rate
+	// fps, the clip on air still covers, as the channel last counted them;
+	// 0 while unknown.
+	ticksLeft int
+	fps       float64
 
 	// Signals from the channel or operator.
 	itemComplete bool // channel signaled the current clip/slate finished
@@ -301,13 +307,25 @@ func (s *Scheduler) tick(now time.Time) SchedulerDecision {
 		shouldAdvance = true
 	}
 
+	// A transition at an item's natural end runs over the item's last
+	// ticks and completes on the last, whose sound fades out over its
+	// period as the incoming item takes the picture: started once the
+	// item has run out, it would mix from its last picture held, its sound
+	// stopped at full level.
+	overlapMs := s.endTransitionMs(now)
+	if !shouldAdvance && item.Type == ItemClip && overlapMs > 0 && s.ticksLeft > 0 &&
+		s.ticksLeft <= transitionTicks(overlapMs, s.fps)+1 {
+		shouldAdvance = true
+	}
+
 	// Live items never auto-advance (no duration, no complete signal).
 	// They only advance via Next(), scheduled time, or JumpTo().
 
-	// Slate items with duration auto-advance by elapsed time.
+	// Slate items with duration auto-advance by elapsed time, into a
+	// transition overlapping the end of it as a clip's does.
 	if !shouldAdvance && item.Type == ItemSlate && s.itemDurationMs > 0 {
 		elapsed := now.Sub(s.itemStartTime)
-		if elapsed.Milliseconds() >= s.itemDurationMs {
+		if elapsed.Milliseconds()+overlapMs >= s.itemDurationMs {
 			shouldAdvance = true
 		}
 	}
@@ -322,6 +340,15 @@ func (s *Scheduler) tick(now time.Time) SchedulerDecision {
 	}
 
 	return s.playingDecision(item)
+}
+
+// SignalTicksLeft is called by the channel on each tick of a clip whose
+// length it knows: the clip's pictures and sound cover n more ticks at fps
+// ticks a second.
+func (s *Scheduler) SignalTicksLeft(n int, fps float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ticksLeft, s.fps = n, fps
 }
 
 // SignalItemComplete is called by the channel when a clip or slate finishes
@@ -696,6 +723,7 @@ func (s *Scheduler) playingLoopExit() bool {
 func (s *Scheduler) resetItemState() {
 	s.itemStartTime = time.Time{}
 	s.itemDurationMs = 0
+	s.ticksLeft = 0
 	s.itemComplete = false
 	s.advancePend = 0
 	s.holdComplete = false
@@ -887,6 +915,33 @@ func (s *Scheduler) startTransition(now time.Time, outgoing *PlaylistItem, targe
 			Progress: 0.0,
 		},
 	}, true
+}
+
+// endTransitionMs returns the length of the transition the item at the
+// cursor ends into at its natural end, 0 for a cut: there is no next item,
+// or the next waits for its scheduled time.
+func (s *Scheduler) endTransitionMs(now time.Time) int64 {
+	next := s.cursor + 1
+	if next >= len(s.playlist.Items) {
+		return 0
+	}
+	item := &s.playlist.Items[next]
+	if item.ScheduledTime != nil && now.Before(*item.ScheduledTime) {
+		return 0
+	}
+	if tc := s.effectiveTransition(item); tc != nil {
+		return int64(tc.DurationMs)
+	}
+	return 0
+}
+
+// transitionTicks is how many ticks at fps a transition of ms blends:
+// those its progress is below 1 on (see tickTransition).
+func transitionTicks(ms int64, fps float64) int {
+	if fps <= 0 {
+		return 0
+	}
+	return int(math.Ceil(float64(ms)*fps/1000 - 1e-9))
 }
 
 // effectiveTransition returns the transition config to use when advancing

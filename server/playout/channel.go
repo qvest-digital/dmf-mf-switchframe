@@ -1836,6 +1836,13 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 	c.mu.Lock()
 	if c.clipIter == iter {
 		c.clipOutputFrame++
+		if total > 0 {
+			// The ticks from the next one on whose whole period the clip's
+			// pictures and sound still cover, for a transition at its end
+			// to end within them.
+			left := int(math.Floor(float64(total)*pipelineFPS/clipFPS+1e-9)) - c.clipOutputFrame
+			c.scheduler.SignalTicksLeft(left, pipelineFPS)
+		}
 	}
 	c.mu.Unlock()
 
