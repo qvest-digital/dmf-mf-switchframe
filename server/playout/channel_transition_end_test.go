@@ -3,6 +3,7 @@ package playout
 import (
 	"fmt"
 	"math"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -589,3 +590,69 @@ type overcounted struct {
 }
 
 func (o overcounted) TotalFrames() int { return o.pcmIterator.TotalFrames() + o.extra }
+
+// A cued channel started on the tick that cuts to it ends its first item
+// into a transition as any run does: the count of ticks left takes in the
+// first picture the cut tick put out, which the run's first tick shows
+// again, so the transition commits on the item's last picture. The run
+// starts a few ticks behind the clock and runs them at once, so the item's
+// time, which its secondary events follow, runs those ticks behind its
+// pictures; the events due by its end still fire, once, on the commit.
+func TestCuedRunEndsItsFirstItemIntoATransition(t *testing.T) {
+	for _, fps := range channelRates {
+		t.Run(fmt.Sprintf("%.3ffps", fps), func(t *testing.T) {
+			n := int(math.Round(fps)) // a second
+			readPTS := scriptClock(t, fps)
+			r := newCueRig(t, fps, 1, n)
+			ch := r.m.channels[0]
+			var wall atomic.Int64
+			wall.Store(time.Now().UnixNano())
+			ch.wallNow = func() time.Time { return time.Unix(0, wall.Load()) }
+			h := &mockHandler{}
+			r.m.SetSecondaryHandler(h)
+			a, b := clipItem("a"), clipItem("b")
+			a.SecondaryEvents = []SecondaryEvent{
+				{Type: "graphics_off", Layer: 1, OffsetMs: 0, Anchor: "end"},
+				{Type: "graphics_off", Layer: 2, OffsetMs: -100, Anchor: "end"},
+			}
+			b.Transition = &TransitionConfig{Type: "mix", DurationMs: 400}
+			require.NoError(t, r.m.LoadPlaylist(1, testPlaylist(a, b)))
+			r.waitCue(t)
+			period := ch.frameDuration
+
+			r.cut(readPTS)
+			due := dueAtStart(readPTS, fps)
+			// Each picture the run puts out is one slot on from the cut
+			// tick's: the run puts the due ones out at once, then one per
+			// period of its wall clock.
+			commit, first := -1, -1
+			fired := map[string][]int{}
+			seen := 0
+			for slot := 0; slot < n+5; slot++ {
+				if slot > due {
+					wall.Add(int64(period))
+				}
+				r.waitEvents(t, fmt.Sprintf("picture slot %d", slot), func(evs []cueEvent) bool {
+					return countKind(evs, "video") >= slot+1
+				})
+				st := ch.scheduler.State()
+				if first < 0 && st == SchedTransitioning {
+					first = slot
+				}
+				if commit < 0 && st == SchedPlaying && ch.scheduler.CurrentItem().ID == "b" {
+					commit = slot
+				}
+				calls := h.getCalls()
+				for _, c := range calls[seen:] {
+					fired[c.Args] = append(fired[c.Args], slot)
+				}
+				seen = len(calls)
+			}
+			require.Greater(t, first, due, "the transition started while the run caught up")
+			require.Equal(t, n-1, commit, "the transition commits on the item's last picture")
+			require.Equal(t, []int{commit}, fired["layer=1"], "the end-anchored event fires once, on the commit")
+			require.Len(t, fired["layer=2"], 1, "the event 100 ms before the end fires once")
+			require.LessOrEqual(t, fired["layer=2"][0], commit)
+		})
+	}
+}

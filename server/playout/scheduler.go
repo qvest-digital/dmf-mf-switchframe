@@ -961,6 +961,13 @@ func (s *Scheduler) NextTransition() (*PlaylistItem, *TransitionConfig) {
 	return next, s.effectiveTransition(next)
 }
 
+// transitionSlack is how far short of its length a transition may have
+// run and count as complete: the channel's ticks come a period apart in
+// whole nanoseconds, short of a period at most rates, so the time of the
+// tick a transition ends on falls up to a nanosecond per tick short of its
+// end, and the transition would blend one tick more.
+const transitionSlack = 10 * time.Microsecond
+
 // transitionTicks is how many ticks at fps a transition of ms blends:
 // those its progress is below 1 on (see tickTransition).
 func transitionTicks(ms int64, fps float64) int {
@@ -987,6 +994,9 @@ func (s *Scheduler) effectiveTransition(nextItem *PlaylistItem) *TransitionConfi
 func (s *Scheduler) tickTransition(now time.Time) SchedulerDecision {
 	elapsed := now.Sub(s.transStartTime)
 	progress := float64(elapsed.Milliseconds()) / float64(s.transDurationMs)
+	if elapsed+transitionSlack >= time.Duration(s.transDurationMs)*time.Millisecond {
+		progress = 1
+	}
 	if progress < 0 {
 		progress = 0
 	}
