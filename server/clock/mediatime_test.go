@@ -479,52 +479,117 @@ func TestTrackingSlackFollowsTheProgramPeriodAndReadDelay(t *testing.T) {
 	}
 }
 
-// Once settled, SettledPTS reports each move of the offset by half a
-// program period or more once, a raise and the lowering a minute later
-// alike: the caller places the source's audio on its stamps again, as the
-// move places its video, and a move under a period is one the mixer never
-// realigns. A smaller lowering, as a sender clock's drift brings, is not
-// reported: placing the audio again would splice it. Holds at every rate.
-func TestTrackingAnchorReportsEachMoveOnce(t *testing.T) {
+// Two stalls of a source's frames, 2.5 s apart in windows in a row, each
+// stall's frames arriving at its end, TrackingSlack and 27 ms late, as a
+// receiver's video path delivered them live: taken for a lasting lateness,
+// they raise the offset, and a minute on time lowers it again. Once
+// settled, the timestamps get there at TrackingSlewRate: no placement
+// moves by more than a tick per TrackingSlewRate of engine time since the
+// one before, so the source's audio, resampled onto it, has no gap and no
+// splice. Stepped, the raise moved the source 46 ms at once at 50 fps, its
+// audio placed again on the moved stamps aired 46 ms of silence, and the
+// lowering spliced it. At every program rate.
+func TestTrackingAnchorSlewsAMoveOnceSettled(t *testing.T) {
 	for _, r := range programRates {
 		t.Run(fmt.Sprintf("%d/%d", r.Num, r.Den), func(t *testing.T) {
 			programRate(t, r)
 			now := int64(1_798_000_000_000_000_000)
 			fixedTAI(t, &now)
+			start := now
 			var a TrackingAnchor
-			src := int64(1_000_000)
-			reports := 0
-			frames := func(count int, late int64) { // late in 90 kHz ticks
-				lateNs := late * 100_000 / 9
-				for range count {
-					now += 20_000_000
-					src += 1800
-					now += lateNs
-					if _, moved := a.SettledPTS(src); moved {
-						reports++
+			stall := TrackingSlack() + 27*90
+			stallEnds := []int64{start + 10_500_000_000, start + 13_000_000_000}
+			arrival := func(due int64) int64 {
+				for _, e := range stallEnds {
+					if due <= e && due > e-stall*100_000/9 {
+						return e
 					}
-					now -= lateNs
+				}
+				return due
+			}
+			var prevPTS, prev, base, top int64
+			for i := int64(1); i <= 90*50; i++ { // 90 s of 20 ms frames
+				now = arrival(start + i*20_000_000)
+				src := 1_000_000 + i*1800
+				applied := a.PTS(src) - src
+				switch at := now - start; {
+				case at == 8_000_000_000: // settled
+					base, top = applied, applied
+				case at > 8_000_000_000:
+					if d, most := abs(applied-prev), (PTS(now)-prevPTS)/TrackingSlewRate+1; d > most {
+						t.Fatalf("frame %d at %d ms moved %d ticks from the one before, %d ticks of engine time earlier; want at most %d",
+							i, at/1_000_000, applied-prev, PTS(now)-prevPTS, most)
+					}
+					top = max(top, applied)
+				}
+				prev, prevPTS = applied, PTS(now)
+			}
+			if s := a.Stats(); s.Raises != 1 || s.Offset != 0 {
+				t.Fatalf("after the stalls and a minute on time: %+v, want 1 raise and the offset back", s)
+			}
+			// The latest frame of a stall is the first after its start.
+			if raise := (stall - 1) / 1800 * 1800; top-base != raise || prev != base {
+				t.Fatalf("timestamps placed up to %d ticks over the settled offset and %d at the end, want %d and 0", top-base, prev-base, raise)
+			}
+		})
+	}
+}
+
+// A raise that lasts is not slewed through: two windows after it the
+// source still arrives more than TrackingSlack later than its timestamps
+// get, and slewing on, its audio would miss read after read until the slew
+// caught up. The raise is taken at once then, and counted as a step. A
+// move of more than TrackingSlewMax, which would slew for more than 25 s,
+// is a step at once. At every program rate.
+func TestTrackingAnchorStepsALastingRaiseAndALargeMove(t *testing.T) {
+	for _, r := range programRates {
+		t.Run(fmt.Sprintf("%d/%d", r.Num, r.Den), func(t *testing.T) {
+			programRate(t, r)
+			now := int64(1_798_000_000_000_000_000)
+			fixedTAI(t, &now)
+			start := now
+			var a TrackingAnchor
+			lasting := TrackingSlack() + 30*90
+			large := lasting + TrackingSlewMax + 90
+			late := func(at int64) int64 {
+				switch {
+				case at >= 40_000_000_000:
+					return large
+				case at >= 10_000_000_000:
+					return lasting
+				}
+				return 0
+			}
+			var base int64
+			var raisedAt, steppedAt []int64
+			for i := int64(1); i <= 50*50; i++ { // 50 s of 20 ms frames
+				due := start + i*20_000_000
+				now = due + late(due-start)*100_000/9
+				src := 1_000_000 + i*1800
+				before := a.Stats()
+				applied := a.PTS(src) - src
+				s := a.Stats()
+				if due-start == 8_000_000_000 {
+					base = applied
+				}
+				if s.Raises > before.Raises && due-start > 8_000_000_000 {
+					raisedAt = append(raisedAt, due-start)
+				}
+				if s.Steps > before.Steps {
+					steppedAt = append(steppedAt, due-start)
+					if want := base + late(due-start); applied != want {
+						t.Fatalf("step at %d ms placed at %d ticks over the settled offset, want %d", (due-start)/1_000_000, applied-base, want-base)
+					}
 				}
 			}
-			const perWindow = TrackingWindow / 1800
-			frames((TrackingSettle+1)*perWindow, 0)
-			if reports != 1 {
-				t.Fatalf("%d reports after the settle, want 1", reports)
+			if len(raisedAt) != 2 || len(steppedAt) != 2 {
+				t.Fatalf("raises at %v ns, steps at %v ns: want 2 of each", raisedAt, steppedAt)
 			}
-			late := TrackingSlack() + TrackingDriftMargin/2 // past the slack, inside the audio budget
-			frames(3*perWindow, late)
-			if s := a.Stats(); s.Raises != 1 || reports != 2 {
-				t.Fatalf("after three windows %d ticks late: %+v, %d reports, want 1 raise and 2 reports", late, s, reports)
+			if d := steppedAt[0] - raisedAt[0]; d <= 0 || d > 3*TrackingWindow*100_000/9 {
+				t.Fatalf("the lasting raise stepped %d ms after it, want within three windows", d/1_000_000)
 			}
-			frames((TrackingHistory+3)*perWindow, 0)
-			if s := a.Stats(); s.Offset != 0 || reports != 3 {
-				t.Fatalf("a minute on time again: %+v, %d reports, want the offset back and 3 reports", s, reports)
-			}
-			small := ProgramPeriod()/2 - 10
-			frames(1, -small) // a window whose latest frame came early, never matched again
-			frames((TrackingHistory+3)*perWindow, -small)
-			if s := a.Stats(); s.Offset != -small || reports != 3 {
-				t.Fatalf("a minute %d ticks earlier: %+v, %d reports, want the offset lowered by it and still 3 reports", small, s, reports)
+			if steppedAt[1] != raisedAt[1] {
+				t.Fatalf("the raise past TrackingSlewMax at %d ms stepped at %d ms, want at once", raisedAt[1]/1_000_000, steppedAt[1]/1_000_000)
 			}
 		})
 	}
@@ -716,44 +781,5 @@ func TestTrackingAnchorCountsItsRaises(t *testing.T) {
 	frame(0)
 	if s := a.Stats(); s.Raises != 1 || s.Offset != 0 || s.Moves != 1 {
 		t.Fatalf("after a jump: %+v, want 1 move, no new raise and an offset of 0 from the new placement", s)
-	}
-}
-
-// SettledPTS reports the settle once per placement, on the first
-// timestamp it maps on the settled offset, also when a PTS call made the
-// anchor settle: the caller places the source's audio on its stamps again
-// from that timestamp, and placed again after a jump, settles again.
-func TestTrackingAnchorReportsEachSettleOnce(t *testing.T) {
-	now := int64(1_798_000_000_000_000_000)
-	fixedTAI(t, &now)
-	var a TrackingAnchor
-	src := int64(1_000_000)
-	settles := 0
-	frames := func(count int) {
-		for range count {
-			now += 20_000_000
-			src += 1800
-			a.PTS(src)
-			if _, settled := a.SettledPTS(src); settled {
-				settles++
-			}
-		}
-	}
-	frames(TrackingSettle*TrackingWindow/1800 - 1)
-	if settles != 0 {
-		t.Fatalf("%d settles reported before the settle windows passed", settles)
-	}
-	frames(2)
-	if settles != 1 {
-		t.Fatalf("%d settles reported once the settle windows passed, want 1", settles)
-	}
-	frames(2 * TrackingWindow / 1800)
-	if settles != 1 {
-		t.Fatalf("%d settles reported two windows on, want still 1", settles)
-	}
-	src += 10 * 90000 // the source restarts 10 s on
-	frames((TrackingSettle+1)*TrackingWindow/1800 + 1)
-	if settles != 2 {
-		t.Fatalf("%d settles reported after a jump, want 2", settles)
 	}
 }

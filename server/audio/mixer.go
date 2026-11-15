@@ -134,9 +134,24 @@ type Channel struct {
 	// airing is set while the last read of the channel played its audio
 	// to its end; breaks counts where the audio aired broke off: a read
 	// after such a read that did not continue that audio, a splice or
-	// silence, and a read whose audio runs out before its end.
+	// silence, and, for a live source, a read whose audio runs out before
+	// its end. live marks a source whose audio is meant to run on
+	// (SetLiveInput); ended is set by EndChannelInput until
+	// ResetChannelInput, and inRead while the channel was read the period
+	// before.
 	airing bool
 	breaks int64
+	live   bool
+	ended  bool
+	inRead bool
+	// slewHist holds the frames IngestPCMSlewed has not resampled yet,
+	// with the slewTaps/2-1 before the next one the kernel reads; slewPos
+	// is that next frame's position in it, slewDir the direction it is
+	// resampled in (0 while on its stamps), and slewBuf the output.
+	slewHist []float32
+	slewPos  float64
+	slewDir  int
+	slewBuf  []float32
 
 	// xfGain is the transition gain the channel aired at the end of the
 	// last period, 0 while inactive. A cut ramp starts from it.
@@ -553,8 +568,11 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 			ch.underruns++
 		}
 		ch.dry = true
-		ch.noteBreak(skip > 0 || got == 0 || off > tol, false)
-		if got > 0 {
+		// Audio that ends on a read boundary runs out at its start: a
+		// break only where a run-out within the read is one.
+		runsOut := ch.live && !ch.ended && ch.inRead
+		ch.noteBreak(skip > 0 || off > tol || got == 0 && runsOut, false)
+		if got > 0 && runsOut {
 			ch.breaks++ // the audio it aired runs out
 		}
 		return out
@@ -622,7 +640,8 @@ func (m *Mixer) ResetChannelInput(sourceKey string) bool {
 	ch.resampler, ch.resamplerSrcRate = nil, 0
 	ch.ringBuf = m.newChannelRingBuf(m.delaySamples(ch))
 	ch.ringEnd, ch.placed, ch.realigned, ch.dry = 0, false, false, false
-	ch.airing = false
+	ch.airing, ch.ended, ch.inRead = false, false, false
+	ch.slewHist, ch.slewPos, ch.slewDir = ch.slewHist[:0], 0, 0
 	ch.hold.prev, ch.hold.counting = 0, false
 	if ch.active {
 		m.initChannelDecoder(ch)
@@ -968,11 +987,38 @@ func (m *Mixer) ChannelShortReads() map[string]int64 {
 	return result
 }
 
+// SetLiveInput marks a channel's source as live, such as an SRT, MXL or
+// ST 2110 input, whose audio is meant to run on: a read whose audio runs
+// out counts as a break. A clip or playout item that ends runs out on
+// purpose, and only the splices and silence before audio of a source not
+// marked live count.
+func (m *Mixer) SetLiveInput(sourceKey string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ch, ok := m.channels[sourceKey]; ok {
+		ch.live = true
+	}
+}
+
+// EndChannelInput records that a channel's source stopped on purpose, as
+// a connection that closed: its audio running out is not a break, also
+// when audio it had queued is pushed after, until ResetChannelInput binds
+// a new input.
+func (m *Mixer) EndChannelInput(sourceKey string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ch, ok := m.channels[sourceKey]; ok {
+		ch.ended = true
+	}
+}
+
 // ChannelBreaks returns, per source, how often the audio it aired broke
 // off: a splice that skipped audio, or silence after audio, whatever the
-// cause. A dropout counts once, where it starts, and audio that airs in
-// pieces once for each; a read of a source that was off program or muted
-// the period before breaks nothing.
+// cause, and at any fader level. A dropout counts once, where it starts,
+// and audio that airs in pieces once for each; a read of a source that was
+// off program or muted the period before breaks nothing, and audio runs
+// out as a break only for a live source (SetLiveInput) that did not end
+// (EndChannelInput) and was read the period before.
 func (m *Mixer) ChannelBreaks() map[string]int64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

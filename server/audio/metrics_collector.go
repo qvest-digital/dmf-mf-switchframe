@@ -27,7 +27,7 @@ var (
 		"Reads of a source's audio that played silence for part or all of a period while the source had audio buffered: audio that reached the read only in part, or that starts after the read point. A source short on every read counts one underrun and a short read per period; a read that finds nothing buffered counts as an underrun only.",
 		[]string{"source"}, nil)
 	descChannelBreaks = prometheus.NewDesc("switchframe_audio_source_breaks_total",
-		"Times the audio a source aired on program broke off: a splice that skipped audio, or silence after audio, whatever the cause. A dropout counts once, where it starts, and audio that airs in pieces once for each.",
+		"Times the audio a source aired on program broke off: a splice that skipped audio, or silence after audio, whatever the cause and at any fader level, -inf included. A dropout counts once, where it starts, and audio that airs in pieces once for each. Audio running out counts only for a live source (SRT, MXL, ST 2110) that did not end its input.",
 		[]string{"source"}, nil)
 	descMixCycle = prometheus.NewDesc("switchframe_audio_mix_cycle_seconds",
 		"Time the most recent mix cycle took.", nil, nil)

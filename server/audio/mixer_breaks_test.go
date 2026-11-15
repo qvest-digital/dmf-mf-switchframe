@@ -12,14 +12,16 @@ import (
 // behind the clock, as a 50 fps program does. The left channel is a 1 kHz
 // sine and the right one counts the source's samples, at up to half scale
 // where the master limiter leaves it alone, so a read shows what the
-// source aired and which of its samples it aired where. It pushes with
-// IngestPCM, placing the source again on its stamps from the first push
-// they moved, as SRT audio is on each anchor move.
+// source aired and which of its samples it aired where. A slewed rig
+// pushes with IngestPCMSlewed; otherwise with IngestPCM, placing the
+// source again on its stamps from the first push they moved, as SRT audio
+// was on each anchor move.
 type sourceRig struct {
 	t       *testing.T
 	m       *Mixer
 	sr      int64
 	key     string
+	slewed  bool
 	now     int64
 	start   int64 // TAI of source sample 0 placed on time
 	next    int64 // next source sample to push
@@ -27,13 +29,14 @@ type sourceRig struct {
 	prevL   float32
 	reads   int
 	offset  int64 // offset of the last push
+	skew    int64 // samples the stamps run later than offset places them
 }
 
 const sourceRigRamp = 1 << 15 // source samples the right channel counts before it wraps
 
-func newSourceRig(t *testing.T, sampleRate int) *sourceRig {
+func newSourceRig(t *testing.T, sampleRate int, slewed bool) *sourceRig {
 	t.Helper()
-	r := &sourceRig{t: t, sr: int64(sampleRate), key: "src"}
+	r := &sourceRig{t: t, sr: int64(sampleRate), key: "src", slewed: slewed}
 	clock.Epoch()
 	r.now = clock.TAINow()
 	clock.SetTAISource(func() int64 { return r.now })
@@ -72,11 +75,17 @@ func (r *sourceRig) run(until int64, offset func(at int64) int64, check func(idx
 				pcm[2*i+1] = float32(s%sourceRigRamp) / sourceRigRamp / 2
 			}
 			first := r.start + r.next*1_000_000_000/r.sr
-			pts := clock.PTS(first) + offset(first-r.start)
-			r.m.IngestPCM(r.key, pcm, pts, 2)
-			if o := offset(first - r.start); o != r.offset {
-				r.m.PlaceChannel(r.key)
-				r.offset = o
+			pts := clock.PTS(first+r.skew*1_000_000_000/r.sr) + offset(first-r.start)
+			if r.slewed {
+				r.m.IngestPCMSlewed(r.key, pcm, pts, 2)
+			} else {
+				// Placed again on its stamps from the first push they
+				// moved, as SRT audio was on each anchor move.
+				r.m.IngestPCM(r.key, pcm, pts, 2)
+				if o := offset(first - r.start); o != r.offset {
+					r.m.PlaceChannel(r.key)
+					r.offset = o
+				}
 			}
 			r.next += job
 			continue
@@ -99,11 +108,13 @@ func aired(out []float32, i int) float64 {
 // cannot air while the counters stay flat. A source placed again on stamps
 // that moved 46 ms later airs 46 ms of silence and one 20 ms earlier
 // splices 20 ms out, and neither is a realign or an underrun, as a live
-// SRT source's anchor moves were not. A source that stops counts once,
-// where its audio runs out. A read of a source that was off program the
-// period before continues nothing and counts none.
+// SRT source's anchor moves were not. A live source that stops counts
+// once, where its audio runs out, and not when its input ended on purpose
+// (EndChannelInput) or is not live, as a clip that ends. A read of a
+// source that was off program the period before continues nothing and
+// counts none, nor does its audio running out in the first read.
 func TestBreaksCountEverySilenceAndSplice(t *testing.T) {
-	r := newSourceRig(t, 48000)
+	r := newSourceRig(t, 48000, false)
 	moves := map[int64]int64{} // offset from, in ns of source time
 	offset := func(at int64) int64 {
 		var o int64
@@ -142,9 +153,87 @@ func TestBreaksCountEverySilenceAndSplice(t *testing.T) {
 	r.run(r.start+10e9, offset, none)
 	want(2, "back on program")
 
-	// The source stops for a second, then resumes.
-	stopped := r.now
-	r.next += r.sr
-	r.run(stopped+2e9, offset, none)
-	want(3, "stopped and resumed")
+	// The source, not live, stops for a second, then resumes: a clip that
+	// ended and the next.
+	stop := func(d int64) {
+		stopped := r.now
+		r.next += d * r.sr / 1e9
+		r.run(stopped+d+1e9, offset, none)
+	}
+	stop(1e9)
+	want(2, "not live, stopped and resumed")
+
+	r.m.SetLiveInput(r.key)
+	stop(1e9)
+	want(3, "live, stopped and resumed")
+
+	// Off program, it stops; it is taken back to program for the read in
+	// which its audio runs out.
+	rate := clock.Rate{Num: r.sr, Den: 1}
+	period := uint64(r.sr / 50)
+	readAt := func() int64 { return clock.IndexToTimestamp(rate, r.readIdx+period) + 40_000_000 }
+	r.m.SetActive(r.key, false)
+	last := r.start + r.next*1_000_000_000/r.sr + offset(math.MaxInt64)*100_000/9
+	r.next += 100 * r.sr
+	for clock.IndexToTimestamp(rate, r.readIdx+period) <= last {
+		r.run(readAt(), offset, none)
+	}
+	r.m.SetActive(r.key, true)
+	u := r.m.ChannelUnderruns()[r.key]
+	r.run(readAt(), offset, none)
+	if r.m.ChannelUnderruns()[r.key] == u {
+		t.Fatal("the first read on program did not run out of audio: the case does not exercise it")
+	}
+	want(3, "back on program with its audio running out")
+
+	// The input ends, as an SRT connection that closed, and the audio it
+	// had queued is pushed after: running out is still no break.
+	r.m.EndChannelInput(r.key)
+	r.run(r.now+50e6, offset, none)
+	stop(1e9)
+	want(3, "live, ended, its queued audio pushed and run out")
+
+	for _, c := range []struct {
+		name        string
+		live, ended bool
+		breaks      int64
+	}{{"not live", false, false, 0}, {"live, ended", true, true, 0}, {"live", true, false, 1}} {
+		if b := breaksAtABoundaryEnd(t, c.live, c.ended); b != c.breaks {
+			t.Fatalf("audio of a source %s ending on a read boundary: %d breaks, want %d", c.name, b, c.breaks)
+		}
+	}
+}
+
+// breaksAtABoundaryEnd pushes a second of audio on the 20 ms read grid,
+// as a clip that ends on a period boundary, reads it and 200 ms more, and
+// returns the breaks counted: the read after the last runs out at its
+// start, not within it.
+func breaksAtABoundaryEnd(t *testing.T, live, ended bool) int64 {
+	t.Helper()
+	m := NewMixer(MixerConfig{SampleRate: 48000, Channels: 2})
+	t.Cleanup(func() { _ = m.Close() })
+	m.AddChannel("clip")
+	m.SetActive("clip", true)
+	if live {
+		m.SetLiveInput("clip")
+	}
+	if ended {
+		m.EndChannelInput("clip")
+	}
+	sr := clock.Rate{Num: 48000, Den: 1}
+	base := clock.TimestampToIndex(sr, clock.TAINow()) / 960 * 960
+	for k := range uint64(50) {
+		pcm := make([]float32, 2*960)
+		for i := range pcm {
+			pcm[i] = 0.1
+		}
+		m.IngestPCM("clip", pcm, clock.IndexPTS(sr, base+k*960), 2)
+	}
+	for k := range uint64(60) {
+		m.ProduceSamples(base+k*960, 960, 0)
+	}
+	if u := m.ChannelUnderruns()["clip"]; u != 1 {
+		t.Fatalf("%d underruns, want the 1 of the end: the case does not run out", u)
+	}
+	return m.ChannelBreaks()["clip"]
 }

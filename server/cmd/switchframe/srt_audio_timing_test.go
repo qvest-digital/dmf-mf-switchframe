@@ -228,9 +228,10 @@ var newConnectionJitter = func(int) int64 { return 0 }
 // The anchor places it at that lateness, and the mixer's first read puts
 // it on those stamps; the windows after the first arrive on time, and the
 // anchor settles that much earlier. That is less than the period the
-// mixer realigns at, so without placing the audio again on its stamps
-// once the anchor settles, it would stay that much later than its video
-// for the rest of the connection.
+// mixer realigns at, so unless the audio follows its stamps as they move,
+// it would stay that much later than its video for the rest of the
+// connection. Resampled onto them, by 2 samples in each 480-sample job, it
+// is on them 2.5 s after the anchor settled.
 func TestSRTAudioLandsOnItsStampsOnceTheAnchorSettles(t *testing.T) {
 	forEachTimingRate(t, srtAudioSettles)
 }
@@ -270,12 +271,13 @@ func srtAudioSettles(t *testing.T, r clock.Rate) {
 
 	// The jobs before 1.9 s arrive late, the rest on time. The program
 	// reads at its own ticks, each after the jobs that arrived before it.
-	const lateUntil, jobs = 190, 1000
+	const lateUntil, jobs = 190, 1200
 	late := 10 * time.Millisecond
 	if period := time.Duration(clock.IndexToTimestamp(r, 1)); period <= late {
 		late = period / 2
 	}
 	settled := clock.TrackingSettle * clock.TrackingWindow / 900
+	landed := settled + 250 // 2.5 s on
 	var prev float32
 	var onsets int
 	tick := clock.TimestampToIndex(r, start) + 1
@@ -290,13 +292,13 @@ func srtAudioSettles(t *testing.T, r clock.Rate) {
 			out := m.ProduceSamples(read, n, 0)
 			for i := 0; i < n; i++ {
 				v := out[2*i]
-				if v > 0.3 && prev <= 0.3 && ts > start+int64(settled+4)*step {
+				if v > 0.3 && prev <= 0.3 && ts > start+int64(landed)*step {
 					onsets++
 					off := int64(read+uint64(i)-startIdx) % (20 * job)
 					if off > 10*job {
 						off -= 20 * job
 					}
-					require.Zerof(t, off, "a loud job lands %d samples off its stamps after the anchor settled", off)
+					require.Zerof(t, off, "a loud job lands %d samples off its stamps 2.5 s after the anchor settled", off)
 				}
 				prev = v
 			}
@@ -313,11 +315,13 @@ func srtAudioSettles(t *testing.T, r clock.Rate) {
 // audio is still read on time where it is, and the anchor leaves it there.
 // A little more, still inside the audio budget, ReadDelay-1 periods,
 // raises the anchor: its video moves that much later, and its audio, which
-// the mixer realigns only past a period, has to be placed on its stamps
-// again, or the two sit apart until the offset comes down a minute later.
+// the mixer realigns only past a period, has to follow its stamps, or the
+// two sit apart until the offset comes down a minute later.
 // Past the budget, its audio misses reads until the anchor raises once. In
 // every case the audio lands where its video is once the lateness lasts,
-// at every program rate and for every audio frame length. Each case reads
+// at every program rate and for every audio frame length: while the
+// anchor slews its video there, within the samples one frame of audio is
+// resampled by, and on it from then on. Each case reads
 // 26 s of audio on one goroutine; under the race detector, which runs a
 // case about 4 s, it runs at the timingRates it keeps, each case at one
 // frame length, taken in turn so that every rate and every case meets
@@ -428,7 +432,9 @@ func srtLastingLateness(t *testing.T, r clock.Rate, frame int, lateness func(int
 				idx := int64(read) + int64(i)
 				for vi := range video {
 					if off := idx - vi; off > -5*int64(frame) && off < 5*int64(frame) {
-						require.Zerof(t, off, "late %d ticks, period %d: a loud frame lands %d samples off its video", late, period, off)
+						if most := int64(frame)/200 + 1; off > most || off < -most {
+							t.Fatalf("late %d ticks, period %d: a loud frame lands %d samples off its video, more than %d", late, period, off, most)
+						}
 					}
 				}
 			}

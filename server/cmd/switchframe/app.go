@@ -1132,6 +1132,7 @@ func (a *App) initMXL() error {
 		// Register with switcher and mixer.
 		a.sw.RegisterMXLSourceLabeled(flowName, spec.Label())
 		a.mixer.AddChannel(flowName)
+		a.mixer.SetLiveInput(flowName)
 		_ = a.mixer.SetAFV(flowName, true)
 
 		// Register relay for browser delivery + replay.
