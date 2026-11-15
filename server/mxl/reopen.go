@@ -71,9 +71,11 @@ type reopener[T flowHandle] struct {
 	preparing bool
 	// expect, when set, checks a flow's configuration before it is read.
 	expect func(FlowConfig) error
-	// done ends retry loops when the reader is closed.
+	// done ends retry loops when the reader is closed, and close waits
+	// for retries to end, so no open outlives the reader.
 	done     chan struct{}
 	doneOnce sync.Once
+	retries  sync.WaitGroup
 	// pending is a retarget ready to take over at the loop's next read.
 	pending *pendingFlow[T]
 	// reading is the flow id the loop reads, for FlowID.
@@ -179,7 +181,7 @@ func (r *reopener[T]) retarget(id string) {
 	if skip || id == "" {
 		return
 	}
-	go func() {
+	r.spawn(func() {
 		for {
 			ctx, cancel := context.WithTimeout(context.Background(), writtenTimeout)
 			err := r.prepare(ctx, id, gen)
@@ -197,7 +199,25 @@ func (r *reopener[T]) retarget(id string) {
 			case <-time.After(reopenInterval):
 			}
 		}
+	})
+}
+
+// spawn runs f on a goroutine close waits for, unless the reader is
+// closed. An open on that goroutine can take seconds on an mxlfs, and
+// one still running after close would use the instance its caller closes
+// next.
+func (r *reopener[T]) spawn(f func()) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return false
+	}
+	r.retries.Add(1)
+	go func() {
+		defer r.retries.Done()
+		f()
 	}()
+	return true
 }
 
 // connect moves the reader to id as retarget does, but tries once and
@@ -210,7 +230,9 @@ func (r *reopener[T]) connect(ctx context.Context, id string) error {
 		return nil
 	}
 	res := make(chan error, 1)
-	go func() { res <- r.prepare(ctx, id, gen) }()
+	if !r.spawn(func() { res <- r.prepare(ctx, id, gen) }) {
+		return errSuperseded
+	}
 	select {
 	case err := <-res:
 		if err != nil {
@@ -410,6 +432,7 @@ func (r *reopener[T]) close() error {
 	r.closed = true
 	r.replacePending(nil)
 	r.mu.Unlock()
+	r.retries.Wait()
 	if !r.isOpen {
 		return nil
 	}
@@ -435,7 +458,15 @@ type reopeningReader struct {
 
 // NewReopeningReader wraps first, an open handle on flowID, so that a flow
 // recreated by its writer is reopened with open instead of ending the read.
+// A nil first is a flow not there yet, as one whose writer creates it on
+// its first frame: the reader starts without a flow and opens flowID as
+// Retarget does, retrying until it is there and written.
 func NewReopeningReader(flowID string, first DiscreteReader, open func(string) (DiscreteReader, error), log *slog.Logger) DiscreteReader {
+	if first == nil {
+		w := NewRetargetableReader(open, nil, log).(*reopeningReader)
+		w.Retarget(flowID)
+		return w
+	}
 	if log == nil {
 		log = slog.Default()
 	}
@@ -502,8 +533,13 @@ type reopeningAudioReader struct {
 
 // NewReopeningAudioReader wraps first, an open handle on flowID, so that a
 // flow recreated by its writer is reopened with open instead of ending the
-// read.
+// read. A nil first is opened later, as by NewReopeningReader.
 func NewReopeningAudioReader(flowID string, first ContinuousReader, open func(string) (ContinuousReader, error), log *slog.Logger) ContinuousReader {
+	if first == nil {
+		w := NewRetargetableAudioReader(open, nil, log).(*reopeningAudioReader)
+		w.Retarget(flowID)
+		return w
+	}
 	if log == nil {
 		log = slog.Default()
 	}

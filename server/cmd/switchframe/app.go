@@ -1160,32 +1160,31 @@ func (a *App) initMXL() error {
 				return fmt.Errorf("mxl: %w", err)
 			}
 		} else {
-			// Open MXL video flow.
+			// Open the MXL flows. A flow not there yet, as one whose writer
+			// creates it on its first frame, leaves the handle nil and the
+			// reader opens it once it is there.
 			vf, err := openReader(videoFlowID)
 			if err != nil {
-				slog.Warn("mxl: could not open video flow", "flowID", videoFlowID, "error", err)
-			} else {
-				videoFlow = mxl.NewReopeningReader(videoFlowID, vf, openReader, nil)
+				slog.Warn("mxl: video flow not open yet, retrying until it is", "flowID", videoFlowID, "error", err)
 			}
+			videoFlow = mxl.NewReopeningReader(videoFlowID, vf, openReader, nil)
 
 			// Open MXL audio flow if specified.
 			if audioFlowID != "" {
 				af, err := openAudioReader(audioFlowID)
 				if err != nil {
-					slog.Warn("mxl: could not open audio flow", "flowID", audioFlowID, "error", err)
-				} else {
-					audioFlow = mxl.NewReopeningAudioReader(audioFlowID, af, openAudioReader, nil)
+					slog.Warn("mxl: audio flow not open yet, retrying until it is", "flowID", audioFlowID, "error", err)
 				}
+				audioFlow = mxl.NewReopeningAudioReader(audioFlowID, af, openAudioReader, nil)
 			}
 
 			// Open MXL data flow if specified (for SCTE-104 ancillary data).
 			if dataFlowID != "" {
 				df, err := openReader(dataFlowID)
 				if err != nil {
-					slog.Warn("mxl: could not open data flow", "flowID", dataFlowID, "error", err)
-				} else {
-					dataFlow = mxl.NewReopeningReader(dataFlowID, df, openReader, nil)
+					slog.Warn("mxl: data flow not open yet, retrying until it is", "flowID", dataFlowID, "error", err)
 				}
+				dataFlow = mxl.NewReopeningReader(dataFlowID, df, openReader, nil)
 			}
 		}
 
