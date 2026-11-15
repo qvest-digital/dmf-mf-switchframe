@@ -53,7 +53,7 @@
 
 ### `POST /api/playout/channels/{n}/next-now`
 
-**Purpose:** take the item after the one on air at once. The cursor moves before the response, which already names the item, and every `next` not applied yet is dropped. A further `next-now` or `next` before the tick moves one item on from there, and `previous` one item back. The next frame tick airs the item the cursor ends on through the transition configured into it, from the item on air, as an advance from it would; when the cursor ends on the item on air, that item plays on. During a transition it takes the item after the one coming in and cuts to it; in a wait for a scheduled item it starts that item; at the last item it completes the playlist.
+**Purpose:** take the item after the one on air at once. The cursor moves before the response, which already names the item, and every `next` not applied yet is dropped. A further `next-now` or `next` before the tick moves one item on from there, and `previous` one item back. The next frame tick airs the item the cursor ends on through the transition configured into it, from the item on air, as an advance from it would, and the status names the item on air until the transition completes. When the cursor ends on the item on air, that item plays on as it was. `next` presses that land on an item scheduled later enter its wait; `next-now` takes it at once. During a transition it takes the item after the one coming in and cuts to it, and `next` presses after it cut on from there; in a wait for a scheduled item it starts that item; at the last item it completes the playlist.
 **Handler:** `(*API).handlePlayoutNextNow`. **Errors:** 400 (`playout.ErrNotOnAir`).
 
 ---

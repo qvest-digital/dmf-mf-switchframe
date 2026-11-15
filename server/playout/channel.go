@@ -1126,6 +1126,7 @@ func (c *Channel) setCursor(cursor int, cue bool) {
 	c.scheduler.state = SchedPlaying
 	c.scheduler.transOutgoing = nil
 	c.scheduler.transIncoming = nil
+	c.scheduler.onAir = -1
 	c.scheduler.mu.Unlock()
 	c.updatePrerollLocked()
 }

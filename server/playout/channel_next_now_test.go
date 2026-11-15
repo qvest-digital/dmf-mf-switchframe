@@ -320,3 +320,54 @@ func TestChannel_NextNowMovesOutFromTheClipOnAir(t *testing.T) {
 		}
 	}
 }
+
+// A seek by peer sync, or a cursor restored by recovery, puts another item
+// on air without a tick, so a Next before the next tick advances from the
+// item the cursor was set to, not from the one the last tick played:
+// after a seek to c the dissolve runs c->d on c's clip, and a's clip is
+// not reopened as the outgoing side.
+func TestChannel_SeekThenNextGoesOutFromTheSeekTarget(t *testing.T) {
+	for _, seek := range []string{"SeekToItem", "SetCursor"} {
+		for _, fps := range channelRates {
+			t.Run(fmt.Sprintf("%s/%.3f", seek, fps), func(t *testing.T) {
+				provider := &multiAssetProvider{assets: map[string][]DecodedFrame{}}
+				for _, id := range []string{"a", "b", "c", "d"} {
+					provider.assets["local:///clips/"+id+".ts"] = fakeFramesWithAudioTag(300, id[0])
+				}
+				ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: provider, Width: 64, Height: 48, FPS: fps})
+				ch.SetRawVideoOutput(func([]byte, int, int, int64, bool) {})
+				pl := testPlaylist(clipItem("a"), clipItem("b"), clipItem("c"), clipItem("d"))
+				pl.DefaultTransition = TransitionConfig{Type: "dissolve", DurationMs: 400}
+				require.NoError(t, ch.LoadPlaylist(pl))
+				ch.mu.Lock()
+				ch.state = StateOnAir
+				ch.scheduler.Start()
+				ch.mu.Unlock()
+				now := time.Unix(0, 0)
+				for end := now.Add(200 * time.Millisecond); now.Before(end); now = now.Add(ch.frameDuration) {
+					ch.tick(now)
+				}
+				if seek == "SeekToItem" {
+					require.NoError(t, ch.SeekToItem(2, 100))
+				} else {
+					ch.SetCursor(2)
+				}
+				require.NoError(t, ch.Next())
+				ch.tick(now)
+				ch.scheduler.mu.Lock()
+				out, in := ch.scheduler.transOutgoing, ch.scheduler.transIncoming
+				ch.scheduler.mu.Unlock()
+				require.NotNil(t, out, "no transition started")
+				require.Equal(t, "c", out.ID)
+				require.Equal(t, "d", in.ID)
+				if seek == "SeekToItem" {
+					ch.mu.Lock()
+					primary, incoming := ch.clipItemID, ch.inClipItemID
+					ch.mu.Unlock()
+					require.Equal(t, "c", primary, "the seek's clip is not the outgoing side")
+					require.Equal(t, "d", incoming)
+				}
+			})
+		}
+	}
+}
