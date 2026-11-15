@@ -2,10 +2,14 @@ package playout
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSliceIteratorBasic(t *testing.T) {
@@ -150,15 +154,122 @@ func TestTrimIteratorOutOnly(t *testing.T) {
 	}
 }
 
+// A trimmed clip reports the pictures it plays, as Next returns them, so
+// the channel can tell where it ends; only an inner iterator that does not
+// know its own length leaves it unknown.
 func TestTrimIteratorTotalFrames(t *testing.T) {
-	frames := fakeFrames(5)
-	inner := NewSliceIterator(frames)
-	iter := NewTrimIterator(inner, 33, 100)
-
-	if iter.TotalFrames() != -1 {
-		t.Errorf("TotalFrames() = %d, want -1", iter.TotalFrames())
+	cases := []struct {
+		name        string
+		inner       func() FrameIterator
+		inMs, outMs int64
+	}{
+		{"in and out", func() FrameIterator { return NewSliceIterator(fakeFrames(10)) }, 33, 200},
+		{"in only", func() FrameIterator { return NewSliceIterator(fakeFrames(10)) }, 100, 0},
+		{"out only", func() FrameIterator { return NewSliceIterator(fakeFrames(10)) }, 0, 100},
+		{"out past the end", func() FrameIterator { return NewSliceIterator(fakeFrames(10)) }, 0, 10_000},
+		{"in past the end", func() FrameIterator { return NewSliceIterator(fakeFrames(10)) }, 10_000, 0},
+		{"wrapped PTS", func() FrameIterator {
+			frames := fakeFrames(10)
+			for i := range frames {
+				frames[i].PTS = (1<<33 - 4*3000 + int64(i)*3000) % (1 << 33)
+			}
+			return NewSliceIterator(frames)
+		}, 50, 250},
+		{"a picture missing", func() FrameIterator {
+			frames := fakeFrames(10)
+			for i := 5; i < len(frames); i++ {
+				frames[i].PTS += 3000
+			}
+			return NewSliceIterator(frames)
+		}, 50, 250},
+		{"on a grid", func() FrameIterator {
+			return &seekableSliceIterator{frames: fakeFrames(10)}
+		}, 50, 250},
+		{"a decoded file", func() FrameIterator {
+			encoded := make([]encodedFrame, 10)
+			for i := range encoded {
+				nal := byte(0x41)
+				if i == 0 {
+					nal = 0x65
+				}
+				encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: 900_000 + int64(i)*3000, isKeyframe: i == 0}
+			}
+			return newFileFrameIterator(encoded, nil, &delayDecoder{depth: 2},
+				func() (VideoDecoder, error) { return &delayDecoder{depth: 2}, nil })
+		}, 50, 250},
+		{"a decoded file across a PTS wrap", func() FrameIterator {
+			encoded := make([]encodedFrame, 10)
+			for i := range encoded {
+				nal := byte(0x41)
+				if i == 0 {
+					nal = 0x65
+				}
+				encoded[i] = encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(i)}, pts: (1<<33 - 4*3000 + int64(i)*3000) % (1 << 33), isKeyframe: i == 0}
+			}
+			return newFileFrameIterator(encoded, nil, &delayDecoder{depth: 2},
+				func() (VideoDecoder, error) { return &delayDecoder{depth: 2}, nil })
+		}, 50, 250},
 	}
+	// Pictures at 24000/1001 fps fall 3753.75 ticks apart, so a grid of
+	// whole-tick steps runs a picture past this out point by the 400th.
+	cases = append(cases, struct {
+		name        string
+		inner       func() FrameIterator
+		inMs, outMs int64
+	}{"on a grid of a fractional rate", func() FrameIterator {
+		const fps = 24000.0 / 1001
+		frames := fakeFrames(500)
+		for i := range frames {
+			frames[i].PTS = int64(math.Round(float64(i) * 90000 / fps))
+		}
+		return gridIterator{NewSliceIterator(frames), fps}
+	}, 0, 16684})
+	// A decoder of B-frames puts pictures out in another order than it is
+	// fed frames, across every in and out point.
+	for _, depth := range []int{1, 2} {
+		for inMs := int64(0); inMs <= 300; inMs += 50 {
+			for outMs := int64(0); outMs <= 1100; outMs += 50 {
+				if outMs > 0 && outMs <= inMs {
+					continue
+				}
+				cases = append(cases, struct {
+					name        string
+					inner       func() FrameIterator
+					inMs, outMs int64
+				}{fmt.Sprintf("B-frames held %d deep", depth), func() FrameIterator { return gopFile(30, depth, 900_000) }, inMs, outMs})
+			}
+		}
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%s/in %d out %d", tc.name, tc.inMs, tc.outMs), func(t *testing.T) {
+			iter := NewTrimIterator(tc.inner(), tc.inMs, tc.outMs)
+			defer iter.Close()
+			total := iter.TotalFrames()
+			n := 0
+			for {
+				f, err := iter.Next()
+				require.NoError(t, err)
+				if f == nil {
+					break
+				}
+				n++
+			}
+			require.Equal(t, n, total, "TotalFrames against the pictures Next returns")
+		})
+	}
+
+	unknown := NewTrimIterator(&errorAfterNIterator{}, 33, 100)
+	require.Equal(t, -1, unknown.TotalFrames(), "an inner iterator of unknown length")
 }
+
+// gridIterator is an iterator that does not list its pictures' PTS, at an
+// exact rate.
+type gridIterator struct {
+	FrameIterator
+	fps float64
+}
+
+func (g gridIterator) EstimateFPS() float64 { return g.fps }
 
 func TestFakeAssetProvider(t *testing.T) {
 	frames := fakeFrames(4)

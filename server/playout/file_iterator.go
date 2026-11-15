@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -108,6 +109,11 @@ type FileFrameIterator struct {
 	fps         float64
 	totalFrames int
 	closed      bool
+	// shown is the frames' PTS in presentation order, counted on across a
+	// 33-bit wrap, once worked out (see presentation); wraps says whether
+	// they wrap.
+	shown []int64
+	wraps bool
 
 	// pcm decodes the audio to PCM for the mixer, which each picture
 	// carries for its own time: pcmPics is the pictures that took theirs
@@ -284,9 +290,9 @@ func newFileFrameIterator(encoded []encodedFrame, audio []audioFrameInfo, decode
 // Each call decodes one frame from the pre-demuxed H.264 data, keeping memory
 // usage at ~3MB per frame instead of loading all YUV into memory.
 //
-// Audio frames are matched by PTS: each video frame gets the first available
-// audio frame whose PTS falls within the video frame's time window
-// [currentPTS, nextVideoPTS). The last video frame's window extends to MaxInt64.
+// The decoder puts the pictures out in presentation order, so the k-th one
+// carries the k-th PTS in that order (see makeDecodedFrame), and its share
+// of the audio by count (see attachAudio and attachPCM).
 func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
 	// Hold the lock for the whole decode so a concurrent Close() cannot free the
 	// decoder out from under decoder.Decode()/ReceiveFrame() (use-after-free).
@@ -319,7 +325,7 @@ func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
 		}
 
 		// Got a decoded frame. Deep-copy: decoder may reuse its output buffer.
-		return f.makeDecodedFrame(yuv, w, h, ef.pts, ef.isKeyframe), nil
+		return f.makeDecodedFrame(yuv, w, h, ef.isKeyframe), nil
 	}
 
 	// Looping: the pass's last pictures are still in the decoder. Feed it
@@ -343,7 +349,7 @@ func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
 			}
 			f.held--
 			f.nextHeld++
-			return f.makeDecodedFrame(yuv, w, h, f.estimateDrainPTS(), false), nil
+			return f.makeDecodedFrame(yuv, w, h, false), nil
 		}
 		if f.held == 0 {
 			f.passDone = true
@@ -362,9 +368,7 @@ func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
 	if drainable, ok := f.decoder.(DrainableDecoder); ok {
 		yuv, w, h, drainErr := drainable.ReceiveFrame()
 		if drainErr == nil && len(yuv) > 0 {
-			// Estimate PTS for drained frames from the last returned frames.
-			pts := f.estimateDrainPTS()
-			return f.makeDecodedFrame(yuv, w, h, pts, false), nil
+			return f.makeDecodedFrame(yuv, w, h, false), nil
 		}
 	}
 
@@ -372,11 +376,24 @@ func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
 }
 
 // makeDecodedFrame creates a DecodedFrame from decoded YUV data, attaches
-// PTS-matched audio, and updates output tracking state.
-func (f *FileFrameIterator) makeDecodedFrame(yuv []byte, w, h int, pts int64, isKeyframe bool) *DecodedFrame {
+// its audio, and updates output tracking state. The picture is the
+// outputCount-th of the pass in presentation order and carries that PTS:
+// the frame fed last, whose PTS the decoder's output came back on, is
+// another picture wherever the decoder reorders. Past the stream's
+// pictures, as a decoder putting out more than it was fed would be, the
+// PTS runs on from the last ones.
+func (f *FileFrameIterator) makeDecodedFrame(yuv []byte, w, h int, isKeyframe bool) *DecodedFrame {
 	// Deep-copy: decoder reuses its output buffer.
 	yuvCopy := make([]byte, len(yuv))
 	copy(yuvCopy, yuv)
+
+	pts := f.estimateDrainPTS()
+	if shown := f.presentation(); f.outputCount < len(shown) {
+		pts = shown[f.outputCount]
+		if f.wraps && pts >= 1<<33 {
+			pts -= 1 << 33
+		}
+	}
 
 	frame := &DecodedFrame{
 		YUV:        yuvCopy,
@@ -512,6 +529,33 @@ func (f *FileFrameIterator) EstimateFPS() float64 {
 // decoded frames may differ slightly due to B-frame reordering drain.
 func (f *FileFrameIterator) TotalFrames() int {
 	return f.totalFrames
+}
+
+// shownPTS returns the PTS of the frames in presentation order, the order
+// Next puts them out in, counted on across a 33-bit wrap.
+func (f *FileFrameIterator) shownPTS() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.presentation())
+}
+
+// presentation returns the frames' PTS in presentation order, counted on
+// across a 33-bit wrap, working them out on the first call. Called under
+// f.mu.
+func (f *FileFrameIterator) presentation() []int64 {
+	if f.shown != nil || len(f.encodedFrames) == 0 {
+		return f.shown
+	}
+	f.wraps = ptsWraps(f.encodedFrames)
+	f.shown = make([]int64, len(f.encodedFrames))
+	for i, ef := range f.encodedFrames {
+		f.shown[i] = ef.pts
+		if f.wraps && ef.pts < f.encodedFrames[0].pts {
+			f.shown[i] += 1 << 33
+		}
+	}
+	slices.Sort(f.shown)
+	return f.shown
 }
 
 // FrameIndex returns the current position in the encoded frame list.

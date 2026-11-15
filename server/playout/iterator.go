@@ -2,6 +2,7 @@ package playout
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strings"
 )
@@ -71,6 +72,15 @@ func (s *SliceIterator) EstimateFPS() float64 {
 // TotalFrames returns the total number of frames in the slice.
 func (s *SliceIterator) TotalFrames() int {
 	return len(s.frames)
+}
+
+// shownPTS returns the frames' PTS in the order Next returns them.
+func (s *SliceIterator) shownPTS() []int64 {
+	pts := make([]int64, len(s.frames))
+	for i := range s.frames {
+		pts[i] = s.frames[i].PTS
+	}
+	return pts
 }
 
 // Close is a no-op for SliceIterator.
@@ -235,9 +245,48 @@ func (t *TrimIterator) EstimateFPS() float64 {
 	return t.inner.EstimateFPS()
 }
 
-// TotalFrames returns -1 (unknown after trim).
+// ptsLister is an iterator that lists the PTS of its pictures in the
+// order Next returns them.
+type ptsLister interface {
+	shownPTS() []int64
+}
+
+// TotalFrames returns how many pictures Next returns within the trim
+// range: counted by their PTS where the inner iterator lists them, else
+// on the grid of the inner iterator's frame count and rate. It is -1 when
+// the inner iterator does not know its length.
 func (t *TrimIterator) TotalFrames() int {
-	return -1
+	var pts []int64
+	if l, ok := t.inner.(ptsLister); ok {
+		pts = l.shownPTS()
+	} else {
+		n, fps := t.inner.TotalFrames(), t.inner.EstimateFPS()
+		if n < 0 || fps <= 0 {
+			return -1
+		}
+		pts = make([]int64, n)
+		for i := range pts {
+			pts[i] = int64(math.Round(float64(i) * 90000 / fps))
+		}
+	}
+	// As Next counts them: from the first picture's PTS on, across a
+	// 33-bit wrap, skipping those before the in point and ending at the
+	// first at or past the out point.
+	k := 0
+	for _, p := range pts {
+		rel := p - pts[0]
+		if rel < -(1 << 32) {
+			rel += 1 << 33
+		}
+		if t.outMs > 0 && rel >= t.outMs*90 {
+			break
+		}
+		if t.inMs > 0 && rel < t.inMs*90 {
+			continue
+		}
+		k++
+	}
+	return k
 }
 
 // Close closes the inner iterator.

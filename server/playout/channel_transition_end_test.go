@@ -165,76 +165,93 @@ func laidOut(chunks []pcmChunk, rate, channels int) []float32 {
 // the sound for a tick: the outgoing item had stopped at full level and
 // the incoming one faded in from nothing.
 func TestPlayoutItemEndCarriesTheSoundInEveryLayout(t *testing.T) {
-	const rate, durMs = 48000, 400
 	rates := channelRates
 	if raceDetector {
 		rates = []float64{25, 30000.0 / 1001, 60}
 	}
 	for _, typ := range []string{"mix", "cut"} {
 		for _, n := range []int{1, 2, 6, 8} {
-			for _, fps := range rates {
-				t.Run(fmt.Sprintf("%s/%dch/%.3ffps", typ, n, fps), func(t *testing.T) {
-					a, b := clipItem("a"), clipItem("b")
-					if typ != "cut" {
-						b.Transition = &TransitionConfig{Type: typ, DurationMs: durMs}
+			for _, trim := range []bool{false, true} {
+				for _, fps := range rates {
+					name := fmt.Sprintf("%s/%dch/%.3ffps", typ, n, fps)
+					if trim {
+						name = "trimmed " + name
 					}
-					aPictures := int(math.Ceil(durMs*fps/1000)) + 10
-					ch, tick, chunks := pcmChannelAt(t, fps, pcmAssets{
-						a.AssetURI: withLayout(pcmClip(aPictures, fps, rate, 0, 0, math.MaxInt64), layoutLevels(n)...),
-						b.AssetURI: withLayout(pcmClip(3*aPictures, fps, rate, 0, 0, math.MaxInt64), layoutLevels(n)...),
-					}, a, b)
-					transitioned := false
-					for i := 0; i < 2*aPictures; i++ {
-						tick(i)
-						transitioned = transitioned || ch.scheduler.State() == SchedTransitioning
-					}
-					require.Equal(t, typ != "cut", transitioned, "a transition ran")
-					starts := 0
-					for _, k := range *chunks {
-						require.Equal(t, n, k.channels, "tick %d: the stream's layout", k.tick)
-						if k.start {
-							starts++
-						}
-					}
-					// A cut starts the incoming item's sound afresh on its first
-					// picture; a mix hands the stream on.
-					wantStarts := 1
-					if typ == "cut" {
-						wantStarts = 2
-					}
-					require.Equal(t, wantStarts, starts, "the streams the sound goes out in")
-					pcm := laidOut(*chunks, rate, n)
-					require.Greater(t, len(pcm)/n, aPictures*rate/int(fps)+rate/10, "the incoming item's sound goes on")
-					// The gains move along the curve at most pi/2 a transition,
-					// over the samples of each tick at its progress, which is
-					// counted in whole milliseconds, a millisecond a tick off.
-					tickMs := 1000 / fps
-					maxStep := 1.05*math.Pi/2*(tickMs+1)/durMs/(rate*tickMs/1000) + 1e-6
-					peak := float32(0)
-					for k := 0; k < len(pcm)/n; k++ {
-						for c := range n {
-							v := pcm[k*n+c]
-							peak = max(peak, v)
-							if typ == "cut" {
-								if math.Abs(float64(v)-1) > 1e-6 {
-									t.Fatalf("sample %d of %d, channel %d: %v, want the one item at full level", k, len(pcm)/n, c, v)
-								}
-								continue
-							}
-							if v < 1-1e-2 || v > math.Sqrt2+1e-3 {
-								t.Fatalf("sample %d of %d, channel %d: %v, a dropout", k, len(pcm)/n, c, v)
-							}
-							if k > 0 && math.Abs(float64(v-pcm[(k-1)*n+c])) > maxStep {
-								t.Fatalf("sample %d, channel %d: the sound steps from %v to %v, at most %v a sample", k, c, pcm[(k-1)*n+c], v, maxStep)
-							}
-						}
-					}
-					if typ != "cut" {
-						require.Greater(t, peak, float32(1.3), "the two items never mixed")
-					}
-				})
+					t.Run(name, func(t *testing.T) {
+						checkItemEndLayout(t, typ, n, fps, trim)
+					})
+				}
 			}
 		}
+	}
+}
+
+// checkItemEndLayout is TestPlayoutItemEndCarriesTheSoundInEveryLayout's
+// case: an item at fps in n channels ends into the next through a typ
+// transition, out of its whole clip or one trimmed to in and out points.
+func checkItemEndLayout(t *testing.T, typ string, n int, fps float64, trim bool) {
+	const rate, durMs = 48000, 400
+	a, b := clipItem("a"), clipItem("b")
+	if typ != "cut" {
+		b.Transition = &TransitionConfig{Type: typ, DurationMs: durMs}
+	}
+	aPictures := int(math.Ceil(durMs*fps/1000)) + 10
+	clipPictures := aPictures
+	if trim {
+		clipPictures = trimmedTo(&a, fps, trimLead(fps, rate), aPictures)
+	}
+	ch, tick, chunks := pcmChannelAt(t, fps, pcmAssets{
+		a.AssetURI: withLayout(pcmClip(clipPictures, fps, rate, 0, 0, math.MaxInt64), layoutLevels(n)...),
+		b.AssetURI: withLayout(pcmClip(3*aPictures, fps, rate, 0, 0, math.MaxInt64), layoutLevels(n)...),
+	}, a, b)
+	transitioned := false
+	for i := 0; i < 2*aPictures; i++ {
+		tick(i)
+		transitioned = transitioned || ch.scheduler.State() == SchedTransitioning
+	}
+	require.Equal(t, typ != "cut", transitioned, "a transition ran")
+	starts := 0
+	for _, k := range *chunks {
+		require.Equal(t, n, k.channels, "tick %d: the stream's layout", k.tick)
+		if k.start {
+			starts++
+		}
+	}
+	// A cut starts the incoming item's sound afresh on its first
+	// picture; a mix hands the stream on.
+	wantStarts := 1
+	if typ == "cut" {
+		wantStarts = 2
+	}
+	require.Equal(t, wantStarts, starts, "the streams the sound goes out in")
+	pcm := laidOut(*chunks, rate, n)
+	require.Greater(t, len(pcm)/n, aPictures*rate/int(fps)+rate/10, "the incoming item's sound goes on")
+	// The gains move along the curve at most pi/2 a transition,
+	// over the samples of each tick at its progress, which is
+	// counted in whole milliseconds, a millisecond a tick off.
+	tickMs := 1000 / fps
+	maxStep := 1.05*math.Pi/2*(tickMs+1)/durMs/(rate*tickMs/1000) + 1e-6
+	peak := float32(0)
+	for k := 0; k < len(pcm)/n; k++ {
+		for c := range n {
+			v := pcm[k*n+c]
+			peak = max(peak, v)
+			if typ == "cut" {
+				if math.Abs(float64(v)-1) > 1e-6 {
+					t.Fatalf("sample %d of %d, channel %d: %v, want the one item at full level", k, len(pcm)/n, c, v)
+				}
+				continue
+			}
+			if v < 1-1e-2 || v > math.Sqrt2+1e-3 {
+				t.Fatalf("sample %d of %d, channel %d: %v, a dropout", k, len(pcm)/n, c, v)
+			}
+			if k > 0 && math.Abs(float64(v-pcm[(k-1)*n+c])) > maxStep {
+				t.Fatalf("sample %d, channel %d: the sound steps from %v to %v, at most %v a sample", k, c, pcm[(k-1)*n+c], v, maxStep)
+			}
+		}
+	}
+	if typ != "cut" {
+		require.Greater(t, peak, float32(1.3), "the two items never mixed")
 	}
 }
 
