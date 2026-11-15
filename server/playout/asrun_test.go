@@ -1231,7 +1231,12 @@ func TestAsRunFullIntegration(t *testing.T) {
 		t.Errorf("item_end events = %d, want 3", ends)
 	}
 
-	// Verify JSONL file was written.
+	// The JSONL file is written by the logger's own goroutine, after the
+	// ring buffer the query read. Close waits for it to write every event
+	// logged before it.
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
 	files, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
 	if len(files) != 1 {
 		t.Fatalf("expected 1 JSONL file, got %d", len(files))
