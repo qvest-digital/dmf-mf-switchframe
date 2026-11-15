@@ -711,11 +711,12 @@ func TestPlayoutFailedItemDoesNotFireItsEvents(t *testing.T) {
 type failingAssets struct {
 	pcmAssets
 	failAt int
+	all    bool // every clip's read fails, not only item a's
 }
 
 func (f failingAssets) Open(uri string) (FrameIterator, error) {
 	it, err := f.pcmAssets.Open(uri)
-	if err != nil || f.failAt < 0 || uri != clipItem("a").AssetURI {
+	if err != nil || f.failAt < 0 || !f.all && uri != clipItem("a").AssetURI {
 		return it, err
 	}
 	return &failingRead{pcmIterator: it.(pcmIterator), at: f.failAt}, nil
@@ -817,4 +818,117 @@ func TestScheduler_FailureDoesNotOutliveAMove(t *testing.T) {
 	d = s.Tick(now)
 	require.Equal(t, "d", d.Item.ID)
 	require.True(t, d.FromEnd, "c ended at its natural end")
+
+	// A cursor set by peer sync moves off a failed item as well.
+	s.SignalItemFailed()
+	s.SetCursor(1, ModeAutomated, 0)
+	now = now.Add(20 * time.Millisecond)
+	d = s.Tick(now)
+	require.Equal(t, "b", d.Item.ID)
+	require.False(t, d.FromEnd, "a cursor set is not an end")
+
+	s.SignalItemComplete()
+	now = now.Add(20 * time.Millisecond)
+	d = s.Tick(now)
+	require.Equal(t, "c", d.Item.ID)
+	require.True(t, d.FromEnd, "b ended at its natural end")
+}
+
+// A clip that fails to read on under the transition at its end has not
+// reached its end either: the transition commits as one from an item left
+// part-way, and the events due by the item's end do not fire.
+func TestPlayoutReadFailureUnderTheEndTransitionIsNoEnd(t *testing.T) {
+	for _, fps := range channelRates {
+		t.Run(fmt.Sprintf("%.3ffps", fps), func(t *testing.T) {
+			n := int(math.Round(2 * fps))
+			a, b := clipItem("a"), clipItem("b")
+			a.SecondaryEvents = []SecondaryEvent{{Type: "graphics_off", Layer: 1, OffsetMs: 0, Anchor: "end"}}
+			b.Transition = &TransitionConfig{Type: "mix", DurationMs: 400}
+			ch, tick, _ := pcmChannelAt(t, fps, failingAssets{pcmAssets: pcmAssets{
+				a.AssetURI: pcmClip(n, fps, 48000, 1, 0, math.MaxInt64),
+				b.AssetURI: pcmClip(2*n, fps, 48000, 0, 1, math.MaxInt64),
+			}, failAt: n - 2}, a, b)
+			h := &mockHandler{}
+			ch.SetSecondaryHandler(h)
+			first, took := -1, false
+			for i := 0; i < n+10; i++ {
+				tick(i)
+				if first < 0 && ch.scheduler.State() == SchedTransitioning {
+					first = i
+				}
+				took = took || ch.scheduler.State() == SchedPlaying && ch.scheduler.CurrentItem().ID == "b"
+			}
+			require.True(t, took, "b never took over")
+			require.GreaterOrEqual(t, first, 0, "the transition never ran")
+			require.Less(t, first, n-2, "the read failed before the transition started")
+			require.Empty(t, h.getCalls(), "the end event of an item that failed under its transition fired")
+		})
+	}
+}
+
+// A clip whose read fails, left playing as in manual mode, reads the error
+// again on every tick; the as-run log has it once. Each clip that fails
+// has its own.
+func TestPlayoutReadFailureIsLoggedOnce(t *testing.T) {
+	a, b := clipItem("a"), clipItem("b")
+	ch, tick, _ := pcmChannel(t, failingAssets{pcmAssets: pcmAssets{
+		a.AssetURI: pcmClip(50, 50, 48000, 1, 0, math.MaxInt64),
+		b.AssetURI: pcmClip(50, 50, 48000, 0, 1, math.MaxInt64),
+	}, failAt: 4}, a, b)
+	var errs []AsRunEvent
+	ch.SetAsRunLog(func(ev AsRunEvent) {
+		if ev.Type == AsRunError {
+			errs = append(errs, ev)
+		}
+	})
+	ch.TakeManual()
+	for i := 0; i < 20; i++ {
+		tick(i)
+	}
+	require.Equal(t, "a", ch.scheduler.CurrentItem().ID, "manual mode left the failed item")
+	require.Len(t, errs, 1, "read errors logged")
+	require.Equal(t, "a", errs[0].ItemID)
+
+	c := clipItem("c")
+	ch, tick, _ = pcmChannel(t, failingAssets{pcmAssets: pcmAssets{
+		a.AssetURI: pcmClip(50, 50, 48000, 1, 0, math.MaxInt64),
+		b.AssetURI: pcmClip(50, 50, 48000, 0, 1, math.MaxInt64),
+		c.AssetURI: pcmClip(50, 50, 48000, 0, 1, math.MaxInt64),
+	}, failAt: 4, all: true}, a, b, c)
+	errs = nil
+	ch.SetAsRunLog(func(ev AsRunEvent) {
+		if ev.Type == AsRunError {
+			errs = append(errs, ev)
+		}
+	})
+	for i := 0; i < 20; i++ {
+		tick(i)
+	}
+	var ids []string
+	for _, ev := range errs {
+		ids = append(ids, ev.ItemID)
+	}
+	require.Equal(t, []string{"a", "b", "c"}, ids, "the items whose read errors are logged")
+
+	// Into a transition, from which the incoming clip goes on in the slot
+	// it was read in during the transition.
+	b.Transition = &TransitionConfig{Type: "mix", DurationMs: 400}
+	ch, tick, _ = pcmChannel(t, failingAssets{pcmAssets: pcmAssets{
+		a.AssetURI: pcmClip(50, 50, 48000, 1, 0, math.MaxInt64),
+		b.AssetURI: pcmClip(50, 50, 48000, 0, 1, math.MaxInt64),
+	}, failAt: 30, all: true}, a, b)
+	errs = nil
+	ch.SetAsRunLog(func(ev AsRunEvent) {
+		if ev.Type == AsRunError {
+			errs = append(errs, ev)
+		}
+	})
+	for i := 0; i < 90; i++ {
+		tick(i)
+	}
+	ids = nil
+	for _, ev := range errs {
+		ids = append(ids, ev.ItemID)
+	}
+	require.Equal(t, []string{"a", "b"}, ids, "the items whose read errors are logged, through a transition")
 }
