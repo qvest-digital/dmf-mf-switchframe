@@ -484,4 +484,13 @@ describe('SourceTile dual engine health dots', () => {
 		});
 		expect(container.querySelector('.virtual-badge')?.textContent).toBe('CUE');
 	});
+
+	// So is a cued playout channel; the badge says a cut starts it.
+	it('marks a cued playout channel source', () => {
+		const playoutSource = { key: 'playout:2', label: 'PLAYOUT:2', type: 'replay', status: 'offline', isVirtual: true } as SourceInfo;
+		const { container } = render(SourceTile, {
+			props: { source: playoutSource, playoutChannels: [{ id: 2, state: 'cued', itemIndex: 0, itemCount: 3 }], tally: 'idle' as TallyStatus, index: 0, onclick: vi.fn() },
+		});
+		expect(container.querySelector('.virtual-badge')?.textContent).toBe('CUE');
+	});
 });

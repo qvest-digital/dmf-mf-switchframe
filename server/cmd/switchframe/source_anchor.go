@@ -57,6 +57,15 @@ func (a *gridAnchor) PTS(src int64) int64 {
 	return src + a.offset
 }
 
+// place maps the source timestamp src to pts, a frame start of the
+// program rate, from now on.
+func (a *gridAnchor) place(src, pts int64) {
+	r := a.programRate()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.offset, a.set, a.placed = pts-src, true, r
+}
+
 func (a *gridAnchor) programRate() clock.Rate {
 	if a.rate != nil {
 		if r := a.rate(); r.Num > 0 && r.Den > 0 {

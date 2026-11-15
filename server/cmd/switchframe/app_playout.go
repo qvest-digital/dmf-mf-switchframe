@@ -8,11 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/caption"
+	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/gpu"
@@ -124,13 +126,25 @@ func (a *App) initPlayout() error {
 	relayFeed := newPlayoutRelayFeed(relayW, relayH, a.cfg.PreviewBitrate, a.cfg.PreviewFrameInterval)
 	liveTaps := &playoutLiveTaps{sw: a.sw}
 
-	// Channel lifecycle: register/unregister as switcher sources.
+	// Channel lifecycle: register/unregister as switcher sources. A channel
+	// is a source from its cue or its start, whichever comes first, to its
+	// stop. Each channel's registration and withdrawal run one at a time,
+	// so a cue offered while the channel stops ends withdrawn.
+	var sourceMu [playout.MaxChannels]sync.Mutex
+	var sourced [playout.MaxChannels]bool
 	mgr.OnChannelLifecycle(
 		// onStart: register playout channel as a raw YUV switcher source + mixer channel.
 		func(channelID int, key string) {
 			// The run's PTS start over from the program's last broadcast
 			// PTS: place it afresh, at its first frame.
 			playoutAnchors.Delete(key)
+			idx := channelID - 1
+			sourceMu[idx].Lock()
+			defer sourceMu[idx].Unlock()
+			if sourced[idx] {
+				return
+			}
+			sourced[idx] = true
 			a.sw.RegisterTimedReplaySource(key)
 			a.mixer.AddChannel(key)
 			_ = a.mixer.SetAFV(key, true)
@@ -139,7 +153,6 @@ func (a *App) initPlayout() error {
 			// Register playout source with GPU preview encoder when available.
 			// This replaces the full-quality relay encode with low-bitrate preview,
 			// matching the clip/SRT source preview proxy path.
-			idx := channelID - 1
 			if gs := a.gpu(); idx >= 0 && idx < playout.MaxChannels && a.cfg.PreviewProxy && gs != nil && gs.sourceManager != nil {
 				pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
 				curPF := a.sw.PipelineFormat()
@@ -191,9 +204,13 @@ func (a *App) initPlayout() error {
 		// onStop: unregister playout channel source.
 		func(channelID int, key string) {
 			idx := channelID - 1
-			if idx >= 0 && idx < playout.MaxChannels {
-				playoutPreviewGroupID[idx].Store(0)
+			sourceMu[idx].Lock()
+			defer sourceMu[idx].Unlock()
+			if !sourced[idx] {
+				return
 			}
+			sourced[idx] = false
+			playoutPreviewGroupID[idx].Store(0)
 			relayFeed.stop(idx)
 			liveTaps.settle(key, nil)
 			// Release GPU preview encoder and cached frames.
@@ -296,6 +313,15 @@ func (a *App) initPlayout() error {
 	})
 
 	a.wirePlayoutAudio(mgr)
+
+	// A run started from its cue stamps its output on the engine timeline
+	// from the read point of the program tick that started it.
+	mgr.OnCuedStart(placePlayoutRun)
+
+	// The first program tick that shows a source, after a cut or as a
+	// transition starts, starts the clip player or playout channel cued
+	// on it.
+	a.sw.SetOnProgramTick(startCuedOnProgramTick(a.clipMgr, mgr))
 
 	// State change broadcasts.
 	mgr.SetOnStateChange(func() {
@@ -645,6 +671,35 @@ func buildPodCueMessage(isOut, autoReturn bool, durationMs int64) *scte35.CueMes
 		msg.BreakDuration = &d
 	}
 	return msg
+}
+
+// placePlayoutRun places the run of the playout channel key that a program
+// tick started from its cue: its PTS are the engine's from pts, that
+// tick's read point, on.
+func placePlayoutRun(key string, pts int64) {
+	playoutAnchor(key).place(pts, pts)
+}
+
+// startCuedOnProgramTick returns the switcher's program tick callback for
+// the clip players and the playout channels: the first tick that shows a
+// clip player's source starts the clip it holds (startClipOnProgramTick),
+// and the first that shows a playout channel's starts the channel if it is
+// cued, its first picture and sound on that tick. clips and channels may
+// be nil.
+func startCuedOnProgramTick(clips *clip.Manager, channels *playout.Manager) func(key string, readPTS int64) {
+	startClip := func(string, int64) {}
+	if clips != nil {
+		startClip = startClipOnProgramTick(clips)
+	}
+	return func(key string, readPTS int64) {
+		if id := playoutChannelIDFromKey(key); id > 0 {
+			if channels != nil {
+				channels.StartCuedAt(id, readPTS)
+			}
+			return
+		}
+		startClip(key, readPTS)
+	}
 }
 
 // wirePlayoutAudio routes the playout channels' audio: to the mixer as

@@ -1892,6 +1892,7 @@
 						<SourceButton
 							source={store.effectiveState.sources[key]}
 							clipPlayers={store.effectiveState.clipPlayers}
+							playoutChannels={store.effectiveState.playout?.channels}
 							tally={store.effectiveState.tallyState[key] || 'idle'}
 							index={i}
 							audioLevelDb={store.effectiveState.audioChannels?.[key] ? Math.max(store.effectiveState.audioChannels[key].peakL, store.effectiveState.audioChannels[key].peakR) : undefined}

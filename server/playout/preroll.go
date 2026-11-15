@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -48,6 +49,12 @@ type preroll struct {
 	entries map[string]*prerollEntry // by item ID
 	queue   []*prerollEntry          // entries in the order want asked for them
 	working bool                     // the worker runs
+
+	// cueItem is the item a cued channel starts on (cueOn), and cue its
+	// first picture once its preparation is ready, for the program tick
+	// that starts the channel (Channel.startAt), which does not wait for mu.
+	cueItem *PlaylistItem
+	cue     atomic.Pointer[cuedStart]
 }
 
 type sizeEntry struct {
@@ -160,6 +167,7 @@ func (p *preroll) want(cur, next []PlaylistItem) {
 		}
 	}
 	p.queue = queue
+	p.offerCueLocked()
 	if !p.working && slices.ContainsFunc(queue, func(e *prerollEntry) bool { return !e.started }) {
 		p.working = true
 		go p.work()
@@ -218,6 +226,7 @@ func (p *preroll) prepare(e *prerollEntry) {
 	e.src = src
 	close(e.done)
 	cancelled := e.cancelled
+	p.offerCueLocked()
 	p.mu.Unlock()
 
 	switch {

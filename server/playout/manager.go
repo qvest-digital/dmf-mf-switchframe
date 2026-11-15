@@ -1,9 +1,11 @@
 package playout
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,6 +21,17 @@ type Manager struct {
 	config   ManagerConfig
 	log      *slog.Logger
 
+	// cueChannels mirrors channels for StartCuedAt, which runs on a
+	// program tick and does not wait for mu; cueOut is where it puts a
+	// cue out.
+	cueChannels [MaxChannels]atomic.Pointer[Channel]
+	cueOut      atomic.Pointer[cueOutputs]
+	cutStarts   sync.WaitGroup // the starts StartCuedAt runs apart
+	// cutMu orders StartCuedAt's cutStarts.Add after closed is read and
+	// before Close waits; it is held for no more than that.
+	cutMu  sync.Mutex
+	closed bool
+
 	podBoards     [MaxChannels]*PodBoard
 	templateStore *PodTemplateStore
 
@@ -27,6 +40,7 @@ type Manager struct {
 	onStateChange     func()
 	onStart           func(channelID int, key string)
 	onStop            func(channelID int, key string)
+	onCuedStart       func(key string, pts int64)
 	rawVideoOutput    func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool)
 	audioOutput       func(key string, data []byte, pts int64, sampleRate, channels int)
 	pcmOutput         func(key string, pcm []float32, pts int64, channels int, start bool)
@@ -92,6 +106,7 @@ func NewManager(config ManagerConfig) *Manager {
 			ticks:                &m.ticks[i],
 			starts:               m.starts,
 		})
+		m.cueChannels[i].Store(m.channels[i])
 		m.podBoards[i] = NewPodBoard(i + 1)
 	}
 
@@ -138,12 +153,76 @@ func (m *Manager) LoadPlaylist(channelID int, pl *Playlist) error {
 		ch.SetIdleConfig(pl.IdleAssetURI, provider)
 	}
 
+	m.offerSource(channelID, ch)
 	m.notifyStateChange()
 	return nil
 }
 
+// offerSource makes ch, the channel channelID, a source while it is cued,
+// so a cut or a mix to it starts it (StartCuedAt).
+func (m *Manager) offerSource(channelID int, ch *Channel) {
+	if ch.State() != StateCued {
+		return
+	}
+	m.mu.Lock()
+	onStart, onStop := m.onStart, m.onStop
+	m.mu.Unlock()
+	if onStart == nil {
+		return
+	}
+	onStart(channelID, ch.Key())
+	// A Stop that ran meanwhile withdrew the source before it was
+	// offered.
+	if ch.State() == StateStopped && onStop != nil {
+		onStop(channelID, ch.Key())
+	}
+}
+
+// StartCuedAt starts the channel channelID when it is cued, from the
+// program tick whose read point is readPTS, the first that shows its
+// source after a cut or as a mix to it starts. With the first picture of
+// the item it starts on prepared, that tick shows the picture and plays
+// the item's sound from its first sample, and the run goes on from the
+// picture after it. Otherwise the channel starts as Start starts it. A
+// channel running, stopped, completed or without a playlist is left as it
+// is.
+//
+// It runs on the tick, before the tick reads its sources: it puts the
+// prepared picture and sound out, decodes nothing and waits for no lock
+// of the manager or the channel. The run starts apart.
+func (m *Manager) StartCuedAt(channelID int, readPTS int64) {
+	if m.validateChannelID(channelID) != nil {
+		return
+	}
+	// A tick after Close, which the sync loop can still run, starts
+	// nothing.
+	m.cutMu.Lock()
+	if m.closed {
+		m.cutMu.Unlock()
+		return
+	}
+	m.cutStarts.Add(1)
+	m.cutMu.Unlock()
+	ch := m.cueChannels[channelID-1].Load()
+	if out := m.cueOut.Load(); out != nil {
+		ch.startAt(readPTS, out)
+	}
+	go func() {
+		defer m.cutStarts.Done()
+		if err := m.start(channelID, true); err != nil && !errors.Is(err, errNotCued) && !errors.Is(err, ErrAlreadyOnAir) {
+			m.log.Warn("playout: cut did not start the channel", "channel", channelID, "error", err)
+		}
+	}()
+}
+
 // Start wires Manager callbacks to the channel, then starts playback.
 func (m *Manager) Start(channelID int) error {
+	return m.start(channelID, false)
+}
+
+// start is Start, and with cut the start a cut or a mix to the channel's
+// source makes (StartCuedAt), which starts only a cued channel.
+func (m *Manager) start(channelID int, cut bool) error {
 	if err := m.validateChannelID(channelID); err != nil {
 		return err
 	}
@@ -167,6 +246,10 @@ func (m *Manager) Start(channelID int) error {
 	liveSourcePrep := m.liveSourcePrep
 	liveAudioFn := m.onLiveAudio
 	m.mu.Unlock()
+
+	if cut && ch.State() != StateCued {
+		return errNotCued
+	}
 
 	// Register with watchdog.
 	if wd != nil {
@@ -265,11 +348,15 @@ func (m *Manager) Start(channelID int) error {
 		}
 	})
 
-	if err := ch.Start(); err != nil {
+	if err := ch.start(cut); err != nil {
+		if errors.Is(err, errNotCued) && wd != nil {
+			// Stopped since: no run reports frames.
+			wd.UnregisterChannel(channelID)
+		}
 		return err
 	}
 
-	m.log.Info("playout channel started", "channel", channelID)
+	m.log.Info("playout channel started", "channel", channelID, "cut", cut)
 	return nil
 }
 
@@ -281,9 +368,16 @@ func (m *Manager) Stop(channelID int) error {
 
 	m.mu.Lock()
 	ch := m.channels[channelID-1]
+	onStop := m.onStop
 	m.mu.Unlock()
 
+	cued := ch.State() == StateCued
 	ch.Stop()
+	if cued && onStop != nil {
+		// A cued channel is a source (offerSource) whether or not a run
+		// before wired the channel's own stop.
+		onStop(channelID, ch.Key())
+	}
 	m.notifyStateChange()
 	return nil
 }
@@ -338,7 +432,11 @@ func (m *Manager) JumpTo(channelID int, itemID string) error {
 	ch := m.channels[channelID-1]
 	m.mu.Unlock()
 
-	return ch.JumpTo(itemID)
+	if err := ch.JumpTo(itemID); err != nil {
+		return err
+	}
+	m.offerSource(channelID, ch)
+	return nil
 }
 
 // EndLoop has the looping clip on the given channel end after its current
@@ -519,6 +617,7 @@ func (m *Manager) Recover(statePath string) error {
 			if pch.State == StateCued || pch.State == StateOnAir {
 				ch.CueAt(pch.Cursor)
 			}
+			m.offerSource(pch.ID, ch)
 		}
 
 		// Restore non-terminal pods.
@@ -580,6 +679,10 @@ func (m *Manager) SetOnStateChange(fn func()) {
 
 // OnChannelLifecycle registers callbacks invoked when a channel starts or stops.
 // Callbacks receive the channel ID (1-based) and source key (e.g., "playout:1").
+// onStart is also invoked when a channel is cued, whose source a cut or a
+// mix starts, and again when a cued channel starts, so it may come for a
+// channel whose source is registered already. onStop may come twice for one
+// stop.
 func (m *Manager) OnChannelLifecycle(onStart func(int, string), onStop func(int, string)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -593,6 +696,24 @@ func (m *Manager) SetRawVideoOutput(fn func(key string, yuv []byte, w, h int, pt
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rawVideoOutput = fn
+	m.storeCueOutLocked()
+}
+
+// OnCuedStart registers fn, called on the program tick that starts a cued
+// channel from its prepared first picture (StartCuedAt), before the picture
+// goes out stamped pts: from it on the run's PTS are on the engine
+// timeline.
+func (m *Manager) OnCuedStart(fn func(key string, pts int64)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onCuedStart = fn
+	m.storeCueOutLocked()
+}
+
+// storeCueOutLocked publishes the outputs StartCuedAt puts a cue out to.
+// Caller holds m.mu.
+func (m *Manager) storeCueOutLocked() {
+	m.cueOut.Store(&cueOutputs{place: m.onCuedStart, video: m.rawVideoOutput, pcm: m.pcmOutput})
 }
 
 // SetAudioOutput registers a callback for audio output from channels.
@@ -616,6 +737,7 @@ func (m *Manager) SetPCMOutput(fn func(key string, pcm []float32, pts int64, cha
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pcmOutput = fn
+	m.storeCueOutLocked()
 	for i := 0; i < MaxChannels; i++ {
 		capturedKey := fmt.Sprintf("playout:%d", i+1)
 		m.channels[i].SetPCMOutput(func(pcm []float32, pts int64, channels int, start bool) {
@@ -772,6 +894,7 @@ func (m *Manager) SetPipelineFormat(width, height int, fps float64) {
 				ticks:                &m.ticks[i],
 				starts:               m.starts,
 			})
+			m.cueChannels[i].Store(m.channels[i])
 		}
 	}
 }
@@ -860,8 +983,12 @@ func (m *Manager) RecoverChannel(channelID int) error {
 	return m.Start(channelID)
 }
 
-// Close stops all active channels.
+// Close stops all active channels, once the starts cuts made are done.
 func (m *Manager) Close() {
+	m.cutMu.Lock()
+	m.closed = true
+	m.cutMu.Unlock()
+	m.cutStarts.Wait()
 	m.mu.Lock()
 	channels := m.channels
 	m.mu.Unlock()
