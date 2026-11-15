@@ -64,9 +64,11 @@ type Scheduler struct {
 	itemStartTime  time.Time
 	itemDurationMs int64 // resolved duration for current item (slates)
 	// ticksLeft is how many ticks, from the next one on, at frame rate
-	// fps, the clip on air still covers, as the channel last counted them;
-	// 0 while unknown.
+	// fps, the clip ticksItem still covers, as the channel last counted
+	// them; 0 while unknown. It counts only while ticksItem is the item at
+	// the cursor: a count signalled for another item says nothing about it.
 	ticksLeft int
+	ticksItem string
 	fps       float64
 
 	// Signals from the channel or operator.
@@ -313,8 +315,8 @@ func (s *Scheduler) tick(now time.Time) SchedulerDecision {
 	// item has run out, it would mix from its last picture held, its sound
 	// stopped at full level.
 	overlapMs := s.endTransitionMs(now)
-	if !shouldAdvance && item.Type == ItemClip && overlapMs > 0 && s.ticksLeft > 0 &&
-		s.ticksLeft <= transitionTicks(overlapMs, s.fps)+1 {
+	if !shouldAdvance && item.Type == ItemClip && overlapMs > 0 && s.ticksItem == item.ID &&
+		s.ticksLeft > 0 && s.ticksLeft <= transitionTicks(overlapMs, s.fps)+1 {
 		shouldAdvance = true
 	}
 
@@ -343,12 +345,13 @@ func (s *Scheduler) tick(now time.Time) SchedulerDecision {
 }
 
 // SignalTicksLeft is called by the channel on each tick of a clip whose
-// length it knows: the clip's pictures and sound cover n more ticks at fps
-// ticks a second.
-func (s *Scheduler) SignalTicksLeft(n int, fps float64) {
+// length it knows: the pictures and sound of the clip of item itemID cover
+// n more ticks at fps ticks a second. n is 0 where the transition at its
+// end is to start only once it has ended.
+func (s *Scheduler) SignalTicksLeft(itemID string, n int, fps float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ticksLeft, s.fps = n, fps
+	s.ticksItem, s.ticksLeft, s.fps = itemID, n, fps
 }
 
 // SignalItemComplete is called by the channel when a clip or slate finishes
@@ -604,6 +607,7 @@ func (s *Scheduler) SetCursor(index int, mode OnAirMode, elapsed time.Duration) 
 	s.mode = mode
 	s.state = SchedPlaying
 	s.itemStartTime = time.Now().Add(-elapsed)
+	s.ticksLeft, s.ticksItem = 0, ""
 	s.itemComplete = false
 	s.advancePend = 0
 	s.holdComplete = false
@@ -723,7 +727,7 @@ func (s *Scheduler) playingLoopExit() bool {
 func (s *Scheduler) resetItemState() {
 	s.itemStartTime = time.Time{}
 	s.itemDurationMs = 0
-	s.ticksLeft = 0
+	s.ticksLeft, s.ticksItem = 0, ""
 	s.itemComplete = false
 	s.advancePend = 0
 	s.holdComplete = false

@@ -50,14 +50,14 @@ func TestScheduler_TransitionAtItemEndStartsBeforeTheEnd(t *testing.T) {
 
 			// One tick more than the transition takes, then the 21 ticks it
 			// takes.
-			s.SignalTicksLeft(22, 50)
+			s.SignalTicksLeft("a", 22, 50)
 			now = now.Add(20 * time.Millisecond)
 			d := s.Tick(now)
 			require.Nil(t, d.Transition, "the transition started with the clip lasting past it")
 			require.NotNil(t, d.Item)
 			require.Equal(t, "a", d.Item.ID)
 
-			s.SignalTicksLeft(21, 50)
+			s.SignalTicksLeft("a", 21, 50)
 			now = now.Add(20 * time.Millisecond)
 			d = s.Tick(now)
 			if !tc.want {
@@ -65,7 +65,7 @@ func TestScheduler_TransitionAtItemEndStartsBeforeTheEnd(t *testing.T) {
 				require.NotNil(t, d.Item, "the clip did not play on")
 				require.Equal(t, "a", d.Item.ID, "the clip did not play on")
 				// Down to its last tick.
-				s.SignalTicksLeft(1, 50)
+				s.SignalTicksLeft("a", 1, 50)
 				now = now.Add(20 * time.Millisecond)
 				d = s.Tick(now)
 				require.Nil(t, d.Transition, "a transition started")
@@ -88,6 +88,58 @@ func TestScheduler_TransitionAtItemEndStartsBeforeTheEnd(t *testing.T) {
 			require.Equal(t, "b", d.Item.ID)
 			now = now.Add(20 * time.Millisecond)
 			require.Nil(t, s.Tick(now).Transition, "the incoming item took the outgoing one's count")
+		})
+	}
+}
+
+// The count of ticks a clip still covers belongs to the item it was
+// counted for and to the play-through it was counted in. A standby engine
+// moved to an item by a snapshot used to take the count of the clip it
+// left, and with it at that clip's end went straight on into the item
+// after the one it was moved to.
+func TestScheduler_TransitionAtItemEndCountsOnlyTheItemsOwnTicks(t *testing.T) {
+	cases := []struct {
+		name string
+		move func(s *Scheduler)
+		want string
+	}{
+		{"moved to the next item", func(s *Scheduler) {
+			s.SignalTicksLeft("a", 3, 50)
+			s.SetCursor(1, ModeAutomated, 0)
+		}, "b"},
+		{"moved back within the item", func(s *Scheduler) {
+			s.SignalTicksLeft("a", 3, 50)
+			s.SetCursor(0, ModeAutomated, 0)
+		}, "a"},
+		{"counted for the item left after the move", func(s *Scheduler) {
+			s.SetCursor(1, ModeAutomated, 0)
+			s.SignalTicksLeft("a", 3, 50)
+		}, "b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewScheduler()
+			pl := schedPlaylist(schedClipItem("a", 0), schedClipItem("b", 0), schedClipItem("c", 0))
+			pl.Items[1].Transition = &TransitionConfig{Type: "mix", DurationMs: 400}
+			pl.Items[2].Transition = &TransitionConfig{Type: "mix", DurationMs: 400}
+			require.NoError(t, s.LoadPlaylist(pl))
+			s.Start()
+			now := time.Now()
+			require.Equal(t, "a", s.Tick(now).Item.ID)
+
+			tc.move(s)
+			now = now.Add(20 * time.Millisecond)
+			d := s.Tick(now)
+			require.Nil(t, d.Transition, "a transition started from a count of another play-through")
+			require.NotNil(t, d.Item)
+			require.Equal(t, tc.want, d.Item.ID)
+
+			// Its own count still ends it into the transition.
+			s.SignalTicksLeft(tc.want, 3, 50)
+			now = now.Add(20 * time.Millisecond)
+			d = s.Tick(now)
+			require.NotNil(t, d.Transition, "the item's own count did not start the transition")
+			require.Equal(t, tc.want, d.Transition.Outgoing.ID)
 		})
 	}
 }

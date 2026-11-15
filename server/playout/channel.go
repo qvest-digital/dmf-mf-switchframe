@@ -1841,7 +1841,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 			// pictures and sound still cover, for a transition at its end
 			// to end within them.
 			left := int(math.Floor(float64(total)*pipelineFPS/clipFPS+1e-9)) - c.clipOutputFrame
-			c.scheduler.SignalTicksLeft(left, pipelineFPS)
+			c.scheduler.SignalTicksLeft(item.ID, left, pipelineFPS)
 		}
 	}
 	c.mu.Unlock()
