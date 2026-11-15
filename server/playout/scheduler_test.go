@@ -1896,3 +1896,24 @@ func TestScheduler_EndLoopActsOnTheItemPlaying(t *testing.T) {
 		})
 	}
 }
+
+// TestScheduler_LoopExitReadsTheItemOnAir: after NextNow and Previous
+// come back to a released looping clip before a tick, the release is
+// still reported for it; the move reset the cursor's state but not the
+// clip on air.
+func TestScheduler_LoopExitReadsTheItemOnAir(t *testing.T) {
+	t0 := time.Unix(0, 0)
+	a := schedClipItem("a", 0)
+	a.Loop = true
+	s := NewScheduler()
+	require.NoError(t, s.LoadPlaylist(schedPlaylist(a, schedClipItem("b", 0))))
+	s.Start()
+	s.Tick(t0)
+	require.NoError(t, s.EndLoop())
+	require.NoError(t, s.NextNow())
+	require.NoError(t, s.Previous())
+	require.True(t, s.LoopExitPending(), "the release read false before the tick")
+	require.True(t, s.StatusSnapshot().LoopExit)
+	require.Equal(t, "a", reviewDecision(s.Tick(t0.Add(time.Millisecond))))
+	require.True(t, s.LoopExitPending())
+}

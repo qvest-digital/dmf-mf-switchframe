@@ -682,7 +682,9 @@ func (s *Scheduler) playingIndex() int {
 // playingLoopExit reports whether the item playing ends its loop after
 // this pass.
 func (s *Scheduler) playingLoopExit() bool {
-	if s.onAir >= 0 && s.cursor != s.onAir {
+	// EndLoop records a release of the item on air in its saved state,
+	// which a move that comes back to it, and resets it, does not clear.
+	if s.onAir >= 0 {
 		return s.onAirState.loopExit
 	}
 	return s.loopExit

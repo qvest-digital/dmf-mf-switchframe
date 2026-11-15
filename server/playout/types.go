@@ -193,10 +193,15 @@ type ChannelStatus struct {
 	// it plays.
 	ItemError string `json:"itemError,omitempty"`
 	// Looping is set while a looping clip is on air, LoopExit once EndLoop
-	// has it end after the current pass.
-	Looping  bool            `json:"looping,omitempty"`
-	LoopExit bool            `json:"loopExit,omitempty"`
-	Pods     *PodBoardStatus `json:"pods,omitempty"`
+	// has it end after the current pass. Both describe the item on air,
+	// which is not the one at ItemIndex between a move of the cursor and
+	// the next tick.
+	Looping  bool `json:"looping,omitempty"`
+	LoopExit bool `json:"loopExit,omitempty"`
+	// PlayingIndex is the index of the item on air that Looping and
+	// LoopExit describe.
+	PlayingIndex int             `json:"-"`
+	Pods         *PodBoardStatus `json:"pods,omitempty"`
 }
 
 // MaxChannels is the maximum number of playout channels.
