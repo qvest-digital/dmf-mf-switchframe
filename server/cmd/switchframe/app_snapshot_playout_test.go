@@ -45,49 +45,33 @@ func TestApplyPlayoutChannels_CarriesLoopExit(t *testing.T) {
 
 // Between Previous and the next tick the cursor names x while a, released
 // from its loop, is still on air. A synced engine seeks to the cursor's
-// item and then ends its loop, so the snapshot must not carry a's release
-// there: it would land on x, refused when x does not loop and a wrong
-// release when it does.
-func TestPlayoutChannelSnapshots_LoopExitOnlyForTheItemAtTheCursor(t *testing.T) {
-	for _, xLoops := range []bool{false, true} {
-		mgr := playout.NewManager(playout.ManagerConfig{
-			AssetProvider:        playout.NewFakeAssetProvider(make([]playout.DecodedFrame, 300)),
-			AllowedLocalPrefixes: []string{"/"},
-		})
-		// One frame a second leaves a second between ticks to act in.
-		mgr.SetPipelineFormat(64, 48, 1)
-		pl := &playout.Playlist{ID: "pl", Name: "pl", Items: []playout.PlaylistItem{
-			{ID: "x", Type: playout.ItemClip, AssetURI: "local:///x.ts", Title: "x", Loop: xLoops},
-			{ID: "a", Type: playout.ItemClip, AssetURI: "local:///a.ts", Title: "a", Loop: true},
-		}}
-		require.NoError(t, mgr.LoadPlaylist(1, pl))
-		require.NoError(t, mgr.JumpTo(1, "a"))
-		require.NoError(t, mgr.Start(1))
-		a := &App{playoutMgr: mgr}
-		status := func() playout.ChannelStatus { return mgr.ChannelStates()[0] }
-
-		inWindow := false
-		for attempt := 0; attempt < 3 && !inWindow; attempt++ {
-			// Wait for a tick to have put a on air, then act right after it.
-			require.Eventually(t, func() bool { return mgr.ChannelElapsedMs(1) > 0 }, 3*time.Second, time.Millisecond)
-			require.NoError(t, mgr.EndLoop(1))
-			require.NoError(t, mgr.Previous(1))
-			snaps := a.playoutChannelSnapshots()
-			st := status()
-			// Still before the next tick: a on air with its release, the
-			// cursor on x. After a tick x would be on air.
-			inWindow = st.LoopExit && st.PlayingIndex == 1 && st.ItemIndex == 0
-			if !inWindow {
-				// A tick ran in between; start over from a.
-				require.NoError(t, mgr.JumpTo(1, "a"))
-				time.Sleep(1100 * time.Millisecond)
-				continue
+// item and then ends its loop, so the snapshot carries a release only while
+// the item on air is the one at the cursor: a's release would land on x,
+// refused when x does not loop and a wrong release when it does.
+func TestPlayoutChannelSnapshot_LoopExitOnlyForTheItemAtTheCursor(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		loopExit                bool
+		playingIndex, itemIndex int
+		want                    bool
+	}{
+		{"item on air left by the cursor", true, 1, 0, false},
+		{"item on air at the cursor", true, 1, 1, true},
+		{"no release", false, 1, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := playout.ChannelStatus{
+				State: "on_air", SchedulerState: "playing", Mode: "automated",
+				CurrentItemID: "x", ItemIndex: tc.itemIndex,
+				Looping: true, LoopExit: tc.loopExit, PlayingIndex: tc.playingIndex,
 			}
-			require.Equal(t, 0, snaps[0].ChannelIndex)
-			require.Equal(t, 0, snaps[0].CurrentItemIndex)
-			require.False(t, snaps[0].LoopExit, "x loops %v: a's release went out with x", xLoops)
-		}
-		require.True(t, inWindow, "no attempt acted between two ticks")
-		_ = mgr.Stop(1)
+			snap := playoutChannelSnapshot(2, st, 1500, "h")
+			require.Equal(t, tc.want, snap.LoopExit)
+			require.Equal(t, internal.PlayoutChannelSnapshot{
+				ChannelIndex: 2, ChannelState: "on_air", CurrentItemIndex: tc.itemIndex,
+				CurrentItemID: "x", ElapsedMs: 1500, SchedulerState: "playing",
+				SchedulerMode: "automated", PlaylistHash: "h", LoopExit: tc.want,
+			}, snap)
+		})
 	}
 }

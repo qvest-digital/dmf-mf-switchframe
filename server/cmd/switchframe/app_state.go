@@ -842,23 +842,28 @@ func (a *App) playoutChannelSnapshots() []internal.PlayoutChannelSnapshot {
 		if s.State == "idle" && s.PlaylistName == "" {
 			continue
 		}
-		schedState := s.SchedulerState
-		if schedState == "" {
-			schedState = s.State // fallback for non-on-air channels
-		}
-		out = append(out, internal.PlayoutChannelSnapshot{
-			ChannelIndex:     i,
-			ChannelState:     s.State,
-			CurrentItemIndex: s.ItemIndex,
-			CurrentItemID:    s.CurrentItemID,
-			ElapsedMs:        a.playoutMgr.ChannelElapsedMs(i + 1),
-			SchedulerState:   schedState,
-			SchedulerMode:    s.Mode,
-			PlaylistHash:     a.playoutMgr.PlaylistHash(i + 1),
-			LoopExit:         s.LoopExit && s.PlayingIndex == s.ItemIndex,
-		})
+		out = append(out, playoutChannelSnapshot(i, s, a.playoutMgr.ChannelElapsedMs(i+1), a.playoutMgr.PlaylistHash(i+1)))
 	}
 	return out
+}
+
+// playoutChannelSnapshot captures channel i from its status.
+func playoutChannelSnapshot(i int, s playout.ChannelStatus, elapsedMs int64, hash string) internal.PlayoutChannelSnapshot {
+	schedState := s.SchedulerState
+	if schedState == "" {
+		schedState = s.State // fallback for non-on-air channels
+	}
+	return internal.PlayoutChannelSnapshot{
+		ChannelIndex:     i,
+		ChannelState:     s.State,
+		CurrentItemIndex: s.ItemIndex,
+		CurrentItemID:    s.CurrentItemID,
+		ElapsedMs:        elapsedMs,
+		SchedulerState:   schedState,
+		SchedulerMode:    s.Mode,
+		PlaylistHash:     hash,
+		LoopExit:         s.LoopExit && s.PlayingIndex == s.ItemIndex,
+	}
 }
 
 func (a *App) captureFullSnapshot() internal.FullStateSnapshot {

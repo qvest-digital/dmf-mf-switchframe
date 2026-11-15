@@ -1917,3 +1917,19 @@ func TestScheduler_LoopExitReadsTheItemOnAir(t *testing.T) {
 	require.Equal(t, "a", reviewDecision(s.Tick(t0.Add(time.Millisecond))))
 	require.True(t, s.LoopExitPending())
 }
+
+// TestScheduler_StopEndsTheLoopRelease: a stopped scheduler has nothing on
+// air, so a release given before the stop no longer reads as pending.
+func TestScheduler_StopEndsTheLoopRelease(t *testing.T) {
+	a := schedClipItem("a", 0)
+	a.Loop = true
+	s := NewScheduler()
+	require.NoError(t, s.LoadPlaylist(schedPlaylist(a, schedClipItem("b", 0))))
+	s.Start()
+	s.Tick(time.Unix(0, 0))
+	require.NoError(t, s.EndLoop())
+	require.True(t, s.LoopExitPending())
+	s.Stop()
+	require.False(t, s.LoopExitPending())
+	require.False(t, s.StatusSnapshot().LoopExit)
+}
