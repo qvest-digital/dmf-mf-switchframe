@@ -817,4 +817,37 @@ func TestScheduler_FailureDoesNotOutliveAMove(t *testing.T) {
 	d = s.Tick(now)
 	require.Equal(t, "d", d.Item.ID)
 	require.True(t, d.FromEnd, "c ended at its natural end")
+
+}
+
+// A clip that fails to read on under the transition at its end has not
+// reached its end either: the transition commits as one from an item left
+// part-way, and the events due by the item's end do not fire.
+func TestPlayoutReadFailureUnderTheEndTransitionIsNoEnd(t *testing.T) {
+	for _, fps := range channelRates {
+		t.Run(fmt.Sprintf("%.3ffps", fps), func(t *testing.T) {
+			n := int(math.Round(2 * fps))
+			a, b := clipItem("a"), clipItem("b")
+			a.SecondaryEvents = []SecondaryEvent{{Type: "graphics_off", Layer: 1, OffsetMs: 0, Anchor: "end"}}
+			b.Transition = &TransitionConfig{Type: "mix", DurationMs: 400}
+			ch, tick, _ := pcmChannelAt(t, fps, failingAssets{pcmAssets: pcmAssets{
+				a.AssetURI: pcmClip(n, fps, 48000, 1, 0, math.MaxInt64),
+				b.AssetURI: pcmClip(2*n, fps, 48000, 0, 1, math.MaxInt64),
+			}, failAt: n - 2}, a, b)
+			h := &mockHandler{}
+			ch.SetSecondaryHandler(h)
+			first, took := -1, false
+			for i := 0; i < n+10; i++ {
+				tick(i)
+				if first < 0 && ch.scheduler.State() == SchedTransitioning {
+					first = i
+				}
+				took = took || ch.scheduler.State() == SchedPlaying && ch.scheduler.CurrentItem().ID == "b"
+			}
+			require.True(t, took, "b never took over")
+			require.GreaterOrEqual(t, first, 0, "the transition never ran")
+			require.Less(t, first, n-2, "the read failed before the transition started")
+			require.Empty(t, h.getCalls(), "the end event of an item that failed under its transition fired")
+		})
+	}
 }

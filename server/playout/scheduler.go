@@ -1026,6 +1026,9 @@ func (s *Scheduler) tickTransition(now time.Time) SchedulerDecision {
 		// next tick.
 		s.cursor = s.transTarget
 		pend := s.advancePend
+		// The outgoing item failed to read on under the transition: it
+		// did not reach its end.
+		fromEnd := s.transFromEnd && !s.itemFailed
 		s.resetItemState()
 		s.advancePend = pend
 		s.state = SchedPlaying
@@ -1035,7 +1038,7 @@ func (s *Scheduler) tickTransition(now time.Time) SchedulerDecision {
 		return SchedulerDecision{
 			State:   SchedPlaying,
 			Item:    incoming,
-			FromEnd: s.transFromEnd,
+			FromEnd: fromEnd,
 		}
 	}
 

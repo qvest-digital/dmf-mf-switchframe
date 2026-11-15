@@ -157,7 +157,7 @@ Each `PlaylistItem` can carry `SecondaryEvents` that fire at elapsed offsets anc
 
 The channel calls `BeginItem` when an item change is detected and `Tick(elapsedMs)` on every subsequent tick of the same item; `EndItem` fires on item change or cleanup to discard pending events.
 
-An item's events fire on through a transition out of it, by the time since the item started, until the transition commits; `EndItem` then drops those that have not fired. An item that ends at its natural end, by a cut or a transition, fires the events due by its end, as one anchored to the end at offset 0, on the tick the next item takes over, before they are dropped: ending into a transition it hands over on its last tick, which starts before that end. An item left by `Next`, `JumpTo`, a seek or a scheduled time, or whose clip fails to open or to read on, fires none it had not reached.
+An item's events fire on through a transition out of it, by the time since the item started, until the transition commits; `EndItem` then drops those that have not fired. An item that ends at its natural end, by a cut or a transition, fires the events due by its end, as one anchored to the end at offset 0, on the tick the next item takes over, before they are dropped: ending into a transition it hands over on its last tick, which starts before that end. An item left by `Next`, `JumpTo`, a seek or a scheduled time, or whose clip fails to open or to read on, under the transition at its end too, fires none it had not reached.
 
 ### Asset cache: LRU disk + metadata persistence
 
