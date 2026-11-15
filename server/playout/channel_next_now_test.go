@@ -371,3 +371,80 @@ func TestChannel_SeekThenNextGoesOutFromTheSeekTarget(t *testing.T) {
 		}
 	}
 }
+
+// While Previous has moved the cursor off a looping clip on air before a
+// tick, the status reports that clip's loop, and its release.
+func TestChannel_StatusLoopingFollowsTheItemPlaying(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: fakeProvider(30)})
+	a := clipItem("a")
+	a.Loop = true
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(clipItem("x"), a, clipItem("b"))))
+	ch.mu.Lock()
+	ch.state = StateOnAir
+	ch.scheduler.Start()
+	ch.mu.Unlock()
+	now := time.Unix(0, 0)
+	ch.tick(now)
+	require.NoError(t, ch.JumpTo("a"))
+	ch.tick(now.Add(ch.frameDuration))
+	require.True(t, ch.Status().Looping)
+
+	require.NoError(t, ch.Previous())
+	st := ch.Status()
+	require.Equal(t, "x", st.CurrentItemID)
+	require.True(t, st.Looping, "a still loops on air")
+	require.False(t, st.LoopExit)
+	require.NoError(t, ch.EndLoop())
+	require.True(t, ch.Status().LoopExit)
+}
+
+// A transition that passes items over, from two Next or two NextNow
+// presses, has the preroll prepare the clips after the one coming in, so
+// the clip after it airs its first frame on the tick that cuts to it, and
+// none for the item passed over, which never airs.
+func TestChannel_PrerollDuringATransitionThatSkips(t *testing.T) {
+	for _, presses := range []string{"nn", "NN"} {
+		for _, fps := range channelRates {
+			t.Run(fmt.Sprintf("%s/%.3f", presses, fps), func(t *testing.T) {
+				provider := &multiAssetProvider{assets: map[string][]DecodedFrame{}}
+				for _, id := range []string{"a", "b", "c", "d"} {
+					provider.assets["local:///clips/"+id+".ts"] = fakeFramesWithAudioTag(300, id[0])
+				}
+				ch := NewChannel(1, ChannelConfig{
+					AllowedLocalPrefixes: []string{"/"},
+					AssetProvider:        provider,
+					PrerollItems:         1,
+					Width:                64,
+					Height:               48,
+					FPS:                  fps,
+				})
+				ch.SetRawVideoOutput(func([]byte, int, int, int64, bool) {})
+				pl := testPlaylist(clipItem("a"), clipItem("b"), clipItem("c"), clipItem("d"))
+				pl.DefaultTransition = TransitionConfig{Type: "dissolve", DurationMs: 400}
+				require.NoError(t, ch.LoadPlaylist(pl))
+				ch.mu.Lock()
+				ch.state = StateOnAir
+				ch.scheduler.Start()
+				ch.mu.Unlock()
+				now := time.Unix(0, 0)
+				ch.tick(now)
+				for _, p := range presses {
+					if p == 'n' {
+						require.NoError(t, ch.Next())
+					} else {
+						require.NoError(t, ch.NextNow())
+					}
+				}
+				now = now.Add(ch.frameDuration)
+				ch.tick(now)
+				require.Equal(t, SchedTransitioning, ch.scheduler.State())
+				ch.preroll.mu.Lock()
+				_, d := ch.preroll.entries["d"]
+				_, b := ch.preroll.entries["b"]
+				ch.preroll.mu.Unlock()
+				require.True(t, d, "d, after the item coming in, is not prepared")
+				require.False(t, b, "b, passed over, is prepared")
+			})
+		}
+	}
+}
