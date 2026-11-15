@@ -77,6 +77,7 @@ type Scheduler struct {
 
 	// Signals from the channel or operator.
 	itemComplete bool // channel signaled the current clip/slate finished
+	itemFailed   bool // the clip signalled complete failed to open or read on
 	advancePend  int  // Next() presses not applied yet, see pendingFrom
 	holdComplete bool // hold item got its complete signal, waiting for Next()
 	loopExit     bool // EndLoop: the looping item plays its pass out, then ends
@@ -163,7 +164,7 @@ func (s *Scheduler) Start() {
 	s.cursor = s.startAt
 	s.startAt = 0
 	s.itemStartTime = time.Time{} // will be set on first Tick
-	s.itemComplete = false
+	s.itemComplete, s.itemFailed = false, false
 	s.advancePend = 0
 	s.holdComplete = false
 	s.loopExit = false
@@ -293,7 +294,7 @@ func (s *Scheduler) tick(now time.Time) SchedulerDecision {
 	// Loop items never auto-advance, but explicit Next() overrides. After
 	// EndLoop the item ends like any clip once its pass completes.
 	if item.Loop && !s.loopExit && !shouldAdvance {
-		s.itemComplete = false
+		s.itemComplete, s.itemFailed = false, false
 		return s.playingDecision(item)
 	}
 
@@ -301,7 +302,7 @@ func (s *Scheduler) tick(now time.Time) SchedulerDecision {
 	if item.Hold {
 		if s.itemComplete {
 			s.holdComplete = true
-			s.itemComplete = false
+			s.itemComplete, s.itemFailed = false, false
 		}
 		if !shouldAdvance {
 			return s.playingDecision(item)
@@ -311,8 +312,8 @@ func (s *Scheduler) tick(now time.Time) SchedulerDecision {
 	// Clip items advance when channel signals complete.
 	ended := false
 	if !shouldAdvance && item.Type == ItemClip && s.itemComplete {
-		s.itemComplete = false
-		shouldAdvance, ended = true, true
+		shouldAdvance, ended = true, !s.itemFailed
+		s.itemComplete, s.itemFailed = false, false
 	}
 
 	// A transition at an item's natural end runs over the item's last
@@ -368,6 +369,15 @@ func (s *Scheduler) SignalItemComplete() {
 	s.itemComplete = true
 }
 
+// SignalItemFailed is called by the channel when a clip cannot be opened or
+// read on: it is left as one that completed is, but has not reached its
+// end, so the handover is not one from an item's natural end (FromEnd).
+func (s *Scheduler) SignalItemFailed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.itemComplete, s.itemFailed = true, true
+}
+
 // Next signals the scheduler to advance to the next item. Presses before
 // the next tick add up, each one item further, up to the end of the
 // playlist; a press past it is ignored.
@@ -381,7 +391,7 @@ func (s *Scheduler) Next() error {
 		s.advancePend++
 	}
 	s.holdComplete = false
-	s.itemComplete = false
+	s.itemComplete, s.itemFailed = false, false
 	return nil
 }
 
@@ -614,7 +624,7 @@ func (s *Scheduler) SetCursor(index int, mode OnAirMode, elapsed time.Duration) 
 	s.state = SchedPlaying
 	s.itemStartTime = time.Now().Add(-elapsed)
 	s.ticksLeft, s.ticksItem = 0, ""
-	s.itemComplete = false
+	s.itemComplete, s.itemFailed = false, false
 	s.advancePend = 0
 	s.holdComplete = false
 	s.take = false
@@ -734,7 +744,7 @@ func (s *Scheduler) resetItemState() {
 	s.itemStartTime = time.Time{}
 	s.itemDurationMs = 0
 	s.ticksLeft, s.ticksItem = 0, ""
-	s.itemComplete = false
+	s.itemComplete, s.itemFailed = false, false
 	s.advancePend = 0
 	s.holdComplete = false
 	s.loopExit = false

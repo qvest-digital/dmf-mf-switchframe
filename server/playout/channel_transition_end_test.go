@@ -656,3 +656,104 @@ func TestCuedRunEndsItsFirstItemIntoATransition(t *testing.T) {
 		})
 	}
 }
+
+// An item whose clip fails to open, or to read on, is left as one that
+// ended is, but it has not reached its end: the events it had not reached
+// do not fire as it is left. Counted as an end, every event of an item
+// that never aired, start-anchored ones included, fired in one burst on
+// the tick the next item took over.
+func TestPlayoutFailedItemDoesNotFireItsEvents(t *testing.T) {
+	cases := []struct {
+		name       string
+		failAt     int // picture the read fails at, -1 for a failed open
+		transition *TransitionConfig
+	}{
+		{"open fails", -1, nil},
+		{"open fails, into a transition", -1, &TransitionConfig{Type: "mix", DurationMs: 400}},
+		{"read fails", 4, nil},
+		{"read fails, into a transition", 4, &TransitionConfig{Type: "mix", DurationMs: 400}},
+	}
+	for _, tc := range cases {
+		for _, fps := range channelRates {
+			t.Run(fmt.Sprintf("%s/%.3ffps", tc.name, fps), func(t *testing.T) {
+				n := int(math.Round(2 * fps))
+				a, b := clipItem("a"), clipItem("b")
+				a.DurationMs = 10000
+				a.SecondaryEvents = []SecondaryEvent{
+					{Type: "graphics_on", Layer: 1, Template: "t", OffsetMs: 5000, Anchor: "start"},
+					{Type: "graphics_off", Layer: 1, OffsetMs: -1000, Anchor: "end"},
+				}
+				b.Transition = tc.transition
+				assets := failingAssets{pcmAssets: pcmAssets{
+					b.AssetURI: pcmClip(2*n, fps, 48000, 0, 1, math.MaxInt64),
+				}, failAt: tc.failAt}
+				if tc.failAt >= 0 {
+					assets.pcmAssets[a.AssetURI] = pcmClip(n, fps, 48000, 1, 0, math.MaxInt64)
+				}
+				ch, tick, _ := pcmChannelAt(t, fps, assets, a, b)
+				h := &mockHandler{}
+				ch.SetSecondaryHandler(h)
+				took := false
+				for i := 0; i < n; i++ {
+					tick(i)
+					took = took || ch.scheduler.State() == SchedPlaying && ch.scheduler.CurrentItem().ID == "b"
+				}
+				require.True(t, took, "b never took over")
+				require.Empty(t, h.getCalls(), "events of the failed item fired")
+			})
+		}
+	}
+}
+
+// failingAssets opens the clips of pcmAssets, those of a clip whose read
+// fails at picture failAt, when it is not negative, and fails to open a
+// clip it does not have.
+type failingAssets struct {
+	pcmAssets
+	failAt int
+}
+
+func (f failingAssets) Open(uri string) (FrameIterator, error) {
+	it, err := f.pcmAssets.Open(uri)
+	if err != nil || f.failAt < 0 || uri != clipItem("a").AssetURI {
+		return it, err
+	}
+	return &failingRead{pcmIterator: it.(pcmIterator), at: f.failAt}, nil
+}
+
+type failingRead struct {
+	pcmIterator
+	at, n int
+}
+
+func (f *failingRead) Next() (*DecodedFrame, error) {
+	if f.n >= f.at {
+		return nil, fmt.Errorf("decode error at picture %d", f.n)
+	}
+	f.n++
+	return f.pcmIterator.Next()
+}
+
+// A failure belongs to the item it was signalled for: an item the operator
+// moves to before the tick that would leave the failed one still ends at
+// its own natural end, and the handover from it is one (FromEnd).
+func TestScheduler_FailureDoesNotOutliveAMove(t *testing.T) {
+	s := NewScheduler()
+	require.NoError(t, s.LoadPlaylist(schedPlaylist(schedClipItem("a", 0), schedClipItem("b", 0), schedClipItem("c", 0), schedClipItem("d", 0))))
+	s.Start()
+	now := time.Now()
+	require.Equal(t, "a", s.Tick(now).Item.ID)
+
+	s.SignalItemFailed()
+	require.NoError(t, s.JumpTo("c"))
+	now = now.Add(20 * time.Millisecond)
+	d := s.Tick(now)
+	require.Equal(t, "c", d.Item.ID)
+	require.False(t, d.FromEnd, "a move is not an end")
+
+	s.SignalItemComplete()
+	now = now.Add(20 * time.Millisecond)
+	d = s.Tick(now)
+	require.Equal(t, "d", d.Item.ID)
+	require.True(t, d.FromEnd, "c ended at its natural end")
+}

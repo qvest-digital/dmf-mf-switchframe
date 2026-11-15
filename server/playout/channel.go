@@ -1803,11 +1803,11 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 					Message:   fmt.Sprintf("asset open failed: %v", err),
 				})
 			}
-			// Signal complete so scheduler advances. Done while holding c.mu
+			// Signal it failed so scheduler advances. Done while holding c.mu
 			// so a concurrent SeekToItem (which holds c.mu while it calls
 			// scheduler.SetCursor) cannot interleave and have this stale
 			// signal advance the cursor past the freshly-seeked item.
-			c.scheduler.SignalItemComplete()
+			c.scheduler.SignalItemFailed()
 			c.itemEnded = true
 			c.mu.Unlock()
 			return nil
@@ -2007,7 +2007,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 		// a concurrent SeekToItem cannot interleave between check and signal.
 		c.mu.Lock()
 		if c.clipIter == iter {
-			c.scheduler.SignalItemComplete()
+			c.scheduler.SignalItemFailed()
 			c.itemEnded = true
 		}
 		lf := c.clipLastFrame
