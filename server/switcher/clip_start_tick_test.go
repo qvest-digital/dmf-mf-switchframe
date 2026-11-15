@@ -110,7 +110,10 @@ func clipStartCase(t *testing.T, now *atomic.Int64, frames []clip.BufferedFrame,
 		t.Fatal("a picture the clip does not hold")
 		return -1
 	}
-	var ingested atomic.Int64
+	// A cued player puts its still out again once a second of wall time
+	// until it starts, so the count of pictures put out says nothing about
+	// which slot is in: the newest PTS put out does.
+	var ingested, newest atomic.Int64
 	p := clip.NewPlayer(clip.PlayerConfig{
 		Clip: frames, AudioClip: aac,
 		OutputFPSNum: f.FPSNum, OutputFPSDen: f.FPSDen,
@@ -120,6 +123,7 @@ func clipStartCase(t *testing.T, now *atomic.Int64, frames []clip.BufferedFrame,
 			pf := mxlFrame(s, 0, byte(picture(wire)+1))
 			pf.PTS = pts
 			s.IngestRawVideo("clip:1", pf)
+			newest.Store(pts)
 			ingested.Add(1)
 		},
 		PCMOutput: func(pcm []float32, pts int64, channels int, start bool) {
@@ -142,7 +146,7 @@ func clipStartCase(t *testing.T, now *atomic.Int64, frames []clip.BufferedFrame,
 	g := grainNow(s) + 4
 	now.Store(clock.IndexToTimestamp(fps, g-1))
 	p.Start(ctx)
-	waitFor(t, func() bool { return ingested.Load() == 1 }, "the cued still")
+	waitFor(t, func() bool { return ingested.Load() >= 1 }, "the cued still")
 
 	s.processTick(audioTickAt(s, sr, g))
 	period := clock.IndexToTimestamp(fps, g+1) - clock.IndexToTimestamp(fps, g)
@@ -173,7 +177,7 @@ func clipStartCase(t *testing.T, now *atomic.Int64, frames []clip.BufferedFrame,
 	// The playback goes on from the slot after the first, on its own. A
 	// slot's PTS runs on in whole 90 kHz ticks, so it is at most one short
 	// of the read point.
-	waitFor(t, func() bool { return ingested.Load() >= 3 }, "the slot after the first")
+	waitFor(t, func() bool { return newest.Load() > first.ReadPTS }, "the slot after the first")
 	next := audioTickAt(s, sr, g+2)
 	s.processTick(next)
 	if _, pts := shown(); pts <= first.ReadPTS || pts < next.ReadPTS-1 {
