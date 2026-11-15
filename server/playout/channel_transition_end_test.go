@@ -819,6 +819,19 @@ func TestScheduler_FailureDoesNotOutliveAMove(t *testing.T) {
 	require.Equal(t, "d", d.Item.ID)
 	require.True(t, d.FromEnd, "c ended at its natural end")
 
+	// A cursor set by peer sync moves off a failed item as well.
+	s.SignalItemFailed()
+	s.SetCursor(1, ModeAutomated, 0)
+	now = now.Add(20 * time.Millisecond)
+	d = s.Tick(now)
+	require.Equal(t, "b", d.Item.ID)
+	require.False(t, d.FromEnd, "a cursor set is not an end")
+
+	s.SignalItemComplete()
+	now = now.Add(20 * time.Millisecond)
+	d = s.Tick(now)
+	require.Equal(t, "c", d.Item.ID)
+	require.True(t, d.FromEnd, "b ended at its natural end")
 }
 
 // A clip that fails to read on under the transition at its end has not
