@@ -214,6 +214,16 @@ type Channel struct {
 	pcmPTS     int64
 	pcmPTSFrac int64
 
+	// heldFrame is the first picture of a run started from its cue, which
+	// the program tick that started it put out with its sound (startAt):
+	// the run's first tick shows it again and puts nothing out, so the
+	// splice coordinator and the relay's encoded audio do not see it.
+	heldFrame *DecodedFrame
+
+	// wallNow is the run's wall clock, time.Now unless a test sets it
+	// before the channel starts.
+	wallNow func() time.Time
+
 	// transitionAudioFrom is the ID of the incoming item of a transition
 	// whose encoded audio the transition has started to carry.
 	transitionAudioFrom string
@@ -464,6 +474,14 @@ func (c *Channel) LoadPlaylist(pl *Playlist) error {
 // completed channel keeps its playlist, so it starts again the same way a
 // cued one does.
 func (c *Channel) Start() error {
+	return c.start(false)
+}
+
+// start is Start. With cut, the start a cut or a mix to the channel's
+// source makes, it starts only a cued channel. A run whose cue a program
+// tick put out (startAt) goes on from the picture after it, stamped on
+// from that tick's read point.
+func (c *Channel) start(cut bool) error {
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
 
@@ -489,6 +507,16 @@ func (c *Channel) Start() error {
 		c.mu.Unlock()
 		return ErrAlreadyOnAir
 	}
+	if cut && c.state != StateCued {
+		c.mu.Unlock()
+		return errNotCued
+	}
+	var cue *cuedStart
+	if c.preroll != nil {
+		if cs := c.preroll.cue.Load(); cs != nil && cs.retire() {
+			cue = cs
+		}
+	}
 
 	// A run that completed on its own was never cancelled.
 	if c.cancel != nil {
@@ -510,31 +538,60 @@ func (c *Channel) Start() error {
 	c.outputPTSFrac = 0
 	c.outputAudioPTSFrac = 0
 	c.audioSrcSet = false
-	c.pcmSet = false
 	c.xfade = nil
+	c.heldFrame = nil
+	var next time.Time // a period after the run starts
+	onStartFn := c.onStart
 
-	// Seed PTS from provider if available.
-	if c.ptsProvider != nil {
-		pts := c.ptsProvider()
-		if pts > 0 {
-			c.outputPTS = pts
-			c.outputAudioPTS = pts
+	if cue != nil {
+		// The tick put the first picture out at cue.pts and started the
+		// PCM stream there: the run's PTS are the engine's from there on.
+		// Its source is on program already.
+		step, frac := c.videoStep()
+		c.outputPTS, c.outputPTSFrac = advancePTS(cue.pts, 0, step, frac)
+		c.outputAudioPTS, c.outputAudioPTSFrac = c.outputPTS, c.outputPTSFrac
+		c.heldFrame = cue.frame
+		onStartFn = nil
+		// The tick read cue.pts a read delay behind the clock. The run
+		// puts each picture out up to a period ahead of its PTS, as one
+		// placed on the clock at its first picture does, so the pictures
+		// already due go out at once.
+		lag := time.Duration(clock.NowPTS()-cue.pts) * time.Second / 90000
+		wall := time.Now
+		if c.wallNow != nil {
+			wall = c.wallNow
+		}
+		next = wall().Add(-min(lag, maxTickBacklog) - c.frameDuration)
+	} else {
+		c.pcmSet = false
+		// Seed PTS from provider if available.
+		if c.ptsProvider != nil {
+			pts := c.ptsProvider()
+			if pts > 0 {
+				c.outputPTS = pts
+				c.outputAudioPTS = pts
+			}
 		}
 	}
 
-	onStartFn := c.onStart
 	stateChangeFn := c.onStateChange
 	c.mu.Unlock()
 
 	if onStartFn != nil {
 		onStartFn(c.Key())
 	}
+	c.prepareLiveSources()
+	if cue != nil {
+		// The next program tick reads the picture after the cue's, so the
+		// run does not wait for the state change to be told.
+		go c.run(ctx, next)
+	}
 	if stateChangeFn != nil {
 		stateChangeFn(StateOnAir)
 	}
-
-	c.prepareLiveSources()
-	go c.run(ctx)
+	if cue == nil {
+		go c.run(ctx, next)
+	}
 	return nil
 }
 
@@ -1062,12 +1119,17 @@ func (c *Channel) updatePrerollLocked() {
 		return
 	}
 	var cur, next []PlaylistItem
+	var cue *PlaylistItem
 	switch c.state {
 	case StateCued:
 		cur, _ = c.scheduler.ClipsAhead(0, c.clipItemID, c.inClipItemID)
+		if len(cur) > 0 {
+			cue = &cur[0]
+		}
 	case StateOnAir:
 		cur, next = c.scheduler.ClipsAhead(c.config.PrerollItems, c.clipItemID, c.inClipItemID)
 	}
+	c.preroll.cueOn(cue)
 	c.preroll.want(cur, next)
 }
 
@@ -1164,12 +1226,30 @@ func (c *Channel) configDimensions() (int, int) {
 // all scheduling decisions to the Scheduler. The ticker always runs at the
 // pipeline frame rate; clips with a different native FPS are handled by
 // timestamp-based frame selection in nextClipFrame().
-func (c *Channel) run(ctx context.Context) {
+func (c *Channel) run(ctx context.Context, next time.Time) {
 	defer close(c.done)
 
-	clock := tickClock{period: c.frameDuration, next: time.Now().Add(c.frameDuration), stats: c.config.ticks}
+	now := c.wallNow
+	if now == nil {
+		now = time.Now
+	}
+	if next.IsZero() {
+		next = now().Add(c.frameDuration)
+	}
+	clock := tickClock{period: c.frameDuration, next: next, stats: c.config.ticks}
 	ticker := time.NewTicker(c.frameDuration)
 	defer ticker.Stop()
+
+	// A run started from its cue starts behind the clock (start): the
+	// ticks due run now. They are the lead every run keeps on the read
+	// point, not ticks made up late.
+	for ctx.Err() == nil && !now().Before(clock.next) {
+		clock.next = clock.next.Add(clock.period)
+		if c.tick(now()) {
+			c.cleanup()
+			return
+		}
+	}
 
 	for {
 		select {
@@ -1177,7 +1257,7 @@ func (c *Channel) run(ctx context.Context) {
 			c.cleanup()
 			return
 		case <-ticker.C:
-			if c.runDue(&clock, time.Now) {
+			if c.runDue(&clock, now) {
 				c.cleanup()
 				return // playlist completed
 			}
@@ -1273,6 +1353,8 @@ func (c *Channel) tick(now time.Time) bool {
 	secScheduler := c.secondaryScheduler
 	asRunFn := c.asRunLog
 	channelID := c.id
+	held := c.heldFrame
+	c.heldFrame = nil
 	c.mu.Unlock()
 
 	c.prepareLiveSources()
@@ -1315,6 +1397,10 @@ func (c *Channel) tick(now time.Time) bool {
 	}
 	if frame == nil {
 		frame = c.slateFrame
+	}
+	if held != nil && frame != nil && sameFrame(frame, held) {
+		// The program tick that started the run put it out (startAt).
+		return false
 	}
 	if frame != nil {
 		pts, frac := c.outputPTS, c.outputPTSFrac

@@ -12,6 +12,15 @@ describe('virtualSourceBadge', () => {
 		}
 	});
 
+	it('marks a cued playout channel as cued', () => {
+		const channels = [
+			{ id: 1, state: 'on_air', itemIndex: 0, itemCount: 2 },
+			{ id: 2, state: 'cued', itemIndex: 0, itemCount: 2 },
+		] as const;
+		expect(virtualSourceBadge('playout:2', [], [...channels])).toBe('CUE');
+		expect(virtualSourceBadge('playout:1', [], [...channels])).not.toBe('CUE');
+	});
+
 	it('keeps the replay badge for other virtual sources', () => {
 		expect(virtualSourceBadge('replay', [{ id: 1, state: 'loaded' }])).toBe('RPL');
 	});

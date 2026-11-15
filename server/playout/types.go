@@ -220,6 +220,9 @@ var (
 	ErrAlreadyCued    = errors.New("playout: channel already cued")
 	ErrInvalidState   = errors.New("playout: invalid state transition")
 
+	// errNotCued: a cut or a mix starts only a cued channel.
+	errNotCued = errors.New("playout: channel not cued")
+
 	// Asset pipeline errors.
 	ErrAssetNotFound   = errors.New("playout: asset not found in cache")
 	ErrAssetNotReady   = errors.New("playout: asset not yet cached")

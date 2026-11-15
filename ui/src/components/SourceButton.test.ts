@@ -28,4 +28,13 @@ describe('SourceButton', () => {
 		});
 		expect(container.querySelector('.virtual-badge')?.textContent).toBe('CUE');
 	});
+
+	// So is a cued playout channel; the badge says a cut starts it.
+	it('marks a cued playout channel source', () => {
+		const playoutSource = { key: 'playout:1', label: 'PLAYOUT:1', type: 'replay', status: 'offline', isVirtual: true } as SourceInfo;
+		const { container } = render(SourceButton, {
+			props: { source: playoutSource, playoutChannels: [{ id: 1, state: 'cued', itemIndex: 0, itemCount: 3 }], tally: 'idle', index: 0, onCut: vi.fn() },
+		});
+		expect(container.querySelector('.virtual-badge')?.textContent).toBe('CUE');
+	});
 });

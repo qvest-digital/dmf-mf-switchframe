@@ -40,7 +40,7 @@ func TestCutToALoadedClipPlayerStartsIt(t *testing.T) {
 		func(_ int, key string) { sw.RegisterTimedReplaySource(key) },
 		func(_ int, key string) { sw.UnregisterSource(key) },
 	)
-	sw.SetOnProgramTick(startClipOnProgramTick(mgr))
+	sw.SetOnProgramTick(startCuedOnProgramTick(mgr, nil))
 
 	require.NoError(t, mgr.Load(1, c.ID))
 	require.NoError(t, mgr.SetLoop(1, true))
