@@ -27,11 +27,22 @@ import (
 // readyFormats are the programs the timing tests run at: every frame
 // rate the engine's formats take, from 23.976, whose ticks lie furthest
 // apart, to 60, at 1080 and 2160 lines, and 120 and 240, whose ticks lie
-// 8.3 and 4.2 ms apart.
+// 8.3 and 4.2 ms apart. Each one waits out readyMaxLag on the wall clock
+// at least once. Under the race detector, which checks the goroutines
+// the check shares with the switcher and the admin server, the same at
+// every rate, they run at 23.976 and 240 fps, the longest and the
+// shortest period, and at 2160p59.94, the dearest tick. Every format
+// still runs without it.
 var readyFormats = []string{
 	"1080p23.976", "1080p24", "1080p25", "1080p29.97", "1080p30",
 	"1080p50", "1080p59.94", "1080p60", "1080p120", "1080p240",
 	"2160p25", "2160p59.94",
+}
+
+func init() {
+	if raceDetector {
+		readyFormats = []string{"1080p23.976", "1080p240", "2160p59.94"}
+	}
 }
 
 // readyFormat returns the format named: a preset, or 1080p at 120 or 240

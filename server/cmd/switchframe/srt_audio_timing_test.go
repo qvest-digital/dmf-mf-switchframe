@@ -28,12 +28,22 @@ func scriptTAI(t *testing.T, now *atomic.Int64) {
 
 // timingRates are the program frame rates the timing tests run at. The
 // SRT decoder hands the mixer 48 kHz whatever the stream carries, so the
-// mixer side runs at 48 kHz only.
+// mixer side runs at 48 kHz only. The tests read seconds of audio on one
+// goroutine, where the race detector finds nothing but runs them several
+// times slower; under it they run at 23.976, 59.94 and 240 fps: the
+// longest period, the last read two periods behind, and the shortest,
+// read ten. Every rate still runs without it.
 var timingRates = []clock.Rate{
 	{Num: 24000, Den: 1001}, {Num: 24, Den: 1}, {Num: 25, Den: 1}, {Num: 30000, Den: 1001},
 	{Num: 30, Den: 1}, {Num: 50, Den: 1}, {Num: 60000, Den: 1001}, {Num: 60, Den: 1},
 	{Num: 100, Den: 1}, {Num: 120000, Den: 1001}, {Num: 120, Den: 1},
 	{Num: 240000, Den: 1001}, {Num: 240, Den: 1},
+}
+
+func init() {
+	if raceDetector {
+		timingRates = []clock.Rate{{Num: 24000, Den: 1001}, {Num: 60000, Den: 1001}, {Num: 240, Den: 1}}
+	}
 }
 
 // forEachTimingRate runs f at every program rate.
@@ -308,30 +318,28 @@ func srtAudioSettles(t *testing.T, r clock.Rate) {
 // Past the budget, its audio misses reads until the anchor raises once. In
 // every case the audio lands where its video is once the lateness lasts,
 // at every program rate and for every audio frame length. Each case reads
-// 26 s of audio on one goroutine, where the race detector finds nothing;
-// under it, which runs a case about 4 s, the cases run at 23.976, 59.94
-// and 240 fps: the longest period, the last read two periods behind, and
-// the shortest, read ten.
+// 26 s of audio on one goroutine; under the race detector, which runs a
+// case about 4 s, it runs at the timingRates it keeps, each case at one
+// frame length, taken in turn so that every rate and every case meets
+// both.
 func TestSRTAudioStaysOnItsVideoThroughALastingLateness(t *testing.T) {
-	rates := []clock.Rate{
-		{Num: 24000, Den: 1001}, {Num: 24, Den: 1}, {Num: 25, Den: 1}, {Num: 30000, Den: 1001}, {Num: 30, Den: 1},
-		{Num: 50, Den: 1}, {Num: 60000, Den: 1001}, {Num: 60, Den: 1}, {Num: 100, Den: 1},
-		{Num: 120000, Den: 1001}, {Num: 120, Den: 1}, {Num: 240000, Den: 1001}, {Num: 240, Den: 1},
+	cases := []struct {
+		name   string
+		late   func(slack, budget int64) int64
+		raises int64
+	}{
+		{"under-slack", func(slack, _ int64) int64 { return slack - 10 }, 0},
+		{"past-slack", func(slack, _ int64) int64 { return slack + clock.TrackingDriftMargin/2 }, 1},
+		{"past-budget", func(_, budget int64) int64 { return budget + 45 }, 1},
 	}
-	if raceDetector {
-		rates = []clock.Rate{{Num: 24000, Den: 1001}, {Num: 60000, Den: 1001}, {Num: 240, Den: 1}}
-	}
-	for _, r := range rates {
-		for _, frame := range []int{1024, 1536} {
-			for _, c := range []struct {
-				name   string
-				late   func(slack, budget int64) int64
-				raises int64
-			}{
-				{"under-slack", func(slack, _ int64) int64 { return slack - 10 }, 0},
-				{"past-slack", func(slack, _ int64) int64 { return slack + clock.TrackingDriftMargin/2 }, 1},
-				{"past-budget", func(_, budget int64) int64 { return budget + 45 }, 1},
-			} {
+	frames := []int{1024, 1536}
+	for i, r := range timingRates {
+		for j, c := range cases {
+			fs := frames
+			if raceDetector {
+				fs = frames[(i+j)%2 : (i+j)%2+1]
+			}
+			for _, frame := range fs {
 				t.Run(fmt.Sprintf("%d/%d/%d/%s", r.Num, r.Den, frame, c.name), func(t *testing.T) {
 					srtLastingLateness(t, r, frame, c.late, c.raises)
 				})
