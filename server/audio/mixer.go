@@ -237,7 +237,10 @@ type Mixer struct {
 	stingerChannels int       // channel count of stinger audio
 
 	// Program mute: true while FTB is held (screen is black, audio is silent).
-	programMuted        bool
+	programMuted bool
+	// muteAtRampEnd is set while AbortToBlack takes every channel down to
+	// silence on a cut ramp: the program is muted when that ramp ends.
+	muteAtRampEnd       bool
 	unmuteFadeRemaining int // samples remaining in unmute fade-in ramp (0 = inactive)
 
 	// Program bus limiter (always active)
@@ -723,6 +726,7 @@ func (m *Mixer) SetProgramMute(muted bool) {
 func (m *Mixer) setProgramMuteLocked(muted bool) {
 	wasMuted := m.programMuted
 	m.programMuted = muted
+	m.muteAtRampEnd = false
 	if muted {
 		m.limiter.Reset()
 		for _, ch := range m.channels {

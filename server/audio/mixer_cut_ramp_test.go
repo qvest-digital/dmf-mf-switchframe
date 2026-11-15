@@ -141,6 +141,9 @@ type gainRig struct {
 	steep int
 	k     int       // the next period
 	gain  []float64 // the measured source's gain, sample by sample
+	// gap runs once between the next period's audio and the ramp's
+	// advance, as a call that lands between the two in the sync loop.
+	gap func()
 }
 
 func newGainRig(t *testing.T, fps clock.Rate, sr int, sources []string, measured string, afv, interleave bool) *gainRig {
@@ -220,6 +223,10 @@ func (r *gainRig) period() {
 	n := r.starts[k+1] - r.starts[k]
 	at := r.base + uint64(r.starts[k])
 	out := r.m.ProduceSamples(at, n, clock.IndexPTS(r.ra, at))
+	if gap := r.gap; gap != nil {
+		r.gap = nil
+		gap()
+	}
 	r.m.AdvanceCrossfade()
 	if len(out) != 2*n {
 		r.t.Fatalf("period %d: %d values, want %d", k, len(out), 2*n)
@@ -640,6 +647,178 @@ var gainScenarios = []gainScenario{
 		},
 		end: func(bool) map[string]float64 { return map[string]float64{"a": 1, "b": 0, "c": 0} },
 	},
+	// A fade to black aborted midway takes every source back up from the
+	// gain it aired.
+	{
+		name: "ftb_aborted_midway",
+		also: "c",
+		run: func(r *gainRig, _ bool) {
+			token := r.transition(FadeOut, "a", "", 8, 4)
+			r.calls(func() { r.m.OnTransitionAbort(token) })
+		},
+		end: func(bool) map[string]float64 { return map[string]float64{"a": 1, "b": 0, "c": 1} },
+	},
+	// A fade from black aborted at once, after one period, halfway or
+	// almost at its end returns to black: every source fades back down
+	// from the gain it aired, and the program is muted once it is silent.
+	ftbReverseAborted(0),
+	ftbReverseAborted(1),
+	ftbReverseAborted(4),
+	ftbReverseAborted(7),
+	// A cut while the aborted fade from black takes the program back down
+	// keeps it going to black: the program stays black after the cut.
+	{
+		name:  "ftb_reverse_aborted_then_cut",
+		also:  "c",
+		steep: 2,
+		run: func(r *gainRig, _ bool) {
+			fromBlackAborted(r, 4)
+			r.periods(1)
+			r.cut("a", "b")
+		},
+		end: func(bool) map[string]float64 { return map[string]float64{"a": 0, "b": 0, "c": 0} },
+	},
+	// A fade from black started again while the aborted one takes the
+	// program back down rises from the gains aired, not from silence.
+	{
+		name:  "ftb_reverse_aborted_then_ftb_in",
+		also:  "c",
+		steep: 2,
+		run: func(r *gainRig, _ bool) {
+			fromBlackAborted(r, 4)
+			r.periods(1)
+			r.transition(FadeIn, "a", "", 8, 8)
+			r.calls(r.m.OnTransitionComplete)
+		},
+		end: func(bool) map[string]float64 { return map[string]float64{"a": 1, "b": 0, "c": 1} },
+	},
+	// A fade from black started during the ramp of that cut: the source
+	// the cut takes off falls from the gain it aired, the rest rise.
+	{
+		name:  "ftb_reverse_aborted_then_cut_then_ftb_in",
+		also:  "c",
+		steep: 2,
+		run: func(r *gainRig, _ bool) {
+			fromBlackAborted(r, 4)
+			r.periods(1)
+			r.cut("a", "b")
+			r.periods(1)
+			r.transition(FadeIn, "b", "", 8, 8)
+			r.calls(r.m.OnTransitionComplete)
+		},
+		end: func(afv bool) map[string]float64 {
+			if afv {
+				return map[string]float64{"a": 0, "b": 1, "c": 0}
+			}
+			return map[string]float64{"a": 1, "b": 1, "c": 1}
+		},
+	},
+	// The abort of a fade from black made again, as a second abort of the
+	// same transition does, cannot take the program back up under black.
+	{
+		name:  "ftb_reverse_aborted_twice",
+		also:  "c",
+		steep: 2,
+		run: func(r *gainRig, _ bool) {
+			token := fromBlackAborted(r, 4)
+			r.periods(1)
+			r.calls(func() { r.m.AbortToBlack(token) })
+		},
+		end: func(bool) map[string]float64 { return map[string]float64{"a": 0, "b": 0, "c": 0} },
+	},
+	// A source switched on while the program goes back to black stays
+	// silent: it has no gain of its own to ramp down from.
+	{
+		name:  "ftb_reverse_aborted_then_source_on",
+		also:  "c",
+		steep: 2,
+		run: func(r *gainRig, _ bool) {
+			fromBlackAborted(r, 4)
+			r.periods(1)
+			r.m.SetActive("b", true)
+		},
+		end: func(bool) map[string]float64 { return map[string]float64{"a": 0, "b": 0, "c": 0} },
+	},
+	// Once the aborted fade from black has muted the program, a fade from
+	// black run to completion and a cut after it air as on any program.
+	{
+		name:  "ftb_reverse_aborted_then_ftb_in_then_cut",
+		also:  "c",
+		steep: 2,
+		run: func(r *gainRig, _ bool) {
+			fromBlackAborted(r, 4)
+			r.periods(cutRampPeriods + 2)
+			r.transition(FadeIn, "a", "", 8, 8)
+			r.calls(r.m.OnTransitionComplete)
+			r.periods(2)
+			r.cut("a", "b")
+		},
+		end: afvEnd("b", map[string]float64{"a": 1, "b": 1, "c": 1}),
+	},
+	// A cut that pre-empts a fade from black as it starts takes the
+	// picture out of black: the abort leaves the program unmuted, and the
+	// cut airs the new source.
+	{
+		name: "ftb_reverse_pre_empted_by_a_cut",
+		also: "c",
+		// The abort takes the channels up from silence on a cut ramp
+		// while the 5 ms unmute ramp still runs: the two together rise up
+		// to twice as steep as the cut ramp alone.
+		steep: 1,
+		run: func(r *gainRig, _ bool) {
+			r.transition(FadeOut, "a", "", 8, 8)
+			r.calls(r.m.OnTransitionComplete, func() { r.m.SetProgramMute(true) })
+			r.periods(1)
+			token := r.transition(FadeIn, "a", "", 8, 0)
+			r.calls(func() { r.m.OnTransitionAbort(token) })
+			r.cut("a", "b")
+		},
+		end: afvEnd("b", map[string]float64{"a": 1, "b": 1, "c": 1}),
+	},
+	// A cut made black that reaches the mixer before the abort of the
+	// fade from black makes the abort's token stale: the program still
+	// goes back down to black and is muted.
+	{
+		name:  "ftb_reverse_aborted_after_a_cut",
+		also:  "c",
+		steep: 2,
+		run: func(r *gainRig, _ bool) {
+			r.transition(FadeOut, "a", "", 8, 8)
+			r.calls(r.m.OnTransitionComplete, func() { r.m.SetProgramMute(true) })
+			r.periods(1)
+			token := r.transition(FadeIn, "a", "", 8, 4)
+			r.cut("a", "b")
+			r.periods(1)
+			r.calls(func() { r.m.AbortToBlack(token) })
+		},
+		end: func(bool) map[string]float64 { return map[string]float64{"a": 0, "b": 0, "c": 0} },
+	},
+}
+
+// fromBlackAborted fades the program to black and, a period later, back
+// from black over 8 periods, and aborts the fade from black after run of
+// them, making the calls the switcher makes. It returns the fade's token.
+func fromBlackAborted(r *gainRig, run int) uint64 {
+	r.transition(FadeOut, "a", "", 8, 8)
+	r.calls(r.m.OnTransitionComplete, func() { r.m.SetProgramMute(true) })
+	r.periods(1)
+	token := r.transition(FadeIn, "a", "", 8, run)
+	r.calls(func() { r.m.AbortToBlack(token) })
+	return token
+}
+
+// ftbReverseAborted is a fade from black aborted after run of its 8
+// periods: the program ends silent.
+func ftbReverseAborted(run int) gainScenario {
+	return gainScenario{
+		name: fmt.Sprintf("ftb_reverse_aborted_%d", run),
+		also: "c",
+		// The 5 ms unmute ramp a fade from black starts with steepens its
+		// first period.
+		steep: 2,
+		run:   func(r *gainRig, _ bool) { fromBlackAborted(r, run) },
+		end:   func(bool) map[string]float64 { return map[string]float64{"a": 0, "b": 0, "c": 0} },
+	}
 }
 
 // cutThenFTB is a cut from a to b and, periods later, a fade to black
@@ -674,9 +853,10 @@ func cutThenMix(periods int) gainScenario {
 
 // No switcher action makes a source's gain step: a cut, a second cut
 // during a cut's ramp, a completed mix and the program change after it, a
-// cut during a mix, with or without a period produced between the calls
-// one action makes. Every source's gain moves at most one ramp increment
-// a period and ends where the action puts it.
+// cut during a mix, an aborted fade to or from black, with or without a
+// period produced between the calls one action makes. Every source's gain
+// moves at most one ramp increment a period and ends where the action
+// puts it.
 func TestCutGainsNeverStep(t *testing.T) {
 	t.Parallel()
 	for _, sc := range gainScenarios {
@@ -722,6 +902,86 @@ func TestCutGainsNeverStep(t *testing.T) {
 					})
 				}
 			}
+		}
+	}
+}
+
+// abortedFromBlackRig is a gain rig over a, b and c measuring a, with a
+// and c on, a on program, that has aired two periods.
+func abortedFromBlackRig(t *testing.T, f rampFormat, afv bool) *gainRig {
+	t.Helper()
+	r := newGainRig(t, f.fps, f.sr, []string{"a", "b", "c"}, "a", afv, false)
+	if afv {
+		r.m.OnProgramChange("a")
+	} else {
+		r.m.SetActive("a", true)
+	}
+	r.m.SetActive("c", true)
+	r.periods(2)
+	return r
+}
+
+// An abort to black made again two periods into the ramp down of the
+// first, as a second abort of the same fade from black does, carries the
+// program on down from the gains aired: it is muted a whole cut ramp
+// later, with no step.
+func TestAbortToBlackAgainCarriesOn(t *testing.T) {
+	t.Parallel()
+	for _, f := range rampFormats() {
+		for _, afv := range afvModes() {
+			t.Run(fmt.Sprintf("%s/afv=%v", formatName(f.fps, f.sr), afv), func(t *testing.T) {
+				t.Parallel()
+				r := abortedFromBlackRig(t, f, afv)
+				token := fromBlackAborted(r, 4)
+				r.periods(2)
+				r.m.AbortToBlack(token)
+				for k := 1; k < cutRampPeriods; k++ {
+					r.period()
+					if r.m.IsProgramMuted() {
+						t.Fatalf("muted %d periods after the second abort, want %d", k, cutRampPeriods)
+					}
+				}
+				r.period()
+				if !r.m.IsProgramMuted() {
+					t.Fatalf("not muted %d periods after the second abort", cutRampPeriods)
+				}
+				r.periods(2)
+				r.steep = 2
+				r.checkContinuous()
+				r.checkEnd(0)
+			})
+		}
+	}
+}
+
+// An abort of the fade from black that lands between the last period of
+// the ramp down and the ramp's advance, as one can in the sync loop, finds
+// its token stale: the ramp ends and mutes the program, and no period
+// airs under black at full gain.
+func TestLateAbortKeepsTheRampToMute(t *testing.T) {
+	t.Parallel()
+	for _, f := range rampFormats() {
+		for _, black := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/abortToBlack=%v", formatName(f.fps, f.sr), black), func(t *testing.T) {
+				t.Parallel()
+				r := abortedFromBlackRig(t, f, true)
+				token := fromBlackAborted(r, 4)
+				r.periods(cutRampPeriods - 1)
+				r.gap = func() {
+					if black {
+						r.m.AbortToBlack(token)
+					} else {
+						r.m.OnTransitionAbort(token)
+					}
+				}
+				r.periods(3)
+				if !r.m.IsProgramMuted() {
+					t.Fatal("the program is not muted after the ramp down")
+				}
+				r.steep = 2
+				r.checkContinuous()
+				r.checkEnd(0)
+			})
 		}
 	}
 }

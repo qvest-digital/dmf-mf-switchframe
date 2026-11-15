@@ -195,6 +195,11 @@ func (m *Mixer) transGainLocked(sourceKey string, ch *Channel, p float64) float6
 	if s, ok := m.cutSpans[sourceKey]; ok {
 		return s.at(p)
 	}
+	// A channel put on during a ramp to mute has no span: it stays silent
+	// rather than air until the mute.
+	if m.muteAtRampEnd {
+		return 0
+	}
 	if start, ok := m.mixStarts[sourceKey]; ok {
 		return m.mixGainLocked(sourceKey, ch, start, p)
 	}
@@ -213,16 +218,16 @@ func (m *Mixer) transGainLocked(sourceKey string, ch *Channel, p float64) float6
 // mixGainLocked returns the gain of an active channel at position p of a
 // transition that started with the channel at gain start. A fade to black
 // takes every channel down from there to silence, so the program is
-// silent when it is muted at the end; a fade from black, which starts from
-// a muted program, brings every channel up from silence but the ones
-// queued to go off. In a mix or dip the incoming source rises from its
-// start to full gain on the transition's curve, the outgoing source, when
-// it follows video, and the channels queued to go off fall from theirs to
-// silence on it, and every other channel, a source on before the mix that
-// does not follow video among them, eases to full gain, staying there
-// when it starts there. With the outgoing source at full gain and the
-// incoming one silent, these are the transitions' own curves. Caller must
-// hold m.mu.
+// silent when it is muted at the end; a fade from black brings every
+// channel up from there, silence when it starts from a muted program, but
+// the ones queued to go off, which fall to silence. In a mix or dip the
+// incoming source rises from its start to full gain on the transition's
+// curve, the outgoing source, when it follows video, and the channels
+// queued to go off fall from theirs to silence on it, and every other
+// channel, a source on before the mix that does not follow video among
+// them, eases to full gain, staying there when it starts there. With the
+// outgoing source at full gain and the incoming one silent, these are the
+// transitions' own curves. Caller must hold m.mu.
 func (m *Mixer) mixGainLocked(sourceKey string, ch *Channel, start, p float64) float64 {
 	mode := m.transCrossfadeMode
 	_, queued := m.afvDeactivateOnComplete[sourceKey]
@@ -230,9 +235,9 @@ func (m *Mixer) mixGainLocked(sourceKey string, ch *Channel, start, p float64) f
 	case mode == FadeOut:
 		return start * transitionFromGain(mode, p)
 	case mode == FadeIn && queued:
-		return 0
+		return cutSpan{start, 0}.at(p)
 	case mode == FadeIn:
-		return transitionFromGain(mode, p)
+		return cutSpan{start, 1}.at(p)
 	case sourceKey == m.transCrossfadeTo && (ch.afv || m.transAbortActivated == sourceKey):
 		if mode == DipToSilence {
 			return start*transitionFromGain(mode, p) + transitionToGain(mode, p)
@@ -245,10 +250,10 @@ func (m *Mixer) mixGainLocked(sourceKey string, ch *Channel, start, p float64) f
 }
 
 // cutTargetLocked returns the gain a channel airs once a cut ramp ends:
-// silence when it goes off with the ramp, full gain when it stays on.
-// Caller must hold m.mu.
+// silence when it goes off with the ramp or the ramp ends in the program
+// mute, full gain when it stays on. Caller must hold m.mu.
 func (m *Mixer) cutTargetLocked(sourceKey string) float64 {
-	if _, off := m.afvDeactivateOnComplete[sourceKey]; off {
+	if _, off := m.afvDeactivateOnComplete[sourceKey]; off || m.muteAtRampEnd {
 		return 0
 	}
 	return 1
@@ -319,5 +324,10 @@ func (m *Mixer) advanceCutCrossfade() {
 		// on program: a queued channel may have been put back on program
 		// (e.g. re-activated by OnCut) after it was queued.
 		m.deactivateQueuedLocked()
+		// A ramp taking the program back to black has aired silence on
+		// its last period, so the mute steps nothing.
+		if m.muteAtRampEnd {
+			m.setProgramMuteLocked(true)
+		}
 	}
 }
