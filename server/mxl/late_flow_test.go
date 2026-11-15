@@ -805,7 +805,7 @@ func TestLateFlow_SparseDataFlowIsRead(t *testing.T) {
 	eachVideoRate(t, func(t *testing.T, rate Rational, period time.Duration) {
 		flow := sparseData{FlowConfig{Format: DataFormatData, GrainRate: rate}}
 		w := NewReopeningReader("d", nil, func(string) (DiscreteReader, error) { return flow, nil }, quietLog)
-		defer w.Close()
+		defer func() { _ = w.Close() }()
 		time.Sleep(writtenTimeout + 2*reopenInterval)
 
 		if _, _, err := w.ReadGrain(1000, uint64(period)); !errors.Is(err, ErrTooLate) {
