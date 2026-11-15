@@ -70,7 +70,7 @@ func TestInitPlayout_RelayCarriesChannelVideoAndAudioWithoutGPU(t *testing.T) {
 		}),
 	}
 	require.NoError(t, a.initPlayout())
-	defer a.playoutMgr.Close()
+	defer closePlayoutApp(a)
 	// State broadcasts need the whole engine; this test is about the relay.
 	a.playoutMgr.SetOnStateChange(func() {})
 

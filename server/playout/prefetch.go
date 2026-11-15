@@ -59,10 +59,11 @@ func (p *Prefetcher) Start(ctx context.Context) {
 		panic("playout: Prefetcher.Start called while already running")
 	}
 	ctx, p.cancel = context.WithCancel(ctx)
-	p.done = make(chan struct{})
+	done := make(chan struct{})
+	p.done = done
 	p.mu.Unlock()
 
-	go p.run(ctx)
+	go p.run(ctx, done)
 }
 
 // Stop cancels the background goroutine and waits for it to exit.
@@ -150,9 +151,10 @@ func (p *Prefetcher) scanNeeded(pl *Playlist, cursor int) []string {
 }
 
 // run is the background goroutine loop: waits for triggers or periodic ticks,
-// then scans and launches fetch goroutines (bounded by semaphore).
-func (p *Prefetcher) run(ctx context.Context) {
-	defer close(p.done)
+// then scans and launches fetch goroutines (bounded by semaphore). It
+// closes done, which Stop takes from p.done under p.mu, on return.
+func (p *Prefetcher) run(ctx context.Context, done chan struct{}) {
+	defer close(done)
 
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()

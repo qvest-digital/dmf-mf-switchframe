@@ -220,6 +220,9 @@ var (
 	ErrAlreadyCued    = errors.New("playout: channel already cued")
 	ErrInvalidState   = errors.New("playout: invalid state transition")
 
+	// errManagerClosed: the manager was closed.
+	errManagerClosed = errors.New("playout: manager closed")
+
 	// errNotCued: a cut or a mix starts only a cued channel.
 	errNotCued = errors.New("playout: channel not cued")
 

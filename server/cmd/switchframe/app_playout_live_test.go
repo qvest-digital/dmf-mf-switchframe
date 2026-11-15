@@ -44,7 +44,7 @@ func TestInitPlayout_LiveItemAirsInputWithoutGPU(t *testing.T) {
 	}
 	require.Nil(t, a.gpu())
 	require.NoError(t, a.initPlayout())
-	defer a.playoutMgr.Close()
+	defer closePlayoutApp(a)
 	a.playoutMgr.SetOnStateChange(func() {})
 
 	const w, h = 64, 36

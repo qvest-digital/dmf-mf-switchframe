@@ -947,6 +947,14 @@ func (m *Manager) RecoverChannel(channelID int) error {
 	if err := m.validateChannelID(channelID); err != nil {
 		return err
 	}
+	// The watchdog's stall callback lands here; after Close there is
+	// nothing to recover.
+	m.cutMu.Lock()
+	closed := m.closed
+	m.cutMu.Unlock()
+	if closed {
+		return errManagerClosed
+	}
 
 	m.mu.Lock()
 	ch := m.channels[channelID-1]
@@ -983,11 +991,23 @@ func (m *Manager) RecoverChannel(channelID int) error {
 	return m.Start(channelID)
 }
 
-// Close stops all active channels, once the starts cuts made are done.
+// Close stops the watchdog and all active channels, once the starts cuts
+// made are done, and closes the as-run logger. A recovery or a cut after it
+// starts nothing.
 func (m *Manager) Close() {
 	m.cutMu.Lock()
 	m.closed = true
 	m.cutMu.Unlock()
+	m.mu.Lock()
+	wd := m.watchdog
+	m.watchdog = nil
+	asRun := m.asRunLogger
+	m.mu.Unlock()
+	// The watchdog's stall callback holds the manager; stopping it waits
+	// for a recovery under way, which the channels' stop below then ends.
+	if wd != nil {
+		wd.Stop()
+	}
 	m.cutStarts.Wait()
 	m.mu.Lock()
 	channels := m.channels
@@ -997,6 +1017,9 @@ func (m *Manager) Close() {
 		if ch != nil {
 			ch.Stop()
 		}
+	}
+	if asRun != nil {
+		_ = asRun.Close()
 	}
 }
 
