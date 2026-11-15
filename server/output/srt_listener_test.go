@@ -408,12 +408,15 @@ func TestSRTListener_StatsPolling(t *testing.T) {
 	err := l.AddConnection("stats-conn", mock)
 	require.NoError(t, err)
 
-	// Wait for at least one stats poll (1-second ticker + margin).
+	// The poller records a poll's stats after SRTStats returns, so a poll
+	// counted by the mock may not be in the snapshot yet. Wait for the
+	// record instead; UpdateSend writes every field under one lock.
+	var snap srt.ConnStatsSnapshot
 	require.Eventually(t, func() bool {
-		return mock.pollCount.Load() >= 1
-	}, 3*time.Second, 50*time.Millisecond)
+		snap = cs.Snapshot()
+		return snap.PacketsSent != 0
+	}, 3*time.Second, 50*time.Millisecond, "no stats recorded")
 
-	snap := cs.Snapshot()
 	require.InDelta(t, 30.0, snap.RTTMs, 0.1, "RTT should be 30ms")
 	require.InDelta(t, 6.5, snap.SendRateMbps, 0.01)
 	require.InDelta(t, 0.02, snap.SendLossRatePct, 0.001)
