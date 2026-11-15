@@ -285,14 +285,29 @@ func (s *Source) Start(ctx context.Context, videoFlow DiscreteReader, audioFlow 
 	}
 }
 
+// Shutdown starts stopping the source without waiting for it: the reader
+// loops are cancelled and the flows' retries ended. An open of a missing
+// flow takes seconds on an mxlfs, so a caller stopping several sources
+// shuts all of them down before it stops any, and the opens under way on
+// them end together rather than one source after another. Safe to call
+// more than once, and before Stop.
+func (s *Source) Shutdown() {
+	if s.cancel != nil {
+		s.cancel()
+	}
+	for _, f := range []any{s.videoFlow, s.audioFlow, s.dataFlow} {
+		if f, ok := f.(interface{ shutdown() }); ok {
+			f.shutdown()
+		}
+	}
+}
+
 // Stop halts the source and waits for goroutines to finish.
 // Safe to call multiple times. Closes flow readers to release C handles
 // before the caller closes the MXL instance.
 func (s *Source) Stop() {
 	s.stopOnce.Do(func() {
-		if s.cancel != nil {
-			s.cancel()
-		}
+		s.Shutdown()
 		s.wg.Wait()
 
 		// Wait for reader goroutines (videoLoop, audioLoop, dataLoop) to finish.
@@ -311,13 +326,6 @@ func (s *Source) Stop() {
 		// Close flow readers to release C handles. Must happen after reader
 		// goroutines exit (they call ReadGrain/ReadSamples on these handles).
 		// Without this, mxlInstance.Close() races with still-open flow readers.
-		// Every reader's retries are ended first, so the opens still under
-		// way on them end together rather than one after another.
-		for _, f := range []any{s.videoFlow, s.audioFlow, s.dataFlow} {
-			if f, ok := f.(interface{ shutdown() }); ok {
-				f.shutdown()
-			}
-		}
 		if s.videoFlow != nil {
 			_ = s.videoFlow.Close()
 		}

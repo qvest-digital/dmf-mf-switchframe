@@ -118,9 +118,22 @@ func (r *reopener[T]) handle() (h T, ok bool) {
 	if now.Before(r.nextRetry) {
 		return h, false
 	}
-	r.nextRetry = now.Add(reopenInterval)
 
+	// A read that passed its loop's context check just before a stop
+	// would otherwise hold the stop for a whole open.
+	r.mu.Lock()
+	closed := r.closed
+	r.mu.Unlock()
+	if closed {
+		return h, false
+	}
+
+	// The interval runs from the end of the open: an open of a missing
+	// flow can take longer than the interval, and a reader loop reads
+	// twice before it looks at its context again, so a stop would
+	// otherwise wait for two opens.
 	h, err := r.open(r.flowID)
+	r.nextRetry = time.Now().Add(reopenInterval)
 	if err != nil {
 		r.log.Debug("mxl: flow not reopened yet", "flowID", r.flowID, "error", err)
 		return h, false

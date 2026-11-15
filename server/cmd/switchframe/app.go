@@ -2146,6 +2146,14 @@ func (a *App) closeSubsystems() {
 	if a.mxlOutput != nil {
 		a.mxlOutput.Stop()
 	}
+	// Every source is shut down before any is waited for, so their
+	// opens under way end together.
+	for _, src := range a.mxlSources {
+		src.Shutdown()
+	}
+	for _, src := range a.demoMXLSources {
+		src.Shutdown()
+	}
 	for _, src := range a.mxlSources {
 		src.Stop()
 	}
