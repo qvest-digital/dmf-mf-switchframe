@@ -1,6 +1,7 @@
 package playout
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -1858,6 +1859,40 @@ func TestScheduler_RestartingTheItemOnAir(t *testing.T) {
 			require.Equal(t, "a", reviewDecision(s.Tick(t0.Add(600*time.Millisecond))))
 			require.Equal(t, "a", reviewDecision(s.Tick(t0.Add(1500*time.Millisecond))), "the slate did not restart")
 			require.Equal(t, "b", reviewDecision(s.Tick(t0.Add(1601*time.Millisecond))))
+		})
+	}
+}
+
+// TestScheduler_EndLoopActsOnTheItemPlaying: after Previous moved the
+// cursor off a looping clip before a tick, that clip is still the one
+// playing, so EndLoop releases its loop, whatever the item at the cursor
+// is, and the release holds when Next comes back to it.
+func TestScheduler_EndLoopActsOnTheItemPlaying(t *testing.T) {
+	for _, xLoops := range []bool{true, false} {
+		t.Run(fmt.Sprintf("x loops %v", xLoops), func(t *testing.T) {
+			t0 := time.Unix(0, 0)
+			a := schedClipItem("a", 0)
+			a.Loop = true
+			x := schedClipItem("x", 0)
+			x.Loop = xLoops
+			s := NewScheduler()
+			require.NoError(t, s.LoadPlaylist(schedPlaylist(x, a, schedClipItem("b", 0))))
+			s.Start()
+			s.Tick(t0)
+			require.NoError(t, s.JumpTo("a"))
+			require.Equal(t, "a", reviewDecision(s.Tick(t0)))
+
+			require.NoError(t, s.Previous())
+			require.NoError(t, s.EndLoop(), "a loops and is playing")
+			require.True(t, s.LoopExitPending())
+			snap := s.StatusSnapshot()
+			require.Equal(t, 1, snap.Playing)
+			require.True(t, snap.LoopExit)
+			require.NoError(t, s.Next())
+			require.Equal(t, "a", reviewDecision(s.Tick(t0.Add(time.Millisecond))))
+			require.True(t, s.LoopExitPending(), "a's loop release was lost")
+			s.SignalItemComplete()
+			require.Equal(t, "b", reviewDecision(s.Tick(t0.Add(2*time.Millisecond))))
 		})
 	}
 }

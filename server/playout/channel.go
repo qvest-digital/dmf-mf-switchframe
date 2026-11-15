@@ -321,7 +321,9 @@ func (c *Channel) Status() ChannelStatus {
 			item := pl.Items[snap.Cursor]
 			st.CurrentItemID = item.ID
 			st.CurrentTitle = item.Title
-			if c.state == StateOnAir && item.Loop && item.Type == ItemClip {
+		}
+		if snap.Playing >= 0 && snap.Playing < len(pl.Items) {
+			if item := pl.Items[snap.Playing]; c.state == StateOnAir && item.Loop && item.Type == ItemClip {
 				st.Looping = true
 				st.LoopExit = snap.LoopExit
 			}

@@ -441,16 +441,19 @@ func (s *Scheduler) EndLoop() error {
 	if !s.started || s.stopped {
 		return ErrNotOnAir
 	}
-	if s.playlist == nil || s.cursor >= len(s.playlist.Items) {
+	at := s.playingIndex()
+	if s.playlist == nil || at >= len(s.playlist.Items) {
 		return ErrNotLooping
 	}
-	item := s.playlist.Items[s.cursor]
+	item := s.playlist.Items[at]
 	if !item.Loop || item.Type != ItemClip {
 		return ErrNotLooping
 	}
-	s.loopExit = true
-	if s.cursor == s.onAir {
+	if at == s.onAir {
 		s.onAirState.loopExit = true
+	}
+	if at == s.cursor {
+		s.loopExit = true
 	}
 	return nil
 }
@@ -460,7 +463,7 @@ func (s *Scheduler) EndLoop() error {
 func (s *Scheduler) LoopExitPending() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.loopExit
+	return s.playingLoopExit()
 }
 
 // Cue moves the cursor to the item with the given ID, so the next Start
@@ -539,7 +542,8 @@ type SchedulerSnapshot struct {
 	Cursor        int
 	Next          int       // the item Next or the schedule airs next
 	ItemStartTime time.Time // when the current item started playing
-	LoopExit      bool      // the looping item ends after this pass
+	Playing       int       // the item playing: the cursor's, or the one on air the cursor left before a tick
+	LoopExit      bool      // the playing item ends its loop after this pass
 }
 
 // StatusSnapshot returns mode, cursor, and state under a single lock acquisition.
@@ -552,7 +556,8 @@ func (s *Scheduler) StatusSnapshot() SchedulerSnapshot {
 		Cursor:        s.cursor,
 		Next:          s.nextIndex(),
 		ItemStartTime: s.itemStartTime,
-		LoopExit:      s.loopExit,
+		Playing:       s.playingIndex(),
+		LoopExit:      s.playingLoopExit(),
 	}
 }
 
@@ -635,8 +640,13 @@ func (s *Scheduler) ClipsAhead(n int, open ...string) (cur, next []PlaylistItem)
 		return nil, nil
 	}
 	at := s.cursor
-	if !s.started {
+	switch {
+	case !s.started:
 		at = s.startAt
+	case s.state == SchedTransitioning:
+		// The items between the cursor and the one coming in are passed
+		// over; the next to air come after the one coming in.
+		at = s.transTarget
 	}
 	if at < 0 || at >= len(s.playlist.Items) {
 		return nil, nil
@@ -658,6 +668,25 @@ func (s *Scheduler) ClipsAhead(n int, open ...string) (cur, next []PlaylistItem)
 }
 
 // --- internal helpers (must be called with s.mu held) ---
+
+// playingIndex returns the index of the item playing: the one on air when
+// Previous, JumpTo or NextNow moved the cursor off it before a tick, which
+// it keeps playing until then, or else the cursor's.
+func (s *Scheduler) playingIndex() int {
+	if s.onAir >= 0 && s.cursor != s.onAir {
+		return s.onAir
+	}
+	return s.cursor
+}
+
+// playingLoopExit reports whether the item playing ends its loop after
+// this pass.
+func (s *Scheduler) playingLoopExit() bool {
+	if s.onAir >= 0 && s.cursor != s.onAir {
+		return s.onAirState.loopExit
+	}
+	return s.loopExit
+}
 
 // resetItemState clears per-item tracking fields.
 func (s *Scheduler) resetItemState() {
