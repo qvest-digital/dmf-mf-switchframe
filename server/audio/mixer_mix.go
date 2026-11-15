@@ -195,6 +195,11 @@ func (m *Mixer) transGainLocked(sourceKey string, ch *Channel, p float64) float6
 	if s, ok := m.cutSpans[sourceKey]; ok {
 		return s.at(p)
 	}
+	// A channel put on during a ramp to mute has no span: it stays silent
+	// rather than air until the mute.
+	if m.muteAtRampEnd {
+		return 0
+	}
 	if start, ok := m.mixStarts[sourceKey]; ok {
 		return m.mixGainLocked(sourceKey, ch, start, p)
 	}

@@ -133,6 +133,11 @@ func (m *interleavedMixer) OnTransitionAbort(token uint64) {
 	m.Mixer.OnTransitionAbort(token)
 }
 
+func (m *interleavedMixer) RampToMute() {
+	m.between()
+	m.Mixer.RampToMute()
+}
+
 // airedPeriod is one period of the gain a source aired at.
 type airedPeriod struct {
 	gain []float64
@@ -447,9 +452,9 @@ func TestMixAudioFollowsTheTicksVideoPosition(t *testing.T) {
 // No switcher action steps a source's audio: a mix run to completion, a
 // cut to the mix's incoming source during it, a cut to a third source
 // during it and a fade to or from black aborted part way each carry every
-// source on from the gain it aired, also when
-// the sync loop produces a period between the calls an action makes, and
-// leave each source where the action puts it.
+// source on from the gain it aired, also when the sync loop produces a
+// period between the calls an action makes, and leave each source where
+// the action puts it.
 func TestSwitcherActionsNeverStepTheAudio(t *testing.T) {
 	t.Parallel()
 	cut := func(r *mixRig, key string) {
@@ -571,9 +576,15 @@ func TestSwitcherActionsNeverStepTheAudio(t *testing.T) {
 		// down leaves it black; a fade from black started then rises from
 		// the gains aired.
 		{"ftb_reverse_aborted_then_cut", func(r *mixRig) {
-			fromBlackAborted(half, true)(r)
+			r.fadeToBlack(StateFTB)
+			r.ticks(1)
+			abortFade(r, half, true)
+			r.tick()
 			cut(r, "mxl:b")
 			r.ticks(rampPeriods + 2)
+			if !r.m.IsProgramMuted() {
+				r.t.Fatal("the program is not muted after the aborted fade from black")
+			}
 		}, "", nil},
 		{"ftb_reverse_aborted_then_ftb_in", func(r *mixRig) {
 			r.fadeToBlack(StateFTB)
@@ -632,6 +643,130 @@ func TestSwitcherActionsNeverStepTheAudio(t *testing.T) {
 						}
 					})
 				}
+			}
+		}
+	}
+}
+
+// hookedFadeMixer is the mixer with hooks run once each: before and after
+// OnTransitionStart and OnTransitionAbort.
+type hookedFadeMixer struct {
+	*audio.Mixer
+	beforeStart, afterStart, beforeAbort, afterAbort func()
+}
+
+// runOnce runs the hook f points to, if any, and clears it.
+func runOnce(f *func()) {
+	if g := *f; g != nil {
+		*f = nil
+		g()
+	}
+}
+
+func (m *hookedFadeMixer) OnTransitionStart(from, to string, mode audio.TransitionMode, durationMs int) uint64 {
+	runOnce(&m.beforeStart)
+	token := m.Mixer.OnTransitionStart(from, to, mode, durationMs)
+	runOnce(&m.afterStart)
+	return token
+}
+
+func (m *hookedFadeMixer) OnTransitionAbort(token uint64) {
+	runOnce(&m.beforeAbort)
+	m.Mixer.OnTransitionAbort(token)
+	runOnce(&m.afterAbort)
+}
+
+// A fade from black can be cut short while it is set up, and its abort
+// can reach the mixer after a cut has: the program audio follows the
+// picture either way. A cut that pre-empts the setup puts the picture up,
+// so the program is not muted and the new source airs. An abort that
+// pre-empts the setup, landing before or after the mixer starts the fade,
+// leaves black, so the program goes down and is muted. An aborted fade
+// whose abort reaches the mixer after a cut made on black, its token stale
+// then, leaves black too. A fade from black pressed again before the
+// aborted one has taken the program down brings the picture up, and the
+// program with it. No source steps on the way.
+func TestFadeFromBlackPreEmptedFollowsThePicture(t *testing.T) {
+	t.Parallel()
+	scenarios := []struct {
+		name  string
+		hook  func(r *mixRig, m *hookedFadeMixer)
+		abort bool  // abort the fade from the engine halfway
+		state State // where the switcher ends
+		on    string
+		kept  []string
+	}{
+		{"cut_during_the_setup", func(r *mixRig, m *hookedFadeMixer) {
+			m.afterStart = func() {
+				if err := r.s.Cut(r.t.Context(), "mxl:b"); err != nil {
+					r.t.Error(err)
+				}
+			}
+		}, false, StateIdle, "mxl:b", []string{"mxl:a"}},
+		{"abort_before_the_audio_starts", func(r *mixRig, m *hookedFadeMixer) {
+			m.beforeStart = r.s.AbortTransition
+		}, false, StateFTB, "", nil},
+		{"abort_after_the_audio_starts", func(r *mixRig, m *hookedFadeMixer) {
+			m.afterStart = r.s.AbortTransition
+		}, false, StateFTB, "", nil},
+		{"cut_ahead_of_the_abort", func(r *mixRig, m *hookedFadeMixer) {
+			m.beforeAbort = func() {
+				if err := r.s.Cut(r.t.Context(), "mxl:b"); err != nil {
+					r.t.Error(err)
+				}
+				r.tick()
+			}
+		}, true, StateFTB, "", nil},
+		{"ftb_in_ahead_of_the_ramp_to_mute", func(r *mixRig, m *hookedFadeMixer) {
+			m.afterAbort = func() {
+				if err := r.s.FadeToBlack(r.t.Context()); err != nil {
+					r.t.Error(err)
+				}
+			}
+		}, true, StateIdle, "mxl:a", nil},
+	}
+	for _, sc := range scenarios {
+		for _, f := range mixFormats() {
+			for _, afv := range afvModes() {
+				name := fmt.Sprintf("%s/%dHz_%d_%d/afv=%v", sc.name, f.sr, f.fps.Num, f.fps.Den, afv)
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+					for _, measured := range mixSources {
+						func() {
+							r := newMixRig(t, f.fps, f.sr, measured, afv, false)
+							defer r.close()
+							r.fadeToBlack(StateFTB)
+							r.ticks(1)
+							m := &hookedFadeMixer{Mixer: r.m}
+							sc.hook(r, m)
+							r.s.SetMixer(m)
+							// A fade pre-empted during its setup reports
+							// so; the hooks check their own calls.
+							if !sc.abort {
+								_ = r.s.FadeToBlack(r.t.Context())
+							} else {
+								n := r.startFade()
+								r.ticks(n / 2)
+								r.s.hotState.Load().transEngine.Abort()
+							}
+							for i := 0; i < 1000 && r.s.hotState.Load().state != sc.state; i++ {
+								r.tick()
+							}
+							r.ticks(rampPeriods + 2)
+							if st := r.s.hotState.Load().state; st != sc.state {
+								t.Fatalf("the switcher ends in state %v, want %v", st, sc.state)
+							}
+							if muted := r.m.IsProgramMuted(); muted != (sc.on == "") {
+								t.Fatalf("the program is muted: %v, want %v", muted, sc.on == "")
+							}
+							want := 0.0
+							if sc.on != "" && (measured == sc.on || !afv && slices.Contains(sc.kept, measured)) {
+								want = 1
+							}
+							r.checkContinuous(want)
+						}()
+					}
+				})
 			}
 		}
 	}

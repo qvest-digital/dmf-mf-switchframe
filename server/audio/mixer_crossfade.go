@@ -183,7 +183,7 @@ func (m *Mixer) deactivateOnCompleteLocked(sourceKey string) {
 //   - Crossfade: equal-power A->B (mix/dissolve)
 //   - DipToSilence: A->silence->B (dip through black)
 //   - FadeOut: A->silence (fade to black)
-//   - FadeIn: silence->A (fade from black)
+//   - FadeIn: silence, or the gains aired, ->A (fade from black)
 //
 // The new source channel is activated so its audio frames are accepted.
 //
@@ -337,7 +337,7 @@ func (m *Mixer) OnTransitionAbort(token uint64) {
 	// which is otherwise the only thing that deactivates it. Never the
 	// current program AFV source (e.g. a cut landed on that source
 	// mid-transition).
-	from, to, mode := m.transCrossfadeFrom, m.transCrossfadeTo, m.transCrossfadeMode
+	from, to := m.transCrossfadeFrom, m.transCrossfadeTo
 	if key := m.transAbortActivated; key != "" && key != m.programAFVSource {
 		if _, ok := m.channels[key]; ok {
 			m.deactivateOnCompleteLocked(key)
@@ -359,27 +359,46 @@ func (m *Mixer) OnTransitionAbort(token uint64) {
 	m.stingerOffset = 0
 	m.stingerChannels = 0
 
-	// An aborted fade from black returns to black: the ramp takes every
-	// channel down to silence and the program is muted where it ends.
-	// Muted at once, the program would step from the gains aired to
-	// silence.
-	m.muteAtRampEnd = mode == FadeIn
-
 	// Pulled back before any gain moved, as a T-bar pulled back to 0 at
 	// once leaves it, the channels are where the abort puts them: the
-	// incoming one goes off and the rest stay on, or the program is muted
-	// after a fade from black. Otherwise a cut ramp takes each channel on
-	// from the gain it aired, so none steps.
+	// incoming one goes off and the rest stay on. Otherwise a cut ramp
+	// takes each channel on from the gain it aired, so none steps.
 	if m.cutTargetsAiredLocked() {
 		m.deactivateQueuedLocked()
-		if m.muteAtRampEnd {
-			m.setProgramMuteLocked(true)
-		}
 		return
 	}
 	m.transCrossfadeActive = true
 	m.transCrossfadeFrom = to
 	m.transCrossfadeTo = from
+	m.transCrossfadeMode = Crossfade
+	m.startCutRampLocked()
+}
+
+// RampToMute takes the program to black: every channel ramps down from
+// the gain it aired to silence over a cut ramp, and the program is muted
+// as the ramp ends, or at once when every channel already airs silence.
+// Muted at once, the program would step from the gains aired to silence.
+// The switcher calls it when an abort leaves the picture holding black.
+// While the ramp runs, every cut ramp ends in silence, so neither a cut
+// nor a late or repeated abort of the fade from black takes the channels
+// back up. It does nothing on a muted program, or during a fade from
+// black, which a newer press started and which unmutes the program.
+func (m *Mixer) RampToMute() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.programMuted ||
+		m.transCrossfadeActive && m.transCrossfadeMode == FadeIn && m.cutFramesRemaining <= 0 {
+		return
+	}
+	m.muteAtRampEnd = true
+	if m.cutTargetsAiredLocked() {
+		m.deactivateQueuedLocked()
+		m.setProgramMuteLocked(true)
+		return
+	}
+	m.transCrossfadeActive = true
+	m.transCrossfadeFrom = ""
+	m.transCrossfadeTo = ""
 	m.transCrossfadeMode = Crossfade
 	m.startCutRampLocked()
 }
