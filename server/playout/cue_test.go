@@ -530,3 +530,37 @@ func TestAStopWhileTheCueIsOfferedWithdrawsIt(t *testing.T) {
 	lc := r.lifecycle()
 	require.Equal(t, "stop playout:1", lc[len(lc)-1], "lifecycle %v", lc)
 }
+
+// A channel re-cued on another item retires the cue it held: a program
+// tick that loaded the old cue before the new one replaced it, or a start
+// that finds it, must not put the item no longer cued out. The tick that
+// cuts to the channel airs the item it is cued on now.
+func TestReCueingRetiresTheCueItReplaces(t *testing.T) {
+	readPTS := scriptClock(t, 50)
+	r := newCueRig(t, 50, 1, 40)
+	r.load(t, "a", "b")
+	r.waitCue(t)
+	pre := r.m.cueChannels[0].Load().preroll
+	cueA := pre.cue.Load()
+
+	require.NoError(t, r.m.JumpTo(1, "b"))
+	waitFor(t, 10*time.Second, func() bool { c := pre.cue.Load(); return c != nil && c != cueA })
+	cueB := pre.cue.Load()
+
+	// A tick that loaded a's cue before b's replaced it puts nothing out.
+	pre.cue.Store(cueA)
+	require.False(t, r.m.cueChannels[0].Load().startAt(readPTS, r.m.cueOut.Load()), "a's cue went out after b was cued")
+	pre.cue.Store(cueB)
+	require.Empty(t, r.snapshot())
+	cueA.mu.Lock()
+	retired, taken := cueA.retired, cueA.taken
+	cueA.mu.Unlock()
+	require.True(t, retired, "the cue of item a is retired once b is cued")
+	require.False(t, taken)
+
+	evs := r.cut(readPTS)
+	require.GreaterOrEqual(t, len(evs), 2)
+	require.Equal(t, cueEvent{kind: "video", pts: readPTS, pic: 0}, evs[1])
+	waitFor(t, 5*time.Second, func() bool { return len(r.itemStarts()) > 0 })
+	require.Equal(t, []string{"b"}, r.itemStarts(), "item b airs")
+}
