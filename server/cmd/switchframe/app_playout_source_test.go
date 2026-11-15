@@ -78,11 +78,7 @@ func TestInitPlayout_CuedThenStartedChannelIsRegisteredOnce(t *testing.T) {
 		}),
 	}
 	require.NoError(t, a.initPlayout())
-	t.Cleanup(func() {
-		a.playoutMgr.Close()
-		a.sw.Close()
-		_ = a.mixer.Close()
-	})
+	t.Cleanup(func() { closePlayoutApp(a) })
 	a.playoutMgr.SetOnStateChange(func() {})
 
 	clipDir := filepath.Join(stateDir, "clips")

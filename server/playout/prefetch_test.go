@@ -427,3 +427,15 @@ func TestPrefetcherSkipsInflight(t *testing.T) {
 		t.Errorf("expected 1 HTTP fetch for duplicate URI, got %d", count)
 	}
 }
+
+// Stop and the run it ends do not race: the run closes the done channel
+// Start made, not the field Stop clears. Under the race detector a Stop
+// right after Start, the order an engine that shuts down at once takes,
+// reported a race on it.
+func TestPrefetcherStopRightAfterStart(t *testing.T) {
+	for range 20 {
+		p := NewPrefetcher(PrefetcherConfig{Resolver: NewAssetResolver([]string{"/"})})
+		p.Start(context.Background())
+		p.Stop()
+	}
+}
