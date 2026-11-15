@@ -819,3 +819,53 @@ func TestLateFlow_SparseDataFlowIsRead(t *testing.T) {
 		}
 	})
 }
+
+// A reader loop reopening a deleted flow waits a retry interval after
+// each failed open before the next, also when the open takes longer than
+// the interval, as one of a missing flow does on an mxlfs. Opened back to
+// back, the loop is almost never outside an open, and a stop waits for
+// more than the one under way.
+func TestLateFlow_ReopenWaitsAnIntervalAfterASlowOpen(t *testing.T) {
+	eachVideoRate(t, func(t *testing.T, rate Rational, period time.Duration) {
+		const cost = 2 * reopenInterval
+		deleted := 10 * period
+		video := newLateFlow(lateVideoShape(rate), lateFile{until: deleted})
+		video.openCost = cost
+		var mu sync.Mutex
+		var spans [][2]time.Time
+		open := func(id string) (DiscreteReader, error) {
+			start := time.Now()
+			h, err := video.openVideo(id)
+			mu.Lock()
+			spans = append(spans, [2]time.Time{start, time.Now()})
+			mu.Unlock()
+			return h, err
+		}
+		first, _ := video.openVideo("v")
+		src := NewSource(SourceConfig{FlowName: "late", Width: lateW, Height: lateH,
+			FPSNum: int(rate.Numerator), FPSDen: int(rate.Denominator), Logger: quietLog})
+		src.Start(context.Background(), NewReopeningReader("v", first, open, quietLog), nil)
+		// Into the third open, a retry interval after each of the two
+		// before it.
+		time.Sleep(deleted + 3*cost + cost/2)
+
+		start := time.Now()
+		src.Stop()
+		if took := time.Since(start); took > cost {
+			t.Errorf("Stop took %v, want at most the open under way, %v", took, cost)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(spans) < 3 {
+			t.Fatalf("%d opens of the deleted flow, want 3", len(spans))
+		}
+		for i := 1; i < len(spans); i++ {
+			if gap := spans[i][0].Sub(spans[i-1][1]); gap < reopenInterval {
+				t.Errorf("open %d started %v after open %d ended, want a retry interval, %v", i, gap, i-1, reopenInterval)
+			}
+		}
+		if _, inOpen, _ := video.stats(); inOpen != 0 {
+			t.Errorf("%d opens still under way after Stop returned", inOpen)
+		}
+	})
+}

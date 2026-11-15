@@ -775,3 +775,29 @@ func TestRetarget_ResyncsToANewFlowBehindTheOld(t *testing.T) {
 		}
 	})
 }
+
+// A reader shut down for a stop opens nothing more, even for a read that
+// reaches the reopen after the stop began: that open would hold the stop
+// for as long as an open of a missing flow takes.
+func TestReopeningReader_OpensNothingAfterShutdown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		deleted := newLiveFlow(1, videoShape)
+		_ = deleted.Close()
+		var opens atomic.Int32
+		open := func(string) (DiscreteReader, error) {
+			opens.Add(1)
+			return nil, errors.New("flow not found")
+		}
+		w := NewReopeningReader("v", deleted, open, quietLog).(*reopeningReader)
+		if _, _, err := w.ReadGrain(0, 0); !errors.Is(err, ErrTimeout) {
+			t.Fatalf("read of a deleted flow = %v, want ErrTimeout while it is reopened", err)
+		}
+		w.shutdown()
+		if _, _, err := w.ReadGrain(0, 0); !errors.Is(err, ErrTimeout) {
+			t.Errorf("read after shutdown = %v, want ErrTimeout", err)
+		}
+		if n := opens.Load(); n != 0 {
+			t.Errorf("%d opens after shutdown", n)
+		}
+	})
+}

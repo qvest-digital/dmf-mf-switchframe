@@ -119,6 +119,15 @@ func (r *reopener[T]) handle() (h T, ok bool) {
 		return h, false
 	}
 
+	// A read that passed its loop's context check just before a stop
+	// would otherwise hold the stop for a whole open.
+	r.mu.Lock()
+	closed := r.closed
+	r.mu.Unlock()
+	if closed {
+		return h, false
+	}
+
 	// The interval runs from the end of the open: an open of a missing
 	// flow can take longer than the interval, and a reader loop reads
 	// twice before it looks at its context again, so a stop would
