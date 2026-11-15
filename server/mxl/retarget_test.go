@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -344,27 +345,30 @@ func TestRetarget_RefusesOtherShape(t *testing.T) {
 }
 
 // An input booked without a flow waits for its first connection instead of
-// ending its reader loop.
+// ending its reader loop. It runs on synctest's clock: on a loaded host the
+// call to Retarget alone was seen to start 585 ms late on the wall clock.
 func TestRetargetableReader_WaitsForFirstFlow(t *testing.T) {
-	store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape)})
-	flow := NewRetargetableReader(store.open, nil, nil)
-	r := startVideo(t, flow)
+	synctest.Test(t, func(t *testing.T) {
+		store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape)})
+		flow := NewRetargetableReader(store.open, nil, nil)
+		r := startVideo(t, flow)
 
-	select {
-	case _, ok := <-r.Video():
-		if !ok {
-			t.Fatal("reader loop with no flow ended")
+		select {
+		case _, ok := <-r.Video():
+			if !ok {
+				t.Fatal("reader loop with no flow ended")
+			}
+			t.Fatal("grain delivered with no flow")
+		case <-time.After(100 * time.Millisecond):
 		}
-		t.Fatal("grain delivered with no flow")
-	case <-time.After(100 * time.Millisecond):
-	}
-	flow.(Retargetable).Retarget("a")
-	if g := nextGrain(t, r); g.V210[0] != 1 {
-		t.Fatalf("grain from flow %d, want 1", g.V210[0])
-	}
-	if got := flow.ConfigInfo(); got != videoShape {
-		t.Errorf("shape = %+v, want the first flow's", got)
-	}
+		flow.(Retargetable).Retarget("a")
+		if g := nextGrain(t, r); g.V210[0] != 1 {
+			t.Fatalf("grain from flow %d, want 1", g.V210[0])
+		}
+		if got := flow.ConfigInfo(); got != videoShape {
+			t.Errorf("shape = %+v, want the first flow's", got)
+		}
+	})
 }
 
 // Disconnecting stops reading but keeps the loop, so a later connection
