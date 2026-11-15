@@ -698,7 +698,10 @@ func attr(r slog.Record, key string) (v slog.Value, ok bool) {
 // move from another flow.
 func TestLateFlow_WaitingShowsInFlowOpenAndLog(t *testing.T) {
 	eachVideoRate(t, func(t *testing.T, rate Rational, period time.Duration) {
-		const appear = 150 * time.Second
+		// Retries fail at once here, a reopenInterval apart, so a warning
+		// is due at the first retry a retryWarnEvery after the last one.
+		warnStep := (retryWarnEvery + reopenInterval - 1) / reopenInterval * reopenInterval
+		appear := 2*warnStep + warnStep/2
 		video := newLateFlow(lateVideoShape(rate), lateFile{from: appear})
 		logged := &logRecords{}
 		w := NewReopeningReader("v", nil, video.openVideo, slog.New(logged))
@@ -721,7 +724,7 @@ func TestLateFlow_WaitingShowsInFlowOpenAndLog(t *testing.T) {
 				warned = append(warned, rec.Time.Sub(video.start))
 			}
 		}
-		if want := []time.Duration{0, retryWarnEvery, 2 * retryWarnEvery}; fmt.Sprint(warned) != fmt.Sprint(want) {
+		if want := []time.Duration{0, warnStep, 2 * warnStep}; fmt.Sprint(warned) != fmt.Sprint(want) {
 			t.Errorf("warned of the missing flow at %v, want %v", warned, want)
 		}
 
