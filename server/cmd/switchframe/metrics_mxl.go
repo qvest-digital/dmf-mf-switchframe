@@ -15,7 +15,7 @@ var (
 	descMXLLag = prometheus.NewDesc("switchframe_mxl_reader_lag_grains",
 		"Grains an MXL input's video read position trails the head of its flow.", []string{"source"}, nil)
 	descMXLFlowOpen = prometheus.NewDesc("switchframe_mxl_reader_flow_open",
-		"1 while an MXL input's reader has its flow open, 0 while it waits for the flow to appear, by essence.",
+		"1 while an MXL input's reader has its flow open, 0 while it has no flow open: waiting for one, or disconnected. By essence.",
 		[]string{"source", "essence"}, nil)
 
 	descMXLAudioOverlaps = prometheus.NewDesc("switchframe_mxl_writer_audio_overlaps_total",
