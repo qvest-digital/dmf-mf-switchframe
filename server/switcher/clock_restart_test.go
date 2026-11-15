@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/zsiec/prism/distribution"
@@ -16,65 +17,85 @@ import (
 // goroutine is reading, so the replacement must not wait for the loop to
 // end: the loop would wait for itself and the program would stop.
 func TestTimedFormatSetRestartsClockFromSyncLoop(t *testing.T) {
-	s := newTestSwitcherDirect(distribution.NewRelay())
+	// The engine's TAI clock runs on the bubble's time from the system
+	// clock's reading, so its ticks come on the bubble's timers and the
+	// switcher's timestamps keep the epoch they have.
+	at := clock.TAINow()
+	// The clock sync sampler runs for the life of the process: started in
+	// the bubble, it would never end.
+	clock.GetSyncState()
+	// The format change starts a realtime clock, which sets the program
+	// rate for the package; the tests after this one start without it.
+	t.Cleanup(clock.ResetProgramRate())
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		clock.SetTAISource(func() int64 { return at + int64(time.Since(start)) })
+		t.Cleanup(func() { clock.SetTAISource(nil) })
 
-	q := cmdqueue.New(clock.Now)
-	d := cmdqueue.NewDispatcher()
-	formatSet := make(chan error, 1)
-	d.Register("format_set", func(json.RawMessage) error {
-		err := s.SetPipelineFormat(PipelineFormat{
-			Name: "test25", Width: 320, Height: 240, FPSNum: 25, FPSDen: 1,
+		s := newTestSwitcherDirect(distribution.NewRelay())
+
+		q := cmdqueue.New(clock.Now)
+		d := cmdqueue.NewDispatcher()
+		formatSet := make(chan error, 1)
+		d.Register("format_set", func(json.RawMessage) error {
+			err := s.SetPipelineFormat(PipelineFormat{
+				Name: "test25", Width: 320, Height: 240, FPSNum: 25, FPSDen: 1,
+			})
+			formatSet <- err
+			return err
 		})
-		formatSet <- err
-		return err
-	})
-	var pings atomic.Int64
-	d.Register("ping", func(json.RawMessage) error {
-		pings.Add(1)
-		return nil
-	})
-	s.SetCommandQueue(q, d)
-	s.Start()
-	// A deadlocked loop would also hang Close, so a failed run skips it.
-	t.Cleanup(func() {
-		if !t.Failed() {
-			s.Close()
+		var pings atomic.Int64
+		d.Register("ping", func(json.RawMessage) error {
+			pings.Add(1)
+			return nil
+		})
+		s.SetCommandQueue(q, d)
+		s.Start()
+		// A deadlocked loop hangs Close as well; in the bubble that shows as a
+		// deadlock rather than a hang.
+		t.Cleanup(s.Close)
+
+		if err := q.Enqueue(cmdqueue.Command{Seq: 1, Action: "format_set"}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-formatSet:
+			if err != nil {
+				t.Fatalf("SetPipelineFormat: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("format_set from the command queue did not return within 2s")
+		}
+
+		// The loop keeps draining commands, now on the new clock.
+		if err := q.Enqueue(cmdqueue.Command{Seq: 2, Action: "ping"}); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for pings.Load() == 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("sync loop stopped draining commands after the format change")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+
+		s.configMu.Lock()
+		rc := s.refClock
+		s.configMu.Unlock()
+		if n, den := rc.Rate(); n != 25 || den != 1 {
+			t.Fatalf("clock rate = %d/%d, want 25/1", n, den)
+		}
+		// From the middle of a grain, so no grain starts at either end of the
+		// interval: 400 ms holds exactly ten grains at 25 fps.
+		synctest.Wait()
+		period := int64(40 * time.Millisecond)
+		time.Sleep(time.Duration(period/2 - clock.TAINow()%period + period))
+		synctest.Wait()
+		before := rc.TickCount()
+		time.Sleep(400 * time.Millisecond)
+		synctest.Wait()
+		if got := rc.TickCount() - before; got != 10 {
+			t.Fatalf("clock ticked %d times in 400ms, want 10 at 25 fps", got)
 		}
 	})
-
-	if err := q.Enqueue(cmdqueue.Command{Seq: 1, Action: "format_set"}); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-formatSet:
-		if err != nil {
-			t.Fatalf("SetPipelineFormat: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("format_set from the command queue did not return within 2s")
-	}
-
-	// The loop keeps draining commands, now on the new clock.
-	if err := q.Enqueue(cmdqueue.Command{Seq: 2, Action: "ping"}); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for pings.Load() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("sync loop stopped draining commands after the format change")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	s.configMu.Lock()
-	rc := s.refClock
-	s.configMu.Unlock()
-	if n, den := rc.Rate(); n != 25 || den != 1 {
-		t.Fatalf("clock rate = %d/%d, want 25/1", n, den)
-	}
-	before := rc.TickCount()
-	time.Sleep(400 * time.Millisecond)
-	if got := rc.TickCount() - before; got < 8 || got > 12 {
-		t.Fatalf("clock ticked %d times in 400ms, want 10 +-2 at 25 fps", got)
-	}
 }
