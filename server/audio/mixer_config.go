@@ -122,6 +122,7 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 			"realigns":            ch.realigns,
 			"underruns":           ch.underruns,
 			"short_reads":         ch.shortReads,
+			"breaks":              ch.breaks,
 		}
 		channelDetails[key] = detail
 	}

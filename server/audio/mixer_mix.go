@@ -110,6 +110,7 @@ func (m *Mixer) produceSamplesLocked(start uint64, totalValues int) []float32 {
 		ch.xfGain = gEnd
 		ch.aired = ch.active
 		if !ch.active || ch.muted || ch.ringBuf == nil {
+			ch.airing = false
 			continue
 		}
 

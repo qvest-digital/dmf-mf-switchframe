@@ -131,6 +131,12 @@ type Channel struct {
 	dry        bool
 	underruns  int64
 	shortReads int64
+	// airing is set while the last read of the channel played its audio
+	// to its end; breaks counts where the audio aired broke off: a read
+	// after such a read that did not continue that audio, a splice or
+	// silence, and a read whose audio runs out before its end.
+	airing bool
+	breaks int64
 
 	// xfGain is the transition gain the channel aired at the end of the
 	// last period, 0 while inactive. A cut ramp starts from it.
@@ -527,6 +533,7 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 			if have > 0 {
 				ch.shortReads++
 			}
+			ch.noteBreak(true, false)
 			return make([]float32, n*c)
 		}
 	}
@@ -546,9 +553,14 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 			ch.underruns++
 		}
 		ch.dry = true
+		ch.noteBreak(skip > 0 || got == 0 || off > tol, false)
+		if got > 0 {
+			ch.breaks++ // the audio it aired runs out
+		}
 		return out
 	}
 	ch.dry = false
+	ch.noteBreak(off > tol || off < -tol, true)
 	if skip == 0 {
 		return ch.ringBuf.Pop(n * c)
 	}
@@ -556,6 +568,16 @@ func (m *Mixer) popAt(ch *Channel, start uint64, n int) []float32 {
 	out := make([]float32, n*c)
 	copy(out[skip*c:], ch.ringBuf.Pop(need*c))
 	return out
+}
+
+// noteBreak records whether a read of ch starts with anything but the
+// audio that continues what the read before played to its end, a break of
+// that audio, and whether the read plays its own audio to its end.
+func (ch *Channel) noteBreak(broke, airs bool) {
+	if broke && ch.airing {
+		ch.breaks++
+	}
+	ch.airing = airs
 }
 
 // PlaceChannel has the next read that reaches a channel's audio put it
@@ -600,6 +622,7 @@ func (m *Mixer) ResetChannelInput(sourceKey string) bool {
 	ch.resampler, ch.resamplerSrcRate = nil, 0
 	ch.ringBuf = m.newChannelRingBuf(m.delaySamples(ch))
 	ch.ringEnd, ch.placed, ch.realigned, ch.dry = 0, false, false, false
+	ch.airing = false
 	ch.hold.prev, ch.hold.counting = 0, false
 	if ch.active {
 		m.initChannelDecoder(ch)
@@ -941,6 +964,21 @@ func (m *Mixer) ChannelShortReads() map[string]int64 {
 	result := make(map[string]int64, len(m.channels))
 	for key, ch := range m.channels {
 		result[key] = ch.shortReads
+	}
+	return result
+}
+
+// ChannelBreaks returns, per source, how often the audio it aired broke
+// off: a splice that skipped audio, or silence after audio, whatever the
+// cause. A dropout counts once, where it starts, and audio that airs in
+// pieces once for each; a read of a source that was off program or muted
+// the period before breaks nothing.
+func (m *Mixer) ChannelBreaks() map[string]int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]int64, len(m.channels))
+	for key, ch := range m.channels {
+		result[key] = ch.breaks
 	}
 	return result
 }
