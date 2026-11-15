@@ -9,6 +9,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	playoutStart: vi.fn().mockResolvedValue(undefined),
 	playoutStop: vi.fn().mockResolvedValue(undefined),
 	playoutNext: vi.fn().mockResolvedValue(undefined),
+	playoutNextNow: vi.fn().mockResolvedValue(undefined),
 	playoutPrevious: vi.fn().mockResolvedValue(undefined),
 	playoutEndLoop: vi.fn().mockResolvedValue(undefined),
 	playoutTakeManual: vi.fn().mockResolvedValue(undefined),
@@ -362,6 +363,34 @@ describe('PlayoutTransport', () => {
 		expect(warning).toBeTruthy();
 		expect(warning!.textContent).toContain('Engine A');
 		expect(warning!.textContent).toContain('Engine B');
+	});
+});
+
+describe('PlayoutTransport next now', () => {
+	beforeEach(() => vi.clearAllMocks());
+
+	it('posts next now beside Next while on air', async () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', mode: 'automated', itemIndex: 0, itemCount: 3 }) },
+		});
+		const btn = container.querySelector('.t-next-now') as HTMLButtonElement;
+		expect(btn).toBeTruthy();
+		expect(btn.previousElementSibling?.classList.contains('t-next')).toBe(true);
+		expect(btn.disabled).toBe(false);
+		await fireEvent.click(btn);
+		expect(api.playoutNextNow).toHaveBeenCalledWith(1);
+		expect(api.playoutNext).not.toHaveBeenCalled();
+	});
+
+	it('is disabled off air, where the channel refuses it', () => {
+		for (const state of ['stopped', 'cued'] as const) {
+			const { container, unmount } = render(PlayoutTransport, {
+				props: { channel: makeChannel({ state, itemIndex: 0, itemCount: 3 }) },
+			});
+			const btn = container.querySelector('.t-next-now') as HTMLButtonElement;
+			expect(btn.disabled).toBe(true);
+			unmount();
+		}
 	});
 });
 

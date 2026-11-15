@@ -170,6 +170,13 @@ describe('isTimedPath — upload paths (H5)', () => {
 	});
 });
 
+describe('isTimedPath - playout transport', () => {
+	it('stamps next now like next with an execution time and command sequence', () => {
+		expect(isTimedPath('/api/playout/channels/1/next')).toBe(true);
+		expect(isTimedPath('/api/playout/channels/1/next-now')).toBe(true);
+	});
+});
+
 describe('isNonIdempotent — playout pod operations', () => {
 	it('recognizes fire as non-idempotent', () => {
 		expect(isNonIdempotent('/api/playout/channels/0/pods/pod1/fire')).toBe(true);

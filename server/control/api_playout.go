@@ -28,6 +28,7 @@ func (a *API) registerPlayoutRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/playout/channels/{n}/start", a.handlePlayoutStart)
 	mux.HandleFunc("POST /api/playout/channels/{n}/stop", a.handlePlayoutStop)
 	mux.HandleFunc("POST /api/playout/channels/{n}/next", a.handlePlayoutNext)
+	mux.HandleFunc("POST /api/playout/channels/{n}/next-now", a.handlePlayoutNextNow)
 	mux.HandleFunc("POST /api/playout/channels/{n}/previous", a.handlePlayoutPrevious)
 	mux.HandleFunc("POST /api/playout/channels/{n}/jump", a.handlePlayoutJump)
 	mux.HandleFunc("POST /api/playout/channels/{n}/end-loop", a.handlePlayoutEndLoop)
@@ -174,6 +175,26 @@ func (a *API) handlePlayoutNext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.playoutMgr.Next(n); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	a.broadcast()
+	states := a.playoutMgr.ChannelStates()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(states[n-1])
+}
+
+// handlePlayoutNextNow takes the item after the one on air on a playout
+// channel at once, dropping the Next presses not applied yet.
+func (a *API) handlePlayoutNextNow(w http.ResponseWriter, r *http.Request) {
+	n, err := parseChannelID(r)
+	if err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	if err := a.playoutMgr.NextNow(n); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}

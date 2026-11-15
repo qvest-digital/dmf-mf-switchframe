@@ -1447,3 +1447,417 @@ func TestScheduler_NextPressesCompleteFromIdleWait(t *testing.T) {
 	require.NoError(t, s.Next())
 	require.True(t, s.Tick(now.Add(200*time.Millisecond)).Completed)
 }
+
+func nextNowScheduler(t *testing.T, tc *TransitionConfig) *Scheduler {
+	t.Helper()
+	s := NewScheduler()
+	pl := schedPlaylist(
+		schedLiveItem("a", "cam-1"), schedLiveItem("b", "cam-2"),
+		schedLiveItem("c", "cam-3"), schedLiveItem("d", "cam-4"),
+	)
+	if tc != nil {
+		pl.DefaultTransition = *tc
+	}
+	require.NoError(t, s.LoadPlaylist(pl))
+	s.Start()
+	return s
+}
+
+// TestScheduler_NextNowDropsQueuedNexts: NextNow moves the cursor before
+// the tick and takes the item after the one on air, whatever Next presses
+// were queued.
+func TestScheduler_NextNowDropsQueuedNexts(t *testing.T) {
+	s := nextNowScheduler(t, nil)
+	now := time.Now()
+	s.Tick(now)
+
+	require.NoError(t, s.Next())
+	require.NoError(t, s.Next())
+	require.NoError(t, s.NextNow())
+	require.Equal(t, 1, s.Cursor(), "the cursor moves before the tick")
+	d := s.Tick(now.Add(time.Millisecond))
+	require.Equal(t, "b", d.Item.ID)
+	d = s.Tick(now.Add(2 * time.Millisecond))
+	require.Equal(t, "b", d.Item.ID, "a queued Next survived NextNow")
+
+	// A Next after it counts from the item it took.
+	require.NoError(t, s.Next())
+	require.Equal(t, "c", s.Tick(now.Add(3*time.Millisecond)).Item.ID)
+}
+
+// TestScheduler_NextNowTransitionsFromTheItemOnAir: the item NextNow takes
+// comes in through the playlist's transition, from the item on air.
+func TestScheduler_NextNowTransitionsFromTheItemOnAir(t *testing.T) {
+	s := nextNowScheduler(t, &TransitionConfig{Type: "dissolve", DurationMs: 500})
+	now := time.Now()
+	s.Tick(now)
+
+	require.NoError(t, s.NextNow())
+	d := s.Tick(now)
+	require.NotNil(t, d.Transition)
+	require.Equal(t, "a", d.Transition.Outgoing.ID)
+	require.Equal(t, "b", d.Transition.Incoming.ID)
+	// As in a transition Next starts, the cursor stays on the item going
+	// out until the transition commits, and the item coming in airs next.
+	snap := s.StatusSnapshot()
+	require.Equal(t, 0, snap.Cursor)
+	require.Equal(t, 1, snap.Next)
+	d = s.Tick(now.Add(501 * time.Millisecond))
+	require.Nil(t, d.Transition)
+	require.Equal(t, "b", d.Item.ID)
+	require.Equal(t, 1, s.Cursor())
+}
+
+// TestScheduler_LoadPlaylistForgetsTheItemOnAir: a playlist loaded on air
+// starts from its first item, and a Next before the first tick goes out
+// from that item, not from the index the old playlist had on air.
+func TestScheduler_LoadPlaylistForgetsTheItemOnAir(t *testing.T) {
+	s := nextNowScheduler(t, &TransitionConfig{Type: "dissolve", DurationMs: 500})
+	now := time.Now()
+	require.NoError(t, s.JumpTo("c"))
+	require.Equal(t, "c", s.Tick(now).Item.ID)
+
+	pl := schedPlaylist(schedLiveItem("w", "cam-1"), schedLiveItem("x", "cam-2"),
+		schedLiveItem("y", "cam-3"), schedLiveItem("z", "cam-4"))
+	pl.DefaultTransition = TransitionConfig{Type: "dissolve", DurationMs: 500}
+	require.NoError(t, s.LoadPlaylist(pl))
+	require.NoError(t, s.Next())
+	d := s.Tick(now.Add(time.Millisecond))
+	require.NotNil(t, d.Transition)
+	require.Equal(t, "w", d.Transition.Outgoing.ID)
+	require.Equal(t, "x", d.Transition.Incoming.ID)
+}
+
+// TestScheduler_NextNowDuringTransitionCuts: during a transition NextNow
+// takes the item after the one coming in, at once and as a cut.
+func TestScheduler_NextNowDuringTransitionCuts(t *testing.T) {
+	s := nextNowScheduler(t, &TransitionConfig{Type: "dissolve", DurationMs: 500})
+	now := time.Now()
+	s.Tick(now)
+	require.NoError(t, s.Next())
+	require.NotNil(t, s.Tick(now).Transition)
+
+	require.NoError(t, s.NextNow())
+	d := s.Tick(now.Add(100 * time.Millisecond))
+	require.Nil(t, d.Transition)
+	require.Equal(t, "c", d.Item.ID)
+	require.Equal(t, SchedPlaying, s.State())
+}
+
+// TestScheduler_NextNowAtLastItemCompletes: past the last item there is
+// nothing to take, so the playlist completes, as Next would.
+func TestScheduler_NextNowAtLastItemCompletes(t *testing.T) {
+	s := nextNowScheduler(t, nil)
+	now := time.Now()
+	s.Tick(now)
+	require.NoError(t, s.JumpTo("d"))
+	s.Tick(now)
+
+	require.NoError(t, s.NextNow())
+	require.True(t, s.Tick(now.Add(time.Millisecond)).Completed)
+}
+
+// TestScheduler_NextNowDuringIdleWait starts the item waiting for its
+// scheduled time.
+func TestScheduler_NextNowDuringIdleWait(t *testing.T) {
+	s := NewScheduler()
+	now := time.Now()
+	future := now.Add(10 * time.Second)
+	b := schedSlateItem("b", 5000)
+	b.ScheduledTime = &future
+	require.NoError(t, s.LoadPlaylist(schedPlaylist(schedSlateItem("a", 100), b)))
+	s.Start()
+	s.Tick(now)
+	require.True(t, s.Tick(now.Add(101*time.Millisecond)).IsIdle)
+
+	require.NoError(t, s.NextNow())
+	d := s.Tick(now.Add(200 * time.Millisecond))
+	require.False(t, d.IsIdle)
+	require.Equal(t, "b", d.Item.ID)
+}
+
+func TestScheduler_NextNowWhenStopped(t *testing.T) {
+	s := NewScheduler()
+	require.ErrorIs(t, s.NextNow(), ErrNotOnAir)
+}
+
+// TestScheduler_MovesBeforeATickGoOutFromTheItemOnAir: when the cursor
+// moved off the item on air before a tick, the item at the cursor has not
+// aired, so the transition to where the presses land runs from the item on
+// air, and presses that come back to it leave it playing.
+func TestScheduler_MovesBeforeATickGoOutFromTheItemOnAir(t *testing.T) {
+	cases := []struct {
+		name     string
+		from     string
+		presses  string // N = NextNow, n = Next, p = Previous, j = JumpTo b
+		outgoing string // "" = no transition
+		want     string // incoming item, or the item playing
+	}{
+		{"NextNow twice", "a", "NN", "a", "c"},
+		{"NextNow then Next", "a", "Nn", "a", "c"},
+		{"Previous then Next", "b", "pn", "", "b"},
+		{"Previous then Next twice", "b", "pnn", "b", "c"},
+		{"JumpTo then Next", "d", "jn", "d", "c"},
+		{"NextNow then JumpTo cuts", "a", "Nj", "", "b"},
+		{"NextNow twice then Previous cuts", "b", "NNp", "", "c"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := nextNowScheduler(t, &TransitionConfig{Type: "dissolve", DurationMs: 500})
+			now := time.Now()
+			require.NoError(t, s.JumpTo(tc.from))
+			require.Equal(t, tc.from, s.Tick(now).Item.ID)
+			for _, p := range tc.presses {
+				switch p {
+				case 'N':
+					require.NoError(t, s.NextNow())
+				case 'n':
+					require.NoError(t, s.Next())
+				case 'p':
+					require.NoError(t, s.Previous())
+				case 'j':
+					require.NoError(t, s.JumpTo("b"))
+				}
+			}
+			d := s.Tick(now.Add(time.Millisecond))
+			if tc.outgoing == "" {
+				require.Nil(t, d.Transition)
+				require.Equal(t, tc.want, d.Item.ID)
+				return
+			}
+			require.NotNil(t, d.Transition)
+			require.Equal(t, tc.outgoing, d.Transition.Outgoing.ID)
+			require.Equal(t, tc.want, d.Transition.Incoming.ID)
+			d = s.Tick(now.Add(502 * time.Millisecond))
+			require.Equal(t, tc.want, d.Item.ID)
+		})
+	}
+}
+
+func reviewDecision(d SchedulerDecision) string {
+	switch {
+	case d.Completed:
+		return "completed"
+	case d.Transition != nil:
+		return d.Transition.Outgoing.ID + "->" + d.Transition.Incoming.ID
+	case d.IsIdle:
+		return "idle"
+	case d.Item != nil:
+		return d.Item.ID
+	}
+	return ""
+}
+
+// TestScheduler_ComingBackKeepsTheItemOnAirAsItWas: moves that come back
+// to the item on air before a tick leave it playing as it was. A slate
+// keeps its timer, so it ends when it would have, and a looping clip keeps
+// its loop release.
+func TestScheduler_ComingBackKeepsTheItemOnAirAsItWas(t *testing.T) {
+	for _, presses := range []string{"pn", "Np", "NNpp"} {
+		t.Run(presses, func(t *testing.T) {
+			press := func(s *Scheduler) {
+				for _, p := range presses {
+					switch p {
+					case 'N':
+						require.NoError(t, s.NextNow())
+					case 'n':
+						require.NoError(t, s.Next())
+					case 'p':
+						require.NoError(t, s.Previous())
+					}
+				}
+			}
+			t0 := time.Unix(0, 0)
+			s := NewScheduler()
+			require.NoError(t, s.LoadPlaylist(schedPlaylist(schedSlateItem("x", 100000),
+				schedSlateItem("a", 1000), schedSlateItem("b", 1000), schedSlateItem("c", 1000))))
+			s.Start()
+			s.Tick(t0)
+			require.NoError(t, s.JumpTo("a"))
+			require.Equal(t, "a", s.Tick(t0).Item.ID)
+			press(s)
+			require.Equal(t, "a", reviewDecision(s.Tick(t0.Add(600*time.Millisecond))))
+			require.Equal(t, "b", reviewDecision(s.Tick(t0.Add(1001*time.Millisecond))), "the slate's timer restarted")
+
+			a := schedClipItem("a", 0)
+			a.Loop = true
+			s = NewScheduler()
+			require.NoError(t, s.LoadPlaylist(schedPlaylist(schedClipItem("x", 0), a,
+				schedClipItem("b", 0), schedClipItem("c", 0))))
+			s.Start()
+			s.Tick(t0)
+			require.NoError(t, s.JumpTo("a"))
+			s.Tick(t0)
+			require.NoError(t, s.EndLoop())
+			press(s)
+			require.Equal(t, "a", reviewDecision(s.Tick(t0.Add(time.Millisecond))))
+			require.True(t, s.LoopExitPending(), "the loop release was dropped")
+			s.SignalItemComplete()
+			require.Equal(t, "b", reviewDecision(s.Tick(t0.Add(2*time.Millisecond))))
+		})
+	}
+}
+
+// TestScheduler_RestartingForgetsTheItemOnAir: after Stop and Start, or a
+// cursor set by peer sync or recovery, the item the last tick played is no
+// longer on air, so a Next or NextNow before the next tick goes out from
+// the cursor, as on a fresh scheduler.
+func TestScheduler_RestartingForgetsTheItemOnAir(t *testing.T) {
+	for _, tc := range []struct {
+		name, op, want string
+	}{
+		{"restart then Next", "next", "a->b"},
+		// From the first item NextNow takes b; going out from c it would
+		// transition c->b.
+		{"restart then NextNow", "nextnow", "b"},
+		{"SetCursor then Next", "setcursor", "c->d"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t0 := time.Unix(0, 0)
+			s := nextNowScheduler(t, &TransitionConfig{Type: "dissolve", DurationMs: 500})
+			s.Tick(t0)
+			require.NoError(t, s.JumpTo("c"))
+			s.Tick(t0)
+			switch tc.op {
+			case "next":
+				s.Stop()
+				s.Start()
+				require.NoError(t, s.Next())
+			case "nextnow":
+				s.Stop()
+				s.Start()
+				require.NoError(t, s.NextNow())
+			case "setcursor":
+				require.NoError(t, s.JumpTo("a"))
+				s.Tick(t0)
+				s.SetCursor(2, ModeAutomated, 0)
+				require.NoError(t, s.Next())
+			}
+			require.Equal(t, tc.want, reviewDecision(s.Tick(t0.Add(time.Millisecond))))
+		})
+	}
+}
+
+// TestScheduler_PreviousDuringAMoveTransition: during a transition from
+// moves before a tick, as during one Next started, the cursor is on the
+// item going out, so Previous goes back from it and never to the item the
+// moves passed over.
+func TestScheduler_PreviousDuringAMoveTransition(t *testing.T) {
+	for _, presses := range []string{"NN", "nn", "jn"} {
+		t.Run(presses, func(t *testing.T) {
+			t0 := time.Unix(0, 0)
+			s := nextNowScheduler(t, &TransitionConfig{Type: "dissolve", DurationMs: 500})
+			require.NoError(t, s.JumpTo("b"))
+			s.Tick(t0)
+			for _, p := range presses {
+				switch p {
+				case 'N':
+					require.NoError(t, s.NextNow())
+				case 'n':
+					require.NoError(t, s.Next())
+				case 'j':
+					require.NoError(t, s.JumpTo("c"))
+				}
+			}
+			require.Equal(t, "b->d", reviewDecision(s.Tick(t0.Add(time.Millisecond))))
+			snap := s.StatusSnapshot()
+			require.Equal(t, 1, snap.Cursor, "the cursor left the item going out")
+			require.Equal(t, 3, snap.Next)
+			require.NoError(t, s.Previous())
+			require.Equal(t, "a", reviewDecision(s.Tick(t0.Add(50*time.Millisecond))))
+		})
+	}
+}
+
+// TestScheduler_MovesBeforeATickWaitForTheSchedule: Next presses that land
+// on an item scheduled later enter its wait, whether they count from the
+// item on air or from a cursor JumpTo moved; NextNow takes it at once.
+func TestScheduler_MovesBeforeATickWaitForTheSchedule(t *testing.T) {
+	for _, tc := range []struct{ presses, want string }{
+		{"nn", "idle"},
+		{"jn", "idle"},
+		{"jN", "c"},
+	} {
+		t.Run(tc.presses, func(t *testing.T) {
+			t0 := time.Unix(0, 0)
+			future := t0.Add(time.Hour)
+			c := schedLiveItem("c", "cam-3")
+			c.ScheduledTime = &future
+			s := NewScheduler()
+			require.NoError(t, s.LoadPlaylist(schedPlaylist(schedLiveItem("a", "cam-1"),
+				schedLiveItem("b", "cam-2"), c, schedLiveItem("d", "cam-4"))))
+			s.Start()
+			s.Tick(t0)
+			for _, p := range tc.presses {
+				switch p {
+				case 'n':
+					require.NoError(t, s.Next())
+				case 'N':
+					require.NoError(t, s.NextNow())
+				case 'j':
+					require.NoError(t, s.JumpTo("b"))
+				}
+			}
+			require.Equal(t, tc.want, reviewDecision(s.Tick(t0.Add(time.Millisecond))))
+		})
+	}
+}
+
+// TestScheduler_IdleWaitNamesTheWaitingItemNext: in a wait for a scheduled
+// item, that item airs next, also with one Next pending, which starts it;
+// a second press lands on the item after it.
+func TestScheduler_IdleWaitNamesTheWaitingItemNext(t *testing.T) {
+	t0 := time.Unix(0, 0)
+	future := t0.Add(10 * time.Second)
+	b := schedSlateItem("b", 5000)
+	b.ScheduledTime = &future
+	s := NewScheduler()
+	require.NoError(t, s.LoadPlaylist(schedPlaylist(schedSlateItem("a", 100), b, schedSlateItem("c", 5000))))
+	s.Start()
+	s.Tick(t0)
+	require.True(t, s.Tick(t0.Add(101*time.Millisecond)).IsIdle)
+	require.Equal(t, 1, s.StatusSnapshot().Next)
+	require.NoError(t, s.Next())
+	require.Equal(t, 1, s.StatusSnapshot().Next)
+	require.NoError(t, s.Next())
+	require.Equal(t, 2, s.StatusSnapshot().Next)
+}
+
+// TestScheduler_NextAfterNextNowDuringATransitionCuts: NextNow during a
+// transition cuts, so a Next after it before the tick cuts on to the item
+// after, rather than transition out of the item NextNow took, which never
+// aired.
+func TestScheduler_NextAfterNextNowDuringATransitionCuts(t *testing.T) {
+	t0 := time.Unix(0, 0)
+	s := nextNowScheduler(t, &TransitionConfig{Type: "dissolve", DurationMs: 500})
+	s.Tick(t0)
+	require.NoError(t, s.Next())
+	require.Equal(t, "a->b", reviewDecision(s.Tick(t0)))
+	require.NoError(t, s.NextNow())
+	require.NoError(t, s.Next())
+	require.Equal(t, "d", reviewDecision(s.Tick(t0.Add(100*time.Millisecond))))
+	require.Equal(t, 3, s.Cursor())
+}
+
+// TestScheduler_RestartingTheItemOnAir: Previous on the first item and a
+// JumpTo to the item on air restart it, as they did before moves came back
+// to the item on air: a slate's timer starts again.
+func TestScheduler_RestartingTheItemOnAir(t *testing.T) {
+	for _, op := range []string{"previous", "jump"} {
+		t.Run(op, func(t *testing.T) {
+			t0 := time.Unix(0, 0)
+			s := NewScheduler()
+			require.NoError(t, s.LoadPlaylist(schedPlaylist(schedSlateItem("a", 1000), schedSlateItem("b", 1000))))
+			s.Start()
+			s.Tick(t0)
+			if op == "previous" {
+				require.NoError(t, s.Previous())
+			} else {
+				require.NoError(t, s.JumpTo("a"))
+			}
+			require.Equal(t, "a", reviewDecision(s.Tick(t0.Add(600*time.Millisecond))))
+			require.Equal(t, "a", reviewDecision(s.Tick(t0.Add(1500*time.Millisecond))), "the slate did not restart")
+			require.Equal(t, "b", reviewDecision(s.Tick(t0.Add(1601*time.Millisecond))))
+		})
+	}
+}

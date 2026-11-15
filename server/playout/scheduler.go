@@ -69,6 +69,16 @@ type Scheduler struct {
 	holdComplete bool // hold item got its complete signal, waiting for Next()
 	loopExit     bool // EndLoop: the looping item plays its pass out, then ends
 
+	// onAir is the index of the item the last tick played, -1 for none:
+	// Previous, JumpTo and NextNow move the cursor off it before it goes.
+	// onAirState is its per-item state as that tick left it, which the
+	// item keeps when the moves come back to it.
+	onAir      int
+	onAirState itemState
+	// take means NextNow moved the cursor: the next tick transitions into
+	// the item at the cursor from the one on air.
+	take bool
+
 	// Transition state.
 	transStartTime  time.Time
 	transDurationMs int64
@@ -90,11 +100,21 @@ type Scheduler struct {
 	idleWaiting bool
 }
 
+// itemState is the state of the item on air that resetItemState clears and
+// a later tick of the same item reads.
+type itemState struct {
+	startTime    time.Time
+	durationMs   int64
+	holdComplete bool
+	loopExit     bool
+}
+
 // NewScheduler creates a new Scheduler in the idle state.
 func NewScheduler() *Scheduler {
 	return &Scheduler{
 		state: SchedIdle,
 		mode:  ModeAutomated,
+		onAir: -1,
 	}
 }
 
@@ -105,6 +125,8 @@ func (s *Scheduler) LoadPlaylist(pl *Playlist) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The index of the item on air means nothing in another playlist.
+	s.onAir = -1
 	s.playlist = pl
 	s.cursor = 0
 	s.startAt = 0
@@ -117,6 +139,8 @@ func (s *Scheduler) LoadPlaylist(pl *Playlist) error {
 func (s *Scheduler) Start() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Nothing is on air until the first tick, whatever played before a Stop.
+	s.onAir = -1
 	if s.playlist == nil || len(s.playlist.Items) == 0 {
 		return
 	}
@@ -130,6 +154,7 @@ func (s *Scheduler) Start() {
 	s.advancePend = 0
 	s.holdComplete = false
 	s.loopExit = false
+	s.take = false
 	s.idleWaiting = false
 }
 
@@ -151,6 +176,17 @@ func (s *Scheduler) Stop() {
 func (s *Scheduler) Tick(now time.Time) SchedulerDecision {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	d := s.tick(now)
+	s.onAir = -1
+	if d.State == SchedPlaying && d.Item != nil {
+		s.onAir = s.cursor
+		s.onAirState = itemState{s.itemStartTime, s.itemDurationMs, s.holdComplete, s.loopExit}
+	}
+	return d
+}
+
+// tick is Tick with s.mu held.
+func (s *Scheduler) tick(now time.Time) SchedulerDecision {
 
 	// 1. Stopped or no playlist → completed.
 	if s.stopped || !s.started || s.playlist == nil {
@@ -180,6 +216,40 @@ func (s *Scheduler) Tick(now time.Time) SchedulerDecision {
 	}
 
 	item := &s.playlist.Items[s.cursor]
+
+	// The operator moved the cursor off the item on air since the last
+	// tick, so the item at the cursor has not aired. Next presses count
+	// from it, and NextNow takes it, but the move goes out from the item
+	// on air, as an advance from it would. Moves that came back to the
+	// item on air leave it as it was.
+	take := s.take
+	s.take = false
+	if take && s.onAir < 0 && s.advancePend > 0 {
+		// NextNow left no single item on air, as during a transition, so
+		// the presses after it cut to where they land, as NextNow cuts.
+		s.cursor += s.advancePend
+		s.advancePend = 0
+		if s.cursor >= len(s.playlist.Items) {
+			s.state = SchedIdle
+			return SchedulerDecision{
+				State:     SchedIdle,
+				Completed: true,
+			}
+		}
+		item = &s.playlist.Items[s.cursor]
+	}
+	if s.onAir >= 0 {
+		switch {
+		case s.cursor != s.onAir && s.advancePend > 0:
+			target := s.cursor + s.advancePend
+			s.advancePend = 0
+			return s.moveFrom(now, s.onAir, target, true)
+		case s.cursor != s.onAir && take:
+			return s.moveFrom(now, s.onAir, s.cursor, false)
+		case s.cursor == s.onAir && s.itemStartTime.IsZero():
+			s.resumeOnAir()
+		}
+	}
 
 	// 5. Initialize item start time on first tick of an item.
 	if s.itemStartTime.IsZero() {
@@ -277,6 +347,35 @@ func (s *Scheduler) Next() error {
 	return nil
 }
 
+// NextNow moves the cursor at once to the item after the one on air and
+// drops every Next not applied yet: the operator takes that item, whatever
+// was queued. A further NextNow or Next before the tick moves on from
+// there. The next tick airs the item the cursor ends on the way an advance
+// from the item on air does, through the playlist's transition into it.
+// During a transition it takes the item after the one coming in and cuts
+// to it, since the picture on air is a blend no transition can start
+// from, and Next presses after it cut on from there. In a wait for a
+// scheduled item it starts that item. At the last item it completes the
+// playlist on the next tick.
+func (s *Scheduler) NextNow() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.started || s.stopped {
+		return ErrNotOnAir
+	}
+	if s.playlist == nil {
+		return ErrNoPlaylist
+	}
+	s.cursor = min(s.pendingFrom()+1, len(s.playlist.Items))
+	s.resetItemState()
+	s.take = true
+	s.transOutgoing = nil
+	s.transIncoming = nil
+	s.idleWaiting = false
+	s.state = SchedPlaying
+	return nil
+}
+
 // Previous takes back a Next not applied yet, or else moves the cursor
 // back one item.
 func (s *Scheduler) Previous() error {
@@ -291,6 +390,9 @@ func (s *Scheduler) Previous() error {
 	}
 	if s.cursor > 0 {
 		s.cursor--
+	} else if s.cursor == s.onAir {
+		// Previous on the first item restarts it.
+		s.onAir = -1
 	}
 	s.resetItemState()
 	// An explicit operator navigation overrides a pending schedule wait —
@@ -312,6 +414,10 @@ func (s *Scheduler) JumpTo(itemID string) error {
 	}
 	for i, item := range s.playlist.Items {
 		if item.ID == itemID {
+			if i == s.cursor && i == s.onAir {
+				// A jump to the item on air restarts it.
+				s.onAir = -1
+			}
 			s.cursor = i
 			s.resetItemState()
 			// An explicit operator jump overrides a pending schedule wait —
@@ -343,6 +449,9 @@ func (s *Scheduler) EndLoop() error {
 		return ErrNotLooping
 	}
 	s.loopExit = true
+	if s.cursor == s.onAir {
+		s.onAirState.loopExit = true
+	}
 	return nil
 }
 
@@ -453,6 +562,7 @@ func (s *Scheduler) StatusSnapshot() SchedulerSnapshot {
 func (s *Scheduler) SetCursor(index int, mode OnAirMode, elapsed time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.onAir = -1
 	if s.playlist == nil || index < 0 || index >= len(s.playlist.Items) {
 		return
 	}
@@ -463,6 +573,7 @@ func (s *Scheduler) SetCursor(index int, mode OnAirMode, elapsed time.Duration) 
 	s.itemComplete = false
 	s.advancePend = 0
 	s.holdComplete = false
+	s.take = false
 	// A loop release belongs to the item it was given for and to the engine
 	// state the cursor is taken from; the snapshot carries it separately.
 	s.loopExit = false
@@ -556,6 +667,7 @@ func (s *Scheduler) resetItemState() {
 	s.advancePend = 0
 	s.holdComplete = false
 	s.loopExit = false
+	s.take = false
 }
 
 // nextIndex returns the index of the item that airs next: the one the
@@ -565,6 +677,8 @@ func (s *Scheduler) nextIndex() int {
 	switch {
 	case s.advancePend > 0:
 		return s.pendingFrom() + s.advancePend
+	case s.idleWaiting:
+		return s.cursor
 	case s.state == SchedTransitioning:
 		return s.transTarget
 	}
@@ -651,30 +765,9 @@ func (s *Scheduler) advance(now time.Time, steps int) SchedulerDecision {
 		}
 	}
 
-	// Determine transition config: per-item takes priority, then playlist default.
-	tc := s.effectiveTransition(nextItem)
-
-	if tc != nil && tc.DurationMs > 0 {
-		// Start a transition.
-		outgoing := s.playlist.Items[s.cursor]
-		s.transOutgoing = &outgoing
-		s.transIncoming = nextItem
-		s.transConfig = *tc
-		s.transTarget = nextCursor
-		s.transStartTime = now
-		s.transDurationMs = int64(tc.DurationMs)
-		s.state = SchedTransitioning
-
-		return SchedulerDecision{
-			State: SchedTransitioning,
-			Item:  &outgoing,
-			Transition: &TransitionReq{
-				Outgoing: s.transOutgoing,
-				Incoming: s.transIncoming,
-				Config:   s.transConfig,
-				Progress: 0.0,
-			},
-		}
+	outgoing := s.playlist.Items[s.cursor]
+	if d, ok := s.startTransition(now, &outgoing, nextCursor); ok {
+		return d
 	}
 
 	// Hard cut — advance immediately.
@@ -685,6 +778,82 @@ func (s *Scheduler) advance(now time.Time, steps int) SchedulerDecision {
 		State: SchedPlaying,
 		Item:  nextItem,
 	}
+}
+
+// resumeOnAir gives the item on air back the state its last tick left it.
+func (s *Scheduler) resumeOnAir() {
+	st := s.onAirState
+	s.itemStartTime, s.itemDurationMs = st.startTime, st.durationMs
+	s.holdComplete, s.loopExit = st.holdComplete, st.loopExit
+}
+
+// moveFrom moves from the item at index from, on air, to the one at
+// target, as advance moves from the cursor: through a transition when one
+// is configured into it, else as a cut, and into the wait for a scheduled
+// target when schedule is set. The cursor stays on the item on air until
+// the transition commits. Presses that come back to the item on air leave
+// it playing as it was.
+func (s *Scheduler) moveFrom(now time.Time, from, target int, schedule bool) SchedulerDecision {
+	if target >= len(s.playlist.Items) {
+		s.cursor = len(s.playlist.Items)
+		s.state = SchedIdle
+		return SchedulerDecision{
+			State:     SchedIdle,
+			Completed: true,
+		}
+	}
+	if target == from {
+		s.cursor = from
+		s.resumeOnAir()
+		return s.playingDecision(&s.playlist.Items[from])
+	}
+	if next := &s.playlist.Items[target]; schedule && next.ScheduledTime != nil && now.Before(*next.ScheduledTime) {
+		s.cursor = target
+		s.resetItemState()
+		s.idleWaiting = true
+		s.state = SchedIdle
+		return SchedulerDecision{
+			State:  SchedIdle,
+			IsIdle: true,
+		}
+	}
+	outgoing := s.playlist.Items[from]
+	if d, ok := s.startTransition(now, &outgoing, target); ok {
+		s.cursor = from
+		return d
+	}
+	s.cursor = target
+	s.resetItemState()
+	return s.playingDecision(&s.playlist.Items[target])
+}
+
+// startTransition starts the transition from outgoing to the item at
+// index target, when one is configured into it, and reports whether it did.
+func (s *Scheduler) startTransition(now time.Time, outgoing *PlaylistItem, target int) (SchedulerDecision, bool) {
+	// Per-item transition takes priority, then playlist default.
+	incoming := &s.playlist.Items[target]
+	tc := s.effectiveTransition(incoming)
+	if tc == nil || tc.DurationMs <= 0 {
+		return SchedulerDecision{}, false
+	}
+	s.transOutgoing = outgoing
+	s.transIncoming = incoming
+	s.transConfig = *tc
+	s.transTarget = target
+	s.transStartTime = now
+	s.transDurationMs = int64(tc.DurationMs)
+	s.state = SchedTransitioning
+
+	return SchedulerDecision{
+		State: SchedTransitioning,
+		Item:  outgoing,
+		Transition: &TransitionReq{
+			Outgoing: s.transOutgoing,
+			Incoming: s.transIncoming,
+			Config:   s.transConfig,
+			Progress: 0.0,
+		},
+	}, true
 }
 
 // effectiveTransition returns the transition config to use when advancing

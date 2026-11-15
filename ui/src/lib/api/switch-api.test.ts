@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, checkFragmentToken, getAuthToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency, setDualTimestampProvider, graphicsOn, graphicsOff, recallPreset, dveSlotOn, clipPlayerPlay, clipPlayerStop, listRecordingsDualEngine, listRecordingsFromEngine, importRecordingFromEngine, graphicsSequenceUpload, runMacro, setSourceKey, setFormat, setEncoderBackend, resetCircuitBreakers, engineFetch, authHeaders } from './switch-api';
-import { setSqueezeback, squeezebackOn, squeezebackOff } from './switch-api';
+import { setSqueezeback, squeezebackOn, squeezebackOff, playoutNextNow } from './switch-api';
 import { setEngineUrls } from './base-url';
 import * as notifications from '$lib/state/notifications.svelte';
 import type { SRTOutputConfig, SCTE35CueRequest, CreateSRTSourceConfig } from './types';
@@ -25,6 +25,19 @@ describe('switch-api', () => {
 			body: JSON.stringify({ source: 'cam1' }),
 		});
 		expect(result.programSource).toBe('cam1');
+	});
+
+	it('playoutNextNow posts to the channel next-now endpoint', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({}),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await playoutNextNow(2);
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		expect(mockFetch.mock.calls[0][0]).toBe('/api/playout/channels/2/next-now');
+		expect(mockFetch.mock.calls[0][1].method).toBe('POST');
 	});
 
 	it('setPreview sends POST with source', async () => {

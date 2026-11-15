@@ -2,7 +2,7 @@
 	import { onDestroy } from 'svelte';
 	import type { PlayoutChannelState, CacheStatus } from '$lib/api/types';
 	import {
-		playoutStart, playoutStop, playoutNext, playoutPrevious, playoutEndLoop,
+		playoutStart, playoutStop, playoutNext, playoutNextNow, playoutPrevious, playoutEndLoop,
 		playoutTakeManual, playoutReturnToAuto, apiCall,
 	} from '$lib/api/switch-api';
 	import {
@@ -82,6 +82,10 @@
 
 	function handleNext() {
 		apiCall(playoutNext(channel.id), 'Playout next');
+	}
+
+	function handleNextNow() {
+		apiCall(playoutNextNow(channel.id), 'Playout next now');
 	}
 
 	function handleEndLoop() {
@@ -171,6 +175,14 @@
 		</button>
 		<button class="t-btn t-next" onclick={handleNext} disabled={isStopped} title="Next item">
 			{@html renderIcon(ICON_FRAME_FORWARD, 15)}
+		</button>
+		<button
+			class="t-btn t-next-now"
+			onclick={handleNextNow}
+			disabled={!isOnAir}
+			title="Take the next item now, dropping queued Next presses"
+		>
+			NEXT NOW
 		</button>
 		{#if isOnAir && channel.looping}
 			<button
@@ -265,6 +277,14 @@
 	.t-next {
 		min-width: 34px;
 		height: 30px;
+	}
+
+	.t-next-now {
+		padding: 0 8px;
+		font-family: var(--font-ui);
+		font-size: 8px;
+		font-weight: 700;
+		letter-spacing: 0.06em;
 	}
 
 	.t-end-loop {

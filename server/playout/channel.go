@@ -600,6 +600,24 @@ func (c *Channel) Next() error {
 	return nil
 }
 
+// NextNow moves the cursor to the item after the one on air and drops the
+// Next presses not applied yet; the item airs on the next tick.
+func (c *Channel) NextNow() error {
+	c.mu.Lock()
+	if c.state != StateOnAir {
+		c.mu.Unlock()
+		return ErrNotOnAir
+	}
+	c.mu.Unlock()
+	if err := c.scheduler.NextNow(); err != nil {
+		return err
+	}
+	c.updatePreroll()
+	// The item airs on the next tick; its source may not have been armed.
+	c.prepareLiveSources()
+	return nil
+}
+
 // Previous takes back a Next the run loop has not applied yet, or else
 // moves the cursor back one item.
 func (c *Channel) Previous() error {
@@ -1108,6 +1126,7 @@ func (c *Channel) setCursor(cursor int, cue bool) {
 	c.scheduler.state = SchedPlaying
 	c.scheduler.transOutgoing = nil
 	c.scheduler.transIncoming = nil
+	c.scheduler.onAir = -1
 	c.scheduler.mu.Unlock()
 	c.updatePrerollLocked()
 }
