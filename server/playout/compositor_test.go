@@ -379,3 +379,21 @@ func TestCompositor_WipeWithConfig(t *testing.T) {
 		t.Fatal("wipe at 0.5 should contain pixels from both sources")
 	}
 }
+
+// Blends tells the types Blend blends from those it cuts on, as the channel
+// needs to know before a transition starts whether it overlaps a clip's end.
+func TestCompositor_BlendsMatchesBlend(t *testing.T) {
+	types := []string{"dissolve", "mix", "dip", "dip_black", "dip_white", "wipe", "dve-push", "dve-", "push", "cut", "", "Mix"}
+	cpu := NewCompositor(4, 4, nil)
+	gpu := NewCompositor(4, 4, func(_, _, _ []byte, _, _ int, _ float32, _ string) {})
+	for _, typ := range types {
+		a, b := makeTestFrame(4, 4, 16, 128, 128, 0), makeTestFrame(4, 4, 235, 128, 128, 3000)
+		cfg := TransitionConfig{Type: typ, DurationMs: 400}
+		if got, want := cpu.Blends(typ), cpu.Blend(a, b, 0.5, cfg) != b; got != want {
+			t.Errorf("CPU: Blends(%q) = %v, Blend blends: %v", typ, got, want)
+		}
+		if got, want := gpu.Blends(typ), gpu.Blend(a, b, 0.5, cfg) != b; got != want {
+			t.Errorf("GPU: Blends(%q) = %v, Blend blends: %v", typ, got, want)
+		}
+	}
+}

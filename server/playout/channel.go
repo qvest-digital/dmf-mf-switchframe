@@ -1423,6 +1423,24 @@ func (c *Channel) tick(now time.Time) bool {
 	return false
 }
 
+// endTransitionCuts reports whether the transition the item at the
+// scheduler's cursor ends into goes out as a cut, as transitionFrame puts
+// it out: the incoming item is a live source aliased on the GPU, which has
+// no picture here to blend, or the compositor cannot blend its type.
+func (c *Channel) endTransitionCuts() bool {
+	next, tc := c.scheduler.NextTransition()
+	if next == nil || tc == nil {
+		return false
+	}
+	if !c.compositor.Blends(tc.Type) {
+		return true
+	}
+	c.mu.Lock()
+	alias := c.gpuAlias
+	c.mu.Unlock()
+	return next.Type == ItemLive && alias != nil && alias(next.Source)
+}
+
 // transitionFrame returns the frame of a transition in progress: the
 // outgoing and incoming items blended at its progress.
 func (c *Channel) transitionFrame(t *TransitionReq) *DecodedFrame {
@@ -1834,6 +1852,8 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 
 	targetSourceFrame := int(float64(outputFrame) * clipFPS / pipelineFPS)
 
+	cuts := total > 0 && c.endTransitionCuts()
+
 	// Always increment output frame counter — unless a concurrent SeekToItem
 	// replaced the iterator since we captured it (the seek reset the counter).
 	c.mu.Lock()
@@ -1842,8 +1862,13 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 		if total > 0 {
 			// The ticks from the next one on whose whole period the clip's
 			// pictures and sound still cover, for a transition at its end
-			// to end within them.
-			left := int(math.Floor(float64(total)*pipelineFPS/clipFPS+1e-9)) - c.clipOutputFrame
+			// to end within them. A transition that goes out as a cut
+			// starts once the clip has ended instead: overlapping it, the
+			// cut would take the clip off before its end.
+			left := 0
+			if !cuts {
+				left = int(math.Floor(float64(total)*pipelineFPS/clipFPS+1e-9)) - c.clipOutputFrame
+			}
 			c.scheduler.SignalTicksLeft(item.ID, left, pipelineFPS)
 		}
 	}

@@ -939,6 +939,19 @@ func (s *Scheduler) endTransitionMs(now time.Time) int64 {
 	return 0
 }
 
+// NextTransition returns the item after the cursor and the transition
+// configured into it, or nil for both when there is no next item, and a
+// nil transition for a cut.
+func (s *Scheduler) NextTransition() (*PlaylistItem, *TransitionConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.playlist == nil || s.cursor+1 >= len(s.playlist.Items) {
+		return nil, nil
+	}
+	next := &s.playlist.Items[s.cursor+1]
+	return next, s.effectiveTransition(next)
+}
+
 // transitionTicks is how many ticks at fps a transition of ms blends:
 // those its progress is below 1 on (see tickTransition).
 func transitionTicks(ms int64, fps float64) int {

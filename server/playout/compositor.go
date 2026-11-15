@@ -127,6 +127,19 @@ func (c *Compositor) Blend(a, b *DecodedFrame, progress float64, config Transiti
 	}
 }
 
+// Blends reports whether Blend blends a transition of type typ rather than
+// cutting to the incoming frame.
+func (c *Compositor) Blends(typ string) bool {
+	if c.gpuBlend != nil {
+		return true
+	}
+	switch typ {
+	case "dissolve", "mix", "dip_black", "dip", "dip_white", "wipe":
+		return true
+	}
+	return strings.HasPrefix(typ, "dve-")
+}
+
 // Cut returns frame b directly (hard cut, no blend).
 // No copy is made — the caller receives the same YUV slice.
 func (c *Compositor) Cut(b *DecodedFrame) *DecodedFrame {

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // The scheduler starts a transition at the natural end of a clip on the
@@ -445,5 +447,59 @@ func TestPlayoutSecondaryEventsFireInTheTransitionAtItemEnd(t *testing.T) {
 			}
 			require.Equal(t, want, got, "the ticks the events fired on")
 		})
+	}
+}
+
+// A transition that goes out as a cut does not overlap the clip's end:
+// the incoming item takes over on the tick after the clip's last, where it
+// would without the transition. Overlapping, the cut came on the tick the
+// transition started, a transition's length before the clip's end.
+func TestPlayoutTransitionThatCutsLetsTheClipPlayOut(t *testing.T) {
+	cases := []struct {
+		name     string
+		incoming PlaylistItem
+		typ      string
+		setup    func(ch *Channel)
+	}{
+		{"into a live source aliased on the GPU", liveItem("b", "cam"), "mix", func(ch *Channel) {
+			ch.SetGPUAlias(func(string) bool { return true })
+		}},
+		{"of a type the compositor does not blend", clipItem("b"), "push", func(ch *Channel) {
+			ch.compositor = NewCompositor(16, 16, nil)
+		}},
+	}
+	for _, tc := range cases {
+		for _, fps := range channelRates {
+			t.Run(fmt.Sprintf("%s/%.3ffps", tc.name, fps), func(t *testing.T) {
+				n := int(math.Round(2 * fps))
+				a, b := clipItem("a"), tc.incoming
+				b.Transition = &TransitionConfig{Type: tc.typ, DurationMs: 400}
+				ch, tick, chunks := pcmChannelAt(t, fps, pcmAssets{
+					a.AssetURI:             pcmClip(n, fps, 48000, 1, 0, math.MaxInt64),
+					clipItem("b").AssetURI: pcmClip(2*n, fps, 48000, 0, 1, math.MaxInt64),
+				}, a, b)
+				tc.setup(ch)
+				ch.SetGPUSourceTap(func(string) *DecodedFrame {
+					return &DecodedFrame{YUV: make([]byte, video.YUV420FrameSize(16, 16)), Width: 16, Height: 16}
+				})
+				for i := 0; i < n+10; i++ {
+					tick(i)
+				}
+				// The clip's samples, all of them, went out by the tick
+				// after its last.
+				samples, last := 0, -1
+				for _, c := range *chunks {
+					for k := 0; k < len(c.pcm); k += c.channels {
+						if c.pcm[k] > 0 {
+							samples++
+							last = c.tick
+						}
+					}
+				}
+				want := int(math.Round(float64(n) * 48000 / fps))
+				require.Equal(t, want, samples, "the clip's samples that went out, its last on tick %d of %d", last, n)
+				require.Less(t, last, n+1, "the clip's sound past its end")
+			})
+		}
 	}
 }
