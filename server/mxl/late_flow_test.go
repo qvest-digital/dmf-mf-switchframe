@@ -2,6 +2,7 @@ package mxl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -264,6 +265,12 @@ func (r *lateRun) frames() (video, audio []lateFrame) {
 // after d and returns what the source handed over once Stop returned.
 func runLate(t *testing.T, rate Rational, video, audio, data *lateFlow, d time.Duration) *lateRun {
 	t.Helper()
+	return runLateLogged(t, quietLog, rate, video, audio, data, d)
+}
+
+// runLateLogged is runLate with the source logging to log.
+func runLateLogged(t *testing.T, log *slog.Logger, rate Rational, video, audio, data *lateFlow, d time.Duration) *lateRun {
+	t.Helper()
 	run := &lateRun{}
 	var src *Source
 	src = NewSource(SourceConfig{
@@ -272,7 +279,7 @@ func runLate(t *testing.T, rate Rational, video, audio, data *lateFlow, d time.D
 		Height:   lateH,
 		FPSNum:   int(rate.Numerator),
 		FPSDen:   int(rate.Denominator),
-		Logger:   quietLog,
+		Logger:   log,
 		OnRawVideo: func(_ string, yuv []byte, _, _ int, pts int64) {
 			run.mu.Lock()
 			run.video = append(run.video, lateFrame{pts: pts, y: yuv[0], at: time.Now(), shift: src.audioShift.Load()})
@@ -601,6 +608,211 @@ func TestLateFlow_NeverAppearsStopsCleanly(t *testing.T) {
 		v, a := run.frames()
 		if len(v) != 0 || len(a) != 0 || run.data != 0 {
 			t.Errorf("handed over %d video, %d audio, %d data grains of flows that never existed", len(v), len(a), run.data)
+		}
+	})
+}
+
+// The readers of a source whose flows are all missing each have an open
+// under way most of the time, and an open of a missing flow takes seconds
+// on an mxlfs. Stop ends every reader's retries before it waits for any,
+// so it waits for the opens under way together: about one open, not one
+// after another while the readers not yet closed start new ones.
+func TestLateFlow_StopWaitsForOpensTogether(t *testing.T) {
+	eachVideoRate(t, func(t *testing.T, rate Rational, period time.Duration) {
+		const cost = 2 * time.Second
+		video, audio, data := newLateFlow(lateVideoShape(rate)), newLateFlow(lateAudioShape), newLateFlow(lateDataShape)
+		for _, f := range []*lateFlow{video, audio, data} {
+			f.openCost = cost
+		}
+		// Made a retry interval apart, so the readers' opens and waits are
+		// out of step: at the stop, the video's open has 1.5 s to go, the
+		// audio starts one in 0.5 s and the data one in 1.5 s.
+		vr := NewReopeningReader("v", nil, video.openVideo, quietLog)
+		time.Sleep(reopenInterval)
+		ar := NewReopeningAudioReader("a", nil, audio.openAudio, quietLog)
+		time.Sleep(reopenInterval)
+		dr := NewReopeningReader("d", nil, data.openVideo, quietLog)
+		src := NewSource(SourceConfig{FlowName: "late", Width: lateW, Height: lateH,
+			FPSNum: int(rate.Numerator), FPSDen: int(rate.Denominator), Logger: quietLog})
+		src.Start(context.Background(), vr, ar, dr)
+		time.Sleep(1500 * time.Millisecond)
+
+		start := time.Now()
+		src.Stop()
+		if took := time.Since(start); took > cost {
+			t.Errorf("Stop took %v, want at most one open, %v", took, cost)
+		}
+		for name, f := range map[string]*lateFlow{"video": video, "audio": audio, "data": data} {
+			if _, inOpen, _ := f.stats(); inOpen != 0 {
+				t.Errorf("%s: %d opens still under way after Stop returned", name, inOpen)
+			}
+		}
+	})
+}
+
+// logRecords keeps every record logged through it.
+type logRecords struct {
+	mu   sync.Mutex
+	recs []slog.Record
+}
+
+func (l *logRecords) Enabled(context.Context, slog.Level) bool { return true }
+func (l *logRecords) Handle(_ context.Context, r slog.Record) error {
+	l.mu.Lock()
+	l.recs = append(l.recs, r.Clone())
+	l.mu.Unlock()
+	return nil
+}
+func (l *logRecords) WithAttrs([]slog.Attr) slog.Handler { return l }
+func (l *logRecords) WithGroup(string) slog.Handler      { return l }
+
+// of returns the records logged with msg.
+func (l *logRecords) of(msg string) []slog.Record {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []slog.Record
+	for _, r := range l.recs {
+		if r.Message == msg {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// attr returns the value of r's attribute key.
+func attr(r slog.Record, key string) (v slog.Value, ok bool) {
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			v, ok = a.Value, true
+			return false
+		}
+		return true
+	})
+	return v, ok
+}
+
+// A source waiting for a flow reads nothing and loses nothing, so the wait
+// itself shows: the reader reports no flow open until the flow is read,
+// and warns that the flow is missing at the first failed open and then
+// once a minute, not at every retry. The open is logged as one, not as a
+// move from another flow.
+func TestLateFlow_WaitingShowsInFlowOpenAndLog(t *testing.T) {
+	eachVideoRate(t, func(t *testing.T, rate Rational, period time.Duration) {
+		const appear = 150 * time.Second
+		video := newLateFlow(lateVideoShape(rate), lateFile{from: appear})
+		logged := &logRecords{}
+		w := NewReopeningReader("v", nil, video.openVideo, slog.New(logged))
+		r := NewVideoReader(ReaderConfig{BufSize: 1, TimeoutMs: 100, Width: lateW, Height: lateH, Logger: quietLog})
+		ctx, cancel := context.WithCancel(context.Background())
+		r.StartVideo(ctx, w)
+		go func() {
+			for range r.Video() {
+			}
+		}()
+		open := w.(interface{ FlowOpen() bool })
+
+		time.Sleep(appear - time.Millisecond)
+		if open.FlowOpen() {
+			t.Error("flow open before it exists")
+		}
+		var warned []time.Duration
+		for _, rec := range logged.of("mxl: flow not open yet, retrying") {
+			if rec.Level == slog.LevelWarn {
+				warned = append(warned, rec.Time.Sub(video.start))
+			}
+		}
+		if want := []time.Duration{0, retryWarnEvery, 2 * retryWarnEvery}; fmt.Sprint(warned) != fmt.Sprint(want) {
+			t.Errorf("warned of the missing flow at %v, want %v", warned, want)
+		}
+
+		time.Sleep(lateBound(period, false))
+		if !open.FlowOpen() {
+			t.Errorf("flow not open %v after it appeared", lateBound(period, false))
+		}
+		if n := len(logged.of("mxl: flow opened")); n != 1 {
+			t.Errorf("flow opened logged %d times, want once", n)
+		}
+		if n := len(logged.of("mxl: input moved to another flow")); n != 0 {
+			t.Errorf("first open logged as a move %d times", n)
+		}
+
+		cancel()
+		r.Wait()
+		_ = w.Close()
+		if open.FlowOpen() {
+			t.Error("flow open after Close")
+		}
+	})
+}
+
+// The audio of a source can be shifted before its video's rate is known:
+// that log line carries no video grains, which would read as none, and the
+// shift is logged with its grains once the first video grain arrives.
+func TestLateFlow_ShiftLoggedWithVideoGrainsOnceKnown(t *testing.T) {
+	eachVideoRate(t, func(t *testing.T, rate Rational, period time.Duration) {
+		cr := clock.Rate{Num: rate.Numerator, Den: rate.Denominator}
+		saved, savedDelay, savedNow := programPeriod, programReadDelay, nowPTS
+		programPeriod = func() int64 { return programPeriodAt(cr) }
+		programReadDelay = func() uint64 { return clock.ReadDelay(cr) }
+		nowPTS = func() int64 { return clock.PTS(time.Now().UnixNano()) }
+		t.Cleanup(func() { programPeriod, programReadDelay, nowPTS = saved, savedDelay, savedNow })
+
+		appear := 3*time.Second + 7*period
+		video := newLateFlow(lateVideoShape(rate), lateFile{from: appear})
+		audio := newLateFlow(lateAudioShape, lateFile{})
+		audio.lag = 80 * time.Millisecond
+		logged := &logRecords{}
+		runLateLogged(t, slog.New(logged), rate, video, audio, nil, appear+2*time.Second)
+
+		shifts := logged.of("mxl source: audio arrives after the mixer's read point, mixing it later")
+		if len(shifts) == 0 || !shifts[0].Time.Before(video.start.Add(appear)) {
+			t.Fatal("audio not shifted before the video appeared")
+		}
+		var grains []uint64
+		for _, rec := range append(shifts, logged.of("mxl source: video shown later to stay with its audio")...) {
+			v, ok := attr(rec, "video_shift_grains")
+			if !ok {
+				continue
+			}
+			if rec.Time.Before(video.start.Add(appear)) {
+				t.Errorf("%q logged %d video grains before the video's rate was known", rec.Message, v.Uint64())
+			}
+			grains = append(grains, v.Uint64())
+		}
+		if len(grains) == 0 || grains[0] == 0 {
+			t.Errorf("video grains of the shift logged as %v once the video appeared, want a grain or more", grains)
+		}
+	})
+}
+
+// sparseData is a data flow whose head stays where its one grain put it,
+// as that of a source carrying ancillary data only now and then does for
+// longer than a retarget waits.
+type sparseData struct{ config FlowConfig }
+
+func (sparseData) ReadGrain(_, timeoutNs uint64) ([]byte, GrainInfo, error) {
+	time.Sleep(time.Duration(timeoutNs))
+	return nil, GrainInfo{}, ErrTimeout
+}
+func (f sparseData) ConfigInfo() FlowConfig   { return f.config }
+func (sparseData) HeadIndex() (uint64, error) { return 1000, nil }
+func (sparseData) Close() error               { return nil }
+
+// A data flow that has received a grain is read, even when no second one
+// follows before a retarget's wait is up: it would otherwise be reopened
+// for as long as its source carries no ancillary data.
+func TestLateFlow_SparseDataFlowIsRead(t *testing.T) {
+	eachVideoRate(t, func(t *testing.T, rate Rational, period time.Duration) {
+		flow := sparseData{FlowConfig{Format: DataFormatData, GrainRate: rate}}
+		w := NewReopeningReader("d", nil, func(string) (DiscreteReader, error) { return flow, nil }, quietLog)
+		defer w.Close()
+		time.Sleep(writtenTimeout + 2*reopenInterval)
+
+		if _, _, err := w.ReadGrain(1000, uint64(period)); !errors.Is(err, ErrTooLate) {
+			t.Errorf("first read = %v, want ErrTooLate from the data flow taken over", err)
+		}
+		if !w.(interface{ FlowOpen() bool }).FlowOpen() {
+			t.Error("data flow not open")
 		}
 	})
 }

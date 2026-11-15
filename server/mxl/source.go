@@ -311,6 +311,13 @@ func (s *Source) Stop() {
 		// Close flow readers to release C handles. Must happen after reader
 		// goroutines exit (they call ReadGrain/ReadSamples on these handles).
 		// Without this, mxlInstance.Close() races with still-open flow readers.
+		// Every reader's retries are ended first, so the opens still under
+		// way on them end together rather than one after another.
+		for _, f := range []any{s.videoFlow, s.audioFlow, s.dataFlow} {
+			if f, ok := f.(interface{ shutdown() }); ok {
+				f.shutdown()
+			}
+		}
 		if s.videoFlow != nil {
 			_ = s.videoFlow.Close()
 		}
@@ -338,6 +345,24 @@ func (s *Source) ReaderStats() map[string]ReaderStats {
 		if r != nil {
 			out[essence] = r.Stats()
 		}
+	}
+	return out
+}
+
+// FlowsOpen reports, by essence, whether each reader the source runs has
+// a flow open to read. A reader waiting for its flow to appear has none.
+func (s *Source) FlowsOpen() map[string]bool {
+	out := map[string]bool{}
+	for essence, f := range map[string]any{"video": s.videoFlow, "audio": s.audioFlow, "data": s.dataFlow} {
+		if f == nil {
+			continue
+		}
+		// A handle that cannot reopen is open for as long as it is read.
+		open := true
+		if o, ok := f.(interface{ FlowOpen() bool }); ok {
+			open = o.FlowOpen()
+		}
+		out[essence] = open
 	}
 	return out
 }
@@ -444,6 +469,13 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 	if r := s.videoRate.Load(); r == nil || *r != grain.Rate {
 		rate := grain.Rate
 		s.videoRate.Store(&rate)
+		// The audio's shift was logged without the video's grains when
+		// the video rate was not known yet.
+		if shift := s.audioShift.Load(); r == nil && shift != 0 {
+			s.log.Warn("mxl source: video shown later to stay with its audio",
+				"source", s.config.FlowName, "audio_shift_ms", shift/90,
+				"video_shift_grains", videoGrains(rate, shift))
+		}
 	}
 	pts := s.shifted(grain.PTS)
 
@@ -643,13 +675,11 @@ func (s *Source) processAudioGrain(grain AudioGrain) {
 		mixPTS := s.audioPlace.pts(pts, delay)
 		if s.audioPlace.shift != shift {
 			s.audioShift.Store(s.audioPlace.shift)
-			var grains uint64
+			args := []any{"source", s.config.FlowName, "audio_shift_ms", s.audioPlace.shift / 90}
 			if r := s.videoRate.Load(); r != nil {
-				grains = videoGrains(*r, s.audioPlace.shift)
+				args = append(args, "video_shift_grains", videoGrains(*r, s.audioPlace.shift))
 			}
-			s.log.Warn("mxl source: audio arrives after the mixer's read point, mixing it later",
-				"source", s.config.FlowName, "audio_shift_ms", s.audioPlace.shift/90,
-				"video_shift_grains", grains)
+			s.log.Warn("mxl source: audio arrives after the mixer's read point, mixing it later", args...)
 			if s.config.PlaceAudio != nil {
 				s.config.PlaceAudio()
 			}

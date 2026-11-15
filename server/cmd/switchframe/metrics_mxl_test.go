@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -54,6 +55,21 @@ func TestMXLReaderCollector(t *testing.T) {
 	f := metricstest.Series(t, c)
 	require.Equal(t, map[string]float64{"mxl:cam1": 0}, f["switchframe_mxl_reader_skipped_grains_total"])
 	require.Equal(t, map[string]float64{"audio/mxl:cam1": 0, "video/mxl:cam1": 0}, f["switchframe_mxl_reader_resyncs_total"])
+}
+
+// An input whose flow is not there yet reads nothing and reports nothing
+// lost, so whether its flow is open is exported by essence: 0 for an audio
+// flow still missing, 1 for the video flow being read.
+func TestMXLReaderCollector_FlowOpen(t *testing.T) {
+	missing := func(string) (mxl.ContinuousReader, error) { return nil, errors.New("flow not found") }
+	src := mxl.NewSource(mxl.SourceConfig{FlowName: "mxl:cam1", Width: 16, Height: 16})
+	ctx, cancel := context.WithCancel(context.Background())
+	src.Start(ctx, waitingFlow{head: new(atomic.Uint64)}, mxl.NewReopeningAudioReader("a", nil, missing, nil))
+	defer func() { cancel(); src.Stop() }()
+
+	c := &mxlReaderCollector{sources: func() []*mxl.Source { return []*mxl.Source{src} }}
+	require.Equal(t, map[string]float64{"audio/mxl:cam1": 0, "video/mxl:cam1": 1},
+		metricstest.Series(t, c)["switchframe_mxl_reader_flow_open"])
 }
 
 // grainSink is a video flow writer that takes every grain.

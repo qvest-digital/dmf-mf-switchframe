@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,6 +18,11 @@ const reopenInterval = time.Second
 // writtenTimeout bounds how long a retarget waits for the flow it opened to
 // be written on this node.
 const writtenTimeout = 5 * time.Second
+
+// retryWarnEvery spaces out the warning that a retarget's flow is still
+// not open, so a source waiting for good shows in the log without a line
+// per retry.
+const retryWarnEvery = time.Minute
 
 type flowHandle interface {
 	ConfigInfo() FlowConfig
@@ -44,8 +50,10 @@ type reopener[T flowHandle] struct {
 	open   func(flowID string) (T, error)
 	log    *slog.Logger
 
-	cur       T
-	isOpen    bool
+	cur T
+	// isOpen is written by the reader loop only and read by FlowOpen from
+	// any goroutine.
+	isOpen    atomic.Bool
 	nextRetry time.Time
 	// lookBack is how far behind the head a reader loop moved to a flow
 	// reads first: grains for a discrete flow, samples for a continuous one.
@@ -100,7 +108,7 @@ func (r *reopener[T]) handle() (h T, ok bool) {
 	if p != nil {
 		r.takeOver(p)
 	}
-	if r.isOpen {
+	if r.isOpen.Load() {
 		return r.cur, true
 	}
 	if r.flowID == "" {
@@ -125,7 +133,8 @@ func (r *reopener[T]) handle() (h T, ok bool) {
 	r.mu.Lock()
 	r.adoptShape(h)
 	r.mu.Unlock()
-	r.cur, r.isOpen, r.fresh = h, true, true
+	r.cur, r.fresh = h, true
+	r.isOpen.Store(true)
 	r.log.Info("mxl: flow reopened", "flowID", r.flowID)
 	return h, true
 }
@@ -158,14 +167,18 @@ func (r *reopener[T]) adoptShape(h T) {
 
 // takeOver replaces the current handle with a retarget's.
 func (r *reopener[T]) takeOver(p *pendingFlow[T]) {
-	if r.isOpen {
+	if r.isOpen.Load() {
 		_ = r.cur.Close()
 	}
-	r.log.Info("mxl: input moved to another flow", "from", r.flowID, "to", p.id)
+	if r.flowID == "" && p.id != "" {
+		r.log.Info("mxl: flow opened", "flowID", p.id)
+	} else {
+		r.log.Info("mxl: input moved to another flow", "from", r.flowID, "to", p.id)
+	}
 	r.flowID = p.id
 	r.cur = p.h
-	r.isOpen = p.id != ""
-	r.fresh = r.isOpen
+	r.isOpen.Store(p.id != "")
+	r.fresh = p.id != ""
 	r.nextRetry = time.Time{}
 	r.mu.Lock()
 	r.reading = p.id
@@ -182,6 +195,8 @@ func (r *reopener[T]) retarget(id string) {
 		return
 	}
 	r.spawn(func() {
+		var failures int
+		var warned time.Time
 		for {
 			ctx, cancel := context.WithTimeout(context.Background(), writtenTimeout)
 			err := r.prepare(ctx, id, gen)
@@ -192,7 +207,13 @@ func (r *reopener[T]) retarget(id string) {
 				}
 				return
 			}
-			r.log.Debug("mxl: retargeted flow not open yet", "flowID", id, "error", err)
+			failures++
+			level := slog.LevelDebug
+			if failures == 1 || time.Since(warned) >= retryWarnEvery {
+				level, warned = slog.LevelWarn, time.Now()
+			}
+			r.log.Log(context.Background(), level, "mxl: flow not open yet, retrying",
+				"flowID", id, "attempts", failures, "error", err)
 			select {
 			case <-r.done:
 				return
@@ -329,8 +350,15 @@ func (r *reopener[T]) prepare(ctx context.Context, id string, gen uint64) error 
 }
 
 // grainsBack is the lookBack of a discrete flow, samplesBack that of a
-// continuous one: the most an audio read takes.
-func grainsBack(FlowConfig) uint64 { return grainLookBack }
+// continuous one: the most an audio read takes. A data flow is written
+// only for frames that carry ancillary data, which can be seconds apart,
+// so one grain received is all that is waited for.
+func grainsBack(c FlowConfig) uint64 {
+	if c.Format == DataFormatData {
+		return 0
+	}
+	return grainLookBack
+}
 
 func samplesBack(c FlowConfig) uint64 { return uint64(maxAudioReadSize(flowSampleRate(c))) }
 
@@ -389,12 +417,13 @@ func (r *reopener[T]) current() string {
 
 // invalidate drops the current handle after libmxl reported it invalid.
 func (r *reopener[T]) invalidate() {
-	if !r.isOpen {
+	if !r.isOpen.Load() {
 		return
 	}
 	_ = r.cur.Close()
 	var zero T
-	r.cur, r.isOpen, r.fresh = zero, false, false
+	r.cur, r.fresh = zero, false
+	r.isOpen.Store(false)
 	r.nextRetry = time.Time{}
 	r.log.Warn("mxl: flow was recreated, reopening", "flowID", r.flowID)
 }
@@ -422,7 +451,10 @@ func (r *reopener[T]) headIndex() (uint64, error) {
 	return h.HeadIndex()
 }
 
-func (r *reopener[T]) close() error {
+// shutdown ends retries and refuses new ones without waiting for an open
+// under way, so several readers can be told to stop before any is waited
+// for.
+func (r *reopener[T]) shutdown() {
 	r.doneOnce.Do(func() {
 		if r.done != nil {
 			close(r.done)
@@ -432,11 +464,15 @@ func (r *reopener[T]) close() error {
 	r.closed = true
 	r.replacePending(nil)
 	r.mu.Unlock()
+}
+
+func (r *reopener[T]) close() error {
+	r.shutdown()
 	r.retries.Wait()
-	if !r.isOpen {
+	if !r.isOpen.Load() {
 		return nil
 	}
-	r.isOpen = false
+	r.isOpen.Store(false)
 	return r.cur.Close()
 }
 
@@ -470,11 +506,13 @@ func NewReopeningReader(flowID string, first DiscreteReader, open func(string) (
 	if log == nil {
 		log = slog.Default()
 	}
-	return &reopeningReader{r: reopener[DiscreteReader]{
+	w := &reopeningReader{r: reopener[DiscreteReader]{
 		flowID: flowID, open: open, log: log, lookBack: grainsBack,
-		want: first.ConfigInfo(), hasWant: true, cur: first, isOpen: true,
+		want: first.ConfigInfo(), hasWant: true, cur: first,
 		reading: flowID, done: make(chan struct{}),
 	}}
+	w.r.isOpen.Store(true)
+	return w
 }
 
 // ReadGrain reads from the current handle. After the flow was recreated it
@@ -514,6 +552,12 @@ func (w *reopeningReader) Connect(ctx context.Context, flowID string) error {
 // FlowID is the flow the reader reads.
 func (w *reopeningReader) FlowID() string { return w.r.current() }
 
+// FlowOpen reports whether the reader has a flow open to read. Safe to
+// call from any goroutine.
+func (w *reopeningReader) FlowOpen() bool { return w.r.isOpen.Load() }
+
+func (w *reopeningReader) shutdown() { w.r.shutdown() }
+
 // NewRetargetableReader is a reader that names no flow until retargeted.
 // expect, when not nil, refuses a flow whose configuration the reader loop
 // cannot read; besides, the first flow read sets the shape every later one
@@ -543,11 +587,13 @@ func NewReopeningAudioReader(flowID string, first ContinuousReader, open func(st
 	if log == nil {
 		log = slog.Default()
 	}
-	return &reopeningAudioReader{r: reopener[ContinuousReader]{
+	w := &reopeningAudioReader{r: reopener[ContinuousReader]{
 		flowID: flowID, open: open, log: log, lookBack: samplesBack,
-		want: first.ConfigInfo(), hasWant: true, cur: first, isOpen: true,
+		want: first.ConfigInfo(), hasWant: true, cur: first,
 		reading: flowID, done: make(chan struct{}),
 	}}
+	w.r.isOpen.Store(true)
+	return w
 }
 
 // ReadSamples behaves as reopeningReader.ReadGrain does for grains.
@@ -581,6 +627,11 @@ func (w *reopeningAudioReader) Connect(ctx context.Context, flowID string) error
 
 // FlowID is the flow the reader reads.
 func (w *reopeningAudioReader) FlowID() string { return w.r.current() }
+
+// FlowOpen behaves as reopeningReader.FlowOpen does.
+func (w *reopeningAudioReader) FlowOpen() bool { return w.r.isOpen.Load() }
+
+func (w *reopeningAudioReader) shutdown() { w.r.shutdown() }
 
 // NewRetargetableAudioReader is the ContinuousReader counterpart of
 // NewRetargetableReader.
