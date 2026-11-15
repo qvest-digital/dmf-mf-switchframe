@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/zsiec/prism/media"
@@ -956,19 +957,34 @@ func TestSource_EncoderGetsItsOwnCopy(t *testing.T) {
 }
 
 // A switcher hand-off slower than the flow holds the source's ingest
-// goroutine, as a per-frame GPU upload on a shared GPU does. The reader
-// must stay near the head and never let the ring wrap under it.
+// goroutine, as a per-frame GPU upload on a shared GPU does, and a read can
+// cost the reader most of a grain period, as copying a grain out of shared
+// memory on a busy node does. The reader must stay near the head and never
+// let the ring wrap under it, nor skip nearer than videoMaxLag, which loses
+// grains the switcher had time for. Everything runs on synctest's clock, so
+// a goroutine the host deschedules adds no lag of its own.
 func TestSource_SlowSwitcherStaysNearHead(t *testing.T) {
+	for _, rate := range videoRates {
+		for _, cost := range []int64{0, 6} { // tenths of a grain period
+			t.Run(fmt.Sprintf("%d/%d/cost%d", rate.Numerator, rate.Denominator, cost), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) { slowSwitcher(t, rate, cost) })
+			})
+		}
+	}
+}
+
+func slowSwitcher(t *testing.T, rate Rational, cost int64) {
 	const width, height = 12, 2
-	ring := &liveRing{start: time.Now(), period: 4 * time.Millisecond, size: 20,
+	period := ratePeriod(rate)
+	ring := &liveRing{start: time.Now(), rate: rate, size: 20, cost: period * time.Duration(cost) / 10,
 		data: makeV210FrameWithY(width, height, 64)}
 	src := NewSource(SourceConfig{
 		FlowName:   "cam1",
 		Width:      width,
 		Height:     height,
-		OnRawVideo: func(string, []byte, int, int, int64) { time.Sleep(6 * time.Millisecond) },
+		OnRawVideo: func(string, []byte, int, int, int64) { time.Sleep(period * 3 / 2) },
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*period)
 	defer cancel()
 	src.Start(ctx, ring, nil)
 	<-ctx.Done()
@@ -979,8 +995,18 @@ func TestSource_SlowSwitcherStaysNearHead(t *testing.T) {
 	if ring.tooLate != 0 {
 		t.Fatalf("the ring overwrote the reader's position %d times", ring.tooLate)
 	}
-	if ring.maxLag > videoMaxLag+2 {
-		t.Fatalf("reader fell %d grains behind the head, bound %d", ring.maxLag, videoMaxLag)
+	// The skip sets the position before the read; a read costing less than
+	// a period finds the head at most one grain further on.
+	bound := uint64(videoMaxLag)
+	if cost > 0 {
+		bound++
+	}
+	if ring.maxLag > bound {
+		t.Fatalf("reader fell %d grains behind the head, bound %d", ring.maxLag, bound)
+	}
+	if ring.skips == 0 || ring.skipLag < videoMaxLag {
+		t.Fatalf("%d skips, the nearest landing %d grains behind the head, want %d or more",
+			ring.skips, ring.skipLag, videoMaxLag)
 	}
 }
 
