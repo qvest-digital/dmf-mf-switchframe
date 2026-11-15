@@ -14,6 +14,9 @@ var (
 		[]string{"source", "essence"}, nil)
 	descMXLLag = prometheus.NewDesc("switchframe_mxl_reader_lag_grains",
 		"Grains an MXL input's video read position trails the head of its flow.", []string{"source"}, nil)
+	descMXLFlowOpen = prometheus.NewDesc("switchframe_mxl_reader_flow_open",
+		"1 while an MXL input's reader has its flow open, 0 while it waits for the flow to appear, by essence.",
+		[]string{"source", "essence"}, nil)
 
 	descMXLAudioOverlaps = prometheus.NewDesc("switchframe_mxl_writer_audio_overlaps_total",
 		"Program audio batches the MXL output dropped because they overlapped audio already written.", nil, nil)
@@ -32,6 +35,7 @@ func (c *mxlReaderCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- descMXLSkipped
 	ch <- descMXLResyncs
 	ch <- descMXLLag
+	ch <- descMXLFlowOpen
 }
 
 // Collect implements prometheus.Collector.
@@ -45,6 +49,13 @@ func (c *mxlReaderCollector) Collect(ch chan<- prometheus.Metric) {
 				ch <- prometheus.MustNewConstMetric(descMXLSkipped, prometheus.CounterValue, float64(st.SkippedGrains), source)
 				ch <- prometheus.MustNewConstMetric(descMXLLag, prometheus.GaugeValue, float64(st.LagGrains), source)
 			}
+		}
+		for essence, open := range src.FlowsOpen() {
+			v := 0.0
+			if open {
+				v = 1
+			}
+			ch <- prometheus.MustNewConstMetric(descMXLFlowOpen, prometheus.GaugeValue, v, source, essence)
 		}
 	}
 }

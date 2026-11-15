@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -344,27 +346,30 @@ func TestRetarget_RefusesOtherShape(t *testing.T) {
 }
 
 // An input booked without a flow waits for its first connection instead of
-// ending its reader loop.
+// ending its reader loop. It runs on synctest's clock, so how long the
+// host takes to schedule Retarget does not count against the wait.
 func TestRetargetableReader_WaitsForFirstFlow(t *testing.T) {
-	store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape)})
-	flow := NewRetargetableReader(store.open, nil, nil)
-	r := startVideo(t, flow)
+	synctest.Test(t, func(t *testing.T) {
+		store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape)})
+		flow := NewRetargetableReader(store.open, nil, nil)
+		r := startVideo(t, flow)
 
-	select {
-	case _, ok := <-r.Video():
-		if !ok {
-			t.Fatal("reader loop with no flow ended")
+		select {
+		case _, ok := <-r.Video():
+			if !ok {
+				t.Fatal("reader loop with no flow ended")
+			}
+			t.Fatal("grain delivered with no flow")
+		case <-time.After(100 * time.Millisecond):
 		}
-		t.Fatal("grain delivered with no flow")
-	case <-time.After(100 * time.Millisecond):
-	}
-	flow.(Retargetable).Retarget("a")
-	if g := nextGrain(t, r); g.V210[0] != 1 {
-		t.Fatalf("grain from flow %d, want 1", g.V210[0])
-	}
-	if got := flow.ConfigInfo(); got != videoShape {
-		t.Errorf("shape = %+v, want the first flow's", got)
-	}
+		flow.(Retargetable).Retarget("a")
+		if g := nextGrain(t, r); g.V210[0] != 1 {
+			t.Fatalf("grain from flow %d, want 1", g.V210[0])
+		}
+		if got := flow.ConfigInfo(); got != videoShape {
+			t.Errorf("shape = %+v, want the first flow's", got)
+		}
+	})
 }
 
 // Disconnecting stops reading but keeps the loop, so a later connection
@@ -693,4 +698,80 @@ func TestRetarget_SupersededRetargetStopsOpening(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A reader closed before its flow appeared, as when a source is stopped,
+// starts nothing when it is retargeted or connected afterwards: no open,
+// no goroutine outliving the close, and a connection reports that it was
+// not made.
+func TestRetarget_AfterCloseStartsNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := newFlowStore(map[string]*liveFlow{"a": newLiveFlow(1, videoShape)})
+		var opens atomic.Int32
+		open := func(id string) (DiscreteReader, error) {
+			opens.Add(1)
+			return store.open(id)
+		}
+		w := NewReopeningReader("missing", nil, open, quietLog).(*reopeningReader)
+		synctest.Wait()
+		_ = w.Close()
+		opens.Store(0)
+
+		w.Retarget("a")
+		if err := w.Connect(context.Background(), "a"); err == nil {
+			t.Error("Connect after Close succeeded")
+		}
+		if w.r.spawn(func() { t.Error("goroutine started after Close") }) {
+			t.Error("spawn after Close accepted")
+		}
+		synctest.Wait()
+		if n := opens.Load(); n != 0 {
+			t.Errorf("%d opens after Close", n)
+		}
+		if id := w.FlowID(); id != "" {
+			t.Errorf("reads %q after Close", id)
+		}
+	})
+}
+
+// A move to a flow whose head is behind the index the reader loop reached
+// on the old one, as one whose writer runs later, resyncs the loop to the
+// new head at once instead of waiting there until the new flow catches up.
+func TestRetarget_ResyncsToANewFlowBehindTheOld(t *testing.T) {
+	eachVideoRate(t, func(t *testing.T, rate Rational, period time.Duration) {
+		old, next := newLateFlow(lateVideoShape(rate), lateFile{}), newLateFlow(lateVideoShape(rate), lateFile{})
+		old.lag = -2 * time.Second
+		open := func(id string) (DiscreteReader, error) {
+			if id == "b" {
+				return next.openVideo(id)
+			}
+			return old.openVideo(id)
+		}
+		first, _ := old.openVideo("a")
+		w := NewReopeningReader("a", first, open, quietLog)
+		r := NewVideoReader(ReaderConfig{BufSize: 1, TimeoutMs: 100, Width: lateW, Height: lateH, Logger: quietLog})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer func() {
+			cancel()
+			for range r.Video() {
+			}
+			r.Wait()
+		}()
+		time.Sleep(4 * period)
+		r.StartVideo(ctx, w)
+		reached := nextGrain(t, r).Index
+
+		w.(Retargetable).Retarget("b")
+		for {
+			g := nextGrain(t, r)
+			if g.Index > reached {
+				reached = g.Index
+				continue
+			}
+			if head := next.head(0); head-g.Index > grainLookBack+3 {
+				t.Errorf("first grain of the new flow at %d, %d behind its head", g.Index, head-g.Index)
+			}
+			return
+		}
+	})
 }
