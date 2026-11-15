@@ -64,8 +64,9 @@ type ReaderConfig struct {
 // falling a whole ring behind and losing the ring at once on a re-sync.
 // Delivery latency adds the channel's grains on top, about 3+4 grains. A
 // position behind because the producer committed a burst is not skipped:
-// the consumer counts as the cause only when a send waited longer than a
-// grain period, and one that keeps up drains the burst.
+// the consumer counts as the cause only when it took the last few grains
+// at less than the flow's rate while one was waiting, and one that keeps
+// up drains the burst.
 const videoMaxLag = 3
 
 // grainLookBack is how many grains behind the head the video and data loops
@@ -269,13 +270,29 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 	const maxConsecutiveErrors = 50
 
 	var skipped uint64
-	// The consumer is behind when a send waits longer than a grain period;
-	// a shorter wait is it being scheduled, as when a burst fills videoCh.
+	// The consumer is behind when a send finds videoCh full and the last
+	// window sends took longer than window grain periods. With window at
+	// most videoCh's capacity, the grain sent window sends ago is still in
+	// videoCh when it is full, so the consumer had a grain waiting for the
+	// whole span and took fewer grains than the flow made: the span is its
+	// own, not this loop's reads or a producer's pause. For the same reason
+	// none of the first window sends finds videoCh full, so every slot of
+	// sent holds a send by the time one does. Timing one send from its wait
+	// leaves out the read before it, so a read costing a fraction of a
+	// period hides a consumer slower than the flow until the ring wraps
+	// under the reader; timing the gap since one send counts a single slow
+	// frame of a consumer that keeps up on average, and skips the grains of
+	// a burst it would have drained. A videoCh of fewer than videoMaxLag+1
+	// grains shrinks the window to its capacity, down to that single gap at
+	// a capacity of one.
 	period := 20 * time.Millisecond
 	if rate.Numerator > 0 && rate.Denominator > 0 {
 		period = time.Duration(int64(time.Second) * rate.Denominator / rate.Numerator)
 	}
-	waited := false // the last send waited longer than period
+	window := min(videoMaxLag+1, cap(r.videoCh))
+	sent := make([]time.Time, window) // completion of the last window sends, oldest at next
+	next := 0
+	waited := false // the last send found videoCh full after a slow window
 	for {
 		select {
 		case <-ctx.Done():
@@ -358,14 +375,16 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 		case r.videoCh <- grain:
 			waited = false
 		default:
-			start := time.Now()
 			select {
 			case r.videoCh <- grain:
 			case <-ctx.Done():
 				return
 			}
-			waited = time.Since(start) > period
+			oldest := sent[next]
+			waited = time.Since(oldest) > time.Duration(window)*period
 		}
+		sent[next] = time.Now()
+		next = (next + 1) % window
 
 		index++
 	}

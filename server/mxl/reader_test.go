@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -868,26 +869,30 @@ func TestSentinelErrors_WrappedErrorsMatchWithErrorsIs(t *testing.T) {
 	}
 }
 
-// liveRing is a flow whose head advances one grain per period from start,
-// keeping the last size grains: ReadGrain of a later grain waits for it,
-// and of an overwritten one fails with ErrTooLate.
+// liveRing is a flow whose head advances one grain per grain period of
+// rate from start, keeping the last size grains: ReadGrain of a later grain
+// waits for it, and of an overwritten one fails with ErrTooLate.
 type liveRing struct {
-	start  time.Time
-	period time.Duration
-	size   uint64
-	data   []byte // every grain's payload; one byte when nil
-	burst  uint64 // grains committed at once, every burst periods; 1 when 0
+	start time.Time
+	rate  Rational
+	size  uint64
+	data  []byte        // every grain's payload; one byte when nil
+	burst uint64        // grains committed at once, every burst periods; 1 when 0
+	cost  time.Duration // a read's own time once its grain is there
 
 	mu      sync.Mutex
 	tooLate int
 	maxLag  uint64
 	read    int    // grains read
+	first   uint64 // index of the first grain read
 	last    uint64 // index of the last grain read
 	skips   int    // reads that did not follow the previous index
+	skipLag uint64 // least lag of a read that did not follow the previous index
 }
 
 func (r *liveRing) head() uint64 {
-	n := uint64(time.Since(r.start) / r.period)
+	n := uint64(time.Since(r.start).Nanoseconds() * r.rate.Numerator /
+		(r.rate.Denominator * int64(time.Second)))
 	if r.burst > 1 {
 		n -= n % r.burst
 	}
@@ -900,8 +905,9 @@ func (r *liveRing) ReadGrain(index uint64, timeoutNs uint64) ([]byte, GrainInfo,
 		if time.Now().After(deadline) {
 			return nil, GrainInfo{}, fmt.Errorf("%w: read grain", ErrTimeout)
 		}
-		time.Sleep(r.period / 4)
+		time.Sleep(ratePeriod(r.rate) / 4)
 	}
+	time.Sleep(r.cost)
 	head := r.head()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -909,11 +915,15 @@ func (r *liveRing) ReadGrain(index uint64, timeoutNs uint64) ([]byte, GrainInfo,
 		r.tooLate++
 		return nil, GrainInfo{}, fmt.Errorf("%w: grain expired", ErrTooLate)
 	}
-	if lag := head - index; lag > r.maxLag {
-		r.maxLag = lag
+	lag := head - index
+	r.maxLag = max(r.maxLag, lag)
+	if r.read == 0 {
+		r.first = index
 	}
 	if r.read > 0 && index != r.last+1 {
-		r.skips++
+		if r.skips++; r.skips == 1 || lag < r.skipLag {
+			r.skipLag = lag
+		}
 	}
 	r.read++
 	r.last = index
@@ -925,66 +935,168 @@ func (r *liveRing) ReadGrain(index uint64, timeoutNs uint64) ([]byte, GrainInfo,
 }
 
 func (r *liveRing) ConfigInfo() FlowConfig {
-	return FlowConfig{Format: DataFormatVideo, GrainRate: Rational{int64(time.Second / r.period), 1}}
+	return FlowConfig{Format: DataFormatVideo, GrainRate: r.rate}
 }
 func (r *liveRing) HeadIndex() (uint64, error) { return r.head(), nil }
 func (r *liveRing) Close() error               { return nil }
 
+// readVideo runs a video reader on ring for periods grain periods of its
+// rate, the consumer taking frame(i) of synctest's clock over the i-th
+// grain, and returns the reader once it stopped. It runs in a synctest
+// bubble, so the host descheduling a goroutine moves no clock.
+func readVideo(ring *liveRing, periods int, frame func(i int) time.Duration) *Reader {
+	r := NewVideoReader(ReaderConfig{TimeoutMs: 100})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(periods)*ratePeriod(ring.rate))
+	defer cancel()
+	r.StartVideo(ctx, ring)
+	i := 0
+	for range r.Video() {
+		time.Sleep(frame(i))
+		i++
+	}
+	r.Wait()
+	return r
+}
+
+// ratePeriod is a grain period of rate.
+func ratePeriod(rate Rational) time.Duration {
+	return time.Duration(rate.Denominator) * time.Second / time.Duration(rate.Numerator)
+}
+
 // A consumer slower than the flow loses grains one at a time a few grains
 // behind the head, and never lets the ring overwrite the reader's position:
 // a re-sync after a wrap drops the whole ring at once, and the latency
-// before it grows to the full ring.
+// before it grows to the full ring. It is kept videoMaxLag behind, not
+// closer: a nearer position loses grains the consumer had time for.
 func TestReader_SlowConsumerStaysNearHead(t *testing.T) {
-	ring := &liveRing{start: time.Now(), period: 4 * time.Millisecond, size: 20}
-	r := NewVideoReader(ReaderConfig{TimeoutMs: 100})
-	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
-	defer cancel()
-	r.StartVideo(ctx, ring)
+	for _, rate := range videoRates {
+		t.Run(fmt.Sprintf("%d/%d", rate.Numerator, rate.Denominator), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				period := ratePeriod(rate)
+				ring := &liveRing{start: time.Now(), rate: rate, size: 20}
+				readVideo(ring, 200, func(int) time.Duration { return period * 3 / 2 })
 
-	got := 0
-	for range r.Video() {
-		got++
-		time.Sleep(6 * time.Millisecond) // two thirds of the flow's rate
+				ring.mu.Lock()
+				defer ring.mu.Unlock()
+				if ring.read == 0 {
+					t.Fatal("no grains delivered")
+				}
+				if ring.tooLate != 0 {
+					t.Fatalf("the ring overwrote the reader's position %d times", ring.tooLate)
+				}
+				if ring.maxLag != videoMaxLag {
+					t.Fatalf("reader fell at most %d grains behind the head, want %d", ring.maxLag, videoMaxLag)
+				}
+				if ring.skips == 0 || ring.skipLag != videoMaxLag {
+					t.Fatalf("%d skips, the nearest landing %d grains behind the head, want %d",
+						ring.skips, ring.skipLag, videoMaxLag)
+				}
+			})
+		})
 	}
-	r.Wait()
+}
 
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-	if got == 0 {
-		t.Fatal("no grains delivered")
-	}
-	if ring.tooLate != 0 {
-		t.Fatalf("the ring overwrote the reader's position %d times", ring.tooLate)
-	}
-	if ring.maxLag > videoMaxLag+2 {
-		t.Fatalf("reader fell %d grains behind the head, bound %d", ring.maxLag, videoMaxLag)
+// A consumer only a tenth slower than the flow falls behind slowly, and a
+// read costing 0.6 of a period hides most of its gap: the reader must still
+// count it as behind and keep it near the head rather than let the lag grow
+// to the ring.
+func TestReader_BarelySlowConsumerStaysNearHead(t *testing.T) {
+	for _, rate := range videoRates {
+		for _, cost := range []int64{0, 6} { // tenths of a period a read costs
+			t.Run(fmt.Sprintf("%d/%d/cost%d", rate.Numerator, rate.Denominator, cost), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					period := ratePeriod(rate)
+					ring := &liveRing{start: time.Now(), rate: rate, size: 40, cost: period * time.Duration(cost) / 10}
+					readVideo(ring, 400, func(int) time.Duration { return period * 11 / 10 })
+
+					ring.mu.Lock()
+					defer ring.mu.Unlock()
+					if ring.tooLate != 0 {
+						t.Fatalf("the ring overwrote the reader's position %d times", ring.tooLate)
+					}
+					if ring.maxLag > videoMaxLag+1 {
+						t.Fatalf("reader fell %d grains behind the head, bound %d", ring.maxLag, videoMaxLag+1)
+					}
+				})
+			})
+		}
 	}
 }
 
 // A producer that commits in bursts, as a mirrored flow or a jittery source
 // does, leaves the head several grains ahead of a reader whose consumer
 // keeps up. None of those grains is skipped: the consumer drains the burst.
+// That holds for one whose frames vary, with one of 1.5 to 3 periods among
+// short ones, as long as it keeps up on average: a single slow frame is not
+// a consumer slower than the flow. A mirror resuming after a stall delivers
+// a burst of 20 grains and more.
 func TestReader_FastConsumerKeepsEveryGrainOfABurst(t *testing.T) {
-	for _, burst := range []uint64{6, 12} {
-		t.Run(fmt.Sprint(burst), func(t *testing.T) {
-			ring := &liveRing{start: time.Now(), period: 4 * time.Millisecond, size: 40, burst: burst}
-			r := NewVideoReader(ReaderConfig{TimeoutMs: 100})
-			ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
-			defer cancel()
-			r.StartVideo(ctx, ring)
-			for range r.Video() {
-			}
-			r.Wait()
+	consumers := []struct {
+		name    string
+		cost    int64   // tenths of a period a read costs
+		pattern []int64 // tenths of a period per grain, cycled
+	}{
+		{"fast", 0, []int64{0}},
+		{"jitter", 3, []int64{2, 2, 2, 15}},
+		{"jitter-wide", 3, []int64{3, 3, 3, 24}},
+		{"jitter-long", 0, []int64{1, 1, 1, 1, 1, 1, 1, 30}},
+	}
+	for _, rate := range videoRates {
+		for _, burst := range []uint64{6, 12, 24} {
+			for _, c := range consumers {
+				t.Run(fmt.Sprintf("%d/%d/burst%d/%s", rate.Numerator, rate.Denominator, burst, c.name), func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						period := ratePeriod(rate)
+						ring := &liveRing{start: time.Now(), rate: rate, size: 40, burst: burst,
+							cost: period * time.Duration(c.cost) / 10}
+						readVideo(ring, 400, func(i int) time.Duration {
+							return period * time.Duration(c.pattern[i%len(c.pattern)]) / 10
+						})
 
-			ring.mu.Lock()
-			defer ring.mu.Unlock()
-			if ring.read < 100 {
-				t.Fatalf("only %d grains read", ring.read)
+						ring.mu.Lock()
+						defer ring.mu.Unlock()
+						if ring.skips != 0 || ring.tooLate != 0 {
+							t.Fatalf("a consumer that keeps up lost grains: %d skips, %d re-syncs over %d reads",
+								ring.skips, ring.tooLate, ring.read)
+						}
+						if ring.read < 300 {
+							t.Fatalf("only %d grains read", ring.read)
+						}
+					})
+				})
 			}
-			if ring.skips != 0 || ring.tooLate != 0 {
-				t.Fatalf("a consumer that keeps up lost grains: %d skips, %d re-syncs over %d reads",
-					ring.skips, ring.tooLate, ring.read)
-			}
+		}
+	}
+}
+
+// A consumer that stalls for several periods now and then, and is fast in
+// between, loses the grains of each stall in one skip and none of the
+// bursts it drains afterwards: once it takes grains as fast as they come,
+// it no longer counts as behind.
+func TestReader_StalledConsumerSkipsOncePerStall(t *testing.T) {
+	for _, rate := range videoRates {
+		t.Run(fmt.Sprintf("%d/%d", rate.Numerator, rate.Denominator), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				period := ratePeriod(rate)
+				ring := &liveRing{start: time.Now(), rate: rate, size: 40, burst: 6, cost: period * 3 / 10}
+				stalls := 0
+				readVideo(ring, 400, func(i int) time.Duration {
+					if i%50 == 49 {
+						stalls++
+						return 8 * period
+					}
+					return period / 10
+				})
+
+				ring.mu.Lock()
+				defer ring.mu.Unlock()
+				if ring.tooLate != 0 {
+					t.Fatalf("the ring overwrote the reader's position %d times", ring.tooLate)
+				}
+				if ring.skips == 0 || ring.skips > stalls {
+					t.Fatalf("%d skips over %d stalls", ring.skips, stalls)
+				}
+			})
 		})
 	}
 }
@@ -1046,41 +1158,34 @@ func TestReader_CountsDataResyncs(t *testing.T) {
 	}
 }
 
-// A consumer slower than the flow loses grains as skips, counted, and its
-// lag behind the head stays within the skip bound; a fast one loses none.
+// A consumer slower than the flow loses grains as skips, every one of them
+// counted, and its lag behind the head stays within the skip bound; a fast
+// one loses none.
 func TestReader_CountsSkipsAndLag(t *testing.T) {
-	slow := &liveRing{start: time.Now(), period: 4 * time.Millisecond, size: 20}
-	r := NewVideoReader(ReaderConfig{TimeoutMs: 100})
-	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
-	defer cancel()
-	r.StartVideo(ctx, slow)
-	for range r.Video() {
-		time.Sleep(6 * time.Millisecond)
-	}
-	r.Wait()
-	st := r.Stats()
-	slow.mu.Lock()
-	skips := uint64(slow.skips)
-	slow.mu.Unlock()
-	if st.SkippedGrains == 0 {
-		t.Fatal("a slow consumer skipped grains, none counted")
-	}
-	if skips > 0 && st.SkippedGrains < skips {
-		t.Fatalf("counted %d skipped grains, the ring saw %d skips", st.SkippedGrains, skips)
-	}
-	if st.LagGrains > videoMaxLag+2 {
-		t.Fatalf("lag %d grains, bound %d", st.LagGrains, videoMaxLag)
-	}
+	for _, rate := range videoRates {
+		t.Run(fmt.Sprintf("%d/%d", rate.Numerator, rate.Denominator), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				period := ratePeriod(rate)
+				slow := &liveRing{start: time.Now(), rate: rate, size: 20}
+				st := readVideo(slow, 150, func(int) time.Duration { return period * 3 / 2 }).Stats()
+				slow.mu.Lock()
+				passed := slow.last + 1 - slow.first - uint64(slow.read) // grains passed over between reads
+				slow.mu.Unlock()
+				if st.SkippedGrains == 0 {
+					t.Fatal("a slow consumer skipped grains, none counted")
+				}
+				if st.SkippedGrains != passed {
+					t.Fatalf("counted %d skipped grains, the reader passed over %d", st.SkippedGrains, passed)
+				}
+				if st.LagGrains > videoMaxLag+1 {
+					t.Fatalf("lag %d grains, bound %d", st.LagGrains, videoMaxLag+1)
+				}
 
-	fast := &liveRing{start: time.Now(), period: 4 * time.Millisecond, size: 40}
-	r = NewVideoReader(ReaderConfig{TimeoutMs: 100})
-	ctx, cancel = context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	r.StartVideo(ctx, fast)
-	for range r.Video() {
-	}
-	r.Wait()
-	if st := r.Stats(); st.SkippedGrains != 0 || st.Resyncs != 0 {
-		t.Fatalf("a consumer that keeps up lost grains: %+v", st)
+				fast := &liveRing{start: time.Now(), rate: rate, size: 40}
+				if st := readVideo(fast, 100, func(int) time.Duration { return 0 }).Stats(); st.SkippedGrains != 0 || st.Resyncs != 0 {
+					t.Fatalf("a consumer that keeps up lost grains: %+v", st)
+				}
+			})
+		})
 	}
 }
