@@ -46,12 +46,14 @@
 
 ### `POST /api/playout/channels/{n}/next`
 
+**Purpose:** advance to the next playlist item on the channel's next frame tick. Calls before that tick add up: N calls land N items ahead in one move, through one transition, so no item between them goes to air. Calls past the end of the playlist are ignored; the one that reaches it completes the playlist. A call during a transition counts from the incoming item and applies on the tick after the transition ends.
 **Handler:** `(*API).handlePlayoutNext`.
 
 ---
 
 ### `POST /api/playout/channels/{n}/previous`
 
+**Purpose:** take back one `next` not applied yet; with none pending, move back one item at once.
 **Handler:** `(*API).handlePlayoutPrevious`.
 
 ---

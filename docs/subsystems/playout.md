@@ -106,9 +106,9 @@ Clips whose native FPS differs from the pipeline FPS use nearest-neighbor FRC: `
 `scheduler.Tick` is a switch on scheduler state:
 
 - **Stopped / no playlist** → `Completed: true`. The channel transitions to `StateCompleted`.
-- **Transitioning** → `tickTransition` computes progress from elapsed time vs. configured duration, returns the outgoing + incoming items and the `TransitionConfig`. When progress reaches 1.0 the scheduler advances cursor and returns to `Playing`.
+- **Transitioning** -> `tickTransition` computes progress from elapsed time vs. configured duration, returns the outgoing + incoming items and the `TransitionConfig`. When progress reaches 1.0 the scheduler moves the cursor to the incoming item and returns to `Playing`; presses made during the transition count from that item.
 - **Idle-waiting** → a scheduled future item's time hasn't arrived yet; returns `IsIdle: true`.
-- **Playing** → bounds check (cursor past end → completed), resolve current item duration on first tick, then check for explicit `Next()`/`JumpTo()`/`Previous()` advance requests. Loop items never auto-advance unless `Next()` fires. Hold items stop advancing once `itemComplete` arrives and wait for an explicit `Next()`. Scheduled items whose `ScheduledTime` is in the future park in idle-waiting.
+- **Playing** -> bounds check (cursor past end -> completed), resolve current item duration on first tick, then check for `Next()` presses. The presses since the last tick are counted and applied as one move of that many items, bounded at one past the last item; `Previous()` takes back one pending press before it moves the cursor back, and `JumpTo()` and `Previous()` move the cursor themselves. Loop items never auto-advance unless `Next()` fires. Hold items stop advancing once `itemComplete` arrives and wait for an explicit `Next()`. Scheduled items whose `ScheduledTime` is in the future park in idle-waiting.
 
 Mode (`ModeAutomated`, `ModeManual`, `ModeBreak`) gates auto-advance: both manual and break modes hold position. `TakeBreak`/`ReturnFromBreak` are driven by the pod board on pod fire/complete — the scheduler doesn't know about SCTE-35, just about the mode bit. `TakeManual` and `ReturnToAuto` are operator overrides.
 

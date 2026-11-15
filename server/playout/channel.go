@@ -326,8 +326,8 @@ func (c *Channel) Status() ChannelStatus {
 				st.LoopExit = snap.LoopExit
 			}
 		}
-		if snap.Cursor+1 < len(pl.Items) {
-			next := pl.Items[snap.Cursor+1]
+		if snap.Next < len(pl.Items) {
+			next := pl.Items[snap.Next]
 			st.NextItemID = next.ID
 			st.NextTitle = next.Title
 		}
@@ -591,10 +591,17 @@ func (c *Channel) Next() error {
 		return ErrNotOnAir
 	}
 	c.mu.Unlock()
-	return c.scheduler.Next()
+	if err := c.scheduler.Next(); err != nil {
+		return err
+	}
+	// Presses before the tick land further ahead than the item after the
+	// cursor, whose source alone the ticks have armed.
+	c.prepareLiveSources()
+	return nil
 }
 
-// Previous moves the cursor back one item.
+// Previous takes back a Next the run loop has not applied yet, or else
+// moves the cursor back one item.
 func (c *Channel) Previous() error {
 	c.mu.Lock()
 	if c.state != StateOnAir {

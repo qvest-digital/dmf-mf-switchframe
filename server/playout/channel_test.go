@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -335,8 +336,7 @@ func TestChannel_Previous(t *testing.T) {
 		t.Fatalf("LoadPlaylist: %v", err)
 	}
 	// The run loop's ticks are driven here, one frame period at a time on a
-	// scripted clock: Next only marks an advance for the next tick, so two
-	// calls with no tick between them would count as one.
+	// scripted clock: Next only marks an advance for the next tick.
 	ch.mu.Lock()
 	ch.state = StateOnAir
 	ch.scheduler.Start()
@@ -764,6 +764,139 @@ func TestChannel_NextWhileStopped(t *testing.T) {
 	err := ch.Next()
 	if err != ErrNotOnAir {
 		t.Fatalf("expected ErrNotOnAir, got %v", err)
+	}
+}
+
+// TestChannel_NavigationBeforeTick presses Next and Previous several times
+// between two ticks of the run loop. Each Next counts, a Previous takes back
+// one Next not applied yet, and presses past the end of the playlist are
+// dropped.
+func TestChannel_NavigationBeforeTick(t *testing.T) {
+	cases := []struct {
+		name    string
+		from    string
+		presses string // n = Next, p = Previous
+		want    string // item on air after the tick, "" = completed
+	}{
+		{"next twice", "a", "nn", "c"},
+		{"next then previous", "b", "np", "b"},
+		{"previous twice", "d", "pp", "b"},
+		{"next three times", "a", "nnn", "d"},
+		{"previous after next three times", "a", "nnnp", "c"},
+		{"next past the last item", "c", "nnnp", "d"},
+		{"next at the last item", "d", "nnp", "d"},
+		{"next at the last item completes", "d", "nn", ""},
+	}
+	for _, fps := range channelRates {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("%.3f/%s", fps, tc.name), func(t *testing.T) {
+				ch := NewChannel(1, ChannelConfig{
+					FPS:                  fps,
+					AssetProvider:        fakeProvider(3),
+					AllowedLocalPrefixes: []string{"/"},
+				})
+				pl := testPlaylist(liveItem("a", "cam-1"), liveItem("b", "cam-2"),
+					liveItem("c", "cam-3"), liveItem("d", "cam-4"))
+				if err := ch.LoadPlaylist(pl); err != nil {
+					t.Fatalf("LoadPlaylist: %v", err)
+				}
+				var armed []string
+				ch.SetLiveSourcePrepare(func(src string) { armed = append(armed, src) })
+				ch.mu.Lock()
+				ch.state = StateOnAir
+				ch.scheduler.Start()
+				ch.mu.Unlock()
+				wall := time.Unix(0, 0)
+				now := func() time.Time { return wall }
+				k := tickClock{period: ch.frameDuration, next: wall.Add(ch.frameDuration)}
+				completed := false
+				tick := func() {
+					wall = wall.Add(ch.frameDuration)
+					completed = ch.runDue(&k, now)
+				}
+				tick()
+				if err := ch.JumpTo(tc.from); err != nil {
+					t.Fatalf("JumpTo: %v", err)
+				}
+				tick()
+				armed = nil
+				for _, p := range tc.presses {
+					var err error
+					if p == 'n' {
+						err = ch.Next()
+					} else {
+						err = ch.Previous()
+					}
+					if err != nil {
+						t.Fatalf("press %c: %v", p, err)
+					}
+				}
+				// The item the presses land on is armed before the tick
+				// that airs it.
+				src := map[string]string{"a": "cam-1", "b": "cam-2", "c": "cam-3", "d": "cam-4"}[tc.want]
+				if src != "" && !slices.Contains(armed, src) {
+					t.Fatalf("source %s of %s not armed by the presses (armed %v)", src, tc.want, armed)
+				}
+				tick()
+				if tc.want == "" {
+					if !completed || ch.State() != StateCompleted {
+						t.Fatalf("completed=%v state=%v, want the playlist completed", completed, ch.State())
+					}
+					return
+				}
+				if got := ch.Status().CurrentItemID; got != tc.want {
+					t.Fatalf("on air: %q, want %q", got, tc.want)
+				}
+				// The presses are used up: the next tick keeps the item.
+				tick()
+				if got := ch.Status().CurrentItemID; got != tc.want {
+					t.Fatalf("one tick later on air: %q, want %q", got, tc.want)
+				}
+			})
+		}
+	}
+}
+
+// TestChannel_StatusNamesTheItemAiringNext: the status's next item is the
+// one the pending Next presses land on, or the one a transition brings
+// in, not the one after the cursor.
+func TestChannel_StatusNamesTheItemAiringNext(t *testing.T) {
+	for _, fps := range channelRates {
+		t.Run(fmt.Sprintf("%.3f", fps), func(t *testing.T) {
+			ch := NewChannel(1, ChannelConfig{
+				FPS:                  fps,
+				AssetProvider:        fakeProvider(3),
+				AllowedLocalPrefixes: []string{"/"},
+			})
+			pl := testPlaylist(liveItem("a", "cam-1"), liveItem("b", "cam-2"),
+				liveItem("c", "cam-3"), liveItem("d", "cam-4"))
+			pl.DefaultTransition = TransitionConfig{Type: "dissolve", DurationMs: 1000}
+			require.NoError(t, ch.LoadPlaylist(pl))
+			ch.mu.Lock()
+			ch.state = StateOnAir
+			ch.scheduler.Start()
+			ch.mu.Unlock()
+			wall := time.Unix(0, 0)
+			now := func() time.Time { return wall }
+			k := tickClock{period: ch.frameDuration, next: wall.Add(ch.frameDuration)}
+			tick := func() {
+				wall = wall.Add(ch.frameDuration)
+				ch.runDue(&k, now)
+			}
+			tick()
+			require.Equal(t, "b", ch.Status().NextItemID)
+
+			require.NoError(t, ch.Next())
+			require.NoError(t, ch.Next())
+			require.Equal(t, "c", ch.Status().NextItemID, "pending presses")
+			tick()
+			require.Equal(t, SchedTransitioning, ch.scheduler.State())
+			st := ch.Status()
+			require.Equal(t, "a", st.CurrentItemID)
+			require.Equal(t, "c", st.NextItemID, "during the transition")
+			require.NoError(t, ch.Next())
+			require.Equal(t, "d", ch.Status().NextItemID, "a press during the transition")
+		})
 	}
 }
 
