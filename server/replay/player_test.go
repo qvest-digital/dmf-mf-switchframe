@@ -2035,10 +2035,18 @@ func TestReplayPlayer_SeekReplacePending(t *testing.T) {
 	}
 }
 
+// Pause holds the picture on air. The output loop checks for a pause
+// before it hands a picture to RawVideoOutput, then waits for the
+// picture's slot and encodes it to Output. A picture past that check when
+// Pause ran is still handed raw and put out after Pause returns: at most
+// that one, and nothing after it, however long the pause lasts. Resume
+// plays on. Counted against the pictures handed raw when Pause returned,
+// not against a count taken before it, which the pictures put out in
+// between would make a frame or two short on a loaded host.
 func TestReplayPlayer_PauseBlocksOutputGOP(t *testing.T) {
-	// Verify that pause actually blocks the output loop and resume unblocks it.
 	clip := buildTestClip(1, 5)
-	var frameCount atomic.Int64
+	var raw, out atomic.Int64
+	outCh := make(chan struct{}, 1024)
 
 	p := newReplayPlayer(PlayerConfig{
 		Clip:           clip,
@@ -2046,41 +2054,46 @@ func TestReplayPlayer_PauseBlocksOutputGOP(t *testing.T) {
 		Loop:           true, // Loop so the player doesn't finish before we can pause.
 		DecoderFactory: mockDecoderFactory,
 		EncoderFactory: mockEncoderFactory,
-		Output: func(frame *media.VideoFrame) {
-			frameCount.Add(1)
+		RawVideoOutput: func([]byte, int, int, int64) { raw.Add(1) },
+		Output: func(*media.VideoFrame) {
+			out.Add(1)
+			outCh <- struct{}{}
 		},
 		OnDone:  func() {},
 		OnReady: func() {},
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
 	p.Start(ctx)
+	defer func() { p.Stop(); p.Wait() }()
 
-	// Let it produce some frames.
-	time.Sleep(200 * time.Millisecond)
-	countBeforePause := frameCount.Load()
-	require.Greater(t, countBeforePause, int64(0), "should have produced frames before pause")
+	waitFrames := func(n int) {
+		t.Helper()
+		for range n {
+			select {
+			case <-outCh:
+			case <-ctx.Done():
+				t.Fatal("no frame put out")
+			}
+		}
+	}
+	waitFrames(3)
 
-	// Pause and verify output stops.
 	p.Pause()
+	rawAtPause := raw.Load()
+	// Six pictures' time at the clip's 30 fps: a pause that held nothing
+	// would hand out several more than the one allowed.
 	time.Sleep(200 * time.Millisecond)
-	countWhilePaused := frameCount.Load()
+	rawPaused := raw.Load()
+	require.LessOrEqual(t, rawPaused, rawAtPause+1, "pictures handed raw while paused")
+	require.LessOrEqual(t, out.Load(), rawAtPause+1, "pictures put out while paused")
 
-	// Allow at most 1 frame of slack (the frame that was in-flight when we paused).
-	require.LessOrEqual(t, countWhilePaused-countBeforePause, int64(1),
-		"no new frames should be produced while paused")
-
-	// Resume and verify output resumes.
 	p.Resume()
-	time.Sleep(200 * time.Millisecond)
-	countAfterResume := frameCount.Load()
-	require.Greater(t, countAfterResume, countWhilePaused+1,
-		"frames should resume after unpause")
-
-	p.Stop()
-	p.Wait()
+	for out.Load() <= rawPaused {
+		waitFrames(1)
+	}
+	require.Greater(t, raw.Load(), rawPaused, "playback did not resume")
 }
 
 func TestReplayPlayer_DualEncode_ProxyForBrowser(t *testing.T) {
