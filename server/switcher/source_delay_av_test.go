@@ -11,8 +11,43 @@ import (
 // A source delay holds the source's video and its audio back by the same
 // amount, so the delayed source stays in lip sync: the tick shows the
 // frame and plays the audio of one media time, the delay before its read
-// point.
+// point. It holds before a realtime clock has started, and with the
+// program at the source's rate, where the frame store keeps only the
+// frames a tick still to come may show.
+//
+// The engine clock stands still on the tick's time. The frame store
+// judges by the clock at each frame's arrival which frames a tick may
+// still show, and the tick here is built before the frames arrive: on the
+// running clock a host slow enough to take a frame period over them moved
+// that point past the tick's read point, and the frame it shows was gone.
 func TestSourceDelayKeepsVideoAndAudioAligned(t *testing.T) {
+	vr := clock.Rate{Num: 30000, Den: 1001}
+	clock.Epoch()
+	at := clock.TAINow()
+	clock.SetTAISource(func() int64 { return at })
+	t.Cleanup(func() { clock.SetTAISource(nil) })
+	t.Cleanup(clock.ResetProgramRate())
+	for _, tc := range []struct {
+		name    string
+		program clock.Rate
+	}{
+		{"before a realtime clock", clock.Rate{}},
+		{"program at the source's rate", vr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock.ResetProgramRate()
+			if tc.program.Num > 0 {
+				clock.SetProgramRate(tc.program)
+			}
+			checkSourceDelayAlignment(t, vr)
+		})
+	}
+}
+
+// checkSourceDelayAlignment delays a source at vr by 100 ms and checks
+// the tick at the current time shows its video and plays its audio from
+// the same media time.
+func checkSourceDelayAlignment(t *testing.T, vr clock.Rate) {
 	s := newTestSwitcherDirect(distribution.NewRelay())
 	defer s.Close()
 	m := audio.NewMixer(audio.MixerConfig{SampleRate: 48000, Channels: 2})
@@ -28,7 +63,6 @@ func TestSourceDelayKeepsVideoAndAudioAligned(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	vr := clock.Rate{Num: 30000, Den: 1001}
 	ar := clock.Rate{Num: 48000, Den: 1}
 	const rampMod = 4096
 	now := clock.TimestampToIndex(vr, clock.TAINow())
