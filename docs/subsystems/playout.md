@@ -185,7 +185,7 @@ Timeout handling: if no black is found within the window, the coordinator fires 
 
 ### As-run logger: ring buffer + JSONL persistence
 
-`AsRunLogger` wraps a circular ring buffer (default 10,000 entries) plus a date-stamped JSONL file. Every `Log(event)` call appends to both — the ring is queryable by `AsRunQuery` filters (type, channel, time range, limit) for the UI's "recent events" panel, and the JSONL file is the durable record for compliance exports. `bxf.ExportAsRun(events)` converts a slice of `AsRunEvent` into a BXF `AsRun` XML document.
+`AsRunLogger` wraps a circular ring buffer (default 10,000 entries) plus a date-stamped JSONL file. Every `Log(event)` call appends to both -- the ring is queryable by `AsRunQuery` filters (type, channel, time range, limit) for the UI's "recent events" panel, and the JSONL file is the durable record for compliance exports. `bxf.ExportAsRun(events)` converts a slice of `AsRunEvent` into a BXF `AsRun` XML document. A clip's read error is logged once, though a clip left playing after it, in manual mode, in a break or under a transition, reads it again on every tick.
 
 Retention is a separate goroutine (`stopRetention` channel) that prunes JSONL files older than `RetentionDays`.
 

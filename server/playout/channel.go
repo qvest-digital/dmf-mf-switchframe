@@ -113,6 +113,7 @@ type Channel struct {
 	clipOutputFrame int // pipeline ticks since clip started (for FRC timestamp selection)
 	clipStartTime   time.Time
 	clipLastFrame   *DecodedFrame // for hold mode
+	clipReadFailed  bool          // the clip's read error is logged
 
 	// Incoming clip playback during a transition. The primary clip slot above
 	// continues iterating the outgoing item; this second slot pre-rolls the
@@ -815,6 +816,7 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 	}
 	if frameSource != nil {
 		c.clipIter = frameSource
+		c.clipReadFailed = false
 		c.clipItemID = item.ID
 		c.clipFPS = openFPS
 		c.clipTotal = openTotal
@@ -1815,6 +1817,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 
 		c.beginItemStartLocked(item, result)
 		c.clipIter = frameSource
+		c.clipReadFailed = false
 		c.itemError.Store(nil)
 		c.clipFPS = fps
 		c.clipTotal = total
@@ -1989,11 +1992,22 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 	}
 
 	if err != nil {
-		slog.Warn("playout: frame read error", "item", item.ID, "frame", sourceFrame, "error", err)
+		// A clip left playing after the error, in manual mode, in a
+		// break or under a transition, reads it again on every tick: it is
+		// logged once.
+		c.mu.Lock()
+		logged := c.clipIter == iter && c.clipReadFailed
+		if c.clipIter == iter {
+			c.clipReadFailed = true
+		}
+		c.mu.Unlock()
+		if !logged {
+			slog.Warn("playout: frame read error", "item", item.ID, "frame", sourceFrame, "error", err)
+		}
 
 		// Any frame read error is treated as terminal — signal complete so
 		// the scheduler advances to the next item.
-		if asRunFn != nil {
+		if asRunFn != nil && !logged {
 			asRunFn(AsRunEvent{
 				Timestamp: time.Now().UTC(),
 				Type:      AsRunError,
@@ -2346,6 +2360,7 @@ func (c *Channel) promoteIncomingClip(item *PlaylistItem) {
 		c.clipIter.Close()
 	}
 	c.clipIter = c.inClipIter
+	c.clipReadFailed = false
 	c.clipItemID = c.inClipItemID
 	c.clipFPS = c.inClipFPS
 	c.clipTotal = c.inClipTotal
