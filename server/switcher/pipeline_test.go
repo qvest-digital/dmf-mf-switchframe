@@ -501,56 +501,73 @@ func TestPipeline_EncoderBufferingDropsFrames(t *testing.T) {
 	// Hardware encoders (e.g. VideoToolbox) return nil data during warmup
 	// (EAGAIN). The pipeline should silently drop these frames without
 	// error, then resume normal output once the encoder starts producing.
-	programRelay := newTestRelay()
-	viewer := newMockProgramViewer("test")
-	programRelay.AddViewer(viewer)
+	// The test drives the ticks itself: on the reference clock a tick the
+	// loop takes late repeats the last frame broadcast without encoding,
+	// which a loaded host does at any rate.
+	const warmup, ticks = 3, 6
+	for _, rate := range mixFrameRates {
+		t.Run(fmt.Sprintf("%d/%d", rate.Num, rate.Den), func(t *testing.T) {
+			programRelay := newTestRelay()
+			viewer := newMockProgramViewer("test")
+			programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(t, programRelay)
-	enc := newBufferingEncoder(transition.NewMockEncoder(), 3)
-	sw.SetPipelineCodecs(
-		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-			return enc, nil
-		},
-	)
-	require.NoError(t, sw.BuildPipeline())
-	defer sw.Close()
+			sw := newTestSwitcherDirect(programRelay)
+			defer sw.closeDirect()
+			f := *sw.pipelineFormat.Load()
+			f.FPSNum, f.FPSDen = int(rate.Num), int(rate.Den)
+			sw.pipelineFormat.Store(&f)
+			enc := newBufferingEncoder(transition.NewMockEncoder(), warmup)
+			sw.SetPipelineCodecs(
+				func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+					return enc, nil
+				},
+			)
+			require.NoError(t, sw.BuildPipeline())
 
-	cam1Relay := newTestRelay()
-	sw.RegisterSource("cam1", cam1Relay)
-	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+			cam1Relay := newTestRelay()
+			sw.RegisterSource("cam1", cam1Relay)
+			require.NoError(t, sw.Cut(context.Background(), "cam1"))
+			sendRawFrame(sw, "cam1", 100, true)
 
-	// Every tick encodes a frame: the first 3 should be silently dropped
-	// (buffering), every later one should produce output.
-	sendRawFrame(sw, "cam1", 100, true)
+			// Every tick encodes a frame: the first ones are silently
+			// dropped (buffering), every later one produces output. Each
+			// tick waits for its encode, so none is shed by a busy encoder.
+			for i := 0; i < ticks; i++ {
+				sw.tickNow()
+				select {
+				case <-enc.encoded:
+				case <-time.After(5 * time.Second):
+					t.Fatalf("tick %d was not encoded", i)
+				}
+			}
 
-	require.Eventually(t, func() bool {
-		viewer.mu.Lock()
-		defer viewer.mu.Unlock()
-		return len(viewer.videos) >= 2
-	}, 2*time.Second, 5*time.Millisecond,
-		"should receive frames after encoder warmup")
-
-	sw.Close() // drains the encoder
-	viewer.mu.Lock()
-	require.Equal(t, int(enc.calls.Load())-3, len(viewer.videos), "only post-warmup frames should reach viewer")
-	viewer.mu.Unlock()
+			sw.Close() // drains the encoder
+			require.Equal(t, int32(ticks), enc.calls.Load())
+			viewer.mu.Lock()
+			defer viewer.mu.Unlock()
+			require.Len(t, viewer.videos, ticks-warmup, "only post-warmup frames should reach viewer")
+		})
+	}
 }
 
 // bufferingEncoder returns nil data for the first N calls (simulating
 // hardware encoder warmup like VideoToolbox EAGAIN), then delegates.
+// Each call is sent on encoded once it returns.
 type bufferingEncoder struct {
 	inner     transition.VideoEncoder
 	remaining atomic.Int32
 	calls     atomic.Int32
+	encoded   chan struct{}
 }
 
 func newBufferingEncoder(inner transition.VideoEncoder, warmupFrames int) *bufferingEncoder {
-	e := &bufferingEncoder{inner: inner}
+	e := &bufferingEncoder{inner: inner, encoded: make(chan struct{}, 64)}
 	e.remaining.Store(int32(warmupFrames))
 	return e
 }
 
 func (e *bufferingEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+	defer func() { e.encoded <- struct{}{} }()
 	e.calls.Add(1)
 	if e.remaining.Add(-1) >= 0 {
 		return nil, false, nil // EAGAIN — no output yet
