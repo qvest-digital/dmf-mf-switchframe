@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0-rc.53](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.52...mxl-v1.0.0-rc.53) (2026-11-15)
+
+
+### Bug Fixes
+
+* **mxl:** judge a slow video consumer by its last few sends ([#285](https://github.com/qvest-digital/dmf-mf-switchframe/issues/285)) ([00cd8d4](https://github.com/qvest-digital/dmf-mf-switchframe/commit/00cd8d48893174dcefb7949c3fdb9ae3d49197f1))
+* **playout:** drop the loop release on Stop and test the snapshot purely ([#284](https://github.com/qvest-digital/dmf-mf-switchframe/issues/284)) ([9d50109](https://github.com/qvest-digital/dmf-mf-switchframe/commit/9d50109e17ff14b942ff341a4badd75c6c4ef457))
+
 ## [1.0.0-rc.52](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.51...mxl-v1.0.0-rc.52) (2026-11-15)
 
 
