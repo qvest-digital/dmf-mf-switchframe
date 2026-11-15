@@ -169,6 +169,8 @@ func (s *Scheduler) Stop() {
 	// engine, whatever cue a restart left on one of them.
 	s.startAt = 0
 	s.resetItemState()
+	// Nothing is on air once stopped, so no loop release reads as pending.
+	s.onAir = -1
 }
 
 // Tick is called once per frame period. It returns a SchedulerDecision

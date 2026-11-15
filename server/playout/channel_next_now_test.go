@@ -448,3 +448,45 @@ func TestChannel_PrerollDuringATransitionThatSkips(t *testing.T) {
 		}
 	}
 }
+
+// After EndLoop and Previous before the next tick, the status names x at
+// the cursor and reports a, still on air, as the item looping with its
+// release. The peer snapshot reads both to decide whether the release
+// goes along with the cursor's item.
+func TestChannel_StatusPlayingIndexBeforeTheTick(t *testing.T) {
+	for _, fps := range channelRates {
+		t.Run(fmt.Sprintf("%.3f", fps), func(t *testing.T) {
+			ch := NewChannel(1, ChannelConfig{FPS: fps, AllowedLocalPrefixes: []string{"/"}, AssetProvider: fakeProvider(30)})
+			a := clipItem("a")
+			a.Loop = true
+			require.NoError(t, ch.LoadPlaylist(testPlaylist(clipItem("x"), a, clipItem("b"))))
+			ch.mu.Lock()
+			ch.state = StateOnAir
+			ch.scheduler.Start()
+			ch.mu.Unlock()
+			now := time.Unix(0, 0)
+			ch.tick(now)
+			require.NoError(t, ch.JumpTo("a"))
+			now = now.Add(ch.frameDuration)
+			ch.tick(now)
+			st := ch.Status()
+			require.Equal(t, 1, st.PlayingIndex)
+			require.Equal(t, 1, st.ItemIndex)
+
+			require.NoError(t, ch.EndLoop())
+			require.NoError(t, ch.Previous())
+			st = ch.Status()
+			require.Equal(t, 0, st.ItemIndex)
+			require.Equal(t, "x", st.CurrentItemID)
+			require.Equal(t, 1, st.PlayingIndex, "a is still on air")
+			require.True(t, st.Looping)
+			require.True(t, st.LoopExit)
+
+			now = now.Add(ch.frameDuration)
+			ch.tick(now)
+			st = ch.Status()
+			require.Equal(t, 0, st.PlayingIndex, "x is on air after the tick")
+			require.False(t, st.LoopExit)
+		})
+	}
+}
