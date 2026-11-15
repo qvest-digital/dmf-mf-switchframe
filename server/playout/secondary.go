@@ -84,6 +84,13 @@ func (s *SecondaryEventScheduler) BeginItem(events []SecondaryEvent, durationMs 
 	})
 }
 
+// TickEnd fires the events due by the end of the item, as Tick at its
+// duration does, for an item that ends at its natural end on a tick that
+// starts before that time, as one ending into a transition does.
+func (s *SecondaryEventScheduler) TickEnd() {
+	s.Tick(s.durationMs)
+}
+
 // EndItem clears the current schedule.
 func (s *SecondaryEventScheduler) EndItem() {
 	s.events = nil

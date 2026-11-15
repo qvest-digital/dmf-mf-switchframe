@@ -37,6 +37,10 @@ type SchedulerDecision struct {
 	IsIdle     bool           // true = no active item, play idle asset
 	Transition *TransitionReq // non-nil during a transition
 	Completed  bool           // true = playlist exhausted or scheduler stopped
+	// FromEnd is true on the tick Item takes over from an item that ended
+	// at its natural end, by a cut or the commit of a transition, rather
+	// than one left by an operator's move or a scheduled time.
+	FromEnd bool
 }
 
 // TransitionReq describes an active transition between two playlist items.
@@ -93,7 +97,8 @@ type Scheduler struct {
 	transOutgoing   *PlaylistItem
 	transIncoming   *PlaylistItem
 	transConfig     TransitionConfig
-	transTarget     int // index of transIncoming
+	transFromEnd    bool // the transition leaves an item at its natural end
+	transTarget     int  // index of transIncoming
 
 	// Flags.
 	started bool
@@ -304,9 +309,10 @@ func (s *Scheduler) tick(now time.Time) SchedulerDecision {
 	}
 
 	// Clip items advance when channel signals complete.
+	ended := false
 	if !shouldAdvance && item.Type == ItemClip && s.itemComplete {
 		s.itemComplete = false
-		shouldAdvance = true
+		shouldAdvance, ended = true, true
 	}
 
 	// A transition at an item's natural end runs over the item's last
@@ -317,7 +323,7 @@ func (s *Scheduler) tick(now time.Time) SchedulerDecision {
 	overlapMs := s.endTransitionMs(now)
 	if !shouldAdvance && item.Type == ItemClip && overlapMs > 0 && s.ticksItem == item.ID &&
 		s.ticksLeft > 0 && s.ticksLeft <= transitionTicks(overlapMs, s.fps)+1 {
-		shouldAdvance = true
+		shouldAdvance, ended = true, true
 	}
 
 	// Live items never auto-advance (no duration, no complete signal).
@@ -328,7 +334,7 @@ func (s *Scheduler) tick(now time.Time) SchedulerDecision {
 	if !shouldAdvance && item.Type == ItemSlate && s.itemDurationMs > 0 {
 		elapsed := now.Sub(s.itemStartTime)
 		if elapsed.Milliseconds()+overlapMs >= s.itemDurationMs {
-			shouldAdvance = true
+			shouldAdvance, ended = true, true
 		}
 	}
 
@@ -338,7 +344,7 @@ func (s *Scheduler) tick(now time.Time) SchedulerDecision {
 	}
 
 	if shouldAdvance {
-		return s.advance(now, steps)
+		return s.advance(now, steps, ended)
 	}
 
 	return s.playingDecision(item)
@@ -801,7 +807,7 @@ func (s *Scheduler) nextScheduledTimeReached(now time.Time) bool {
 
 // advance moves steps items ahead. It may start a transition if one is
 // configured, or do a hard cut. Returns the decision for this tick.
-func (s *Scheduler) advance(now time.Time, steps int) SchedulerDecision {
+func (s *Scheduler) advance(now time.Time, steps int, ended bool) SchedulerDecision {
 	nextCursor := s.cursor + steps
 
 	// Playlist exhausted.
@@ -832,6 +838,7 @@ func (s *Scheduler) advance(now time.Time, steps int) SchedulerDecision {
 
 	outgoing := s.playlist.Items[s.cursor]
 	if d, ok := s.startTransition(now, &outgoing, nextCursor); ok {
+		s.transFromEnd = ended
 		return d
 	}
 
@@ -840,8 +847,9 @@ func (s *Scheduler) advance(now time.Time, steps int) SchedulerDecision {
 	s.resetItemState()
 	s.state = SchedPlaying
 	return SchedulerDecision{
-		State: SchedPlaying,
-		Item:  nextItem,
+		State:   SchedPlaying,
+		Item:    nextItem,
+		FromEnd: ended,
 	}
 }
 
@@ -904,6 +912,7 @@ func (s *Scheduler) startTransition(now time.Time, outgoing *PlaylistItem, targe
 	s.transOutgoing = outgoing
 	s.transIncoming = incoming
 	s.transConfig = *tc
+	s.transFromEnd = false
 	s.transTarget = target
 	s.transStartTime = now
 	s.transDurationMs = int64(tc.DurationMs)
@@ -995,8 +1004,9 @@ func (s *Scheduler) tickTransition(now time.Time) SchedulerDecision {
 		s.transOutgoing = nil
 		s.transIncoming = nil
 		return SchedulerDecision{
-			State: SchedPlaying,
-			Item:  incoming,
+			State:   SchedPlaying,
+			Item:    incoming,
+			FromEnd: s.transFromEnd,
 		}
 	}
 

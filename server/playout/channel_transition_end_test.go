@@ -503,3 +503,89 @@ func TestPlayoutTransitionThatCutsLetsTheClipPlayOut(t *testing.T) {
 		}
 	}
 }
+
+// An event anchored to an item's end fires once where the item ends at
+// its natural end, on the tick the next item takes over. Ending into a
+// transition, the item hands over on its last tick, which starts before
+// that end, so the event used to be dropped there; a cut hands over on
+// the tick after the last, where the item's end has come, unless the clip
+// plays fewer pictures than it counts, as where a decoder drops some. An
+// item left part-way by Next has not reached its end, and the event does
+// not fire.
+func TestPlayoutEndAnchoredEventFiresOnceWhereTheItemEnds(t *testing.T) {
+	mix := &TransitionConfig{Type: "mix", DurationMs: 400}
+	cases := []struct {
+		name       string
+		transition *TransitionConfig
+		extra      int // pictures the clip counts and does not play
+		nextAt     int // tick Next is pressed on, -1 for none
+		fires      bool
+	}{
+		{"into a transition", mix, 0, -1, true},
+		{"into a cut", nil, 0, -1, true},
+		{"into a cut from a clip short of its count", nil, 5, -1, true},
+		{"left mid-item by a cut", nil, 0, 10, false},
+		{"left mid-item through a transition", mix, 0, 10, false},
+	}
+	for _, tc := range cases {
+		for _, fps := range channelRates {
+			t.Run(fmt.Sprintf("%s/%.3ffps", tc.name, fps), func(t *testing.T) {
+				n := int(math.Round(2 * fps))
+				a, b := clipItem("a"), clipItem("b")
+				a.SecondaryEvents = []SecondaryEvent{{Type: "graphics_off", Layer: 1, OffsetMs: 0, Anchor: "end"}}
+				b.Transition = tc.transition
+				ch, tick, _ := pcmChannelAt(t, fps, overcountAssets{pcmAssets{
+					a.AssetURI: pcmClip(n, fps, 48000, 1, 0, math.MaxInt64),
+					b.AssetURI: pcmClip(2*n, fps, 48000, 0, 1, math.MaxInt64),
+				}, tc.extra}, a, b)
+				h := &mockHandler{}
+				ch.SetSecondaryHandler(h)
+
+				fired, takeover := []int{}, -1
+				seen := 0
+				for i := 0; i < n+20; i++ {
+					if i == tc.nextAt {
+						require.NoError(t, ch.Next())
+					}
+					tick(i)
+					if takeover < 0 && ch.scheduler.State() == SchedPlaying && ch.scheduler.CurrentItem().ID == "b" {
+						takeover = i
+					}
+					calls := h.getCalls()
+					for range calls[seen:] {
+						fired = append(fired, i)
+					}
+					seen = len(calls)
+				}
+				require.GreaterOrEqual(t, takeover, 0, "b never took over")
+				if !tc.fires {
+					require.Empty(t, fired, "the end-anchored event fired for an item left part-way")
+					return
+				}
+				require.Equal(t, []int{takeover}, fired, "the ticks the end-anchored event fired on; b took over on %d", takeover)
+			})
+		}
+	}
+}
+
+// overcountAssets opens the clips of pcmAssets reporting extra more
+// pictures than they play.
+type overcountAssets struct {
+	pcmAssets
+	extra int
+}
+
+func (o overcountAssets) Open(uri string) (FrameIterator, error) {
+	it, err := o.pcmAssets.Open(uri)
+	if err != nil {
+		return nil, err
+	}
+	return overcounted{it.(pcmIterator), o.extra}, nil
+}
+
+type overcounted struct {
+	pcmIterator
+	extra int
+}
+
+func (o overcounted) TotalFrames() int { return o.pcmIterator.TotalFrames() + o.extra }

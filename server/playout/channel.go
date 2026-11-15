@@ -1497,7 +1497,7 @@ func (c *Channel) itemFrame(decision SchedulerDecision, secScheduler *SecondaryE
 		// where the pre-roll left off instead of reopening from frame 0.
 		c.promoteIncomingClip(item)
 		// Track item changes for as-run logging and secondary events.
-		c.handleItemChange(item, secScheduler, asRunFn, channelID, now)
+		c.handleItemChange(item, decision.FromEnd, secScheduler, asRunFn, channelID, now)
 		if f := c.frameForItem(item); f != nil || frame == nil {
 			frame = f
 		}
@@ -1567,8 +1567,9 @@ func hasAudio(f *DecodedFrame) bool {
 }
 
 // handleItemChange detects when the scheduler moves to a new item and fires
-// as-run events and secondary event scheduling.
-func (c *Channel) handleItemChange(item *PlaylistItem, secScheduler *SecondaryEventScheduler, asRunFn func(AsRunEvent), channelID int, now time.Time) {
+// as-run events and secondary event scheduling. fromEnd is the decision's
+// FromEnd: the item left ended at its natural end.
+func (c *Channel) handleItemChange(item *PlaylistItem, fromEnd bool, secScheduler *SecondaryEventScheduler, asRunFn func(AsRunEvent), channelID int, now time.Time) {
 	c.mu.Lock()
 	prevItemID := c.secondaryItemID
 	c.mu.Unlock()
@@ -1577,6 +1578,14 @@ func (c *Channel) handleItemChange(item *PlaylistItem, secScheduler *SecondaryEv
 		// Same item — tick secondary events if applicable.
 		c.tickSecondaryEvents(item, secScheduler, now)
 		return
+	}
+
+	// An item that ended at its natural end fires the events due by its end
+	// before they are dropped: one ending into a transition hands over on
+	// its last tick, which starts before that end. Left by a move, it fires
+	// none it had not reached.
+	if fromEnd && secScheduler != nil && prevItemID != "" {
+		secScheduler.TickEnd()
 	}
 
 	// New item — end the old one, start the new one.
