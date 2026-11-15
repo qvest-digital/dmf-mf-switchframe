@@ -19,6 +19,8 @@
 
 **Handler:** `(*API).handlePlayoutChannelGet`. **Response 200:** one `playout.ChannelState`. **Errors:** 400 (`playout.ErrInvalidChannel`).
 
+`looping` and `loopExit` describe the item on air. Between a `previous`, `jump` or `next-now` and the next frame tick that item is still on air while `currentItemId` and `itemIndex` already name the item at the cursor.
+
 ---
 
 ### `POST /api/playout/channels/{n}/load`
@@ -67,7 +69,7 @@
 
 ### `POST /api/playout/channels/{n}/end-loop`
 
-**Purpose:** let the looping clip on air finish its current pass, then end as a clip that does not loop.
+**Purpose:** let the looping clip on air finish its current pass, then end as a clip that does not loop. It acts on the item on air, also in the frame after a move of the cursor, before the next tick.
 **Handler:** `(*API).handlePlayoutEndLoop`. **Errors:** 400 (`playout.ErrNotOnAir`), 409 (`playout.ErrNotLooping`).
 
 ---

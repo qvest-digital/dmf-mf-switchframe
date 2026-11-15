@@ -322,6 +322,7 @@ func (c *Channel) Status() ChannelStatus {
 			st.CurrentItemID = item.ID
 			st.CurrentTitle = item.Title
 		}
+		st.PlayingIndex = snap.Playing
 		if snap.Playing >= 0 && snap.Playing < len(pl.Items) {
 			if item := pl.Items[snap.Playing]; c.state == StateOnAir && item.Loop && item.Type == ItemClip {
 				st.Looping = true

@@ -828,6 +828,39 @@ func dveSlotStateFromTransform(t dve.Transform) *internal.DVESlotState {
 // This is used for multi-region active-active redundancy: a browser
 // detecting state divergence pulls a snapshot from the authoritative
 // engine and pushes it to the lagging one.
+// playoutChannelSnapshots captures each playout channel with a playlist.
+// A synced engine seeks to the item at the cursor and then takes the loop
+// release, so the release goes along only while the item on air is the
+// one at the cursor: between a move and the next tick it belongs to
+// another item.
+func (a *App) playoutChannelSnapshots() []internal.PlayoutChannelSnapshot {
+	if a.playoutMgr == nil {
+		return nil
+	}
+	var out []internal.PlayoutChannelSnapshot
+	for i, s := range a.playoutMgr.ChannelStates() {
+		if s.State == "idle" && s.PlaylistName == "" {
+			continue
+		}
+		schedState := s.SchedulerState
+		if schedState == "" {
+			schedState = s.State // fallback for non-on-air channels
+		}
+		out = append(out, internal.PlayoutChannelSnapshot{
+			ChannelIndex:     i,
+			ChannelState:     s.State,
+			CurrentItemIndex: s.ItemIndex,
+			CurrentItemID:    s.CurrentItemID,
+			ElapsedMs:        a.playoutMgr.ChannelElapsedMs(i + 1),
+			SchedulerState:   schedState,
+			SchedulerMode:    s.Mode,
+			PlaylistHash:     a.playoutMgr.PlaylistHash(i + 1),
+			LoopExit:         s.LoopExit && s.PlayingIndex == s.ItemIndex,
+		})
+	}
+	return out
+}
+
 func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 	state := a.sw.State()
 
@@ -1061,29 +1094,7 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 	}
 
 	// --- Playout channels ---
-	if a.playoutMgr != nil {
-		states := a.playoutMgr.ChannelStates()
-		for i, s := range states {
-			if s.State == "idle" && s.PlaylistName == "" {
-				continue
-			}
-			schedState := s.SchedulerState
-			if schedState == "" {
-				schedState = s.State // fallback for non-on-air channels
-			}
-			snap.PlayoutChannels = append(snap.PlayoutChannels, internal.PlayoutChannelSnapshot{
-				ChannelIndex:     i,
-				ChannelState:     s.State,
-				CurrentItemIndex: s.ItemIndex,
-				CurrentItemID:    s.CurrentItemID,
-				ElapsedMs:        a.playoutMgr.ChannelElapsedMs(i + 1),
-				SchedulerState:   schedState,
-				SchedulerMode:    s.Mode,
-				PlaylistHash:     a.playoutMgr.PlaylistHash(i + 1),
-				LoopExit:         s.LoopExit,
-			})
-		}
-	}
+	snap.PlayoutChannels = a.playoutChannelSnapshots()
 
 	// --- SCTE-35 active events ---
 	if a.scte35Injector != nil {
