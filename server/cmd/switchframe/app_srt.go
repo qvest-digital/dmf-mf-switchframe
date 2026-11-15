@@ -755,6 +755,7 @@ func (a *App) bindSRTSource(key string) *clock.TrackingAnchor {
 		a.mixer.AddChannel(key)
 		_ = a.mixer.SetAFV(key, true)
 	}
+	a.mixer.SetLiveInput(key)
 	return &clock.TrackingAnchor{}
 }
 
@@ -777,6 +778,10 @@ func (a *App) releaseSRTConnection(sourceKey string, mode string) {
 	// stops this one and waits for this release before it opens a preview
 	// encoder of its own, which a stop after the delete could close.
 	a.sw.StopSourcePreview(sourceKey)
+	// The connection ended: its audio running out is not a dropout.
+	if a.mixer != nil {
+		a.mixer.EndChannelInput(sourceKey)
+	}
 
 	a.srtSourcesMu.Lock()
 	delete(a.srtSources, sourceKey)
@@ -1205,15 +1210,11 @@ func (a *App) startSRTReplayCPUEncode(rc *srtRelayContext) {
 // ingestSRTAudio hands an SRT source's decoded audio to the mixer. The
 // stream's own PTS, placed on the timeline by the tracking anchor its video
 // shares, keep the audio continuous however the decoder bunches it; the
-// anchor follows a sender clock that drifts. Once the anchor settles, and
-// whenever its offset moves after that, the audio is placed on its
-// timestamps again, so it stays on its video.
+// anchor follows a sender clock that drifts. When the anchor's offset
+// moves, the mixer resamples the audio onto its moved stamps as the anchor
+// slews its video there, so the two stay together without a splice.
 func (a *App) ingestSRTAudio(key string, anchor *clock.TrackingAnchor, job srtAudioJob) {
-	pts, settled := anchor.SettledPTS(job.pts)
-	a.mixer.IngestPCM(key, job.pcm, pts, job.channels)
-	if settled {
-		a.mixer.PlaceChannel(key)
-	}
+	a.mixer.IngestPCMSlewed(key, job.pcm, anchor.PTS(job.pts), job.channels)
 }
 
 // startSRTAudioRelay starts a goroutine that delivers decoded PCM audio to the
@@ -1490,7 +1491,7 @@ func (a *App) srtAnchorStats() map[string]clock.TrackingStats {
 
 // srtAnchorProvider exposes each connected SRT source's anchor offset
 // change since its connection was placed, in ms, and the times it was
-// raised, via debug snapshots.
+// raised and stepped, via debug snapshots.
 type srtAnchorProvider struct {
 	app *App
 }
@@ -1503,6 +1504,7 @@ func (p srtAnchorProvider) DebugSnapshot() map[string]any {
 			"offset_ms": float64(s.Offset) / 90,
 			"raises":    s.Raises,
 			"moves":     s.Moves,
+			"steps":     s.Steps,
 		}
 	}
 	return map[string]any{"sources": sources}
@@ -1515,6 +1517,9 @@ var (
 	descSRTAnchorRaises = prometheus.NewDesc("switchframe_srt_anchor_offset_raises_total",
 		"Timestamps of a connected SRT source that raised its TrackingAnchor offset, each moving its later frames that much later. Starts at 0 on every connection.",
 		[]string{"source"}, nil)
+	descSRTAnchorSteps = prometheus.NewDesc("switchframe_srt_anchor_offset_steps_total",
+		"Moves of a connected SRT source's settled TrackingAnchor offset taken at once rather than slewed, each moving its video and audio by a step. Starts at 0 on every connection.",
+		[]string{"source"}, nil)
 )
 
 // srtAnchorCollector exposes the SRT anchors' statistics at scrape time.
@@ -1526,6 +1531,7 @@ type srtAnchorCollector struct {
 func (c srtAnchorCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- descSRTAnchorOffset
 	ch <- descSRTAnchorRaises
+	ch <- descSRTAnchorSteps
 }
 
 // Collect implements prometheus.Collector.
@@ -1534,5 +1540,6 @@ func (c srtAnchorCollector) Collect(ch chan<- prometheus.Metric) {
 		source := metrics.SourceLabel(key)
 		ch <- prometheus.MustNewConstMetric(descSRTAnchorOffset, prometheus.GaugeValue, float64(s.Offset)/90000, source)
 		ch <- prometheus.MustNewConstMetric(descSRTAnchorRaises, prometheus.CounterValue, float64(s.Raises), source)
+		ch <- prometheus.MustNewConstMetric(descSRTAnchorSteps, prometheus.CounterValue, float64(s.Steps), source)
 	}
 }

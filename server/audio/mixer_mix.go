@@ -110,10 +110,12 @@ func (m *Mixer) produceSamplesLocked(start uint64, totalValues int) []float32 {
 		ch.xfGain = gEnd
 		ch.aired = ch.active
 		if !ch.active || ch.muted || ch.ringBuf == nil {
+			ch.airing, ch.inRead = false, false
 			continue
 		}
 
 		pcm := m.popAt(ch, start, totalValues/m.numChannels)
+		ch.inRead = true
 		if pcm == nil {
 			continue // never pushed -- skip
 		}

@@ -622,6 +622,7 @@ func (a *App) activateST2110Receiver(id string, params nmos.StagedParams) error 
 		// For audio-only receivers, register audio channel if not already
 		// registered by a paired video receiver.
 		a.mixer.AddChannel(sourceKey)
+		a.mixer.SetLiveInput(sourceKey)
 		_ = a.mixer.SetAFV(sourceKey, true)
 
 		src := st2110.NewSource(st2110.SourceConfig{

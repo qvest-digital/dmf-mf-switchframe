@@ -209,26 +209,34 @@ func (a *Anchor) Moves() int64 {
 // stream's audio does in PES packets of several frames, is placed at its
 // latest arrival, so it is on hand at every read.
 //
-// The offset moves the source's audio against the program read point, and
-// the mixer splices a source's audio whenever it moved by more than a
-// period, so the offset settles once and then moves only on a lasting
-// change. For the first TrackingSettle windows after a placement every
-// timestamp is placed no earlier than it arrives and the offset forgets a
-// lateness after two windows, so the backlog a connection's socket and
-// stream probe built before the first frame was decoded is left behind.
-// Then the offset is the largest lateness of the settle windows after the
-// first, and it is raised only when two windows in a row arrived more
-// than TrackingSlack later than it, to the smaller of their largest
-// latenesses, and lowered only when TrackingHistory windows in a row
-// arrived earlier, to their largest. A frame up to TrackingSlack later
-// than its placement is still read on time, its audio included. A
-// single late burst, as a stalled sender or decode loop delivers, leaves
-// the offset where it is: its frames are shown late and its audio that
-// arrives after its read point is lost, once, rather than moving the rest
-// of the source later and back. A sender clock that drifts is followed,
-// in steps of TrackingSlack when slow and of the drift over a window when
-// fast, TrackingHistory windows behind. A jump of more than MaxAnchorSkew, as on a source
-// restart, places the source again.
+// For the first TrackingSettle windows after a placement every timestamp
+// is placed no earlier than it arrives and the offset forgets a lateness
+// after two windows, so the backlog a connection's socket and stream probe
+// built before the first frame was decoded is left behind. Then the offset
+// is the largest lateness of the settle windows after the first, and it is
+// raised only when two windows in a row arrived more than TrackingSlack
+// later than it, to the smaller of their largest latenesses, and lowered
+// only when TrackingHistory windows in a row arrived earlier, to their
+// largest. A frame up to TrackingSlack later than its placement is still
+// read on time, its audio included. A single late burst, as a stalled
+// sender or decode loop delivers, leaves the offset where it is: its
+// frames are shown late and its audio that arrives after its read point is
+// lost, once. A sender clock that drifts is followed, in steps of
+// TrackingSlack when slow and of the drift over a window when fast,
+// TrackingHistory windows behind. A jump of more than MaxAnchorSkew, as on
+// a source restart, places the source again.
+//
+// From the settle on, the source is not moved by a step: the offset its
+// timestamps get slews to a new offset at TrackingSlewRate, video and audio
+// alike, so its audio is resampled onto the move rather than spliced and
+// its video repeats or skips a frame at a time. Two stalls in windows in a
+// row raise the offset as a lasting lateness does, and slewed, the raise
+// costs no audio. A raise that lasts, a window after it still arriving
+// more than TrackingSlack later than the slewed offset, three late windows
+// in a row that two stalls cannot make, and a move of more than
+// TrackingSlewMax, are taken at once, as a step, counted. The settle's own
+// move from the offset the settle windows followed is a move like any
+// other: it slews, or past TrackingSlewMax steps and counts.
 //
 // No timestamp is placed more than MaxSourceHold after its own arrival:
 // the stores that hold a source's frames and audio until they are due
@@ -242,16 +250,17 @@ type TrackingAnchor struct {
 	mu        sync.Mutex
 	set       bool
 	offset    int64
+	applied   int64                  // offset timestamps are mapped with, slewing to offset
+	slewAt    int64                  // engine PTS up to which applied has slewed
 	placedAt  int64                  // offset the source was last placed at
 	cur       int64                  // largest lateness in the current window
 	maxes     [TrackingHistory]int64 // largest lateness of the last windows, newest first
 	windows   int                    // windows completed since the placement
+	raisedAt  int                    // windows at the last raise
 	windowEnd int64                  // engine PTS at which the current window ends
 	moves     int64
 	raises    int64
-	settles   int64 // times the offset settled after a placement, or moved once settled
-	told      int64 // settles SettledPTS has reported
-	settledAt int64 // offset at the last settle or reported move
+	steps     int64
 }
 
 // TrackingWindow is the span over which a TrackingAnchor takes a
@@ -293,11 +302,8 @@ func abs(x int64) int64 {
 // arrives within delay-1 periods of its placement, however long the frame
 // is. Video gets half its delay periods, which also cover a producer's
 // commit and transit. The slack is the lesser of the two, less
-// TrackingDriftMargin. Within it a raise moves
-// only the source's video, since the mixer realigns audio only past a
-// period, and leaves the two apart until the offset comes down; a lasting
-// lateness past it that is not raised for runs the audio dry read after
-// read.
+// TrackingDriftMargin. A lasting lateness past it that is not raised for
+// runs the audio dry read after read.
 func trackingSlack(period, delay int64) int64 {
 	return max(min((delay-1)*period, delay*period/2)-TrackingDriftMargin, 0)
 }
@@ -314,6 +320,18 @@ const TrackingDriftMargin = 90
 // source.
 const TrackingHistory = 30
 
+// TrackingSlewRate is how much engine time a settled TrackingAnchor takes
+// to move the offset it maps with by one tick: 250 ticks, 0.4%, under the
+// 0.5% its source's audio is resampled at (audio.Mixer.IngestPCMSlewed),
+// so the audio keeps up with its video. A 46 ms raise takes 11.5 s. A step
+// moves the audio by placing it again on its stamps, as it moves the video.
+const TrackingSlewRate = 250
+
+// TrackingSlewMax is the largest move of a settled TrackingAnchor's offset
+// that slews, in 90 kHz ticks (100 ms, 25 s at TrackingSlewRate); a larger
+// one is a step.
+const TrackingSlewMax = 9000
+
 // PTS maps the source timestamp src to the engine timeline.
 func (a *TrackingAnchor) PTS(src int64) int64 {
 	a.mu.Lock()
@@ -321,29 +339,11 @@ func (a *TrackingAnchor) PTS(src int64) int64 {
 	return a.place(src)
 }
 
-// SettledPTS is PTS that also reports whether the offset settled, or
-// moved half a program period or more from where it was last reported,
-// since the last SettledPTS call: true for the first timestamp it maps on
-// the new offset. A settle, raise or lowering can move the source by less
-// than a period, which the mixer never realigns, so the source's audio is
-// placed on its timestamps again from that one on, as its video is. A
-// smaller move is left to add up: placing the audio again splices it, and
-// the lowerings a sender clock's drift brings are fractions of a
-// millisecond.
-func (a *TrackingAnchor) SettledPTS(src int64) (int64, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	pts := a.place(src)
-	settled := a.told != a.settles
-	a.told = a.settles
-	return pts, settled
-}
-
 // place maps src to the engine timeline. Caller holds a.mu.
 func (a *TrackingAnchor) place(src int64) int64 {
 	now := NowPTS()
 	late := now - src
-	was, placed, settled := a.offset, false, false
+	was, placed, step := a.offset, false, false
 	switch {
 	case !a.set || late-a.offset > MaxAnchorSkew || a.offset-late > MaxAnchorSkew:
 		if a.set {
@@ -358,15 +358,16 @@ func (a *TrackingAnchor) place(src int64) int64 {
 		a.maxes[0], a.cur = a.cur, late
 		a.windows++
 		a.windowEnd = now + TrackingWindow
+		later := min(a.maxes[0], a.maxes[1])
 		switch {
 		case a.windows < TrackingSettle:
 			a.offset = max(a.maxes[0], late)
 		case a.windows == TrackingSettle:
 			a.offset = slices.Max(a.maxes[:TrackingSettle-1])
-			a.settles++
-			settled = true
-		case min(a.maxes[0], a.maxes[1]) > a.offset+TrackingSlack():
-			a.offset = min(a.maxes[0], a.maxes[1])
+		case later > a.offset+TrackingSlack():
+			a.offset, a.raisedAt = later, a.windows
+		case a.applied < a.offset && a.windows >= a.raisedAt+1 && later > a.applied+TrackingSlack():
+			step = true
 		case a.windows >= TrackingSettle+TrackingHistory && slices.Max(a.maxes[:]) < a.offset:
 			a.offset = slices.Max(a.maxes[:])
 		}
@@ -386,13 +387,29 @@ func (a *TrackingAnchor) place(src int64) int64 {
 	} else if a.offset > was {
 		a.raises++
 	}
-	if settled {
-		a.settledAt = a.offset
-	} else if !placed && a.windows > TrackingSettle && 2*abs(a.offset-a.settledAt) >= programPeriodOr() {
-		a.settles++
-		a.settledAt = a.offset
+	a.slew(now, step)
+	a.applied = min(a.applied, ceil)
+	return src + a.applied
+}
+
+// slew moves the offset timestamps are mapped with towards the offset:
+// at once before the settle, and after it at TrackingSlewRate, or at once
+// as a step when step is set or the move is more than TrackingSlewMax.
+// Caller holds a.mu.
+func (a *TrackingAnchor) slew(now int64, step bool) {
+	d := a.offset - a.applied
+	switch {
+	case d == 0 || a.windows < TrackingSettle:
+		a.applied, a.slewAt = a.offset, now
+	case step || abs(d) > TrackingSlewMax:
+		a.applied, a.slewAt = a.offset, now
+		a.steps++
+	default:
+		if n := (now - a.slewAt) / TrackingSlewRate; n > 0 {
+			a.slewAt += n * TrackingSlewRate
+			a.applied += max(-n, min(n, d))
+		}
 	}
-	return src + a.offset
 }
 
 // Moves returns how often the source was placed again after a jump.
@@ -406,17 +423,21 @@ func (a *TrackingAnchor) Moves() int64 {
 type TrackingStats struct {
 	// Offset is how far the offset moved since the source was last
 	// placed, in 90 kHz ticks: up when its timestamps arrived later, down
-	// when a window forgot a lateness.
+	// when a window forgot a lateness. Once settled, the source's
+	// timestamps get there at TrackingSlewRate.
 	Offset int64
 	// Raises counts the timestamps that raised the offset: each moved the
 	// source's later timestamps that much later on the engine timeline.
 	Raises int64
 	Moves  int64 // placements again after a jump
+	// Steps counts the moves of a settled offset taken at once rather than
+	// slewed: each moved the source's video and audio by a step.
+	Steps int64
 }
 
 // Stats returns the anchor's placement statistics.
 func (a *TrackingAnchor) Stats() TrackingStats {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return TrackingStats{Offset: a.offset - a.placedAt, Raises: a.raises, Moves: a.moves}
+	return TrackingStats{Offset: a.offset - a.placedAt, Raises: a.raises, Moves: a.moves, Steps: a.steps}
 }

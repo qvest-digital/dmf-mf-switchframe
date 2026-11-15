@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"math"
 	"time"
 
 	"github.com/zsiec/prism/media"
@@ -205,6 +206,22 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame, time
 // The channels parameter is the source's actual channel count (1=mono, 2=stereo).
 // If channels < mixer's numChannels, mono samples are upmixed to stereo.
 func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels int) {
+	m.ingestPCM(sourceKey, pcm, pts, channels, false)
+}
+
+// IngestPCMSlewed is IngestPCM for a source whose stamps move as a
+// clock.TrackingAnchor slews its offset. The audio continues the source's
+// audio before it, and when its stamps are 2 samples or more off that, it
+// is resampled towards them by at most one sample in slewDivisor (0.5%)
+// until it is on them again, so a move of the stamps is neither a splice
+// nor silence. Stamps half a program period or more off, as a step of the
+// anchor moves them, place the audio again on them, as the first push
+// does, so it never airs that far from its video.
+func (m *Mixer) IngestPCMSlewed(sourceKey string, pcm []float32, pts int64, channels int) {
+	m.ingestPCM(sourceKey, pcm, pts, channels, true)
+}
+
+func (m *Mixer) ingestPCM(sourceKey string, pcm []float32, pts int64, channels int, slewed bool) {
 	// Audio forwarding (same pattern as IngestFrame).
 	m.mu.RLock()
 	fwdDst := m.audioForwards[sourceKey]
@@ -213,12 +230,12 @@ func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels i
 		// Deep-copy PCM to prevent aliasing.
 		fwdPCM := make([]float32, len(pcm))
 		copy(fwdPCM, pcm)
-		m.ingestPCMInner(fwdDst, fwdPCM, pts, channels)
+		m.ingestPCMInner(fwdDst, fwdPCM, pts, channels, slewed)
 	}
-	m.ingestPCMInner(sourceKey, pcm, pts, channels)
+	m.ingestPCMInner(sourceKey, pcm, pts, channels, slewed)
 }
 
-func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, channels int) {
+func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, channels int, slewed bool) {
 	m.mu.Lock()
 
 	ch, ok := m.channels[sourceKey]
@@ -319,9 +336,169 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 	// buffer primed so that when a channel activates via AFV, there is no
 	// silence gap from an empty ring buffer. ProduceSamples only reads from
 	// active channels, so inactive data won't be mixed into output.
-	ch.ringBuf.Push(trimmedPCM)
-	m.stampRing(ch, pts, len(trimmedPCM)/m.numChannels)
+	if slewed {
+		m.pushSlewed(ch, trimmedPCM, pts)
+	} else {
+		ch.ringBuf.Push(trimmedPCM)
+		m.stampRing(ch, pts, len(trimmedPCM)/m.numChannels)
+	}
 	m.mu.Unlock()
+}
+
+// slewDivisor bounds how fast IngestPCMSlewed resamples a source onto its
+// stamps: one sample in 200, 0.5%, a pitch change under 9 cents.
+const slewDivisor = 200
+
+// slewTaps is the length of the windowed-sinc kernel IngestPCMSlewed
+// resamples with, and slewPhases how many fractional positions its table
+// holds, interpolated between: the error is under -60 dB up to 15 kHz at
+// 48 kHz. A source is held back slewTaps/2 frames so the frames after the
+// one resampled are on hand: that costs 167 us of the audio budget at
+// 48 kHz, and the held frames are released by the next push, so the last
+// of them before a source stops never air.
+const (
+	slewTaps   = 16
+	slewPhases = 512
+	slewBeta   = 7.0
+)
+
+// slewKernel holds slewPhases+1 kernels of slewTaps taps: kernel p
+// interpolates the position p/slewPhases after a frame from the frames
+// slewTaps/2-1 before it to slewTaps/2 after, normalised to unity gain.
+var slewKernel = func() []float32 {
+	const h = slewTaps / 2
+	k := make([]float32, (slewPhases+1)*slewTaps)
+	for p := 0; p <= slewPhases; p++ {
+		frac := float64(p) / slewPhases
+		row := k[p*slewTaps : (p+1)*slewTaps]
+		var sum float64
+		w := make([]float64, slewTaps)
+		for t := range slewTaps {
+			x := float64(t-h+1) - frac
+			v := 1.0
+			if x != 0 {
+				v = math.Sin(math.Pi*x) / (math.Pi * x)
+			}
+			if r := x / h; r > -1 && r < 1 {
+				v *= besselI0(slewBeta*math.Sqrt(1-r*r)) / besselI0(slewBeta)
+			} else {
+				v = 0
+			}
+			w[t], sum = v, sum+v
+		}
+		for t := range slewTaps {
+			row[t] = float32(w[t] / sum)
+		}
+	}
+	return k
+}()
+
+// slewAt writes to dst the frame of hist, interleaved frames of c
+// channels, at position pos, which has slewTaps/2-1 frames before it and
+// slewTaps/2 after.
+func slewAt(dst, hist []float32, c int, pos float64) {
+	i := int(pos)
+	frac := pos - float64(i)
+	if frac == 0 {
+		copy(dst, hist[i*c:(i+1)*c])
+		return
+	}
+	f := frac * slewPhases
+	p := int(f)
+	a := float32(f - float64(p))
+	k0 := slewKernel[p*slewTaps : (p+1)*slewTaps]
+	k1 := slewKernel[(p+1)*slewTaps : (p+2)*slewTaps]
+	base := (i - slewTaps/2 + 1) * c
+	for ch := range c {
+		var v float32
+		for t := range slewTaps {
+			v += hist[base+t*c+ch] * (k0[t] + a*(k1[t]-k0[t]))
+		}
+		dst[ch] = v
+	}
+}
+
+// pushSlewed pushes pcm, stamped pts, for IngestPCMSlewed. Its frames
+// follow the ones before; while the next frame airs 2 samples or more off
+// its stamp, they are resampled towards the stamps, a sample in
+// slewDivisor, until it airs on it, and half a program period or more off
+// they are placed again on the stamps. A 44.1 kHz stream's stamps step a
+// sample either way of its own audio, which needs no resampling, and a
+// slewing anchor moves the stamps under a millisecond between an MPEG-TS
+// stream's bursts of audio, under half the 4.2 ms period at 240 fps.
+// Caller holds m.mu.
+func (m *Mixer) pushSlewed(ch *Channel, pcm []float32, pts int64) {
+	const h = slewTaps / 2
+	c := m.numChannels
+	n := len(pcm) / c
+	if n == 0 {
+		return
+	}
+	sr := clock.Rate{Num: int64(m.sampleRate), Den: 1}
+	start := int64(clock.TimestampToIndex(sr, clock.TimestampOf(pts)))
+	var end int64 // mixer index of the next frame pushed to the ring
+	var off float64
+	held := len(ch.slewHist) / c
+	if ch.ringEnd != 0 && held > 0 {
+		end = int64(clock.TimestampToIndex(sr, ch.ringEnd))
+		// >0: the next frame airs after its stamp. The indices are
+		// subtracted first: as floats they are a sixty-fourth apart.
+		off = float64(end-start+int64(held)) - ch.slewPos
+		period := clock.ProgramPeriod()
+		if period == 0 {
+			period = 90000 / 240 // no program clock yet: the shortest period read
+		}
+		if most := float64(period * sr.Num / 90000 / 2); off >= most || -off >= most {
+			// Placed again: the frames held back air first, as they are.
+			rest := ch.slewHist[int(math.Round(ch.slewPos))*c:]
+			ch.ringBuf.Push(rest)
+			end += int64(len(rest) / c)
+			held = 0
+			ch.placed = false
+		}
+	}
+	if held == 0 {
+		ch.slewHist = append(ch.slewHist[:0], make([]float32, h*c)...)
+		ch.slewPos, ch.slewDir, off, end = h, 0, 0, start
+	}
+	ch.slewHist = append(ch.slewHist, pcm...)
+	frames := len(ch.slewHist) / c
+	out := ch.slewBuf[:0]
+	for int(ch.slewPos)+h < frames {
+		if ch.slewDir == 0 && (off >= 2 || off <= -2) {
+			ch.slewDir = 1
+			if off < 0 {
+				ch.slewDir = -1
+			}
+		}
+		k := len(out)
+		out = append(out, make([]float32, c)...)
+		slewAt(out[k:], ch.slewHist, c, ch.slewPos)
+		step := 1.0
+		switch {
+		case ch.slewDir == 0:
+		case off <= 1.0/slewDivisor+1e-9 && off >= -1.0/slewDivisor-1e-9:
+			// Lands on the stamps: the next frame is a whole one.
+			step, ch.slewDir = 1+off, 0
+		case off > 0:
+			// Towards the stamps, which may have stepped past it.
+			step, ch.slewDir = 1+1.0/slewDivisor, 1
+		default:
+			step, ch.slewDir = 1-1.0/slewDivisor, -1
+		}
+		ch.slewPos += step
+		off += 1 - step
+		if ch.slewDir == 0 {
+			ch.slewPos, off = math.Round(ch.slewPos*1e6)/1e6, math.Round(off*1e6)/1e6
+		}
+	}
+	ch.slewBuf = out
+	ch.ringBuf.Push(out)
+	ch.ringEnd = clock.IndexToTimestamp(sr, uint64(end)+uint64(len(out)/c))
+	if drop := int(ch.slewPos) - h + 1; drop > 0 {
+		ch.slewHist = append(ch.slewHist[:0], ch.slewHist[drop*c:]...)
+		ch.slewPos -= float64(drop)
+	}
 }
 
 // arrivalSlack is how far ahead of its arrival a source's audio may be
