@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.0-rc.54](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.53...mxl-v1.0.0-rc.54) (2026-11-15)
+
+
+### Features
+
+* **playout:** start a cued channel on the tick that cuts to it ([#293](https://github.com/qvest-digital/dmf-mf-switchframe/issues/293)) ([28ae58c](https://github.com/qvest-digital/dmf-mf-switchframe/commit/28ae58c376a792d98912e9d13999231be3a989e5))
+
+
+### Bug Fixes
+
+* **audio,clock:** slew SRT audio onto a settled anchor's moves ([#294](https://github.com/qvest-digital/dmf-mf-switchframe/issues/294)) ([6e60a8a](https://github.com/qvest-digital/dmf-mf-switchframe/commit/6e60a8a66a46c6f54f53349c5202bbe5d6957cfc))
+* **mxl:** open a source's flows once they appear ([#292](https://github.com/qvest-digital/dmf-mf-switchframe/issues/292)) ([15222f0](https://github.com/qvest-digital/dmf-mf-switchframe/commit/15222f0137ffde3f54db1fe6ff369da3242ebc3b))
+* **mxl:** shut every MXL source down before stopping any ([#296](https://github.com/qvest-digital/dmf-mf-switchframe/issues/296)) ([7c848b1](https://github.com/qvest-digital/dmf-mf-switchframe/commit/7c848b1daf332ade941c67bcb16809b70f49b9bc))
+* **playout:** overlap a transition at an item's natural end ([#291](https://github.com/qvest-digital/dmf-mf-switchframe/issues/291)) ([1f14f2c](https://github.com/qvest-digital/dmf-mf-switchframe/commit/1f14f2c36a51f9fae94e996fda74e37f3de2e85f))
+* **playout:** stop the watchdog and as-run logger on Close ([#298](https://github.com/qvest-digital/dmf-mf-switchframe/issues/298)) ([58d89b8](https://github.com/qvest-digital/dmf-mf-switchframe/commit/58d89b81dad236bdc0605ac3510cde6c71b96b2b))
+
 ## [1.0.0-rc.53](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.52...mxl-v1.0.0-rc.53) (2026-11-15)
 
 
