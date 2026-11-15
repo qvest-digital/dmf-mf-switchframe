@@ -282,7 +282,9 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 	// period hides a consumer slower than the flow until the ring wraps
 	// under the reader; timing the gap since one send counts a single slow
 	// frame of a consumer that keeps up on average, and skips the grains of
-	// a burst it would have drained.
+	// a burst it would have drained. A videoCh of fewer than videoMaxLag+1
+	// grains shrinks the window to its capacity, down to that single gap at
+	// a capacity of one.
 	period := 20 * time.Millisecond
 	if rate.Numerator > 0 && rate.Denominator > 0 {
 		period = time.Duration(int64(time.Second) * rate.Denominator / rate.Numerator)

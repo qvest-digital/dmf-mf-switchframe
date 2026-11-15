@@ -996,6 +996,33 @@ func TestReader_SlowConsumerStaysNearHead(t *testing.T) {
 	}
 }
 
+// A consumer only a tenth slower than the flow falls behind slowly, and a
+// read costing 0.6 of a period hides most of its gap: the reader must still
+// count it as behind and keep it near the head rather than let the lag grow
+// to the ring.
+func TestReader_BarelySlowConsumerStaysNearHead(t *testing.T) {
+	for _, rate := range videoRates {
+		for _, cost := range []int64{0, 6} { // tenths of a period a read costs
+			t.Run(fmt.Sprintf("%d/%d/cost%d", rate.Numerator, rate.Denominator, cost), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					period := ratePeriod(rate)
+					ring := &liveRing{start: time.Now(), rate: rate, size: 40, cost: period * time.Duration(cost) / 10}
+					readVideo(ring, 400, func(int) time.Duration { return period * 11 / 10 })
+
+					ring.mu.Lock()
+					defer ring.mu.Unlock()
+					if ring.tooLate != 0 {
+						t.Fatalf("the ring overwrote the reader's position %d times", ring.tooLate)
+					}
+					if ring.maxLag > videoMaxLag+1 {
+						t.Fatalf("reader fell %d grains behind the head, bound %d", ring.maxLag, videoMaxLag+1)
+					}
+				})
+			})
+		}
+	}
+}
+
 // A producer that commits in bursts, as a mirrored flow or a jittery source
 // does, leaves the head several grains ahead of a reader whose consumer
 // keeps up. None of those grains is skipped: the consumer drains the burst.
