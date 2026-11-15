@@ -734,6 +734,67 @@ func (f *failingRead) Next() (*DecodedFrame, error) {
 	return f.pcmIterator.Next()
 }
 
+// A transition completes on the tick transitionTicks after the one it
+// started on, the count a transition at an item's end is started by, at
+// every channel rate and every length of a whole number of milliseconds
+// up to 10 s, both on the channel's tick clock, which steps by its period
+// in whole nanoseconds, and on ticks placed on the exact grid. Where a
+// tick fell short of the transition's length on the stepped clock, it
+// blended one tick past the end of the clip it overlaps; a fixed
+// allowance for that ended it a tick early where a tick falls a few
+// microseconds short of the length, as at 119.88 and 239.76 fps.
+func TestScheduler_TransitionCompletesOnItsCountedTick(t *testing.T) {
+	for _, fps := range channelRates {
+		period := time.Duration(float64(time.Second) / fps) // as the channel's
+		clocks := map[string]func(i int) time.Duration{
+			"stepped": func(i int) time.Duration { return time.Duration(i) * period },
+			"grid":    func(i int) time.Duration { return time.Duration(math.Round(float64(i) * 1e9 / fps)) },
+		}
+		for name, at := range clocks {
+			for _, from := range []int{0, 37} {
+				for ms := int64(1); ms <= 10_000; ms++ {
+					n := transitionTicks(ms, fps)
+					elapsed := func(k int) time.Duration { return at(from+k) - at(from) }
+					if n > 1 && transitionDone(elapsed(n-1), n-1, ms) {
+						t.Fatalf("%.3f fps, %s clock from tick %d: %d ms completes on tick %d, not %d", fps, name, from, ms, n-1, n)
+					}
+					if !transitionDone(elapsed(n), n, ms) {
+						t.Fatalf("%.3f fps, %s clock from tick %d: %d ms has not completed on tick %d", fps, name, from, ms, n)
+					}
+				}
+			}
+		}
+	}
+
+	// The scheduler counts the ticks itself.
+	for _, fps := range channelRates {
+		period := time.Duration(float64(time.Second) / fps)
+		for ms := int64(1); ms <= 10_000; ms += 97 {
+			for _, d := range []int64{ms, 659} {
+				s := NewScheduler()
+				pl := schedPlaylist(schedClipItem("a", 0), schedClipItem("b", 0))
+				pl.Items[1].Transition = &TransitionConfig{Type: "mix", DurationMs: int(d)}
+				require.NoError(t, s.LoadPlaylist(pl))
+				s.Start()
+				now := time.Now()
+				s.Tick(now)
+				require.NoError(t, s.Next())
+				now = now.Add(period)
+				require.NotNil(t, s.Tick(now).Transition)
+				n := transitionTicks(d, fps)
+				for k := 1; ; k++ {
+					now = now.Add(period)
+					if s.Tick(now).Transition == nil {
+						require.Equal(t, n, k, "%.3f fps, %d ms: the tick it completes on", fps, d)
+						break
+					}
+					require.Less(t, k, n, "%.3f fps, %d ms: still blending", fps, d)
+				}
+			}
+		}
+	}
+}
+
 // A failure belongs to the item it was signalled for: an item the operator
 // moves to before the tick that would leave the failed one still ends at
 // its own natural end, and the handover from it is one (FromEnd).

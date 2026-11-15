@@ -150,7 +150,7 @@ func pcmClip(n int, fps float64, rate int, l, r float32, audible int64) pcmItera
 
 // The channel and clip rates the tests run at.
 var (
-	channelRates = []float64{24000.0 / 1001, 24, 25, 30000.0 / 1001, 30, 50, 60000.0 / 1001, 60, 100, 120, 240}
+	channelRates = []float64{24000.0 / 1001, 24, 25, 30000.0 / 1001, 30, 50, 60000.0 / 1001, 60, 100, 120000.0 / 1001, 120, 240000.0 / 1001, 240}
 	// A clip at another rate than the channel's: slower ones hold some
 	// pictures and hand out a picture's PCM on the next, faster ones skip
 	// some and hand out several pictures' PCM on one tick.

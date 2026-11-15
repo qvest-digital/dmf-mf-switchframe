@@ -94,6 +94,7 @@ type Scheduler struct {
 
 	// Transition state.
 	transStartTime  time.Time
+	transTicks      int // ticks since the one the transition started on
 	transDurationMs int64
 	transOutgoing   *PlaylistItem
 	transIncoming   *PlaylistItem
@@ -925,6 +926,7 @@ func (s *Scheduler) startTransition(now time.Time, outgoing *PlaylistItem, targe
 	s.transFromEnd = false
 	s.transTarget = target
 	s.transStartTime = now
+	s.transTicks = 0
 	s.transDurationMs = int64(tc.DurationMs)
 	s.state = SchedTransitioning
 
@@ -971,15 +973,21 @@ func (s *Scheduler) NextTransition() (*PlaylistItem, *TransitionConfig) {
 	return next, s.effectiveTransition(next)
 }
 
-// transitionSlack is how far short of its length a transition may have
-// run and count as complete: the channel's ticks come a period apart in
-// whole nanoseconds, short of a period at most rates, so the time of the
-// tick a transition ends on falls up to a nanosecond per tick short of its
-// end, and the transition would blend one tick more.
-const transitionSlack = 10 * time.Microsecond
+// transitionDone reports whether a transition of ms has completed on the
+// tick ticks after the one it started on, elapsed after it. The channel's
+// tick clock steps by its frame period in whole nanoseconds, up to a
+// nanosecond short of the period, so that tick's time falls up to ticks
+// nanoseconds short of where it is due: counted short, a transition whose
+// length is a whole number of periods would blend one tick more. A
+// transition completes on the tick transitionTicks after the one it
+// started on.
+func transitionDone(elapsed time.Duration, ticks int, ms int64) bool {
+	return elapsed+time.Duration(ticks) >= time.Duration(ms)*time.Millisecond
+}
 
 // transitionTicks is how many ticks at fps a transition of ms blends:
-// those its progress is below 1 on (see tickTransition).
+// those its progress is below 1 on (see tickTransition and
+// transitionDone).
 func transitionTicks(ms int64, fps float64) int {
 	if fps <= 0 {
 		return 0
@@ -1003,8 +1011,9 @@ func (s *Scheduler) effectiveTransition(nextItem *PlaylistItem) *TransitionConfi
 // tickTransition handles a tick while in the transitioning state.
 func (s *Scheduler) tickTransition(now time.Time) SchedulerDecision {
 	elapsed := now.Sub(s.transStartTime)
+	s.transTicks++
 	progress := float64(elapsed.Milliseconds()) / float64(s.transDurationMs)
-	if elapsed+transitionSlack >= time.Duration(s.transDurationMs)*time.Millisecond {
+	if transitionDone(elapsed, s.transTicks, s.transDurationMs) {
 		progress = 1
 	}
 	if progress < 0 {
