@@ -180,10 +180,11 @@ type audioTransitionHandler interface {
 	OnTransitionPosition(position float64)
 	OnTransitionComplete()
 	OnTransitionAbort(token uint64)
-	// RampToMute takes the program audio down from the gains it aired and
-	// mutes it once silent. The switcher calls it when an abort leaves the
-	// picture holding black.
-	RampToMute()
+	// AbortToBlack is OnTransitionAbort for an abort that leaves the
+	// picture holding black: it also takes the program audio down from the
+	// gains it aired and mutes it once silent, even when the token is
+	// stale.
+	AbortToBlack(token uint64)
 	SetProgramMute(muted bool)
 	SetStingerAudio(audio []float32, sampleRate, channels int)
 }
@@ -2580,9 +2581,10 @@ func (s *Switcher) abandonTransitionSetup(engine *transition.Engine, audioHandle
 	s.configMu.Unlock()
 	engine.Stop()
 	if audioHandler != nil {
-		audioHandler.OnTransitionAbort(audioToken)
 		if black {
-			audioHandler.RampToMute()
+			audioHandler.AbortToBlack(audioToken)
+		} else {
+			audioHandler.OnTransitionAbort(audioToken)
 		}
 	}
 	s.log.Warn("transition aborted", "type", transType, "reason", "pre-empted during setup")
@@ -2630,9 +2632,10 @@ func (s *Switcher) AbortTransition() {
 		s.log.Warn("transition aborted", "type", transType, "reason", "manual abort")
 
 		if audioHandler != nil {
-			audioHandler.OnTransitionAbort(audioToken)
 			if black {
-				audioHandler.RampToMute()
+				audioHandler.AbortToBlack(audioToken)
+			} else {
+				audioHandler.OnTransitionAbort(audioToken)
 			}
 		}
 		s.notifyStateChange(snapshot)
@@ -2846,8 +2849,7 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 			// FTB reverse aborted: the screen stays black. The audio goes
 			// down from the gains it aired and is muted once silent, also
 			// when a cut has made the abort's token stale.
-			audioHandler.OnTransitionAbort(audioToken)
-			audioHandler.RampToMute()
+			audioHandler.AbortToBlack(audioToken)
 		} else {
 			audioHandler.OnTransitionComplete()
 		}

@@ -238,7 +238,7 @@ type Mixer struct {
 
 	// Program mute: true while FTB is held (screen is black, audio is silent).
 	programMuted bool
-	// muteAtRampEnd is set while RampToMute takes every channel down to
+	// muteAtRampEnd is set while AbortToBlack takes every channel down to
 	// silence on a cut ramp: the program is muted when that ramp ends.
 	muteAtRampEnd       bool
 	unmuteFadeRemaining int // samples remaining in unmute fade-in ramp (0 = inactive)

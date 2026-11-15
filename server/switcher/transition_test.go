@@ -70,9 +70,11 @@ func (m *mockAudioTransHandler) OnTransitionAbort(token uint64) {
 	m.abortTokens = append(m.abortTokens, token)
 }
 
-func (m *mockAudioTransHandler) RampToMute() {
+func (m *mockAudioTransHandler) AbortToBlack(token uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.abortCount++
+	m.abortTokens = append(m.abortTokens, token)
 	m.programMuted = true
 }
 

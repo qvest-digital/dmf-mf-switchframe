@@ -325,10 +325,34 @@ func (m *Mixer) OnTransitionComplete() {
 func (m *Mixer) OnTransitionAbort(token uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	from, to, ok := m.abortTransitionLocked(token)
+	if !ok {
+		return
+	}
+	// Pulled back before any gain moved, as a T-bar pulled back to 0 at
+	// once leaves it, the channels are where the abort puts them: the
+	// incoming one goes off and the rest stay on. Otherwise a cut ramp
+	// takes each channel on from the gain it aired, so none steps.
+	if m.cutTargetsAiredLocked() {
+		m.deactivateQueuedLocked()
+		return
+	}
+	m.transCrossfadeActive = true
+	m.transCrossfadeFrom = to
+	m.transCrossfadeTo = from
+	m.transCrossfadeMode = Crossfade
+	m.startCutRampLocked()
+}
+
+// abortTransitionLocked clears the transition state token owns and
+// queues the channel the transition put on to go off. It returns the
+// transition's sources and whether token owned the state; a stale token
+// leaves the state alone. Caller must hold m.mu.
+func (m *Mixer) abortTransitionLocked(token uint64) (from, to string, ok bool) {
 	if uint64(m.transCrossfades.Load()) != token {
 		// Stale abort: the transition state currently in the mixer was
 		// established by a newer owner. Leave it untouched.
-		return
+		return "", "", false
 	}
 	// The incoming channel goes off if (and only if) OnTransitionStart was
 	// what activated it or kept it on. The transition never completed, so
@@ -337,7 +361,7 @@ func (m *Mixer) OnTransitionAbort(token uint64) {
 	// which is otherwise the only thing that deactivates it. Never the
 	// current program AFV source (e.g. a cut landed on that source
 	// mid-transition).
-	from, to := m.transCrossfadeFrom, m.transCrossfadeTo
+	from, to = m.transCrossfadeFrom, m.transCrossfadeTo
 	if key := m.transAbortActivated; key != "" && key != m.programAFVSource {
 		if _, ok := m.channels[key]; ok {
 			m.deactivateOnCompleteLocked(key)
@@ -358,47 +382,40 @@ func (m *Mixer) OnTransitionAbort(token uint64) {
 	m.stingerAudio = nil
 	m.stingerOffset = 0
 	m.stingerChannels = 0
-
-	// Pulled back before any gain moved, as a T-bar pulled back to 0 at
-	// once leaves it, the channels are where the abort puts them: the
-	// incoming one goes off and the rest stay on. Otherwise a cut ramp
-	// takes each channel on from the gain it aired, so none steps.
-	if m.cutTargetsAiredLocked() {
-		m.deactivateQueuedLocked()
-		return
-	}
-	m.transCrossfadeActive = true
-	m.transCrossfadeFrom = to
-	m.transCrossfadeTo = from
-	m.transCrossfadeMode = Crossfade
-	m.startCutRampLocked()
+	return from, to, true
 }
 
-// RampToMute takes the program to black: every channel ramps down from
-// the gain it aired to silence over a cut ramp, and the program is muted
-// as the ramp ends, or at once when every channel already airs silence.
-// Muted at once, the program would step from the gains aired to silence.
-// The switcher calls it when an abort leaves the picture holding black.
-// While the ramp runs, every cut ramp ends in silence, so neither a cut
-// nor a late or repeated abort of the fade from black takes the channels
-// back up. It does nothing on a muted program, or during a fade from
-// black, which a newer press started and which unmutes the program.
-func (m *Mixer) RampToMute() {
+// AbortToBlack aborts the transition token owns, as OnTransitionAbort
+// does, and takes the program to black in the same step: every channel
+// ramps down from the gain it aired to silence over a cut ramp, and the
+// program is muted as the ramp ends, or at once when every channel
+// already airs silence. The switcher calls it when an abort leaves the
+// picture holding black. One call under one lock, so no period airs the
+// abort's ramp back up before the ramp down; muted at once instead, the
+// program would step from the gains aired to silence.
+//
+// A stale token leaves the transition state alone and still takes the
+// program to black, so the mute follows the picture when a cut on black
+// reached the mixer first. While the ramp runs every cut ramp ends in
+// silence, and the ramp makes every older token stale, so neither a cut
+// nor a late abort takes the channels back up. It does nothing on a muted
+// program, or during a fade from black, which a newer press started and
+// which unmutes the program.
+func (m *Mixer) AbortToBlack(token uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.programMuted ||
-		m.transCrossfadeActive && m.transCrossfadeMode == FadeIn && m.cutFramesRemaining <= 0 {
+	m.abortTransitionLocked(token)
+	if m.programMuted || m.transCrossfadeActive && m.transCrossfadeMode == FadeIn {
 		return
 	}
 	m.muteAtRampEnd = true
+	m.transCrossfades.Add(1)
 	if m.cutTargetsAiredLocked() {
 		m.deactivateQueuedLocked()
 		m.setProgramMuteLocked(true)
 		return
 	}
 	m.transCrossfadeActive = true
-	m.transCrossfadeFrom = ""
-	m.transCrossfadeTo = ""
 	m.transCrossfadeMode = Crossfade
 	m.startCutRampLocked()
 }

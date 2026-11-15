@@ -133,9 +133,9 @@ func (m *interleavedMixer) OnTransitionAbort(token uint64) {
 	m.Mixer.OnTransitionAbort(token)
 }
 
-func (m *interleavedMixer) RampToMute() {
+func (m *interleavedMixer) AbortToBlack(token uint64) {
 	m.between()
-	m.Mixer.RampToMute()
+	m.Mixer.AbortToBlack(token)
 }
 
 // airedPeriod is one period of the gain a source aired at.
@@ -483,19 +483,22 @@ func TestSwitcherActionsNeverStepTheAudio(t *testing.T) {
 	// abortFade aborts the fade under way after the given share of its
 	// ticks, by AbortTransition or, as a T-bar pulled back to 0 or the
 	// frame watchdog does, from the transition engine, and checks that it
-	// was still running.
-	abortFade := func(r *mixRig, ticks func(n int) int, engine bool) {
+	// was still running. It returns how many samples aired before the
+	// abort.
+	abortFade := func(r *mixRig, ticks func(n int) int, engine bool) int {
 		n := r.startFade()
 		r.ticks(ticks(n))
 		hs := r.s.hotState.Load()
 		if !hs.state.isInTransition() || hs.transEngine == nil {
 			r.t.Fatalf("the fade ended before its abort, after %d of %d ticks", ticks(n), n)
 		}
+		gain, _ := r.gains()
 		if engine {
 			hs.transEngine.Abort()
 		} else {
 			r.s.AbortTransition()
 		}
+		return len(gain)
 	}
 	first := func(int) int { return 1 }
 	half := func(n int) int { return n / 2 }
@@ -504,10 +507,20 @@ func TestSwitcherActionsNeverStepTheAudio(t *testing.T) {
 		return func(r *mixRig) {
 			r.fadeToBlack(StateFTB)
 			r.ticks(1)
-			abortFade(r, ticks, engine)
+			at := abortFade(r, ticks, engine)
 			r.ticks(rampPeriods + 2)
 			if !r.m.IsProgramMuted() {
 				r.t.Fatal("the program is not muted after the aborted fade from black")
+			}
+			// The picture is black from the abort on, so no source rises
+			// after it, also when the sync loop produces a period while
+			// the switcher hands the abort to the mixer.
+			gain, _ := r.gains()
+			for i := at; i < len(gain); i++ {
+				if gain[i] > gain[at-1]+1e-9 {
+					r.t.Fatalf("%s: sample %d rises to %.6f under black, from %.6f at the abort",
+						r.measured, i, gain[i], gain[at-1])
+				}
 			}
 		}
 	}
@@ -649,7 +662,8 @@ func TestSwitcherActionsNeverStepTheAudio(t *testing.T) {
 }
 
 // hookedFadeMixer is the mixer with hooks run once each: before and after
-// OnTransitionStart and OnTransitionAbort.
+// OnTransitionStart, and before and after an abort, by OnTransitionAbort
+// or AbortToBlack.
 type hookedFadeMixer struct {
 	*audio.Mixer
 	beforeStart, afterStart, beforeAbort, afterAbort func()
@@ -676,6 +690,12 @@ func (m *hookedFadeMixer) OnTransitionAbort(token uint64) {
 	runOnce(&m.afterAbort)
 }
 
+func (m *hookedFadeMixer) AbortToBlack(token uint64) {
+	runOnce(&m.beforeAbort)
+	m.Mixer.AbortToBlack(token)
+	runOnce(&m.afterAbort)
+}
+
 // A fade from black can be cut short while it is set up, and its abort
 // can reach the mixer after a cut has: the program audio follows the
 // picture either way. A cut that pre-empts the setup puts the picture up,
@@ -684,8 +704,9 @@ func (m *hookedFadeMixer) OnTransitionAbort(token uint64) {
 // leaves black, so the program goes down and is muted. An aborted fade
 // whose abort reaches the mixer after a cut made on black, its token stale
 // then, leaves black too. A fade from black pressed again before the
-// aborted one has taken the program down brings the picture up, and the
-// program with it. No source steps on the way.
+// abort of the last one reaches the mixer, or after it, while the program
+// goes down, brings the picture up, and the program with it. No source
+// steps on the way.
 func TestFadeFromBlackPreEmptedFollowsThePicture(t *testing.T) {
 	t.Parallel()
 	scenarios := []struct {
@@ -717,7 +738,14 @@ func TestFadeFromBlackPreEmptedFollowsThePicture(t *testing.T) {
 				r.tick()
 			}
 		}, true, StateFTB, "", nil},
-		{"ftb_in_ahead_of_the_ramp_to_mute", func(r *mixRig, m *hookedFadeMixer) {
+		{"ftb_in_ahead_of_the_abort", func(r *mixRig, m *hookedFadeMixer) {
+			m.beforeAbort = func() {
+				if err := r.s.FadeToBlack(r.t.Context()); err != nil {
+					r.t.Error(err)
+				}
+			}
+		}, true, StateIdle, "mxl:a", nil},
+		{"ftb_in_after_the_abort", func(r *mixRig, m *hookedFadeMixer) {
 			m.afterAbort = func() {
 				if err := r.s.FadeToBlack(r.t.Context()); err != nil {
 					r.t.Error(err)
@@ -764,6 +792,60 @@ func TestFadeFromBlackPreEmptedFollowsThePicture(t *testing.T) {
 								want = 1
 							}
 							r.checkContinuous(want)
+						}()
+					}
+				})
+			}
+		}
+	}
+}
+
+// A fade from black pressed again before the abort of the last one
+// reaches the mixer leaves that abort nothing to take down. Aborted in
+// turn, by the operator or from the transition engine, the newer fade
+// takes the program back to black and mutes it, with no step.
+func TestFadeFromBlackPressedAgainThenAbortedEndsBlack(t *testing.T) {
+	t.Parallel()
+	for _, f := range mixFormats() {
+		for _, afv := range afvModes() {
+			for _, engine := range []bool{false, true} {
+				name := fmt.Sprintf("%dHz_%d_%d/afv=%v/engine=%v", f.sr, f.fps.Num, f.fps.Den, afv, engine)
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+					for _, measured := range mixSources {
+						func() {
+							r := newMixRig(t, f.fps, f.sr, measured, afv, false)
+							defer r.close()
+							r.fadeToBlack(StateFTB)
+							r.ticks(1)
+							m := &hookedFadeMixer{Mixer: r.m}
+							m.beforeAbort = func() {
+								if err := r.s.FadeToBlack(r.t.Context()); err != nil {
+									r.t.Error(err)
+								}
+							}
+							r.s.SetMixer(m)
+							n := r.startFade()
+							r.ticks(n / 2)
+							r.s.hotState.Load().transEngine.Abort()
+							r.ticks(2)
+							hs := r.s.hotState.Load()
+							if hs.state != StateFTBReversing || hs.transEngine == nil {
+								t.Fatalf("the newer fade from black is not running: state %v", hs.state)
+							}
+							if engine {
+								hs.transEngine.Abort()
+							} else {
+								r.s.AbortTransition()
+							}
+							r.ticks(rampPeriods + 2)
+							if st := r.s.hotState.Load().state; st != StateFTB {
+								t.Fatalf("the switcher ends in state %v, want %v", st, StateFTB)
+							}
+							if !r.m.IsProgramMuted() {
+								t.Fatal("the program is not muted, with the picture black")
+							}
+							r.checkContinuous(0)
 						}()
 					}
 				})
