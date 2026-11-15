@@ -1382,6 +1382,9 @@ func (c *Channel) tick(now time.Time) bool {
 		}
 	}
 	if decision.Transition != nil {
+		// The outgoing item's secondary events run on through the
+		// transition, which overlaps its end, until it commits.
+		c.tickSecondaryEvents(decision.Transition.Outgoing, secScheduler, now)
 		frame = c.transitionFrame(decision.Transition)
 	} else if decision.IsIdle {
 		frame = c.idleLoop.NextFrame()
@@ -1418,6 +1421,24 @@ func (c *Channel) tick(now time.Time) bool {
 	}
 
 	return false
+}
+
+// endTransitionCuts reports whether the transition the item at the
+// scheduler's cursor ends into goes out as a cut, as transitionFrame puts
+// it out: the incoming item is a live source aliased on the GPU, which has
+// no picture here to blend, or the compositor cannot blend its type.
+func (c *Channel) endTransitionCuts() bool {
+	next, tc := c.scheduler.NextTransition()
+	if next == nil || tc == nil {
+		return false
+	}
+	if !c.compositor.Blends(tc.Type) {
+		return true
+	}
+	c.mu.Lock()
+	alias := c.gpuAlias
+	c.mu.Unlock()
+	return next.Type == ItemLive && alias != nil && alias(next.Source)
 }
 
 // transitionFrame returns the frame of a transition in progress: the
@@ -1476,7 +1497,7 @@ func (c *Channel) itemFrame(decision SchedulerDecision, secScheduler *SecondaryE
 		// where the pre-roll left off instead of reopening from frame 0.
 		c.promoteIncomingClip(item)
 		// Track item changes for as-run logging and secondary events.
-		c.handleItemChange(item, secScheduler, asRunFn, channelID, now)
+		c.handleItemChange(item, decision.FromEnd, secScheduler, asRunFn, channelID, now)
 		if f := c.frameForItem(item); f != nil || frame == nil {
 			frame = f
 		}
@@ -1546,8 +1567,9 @@ func hasAudio(f *DecodedFrame) bool {
 }
 
 // handleItemChange detects when the scheduler moves to a new item and fires
-// as-run events and secondary event scheduling.
-func (c *Channel) handleItemChange(item *PlaylistItem, secScheduler *SecondaryEventScheduler, asRunFn func(AsRunEvent), channelID int, now time.Time) {
+// as-run events and secondary event scheduling. fromEnd is the decision's
+// FromEnd: the item left ended at its natural end.
+func (c *Channel) handleItemChange(item *PlaylistItem, fromEnd bool, secScheduler *SecondaryEventScheduler, asRunFn func(AsRunEvent), channelID int, now time.Time) {
 	c.mu.Lock()
 	prevItemID := c.secondaryItemID
 	c.mu.Unlock()
@@ -1556,6 +1578,14 @@ func (c *Channel) handleItemChange(item *PlaylistItem, secScheduler *SecondaryEv
 		// Same item — tick secondary events if applicable.
 		c.tickSecondaryEvents(item, secScheduler, now)
 		return
+	}
+
+	// An item that ended at its natural end fires the events due by its end
+	// before they are dropped: one ending into a transition hands over on
+	// its last tick, which starts before that end. Left by a move, it fires
+	// none it had not reached.
+	if fromEnd && secScheduler != nil && prevItemID != "" {
+		secScheduler.TickEnd()
 	}
 
 	// New item — end the old one, start the new one.
@@ -1773,11 +1803,11 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 					Message:   fmt.Sprintf("asset open failed: %v", err),
 				})
 			}
-			// Signal complete so scheduler advances. Done while holding c.mu
+			// Signal it failed so scheduler advances. Done while holding c.mu
 			// so a concurrent SeekToItem (which holds c.mu while it calls
 			// scheduler.SetCursor) cannot interleave and have this stale
 			// signal advance the cursor past the freshly-seeked item.
-			c.scheduler.SignalItemComplete()
+			c.scheduler.SignalItemFailed()
 			c.itemEnded = true
 			c.mu.Unlock()
 			return nil
@@ -1831,11 +1861,25 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 
 	targetSourceFrame := int(float64(outputFrame) * clipFPS / pipelineFPS)
 
+	cuts := total > 0 && c.endTransitionCuts()
+
 	// Always increment output frame counter — unless a concurrent SeekToItem
 	// replaced the iterator since we captured it (the seek reset the counter).
 	c.mu.Lock()
 	if c.clipIter == iter {
 		c.clipOutputFrame++
+		if total > 0 {
+			// The ticks from the next one on whose whole period the clip's
+			// pictures and sound still cover, for a transition at its end
+			// to end within them. A transition that goes out as a cut
+			// starts once the clip has ended instead: overlapping it, the
+			// cut would take the clip off before its end.
+			left := 0
+			if !cuts {
+				left = int(math.Floor(float64(total)*pipelineFPS/clipFPS+1e-9)) - c.clipOutputFrame
+			}
+			c.scheduler.SignalTicksLeft(item.ID, left, pipelineFPS)
+		}
 	}
 	c.mu.Unlock()
 
@@ -1963,7 +2007,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem, rewound bool) *DecodedFrame 
 		// a concurrent SeekToItem cannot interleave between check and signal.
 		c.mu.Lock()
 		if c.clipIter == iter {
-			c.scheduler.SignalItemComplete()
+			c.scheduler.SignalItemFailed()
 			c.itemEnded = true
 		}
 		lf := c.clipLastFrame

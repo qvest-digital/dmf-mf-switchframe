@@ -6,10 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal/video"
@@ -561,6 +564,8 @@ func TestFileFrameIterator_DrainableDecoder(t *testing.T) {
 	// Test that drain phase works with a DrainableDecoder.
 	// Feed 3 frames where the first 2 return "buffering", then the 3rd
 	// returns decoded output. After all are fed, drain returns 2 more frames.
+	// The pictures come out in presentation order, each with its own PTS:
+	// the first is picture 0, put out on the third frame fed.
 	mock := &mockDrainableDecoder{
 		width:       320,
 		height:      240,
@@ -590,8 +595,8 @@ func TestFileFrameIterator_DrainableDecoder(t *testing.T) {
 	if f == nil {
 		t.Fatal("Next() 1 returned nil")
 	}
-	if f.PTS != 6000 {
-		t.Errorf("frame 1 PTS = %d, want 6000 (first output from frame 2)", f.PTS)
+	if f.PTS != 0 {
+		t.Errorf("frame 1 PTS = %d, want 0 (picture 0, put out on frame 2)", f.PTS)
 	}
 
 	// Next two calls should drain.
@@ -602,6 +607,9 @@ func TestFileFrameIterator_DrainableDecoder(t *testing.T) {
 	if f2 == nil {
 		t.Fatal("Next() 2 returned nil, expected drained frame")
 	}
+	if f2.PTS != 3000 {
+		t.Errorf("frame 2 PTS = %d, want 3000", f2.PTS)
+	}
 
 	f3, err := iter.Next()
 	if err != nil {
@@ -609,6 +617,9 @@ func TestFileFrameIterator_DrainableDecoder(t *testing.T) {
 	}
 	if f3 == nil {
 		t.Fatal("Next() 3 returned nil, expected drained frame")
+	}
+	if f3.PTS != 6000 {
+		t.Errorf("frame 3 PTS = %d, want 6000", f3.PTS)
 	}
 
 	// Should be done now.
@@ -2208,5 +2219,120 @@ func TestEstimateFPSAtEveryRate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// gopDecoder puts pictures out in presentation order after holding depth of
+// them, as a decoder of B-frames does, and every IDR starts pictures shown
+// after all it holds. A frame's last byte is its picture's number, and the
+// picture it puts out is that byte.
+type gopDecoder struct {
+	depth int
+	epoch int
+	buf   []int
+}
+
+func (d *gopDecoder) Decode(h []byte) ([]byte, int, int, error) {
+	if h[4] == 0x65 && len(d.buf) > 0 {
+		d.epoch++
+	}
+	d.buf = append(d.buf, d.epoch<<8|int(h[len(h)-1]))
+	if len(d.buf) <= d.depth {
+		return nil, 0, 0, fmt.Errorf("buffering")
+	}
+	return d.pop(), 1, 1, nil
+}
+
+func (d *gopDecoder) SendEOS() error { return nil }
+
+func (d *gopDecoder) ReceiveFrame() ([]byte, int, int, error) {
+	if len(d.buf) == 0 {
+		return nil, 0, 0, fmt.Errorf("drained")
+	}
+	return d.pop(), 1, 1, nil
+}
+
+func (d *gopDecoder) pop() []byte {
+	i := slices.Index(d.buf, slices.Min(d.buf))
+	p := d.buf[i]
+	d.buf = slices.Delete(d.buf, i, i+1)
+	return []byte{byte(p)}
+}
+
+func (d *gopDecoder) Close() {}
+
+// gopPTS is the PTS of picture p of a gopFile starting at PTS first: the
+// 33-bit PTS wraps.
+func gopPTS(first int64, p int) int64 { return (first + int64(p)*3000) % (1 << 33) }
+
+// gopFile is n pictures at 30 fps from PTS first in closed GOPs of six,
+// each opening on an IDR, in decode order I P B B P B, decoded by a
+// gopDecoder holding depth pictures.
+func gopFile(n, depth int, first int64) *FileFrameIterator {
+	var enc []encodedFrame
+	for g := 0; g < n; g += 6 {
+		for _, p := range []int{g, g + 3, g + 1, g + 2, g + 5, g + 4} {
+			if p >= n {
+				continue
+			}
+			nal := byte(0x41)
+			if p == g {
+				nal = 0x65
+			}
+			enc = append(enc, encodedFrame{wireData: []byte{0, 0, 0, 1, nal, byte(p)}, pts: gopPTS(first, p), isKeyframe: p == g})
+		}
+	}
+	return newFileFrameIterator(enc, nil, &gopDecoder{depth: depth},
+		func() (VideoDecoder, error) { return &gopDecoder{depth: depth}, nil })
+}
+
+// Each picture of a file with B-frames carries its own PTS, in order, from
+// the start, after a seek and on every pass of a loop: the decoder puts
+// them out in presentation order, and the PTS of the frame it was fed last
+// is another picture's. Across a wrap of the 33-bit PTS each still
+// carries its own. Trimming counts the pictures by their PTS.
+func TestFileFrameIteratorLabelsPicturesWithTheirOwnPTS(t *testing.T) {
+	const n = 28
+	// pass reads pictures until the pass ends, checking each one's PTS,
+	// and returns the pictures it read.
+	pass := func(t *testing.T, it *FileFrameIterator, first int64) []int {
+		t.Helper()
+		var got []int
+		for {
+			f, err := it.Next()
+			require.NoError(t, err)
+			if f == nil {
+				return got
+			}
+			p := int(f.YUV[0])
+			require.Equal(t, gopPTS(first, p), f.PTS, "picture %d, the %d-th out", p, len(got))
+			got = append(got, p)
+		}
+	}
+	seq := func(from, to int) []int {
+		var s []int
+		for p := from; p < to; p++ {
+			s = append(s, p)
+		}
+		return s
+	}
+	for _, first := range []int64{900_000, 1<<33 - 10*3000} {
+		for _, depth := range []int{1, 2, 3} {
+			t.Run(fmt.Sprintf("from %d depth %d", first, depth), func(t *testing.T) {
+				it := gopFile(n, depth, first)
+				defer it.Close()
+				require.Equal(t, seq(0, n), pass(t, it, first), "the pictures of a pass")
+
+				require.NoError(t, it.Seek(15))
+				require.Equal(t, seq(12, n), pass(t, it, first), "the pictures after a seek into the third GOP")
+
+				require.NoError(t, it.Seek(0))
+				it.SetLoop(true)
+				for k := range 3 {
+					require.Equal(t, seq(0, n), pass(t, it, first), "the pictures of loop pass %d", k)
+					require.NoError(t, it.Rewind())
+				}
+			})
+		}
 	}
 }

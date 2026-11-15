@@ -150,7 +150,7 @@ func pcmClip(n int, fps float64, rate int, l, r float32, audible int64) pcmItera
 
 // The channel and clip rates the tests run at.
 var (
-	channelRates = []float64{24000.0 / 1001, 24, 25, 30000.0 / 1001, 30, 50, 60000.0 / 1001, 60, 100, 120, 240}
+	channelRates = []float64{24000.0 / 1001, 24, 25, 30000.0 / 1001, 30, 50, 60000.0 / 1001, 60, 100, 120000.0 / 1001, 120, 240000.0 / 1001, 240}
 	// A clip at another rate than the channel's: slower ones hold some
 	// pictures and hand out a picture's PCM on the next, faster ones skip
 	// some and hand out several pictures' PCM on one tick.
@@ -233,6 +233,68 @@ func TestPlayoutTransitionCrossfadesThePCMAcrossClipRates(t *testing.T) {
 	}
 }
 
+// A transition at an item's natural end runs over the item's last
+// pictures and their sound and ends on the last one, so it airs as the
+// transition a Next mid-item airs: each item at the curve, without a gap
+// or a step, and the outgoing item's pictures moving to the end. It used
+// to start once the item had run out, and mixed from its last picture,
+// held, while its sound had stopped at full level: the program went
+// silent for a tick and the incoming item faded in from nothing.
+func TestPlayoutTransitionAtItemEndCrossfadesThePCM(t *testing.T) {
+	cases := []pcmCase{
+		{name: "mix", typ: "mix"},
+		{name: "dip", typ: "dip"},
+		{name: "outgoing silent", typ: "mix", out: noAudio},
+		{name: "outgoing played out", typ: "mix", out: audioToTransition},
+		{name: "incoming silent", typ: "mix", inSilent: true},
+		{name: "one picture", typ: "mix", pictures: 1},
+	}
+	// Each also out of a clip trimmed to in and out points, whose length
+	// the channel counts from them.
+	for _, tc := range cases[:len(cases):len(cases)] {
+		tc.name, tc.trim = "trimmed "+tc.name, true
+		cases = append(cases, tc)
+	}
+	rates := []int{44100, 48000}
+	if raceDetector {
+		rates = rates[1:]
+	}
+	for _, tc := range cases {
+		for _, fps := range channelRates {
+			for _, rate := range rates {
+				t.Run(fmt.Sprintf("%s/%.3ffps/%dHz", tc.name, fps, rate), func(t *testing.T) {
+					tc := tc
+					tc.channelFPS, tc.clipFPS, tc.rate, tc.pre, tc.atEnd = fps, fps, rate, 6, true
+					checkTransitionPCM(t, tc)
+				})
+			}
+		}
+	}
+	if raceDetector {
+		cases = []pcmCase{cases[0], cases[len(cases)/2]}
+	}
+	for _, r := range append(clipOnChannelRates, unevenClipOnChannelRates...) {
+		clip, channel := r[0], r[1]
+		uneven := slices.Contains(unevenClipOnChannelRates, r)
+		for _, tc := range cases {
+			if tc.pictures == 1 && clip < channel {
+				// A clip slower than the channel hands its last picture's
+				// sound out whole on the picture's first tick, at full level
+				// before a transition shorter than that picture starts, and
+				// nothing fades it then.
+				continue
+			}
+			for phase := range clipCycle(clip, channel) {
+				t.Run(fmt.Sprintf("%.3fon%.3f/%s/tick%d", clip, channel, tc.name, phase), func(t *testing.T) {
+					tc := tc
+					tc.channelFPS, tc.clipFPS, tc.rate, tc.pre, tc.uneven, tc.atEnd = channel, clip, 48000, 6+phase, uneven, true
+					checkTransitionPCM(t, tc)
+				})
+			}
+		}
+	}
+}
+
 // clipCycle is how many channel ticks the pictures of a clip at clip fps
 // take to fall on the channel's at channel fps the same way again.
 func clipCycle(clip, channel float64) int {
@@ -262,6 +324,59 @@ type pcmCase struct {
 	pre                 int // the tick the transition starts on
 	pictures            int // the transition's length, 400 ms if 0
 	uneven              bool
+	// atEnd: no Next, the outgoing item ends on its own about where a
+	// transition started on tick pre would end.
+	atEnd bool
+	// trim: the outgoing item plays a stretch of its clip, between an in
+	// and an out point.
+	trim bool
+}
+
+// trimmedTo gives item in and out points that leave the pictures of a
+// clip at fps from first to first+n, and returns the clip's picture
+// count: a second past the out point.
+func trimmedTo(item *PlaylistItem, fps float64, first, n int) int {
+	pts := func(i int) int64 { return int64(math.Round(float64(i) * 90000 / fps)) }
+	// The in point falls after the PTS of the picture before first, at the
+	// latest on first's, the out point likewise after the last one kept.
+	item.InPointMs = pts(first) / 90
+	item.OutPointMs = pts(first+n-1)/90 + 1
+	return first + n + int(math.Ceil(fps))
+}
+
+// trimLead is the first picture, 200 ms in at least, that a clip at fps
+// with rate Hz sound can be trimmed to on a whole sample and a whole
+// 90 kHz tick, so the trimmed item's sound starts on its picture as
+// exactly as an untrimmed one's.
+func trimLead(fps float64, rate int) int {
+	whole := func(x float64) bool { return math.Abs(x-math.Round(x)) < 1e-6 }
+	lead := int(math.Ceil(0.2 * fps))
+	for !whole(float64(lead)*float64(rate)/fps) || !whole(float64(lead)*90000/fps) {
+		lead++
+	}
+	return lead
+}
+
+// numbered gives each picture of it a picture of its own, which tells the
+// side, side, and the picture's index.
+func numbered(it pcmIterator, side byte) pcmIterator {
+	frames := make([]DecodedFrame, len(it.frames))
+	copy(frames, it.frames)
+	for i := range frames {
+		yuv := make([]byte, len(frames[i].YUV))
+		yuv[0], yuv[1], yuv[2] = side, byte(i), byte(i>>8)
+		frames[i].YUV = yuv
+	}
+	return pcmIterator{NewSliceIterator(frames), it.fps}
+}
+
+// pictureOf returns the index of the picture yuv numbered gave side, -1
+// for none.
+func pictureOf(yuv []byte, side byte) int {
+	if len(yuv) < 3 || yuv[0] != side {
+		return -1
+	}
+	return int(yuv[1]) | int(yuv[2])<<8
 }
 
 func checkTransitionPCM(t *testing.T, tc pcmCase) {
@@ -271,13 +386,46 @@ func checkTransitionPCM(t *testing.T, tc pcmCase) {
 	if tc.pictures > 0 {
 		durMs = int(math.Ceil(float64(tc.pictures) * 1000 / fps))
 	}
+	// The channel's tick i shows the picture of sample tickAt(i) on, at
+	// tickTime(i).
+	tickAt := func(i int) int64 { return int64(math.Round(float64(i) * float64(rate) / fps)) }
+	tickTime := func(i int) time.Duration { return time.Duration(math.Round(float64(i) * 1e9 / fps)) }
+	// The channel shows the clip picture clipPicture(i) on tick i.
+	clipPicture := func(i int) int { return int(float64(i) * tc.clipFPS / fps) }
+	outPictures, lastOut := 0, -1
+	if tc.atEnd {
+		// A picture more than the transition takes, so the item airs a
+		// tick at least before it starts.
+		outPictures = clipPicture(pre) + 1 + int(float64(durMs)*tc.clipFPS/1000)
+		// The last tick whose whole period the outgoing item's pictures,
+		// and so its sound, still cover.
+		lastOut = int(math.Floor(float64(outPictures)*fps/tc.clipFPS+1e-9)) - 1
+		// The transition starts on the first tick from which it completes,
+		// on the first tick durMs after it starts, by lastOut.
+		pre = 0
+		for tickTime(lastOut-1)-tickTime(pre) >= time.Duration(durMs)*time.Millisecond {
+			pre++
+		}
+	}
 	ticks := pre + int(math.Ceil(float64(durMs)*fps/1000)) + post
 	a, b := clipItem("a"), clipItem("b")
 	b.Transition = &TransitionConfig{Type: tc.typ, DurationMs: durMs}
 	pictures := int(float64(ticks+4)*tc.clipFPS/fps) + 4
-	// The channel's tick i shows the picture of sample tickAt(i) on.
-	tickAt := func(i int) int64 { return int64(math.Round(float64(i) * float64(rate) / fps)) }
+	if !tc.atEnd {
+		outPictures = pictures
+	}
+	// The outgoing item's first picture and first sample, in its clip.
+	lead, leadSample, clipPictures := 0, int64(0), outPictures
+	if tc.trim {
+		lead = trimLead(tc.clipFPS, rate)
+		leadSample = int64(math.Round(float64(lead) * float64(rate) / tc.clipFPS))
+		clipPictures = trimmedTo(&a, tc.clipFPS, lead, outPictures)
+	}
 	outAudible := map[audioTo]int64{audioThroughout: math.MaxInt64, noAudio: 0, audioToTransition: tickAt(pre)}[tc.out]
+	clipAudible := outAudible
+	if tc.out == audioToTransition {
+		clipAudible += leadSample
+	}
 	inAudible := int64(math.MaxInt64)
 	if tc.inSilent {
 		inAudible = 0
@@ -285,13 +433,16 @@ func checkTransitionPCM(t *testing.T, tc pcmCase) {
 	ch := NewChannel(1, ChannelConfig{
 		AllowedLocalPrefixes: []string{"/"},
 		AssetProvider: pcmAssets{
-			a.AssetURI: pcmClip(pictures, tc.clipFPS, rate, 1, 0, outAudible),
-			b.AssetURI: pcmClip(pictures, tc.clipFPS, rate, 0, 1, inAudible),
+			a.AssetURI: numbered(pcmClip(clipPictures, tc.clipFPS, rate, 1, 0, clipAudible), 'a'),
+			b.AssetURI: numbered(pcmClip(pictures, tc.clipFPS, rate, 0, 1, inAudible), 'b'),
 		},
 		Width: 16, Height: 16, FPS: fps,
 	})
 	progress := math.NaN()
-	ch.compositor = NewCompositor(16, 16, func(_, _, _ []byte, _, _ int, p float32, _ string) { progress = float64(p) })
+	outPic, inPic := -1, -1
+	ch.compositor = NewCompositor(16, 16, func(out, in, _ []byte, _, _ int, p float32, _ string) {
+		progress, outPic, inPic = float64(p), pictureOf(out, 'a'), pictureOf(in, 'b')
+	})
 	ch.SetRawVideoOutput(func([]byte, int, int, int64, bool) {})
 
 	// The stream as the mixer reads it: a chunk that continues the one
@@ -327,17 +478,21 @@ func checkTransitionPCM(t *testing.T, tc pcmCase) {
 	ch.scheduler.Start()
 	ch.mu.Unlock()
 	t0 := time.Now()
-	var prog []float64 // per tick, NaN where the pictures are not blended
-	var streamed []int // per tick, the samples of the stream out after it
-	before := 0        // the samples out before the transition
+	var prog []float64        // per tick, NaN where the pictures are not blended
+	var outPics, inPics []int // per tick, the pictures blended
+	var streamed []int        // per tick, the samples of the stream out after it
+	before := 0               // the samples out before the transition
 	for tick = 0; tick < ticks; tick++ {
 		if tick == pre {
-			require.NoError(t, ch.Next())
+			if !tc.atEnd {
+				require.NoError(t, ch.Next())
+			}
 			before = len(l)
 		}
-		progress = math.NaN()
-		ch.tick(t0.Add(time.Duration(math.Round(float64(tick) * 1e9 / fps))))
+		progress, outPic, inPic = math.NaN(), -1, -1
+		ch.tick(t0.Add(tickTime(tick)))
 		prog = append(prog, progress)
+		outPics, inPics = append(outPics, outPic), append(inPics, inPic)
 		streamed = append(streamed, len(l))
 	}
 	first, last := -1, -1
@@ -349,8 +504,18 @@ func checkTransitionPCM(t *testing.T, tc pcmCase) {
 			last = i
 		}
 	}
-	require.Equal(t, pre, first, "the transition starts on the Next")
+	require.Equal(t, pre, first, "the transition starts on the Next, or at an item's end on the first tick its last picture falls within")
 	require.Less(t, last+1, ticks, "the transition completes")
+	require.Equal(t, 0, inPics[first], "the incoming item's first picture opens the transition")
+	if tc.atEnd {
+		// The outgoing item's pictures go on under the transition, each on
+		// its tick, none held, and it lasts through the tick the
+		// transition completes on, where its sound fades out.
+		require.Equal(t, lastOut, last+1, "the transition completes on the outgoing item's last tick")
+		for i := first; i <= last; i++ {
+			require.Equal(t, lead+clipPicture(i), outPics[i], "tick %d: the outgoing item's picture", i)
+		}
+	}
 
 	// knot is the last sample of tick i's picture, the tick's gains, as
 	// stream positions run from the picture of firstTick.
@@ -448,8 +613,8 @@ func checkTransitionPCM(t *testing.T, tc pcmCase) {
 		require.InDelta(t, 0, l[len(l)-1], 1e-6, "the outgoing item's last sample")
 		return
 	}
-	clipPicture := int(math.Ceil(float64(rate) / tc.clipFPS))
-	require.LessOrEqual(t, len(l), knot(ticks-1)+1+clipPicture+1, "the incoming item's sound runs ahead of the last tick")
+	clipPeriod := int(math.Ceil(float64(rate) / tc.clipFPS))
+	require.LessOrEqual(t, len(l), knot(ticks-1)+1+clipPeriod+1, "the incoming item's sound runs ahead of the last tick")
 	for k := end; k < len(l); k++ {
 		if math.Abs(float64(l[k])) > maxStep+1e-6 || math.Abs(float64(r[k])-1) > maxStep+1e-6 {
 			t.Fatalf("sample %d after the transition: outgoing %v, incoming %v", k, l[k], r[k])
@@ -545,7 +710,13 @@ type pcmChunk struct {
 // recording its PCM output into chunks with the tick it went out on.
 func pcmChannel(t *testing.T, assets AssetProvider, items ...PlaylistItem) (ch *Channel, tick func(i int), chunks *[]pcmChunk) {
 	t.Helper()
-	ch = NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: assets, Width: 16, Height: 16, FPS: 50})
+	return pcmChannelAt(t, 50, assets, items...)
+}
+
+// pcmChannelAt is pcmChannel at fps.
+func pcmChannelAt(t *testing.T, fps float64, assets AssetProvider, items ...PlaylistItem) (ch *Channel, tick func(i int), chunks *[]pcmChunk) {
+	t.Helper()
+	ch = NewChannel(1, ChannelConfig{AllowedLocalPrefixes: []string{"/"}, AssetProvider: assets, Width: 16, Height: 16, FPS: fps})
 	ch.compositor = NewCompositor(16, 16, func(_, _, _ []byte, _, _ int, _ float32, _ string) {})
 	ch.SetRawVideoOutput(func([]byte, int, int, int64, bool) {})
 	var out []pcmChunk
@@ -561,7 +732,7 @@ func pcmChannel(t *testing.T, assets AssetProvider, items ...PlaylistItem) (ch *
 	t0 := time.Now()
 	return ch, func(i int) {
 		at = i
-		ch.tick(t0.Add(time.Duration(i) * 20 * time.Millisecond))
+		ch.tick(t0.Add(time.Duration(math.Round(float64(i) * 1e9 / fps))))
 	}, &out
 }
 

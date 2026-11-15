@@ -265,16 +265,33 @@ func TestChannel_Preroll_ClipEndCutsOnTheSameTick(t *testing.T) {
 	}
 }
 
-// A clip that ends into a transition starts the transition on the same
-// tick: that tick blends the incoming clip's first frame and carries its
-// audio, rather than showing the outgoing clip's last frame once more.
+// unknownLengthProvider opens the assets of its slowProvider as sources
+// that do not know their length.
+type unknownLengthProvider struct{ *slowProvider }
+
+func (p unknownLengthProvider) Open(uri string) (FrameIterator, error) {
+	it, err := p.slowProvider.Open(uri)
+	if err != nil {
+		return nil, err
+	}
+	return unknownLength{it}, nil
+}
+
+type unknownLength struct{ FrameIterator }
+
+func (unknownLength) TotalFrames() int { return -1 }
+
+// A clip whose source does not know its length, ending into a transition,
+// starts the transition on the tick it ends: that tick already blends the
+// incoming clip's first frame and carries its audio. A clip of known
+// length starts it before it ends instead.
 func TestChannel_Preroll_ClipEndStartsTransitionOnTheSameTick(t *testing.T) {
 	p := newSlowProvider(0, 0, 3)
 	var out []emitted
-	ch := prerollChannel(p, 1, &out)
-	b := clipItem("b")
+	ch := prerollChannel(unknownLengthProvider{p}, 1, &out)
+	a, b := clipItem("a"), clipItem("b")
 	b.Transition = &TransitionConfig{Type: "dissolve", DurationMs: 100}
-	require.NoError(t, ch.LoadPlaylist(testPlaylist(clipItem("a"), b)))
+	require.NoError(t, ch.LoadPlaylist(testPlaylist(a, b)))
 	waitPrerolled(t, ch, 1)
 	onAir(ch)
 	waitPrerolled(t, ch, 2)
