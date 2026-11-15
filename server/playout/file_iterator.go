@@ -637,7 +637,13 @@ func (f *FileFrameIterator) seekLocked(targetFrame int) error {
 	}
 	f.decoder = dec
 
-	// Reset state to keyframe position.
+	// Reset state to keyframe position. The pictures before the keyframe
+	// in decode order are those shown before it in a closed GOP, so the
+	// first picture out after the seek carries the seekIdx-th PTS in
+	// presentation order (makeDecodedFrame). The decoder does not say
+	// which picture it puts out: one that drops the leading pictures of an
+	// open GOP, or a frame it rejects, shifts the PTS of the pictures
+	// after by one each.
 	f.frameIndex = seekIdx
 	f.outputCount = seekIdx
 	f.draining = false
