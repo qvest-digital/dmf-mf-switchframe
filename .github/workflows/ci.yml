@@ -59,9 +59,11 @@ jobs:
           cd server
           go test $(go list ./... | grep -v -e '/server/audio$' -e '/server/cmd/switchframe$') \
             -race -coverprofile=coverage.out -timeout=15m
-      # A module of its own, so ./... above leaves it out.
+      # Modules of their own, so ./... above leaves them out.
       - name: Run tests of the patched prism package
         run: cd server/third_party/prism && go test ./distribution/ -race -timeout=5m
+      - name: Run tests of the patched srtgo package
+        run: cd server/third_party/srtgo && go test ./internal/core/ -race -timeout=5m
       - name: Upload Go coverage
         uses: actions/upload-artifact@v4
         with:
