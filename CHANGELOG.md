@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0-rc.55](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.54...mxl-v1.0.0-rc.55) (2026-11-16)
+
+
+### Bug Fixes
+
+* **clock:** read each tick's audio on from where the last read ended ([#305](https://github.com/qvest-digital/dmf-mf-switchframe/issues/305)) ([17b793c](https://github.com/qvest-digital/dmf-mf-switchframe/commit/17b793c8b9d09daf39111d7aefe1379f9364ab81))
+* **clock:** slew an SRT source's video onto the program frame starts ([#307](https://github.com/qvest-digital/dmf-mf-switchframe/issues/307)) ([5a8d286](https://github.com/qvest-digital/dmf-mf-switchframe/commit/5a8d286555f18049dc5149bf365d190d187747d2))
+* **playout:** treat a failed item's read error consistently ([#300](https://github.com/qvest-digital/dmf-mf-switchframe/issues/300)) ([c175b0a](https://github.com/qvest-digital/dmf-mf-switchframe/commit/c175b0a063e6f8ec1d4db1b21c01c8bd7a0396bf))
+* **srtgo:** take no TSBPD drift sample before the time base is set ([#304](https://github.com/qvest-digital/dmf-mf-switchframe/issues/304)) ([c118bef](https://github.com/qvest-digital/dmf-mf-switchframe/commit/c118befaefba462b0bae3e3b8f7915d63fae4c4b))
+* **srt:** keep a stalled browser relay from delaying program audio ([#306](https://github.com/qvest-digital/dmf-mf-switchframe/issues/306)) ([219b4c1](https://github.com/qvest-digital/dmf-mf-switchframe/commit/219b4c1ac952334dc82f98402e6563ebd9b326cc))
+
 ## [1.0.0-rc.54](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.53...mxl-v1.0.0-rc.54) (2026-11-15)
 
 
