@@ -706,22 +706,18 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		cs.SetDisconnected()
 		slog.Info("SRT source disconnected", "key", sourceKey)
 
-		// Close all async channels — goroutines drain and clean up.
-		close(pipelineCh)
-		close(relayVideoCh)
-		close(audioCh)
-		if replayVideoCh != nil {
-			close(replayVideoCh)
-		}
-		if replayGPUCh != nil {
-			close(replayGPUCh)
-		}
-		// The audio this connection queued is pushed to the mixer, placed
-		// by this connection's anchor, before the release ends it and a
-		// new connection, which waits for the release, resets it.
-		<-audioDone
-
-		a.releaseSRTConnection(sourceKey, cfg.Mode)
+		// Close all async channels: goroutines drain and clean up.
+		a.endSRTConnection(sourceKey, cfg.Mode, audioDone, func() {
+			close(pipelineCh)
+			close(relayVideoCh)
+			close(audioCh)
+			if replayVideoCh != nil {
+				close(replayVideoCh)
+			}
+			if replayGPUCh != nil {
+				close(replayGPUCh)
+			}
+		})
 
 		// Don't unregister from switcher -- leave as "no_signal" for reconnect.
 		// The health monitor will mark it stale/no_signal automatically.
@@ -750,6 +746,17 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	)
 
 	return src
+}
+
+// endSRTConnection ends a stopped SRT connection: closeQueues closes its
+// fan-out channels, and once audioDone is closed, when the audio the
+// connection queued has been pushed to the mixer, placed by this
+// connection's anchor, the connection is released. A new connection,
+// which waits for the release, resets the source's audio only after that.
+func (a *App) endSRTConnection(sourceKey, mode string, audioDone <-chan struct{}, closeQueues func()) {
+	closeQueues()
+	<-audioDone
+	a.releaseSRTConnection(sourceKey, mode)
 }
 
 // bindSRTSource makes key a source of the switcher and the mixer for a new
@@ -1307,9 +1314,9 @@ func queueDroppingOldest(ch chan srtAudioJob, job srtAudioJob, drops *atomic.Int
 // relaySRTAudio encodes the decoded PCM audio jobs from jobs as AAC and
 // broadcasts them to the browser relay and the replay viewer, until jobs
 // is closed. The jobs' PCM is shared with the mixer's ingest, which only
-// reads it. A job that does not continue the one before, off by more than
-// a sample, as after jobs were dropped, starts the encode afresh at its own
-// PTS: carried on, the AAC frames would be stamped earlier than their
+// reads it. A job stamped half its own length or more off the end of the
+// one before, as after jobs were dropped, starts the encode afresh at its
+// own PTS: carried on, the AAC frames would be stamped earlier than their
 // audio by what was dropped, for as long as the connection lasts.
 func (a *App) relaySRTAudio(rc *srtRelayContext, jobs <-chan srtAudioJob) {
 	const aacFrameSamples = 1024
@@ -1330,8 +1337,10 @@ func (a *App) relaySRTAudio(rc *srtRelayContext, jobs <-chan srtAudioJob) {
 			rc.state.audioEncoder = enc
 		}
 
-		// A sample, and the tick each stamp is rounded to.
-		if gap := job.pts - nextPTS; len(audioBuf) > 0 && max(gap, -gap) > (90000+int64(job.sampleRate)-1)/int64(job.sampleRate)+1 {
+		// A drop is of whole jobs; a stamp off by less than half a job is
+		// jitter, as a capture-clock encoder's PES boundaries have.
+		half := int64(len(job.pcm)/job.channels) * 90000 / int64(job.sampleRate) / 2
+		if gap := job.pts - nextPTS; len(audioBuf) > 0 && max(gap, -gap) >= half {
 			audioBuf = audioBuf[:0]
 		}
 		if len(audioBuf) == 0 {

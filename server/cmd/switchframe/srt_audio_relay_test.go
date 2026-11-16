@@ -12,10 +12,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/prism/distribution"
 
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/metrics"
+	"github.com/zsiec/switchframe/server/srt"
+	"github.com/zsiec/switchframe/server/switcher"
 )
 
 // holdMixer holds m, as a read does, until the returned function is called
@@ -41,7 +44,7 @@ func holdMixer(t *testing.T, m *audio.Mixer) (release func()) {
 // how long its push to the mixer took are reported apart, so a soak tells
 // audio that reached the mixer late because the queue before it was long
 // from audio held up by the mixer itself. A push that waits for the mixer,
-// here for a read that holds it 40 ms, counts that wait.
+// here for a read that holds it 40 ms, counts that wait, and only it.
 func TestSRTAudioIngestReportsQueueWaitAndPush(t *testing.T) {
 	m := audio.NewMixer(audio.MixerConfig{SampleRate: 48000, Channels: 2})
 	t.Cleanup(func() { _ = m.Close() })
@@ -55,16 +58,20 @@ func TestSRTAudioIngestReportsQueueWaitAndPush(t *testing.T) {
 		key:          key,
 		state:        &srtSourceState{audioDrops: &drops, relayAudioDrops: &relayDrops},
 		anchor:       &clock.TrackingAnchor{},
-		audioCh:      make(chan srtAudioJob, 1),
+		audioCh:      make(chan srtAudioJob),
 		queueDelay:   queue,
 		pushDuration: push,
 	}
 	done := a.startSRTAudioRelay(rc)
 
-	const late, hold = 40 * time.Millisecond, 40 * time.Millisecond
+	// The job was decoded a second ago and is taken by the ingest, from an
+	// unbuffered channel, while a read holds the mixer; the read lets go
+	// 40 ms after the ingest took it.
+	const late, hold = time.Second, 40 * time.Millisecond
 	release := holdMixer(t, m)
-	time.AfterFunc(hold, release)
 	rc.audioCh <- srtAudioJob{pcm: make([]float32, 2*480), pts: clock.NowPTS(), sampleRate: 48000, channels: 2, decoded: time.Now().Add(-late)}
+	time.Sleep(hold)
+	release()
 	close(rc.audioCh)
 	<-done
 
@@ -76,10 +83,11 @@ func TestSRTAudioIngestReportsQueueWaitAndPush(t *testing.T) {
 	n, waited := sum(queue)
 	require.Equal(t, uint64(1), n)
 	require.GreaterOrEqual(t, waited, late.Seconds())
-	require.Less(t, waited, late.Seconds()+1)
+	require.Less(t, waited, late.Seconds()+0.5, "the queue wait counted the push")
 	n, pushed := sum(push)
 	require.Equal(t, uint64(1), n)
-	require.GreaterOrEqual(t, pushed, (hold / 2).Seconds(), "the push's wait for the mixer was not counted")
+	require.GreaterOrEqual(t, pushed, hold.Seconds(), "the push's wait for the mixer was not counted")
+	require.Less(t, pushed, 0.5, "the push counted the queue wait")
 }
 
 // When an SRT connection ends, every frame of audio it had queued is
@@ -171,4 +179,51 @@ switchframe_srt_relay_audio_drops_total{source="` + label + `"} 5
 	problems, err := testutil.CollectAndLint(srtAudioDropCollector{app: a})
 	require.NoError(t, err)
 	require.Empty(t, problems)
+}
+
+// An ended SRT connection is released only once the audio it queued has
+// been pushed to the mixer: released before, a new connection could reset
+// the source's audio and then get the old connection's after it.
+func TestSRTConnectionIsReleasedOnlyOnceItsAudioIsPushed(t *testing.T) {
+	const key = "srt:end"
+	saved := srtSourceReleaseAfter
+	srtSourceReleaseAfter = time.Hour
+	t.Cleanup(func() { srtSourceReleaseAfter = saved })
+	sw := switcher.NewTestSwitcher(t, distribution.NewRelay())
+	m := audio.NewMixer(audio.MixerConfig{SampleRate: 48000, Channels: 2})
+	t.Cleanup(func() { _ = m.Close() })
+	sw.SetMixer(m)
+	a := &App{sw: sw, mixer: m, srtSources: map[string]*srtSourceState{key: {}}}
+	a.bindSRTSource(key)
+	t.Cleanup(func() {
+		a.srtSourcesMu.Lock()
+		defer a.srtSourcesMu.Unlock()
+		for _, g := range a.srtGone {
+			g.Stop()
+		}
+	})
+	released := func() bool {
+		a.srtSourcesMu.Lock()
+		defer a.srtSourcesMu.Unlock()
+		_, ok := a.srtSources[key]
+		return !ok
+	}
+
+	audioDone := make(chan struct{})
+	var closed atomic.Bool
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		a.endSRTConnection(key, srt.ModeCaller, audioDone, func() { closed.Store(true) })
+	}()
+	time.Sleep(50 * time.Millisecond)
+	require.True(t, closed.Load(), "the connection's queues were not closed")
+	require.False(t, released(), "the connection was released before its audio was pushed")
+	close(audioDone)
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection was not released once its audio was pushed")
+	}
+	require.True(t, released())
 }

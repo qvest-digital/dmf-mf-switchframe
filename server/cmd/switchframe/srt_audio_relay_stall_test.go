@@ -175,7 +175,7 @@ func (v *ptsRecorder) SendAudio(f *media.AudioFrame) {
 }
 
 // An SRT source whose decoder hands over audio in frames other than the
-// 1024 samples the relay encodes, here 1152, has jobs dropped before its
+// 1024 samples the relay encodes, here 1152, has a job dropped before its
 // relay. Each AAC frame the relay broadcasts after the gap is stamped with
 // the PTS of its own first sample: carried on across the gap, the frames
 // were stamped earlier than their audio by what was dropped, for as long
@@ -196,15 +196,15 @@ func TestSRTRelayAudioKeepsItsStampsAcrossDroppedFrames(t *testing.T) {
 	stamp := func(sample int64) int64 { return pts0 + sample*90000/sr }
 	var want []int64 // the first sample of every AAC frame of the run after the gap
 	for k := int64(0); k < 40; k++ {
-		if k >= 10 && k < 13 {
+		if k == 10 {
 			continue // dropped
 		}
 		jobs <- srtAudioJob{pcm: make([]float32, 2*n), pts: stamp(k * n), sampleRate: sr, channels: 2}
 	}
 	close(jobs)
 	<-done
-	for s := int64(13 * n); s+1024 <= 40*n; s += 1024 {
-		want = append(want, stamp(13*n)+(s-13*n)/1024*(1024*90000/sr))
+	for s := int64(11 * n); s+1024 <= 40*n; s += 1024 {
+		want = append(want, stamp(11*n)+(s-11*n)/1024*(1024*90000/sr))
 	}
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
@@ -241,5 +241,38 @@ func TestSRTRelayAudioRunsOnAcrossA441StreamsStamps(t *testing.T) {
 	require.Greater(t, len(rec.pts), 150)
 	for i := 1; i < len(rec.pts); i++ {
 		require.Equal(t, int64(1920), rec.pts[i]-rec.pts[i-1], "AAC frame %d is not stamped on from the one before", i)
+	}
+}
+
+// An encoder that stamps its PES packets on its capture clock moves each
+// job's stamp up to tens of microseconds off the end of the job before.
+// The relay encodes such a stream as one run: no audio is dropped at a
+// jittered boundary, and every AAC frame is stamped 1920 ticks after the
+// one before, give or take the jitter of a job's stamp it starts on.
+func TestSRTRelayAudioRunsOnAcrossJitteredStamps(t *testing.T) {
+	const n, jobs = 1152, 200
+	relay := distribution.NewRelay()
+	rec := &ptsRecorder{}
+	relay.AddViewer(rec)
+	rc := &srtRelayContext{key: "srt:jitter", relay: relay, state: &srtSourceState{}}
+	ch := make(chan srtAudioJob)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		(&App{}).relaySRTAudio(rc, ch)
+	}()
+	for k := int64(0); k < jobs; k++ {
+		jitter := k*7919%9 - 4 // up to 4 ticks, 44 us, either way
+		ch <- srtAudioJob{pcm: make([]float32, 2*n), pts: 900_000 + k*n*90000/48000 + jitter, sampleRate: 48000, channels: 2}
+	}
+	close(ch)
+	<-done
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	// The encoder holds back a frame or two of its own before its first
+	// output.
+	require.GreaterOrEqual(t, len(rec.pts), jobs*n/1024-2, "audio was dropped at a jittered boundary")
+	for i := 1; i < len(rec.pts); i++ {
+		require.InDelta(t, 1920, rec.pts[i]-rec.pts[i-1], 8, "AAC frame %d is not stamped on from the one before", i)
 	}
 }
