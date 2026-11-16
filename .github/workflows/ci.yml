@@ -62,7 +62,7 @@ jobs:
       # Modules of their own, so ./... above leaves them out.
       - name: Run tests of the patched prism package
         run: cd server/third_party/prism && go test ./distribution/ -race -timeout=5m
-      - name: Run tests of the srtgo copy's core package
+      - name: Run tests of the patched srtgo package
         run: cd server/third_party/srtgo && go test ./internal/core/ -race -timeout=5m
       - name: Upload Go coverage
         uses: actions/upload-artifact@v4

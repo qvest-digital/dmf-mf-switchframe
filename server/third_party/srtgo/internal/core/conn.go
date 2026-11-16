@@ -995,10 +995,17 @@ func (c *Conn) HandlePacket(now clock.Timestamp, p packet.Packet) {
 		case packet.CtrlTypeKeepalive:
 			// Liveness, plus a TSBPD drift sample from the sender's clock (no RTT
 			// sample available here) — useful during data pauses when no ACKACKs flow.
+			// Neither the drift sample nor the wrap state starts before the
+			// first data packet sets the time base: a sample then reads the
+			// clock's age as drift, and a wrap counted then adds 2^32 us the
+			// base does not take back, so every packet would play out about
+			// 71.6 min late. handleACKACK applies the same gate.
 			c.groupIdle = true // alive but no data flowing (group idle-link signal)
 			if c.tsbpdTimer != nil {
-				c.tsbpdTimer.UpdateWrap(p.Header.Timestamp)
-				c.tsbpdTimer.OnACK(p.Header.Timestamp, now, -1)
+				if c.tsbpdBaseSet {
+					c.tsbpdTimer.UpdateWrap(p.Header.Timestamp)
+					c.tsbpdTimer.OnACK(p.Header.Timestamp, now, -1)
+				}
 			}
 		case packet.CtrlTypeShutdown:
 			c.closed = true
@@ -1800,8 +1807,15 @@ func (c *Conn) handleACKACK(now clock.Timestamp, p packet.Packet) {
 
 	// TSBPD drift sample from the ACKACK timestamp (the sender's clock), with the
 	// raw round-trip from this pair — not the smoothed EWMA — so the drift tracer
-	// sees instantaneous path-delay measurements.
-	if c.tsbpdTimer != nil {
+	// sees instantaneous path-delay measurements. Until the first data packet
+	// sets the time base, a sample would measure the time base's absence, not
+	// drift: the connection's clock age at that point, which for a listener's
+	// connection is the listener's age, since every one of them shares its
+	// clock. A wrap counted before that packet adds 2^32 us to the wrap
+	// offset, which the base set from the packet's raw timestamp does not
+	// take back, so every packet would play out about 71.6 min late: wrap
+	// state starts at the time base, as drift does.
+	if c.tsbpdTimer != nil && c.tsbpdBaseSet {
 		rttSample := int64(-1)
 		if rtt > 0 && rtt < rttSanityCap {
 			rttSample = int64(rtt)
