@@ -58,3 +58,7 @@ require (
 
 // A patched copy of the pinned version; see THIRD_PARTY_LICENSES.md.
 replace github.com/zsiec/prism => ./third_party/prism
+
+// A copy of the pinned version, the base for a patch; see
+// THIRD_PARTY_LICENSES.md.
+replace github.com/zsiec/srtgo => ./third_party/srtgo
