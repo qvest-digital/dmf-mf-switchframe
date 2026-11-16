@@ -248,7 +248,9 @@ func TestPhase7_FullRecoveryFlow(t *testing.T) {
 		t.Fatalf("restart: %v", err)
 	}
 
-	waitFor(t, 10*time.Second, func() bool {
+	// The playlist plays out in real time, about 9 s, so the deadline
+	// leaves room for a loaded machine.
+	waitFor(t, 30*time.Second, func() bool {
 		s := mgr2.ChannelStates()
 		return s[0].State == "completed"
 	})
