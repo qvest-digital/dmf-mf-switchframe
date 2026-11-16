@@ -36,7 +36,7 @@ func audioTickAt(s *Switcher, sr int, n uint64) clock.Tick {
 	tk.AudioStart = clock.TimestampToIndex(ra, clock.IndexToTimestamp(rv, n))
 	tk.AudioSamples = int(clock.TimestampToIndex(ra, clock.IndexToTimestamp(rv, n+1)) - tk.AudioStart)
 	tk.AudioPTS = clock.IndexPTS(ra, tk.AudioStart)
-	tk.ReadSample = tk.AudioStart - clock.TimestampToIndex(ra, clock.IndexToTimestamp(rv, clock.ReaderDelayGrains))
+	tk.ReadSample = tk.AudioStart - clock.TimestampToIndex(ra, clock.IndexToTimestamp(rv, clock.ReadDelay(rv)))
 	return tk
 }
 
