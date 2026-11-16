@@ -481,15 +481,19 @@ func (a *TrackingAnchor) realign() {
 // with one, an offset that places the video on it. It moves up to the
 // least such offset at or above lo once the target is more than
 // TrackingGridMargin below lo, and down to it only once the next lower
-// one is TrackingDriftMargin or more above lo. At a rate whose period is
+// one is TrackingDriftMargin or more above lo and above the largest
+// lateness of this window and the last: a raise would take the offset up
+// to that lateness, and the target straight back up with it, as a sender
+// clock that runs slow arrives later until it does. At a rate whose period is
 // not a whole number of ticks, the offsets that place the video step by
 // 1501 and 1502 ticks, say, and which of them a measurement finds can
 // change by a tick; and a sender clock that runs fast moves both the
 // alignment and a lowering offset down by about the same drift a window.
 // Without that much allowed either way, the source would move a period
 // up and back whenever they did. The target is thus within
-// [lo-TrackingGridMargin, lo+period+TrackingDriftMargin). Caller holds
-// a.mu.
+// [lo-TrackingGridMargin, lo+period+TrackingDriftMargin), and above it by
+// as far as the largest lateness of this window and the last is over lo.
+// Caller holds a.mu.
 func (a *TrackingAnchor) alignUp(lo int64) int64 {
 	if r, ok := ProgramRate(); !ok || r != a.grid {
 		a.grid = Rate{}
@@ -498,10 +502,20 @@ func (a *TrackingAnchor) alignUp(lo int64) int64 {
 	at := func(k uint64) int64 { return IndexPTS(a.grid, k) - TrackingGridMargin - a.vref }
 	if at(a.kref) < lo-TrackingGridMargin {
 		a.kref = startAtOrAfter(a.grid, lo+a.vref)
-	} else if a.kref > 0 && at(a.kref-1) >= lo+TrackingDriftMargin {
+	} else if a.kref > 0 && at(a.kref-1) >= a.latest(lo)+TrackingDriftMargin {
 		a.kref = startAtOrAfter(a.grid, lo+TrackingGridMargin+a.vref)
 	}
 	return at(a.kref)
+}
+
+// latest returns the largest of lo and the latenesses of the current window
+// and, once one has ended, the last. Caller holds a.mu.
+func (a *TrackingAnchor) latest(lo int64) int64 {
+	l := max(lo, a.cur)
+	if a.windows > 0 {
+		l = max(l, a.maxes[0])
+	}
+	return l
 }
 
 // startAtOrAfter returns the index of the first frame start of rate r at
