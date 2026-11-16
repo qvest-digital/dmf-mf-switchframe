@@ -492,7 +492,7 @@ func (a *TrackingAnchor) realign() {
 // Without that much allowed either way, the source would move a period
 // up and back whenever they did. The target is thus within
 // [lo-TrackingGridMargin, lo+period+TrackingDriftMargin), and above it by
-// as far as the latest lateness is over lo while a raise is pending.
+// as far as the largest lateness of this window and the last is over lo.
 // Caller holds a.mu.
 func (a *TrackingAnchor) alignUp(lo int64) int64 {
 	if r, ok := ProgramRate(); !ok || r != a.grid {
