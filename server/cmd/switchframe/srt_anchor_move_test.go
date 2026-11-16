@@ -6,8 +6,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/zsiec/prism/distribution"
+
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/clock"
+	"github.com/zsiec/switchframe/server/switcher"
 )
 
 // anchorMoveRun is what srtAnchorMove saw of the aired program audio.
@@ -289,6 +292,67 @@ func TestSRTAudioCountsEveryBreakOfALastingLateness(t *testing.T) {
 		}
 		if res.counted != int64(res.breaks) {
 			t.Fatalf("the source counted %d breaks, the aired samples show %d", res.counted, res.breaks)
+		}
+	})
+}
+
+// ptsGPU is a GPU source manager that records the PTS of every frame the
+// switcher ingests.
+type ptsGPU struct{ pts chan int64 }
+
+func (g *ptsGPU) IngestYUV(_ string, _ []byte, _, _ int, pts int64) { g.pts <- pts }
+func (g *ptsGPU) RemoveSource(string)                               {}
+
+// An SRT source's video goes through its connection's pipeline ingest,
+// which maps each frame through the anchor with srtVideoPTS, as the NVDEC
+// path does: once the anchor settled, every frame the switcher ingests is
+// stamped just before a program frame start, so it airs on its stamp, with
+// its audio. Mapped by the lateness alone, a frame lands anywhere in the
+// period before one. At every program rate.
+func TestSRTVideoIngestLandsJustBeforeAFrameStart(t *testing.T) {
+	forEachTimingRate(t, func(t *testing.T, r clock.Rate) {
+		var now atomic.Int64
+		scriptTAI(t, &now)
+		const key = "srt:ingest"
+		sw := switcher.NewTestSwitcher(t, distribution.NewRelay())
+		// After the switcher's own clock, which sets its rate as it starts.
+		clock.SetProgramRate(r)
+		t.Cleanup(func() { clock.SetProgramRate(clock.Rate{Num: 50, Den: 1}) })
+		gpu := &ptsGPU{pts: make(chan int64, 1)}
+		sw.SetGPUSourceManager(gpu)
+		m := audio.NewMixer(audio.MixerConfig{SampleRate: 48000, Channels: 2})
+		t.Cleanup(func() { _ = m.Close() })
+		sw.SetMixer(m)
+		a := &App{sw: sw, mixer: m, srtSources: map[string]*srtSourceState{}}
+		video := make(chan srtVideoJob)
+		a.startSRTPipelineIngest(key, a.bindSRTSource(key), video, nil)
+		t.Cleanup(func() { close(video) })
+
+		start := now.Load()
+		src0 := clock.PTS(start)
+		// Late by a third of a period and 5 ms, so a frame mapped by its
+		// lateness alone lands well inside a period.
+		late := 5_000_000 + clock.IndexToTimestamp(r, 1)/3
+		var checked int
+		for i := int64(0); ; i++ {
+			at := clock.IndexToTimestamp(r, uint64(i))
+			if at > 10_000_000_000 {
+				break
+			}
+			now.Store(start + at + late)
+			video <- srtVideoJob{yuv: make([]byte, 16*16*3/2), w: 16, h: 16, pts: src0 + i*90000*r.Den/r.Num}
+			pts := <-gpu.pts
+			if at < 8_000_000_000 {
+				continue
+			}
+			if lead := onGrid(r, pts) - pts; lead < clock.TrackingGridMargin || lead > clock.TrackingGridMargin+2 {
+				t.Fatalf("frame %d ingested %d ticks before the program frame start at or after it, want %d to %d",
+					i, lead, clock.TrackingGridMargin, clock.TrackingGridMargin+2)
+			}
+			checked++
+		}
+		if got, _ := clock.ProgramRate(); checked == 0 || got != r {
+			t.Fatalf("%d frames checked at program rate %v, want some at %v", checked, got, r)
 		}
 	})
 }

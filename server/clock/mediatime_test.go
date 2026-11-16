@@ -847,8 +847,8 @@ func periodTicks(r Rate) int64 {
 // whatever its lateness: 16 of them across a period, and those that leave
 // its frames within a few ticks either side of a frame start before, at
 // every program rate. The offset its timestamps get is the offset of its
-// lateness or up to a period more, never less than TrackingGridMargin
-// under it.
+// lateness or up to a period and TrackingDriftMargin more, never less
+// than TrackingGridMargin under it.
 func TestTrackingAnchorPlacesVideoJustBeforeAFrameStart(t *testing.T) {
 	for _, r := range programRates {
 		period := IndexToTimestamp(r, 1)
@@ -861,7 +861,7 @@ func TestTrackingAnchorPlacesVideoJustBeforeAFrameStart(t *testing.T) {
 				if unaligned < 0 {
 					unaligned = frameLead(r, pts)
 				}
-				if over := pts - stamp - a.offset; over < -TrackingGridMargin || over >= periodTicks(r) {
+				if over := pts - stamp - a.offset; over < -TrackingGridMargin || over >= periodTicks(r)+TrackingDriftMargin {
 					t.Fatalf("frame stamped %d mapped with %d ticks over the offset", stamp, over)
 				}
 				if at < 8_000_000_000 {
@@ -920,43 +920,224 @@ func TestTrackingAnchorLeavesVideoAtAnotherRateOnItsOffset(t *testing.T) {
 	}
 }
 
-// A sender clock off the program's by 50 ppm moves its frames by 9 ticks
-// a window against the frame starts. A fast one's frames are aligned
-// again as each falls under TrackingGridMargin, so none passes a frame
-// start and airs a period late; a slow one's as each window ends, so they
-// stay within two windows' drift over it. Every frame mapped once the
-// anchor settled lands so, apart from while the anchor slews a period
-// that the drift took it outside of, at every program rate.
+// A sender clock off the program's moves its frames against the frame
+// starts by its drift, 9 ticks a window at 50 ppm. A fast one's frames are
+// aligned again as each falls under TrackingGridMargin, so none passes a
+// frame start and airs a period late; a slow one's as each window ends,
+// so they stay within two windows' drift over it. A fast sender also has
+// its offset lowered by the same drift once TrackingHistory windows have
+// passed, and the alignment must not then move the source a period up and
+// back down: over 300 s, well past that, the target moves by a whole
+// period no more often than the drift itself takes it a period, never a
+// period and back within 5 s, and every frame mapped while the anchor is
+// not slewing lands so. At 20 and 50 ppm
+// either way, 48 latenesses across a period, every program rate.
 func TestTrackingAnchorKeepsVideoOnTheFrameStartsThroughDrift(t *testing.T) {
+	const dur = 300_000_000_000
+	phases := int64(48)
+	if testing.Short() || raceDetector {
+		phases = 6
+	}
 	for _, r := range programRates {
-		for _, ppm := range []int64{50, -50} {
+		for _, ppm := range []int64{20, 50, -20, -50} {
 			t.Run(fmt.Sprintf("%d_%d/%+dppm", r.Num, r.Den, ppm), func(t *testing.T) {
-				programRate(t, r)
+				P := periodTicks(r)
 				low, high := int64(TrackingGridMargin-1), int64(TrackingGridMargin+1)
 				if ppm < 0 {
-					low, high = TrackingGridMargin, TrackingGridMargin+1-ppm*2*TrackingWindow/1_000_000
+					// And a tick for the 1501 and 1502-tick steps of a rate whose
+					// period is not a whole number of ticks.
+					low, high = TrackingGridMargin, TrackingGridMargin+2+(-ppm*2*TrackingWindow+999_999)/1_000_000
 				}
-				var checked, slewing int
-				trackVideo(t, r, ppm, 60_000_000_000, func(int64) int64 { return 5_000_000 }, func(a *TrackingAnchor, at, stamp, pts int64) {
-					if at < 8_000_000_000 {
-						return
+				// The periods the drift itself moves the frames by, and one
+				// either side for where they start.
+				most := int(abs(ppm)*dur/1_000_000*9/100_000/P) + 2
+				period := IndexToTimestamp(r, 1)
+				for q := range phases {
+					programRate(t, r)
+					var last, lastMove, lastAt int64
+					moves, checked, slewing := 0, 0, 0
+					var log []string
+					trackVideo(t, r, ppm, dur, func(int64) int64 { return 5_000_000 + q*period/phases }, func(a *TrackingAnchor, at, stamp, pts int64) {
+						if d := a.target - last; at >= 8_000_000_000 && abs(d) >= P/2 {
+							moves++
+							if len(log) < 6 {
+								log = append(log, fmt.Sprintf("%.1fs:%+d", float64(at)/1e9, d))
+							}
+							if lastMove != 0 && (d > 0) != (lastMove > 0) && at-lastAt < 5_000_000_000 {
+								t.Fatalf("phase %d: the target moved a period and back within 5 s: %v", q, log)
+							}
+							lastMove, lastAt = d, at
+						}
+						last = a.target
+						if at < 8_000_000_000 {
+							return
+						}
+						if a.applied != a.target {
+							slewing++
+							return
+						}
+						if lead := frameLead(r, pts); lead < low || lead > high {
+							t.Fatalf("phase %d at %d ms: frame stamped %d placed %d ticks before the frame start at or after it, want %d to %d",
+								q, at/1_000_000, stamp, lead, low, high)
+						}
+						checked++
+					})
+					if moves > most {
+						t.Fatalf("phase %d: the target moved a period %d times, the drift takes it %d at most: %v", q, moves, most, log)
 					}
-					if a.applied != a.target {
-						slewing++
-						return
+					// A period slewed at TrackingSlewRate takes 10.4 s at 24 fps.
+					if slewing > checked/2 {
+						t.Fatalf("phase %d: %d frames mapped while slewing, %d not", q, slewing, checked)
 					}
-					if lead := frameLead(r, pts); lead < low || lead > high {
-						t.Fatalf("at %d ms: frame stamped %d placed %d ticks before the frame start at or after it, want %d to %d",
-							at/1_000_000, stamp, lead, low, high)
-					}
-					checked++
-				})
-				// A period slewed at TrackingSlewRate takes 10.4 s at 24 fps.
-				if slewing > checked/2 {
-					t.Fatalf("%d frames mapped while slewing, %d not", slewing, checked)
 				}
 			})
 		}
+	}
+}
+
+// A source that is placed again, after a jump of its stamps, and comes on
+// at another rate than before, here 30000/1001 into a program at 30 fps,
+// whose frames no offset places just before a frame start, is mapped at
+// its offset: the alignment its frames had before the jump does not
+// outlive the placement.
+func TestTrackingAnchorForgetsTheAlignmentOnAPlacement(t *testing.T) {
+	r, after := Rate{Num: 30, Den: 1}, Rate{Num: 30000, Den: 1001}
+	programRate(t, r)
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	start := now
+	var a TrackingAnchor
+	at := int64(0)
+	for i := int64(1); at < 20_000_000_000; i++ {
+		at = IndexToTimestamp(r, uint64(i))
+		now = start + at + 5_000_000
+		a.VideoPTS(1_000_000 + at*9/100_000)
+	}
+	if a.grid != r {
+		t.Fatal("the source was not aligned before the jump: the case does not exercise the placement")
+	}
+	jumped := int64(1_000_000 + 20*90000*2)
+	var checked int
+	for i := int64(1); ; i++ {
+		t0 := IndexToTimestamp(after, uint64(i))
+		if t0 > 16_000_000_000 {
+			break
+		}
+		now = start + at + t0 + 5_000_000
+		stamp := jumped + t0*9/100_000
+		pts := a.VideoPTS(stamp)
+		if t0 >= 8_000_000_000 {
+			if pts-stamp != a.offset {
+				t.Fatalf("%d ms after the jump: frame mapped %d ticks over the offset, want it on the offset", t0/1_000_000, pts-stamp-a.offset)
+			}
+			checked++
+		}
+	}
+	if a.Moves() == 0 || checked == 0 {
+		t.Fatalf("moves %d, frames checked %d: the jump did not place the source again", a.Moves(), checked)
+	}
+}
+
+// A source aligned on the program's frame starts is mapped at its offset
+// once the program rate changes to one its frames do not divide, here
+// 50p into a program that goes from 50 to 59.94 fps: the alignment was
+// on the old rate's frame starts.
+func TestTrackingAnchorForgetsTheAlignmentOnARateChange(t *testing.T) {
+	r := Rate{Num: 50, Den: 1}
+	programRate(t, r)
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	start := now
+	var a TrackingAnchor
+	var checked int
+	for i := int64(1); ; i++ {
+		at := IndexToTimestamp(r, uint64(i))
+		if at > 36_000_000_000 {
+			break
+		}
+		if at >= 20_000_000_000 && a.grid == r {
+			SetProgramRate(Rate{Num: 60000, Den: 1001})
+		}
+		if at < 20_000_000_000 && i > 1 && at+IndexToTimestamp(r, 1) >= 20_000_000_000 && a.grid != r {
+			t.Fatal("the source was not aligned before the rate change: the case does not exercise it")
+		}
+		now = start + at + 5_000_000
+		stamp := 1_000_000 + at*9/100_000
+		pts := a.VideoPTS(stamp)
+		if at >= 28_000_000_000 {
+			if pts-stamp != a.offset {
+				t.Fatalf("%d ms after the rate change: frame mapped %d ticks over the offset, want it on the offset", (at-20_000_000_000)/1_000_000, pts-stamp-a.offset)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no frame checked")
+	}
+}
+
+// A source whose audio arrives up to MaxSourceHold before its video has
+// its offset held to that bound, and an alignment of its video past the
+// bound is dropped: its timestamps are mapped with an offset that
+// settles, rather than one that slews towards an alignment the bound
+// never lets it reach. Once its audio arrives with its video again, here
+// 20 s on, the alignment comes back two windows after the last early
+// audio.
+// At every program rate.
+func TestTrackingAnchorHoldsTheAlignmentToTheHoldBound(t *testing.T) {
+	for _, r := range programRates {
+		t.Run(fmt.Sprintf("%d_%d", r.Num, r.Den), func(t *testing.T) {
+			programRate(t, r)
+			now := int64(1_798_000_000_000_000_000)
+			fixedTAI(t, &now)
+			start := now
+			var a TrackingAnchor
+			const early = 495_000_000 // the audio's lead on its video until 20 s
+			video := func(i int64) int64 { return IndexToTimestamp(r, uint64(i)) }
+			audio := func(j int64) int64 { return j * 1024 * 1_000_000_000 / 48000 }
+			var held, slewing, aligned, after int
+			for i, j := int64(1), int64(1); ; {
+				tv, ta := video(i), audio(j)
+				at := min(tv, ta)
+				if at > 44_000_000_000 {
+					break
+				}
+				if at == ta {
+					now = start + ta + 5_000_000
+					if ta >= 20_000_000_000 {
+						now += early
+					}
+					a.PTS(1_000_000 + j*1920)
+					j++
+					continue
+				}
+				now = start + tv + 5_000_000 + early
+				pts := a.VideoPTS(1_000_000 + tv*9/100_000)
+				switch {
+				case tv >= 12_000_000_000 && tv < 20_000_000_000:
+					if a.applied != a.target {
+						slewing++
+					}
+					held++
+				case tv >= 36_000_000_000:
+					// Two windows past the early audio, and 10.4 s for a
+					// period's slew at 24 fps. The stamps here are the
+					// frames' TAI truncated to ticks, the frame starts it
+					// rounded, so at a 1001 rate they land a tick further.
+					if l := frameLead(r, pts); a.applied == a.target && l >= TrackingGridMargin && l <= TrackingGridMargin+2 {
+						aligned++
+					}
+					after++
+				}
+				i++
+			}
+			if held == 0 || slewing > 0 {
+				t.Fatalf("%d of %d frames from 12 s to 20 s mapped while slewing", slewing, held)
+			}
+			if aligned != after {
+				t.Fatalf("%d of %d frames from 36 s on aligned once the audio no longer came early", aligned, after)
+			}
+		})
 	}
 }
 
@@ -1004,7 +1185,7 @@ func TestTrackingAnchorKeepsVideoOnTheFrameStartsThroughMoves(t *testing.T) {
 			if phases[0] == 0 || phases[1] == 0 || phases[2] == 0 {
 				t.Fatalf("frames checked before the raise, after it and after the lowering: %v", phases)
 			}
-			if lastOver < -TrackingGridMargin || lastOver >= periodTicks(r) {
+			if lastOver < -TrackingGridMargin || lastOver >= periodTicks(r)+TrackingDriftMargin {
 				t.Fatalf("the last frame mapped with %d ticks over the offset", lastOver)
 			}
 		})
