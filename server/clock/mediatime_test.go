@@ -995,6 +995,52 @@ func TestTrackingAnchorKeepsVideoOnTheFrameStartsThroughDrift(t *testing.T) {
 	}
 }
 
+// A sender clock that runs slow arrives later and later, so the anchor
+// raises its offset every few minutes, and between raises the frames
+// drift towards the frame starts by the same amount as the target. A
+// target that moved down a period just before a raise moved straight back
+// up with it: one frame skipped and one repeated, a few seconds apart.
+// Over 600 s, with 2 to 5 ms of random jitter, 24 latenesses across a
+// period and every program rate, the target never moves a period and back
+// within 10 s.
+func TestTrackingAnchorDoesNotMoveDownAheadOfARaise(t *testing.T) {
+	const dur = 600_000_000_000
+	phases := int64(24)
+	if testing.Short() || raceDetector {
+		phases = 3
+	}
+	for _, r := range programRates {
+		for _, jit := range []int64{2_000_000, 5_000_000} {
+			t.Run(fmt.Sprintf("%d_%d/jitter%dms", r.Num, r.Den, jit/1_000_000), func(t *testing.T) {
+				P := periodTicks(r)
+				period := IndexToTimestamp(r, 1)
+				for q := range phases {
+					programRate(t, r)
+					seed := uint64(q + 1)
+					late := func(int64) int64 {
+						seed = seed*6364136223846793005 + 1442695040888963407
+						return 5_000_000 + q*period/phases + int64((seed>>33)%uint64(jit))
+					}
+					var last, lastMove, lastAt int64
+					var log []string
+					trackVideo(t, r, -50, dur, late, func(a *TrackingAnchor, at, stamp, pts int64) {
+						if d := a.target - last; a.windows > TrackingSettle && abs(d) >= P/2 {
+							if len(log) < 6 {
+								log = append(log, fmt.Sprintf("%.1fs:%+d", float64(at)/1e9, d))
+							}
+							if lastMove != 0 && (d > 0) != (lastMove > 0) && at-lastAt < 10_000_000_000 {
+								t.Fatalf("phase %d: the target moved a period and back within 10 s: %v", q, log)
+							}
+							lastMove, lastAt = d, at
+						}
+						last = a.target
+					})
+				}
+			})
+		}
+	}
+}
+
 // A source that is placed again, after a jump of its stamps, and comes on
 // at another rate than before, here 30000/1001 into a program at 30 fps,
 // whose frames no offset places just before a frame start, is mapped at
