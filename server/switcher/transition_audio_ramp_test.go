@@ -36,7 +36,7 @@ func audioTickAt(s *Switcher, sr int, n uint64) clock.Tick {
 	tk.AudioStart = clock.TimestampToIndex(ra, clock.IndexToTimestamp(rv, n))
 	tk.AudioSamples = int(clock.TimestampToIndex(ra, clock.IndexToTimestamp(rv, n+1)) - tk.AudioStart)
 	tk.AudioPTS = clock.IndexPTS(ra, tk.AudioStart)
-	tk.ReadSample = clock.TimestampToIndex(ra, clock.IndexToTimestamp(rv, n-clock.ReaderDelayGrains))
+	tk.ReadSample = tk.AudioStart - clock.TimestampToIndex(ra, clock.IndexToTimestamp(rv, clock.ReaderDelayGrains))
 	return tk
 }
 
@@ -258,19 +258,10 @@ func (r *mixRig) deliver() {
 	r.sent = to
 }
 
-// rigTick is the tick of grain n reading the samples up to the next
-// tick's read, so the reads tile the sample timeline and a ring placed
-// again by a cut lands on the read point to the sample.
-func (r *mixRig) rigTick(n uint64) clock.Tick {
-	tk := audioTickAt(r.s, r.sr, n)
-	tk.AudioSamples = int(audioTickAt(r.s, r.sr, n+1).ReadSample - tk.ReadSample)
-	return tk
-}
-
 // tick runs the next tick.
 func (r *mixRig) tick() {
 	r.deliver()
-	tk := r.rigTick(r.g)
+	tk := audioTickAt(r.s, r.sr, r.g)
 	r.g++
 	r.inTick = true
 	r.s.processTick(tk)
@@ -295,7 +286,7 @@ func (r *mixRig) between() {
 	wasTick := r.inTick
 	r.inTick = false
 	r.deliver()
-	r.s.processAudioTick(r.rigTick(r.g))
+	r.s.processAudioTick(audioTickAt(r.s, r.sr, r.g))
 	r.g++
 	r.inTick = wasTick
 }
