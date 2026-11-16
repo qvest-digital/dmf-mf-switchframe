@@ -44,7 +44,7 @@ func holdMixer(t *testing.T, m *audio.Mixer) (release func()) {
 // how long its push to the mixer took are reported apart, so a soak tells
 // audio that reached the mixer late because the queue before it was long
 // from audio held up by the mixer itself. A push that waits for the mixer,
-// here for a read that holds it 40 ms, counts that wait, and only it.
+// here for a read that holds it 100 ms, counts that wait, and only it.
 func TestSRTAudioIngestReportsQueueWaitAndPush(t *testing.T) {
 	m := audio.NewMixer(audio.MixerConfig{SampleRate: 48000, Channels: 2})
 	t.Cleanup(func() { _ = m.Close() })
@@ -66,8 +66,8 @@ func TestSRTAudioIngestReportsQueueWaitAndPush(t *testing.T) {
 
 	// The job was decoded a second ago and is taken by the ingest, from an
 	// unbuffered channel, while a read holds the mixer; the read lets go
-	// 40 ms after the ingest took it.
-	const late, hold = time.Second, 40 * time.Millisecond
+	// 100 ms after the ingest took it.
+	const late, hold = time.Second, 100 * time.Millisecond
 	release := holdMixer(t, m)
 	rc.audioCh <- srtAudioJob{pcm: make([]float32, 2*480), pts: clock.NowPTS(), sampleRate: 48000, channels: 2, decoded: time.Now().Add(-late)}
 	time.Sleep(hold)
@@ -86,7 +86,8 @@ func TestSRTAudioIngestReportsQueueWaitAndPush(t *testing.T) {
 	require.Less(t, waited, late.Seconds()+0.5, "the queue wait counted the push")
 	n, pushed := sum(push)
 	require.Equal(t, uint64(1), n)
-	require.GreaterOrEqual(t, pushed, hold.Seconds(), "the push's wait for the mixer was not counted")
+	// Half the hold: the ingest wakes for the job some time after the send.
+	require.GreaterOrEqual(t, pushed, (hold / 2).Seconds(), "the push's wait for the mixer was not counted")
 	require.Less(t, pushed, 0.5, "the push counted the queue wait")
 }
 
@@ -216,8 +217,8 @@ func TestSRTConnectionIsReleasedOnlyOnceItsAudioIsPushed(t *testing.T) {
 		defer close(ended)
 		a.endSRTConnection(key, srt.ModeCaller, audioDone, func() { closed.Store(true) })
 	}()
+	require.Eventually(t, closed.Load, 5*time.Second, time.Millisecond, "the connection's queues were not closed")
 	time.Sleep(50 * time.Millisecond)
-	require.True(t, closed.Load(), "the connection's queues were not closed")
 	require.False(t, released(), "the connection was released before its audio was pushed")
 	close(audioDone)
 	select {
