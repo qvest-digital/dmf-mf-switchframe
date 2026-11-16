@@ -16,7 +16,7 @@ type Tick struct {
 	AudioStart    uint64        // first sample index of this period: I(Ra, T(Rv, Index))
 	AudioSamples  int           // I(Ra, T(Rv, Index+1)) - AudioStart
 	AudioPTS      int64         // 90 kHz PTS of sample AudioStart
-	ReadSample    uint64        // sample index of the read point: I(Ra, T(Rv, Index-ReadDelay(Rv)))
+	ReadSample    uint64        // sample index of the read point: AudioStart - I(Ra, T(Rv, ReadDelay(Rv)))
 	FrameDuration time.Duration // nominal frame duration (for overload detection)
 }
 
@@ -36,6 +36,7 @@ type Tick struct {
 type ReferenceClock struct {
 	rate         Rate
 	delay        uint64 // grains behind its own a tick reads (ReadDelay)
+	readLag      uint64 // samples behind its own a tick reads: I(Ra, T(Rv, delay))
 	sampleRate   Rate
 	basePTS      int64
 	tickCount    atomic.Int64
@@ -54,14 +55,16 @@ type ReferenceClock struct {
 // realtime=false: ticks produced when consumed, PTS from basePTS
 // (deterministic testing).
 func NewReferenceClock(fpsNum, fpsDen, sampleRate int, basePTS int64, realtime bool) *ReferenceClock {
+	rate := Rate{int64(fpsNum), int64(fpsDen)}
 	c := &ReferenceClock{
-		rate:       Rate{int64(fpsNum), int64(fpsDen)},
-		delay:      ReadDelay(Rate{int64(fpsNum), int64(fpsDen)}),
+		rate:       rate,
+		delay:      ReadDelay(rate),
 		sampleRate: Rate{int64(sampleRate), 1},
 		basePTS:    basePTS,
 		stop:       make(chan struct{}),
 		realtime:   realtime,
 	}
+	c.readLag = TimestampToIndex(c.sampleRate, IndexToTimestamp(rate, c.delay))
 	if realtime {
 		c.ticks = make(chan Tick, 1)
 	} else {
@@ -72,11 +75,17 @@ func NewReferenceClock(fpsNum, fpsDen, sampleRate int, basePTS int64, realtime b
 	return c
 }
 
-// tickAt builds the tick for program grain index n.
+// tickAt builds the tick for program grain index n. Its audio is read a
+// fixed number of samples behind its own period, as many samples as the
+// period has, so each read starts where the last one ended. At a rate
+// whose period is not a whole number of samples, the read grain's period
+// and the tick's own differ in length by a sample now and then, so a read
+// from the read grain's own first sample overlapped or left a gap to the
+// last one.
 func (c *ReferenceClock) tickAt(n uint64) Tick {
 	ts, next, read := c.timestamps(n)
 	start := TimestampToIndex(c.sampleRate, ts)
-	readSample := TimestampToIndex(c.sampleRate, read)
+	readSample := start - min(start, c.readLag)
 	return Tick{
 		Number:        c.tickCount.Add(1) - 1,
 		Index:         n,

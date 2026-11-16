@@ -54,13 +54,13 @@ func forEachTimingRate(t *testing.T, f func(t *testing.T, r clock.Rate)) {
 }
 
 // tickRead returns the 48 kHz samples the tick at program index n reads
-// at rate r, as the sync loop does: the period clock.ReadDelay(r) periods
+// at rate r, as the reference clock hands them to the sync loop: the
+// tick's own period, as many samples, from clock.ReadDelay(r) periods
 // behind it.
 func tickRead(r clock.Rate, n uint64) (start uint64, samples int) {
 	sr := clock.Rate{Num: 48000, Den: 1}
-	d := clock.ReadDelay(r)
-	start = clock.TimestampToIndex(sr, clock.IndexToTimestamp(r, n-d))
-	return start, int(clock.TimestampToIndex(sr, clock.IndexToTimestamp(r, n-d+1)) - start)
+	at := func(i uint64) uint64 { return clock.TimestampToIndex(sr, clock.IndexToTimestamp(r, i)) }
+	return at(n) - at(clock.ReadDelay(r)), int(at(n+1) - at(n))
 }
 
 // An MPEG-TS muxer packs a stream's AAC frames into PES packets of several

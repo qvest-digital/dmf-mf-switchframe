@@ -83,12 +83,16 @@ func checkSourceDelayAlignment(t *testing.T, vr clock.Rate) {
 		m.IngestPCM(key, pcm, clock.IndexPTS(ar, a), 2)
 	}
 
-	read := now - 2
+	// The tick of grain now, built as the reference clock builds it: its
+	// audio is read its own period's samples, ReadDelay periods' samples
+	// behind its period, within a sample of the read grain's own.
+	d := clock.ReadDelay(vr)
+	read := now - d
 	tick := clock.Tick{
 		VideoPTS:      clock.IndexPTS(vr, now),
 		ReadPTS:       clock.IndexPTS(vr, read),
-		ReadSample:    sample(read),
-		AudioSamples:  int(sample(read+1) - sample(read)),
+		ReadSample:    sample(now) - sample(d),
+		AudioSamples:  int(sample(now+1) - sample(now)),
 		FrameDuration: s.PipelineFormat().FrameDuration(),
 	}
 	pf, fresh := s.popProgramFrame(s.frameSync, key, tick)
@@ -105,10 +109,10 @@ func checkSourceDelayAlignment(t *testing.T, vr clock.Rate) {
 		t.Fatalf("video shows media time %d ns before the read point, want the frame at %d ms before",
 			clock.IndexToTimestamp(vr, read)-videoAt, delayMs)
 	}
-	got := uint64(pcm[0]*2*rampMod + 0.5)
-	wantAudio := (sample(read) - delayMs*48) % rampMod
-	if got != wantAudio {
-		t.Fatalf("audio plays media sample %d (mod %d), want %d, %d ms before the read point like the video",
+	got := int64(pcm[0]*2*rampMod + 0.5)
+	wantAudio := int64((sample(read) - delayMs*48) % rampMod)
+	if d := (got-wantAudio+rampMod/2+rampMod)%rampMod - rampMod/2; d < -1 || d > 1 {
+		t.Fatalf("audio plays media sample %d (mod %d), want %d or a sample either side, %d ms before the read point like the video",
 			got, rampMod, wantAudio, delayMs)
 	}
 }

@@ -24,14 +24,15 @@ func tickSwitcher(t *testing.T) *Switcher {
 	return s
 }
 
-// tickAt builds the tick of program grain n.
+// tickAt builds the tick of program grain n, read ReadDelay grains behind
+// it as the reference clock reads it.
 func tickAt(s *Switcher, n uint64) clock.Tick {
 	pf := s.pipelineFormat.Load()
 	r := clock.Rate{Num: int64(pf.FPSNum), Den: int64(pf.FPSDen)}
 	return clock.Tick{
 		Index:         n,
 		VideoPTS:      clock.IndexPTS(r, n),
-		ReadPTS:       clock.IndexPTS(r, n-clock.ReaderDelayGrains),
+		ReadPTS:       clock.IndexPTS(r, n-clock.ReadDelay(r)),
 		FrameDuration: pf.FrameDuration(),
 	}
 }

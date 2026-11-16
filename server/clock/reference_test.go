@@ -1,6 +1,7 @@
 package clock
 
 import (
+	"fmt"
 	"runtime"
 	"testing"
 	"time"
@@ -301,4 +302,41 @@ func TestReferenceClockBasePTS(t *testing.T) {
 			t.Fatalf("expected first PTS=0, got %d", tick.VideoPTS)
 		}
 	})
+}
+
+// Each tick reads its audio on from the sample the last tick's read ended
+// at, at every program rate and sample rate: the mixer takes a read that
+// starts a sample before or after it as an overlap or a gap in every
+// source's audio. Its read point stays within a sample of the read grain's
+// own timestamp, where its video is read.
+func TestReferenceClockAudioReadsTile(t *testing.T) {
+	for _, r := range programRates {
+		for _, sampleRate := range []int{44100, 48000, 96000} {
+			for _, realtime := range []bool{true, false} {
+				t.Run(fmt.Sprintf("%d_%d/%d/realtime=%v", r.Num, r.Den, sampleRate, realtime), func(t *testing.T) {
+					c := NewReferenceClock(int(r.Num), int(r.Den), sampleRate, 0, realtime)
+					sr := Rate{Num: int64(sampleRate), Den: 1}
+					first := 2 * c.delay // non-realtime: the first reads are of time 0
+					if realtime {
+						first = TimestampToIndex(r, TAINow())
+					}
+					prev := c.tickAt(first)
+					for n := first + 1; n < first+3000; n++ {
+						tk := c.tickAt(n)
+						if want := prev.ReadSample + uint64(prev.AudioSamples); tk.ReadSample != want {
+							t.Fatalf("tick %d reads from sample %d, the last read ended at %d", n, tk.ReadSample, want)
+						}
+						ts, _, read := c.timestamps(n)
+						if tk.AudioStart != TimestampToIndex(sr, ts) {
+							t.Fatalf("tick %d: audio starts at %d, its period at %d", n, tk.AudioStart, TimestampToIndex(sr, ts))
+						}
+						if d := int64(tk.ReadSample) - int64(TimestampToIndex(sr, read)); d < -1 || d > 1 {
+							t.Fatalf("tick %d reads %d samples from its read grain", n, d)
+						}
+						prev = tk
+					}
+				})
+			}
+		}
+	}
 }
