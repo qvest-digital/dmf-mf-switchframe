@@ -7,6 +7,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 // aacPrimingSamples is the number of PCM samples FDK-AAC-LC silently discards
@@ -342,7 +343,23 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 		ch.ringBuf.Push(trimmedPCM)
 		m.stampRing(ch, pts, len(trimmedPCM)/m.numChannels)
 	}
+	m.observePushLead(ch)
 	m.mu.Unlock()
+}
+
+// observePushLead records, for a live channel, how far the end of the audio
+// just pushed is ahead of the end of the program's last read, less the
+// channel's delay: what the next reads have left before they find it
+// missing. Caller holds m.mu.
+func (m *Mixer) observePushLead(ch *Channel) {
+	if !ch.live || m.promMetrics == nil || m.readEnd == 0 || ch.ringEnd == 0 {
+		return
+	}
+	if ch.pushLead == nil {
+		ch.pushLead = m.promMetrics.AudioSourcePushLead.WithLabelValues(metrics.SourceLabel(ch.sourceKey))
+	}
+	readEnd := clock.IndexToTimestamp(clock.Rate{Num: int64(m.sampleRate), Den: 1}, m.readEnd-uint64(m.delaySamples(ch)))
+	ch.pushLead.Observe(float64(ch.ringEnd-readEnd) / 1e9)
 }
 
 // slewDivisor bounds how fast IngestPCMSlewed resamples a source onto its

@@ -35,9 +35,13 @@ type srtSourceState struct {
 	audioEncoder audio.Encoder           // set by audio goroutine, for stats
 	previewEnc   *preview.Encoder        // set when preview proxy is enabled
 
-	// Relay path drop counters (incremented in decode callbacks).
+	// Relay path drop counters: frames the browser relay could not keep up
+	// with.
 	relayVideoDrops *atomic.Int64
 	relayAudioDrops *atomic.Int64
+	// audioDrops counts decoded audio the mixer ingest could not keep up
+	// with: lost to the program, not only to the relay.
+	audioDrops *atomic.Int64
 
 	// anchor places the connection's timestamps on the engine timeline.
 	anchor *clock.TrackingAnchor
@@ -58,12 +62,13 @@ type srtVideoJob struct {
 }
 
 // srtAudioJob carries decoded PCM audio between the decode callback and
-// the audio goroutine.
+// the audio goroutines.
 type srtAudioJob struct {
 	pcm        []float32
 	pts        int64
 	sampleRate int
 	channels   int
+	decoded    time.Time // when the decoder handed it over; zero: unknown
 }
 
 // srtReplayGPUJob is a lightweight signal for the GPU replay encode goroutine.
@@ -95,6 +100,10 @@ type srtRelayContext struct {
 	relayVideoCh  chan srtVideoJob
 	replayVideoCh chan srtVideoJob // nil when replay is not active
 	audioCh       chan srtAudioJob
+
+	// ingestDelay observes how long decoded audio took to reach the
+	// mixer (nil without metrics).
+	ingestDelay prometheus.Observer
 
 	// Replay viewer (nil when replay is not active or wired via relay).
 	replayViewer interface {
@@ -130,7 +139,7 @@ func (a *App) initSRT() error {
 	a.debugCollector.Register("relay_drops", &relayDropProvider{app: a})
 	a.debugCollector.Register("srt_anchors", srtAnchorProvider{app: a})
 	if a.appMetrics != nil {
-		registerCollectors(metrics.GetRegistry(), srtAnchorCollector{app: a})
+		registerCollectors(metrics.GetRegistry(), srtAnchorCollector{app: a}, srtAudioDropCollector{app: a})
 	}
 
 	// Wire stats manager into output manager so SRT output adapters
@@ -322,8 +331,8 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	// Create source orchestrator.
 	src := srt.NewSource(cfg, conn, cs, slog.Default())
 
-	// Relay path drop counters (incremented in decode callbacks, exposed in debug snapshots).
-	var relayVideoDrops, relayAudioDrops atomic.Int64
+	// Drop counters, exposed in debug snapshots and as metrics.
+	var relayVideoDrops, relayAudioDrops, audioDrops atomic.Int64
 
 	// Source state for tracking encoder lifecycle and cleanup.
 	state := &srtSourceState{
@@ -331,6 +340,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		relay:           relay,
 		relayVideoDrops: &relayVideoDrops,
 		relayAudioDrops: &relayAudioDrops,
+		audioDrops:      &audioDrops,
 		anchor:          anchor,
 	}
 
@@ -343,11 +353,12 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	// with 100-1500ms gaps.
 	//
 	// Solution: The decode callbacks do NOTHING blocking. They deep-copy
-	// the data and send to buffered channels. Three separate goroutines
-	// handle the heavy work:
+	// the data and send to buffered channels. Separate goroutines handle
+	// the heavy work:
 	//   1. Pipeline goroutine: IngestRawVideo (program path)
 	//   2. Relay video goroutine: H.264 encode + BroadcastVideo
-	//   3. Audio goroutine: IngestPCM + AAC encode + BroadcastAudio
+	//   3. Audio goroutine: IngestPCM (program path)
+	//   4. Relay audio goroutine: AAC encode + BroadcastAudio
 	//
 	// PTS linearization runs in the callback (fast, no allocation).
 
@@ -356,7 +367,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 
 	pipelineCh := make(chan srtVideoJob, 4)   // → IngestRawVideo
 	relayVideoCh := make(chan srtVideoJob, 4) // → H.264 encode + relay
-	audioCh := make(chan srtAudioJob, 8)      // → IngestPCM + AAC encode + relay
+	audioCh := make(chan srtAudioJob, 8)      // → IngestPCM, then AAC encode + relay
 
 	// Replay channel: when preview proxy is active and replay is configured,
 	// a separate full-quality encode goroutine feeds the replay viewer directly.
@@ -464,6 +475,9 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		audioCh:       audioCh,
 		replayViewer:  replayViewer,
 	}
+	if a.appMetrics != nil {
+		rc.ingestDelay = a.appMetrics.SRTAudioIngestDelay.WithLabelValues(metrics.SourceLabel(key))
+	}
 
 	// --- Goroutine 2: Relay video encode ---
 	// When GPU preview is active, the GPU source manager handles preview
@@ -491,7 +505,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		a.startSRTReplayCPUEncode(rc)
 	}
 
-	// --- Goroutine 3: Audio (mixer + relay encode) ---
+	// --- Goroutines 3 and 4: Audio (mixer, then relay encode) ---
 	a.startSRTAudioRelay(rc)
 
 	// --- Register preview encoder with debug collector ---
@@ -679,9 +693,9 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		pcmCopy := make([]float32, len(pcm))
 		copy(pcmCopy, pcm)
 		select {
-		case audioCh <- srtAudioJob{pcm: pcmCopy, pts: pts, sampleRate: sampleRate, channels: channels}:
+		case audioCh <- srtAudioJob{pcm: pcmCopy, pts: pts, sampleRate: sampleRate, channels: channels, decoded: time.Now()}:
 		default:
-			relayAudioDrops.Add(1)
+			audioDrops.Add(1)
 		}
 	}
 
@@ -815,6 +829,11 @@ func (a *App) releaseSRTConnection(sourceKey string, mode string) {
 	// Remove replay viewer from the source relay.
 	if a.replayMgr != nil {
 		a.replayMgr.RemoveSource(sourceKey)
+	}
+
+	// Stream ids come and go: a series per id would grow without bound.
+	if a.appMetrics != nil {
+		a.appMetrics.SRTAudioIngestDelay.DeleteLabelValues(metrics.SourceLabel(sourceKey))
 	}
 }
 
@@ -1217,66 +1236,96 @@ func (a *App) ingestSRTAudio(key string, anchor *clock.TrackingAnchor, job srtAu
 	a.mixer.IngestPCMSlewed(key, job.pcm, anchor.PTS(job.pts), job.channels)
 }
 
-// startSRTAudioRelay starts a goroutine that delivers decoded PCM audio to the
-// mixer and encodes it as AAC for the browser relay and replay system.
+// startSRTAudioRelay starts the goroutine that delivers decoded PCM audio to
+// the mixer and, with a browser relay, the one that encodes it as AAC for
+// the relay and the replay system. The mixer's ingest hands each job on
+// without waiting: an encode or a viewer's send that stalls holds up only
+// the relay, whose jobs past relayAudioQueue are dropped and counted,
+// never the program's audio.
 func (a *App) startSRTAudioRelay(rc *srtRelayContext) {
+	var relayCh chan srtAudioJob
+	if rc.relay != nil {
+		relayCh = make(chan srtAudioJob, relayAudioQueue)
+		go a.relaySRTAudio(rc, relayCh)
+	}
+	go func() {
+		for job := range rc.audioCh {
+			if rc.ingestDelay != nil && !job.decoded.IsZero() {
+				rc.ingestDelay.Observe(time.Since(job.decoded).Seconds())
+			}
+			a.ingestSRTAudio(rc.key, rc.anchor, job)
+			if relayCh == nil {
+				continue
+			}
+			select {
+			case relayCh <- job:
+			default:
+				rc.state.relayAudioDrops.Add(1)
+			}
+		}
+		if relayCh != nil {
+			close(relayCh)
+		}
+	}()
+}
+
+// relayAudioQueue is how many decoded audio jobs the relay encode may fall
+// behind the mixer's ingest before it drops them: as many as the decode
+// callback queues for the ingest.
+const relayAudioQueue = 8
+
+// relaySRTAudio encodes the decoded PCM audio jobs from jobs as AAC and
+// broadcasts them to the browser relay and the replay viewer, until jobs
+// is closed. The jobs' PCM is shared with the mixer's ingest, which only
+// reads it.
+func (a *App) relaySRTAudio(rc *srtRelayContext, jobs <-chan srtAudioJob) {
 	const aacFrameSamples = 1024
 	var (
 		audioEncoder audio.Encoder
 		audioBuf     []float32
 		audioPTS     int64
 	)
-	go func() {
-		for job := range rc.audioCh {
-			a.ingestSRTAudio(rc.key, rc.anchor, job)
-
-			// Encode for relay.
-			if rc.relay == nil {
+	for job := range jobs {
+		if audioEncoder == nil {
+			enc, err := audio.NewFDKEncoder(job.sampleRate, job.channels)
+			if err != nil {
+				slog.Error("srt: audio encoder init failed", "key", rc.key, "error", err)
 				continue
 			}
+			audioEncoder = enc
+			rc.state.audioEncoder = enc
+		}
 
-			if audioEncoder == nil {
-				enc, err := audio.NewFDKEncoder(job.sampleRate, job.channels)
-				if err != nil {
-					slog.Error("srt: audio encoder init failed", "key", rc.key, "error", err)
-					continue
-				}
-				audioEncoder = enc
-				rc.state.audioEncoder = enc
-			}
+		if len(audioBuf) == 0 {
+			audioPTS = job.pts
+		}
+		audioBuf = append(audioBuf, job.pcm...)
 
-			if len(audioBuf) == 0 {
-				audioPTS = job.pts
-			}
-			audioBuf = append(audioBuf, job.pcm...)
-
-			chunkSize := aacFrameSamples * job.channels
-			for len(audioBuf) >= chunkSize {
-				chunk := audioBuf[:chunkSize]
-				encoded, err := audioEncoder.Encode(chunk)
-				if err != nil {
-					audioBuf = audioBuf[chunkSize:]
-					continue
-				}
-				if len(encoded) > 0 {
-					af := &media.AudioFrame{
-						PTS: audioPTS, Data: encoded,
-						SampleRate: job.sampleRate, Channels: job.channels,
-					}
-					rc.relay.BroadcastAudio(af)
-					if rc.replayViewer != nil {
-						rc.replayViewer.SendAudio(af)
-					}
-				}
-				audioPTS += int64(aacFrameSamples) * 90000 / int64(job.sampleRate)
+		chunkSize := aacFrameSamples * job.channels
+		for len(audioBuf) >= chunkSize {
+			chunk := audioBuf[:chunkSize]
+			encoded, err := audioEncoder.Encode(chunk)
+			if err != nil {
 				audioBuf = audioBuf[chunkSize:]
+				continue
 			}
+			if len(encoded) > 0 {
+				af := &media.AudioFrame{
+					PTS: audioPTS, Data: encoded,
+					SampleRate: job.sampleRate, Channels: job.channels,
+				}
+				rc.relay.BroadcastAudio(af)
+				if rc.replayViewer != nil {
+					rc.replayViewer.SendAudio(af)
+				}
+			}
+			audioPTS += int64(aacFrameSamples) * 90000 / int64(job.sampleRate)
+			audioBuf = audioBuf[chunkSize:]
 		}
-		if audioEncoder != nil {
-			_ = audioEncoder.Close()
-			audioEncoder = nil
-		}
-	}()
+	}
+	if audioEncoder != nil {
+		_ = audioEncoder.Close()
+	}
 }
 
 // startSRT starts the SRT listener and restores persisted caller configs.
@@ -1449,7 +1498,8 @@ func (m *srtManagerAdapter) UpdateLatency(key string, latencyMs int) error {
 	return m.store.Save(cfg)
 }
 
-// relayDropProvider exposes per-source relay path drop counters via debug snapshots.
+// relayDropProvider exposes per-source drop counters via debug snapshots:
+// the relay path's, and the decoded audio the mixer's ingest lost.
 type relayDropProvider struct {
 	app *App
 }
@@ -1466,6 +1516,9 @@ func (p *relayDropProvider) DebugSnapshot() map[string]any {
 		}
 		if state.relayAudioDrops != nil {
 			entry["audioDrops"] = state.relayAudioDrops.Load()
+		}
+		if state.audioDrops != nil {
+			entry["programAudioDrops"] = state.audioDrops.Load()
 		}
 		sources[key] = entry
 	}
@@ -1541,5 +1594,41 @@ func (c srtAnchorCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(descSRTAnchorOffset, prometheus.GaugeValue, float64(s.Offset)/90000, source)
 		ch <- prometheus.MustNewConstMetric(descSRTAnchorRaises, prometheus.CounterValue, float64(s.Raises), source)
 		ch <- prometheus.MustNewConstMetric(descSRTAnchorSteps, prometheus.CounterValue, float64(s.Steps), source)
+	}
+}
+
+var (
+	descSRTAudioDrops = prometheus.NewDesc("switchframe_srt_audio_drops_total",
+		"Decoded audio frames of a connected SRT source dropped before the mixer, because its ingest had fallen behind the decoder: missing from the program. Starts at 0 on every connection.",
+		[]string{"source"}, nil)
+	descSRTRelayAudioDrops = prometheus.NewDesc("switchframe_srt_relay_audio_drops_total",
+		"Decoded audio frames of a connected SRT source dropped before the browser relay's AAC encode, because the relay had fallen behind the mixer's ingest: missing from the source's browser preview and replay only. Starts at 0 on every connection.",
+		[]string{"source"}, nil)
+)
+
+// srtAudioDropCollector exposes the SRT sources' audio drop counters at
+// scrape time.
+type srtAudioDropCollector struct {
+	app *App
+}
+
+// Describe implements prometheus.Collector.
+func (c srtAudioDropCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- descSRTAudioDrops
+	ch <- descSRTRelayAudioDrops
+}
+
+// Collect implements prometheus.Collector.
+func (c srtAudioDropCollector) Collect(ch chan<- prometheus.Metric) {
+	c.app.srtSourcesMu.Lock()
+	defer c.app.srtSourcesMu.Unlock()
+	for key, state := range c.app.srtSources {
+		source := metrics.SourceLabel(key)
+		if state.audioDrops != nil {
+			ch <- prometheus.MustNewConstMetric(descSRTAudioDrops, prometheus.CounterValue, float64(state.audioDrops.Load()), source)
+		}
+		if state.relayAudioDrops != nil {
+			ch <- prometheus.MustNewConstMetric(descSRTRelayAudioDrops, prometheus.CounterValue, float64(state.relayAudioDrops.Load()), source)
+		}
 	}
 }
