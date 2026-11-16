@@ -783,3 +783,230 @@ func TestTrackingAnchorCountsItsRaises(t *testing.T) {
 		t.Fatalf("after a jump: %+v, want 1 move, no new raise and an offset of 0 from the new placement", s)
 	}
 }
+
+// videoStamp is the 90 kHz timestamp of video frame i of a source at
+// rate r whose clock runs ppm fast (negative: slow), truncated as a
+// sender counting in whole ticks does: at a rate whose period is not a
+// whole number of ticks its stamps step by the two tick counts in another
+// order than the program's frame starts do.
+func videoStamp(r Rate, i, ppm int64) int64 {
+	return 1_000_000 + i*90000*r.Den*(1_000_000+ppm)/(r.Num*1_000_000)
+}
+
+// trackVideo runs a source of video at rate src, with 48 kHz audio in AAC
+// frames on the same clock, both running ppm fast, through a
+// TrackingAnchor for end ns while the program reads at the rate set.
+// Every frame arrives late(at) after its due time at, with up to 1 ms of
+// jitter. Each video frame mapped is passed to check with the anchor, its
+// arrival since the start, its stamp and where it was mapped.
+func trackVideo(t *testing.T, src Rate, ppm, end int64, late func(at int64) int64, check func(a *TrackingAnchor, at, stamp, pts int64)) {
+	t.Helper()
+	now := int64(1_798_000_000_000_000_000)
+	fixedTAI(t, &now)
+	start := now
+	var a TrackingAnchor
+	video := func(i int64) int64 { return IndexToTimestamp(src, uint64(i)) }
+	audio := func(j int64) int64 { return j * 1024 * 1_000_000_000 / 48000 }
+	jitter := func(i int64) int64 { return i * 7919 % 11 * 100_000 }
+	for i, j := int64(1), int64(1); ; {
+		tv, ta := video(i), audio(j)
+		at := min(tv, ta)
+		if at > end {
+			return
+		}
+		if at == tv {
+			now = start + tv + late(tv) + jitter(i)
+			stamp := videoStamp(src, i, ppm)
+			pts := a.VideoPTS(stamp)
+			check(&a, now-start, stamp, pts)
+			i++
+			continue
+		}
+		now = start + ta + late(ta) + jitter(j)
+		a.PTS(1_000_000 + j*1920*(1_000_000+ppm)/1_000_000)
+		j++
+	}
+}
+
+// frameLead returns how far before the program frame start at or after it
+// pts is.
+func frameLead(r Rate, pts int64) int64 {
+	return IndexPTS(r, startAtOrAfter(r, pts)) - pts
+}
+
+// periodTicks is the period of rate r in 90 kHz ticks, rounded up.
+func periodTicks(r Rate) int64 {
+	return (90000*r.Den + r.Num - 1) / r.Num
+}
+
+// A tick shows a source's newest frame stamped at or before its read
+// point, a program frame start, so a frame stamped between two frame
+// starts airs late by up to a period while its audio airs on its stamps.
+// Once settled, a source at the program rate is mapped so that each video
+// frame lands TrackingGridMargin, or a tick more, before a frame start,
+// whatever its lateness: 16 of them across a period, and those that leave
+// its frames within a few ticks either side of a frame start before, at
+// every program rate. The offset its timestamps get is the offset of its
+// lateness or up to a period more, never less than TrackingGridMargin
+// under it.
+func TestTrackingAnchorPlacesVideoJustBeforeAFrameStart(t *testing.T) {
+	for _, r := range programRates {
+		period := IndexToTimestamp(r, 1)
+		run := func(t *testing.T, late int64) (unaligned int64) {
+			t.Helper()
+			programRate(t, r)
+			unaligned = -1
+			var checked int
+			trackVideo(t, r, 0, 16_000_000_000, func(int64) int64 { return late }, func(a *TrackingAnchor, at, stamp, pts int64) {
+				if unaligned < 0 {
+					unaligned = frameLead(r, pts)
+				}
+				if over := pts - stamp - a.offset; over < -TrackingGridMargin || over >= periodTicks(r) {
+					t.Fatalf("frame stamped %d mapped with %d ticks over the offset", stamp, over)
+				}
+				if at < 8_000_000_000 {
+					return
+				}
+				if lead := frameLead(r, pts); lead < TrackingGridMargin || lead > TrackingGridMargin+1 {
+					t.Fatalf("frame stamped %d placed %d ticks before the frame start at or after it, want %d or a tick more",
+						stamp, lead, TrackingGridMargin)
+				}
+				checked++
+			})
+			if checked == 0 {
+				t.Fatal("no frame checked")
+			}
+			return unaligned
+		}
+		for q := int64(0); q < 16; q++ {
+			t.Run(fmt.Sprintf("%d_%d/phase%d", r.Num, r.Den, q), func(t *testing.T) {
+				late := 5_000_000 + q*period/16
+				unaligned := run(t, late)
+				if q != 0 {
+					return
+				}
+				// The lateness that places the first frame on a frame start,
+				// and a few ticks either side.
+				for f := int64(-3); f <= 3; f++ {
+					t.Run(fmt.Sprintf("edge%+d", f), func(t *testing.T) {
+						run(t, late+(unaligned+f)*100_000/9)
+					})
+				}
+			})
+		}
+	}
+}
+
+// A source at a rate the program's is not a whole multiple or fraction of,
+// such as its 1001 counterpart, has frames at every phase of the frame
+// starts: no offset places them all just before one, and one that placed
+// each window's latest frame there would move the source a different way
+// every window. It is mapped with the offset of its lateness, unmoved, at
+// every program rate.
+func TestTrackingAnchorLeavesVideoAtAnotherRateOnItsOffset(t *testing.T) {
+	for _, r := range programRates {
+		src := Rate{Num: r.Num * 1000, Den: r.Den * 1001}
+		if r.Den != 1 {
+			src = Rate{Num: r.Num / 1000, Den: 1}
+		}
+		t.Run(fmt.Sprintf("%d_%d/from%d_%d", r.Num, r.Den, src.Num, src.Den), func(t *testing.T) {
+			programRate(t, r)
+			trackVideo(t, src, 0, 16_000_000_000, func(int64) int64 { return 5_000_000 }, func(a *TrackingAnchor, at, stamp, pts int64) {
+				if at >= 8_000_000_000 && pts-stamp != a.offset {
+					t.Fatalf("frame stamped %d mapped with %d ticks over the offset, want it on the offset", stamp, pts-stamp-a.offset)
+				}
+			})
+		})
+	}
+}
+
+// A sender clock off the program's by 50 ppm moves its frames by 9 ticks
+// a window against the frame starts. A fast one's frames are aligned
+// again as each falls under TrackingGridMargin, so none passes a frame
+// start and airs a period late; a slow one's as each window ends, so they
+// stay within two windows' drift over it. Every frame mapped once the
+// anchor settled lands so, apart from while the anchor slews a period
+// that the drift took it outside of, at every program rate.
+func TestTrackingAnchorKeepsVideoOnTheFrameStartsThroughDrift(t *testing.T) {
+	for _, r := range programRates {
+		for _, ppm := range []int64{50, -50} {
+			t.Run(fmt.Sprintf("%d_%d/%+dppm", r.Num, r.Den, ppm), func(t *testing.T) {
+				programRate(t, r)
+				low, high := int64(TrackingGridMargin-1), int64(TrackingGridMargin+1)
+				if ppm < 0 {
+					low, high = TrackingGridMargin, TrackingGridMargin+1-ppm*2*TrackingWindow/1_000_000
+				}
+				var checked, slewing int
+				trackVideo(t, r, ppm, 60_000_000_000, func(int64) int64 { return 5_000_000 }, func(a *TrackingAnchor, at, stamp, pts int64) {
+					if at < 8_000_000_000 {
+						return
+					}
+					if a.applied != a.target {
+						slewing++
+						return
+					}
+					if lead := frameLead(r, pts); lead < low || lead > high {
+						t.Fatalf("at %d ms: frame stamped %d placed %d ticks before the frame start at or after it, want %d to %d",
+							at/1_000_000, stamp, lead, low, high)
+					}
+					checked++
+				})
+				// A period slewed at TrackingSlewRate takes 10.4 s at 24 fps.
+				if slewing > checked/2 {
+					t.Fatalf("%d frames mapped while slewing, %d not", slewing, checked)
+				}
+			})
+		}
+	}
+}
+
+// A source whose lateness lasts past the slack is raised for, and a minute
+// back on time lowered again. Once the anchor has taken each move, its
+// video lands just before a frame start again, and at the end within a
+// period over the offset, at every program rate.
+func TestTrackingAnchorKeepsVideoOnTheFrameStartsThroughMoves(t *testing.T) {
+	for _, r := range programRates {
+		t.Run(fmt.Sprintf("%d_%d", r.Num, r.Den), func(t *testing.T) {
+			programRate(t, r)
+			lasting := (TrackingSlack() + 30*90) * 100_000 / 9
+			late := func(at int64) int64 {
+				if at >= 12_000_000_000 && at < 40_000_000_000 {
+					return 5_000_000 + lasting
+				}
+				return 5_000_000
+			}
+			// Before the raise, once it is taken and once the lowering is.
+			var phases [3]int
+			var last *TrackingAnchor
+			var lastOver int64
+			trackVideo(t, r, 0, 135_000_000_000, late, func(a *TrackingAnchor, at, stamp, pts int64) {
+				last, lastOver = a, pts-stamp-a.offset
+				var phase int
+				switch {
+				case at < 8_000_000_000 || a.applied != a.target:
+					return
+				case at < 12_000_000_000:
+					phase = 0
+				case a.Stats().Offset > 270:
+					phase = 1
+				case at >= 40_000_000_000:
+					phase = 2
+				}
+				if lead := frameLead(r, pts); lead < TrackingGridMargin || lead > TrackingGridMargin+1 {
+					t.Fatalf("at %d ms: frame stamped %d placed %d ticks before the frame start at or after it, want %d or a tick more",
+						at/1_000_000, stamp, lead, TrackingGridMargin)
+				}
+				phases[phase]++
+			})
+			if s := last.Stats(); s.Offset > 270 || s.Offset < -270 {
+				t.Fatalf("anchor %+v: want the offset lowered back", s)
+			}
+			if phases[0] == 0 || phases[1] == 0 || phases[2] == 0 {
+				t.Fatalf("frames checked before the raise, after it and after the lowering: %v", phases)
+			}
+			if lastOver < -TrackingGridMargin || lastOver >= periodTicks(r) {
+				t.Fatalf("the last frame mapped with %d ticks over the offset", lastOver)
+			}
+		})
+	}
+}

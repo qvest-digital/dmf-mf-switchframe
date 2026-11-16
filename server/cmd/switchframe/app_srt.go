@@ -662,7 +662,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 
 			// The frame is cached and synchronized under one engine-timeline
 			// PTS: the tick that shows it looks the cached frame up by it.
-			mediaPTS := anchor.PTS(pts)
+			mediaPTS := anchor.VideoPTS(pts)
 			srcMgr.IngestGPUFrame(sourceKey, frame, mediaPTS)
 
 			// Notify the switcher so health monitoring and frame sync see this
@@ -859,7 +859,7 @@ func (a *App) releaseSRTConnection(sourceKey string, mode string) {
 func (a *App) startSRTPipelineIngest(key string, anchor *clock.TrackingAnchor, pipelineCh <-chan srtVideoJob, framePool *switcher.FramePool) {
 	go func() {
 		for job := range pipelineCh {
-			job.pts = anchor.PTS(job.pts)
+			job.pts = anchor.VideoPTS(job.pts)
 			a.sw.IngestRawVideo(key, newSRTPipelineFrame(job, framePool))
 		}
 	}()

@@ -188,10 +188,10 @@ func TestResetProgramRateResetsAndRestoresEveryValue(t *testing.T) {
 	t.Cleanup(ResetProgramRate())
 	SetProgramRate(Rate{Num: 240, Den: 1})
 	read := func() programState {
-		return programState{readLag.Load(), programPeriod.Load(), holdPeriod.Load(), programDelay.Load()}
+		return programState{readLag.Load(), programPeriod.Load(), holdPeriod.Load(), programDelay.Load(), programFrameRate.Load()}
 	}
 	set := read()
-	if set.readLag == 0 || set.period == 0 || set.holdPeriod == 0 || set.delay != 10 {
+	if set.readLag == 0 || set.period == 0 || set.holdPeriod == 0 || set.delay != 10 || set.rate == nil || *set.rate != (Rate{Num: 240, Den: 1}) {
 		t.Fatalf("240 fps recorded %+v", set)
 	}
 
@@ -199,8 +199,8 @@ func TestResetProgramRateResetsAndRestoresEveryValue(t *testing.T) {
 	if got := read(); got != (programState{}) {
 		t.Fatalf("after a reset: %+v, want every value 0", got)
 	}
-	if ReadLag() != 0 || ProgramPeriod() != 0 || ProgramReadDelay() != ReaderDelayGrains {
-		t.Fatalf("after a reset: read lag %d, period %d, read delay %d", ReadLag(), ProgramPeriod(), ProgramReadDelay())
+	if _, ok := ProgramRate(); ReadLag() != 0 || ProgramPeriod() != 0 || ProgramReadDelay() != ReaderDelayGrains || ok {
+		t.Fatalf("after a reset: read lag %d, period %d, read delay %d, rate set %v", ReadLag(), ProgramPeriod(), ProgramReadDelay(), ok)
 	}
 	SetProgramRate(Rate{Num: 25, Den: 1})
 	restore()

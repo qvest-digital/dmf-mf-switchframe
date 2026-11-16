@@ -33,6 +33,10 @@ var programPeriod atomic.Int64
 // ReferenceClock starts.
 var programDelay atomic.Uint64
 
+// programFrameRate is the program frame rate; nil until a realtime
+// ReferenceClock starts.
+var programFrameRate atomic.Pointer[Rate]
+
 // holdPeriod is the frame period a SourceHold is kept for, in 90 kHz
 // ticks: minFramePeriod, or the program frame period rounded down when
 // that is shorter, so a source at the program rate is kept whole for
@@ -48,6 +52,16 @@ func SetProgramRate(r Rate) {
 	programPeriod.Store((90000*r.Den + r.Num - 1) / r.Num)
 	programDelay.Store(d)
 	holdPeriod.Store(max(1, min(minFramePeriod, 90000*r.Den/r.Num)))
+	programFrameRate.Store(&r)
+}
+
+// ProgramRate returns the program frame rate the ticks read at; false
+// until a realtime ReferenceClock starts.
+func ProgramRate() (Rate, bool) {
+	if r := programFrameRate.Load(); r != nil {
+		return *r, true
+	}
+	return Rate{}, false
 }
 
 // ProgramPeriod returns the program frame period the ticks read at, in
@@ -120,6 +134,7 @@ func ReadLag() int64 {
 type programState struct {
 	readLag, period, holdPeriod int64
 	delay                       uint64
+	rate                        *Rate
 }
 
 // ResetProgramRate returns the program rate to unset, as before a
@@ -131,11 +146,13 @@ func ResetProgramRate() (restore func()) {
 		period:     programPeriod.Swap(0),
 		holdPeriod: holdPeriod.Swap(0),
 		delay:      programDelay.Swap(0),
+		rate:       programFrameRate.Swap(nil),
 	}
 	return func() {
 		readLag.Store(saved.readLag)
 		programPeriod.Store(saved.period)
 		holdPeriod.Store(saved.holdPeriod)
 		programDelay.Store(saved.delay)
+		programFrameRate.Store(saved.rate)
 	}
 }

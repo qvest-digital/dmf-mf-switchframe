@@ -201,16 +201,17 @@ func (a *Anchor) Moves() int64 {
 }
 
 // TrackingAnchor maps the own 90 kHz timeline of a source whose clock is
-// not locked to the engine's, such as an SRT stream or a playout channel,
-// onto the engine timeline: every timestamp gets the same offset, so video
-// and audio of the source keep their own relation, and the offset is the
-// lateness (arrival less source timestamp) the source's latest timestamps
-// arrive with. A source whose essences arrive in bursts, as an MPEG-TS
-// stream's audio does in PES packets of several frames, is placed at its
-// latest arrival, so it is on hand at every read.
+// not locked to the engine's, such as an SRT stream, onto the engine
+// timeline: every timestamp gets the same offset, so video and audio of
+// the source keep their own relation, and the offset is the lateness
+// (arrival less source timestamp) the source's latest timestamps arrive
+// with. A source whose essences arrive in bursts, as an MPEG-TS stream's
+// audio does in PES packets of several frames, is placed at its latest
+// arrival, so it is on hand at every read.
 //
 // For the first TrackingSettle windows after a placement every timestamp
-// is placed no earlier than it arrives and the offset forgets a lateness
+// is placed no earlier than it arrives (a video frame up to
+// TrackingGridMargin earlier, as below), and the offset forgets a lateness
 // after two windows, so the backlog a connection's socket and stream probe
 // built before the first frame was decoded is left behind. Then the offset
 // is the largest lateness of the settle windows after the first, and it is
@@ -238,6 +239,22 @@ func (a *Anchor) Moves() int64 {
 // move from the offset the settle windows followed is a move like any
 // other: it slews, or past TrackingSlewMax steps and counts.
 //
+// A tick shows a source's newest frame stamped at or before its read
+// point, a program frame start, and plays the audio stamped from there
+// on, so a frame stamped between two frame starts airs up to a period
+// after its stamp and its audio on it: a picture up to a period behind
+// its sound, by a phase the lateness the offset follows sets, a new one
+// with every move. The offset timestamps are mapped with therefore slews
+// not to the offset but to the least offset at or above it that places
+// the source's video frames, given by VideoPTS, TrackingGridMargin before
+// a program frame start, so each frame airs on its stamp and its audio
+// with it. The phase is taken from each window's frames whose leads on the
+// frame starts agree within TrackingDriftMargin, as a source at the
+// program rate or a whole fraction of it does, and is kept while a window's
+// do not, as at another rate, where no offset places every frame on a
+// frame start. A source with no video, or none yet, is mapped at the
+// offset. The raises and lowerings above are of the offset alone.
+//
 // No timestamp is placed more than MaxSourceHold after its own arrival:
 // the stores that hold a source's frames and audio until they are due
 // keep no more than that, so a frame placed further ahead is dropped
@@ -250,7 +267,8 @@ type TrackingAnchor struct {
 	mu        sync.Mutex
 	set       bool
 	offset    int64
-	applied   int64                  // offset timestamps are mapped with, slewing to offset
+	applied   int64                  // offset timestamps are mapped with, slewing to target
+	target    int64                  // the offset, or above it the video's alignment (alignUp)
 	slewAt    int64                  // engine PTS up to which applied has slewed
 	placedAt  int64                  // offset the source was last placed at
 	cur       int64                  // largest lateness in the current window
@@ -261,7 +279,34 @@ type TrackingAnchor struct {
 	moves     int64
 	raises    int64
 	steps     int64
+
+	// The video's alignment on the program frame starts of rate grid
+	// (zero: none): the target is IndexPTS(grid, kref) less
+	// TrackingGridMargin less vref, the source PTS of a video frame.
+	grid Rate
+	vref int64
+	kref uint64
+	// The current window's video frames, measured on the frame starts of
+	// rate vrate mapped with vt0, the target at its first: lead is how far
+	// a frame is placed before the frame start at or after it. vfirst is
+	// the first frame's, vlo and vhi the least and largest of the others'
+	// less vfirst, wrapped to half a period either way, and the frame of
+	// vlo is source PTS vloSrc placed at engine PTS vloAt.
+	vrate         Rate
+	vt0           int64
+	vn            int
+	vfirst        int64
+	vlo, vhi      int64
+	vloSrc, vloAt int64
 }
+
+// TrackingGridMargin is how far before a program frame start a settled
+// TrackingAnchor places its source's video, in 90 kHz ticks. At a rate
+// whose period is not a whole number of ticks, such as 60000/1001 (1501.5),
+// a source's frame stamps and the frame starts each step by 1501 and 1502
+// ticks, not in turn with each other, so a frame placed a tick before one
+// frame start can be a tick past the next.
+const TrackingGridMargin = 2
 
 // TrackingWindow is the span over which a TrackingAnchor takes a
 // source's largest lateness.
@@ -339,6 +384,110 @@ func (a *TrackingAnchor) PTS(src int64) int64 {
 	return a.place(src)
 }
 
+// VideoPTS maps the source timestamp src of a video frame to the engine
+// timeline, as PTS does, and measures where the frame lands on the
+// program's frame starts, which the offset slews to place it just before.
+func (a *TrackingAnchor) VideoPTS(src int64) int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	pts := a.place(src)
+	a.noteVideo(src)
+	return pts
+}
+
+// noteVideo measures the lead on the program frame starts of the video
+// frame src mapped with the target. An aligned frame whose lead fell under
+// TrackingGridMargin, by no more than TrackingDriftMargin, as a sender
+// clock that runs fast moves its frames towards the frame starts, is
+// aligned again at once: left to the end of the window, its frames would
+// pass a frame start and air a period late for the rest of it. Caller
+// holds a.mu.
+func (a *TrackingAnchor) noteVideo(src int64) {
+	r, ok := ProgramRate()
+	if !ok {
+		return
+	}
+	if r != a.vrate {
+		a.vrate, a.vn = r, 0
+	}
+	period := roundDiv(90000*r.Den, r.Num)
+	wrap := func(d int64) int64 {
+		if d >= period/2 {
+			return d - period
+		} else if d < -period/2 {
+			return d + period
+		}
+		return d
+	}
+	leadAt := func(at int64) int64 { return IndexPTS(r, startAtOrAfter(r, at)) - at }
+	if at := src + a.target; a.grid == r {
+		if d := wrap(leadAt(at) - TrackingGridMargin); d < 0 && d >= -TrackingDriftMargin {
+			a.vref, a.kref = src, PTSIndex(r, at+TrackingGridMargin+d)
+		}
+	}
+	if a.vn == 0 {
+		a.vt0 = a.target
+	}
+	at := src + a.vt0
+	lead := leadAt(at)
+	if a.vn == 0 {
+		a.vfirst, a.vlo, a.vhi, a.vloSrc, a.vloAt = lead, 0, 0, src, at
+		a.vn = 1
+		return
+	}
+	d := wrap(lead - a.vfirst)
+	if d < a.vlo {
+		a.vlo, a.vloSrc, a.vloAt = d, src, at
+	}
+	a.vhi = max(a.vhi, d)
+	a.vn++
+}
+
+// realign takes the video's alignment from the window that just ended:
+// the frame of the least lead is placed TrackingGridMargin before its
+// frame start, and every other frame up to TrackingDriftMargin more, when
+// the window's frames agree that far. Caller holds a.mu.
+func (a *TrackingAnchor) realign() {
+	r, ok := ProgramRate()
+	if ok && a.vn >= 2 && a.vrate == r && a.vhi-a.vlo <= TrackingDriftMargin {
+		a.grid, a.vref = r, a.vloSrc
+		a.kref = PTSIndex(r, a.vloAt+a.vfirst+a.vlo)
+	}
+	a.vn = 0
+}
+
+// alignUp returns the target for offset lo: lo without an alignment, and
+// with one, the least offset at or above lo that places the video on it,
+// or the one before while that is no more than TrackingGridMargin below
+// lo. At a rate whose period is not a whole number of ticks, the offsets
+// that place the video step by 1501 and 1502 ticks, say, and which of
+// them a measurement finds can change by a tick; without that much below
+// lo allowed, the source would move a period whenever it did. Caller holds
+// a.mu.
+func (a *TrackingAnchor) alignUp(lo int64) int64 {
+	if r, ok := ProgramRate(); !ok || r != a.grid {
+		a.grid = Rate{}
+		return lo
+	}
+	at := func(k uint64) int64 { return IndexPTS(a.grid, k) - TrackingGridMargin - a.vref }
+	if at(a.kref) < lo-TrackingGridMargin {
+		a.kref = startAtOrAfter(a.grid, lo+a.vref)
+	} else if a.kref > 0 && at(a.kref-1) >= lo {
+		a.kref = startAtOrAfter(a.grid, lo+TrackingGridMargin+a.vref)
+	}
+	return at(a.kref)
+}
+
+// startAtOrAfter returns the index of the first frame start of rate r at
+// or after the engine PTS pts.
+func startAtOrAfter(r Rate, pts int64) uint64 {
+	i := PTSIndex(r, pts)
+	for IndexPTS(r, i) < pts {
+		i++
+	}
+	return i
+}
+
 // place maps src to the engine timeline. Caller holds a.mu.
 func (a *TrackingAnchor) place(src int64) int64 {
 	now := NowPTS()
@@ -352,8 +501,10 @@ func (a *TrackingAnchor) place(src int64) int64 {
 		a.set = true
 		a.offset, a.cur, a.windows = late, late, 0
 		a.windowEnd = now + TrackingWindow
+		a.grid, a.vn = Rate{}, 0
 		placed = true
 	case now >= a.windowEnd:
+		a.realign()
 		copy(a.maxes[1:], a.maxes[:])
 		a.maxes[0], a.cur = a.cur, late
 		a.windows++
@@ -387,22 +538,23 @@ func (a *TrackingAnchor) place(src int64) int64 {
 	} else if a.offset > was {
 		a.raises++
 	}
+	a.target = a.alignUp(a.offset)
 	a.slew(now, step)
 	a.applied = min(a.applied, ceil)
 	return src + a.applied
 }
 
-// slew moves the offset timestamps are mapped with towards the offset:
+// slew moves the offset timestamps are mapped with towards the target:
 // at once before the settle, and after it at TrackingSlewRate, or at once
 // as a step when step is set or the move is more than TrackingSlewMax.
 // Caller holds a.mu.
 func (a *TrackingAnchor) slew(now int64, step bool) {
-	d := a.offset - a.applied
+	d := a.target - a.applied
 	switch {
 	case d == 0 || a.windows < TrackingSettle:
-		a.applied, a.slewAt = a.offset, now
+		a.applied, a.slewAt = a.target, now
 	case step || abs(d) > TrackingSlewMax:
-		a.applied, a.slewAt = a.offset, now
+		a.applied, a.slewAt = a.target, now
 		a.steps++
 	default:
 		if n := (now - a.slewAt) / TrackingSlewRate; n > 0 {

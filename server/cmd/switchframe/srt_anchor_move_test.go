@@ -14,7 +14,8 @@ import (
 type anchorMoveRun struct {
 	breaks  int                 // breaks of the aired audio from 10 s on, counted from its samples
 	counted int64               // breaks the mixer counted for the source from 10 s on
-	maxAV   int64               // largest distance of the audio from its video, in 90 kHz ticks
+	maxAV   int64               // largest distance of the audio from its video's stamps, in 90 kHz ticks
+	airAV   int64               // the same from its video as it airs, from half a second after the anchor last moved it
 	settled clock.TrackingStats // the anchor's at 10 s
 	stats   clock.TrackingStats // the anchor's at the end
 }
@@ -31,8 +32,9 @@ const anchorMoveKey = "srt:move"
 // arrived, and a few ms of jitter. From 10 s on, every read is checked:
 // its samples must continue the samples before, by the count on the right
 // channel, at the rate a resampling under 0.5% leaves, with no silence;
-// and its audio must air within a program period of its video, as the
-// anchor placed the last video frame. strict fails the test at the first
+// and the distance of its audio from the stamps the anchor gave the last
+// video frame is recorded, and from that frame as it airs, on the first
+// read point at or after its stamp. strict fails the test at the first
 // break; otherwise the breaks are counted.
 func srtAnchorMove(t *testing.T, r clock.Rate, srcRate int, end int64, late func(video bool, at int64) int64, strict bool) anchorMoveRun {
 	t.Helper()
@@ -66,7 +68,9 @@ func srtAnchorMove(t *testing.T, r clock.Rate, srcRate int, end int64, late func
 	var res anchorMoveRun
 	before := int64(-1) // the mixer's count at 10 s
 	var vi, aj int64
-	var vOff int64 // the anchor's offset for the last video frame, in ticks
+	var vOff int64   // the anchor's offset for the last video frame, in ticks
+	var vAir int64   // how much later than its source stamp the last video frame airs, in ticks
+	var vMoved int64 // TAI the anchor last mapped a video frame with another offset than the one before
 	var airing, counted bool
 	var prevRaw float64
 	var abs int64 // 48 kHz sample count of the last aired sample
@@ -81,7 +85,13 @@ func srtAnchorMove(t *testing.T, r clock.Rate, srcRate int, end int64, late func
 		switch at {
 		case tv:
 			pts := src0 + (vi*90000*r.Den)/r.Num
-			vOff = anchor.PTS(pts) - pts
+			mapped := anchor.VideoPTS(pts)
+			if mapped-pts != vOff {
+				vMoved = at
+			}
+			vOff = mapped - pts
+			// The read points are the program's frame starts.
+			vAir = onGrid(r, mapped) - pts
 			vi++
 		case ta:
 			n := samples(aj+1) - samples(aj)
@@ -139,6 +149,9 @@ func srtAnchorMove(t *testing.T, r clock.Rate, srcRate int, end int64, late func
 					if d := max(aOff-vOff, vOff-aOff); d > res.maxAV {
 						res.maxAV = d
 					}
+					if d := max(aOff-vAir, vAir-aOff); d > res.airAV && at-vMoved >= 500_000_000 {
+						res.airAV = d
+					}
 				}
 			}
 		}
@@ -171,6 +184,42 @@ func forEachSourceRate(t *testing.T, f func(t *testing.T, r clock.Rate, srcRate 
 	}
 }
 
+// maxAiredAV is how far an SRT source's audio may air from its video, in
+// 90 kHz ticks, once the source's anchor holds its video still: the video
+// airs up to 3 ticks after its stamp (clock.TrackingGridMargin, and a tick
+// more at a rate whose period is not a whole number of ticks), and the
+// mixer leaves audio up to 2 samples off its stamps, 3.75 ticks, before it
+// resamples it onto them.
+const maxAiredAV = 7
+
+// A tick shows an SRT source's newest frame stamped at or before its read
+// point and plays its audio from there on its stamps, so a frame stamped
+// between two read points airs up to a period after its audio. Which phase
+// of the period a source's stamps fall in follows from its lateness, so
+// its pictures aired behind its sound by anything from nothing to a period,
+// a new amount with every connection. Mapped so its video lands just
+// before a read point, the source airs its audio with its video, whatever
+// its lateness, at every program rate.
+func TestSRTAudioAirsWithItsVideoAtAnyLateness(t *testing.T) {
+	phases := int64(8)
+	if raceDetector {
+		phases = 2
+	}
+	forEachTimingRate(t, func(t *testing.T, r clock.Rate) {
+		clock.SetProgramRate(r)
+		t.Cleanup(func() { clock.SetProgramRate(clock.Rate{Num: 50, Den: 1}) })
+		period := clock.IndexToTimestamp(r, 1)
+		for q := range phases {
+			late := 3_000_000 + q*period/phases
+			res := srtAnchorMove(t, r, 48000, 13_000_000_000, func(bool, int64) int64 { return late }, true)
+			if res.airAV > maxAiredAV {
+				t.Fatalf("lateness %.2f ms: audio aired up to %d ticks from its video, more than %d",
+					float64(late)/1e6, res.airAV, maxAiredAV)
+			}
+		}
+	})
+}
+
 // The live shape of an anchor move that aired 50 ms of silence: an SRT
 // source whose audio arrives on time, frame by frame, and whose video path
 // stalls twice, 2.5 s apart in windows in a row, each stall's frames handed
@@ -178,7 +227,8 @@ func forEachSourceRate(t *testing.T, f func(t *testing.T, r clock.Rate, srcRate 
 // for a lasting lateness and raises its offset, and a minute on time
 // lowers it again. Through both, every program read airs the source's
 // audio on from the read before, with no silence and no step, and the
-// audio airs within a program period of its video. Placed again on its
+// audio airs within a program period of its video's stamps, and with its
+// video once the anchor holds it still. Placed again on its
 // moved stamps, as it was, the source's audio aired the raise as silence
 // and the lowering as a splice, while the source's audio counters stayed
 // flat. At every program rate, for 48 and 44.1 kHz streams.
@@ -205,21 +255,25 @@ func TestSRTAudioAirsThroughAnAnchorMove(t *testing.T) {
 			t.Fatalf("anchor %+v, settled %+v: want the stalls raised for and the offset lowered back a minute on", s, res.settled)
 		}
 		if period := clock.ProgramPeriod(); res.maxAV > period {
-			t.Fatalf("audio aired up to %d ticks from its video, more than the %d-tick period", res.maxAV, period)
+			t.Fatalf("audio aired up to %d ticks from its video's stamps, more than the %d-tick period", res.maxAV, period)
+		}
+		if res.airAV > maxAiredAV {
+			t.Fatalf("audio aired up to %d ticks from its video once the anchor held it still, more than %d", res.airAV, maxAiredAV)
 		}
 	})
 }
 
-// A lateness that lasts, of the whole source and past the audio budget, is
-// raised for, and two windows on the raise is taken as a step: until the
-// anchor raises, the audio arrives after its reads and airs in pieces, and
-// the step places it again on the moved stamps, a gap. None of it goes
-// uncounted: every break the aired samples show, the source's breaks count
-// once, and the step is counted on the anchor. At every program rate, for
-// 48 and 44.1 kHz streams.
+// A lateness that lasts, of the whole source and past the audio budget and
+// the up to a period more its anchor maps it with to air its video on a
+// read point, is raised for, and two windows on the raise is taken as a
+// step: until the anchor raises, the audio arrives after its reads and
+// airs in pieces, and the step places it again on the moved stamps, a gap.
+// None of it goes uncounted: every break the aired samples show, the
+// source's breaks count once, and the step is counted on the anchor. At
+// every program rate, for 48 and 44.1 kHz streams.
 func TestSRTAudioCountsEveryBreakOfALastingLateness(t *testing.T) {
 	forEachSourceRate(t, func(t *testing.T, r clock.Rate, srcRate int) {
-		lasting := clock.TrackingSlack() + 30*90
+		lasting := clock.TrackingSlack() + clock.ProgramPeriod() + 30*90
 		late := func(_ bool, at int64) int64 {
 			if at >= 12_000_000_000 {
 				return lasting * 100_000 / 9
