@@ -297,11 +297,19 @@ func TestSRTAudioCountsEveryBreakOfALastingLateness(t *testing.T) {
 }
 
 // ptsGPU is a GPU source manager that records the PTS of every frame the
-// switcher ingests.
-type ptsGPU struct{ pts chan int64 }
+// switcher ingests for one source. The switcher's built-in sources are
+// ingested through it too, from a goroutine of their own.
+type ptsGPU struct {
+	key string
+	pts chan int64
+}
 
-func (g *ptsGPU) IngestYUV(_ string, _ []byte, _, _ int, pts int64) { g.pts <- pts }
-func (g *ptsGPU) RemoveSource(string)                               {}
+func (g *ptsGPU) IngestYUV(key string, _ []byte, _, _ int, pts int64) {
+	if key == g.key {
+		g.pts <- pts
+	}
+}
+func (g *ptsGPU) RemoveSource(string) {}
 
 // An SRT source's video goes through its connection's pipeline ingest,
 // which maps each frame through the anchor with srtVideoPTS, as the NVDEC
@@ -318,7 +326,7 @@ func TestSRTVideoIngestLandsJustBeforeAFrameStart(t *testing.T) {
 		// After the switcher's own clock, which sets its rate as it starts.
 		clock.SetProgramRate(r)
 		t.Cleanup(func() { clock.SetProgramRate(clock.Rate{Num: 50, Den: 1}) })
-		gpu := &ptsGPU{pts: make(chan int64, 1)}
+		gpu := &ptsGPU{key: key, pts: make(chan int64, 1)}
 		sw.SetGPUSourceManager(gpu)
 		m := audio.NewMixer(audio.MixerConfig{SampleRate: 48000, Channels: 2})
 		t.Cleanup(func() { _ = m.Close() })
