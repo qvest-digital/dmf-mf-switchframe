@@ -63,6 +63,14 @@ Registered per-instance via `NewMetrics` and attached to the switcher with `Swit
 |---|---|---|---|
 | `switchframe_mixer_frames_mixed_total` | counter | - | Every `ProduceSamples` call: one per program tick. |
 | `switchframe_mixer_encode_errors_total` | counter | — | Every FDK-AAC encode failure in the mixer. |
+| `switchframe_audio_source_push_lead_seconds` | histogram | `source` | Every PCM push of a live source (SRT, MXL, ST 2110) whose input has not ended: how much media time the program's reads had left before reaching the end of the pushed audio. The end of the pushed audio on its stamps, less the end of the last read, plus the source's delay. Below a program period the next read finds the source short; below 0 the audio arrived after its read. The series goes when the source's input ends. Buckets: -40 ms, -20 ms, -10 ms, -5 ms, 0, 5 ms, 10 ms, 15 ms, 20 ms, 25 ms, 30 ms, 40 ms, 50 ms, 75 ms, 100 ms, 200 ms, 500 ms. |
+
+## SRT input metrics
+
+| Metric | Type | Labels | Fires on |
+|---|---|---|---|
+| `switchframe_srt_audio_queue_delay_seconds` | histogram | `source` | Every frame of decoded SRT audio the mixer's ingest takes: the time from the decoder handing it over to the ingest taking it, behind the frames queued before it. The series goes when the connection ends. Buckets: 0.1 ms, 0.5 ms, 1 ms, 2 ms, 5 ms, 10 ms, 20 ms, 40 ms, 60 ms, 100 ms, 200 ms, 500 ms, 1 s. |
+| `switchframe_srt_audio_push_duration_seconds` | histogram | `source` | Every push of a frame of decoded SRT audio to the mixer: how long it took, waiting for the mixer included. The series goes when the connection ends. Buckets: 10 us, 50 us, 100 us, 500 us, 1 ms, 2 ms, 5 ms, 10 ms, 20 ms, 50 ms, 100 ms. |
 
 ## Pipeline metrics
 
@@ -226,6 +234,18 @@ Read by [`srt.MetricsCollector`](../../server/srt/metrics_collector.go), from li
 | `switchframe_srt_sent_dropped_packets_total` | counter | `connection` | Packets the sender dropped as too late to send: what the receiver never got. |
 | `switchframe_srt_send_buffer_seconds` | gauge | `connection` | Media waiting in the send buffer. |
 | `switchframe_srt_send_rate_bytes` | gauge | `connection` | Send rate, bytes per second, as SRT measured it over its last window. |
+
+### SRT input metrics
+
+Read by `srtAnchorCollector` and `srtAudioDropCollector` in [`app_srt.go`](../../server/cmd/switchframe/app_srt.go), one set per connected SRT input. Each starts at 0 on every connection.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `switchframe_srt_anchor_offset_seconds` | gauge | `source` | How far the input's TrackingAnchor offset moved since the connection was placed: up when its timestamps arrived later than before, down when a window forgot a lateness. |
+| `switchframe_srt_anchor_offset_raises_total` | counter | `source` | Timestamps of the input that raised its TrackingAnchor offset, each moving its later frames that much later. |
+| `switchframe_srt_anchor_offset_steps_total` | counter | `source` | Moves of the input's settled TrackingAnchor offset taken at once rather than slewed, each moving its video and audio by a step. |
+| `switchframe_srt_audio_drops_total` | counter | `source` | Decoded audio frames dropped before the mixer because its ingest had fallen behind the decoder: missing from the program. |
+| `switchframe_srt_relay_audio_drops_total` | counter | `source` | Decoded audio frames dropped before the browser relay's AAC encode because the relay had fallen behind the mixer's ingest, oldest first: missing from the input's browser preview and replay only. |
 
 ### Playout metrics
 

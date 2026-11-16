@@ -78,3 +78,41 @@ func TestIngestPCMReportsALiveSourcesLead(t *testing.T) {
 		})
 	}
 }
+
+// A live source's series goes when its input ends, as an SRT connection's
+// does, and audio the ended input had queued, pushed after, does not bring
+// it back; a new input of the source starts it afresh.
+func TestPushLeadSeriesFollowsTheSourcesInput(t *testing.T) {
+	sr := clock.Rate{Num: 48000, Den: 1}
+	pm := metrics.NewMetrics(prometheus.NewRegistry())
+	m := NewMixer(MixerConfig{SampleRate: 48000, Channels: 2})
+	t.Cleanup(func() { _ = m.Close() })
+	m.SetMetrics(pm)
+	const key = "srt:cam"
+	m.AddChannel(key)
+	m.SetLiveInput(key)
+	start := clock.PTSIndex(sr, clock.NowPTS())
+	m.ProduceSamples(start, 480, 0)
+	push := func(end uint64) {
+		m.IngestPCM(key, make([]float32, 2*480), clock.IndexPTS(sr, end-480), 2)
+	}
+	series := func() int {
+		ch := make(chan prometheus.Metric, 16)
+		pm.AudioSourcePushLead.Collect(ch)
+		close(ch)
+		return len(ch)
+	}
+
+	push(start + 1440)
+	require.Equal(t, 1, series())
+	m.EndChannelInput(key)
+	require.Zero(t, series(), "the ended input's series stayed")
+	push(start + 1920)
+	require.Zero(t, series(), "audio the ended input had queued brought its series back")
+
+	m.ResetChannelInput(key)
+	m.ProduceSamples(start+480, 480, 0)
+	push(start + 2400)
+	count, _ := pushLeads(t, pm, key)
+	require.Equal(t, uint64(1), count, "the new input's series did not start afresh")
+}

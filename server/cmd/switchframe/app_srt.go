@@ -101,9 +101,10 @@ type srtRelayContext struct {
 	replayVideoCh chan srtVideoJob // nil when replay is not active
 	audioCh       chan srtAudioJob
 
-	// ingestDelay observes how long decoded audio took to reach the
-	// mixer (nil without metrics).
-	ingestDelay prometheus.Observer
+	// queueDelay observes how long decoded audio waited for the mixer's
+	// ingest, pushDuration how long its push to the mixer took (nil
+	// without metrics).
+	queueDelay, pushDuration prometheus.Observer
 
 	// Replay viewer (nil when replay is not active or wired via relay).
 	replayViewer interface {
@@ -365,9 +366,9 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	pf := a.sw.PipelineFormat()
 	framePool := a.sw.GetFramePool()
 
-	pipelineCh := make(chan srtVideoJob, 4)   // → IngestRawVideo
-	relayVideoCh := make(chan srtVideoJob, 4) // → H.264 encode + relay
-	audioCh := make(chan srtAudioJob, 8)      // → IngestPCM, then AAC encode + relay
+	pipelineCh := make(chan srtVideoJob, 4)   // -> IngestRawVideo
+	relayVideoCh := make(chan srtVideoJob, 4) // -> H.264 encode + relay
+	audioCh := make(chan srtAudioJob, 8)      // -> IngestPCM, then AAC encode + relay
 
 	// Replay channel: when preview proxy is active and replay is configured,
 	// a separate full-quality encode goroutine feeds the replay viewer directly.
@@ -476,7 +477,8 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		replayViewer:  replayViewer,
 	}
 	if a.appMetrics != nil {
-		rc.ingestDelay = a.appMetrics.SRTAudioIngestDelay.WithLabelValues(metrics.SourceLabel(key))
+		rc.queueDelay = a.appMetrics.SRTAudioQueueDelay.WithLabelValues(metrics.SourceLabel(key))
+		rc.pushDuration = a.appMetrics.SRTAudioPushDuration.WithLabelValues(metrics.SourceLabel(key))
 	}
 
 	// --- Goroutine 2: Relay video encode ---
@@ -506,7 +508,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	}
 
 	// --- Goroutines 3 and 4: Audio (mixer, then relay encode) ---
-	a.startSRTAudioRelay(rc)
+	audioDone := a.startSRTAudioRelay(rc)
 
 	// --- Register preview encoder with debug collector ---
 	if previewEnc != nil {
@@ -714,6 +716,10 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		if replayGPUCh != nil {
 			close(replayGPUCh)
 		}
+		// The audio this connection queued is pushed to the mixer, placed
+		// by this connection's anchor, before the release ends it and a
+		// new connection, which waits for the release, resets it.
+		<-audioDone
 
 		a.releaseSRTConnection(sourceKey, cfg.Mode)
 
@@ -796,6 +802,14 @@ func (a *App) releaseSRTConnection(sourceKey string, mode string) {
 	if a.mixer != nil {
 		a.mixer.EndChannelInput(sourceKey)
 	}
+	// Stream ids come and go: a series per id would grow without bound.
+	// Removed while the entry is still there, so a new connection, which
+	// waits for this release, labels its series afresh.
+	if a.appMetrics != nil {
+		label := metrics.SourceLabel(sourceKey)
+		a.appMetrics.SRTAudioQueueDelay.DeleteLabelValues(label)
+		a.appMetrics.SRTAudioPushDuration.DeleteLabelValues(label)
+	}
 
 	a.srtSourcesMu.Lock()
 	delete(a.srtSources, sourceKey)
@@ -829,11 +843,6 @@ func (a *App) releaseSRTConnection(sourceKey string, mode string) {
 	// Remove replay viewer from the source relay.
 	if a.replayMgr != nil {
 		a.replayMgr.RemoveSource(sourceKey)
-	}
-
-	// Stream ids come and go: a series per id would grow without bound.
-	if a.appMetrics != nil {
-		a.appMetrics.SRTAudioIngestDelay.DeleteLabelValues(metrics.SourceLabel(sourceKey))
 	}
 }
 
@@ -1240,50 +1249,75 @@ func (a *App) ingestSRTAudio(key string, anchor *clock.TrackingAnchor, job srtAu
 // the mixer and, with a browser relay, the one that encodes it as AAC for
 // the relay and the replay system. The mixer's ingest hands each job on
 // without waiting: an encode or a viewer's send that stalls holds up only
-// the relay, whose jobs past relayAudioQueue are dropped and counted,
-// never the program's audio.
-func (a *App) startSRTAudioRelay(rc *srtRelayContext) {
+// the relay. The returned channel is closed once rc.audioCh is closed and
+// every job queued on it has been pushed to the mixer.
+func (a *App) startSRTAudioRelay(rc *srtRelayContext) <-chan struct{} {
 	var relayCh chan srtAudioJob
 	if rc.relay != nil {
 		relayCh = make(chan srtAudioJob, relayAudioQueue)
 		go a.relaySRTAudio(rc, relayCh)
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		for job := range rc.audioCh {
-			if rc.ingestDelay != nil && !job.decoded.IsZero() {
-				rc.ingestDelay.Observe(time.Since(job.decoded).Seconds())
+			if rc.queueDelay != nil && !job.decoded.IsZero() {
+				rc.queueDelay.Observe(time.Since(job.decoded).Seconds())
 			}
+			pushed := time.Now()
 			a.ingestSRTAudio(rc.key, rc.anchor, job)
-			if relayCh == nil {
-				continue
+			if rc.pushDuration != nil {
+				rc.pushDuration.Observe(time.Since(pushed).Seconds())
 			}
-			select {
-			case relayCh <- job:
-			default:
-				rc.state.relayAudioDrops.Add(1)
+			if relayCh != nil {
+				queueDroppingOldest(relayCh, job, rc.state.relayAudioDrops)
 			}
 		}
 		if relayCh != nil {
 			close(relayCh)
 		}
 	}()
+	return done
 }
 
 // relayAudioQueue is how many decoded audio jobs the relay encode may fall
-// behind the mixer's ingest before it drops them: as many as the decode
-// callback queues for the ingest.
+// behind the mixer's ingest: as many as the decode callback queues for the
+// ingest.
 const relayAudioQueue = 8
+
+// queueDroppingOldest queues job on ch without waiting. A full queue drops
+// its oldest job, counted in drops, rather than job: a relay that resumes
+// after a stall goes on with the newest audio, not with audio up to the
+// queue's length old.
+func queueDroppingOldest(ch chan srtAudioJob, job srtAudioJob, drops *atomic.Int64) {
+	for {
+		select {
+		case ch <- job:
+			return
+		default:
+		}
+		select {
+		case <-ch:
+			drops.Add(1)
+		default:
+		}
+	}
+}
 
 // relaySRTAudio encodes the decoded PCM audio jobs from jobs as AAC and
 // broadcasts them to the browser relay and the replay viewer, until jobs
 // is closed. The jobs' PCM is shared with the mixer's ingest, which only
-// reads it.
+// reads it. A job that does not continue the one before, off by more than
+// a sample, as after jobs were dropped, starts the encode afresh at its own
+// PTS: carried on, the AAC frames would be stamped earlier than their
+// audio by what was dropped, for as long as the connection lasts.
 func (a *App) relaySRTAudio(rc *srtRelayContext, jobs <-chan srtAudioJob) {
 	const aacFrameSamples = 1024
 	var (
 		audioEncoder audio.Encoder
 		audioBuf     []float32
-		audioPTS     int64
+		audioPTS     int64 // PTS of audioBuf's first sample
+		nextPTS      int64 // PTS the next job continues audioBuf at
 	)
 	for job := range jobs {
 		if audioEncoder == nil {
@@ -1296,10 +1330,15 @@ func (a *App) relaySRTAudio(rc *srtRelayContext, jobs <-chan srtAudioJob) {
 			rc.state.audioEncoder = enc
 		}
 
+		// A sample, and the tick each stamp is rounded to.
+		if gap := job.pts - nextPTS; len(audioBuf) > 0 && max(gap, -gap) > (90000+int64(job.sampleRate)-1)/int64(job.sampleRate)+1 {
+			audioBuf = audioBuf[:0]
+		}
 		if len(audioBuf) == 0 {
 			audioPTS = job.pts
 		}
 		audioBuf = append(audioBuf, job.pcm...)
+		nextPTS = job.pts + int64(len(job.pcm)/job.channels)*90000/int64(job.sampleRate)
 
 		chunkSize := aacFrameSamples * job.channels
 		for len(audioBuf) >= chunkSize {

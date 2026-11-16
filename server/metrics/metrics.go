@@ -86,7 +86,8 @@ type Metrics struct {
 	AudioSourcePushLead *prometheus.HistogramVec // label: source
 
 	// SRT input
-	SRTAudioIngestDelay *prometheus.HistogramVec // label: source
+	SRTAudioQueueDelay   *prometheus.HistogramVec // label: source
+	SRTAudioPushDuration *prometheus.HistogramVec // label: source
 
 	// Output
 	RingbufOverflowsTotal prometheus.Counter
@@ -178,16 +179,22 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		AudioSourcePushLead: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "switchframe",
 			Name:      "audio_source_push_lead_seconds",
-			Help:      "How far the end of a live source's PCM audio is ahead of the end of the program's last read when it is pushed to the mixer, on its stamps and less the source's delay. A push that leads by less than a program period leaves the next read short; a negative lead arrived after its read.",
+			Help:      "How much media time the program's reads had left before reaching the end of a live source's audio as it was pushed to the mixer: the end of the pushed audio on its stamps, less the end of the last read, plus the source's delay, which its reads lag by. Below a program period the next read finds the source short; below 0 the audio arrived after its read.",
 			Buckets:   []float64{-0.04, -0.02, -0.01, -0.005, 0, 0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05, 0.075, 0.1, 0.2, 0.5},
 		}, []string{"source"}),
 
 		// SRT input
-		SRTAudioIngestDelay: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		SRTAudioQueueDelay: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "switchframe",
-			Name:      "srt_audio_ingest_delay_seconds",
-			Help:      "Time from a connected SRT source's decoder handing over a frame of audio to its push to the mixer. Starts afresh on every connection.",
+			Name:      "srt_audio_queue_delay_seconds",
+			Help:      "Time from a connected SRT source's decoder handing over a frame of audio to the mixer's ingest taking it: how long it waited behind the frames queued before it. Starts afresh on every connection.",
 			Buckets:   []float64{0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.04, 0.06, 0.1, 0.2, 0.5, 1},
+		}, []string{"source"}),
+		SRTAudioPushDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "switchframe",
+			Name:      "srt_audio_push_duration_seconds",
+			Help:      "Time a connected SRT source's push of a frame of audio to the mixer took, waiting for the mixer included. Starts afresh on every connection.",
+			Buckets:   []float64{0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1},
 		}, []string{"source"}),
 
 		// Output
@@ -376,7 +383,8 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.FramesMixedTotal,
 		m.EncodeErrorsTotal,
 		m.AudioSourcePushLead,
-		m.SRTAudioIngestDelay,
+		m.SRTAudioQueueDelay,
+		m.SRTAudioPushDuration,
 		m.RingbufOverflowsTotal,
 		m.SRTReconnectsTotal,
 		m.RecordingBytesTotal,

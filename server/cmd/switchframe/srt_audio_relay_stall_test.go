@@ -50,7 +50,8 @@ func (v *stallingViewer) SendAudio(*media.AudioFrame) {
 // broadcast it, each frame reached the mixer only after the relay had
 // taken the frame before, so the stall held the program's audio back:
 // its reads found it missing, and the decode callback dropped what the
-// queue could not hold. At every program rate.
+// queue could not hold. What the relay drops instead is counted. At every
+// program rate.
 func TestSRTAudioIngestDoesNotWaitForTheRelay(t *testing.T) {
 	forEachTimingRate(t, srtRelayStall)
 }
@@ -149,5 +150,96 @@ func srtRelayStall(t *testing.T, r clock.Rate) {
 	}
 	require.NotZero(t, stalledAt, "the relay never stalled")
 	require.Zero(t, drops.Load(), "decoded audio was dropped before the mixer")
+	require.NotZero(t, relayDrops.Load(), "the stalled relay dropped nothing: its drops go uncounted")
 	require.Zero(t, m.ChannelBreaks()[key]-before, "the program's audio of the source broke while its relay was stalled")
+}
+
+// ptsRecorder is a browser viewer that records the PTS of the audio frames
+// it is sent.
+type ptsRecorder struct {
+	mu  sync.Mutex
+	pts []int64
+}
+
+func (v *ptsRecorder) ID() string                     { return "pts-recorder" }
+func (v *ptsRecorder) SendVideo(*media.VideoFrame)    {}
+func (v *ptsRecorder) SendCaptions(*ccx.CaptionFrame) {}
+func (v *ptsRecorder) Stats() distribution.ViewerStats {
+	return distribution.ViewerStats{}
+}
+
+func (v *ptsRecorder) SendAudio(f *media.AudioFrame) {
+	v.mu.Lock()
+	v.pts = append(v.pts, f.PTS)
+	v.mu.Unlock()
+}
+
+// An SRT source whose decoder hands over audio in frames other than the
+// 1024 samples the relay encodes, here 1152, has jobs dropped before its
+// relay. Each AAC frame the relay broadcasts after the gap is stamped with
+// the PTS of its own first sample: carried on across the gap, the frames
+// were stamped earlier than their audio by what was dropped, for as long
+// as the connection lasted.
+func TestSRTRelayAudioKeepsItsStampsAcrossDroppedFrames(t *testing.T) {
+	const n, sr = 1152, 48000
+	relay := distribution.NewRelay()
+	rec := &ptsRecorder{}
+	relay.AddViewer(rec)
+	rc := &srtRelayContext{key: "srt:gap", relay: relay, state: &srtSourceState{}}
+	jobs := make(chan srtAudioJob)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		(&App{}).relaySRTAudio(rc, jobs)
+	}()
+	const pts0 = int64(900_000)
+	stamp := func(sample int64) int64 { return pts0 + sample*90000/sr }
+	var want []int64 // the first sample of every AAC frame of the run after the gap
+	for k := int64(0); k < 40; k++ {
+		if k >= 10 && k < 13 {
+			continue // dropped
+		}
+		jobs <- srtAudioJob{pcm: make([]float32, 2*n), pts: stamp(k * n), sampleRate: sr, channels: 2}
+	}
+	close(jobs)
+	<-done
+	for s := int64(13 * n); s+1024 <= 40*n; s += 1024 {
+		want = append(want, stamp(13*n)+(s-13*n)/1024*(1024*90000/sr))
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.GreaterOrEqual(t, len(rec.pts), len(want))
+	got := rec.pts[len(rec.pts)-len(want):]
+	require.Equal(t, want, got, "AAC frames after the gap are not stamped with their own audio")
+}
+
+// A 44.1 kHz stream's AAC frames, decoded to 48 kHz, are 1114 and 1115
+// samples stamped 2089 or 2090 ticks apart, so a job continues the one
+// before within a sample and the tick its stamp is rounded to, never
+// exactly. The relay encodes it as one run: every AAC frame is stamped 1920
+// ticks after the one before.
+func TestSRTRelayAudioRunsOnAcrossA441StreamsStamps(t *testing.T) {
+	relay := distribution.NewRelay()
+	rec := &ptsRecorder{}
+	relay.AddViewer(rec)
+	rc := &srtRelayContext{key: "srt:441", relay: relay, state: &srtSourceState{}}
+	jobs := make(chan srtAudioJob)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		(&App{}).relaySRTAudio(rc, jobs)
+	}()
+	samples := func(j int64) int64 { return j * 1024 * 48000 / 44100 }
+	for j := int64(0); j < 200; j++ {
+		n := samples(j+1) - samples(j)
+		jobs <- srtAudioJob{pcm: make([]float32, 2*n), pts: 900_000 + j*1024*90000/44100, sampleRate: 48000, channels: 2}
+	}
+	close(jobs)
+	<-done
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.Greater(t, len(rec.pts), 150)
+	for i := 1; i < len(rec.pts); i++ {
+		require.Equal(t, int64(1920), rec.pts[i]-rec.pts[i-1], "AAC frame %d is not stamped on from the one before", i)
+	}
 }

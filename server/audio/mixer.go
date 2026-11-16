@@ -146,7 +146,7 @@ type Channel struct {
 	ended  bool
 	inRead bool
 	// pushLead observes a live channel's pushes (observePushLead), from
-	// its first push once metrics are set.
+	// its first push once metrics are set until its input ends.
 	pushLead prometheus.Observer
 	// slewHist holds the frames IngestPCMSlewed has not resampled yet,
 	// with the slewTaps/2-1 before the next one the kernel reads; slewPos
@@ -1016,6 +1016,12 @@ func (m *Mixer) EndChannelInput(sourceKey string) {
 	defer m.mu.Unlock()
 	if ch, ok := m.channels[sourceKey]; ok {
 		ch.ended = true
+		// A source key comes and goes with its input: a series per key
+		// would grow without bound.
+		ch.pushLead = nil
+		if m.promMetrics != nil {
+			m.promMetrics.AudioSourcePushLead.DeleteLabelValues(metrics.SourceLabel(sourceKey))
+		}
 	}
 }
 

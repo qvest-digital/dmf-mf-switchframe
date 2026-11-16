@@ -347,12 +347,12 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 	m.mu.Unlock()
 }
 
-// observePushLead records, for a live channel, how far the end of the audio
-// just pushed is ahead of the end of the program's last read, less the
-// channel's delay: what the next reads have left before they find it
-// missing. Caller holds m.mu.
+// observePushLead records, for a live channel whose input has not ended,
+// how much media time the program's reads have left before they reach the
+// end of the audio just pushed: its end less the end of the last read,
+// plus the channel's delay, which its reads lag by. Caller holds m.mu.
 func (m *Mixer) observePushLead(ch *Channel) {
-	if !ch.live || m.promMetrics == nil || m.readEnd == 0 || ch.ringEnd == 0 {
+	if !ch.live || ch.ended || m.promMetrics == nil || m.readEnd == 0 || ch.ringEnd == 0 {
 		return
 	}
 	if ch.pushLead == nil {
