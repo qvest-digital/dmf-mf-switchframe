@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.56](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.55...mxl-v1.0.0-rc.56) (2026-11-16)
+
+
+### Bug Fixes
+
+* **clock:** keep a slow SRT sender from moving its video down and back ([#309](https://github.com/qvest-digital/dmf-mf-switchframe/issues/309)) ([f3d37ef](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f3d37ef63004d72636f95f7ee70bde2b445095c6))
+
 ## [1.0.0-rc.55](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.54...mxl-v1.0.0-rc.55) (2026-11-16)
 
 
