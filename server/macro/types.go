@@ -47,6 +47,9 @@ const (
 	ActionGraphicsTextAnimateStop Action = "graphics_text_animate_stop"
 	ActionGraphicsTickerStart     Action = "graphics_ticker_start"
 	ActionGraphicsTickerStop      Action = "graphics_ticker_stop"
+	ActionGraphicsHTML5Data       Action = "graphics_html5_data"
+	ActionGraphicsHTML5Play       Action = "graphics_html5_play"
+	ActionGraphicsHTML5Stop       Action = "graphics_html5_stop"
 
 	// Recording actions.
 	ActionRecordingStart Action = "recording_start"
@@ -157,6 +160,9 @@ var allActions = map[Action]bool{
 	ActionGraphicsTextAnimateStop: true,
 	ActionGraphicsTickerStart:     true,
 	ActionGraphicsTickerStop:      true,
+	ActionGraphicsHTML5Data:       true,
+	ActionGraphicsHTML5Play:       true,
+	ActionGraphicsHTML5Stop:       true,
 	ActionRecordingStart:          true,
 	ActionRecordingStop:           true,
 	ActionPresetRecall:            true,
@@ -332,6 +338,9 @@ var stepSummaryMap = map[Action]stepSummaryFunc{
 	ActionGraphicsTextAnimateStop: layerSummary("Graphics Text Animate Stop"),
 	ActionGraphicsTickerStart:     layerSummary("Graphics Ticker Start"),
 	ActionGraphicsTickerStop:      layerSummary("Graphics Ticker Stop"),
+	ActionGraphicsHTML5Data:       layerSummary("HTML5 Data"),
+	ActionGraphicsHTML5Play:       layerSummary("HTML5 Play"),
+	ActionGraphicsHTML5Stop:       layerSummary("HTML5 Stop"),
 	ActionRecordingStart:          staticSummary("Recording Start"),
 	ActionRecordingStop:           staticSummary("Recording Stop"),
 	ActionFTB:                     staticSummary("Fade to Black"),

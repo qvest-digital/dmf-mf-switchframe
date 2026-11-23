@@ -828,3 +828,26 @@ func TestValidateSteps_SqueezebackParams(t *testing.T) {
 		require.Contains(t, result.Errors[0].Message, string(s.Action))
 	}
 }
+
+func TestValidateSteps_HTML5Params(t *testing.T) {
+	t.Parallel()
+	ok := []Step{
+		{Action: ActionGraphicsHTML5Data, Params: map[string]any{"layerId": float64(1), "data": map[string]any{"layout": "lframe"}}},
+		{Action: ActionGraphicsHTML5Play, Params: map[string]any{"layerId": float64(1)}},
+		{Action: ActionGraphicsHTML5Stop, Params: map[string]any{"layerId": float64(1)}},
+	}
+	for _, s := range ok {
+		result := ValidateSteps([]Step{s})
+		require.False(t, result.HasErrors(), "%s %v: %v", s.Action, s.Params, result.Errors)
+		require.Empty(t, result.Warnings, "%s with a layerId", s.Action)
+	}
+
+	for _, p := range []map[string]any{
+		{"layerId": float64(1)},
+		{"layerId": float64(1), "data": nil},
+	} {
+		result := ValidateSteps([]Step{{Action: ActionGraphicsHTML5Data, Params: p}})
+		require.True(t, result.HasErrors(), "params %v should be rejected", p)
+		require.Contains(t, result.Errors[0].Message, "graphics_html5_data requires 'data'")
+	}
+}

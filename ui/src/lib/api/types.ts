@@ -406,6 +406,7 @@ export type MacroAction =
 	| 'graphics_upload_frame'
 	| 'graphics_ticker_start' | 'graphics_ticker_stop'
 	| 'graphics_text_animate' | 'graphics_text_animate_stop'
+	| 'graphics_html5_data' | 'graphics_html5_play' | 'graphics_html5_stop'
 	// Output
 	| 'recording_start' | 'recording_stop'
 	// Presets

@@ -20,6 +20,9 @@
 	let needsLayerId = $derived(GRAPHICS_LAYER_ACTIONS.includes(step.action));
 	let animMode = $derived((step.params.mode as string) || 'pulse');
 
+	// The HTML5 data text while it does not parse; null when it does.
+	let html5DataDraft = $state<string | null>(null);
+
 	// Validation warnings
 	let warnings = $derived.by(() => {
 		const w: string[] = [];
@@ -30,6 +33,9 @@
 			if (transType === 'stinger' && !step.params.stingerName) {
 				w.push('Stinger name is required');
 			}
+		}
+		if (step.action === 'graphics_html5_data' && html5DataDraft !== null) {
+			w.push('Data must be JSON');
 		}
 		return w;
 	});
@@ -224,6 +230,27 @@
 					<option value={t.id}>{t.name}</option>
 				{/each}
 			</select>
+		</div>
+	{/if}
+
+	<!-- Graphics: HTML5 data -->
+	{#if step.action === 'graphics_html5_data'}
+		<div class="field-row">
+			<span class="field-label">Data</span>
+			<textarea
+				class="field-input html5-data-input"
+				rows="3"
+				value={html5DataDraft ?? JSON.stringify(step.params.data ?? {})}
+				oninput={(e) => {
+					const text = (e.target as HTMLTextAreaElement).value;
+					try {
+						onupdate('data', JSON.parse(text));
+						html5DataDraft = null;
+					} catch {
+						html5DataDraft = text;
+					}
+				}}
+			></textarea>
 		</div>
 	{/if}
 

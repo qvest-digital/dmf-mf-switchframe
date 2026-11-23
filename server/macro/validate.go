@@ -185,7 +185,8 @@ func validateStep(i int, step Step, result *ValidationResult) {
 	case ActionGraphicsOn, ActionGraphicsOff, ActionGraphicsAutoOn, ActionGraphicsAutoOff,
 		ActionGraphicsRemoveLayer, ActionGraphicsSetRect, ActionGraphicsSetZOrder,
 		ActionGraphicsFlyIn, ActionGraphicsFlyOut, ActionGraphicsSlide,
-		ActionGraphicsAnimate, ActionGraphicsAnimateStop, ActionGraphicsUploadFrame:
+		ActionGraphicsAnimate, ActionGraphicsAnimateStop, ActionGraphicsUploadFrame,
+		ActionGraphicsHTML5Data, ActionGraphicsHTML5Play, ActionGraphicsHTML5Stop:
 		// layerId defaults to 0 for backward compat, so it's a warning not an error.
 		if _, ok := step.Params["layerId"].(float64); !ok {
 			result.Warnings = append(result.Warnings, ValidationWarning{
@@ -363,6 +364,15 @@ func validateGraphicsStep(i int, step Step, result *ValidationResult) {
 			result.Errors = append(result.Errors, ValidationError{
 				Step:    i,
 				Message: fmt.Sprintf("invalid direction %q; must be left, right, top, or bottom", dir),
+			})
+		}
+	case ActionGraphicsHTML5Data:
+		// Any JSON value is data, as PUT /api/graphics/{id}/html5/data
+		// takes it; a step without one would send null.
+		if v, ok := step.Params["data"]; !ok || v == nil {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: "graphics_html5_data requires 'data' param",
 			})
 		}
 	case ActionGraphicsAnimate:

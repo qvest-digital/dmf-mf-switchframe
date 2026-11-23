@@ -154,6 +154,7 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		stmapRegistry:  a.stmapRegistry,
 		textAnimEngine: a.textAnimEngine,
 		tickerEngine:   a.tickerEngine,
+		htmlGfxMgr:     a.htmlGfxMgr,
 		runID:          req.RunID,
 	}
 
@@ -278,6 +279,7 @@ type apiMacroTarget struct {
 	stmapRegistry  *stmap.Registry
 	textAnimEngine *graphics.TextAnimationEngine
 	tickerEngine   *graphics.TickerEngine
+	htmlGfxMgr     HTMLGfxManager
 
 	// runID and replays derive the ID of each replay clip the run exports.
 	runID   string
@@ -533,6 +535,20 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 		return t.execTickerStart(params)
 	case macro.ActionGraphicsTickerStop:
 		return t.execTickerStop(params)
+
+	// Graphics (HTML5)
+	case macro.ActionGraphicsHTML5Data:
+		return t.execHTML5(params, func(id int) error {
+			data, err := json.Marshal(params["data"])
+			if err != nil {
+				return fmt.Errorf("data: %w", err)
+			}
+			return t.htmlGfxMgr.Update(id, string(data))
+		})
+	case macro.ActionGraphicsHTML5Play:
+		return t.execHTML5(params, func(id int) error { return t.htmlGfxMgr.Play(id) })
+	case macro.ActionGraphicsHTML5Stop:
+		return t.execHTML5(params, func(id int) error { return t.htmlGfxMgr.Stop(id) })
 
 	default:
 		return fmt.Errorf("unimplemented action %q", action)
@@ -1783,6 +1799,24 @@ func (t *apiMacroTarget) execTickerStop(params map[string]any) error {
 		return err
 	}
 	return t.tickerEngine.Stop(id)
+}
+
+// execHTML5 runs fn on the browser of the HTML5 graphic on params' layer,
+// refusing as the /api/graphics/{id}/html5 endpoints do: a step against a
+// graphic that is not there fails the macro rather than doing nothing.
+func (t *apiMacroTarget) execHTML5(params map[string]any, fn func(browserID int) error) error {
+	if t.htmlGfxMgr == nil || !t.htmlGfxMgr.Started() {
+		return errors.New("HTML5 graphics sidecar not running")
+	}
+	layerID, err := intParam(params, "layerId", 0)
+	if err != nil {
+		return err
+	}
+	browserID := t.htmlGfxMgr.BrowserForLayer(layerID)
+	if browserID == -1 {
+		return fmt.Errorf("no HTML5 graphic loaded on layer %d", layerID)
+	}
+	return fn(browserID)
 }
 
 // --- Param helpers ---

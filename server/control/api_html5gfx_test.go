@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/htmlgfx"
+	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -560,4 +562,44 @@ func TestHTML5Play_NoManager(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
+// An L-frame button is one macro: the squeezeback moves and the graphic
+// around it takes another layout, so the macro has to reach the HTML5
+// graphic's data, play and stop as the /html5 endpoints do.
+func TestMacroHTML5Steps(t *testing.T) {
+	mgr := newMockHTMLGfxManager(4)
+	api, _ := setupHTML5GfxTestAPI(t, mgr)
+	layerID := addLayerViaAPI(t, api)
+	rec := serve(t, api, "POST", fmt.Sprintf("/api/graphics/%d/html5", layerID), `{"url":"https://example.com/g.html"}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	browserID := mgr.BrowserForLayer(layerID)
+
+	target := &apiMacroTarget{htmlGfxMgr: mgr}
+	m := macro.Macro{Name: "lframe", Steps: []macro.Step{
+		{Action: macro.ActionGraphicsHTML5Data, Params: map[string]any{"layerId": float64(layerID), "data": map[string]any{"layout": "lframe"}}},
+		{Action: macro.ActionGraphicsHTML5Play, Params: map[string]any{"layerId": float64(layerID)}},
+		{Action: macro.ActionGraphicsHTML5Stop, Params: map[string]any{"layerId": float64(layerID)}},
+	}}
+	require.False(t, macro.ValidateSteps(m.Steps).HasErrors())
+	require.NoError(t, macro.Run(context.Background(), m, target, nil))
+	require.JSONEq(t, `{"layout":"lframe"}`, mgr.data[browserID])
+	require.True(t, mgr.played[browserID])
+	require.True(t, mgr.stopped[browserID])
+}
+
+func TestMacroHTML5StepsRefuseWithoutGraphic(t *testing.T) {
+	mgr := newMockHTMLGfxManager(4)
+	for name, target := range map[string]*apiMacroTarget{
+		"no graphic on the layer": {htmlGfxMgr: mgr},
+		"no sidecar":              {},
+	} {
+		for _, action := range []macro.Action{macro.ActionGraphicsHTML5Data, macro.ActionGraphicsHTML5Play, macro.ActionGraphicsHTML5Stop} {
+			m := macro.Macro{Name: "x", Steps: []macro.Step{
+				{Action: action, Params: map[string]any{"layerId": float64(3), "data": map[string]any{}}},
+			}}
+			require.Error(t, macro.Run(context.Background(), m, target, nil), "%s: %s", name, action)
+		}
+	}
+	require.Empty(t, mgr.data)
 }
