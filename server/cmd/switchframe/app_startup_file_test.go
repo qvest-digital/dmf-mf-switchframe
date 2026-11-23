@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -357,6 +358,24 @@ func TestApplyStartupGraphics_LoadOnly(t *testing.T) {
 	require.Len(t, comp.Status().Layers, 1)
 	require.Equal(t, 4, comp.Status().Layers[0].ID, "the layer the file names")
 	require.False(t, layerActive(comp, 4))
+}
+
+// An engine of a pair that comes back takes the peer's graphics with its
+// state; a second browser on the layer would composite the graphic twice.
+func TestApplyStartupGraphics_LeavesAPeersGraphic(t *testing.T) {
+	api, _, fake := startupGraphicsTest(t)
+	fake.start()
+	require.Equal(t, http.StatusCreated, serve(api, http.MethodPost, "/api/graphics", `{"id":1}`))
+	require.Equal(t, http.StatusOK, serve(api, http.MethodPost, "/api/graphics/1/html5", `{"url":"https://example.com/peer.html"}`))
+	g := startupGraphic{Layer: intPtr(1), HTML5: startupHTML5{URL: "https://example.com/g.html"}, Play: true}
+	applyStartupGraphics(context.Background(), api.Mux(), fake, []startupGraphic{g}, time.Second)
+	require.Equal(t, []string{"allocate", "load"}, fake.callLog(), "only the peer's load")
+}
+
+func serve(api *control.API, method, path, body string) int {
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, httptest.NewRequest(method, path, strings.NewReader(body)))
+	return rec.Code
 }
 
 // Waiting is bounded: a sidecar that never runs, or a page that never gets

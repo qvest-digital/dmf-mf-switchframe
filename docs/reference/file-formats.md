@@ -185,7 +185,7 @@ Validation: `Save` rejects empty names and empty step lists, runs [`ValidateStep
 | `squeezeback` | `dve.SqueezeConfig` | As [`PUT /api/squeezeback`](api/dve.md#put-apisqueezeback) takes it: configured, and off |
 | `macros` | `[]macro.Macro` | As [`PUT /api/macros/{name}`](api/macro.md#put-apimacrosname) takes them, names once per file. A macro of the same name in `macros.json` is replaced |
 
-The squeezeback and the macros are applied before the API serves, and what their routes refuse fails startup with the route's reason, as does a graphic URL the URL policy refuses. Graphics need the HTML5 sidecar, which starts after the engine: they load in the background once it runs. The sidecar, and each graphic to be put on or played, is waited for at most two minutes from start; a graphic that fails or times out is logged as an error and leaves the engine running.
+The squeezeback and the macros are applied before the API serves, and what their routes refuse fails startup with the route's reason, as does a graphic URL the URL policy refuses. Graphics need the HTML5 sidecar, which starts after the engine: they load in the background once it runs, except on a layer that already carries an HTML5 graphic, as one an engine of a pair takes with its peer's state. The sidecar, and each graphic to be put on or played, is waited for at most two minutes from start; a graphic that fails or times out is logged as an error and leaves the engine running.
 
 ## Operators
 

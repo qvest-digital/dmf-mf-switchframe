@@ -179,6 +179,12 @@ func applyStartupGraphics(ctx context.Context, api http.Handler, sidecar startup
 		return
 	}
 	for _, g := range graphics {
+		if hasBrowser(sidecar, *g.Layer) {
+			// An engine of a pair takes its peer's graphics with the peer's
+			// state, and the pair's graphic is the one on air.
+			slog.Info("startup config: graphic already loaded, left as is", "layer", *g.Layer)
+			continue
+		}
 		if err := applyStartupGraphic(ctx, api, sidecar, g, deadline); err != nil {
 			if ctx.Err() != nil {
 				return
@@ -188,6 +194,15 @@ func applyStartupGraphics(ctx context.Context, api http.Handler, sidecar startup
 		}
 		slog.Info("startup config: graphic loaded", "layer", *g.Layer, "url", g.HTML5.URL, "onAir", g.OnAir, "play", g.Play)
 	}
+}
+
+func hasBrowser(sidecar startupSidecar, layer int) bool {
+	for _, bs := range sidecar.BrowserStates() {
+		if bs.LayerID == layer && bs.Status != "empty" {
+			return true
+		}
+	}
+	return false
 }
 
 // applyStartupGraphic adds the graphic's layer, loads it, and turns it on
