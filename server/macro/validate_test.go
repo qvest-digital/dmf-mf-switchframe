@@ -828,3 +828,42 @@ func TestValidateSteps_SqueezebackParams(t *testing.T) {
 		require.Contains(t, result.Errors[0].Message, string(s.Action))
 	}
 }
+
+func TestValidateSteps_HTML5Params(t *testing.T) {
+	t.Parallel()
+	ok := []Step{
+		{Action: ActionHTML5Load, Params: map[string]any{"layerId": float64(0), "url": "https://example.com/g.html"}},
+		{Action: ActionHTML5Load, Params: map[string]any{"layerId": float64(1), "url": "https://example.com/g.html", "data": map[string]any{"layout": "full"}}},
+		{Action: ActionHTML5Data, Params: map[string]any{"layerId": float64(1), "data": map[string]any{"layout": "lframe"}}},
+		{Action: ActionHTML5Data, Params: map[string]any{"layerId": float64(1), "data": "text"}},
+		{Action: ActionHTML5Play, Params: map[string]any{"layerId": float64(1)}},
+		{Action: ActionHTML5Stop, Params: map[string]any{"layerId": float64(1)}},
+		{Action: ActionHTML5Custom, Params: map[string]any{"layerId": float64(1), "action": "highlight"}},
+		{Action: ActionHTML5Custom, Params: map[string]any{"layerId": float64(1), "action": "highlight", "payload": map[string]any{"color": "#ff0"}}},
+	}
+	for _, s := range ok {
+		result := ValidateSteps([]Step{s})
+		require.False(t, result.HasErrors(), "%s %v: %v", s.Action, s.Params, result.Errors)
+		require.Empty(t, result.Warnings, "%s %v", s.Action, s.Params)
+	}
+
+	bad := []Step{
+		{Action: ActionHTML5Play, Params: map[string]any{}},
+		{Action: ActionHTML5Play, Params: map[string]any{"layerId": "1"}},
+		{Action: ActionHTML5Stop, Params: map[string]any{"layerId": float64(-1)}},
+		{Action: ActionHTML5Stop, Params: map[string]any{"layerId": float64(1.5)}},
+		{Action: ActionHTML5Stop, Params: map[string]any{"layerId": float64(1 << 40)}},
+		{Action: ActionHTML5Load, Params: map[string]any{"layerId": float64(1)}},
+		{Action: ActionHTML5Load, Params: map[string]any{"layerId": float64(1), "url": ""}},
+		{Action: ActionHTML5Load, Params: map[string]any{"layerId": float64(1), "url": float64(1)}},
+		{Action: ActionHTML5Data, Params: map[string]any{"layerId": float64(1)}},
+		{Action: ActionHTML5Data, Params: map[string]any{"layerId": float64(1), "data": nil}},
+		{Action: ActionHTML5Custom, Params: map[string]any{"layerId": float64(1)}},
+		{Action: ActionHTML5Custom, Params: map[string]any{"layerId": float64(1), "action": ""}},
+	}
+	for _, s := range bad {
+		result := ValidateSteps([]Step{s})
+		require.True(t, result.HasErrors(), "%s %v should be rejected", s.Action, s.Params)
+		require.Contains(t, result.Errors[0].Message, string(s.Action))
+	}
+}

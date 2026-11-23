@@ -78,6 +78,18 @@ func (a *API) handleSaveMacro(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Whether a URL may be loaded depends on the templates directory, which
+	// only the engine knows: refuse it here rather than when the step runs.
+	if a.htmlGfxMgr != nil {
+		for i, step := range m.Steps {
+			if u, ok := step.Params["url"].(string); ok && step.Action == macro.ActionHTML5Load && u != "" {
+				if err := a.htmlGfxMgr.CheckURL(u); err != nil {
+					httperr.Write(w, http.StatusBadRequest, fmt.Sprintf("step %d: %v", i, err))
+					return
+				}
+			}
+		}
+	}
 	if err := a.macroStore.Save(m); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
@@ -154,6 +166,7 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		stmapRegistry:  a.stmapRegistry,
 		textAnimEngine: a.textAnimEngine,
 		tickerEngine:   a.tickerEngine,
+		html5:          a,
 		runID:          req.RunID,
 	}
 
@@ -278,6 +291,9 @@ type apiMacroTarget struct {
 	stmapRegistry  *stmap.Registry
 	textAnimEngine *graphics.TextAnimationEngine
 	tickerEngine   *graphics.TickerEngine
+	// html5 runs HTML5 steps through the /api/graphics/{id}/html5 routes'
+	// own operations, so a step is checked and refused as a request is.
+	html5 *API
 
 	// runID and replays derive the ID of each replay clip the run exports.
 	runID   string
@@ -533,6 +549,24 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 		return t.execTickerStart(params)
 	case macro.ActionGraphicsTickerStop:
 		return t.execTickerStop(params)
+
+	// Graphics (HTML5)
+	case macro.ActionHTML5Load:
+		return t.execHTML5Load(params)
+	case macro.ActionHTML5Data:
+		return t.execHTML5(params, func(id int) error {
+			data, err := jsonParam(params, "data")
+			if err != nil {
+				return err
+			}
+			return t.html5.htmlGfxMgr.Update(id, string(data))
+		})
+	case macro.ActionHTML5Play:
+		return t.execHTML5(params, func(id int) error { return t.html5.htmlGfxMgr.Play(id) })
+	case macro.ActionHTML5Stop:
+		return t.execHTML5(params, func(id int) error { return t.html5.htmlGfxMgr.Stop(id) })
+	case macro.ActionHTML5Custom:
+		return t.execHTML5Custom(params)
 
 	default:
 		return fmt.Errorf("unimplemented action %q", action)
@@ -1783,6 +1817,90 @@ func (t *apiMacroTarget) execTickerStop(params map[string]any) error {
 		return err
 	}
 	return t.tickerEngine.Stop(id)
+}
+
+// --- HTML5 helpers ---
+
+var errHTML5NotRunning = &html5Error{http.StatusServiceUnavailable, "HTML5 graphics sidecar not running"}
+
+func (t *apiMacroTarget) execHTML5Load(params map[string]any) error {
+	if t.html5 == nil {
+		return errHTML5NotRunning
+	}
+	id, err := intParam(params, "layerId", 0)
+	if err != nil {
+		return err
+	}
+	url, err := stringParam(params, "url")
+	if err != nil {
+		return err
+	}
+	data, err := jsonParam(params, "data")
+	if err != nil {
+		return err
+	}
+	if err := t.html5.loadHTML5(id, url, data); err != nil {
+		return err
+	}
+	t.html5.broadcast()
+	return nil
+}
+
+// execHTML5 runs fn on the browser of the HTML5 graphic on params' layer.
+func (t *apiMacroTarget) execHTML5(params map[string]any, fn func(browserID int) error) error {
+	if t.html5 == nil {
+		return errHTML5NotRunning
+	}
+	id, err := intParam(params, "layerId", 0)
+	if err != nil {
+		return err
+	}
+	browserID, err := t.html5.html5Browser(id)
+	if err != nil {
+		return fmt.Errorf("layer %d: %w", id, err)
+	}
+	if err := fn(browserID); err != nil {
+		return err
+	}
+	t.html5.broadcast()
+	return nil
+}
+
+func (t *apiMacroTarget) execHTML5Custom(params map[string]any) error {
+	if t.html5 == nil {
+		return errHTML5NotRunning
+	}
+	id, err := intParam(params, "layerId", 0)
+	if err != nil {
+		return err
+	}
+	action, err := stringParam(params, "action")
+	if err != nil {
+		return err
+	}
+	payload, err := jsonParam(params, "payload")
+	if err != nil {
+		return err
+	}
+	if err := t.html5.customHTML5(id, action, payload); err != nil {
+		return fmt.Errorf("layer %d: %w", id, err)
+	}
+	t.html5.broadcast()
+	return nil
+}
+
+// jsonParam returns a JSON value param as the routes take it raw: nil when
+// absent.
+func jsonParam(params map[string]any, key string) (json.RawMessage, error) {
+	v, ok := params[key]
+	if !ok {
+		return nil, nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", key, err)
+	}
+	return b, nil
 }
 
 // --- Param helpers ---

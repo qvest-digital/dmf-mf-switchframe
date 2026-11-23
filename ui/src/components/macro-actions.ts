@@ -41,6 +41,11 @@ export const ACTION_META: Record<MacroAction, ActionMeta> = {
 	graphics_ticker_stop: { label: 'Stop Ticker', category: 'Graphics', description: 'Stop scrolling ticker on layer' },
 	graphics_text_animate: { label: 'Text Animate', category: 'Graphics', description: 'Start text animation (typewriter/fade-word)' },
 	graphics_text_animate_stop: { label: 'Stop Text Anim', category: 'Graphics', description: 'Stop text animation on layer' },
+	html5_load: { label: 'HTML5 Load', category: 'Graphics', description: 'Load an HTML5 or OGraf graphic on layer' },
+	html5_data: { label: 'HTML5 Data', category: 'Graphics', description: 'Send data to the HTML5 graphic on layer' },
+	html5_play: { label: 'HTML5 Play', category: 'Graphics', description: 'Play the HTML5 graphic on layer' },
+	html5_stop: { label: 'HTML5 Stop', category: 'Graphics', description: 'Stop the HTML5 graphic on layer' },
+	html5_custom: { label: 'HTML5 Custom', category: 'Graphics', description: 'Call a custom action of the HTML5 graphic on layer' },
 	// Output
 	recording_start: { label: 'Start Recording', category: 'Output', description: 'Start recording' },
 	recording_stop: { label: 'Stop Recording', category: 'Output', description: 'Stop recording' },
@@ -128,6 +133,7 @@ export const GRAPHICS_LAYER_ACTIONS: MacroAction[] = [
 	'graphics_animate', 'graphics_animate_stop', 'graphics_upload_frame',
 	'graphics_ticker_start', 'graphics_ticker_stop',
 	'graphics_text_animate', 'graphics_text_animate_stop',
+	'html5_load', 'html5_data', 'html5_play', 'html5_stop', 'html5_custom',
 ];
 
 export const FLY_DIRECTIONS = [

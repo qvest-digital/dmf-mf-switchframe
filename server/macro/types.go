@@ -48,6 +48,13 @@ const (
 	ActionGraphicsTickerStart     Action = "graphics_ticker_start"
 	ActionGraphicsTickerStop      Action = "graphics_ticker_stop"
 
+	// HTML5 graphics actions, as the /api/graphics/{id}/html5 routes.
+	ActionHTML5Load   Action = "html5_load"
+	ActionHTML5Data   Action = "html5_data"
+	ActionHTML5Play   Action = "html5_play"
+	ActionHTML5Stop   Action = "html5_stop"
+	ActionHTML5Custom Action = "html5_custom"
+
 	// Recording actions.
 	ActionRecordingStart Action = "recording_start"
 	ActionRecordingStop  Action = "recording_stop"
@@ -157,6 +164,11 @@ var allActions = map[Action]bool{
 	ActionGraphicsTextAnimateStop: true,
 	ActionGraphicsTickerStart:     true,
 	ActionGraphicsTickerStop:      true,
+	ActionHTML5Load:               true,
+	ActionHTML5Data:               true,
+	ActionHTML5Play:               true,
+	ActionHTML5Stop:               true,
+	ActionHTML5Custom:             true,
 	ActionRecordingStart:          true,
 	ActionRecordingStop:           true,
 	ActionPresetRecall:            true,
@@ -332,9 +344,16 @@ var stepSummaryMap = map[Action]stepSummaryFunc{
 	ActionGraphicsTextAnimateStop: layerSummary("Graphics Text Animate Stop"),
 	ActionGraphicsTickerStart:     layerSummary("Graphics Ticker Start"),
 	ActionGraphicsTickerStop:      layerSummary("Graphics Ticker Stop"),
-	ActionRecordingStart:          staticSummary("Recording Start"),
-	ActionRecordingStop:           staticSummary("Recording Stop"),
-	ActionFTB:                     staticSummary("Fade to Black"),
+	ActionHTML5Load:               layerSummary("HTML5 Load"),
+	ActionHTML5Data:               layerSummary("HTML5 Data"),
+	ActionHTML5Play:               layerSummary("HTML5 Play"),
+	ActionHTML5Stop:               layerSummary("HTML5 Stop"),
+	ActionHTML5Custom: func(s Step) string {
+		return fmt.Sprintf("HTML5 Custom %s (layer %s)", paramStr(s, "action"), fmtLayerID(s.Params))
+	},
+	ActionRecordingStart: staticSummary("Recording Start"),
+	ActionRecordingStop:  staticSummary("Recording Stop"),
+	ActionFTB:            staticSummary("Fade to Black"),
 	ActionPresetRecall: func(s Step) string {
 		id, _ := s.Params["id"].(string)
 		return fmt.Sprintf("Preset Recall %s", id)

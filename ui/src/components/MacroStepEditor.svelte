@@ -20,6 +20,23 @@
 	let needsLayerId = $derived(GRAPHICS_LAYER_ACTIONS.includes(step.action));
 	let animMode = $derived((step.params.mode as string) || 'pulse');
 
+	// JSON params as typed while they do not parse, by param name.
+	let jsonDrafts = $state<Record<string, string>>({});
+
+	function updateJSON(key: string, text: string) {
+		if (text.trim() === '') {
+			delete jsonDrafts[key];
+			onupdate(key, undefined);
+			return;
+		}
+		try {
+			onupdate(key, JSON.parse(text));
+			delete jsonDrafts[key];
+		} catch {
+			jsonDrafts[key] = text;
+		}
+	}
+
 	// Validation warnings
 	let warnings = $derived.by(() => {
 		const w: string[] = [];
@@ -30,6 +47,9 @@
 			if (transType === 'stinger' && !step.params.stingerName) {
 				w.push('Stinger name is required');
 			}
+		}
+		for (const key of Object.keys(jsonDrafts)) {
+			w.push(`${key} must be JSON`);
 		}
 		return w;
 	});
@@ -224,6 +244,43 @@
 					<option value={t.id}>{t.name}</option>
 				{/each}
 			</select>
+		</div>
+	{/if}
+
+	<!-- HTML5 graphics -->
+	{#if step.action === 'html5_load'}
+		<div class="field-row">
+			<span class="field-label">URL</span>
+			<input
+				class="field-input html5-url-input"
+				type="text"
+				placeholder="https://..."
+				value={step.params.url as string ?? ''}
+				oninput={(e) => onupdate('url', (e.target as HTMLInputElement).value)}
+			/>
+		</div>
+	{/if}
+	{#if step.action === 'html5_custom'}
+		<div class="field-row">
+			<span class="field-label">Action</span>
+			<input
+				class="field-input html5-action-input"
+				type="text"
+				value={step.params.action as string ?? ''}
+				oninput={(e) => onupdate('action', (e.target as HTMLInputElement).value)}
+			/>
+		</div>
+	{/if}
+	{#if step.action === 'html5_load' || step.action === 'html5_data' || step.action === 'html5_custom'}
+		{@const key = step.action === 'html5_custom' ? 'payload' : 'data'}
+		<div class="field-row">
+			<span class="field-label">{key === 'data' ? 'Data' : 'Payload'}</span>
+			<textarea
+				class="field-input html5-json-input"
+				rows="3"
+				value={jsonDrafts[key] ?? (step.params[key] === undefined ? '' : JSON.stringify(step.params[key]))}
+				oninput={(e) => updateJSON(key, (e.target as HTMLTextAreaElement).value)}
+			></textarea>
 		</div>
 	{/if}
 

@@ -394,6 +394,11 @@ func TestRunner_ExecuteDispatchAllNewActions(t *testing.T) {
 		ActionColorGradeSave,
 		ActionCorrectorSet,
 		ActionCorrectorReset,
+		ActionHTML5Load,
+		ActionHTML5Data,
+		ActionHTML5Play,
+		ActionHTML5Stop,
+		ActionHTML5Custom,
 	}
 
 	for _, action := range newActions {
@@ -445,6 +450,16 @@ func TestStepSummary(t *testing.T) {
 			name:     "cut",
 			step:     Step{Action: ActionCut, Params: map[string]any{"source": "cam1"}},
 			expected: "Cut → cam1",
+		},
+		{
+			name:     "html5_data",
+			step:     Step{Action: ActionHTML5Data, Params: map[string]any{"layerId": float64(2), "data": map[string]any{}}},
+			expected: "HTML5 Data (layer 2)",
+		},
+		{
+			name:     "html5_custom",
+			step:     Step{Action: ActionHTML5Custom, Params: map[string]any{"layerId": float64(2), "action": "highlight"}},
+			expected: "HTML5 Custom highlight (layer 2)",
 		},
 		{
 			name:     "preview",
@@ -827,6 +842,7 @@ func TestRunner_AllActionsMapComplete(t *testing.T) {
 		ActionGraphicsSlide, ActionGraphicsAnimate, ActionGraphicsAnimateStop,
 		ActionGraphicsUploadFrame, ActionGraphicsTextAnimate, ActionGraphicsTextAnimateStop,
 		ActionGraphicsTickerStart, ActionGraphicsTickerStop,
+		ActionHTML5Load, ActionHTML5Data, ActionHTML5Play, ActionHTML5Stop, ActionHTML5Custom,
 		ActionRecordingStart, ActionRecordingStop,
 		ActionPresetRecall,
 		ActionKeySet, ActionKeyDelete,
