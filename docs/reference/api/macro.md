@@ -41,7 +41,7 @@
 }
 ```
 
-Valid actions are listed in `macro.allActions` (~60 actions covering cut, preview, transition, wait, audio controls, graphics, keys, clips, SCTE-35, etc.). Each action validates its own params; invalid steps are rejected on save by `macro.ValidateSteps`. `layout_preset` takes a built-in `preset` name and an optional `durationMs` (0-5000, 0 cuts) and `easing`, which animate the recall as in [DVE preset recall](dve.md). `squeezeback_set` takes the rect as `x`, `y`, `w`, `h` (even pixels) and an optional `background`, `durationMs` and `easing`; `squeezeback_on` and `squeezeback_off` take an optional `durationMs` (0-5000, 0 cuts) and `easing`, each defaulting to the configured one, as the [squeezeback](dve.md#squeezeback) endpoints do.
+Valid actions are listed in `macro.allActions` (87 actions covering cut, preview, transition, wait, audio controls, graphics, keys, clips, SCTE-35, etc.). Each action validates its own params; invalid steps are rejected on save by `macro.ValidateSteps`. `layout_preset` takes a built-in `preset` name and an optional `durationMs` (0-5000, 0 cuts) and `easing`, which animate the recall as in [DVE preset recall](dve.md). `squeezeback_set` takes the rect as `x`, `y`, `w`, `h` (even pixels) and an optional `background`, `durationMs` and `easing`; `squeezeback_on` and `squeezeback_off` take an optional `durationMs` (0-5000, 0 cuts) and `easing`, each defaulting to the configured one, as the [squeezeback](dve.md#squeezeback) endpoints do.
 
 The `html5_*` actions drive an HTML5 or OGraf graphic as the [HTML5 graphics](graphics-html5.md) endpoints do, through the same checks, and each needs a `layerId`: unlike the older `graphics_*` actions it has no default. The layer is created first, with `POST /api/graphics` or `graphics_add_layer`.
 
@@ -53,7 +53,7 @@ The `html5_*` actions drive an HTML5 or OGraf graphic as the [HTML5 graphics](gr
 | `html5_stop` | `layerId` | `POST /api/graphics/{id}/html5/stop` |
 | `html5_custom` | `layerId`, `action`, optional `payload` | `POST /api/graphics/{id}/html5/custom` |
 
-`data` and `payload` are any JSON value. An `html5_load` URL is refused on save, and again when the step runs, unless it is `https` or a `file` URL below the templates directory. A step against a layer with no HTML5 graphic, or with the sidecar not running, fails the run.
+`data` and `payload` are any JSON value. An `html5_load` URL is refused on save, and again when the step runs, unless it is `https` or a `file` URL below the templates directory. A step against a layer with no HTML5 graphic, or with the sidecar not running, fails the run. In a redundant pair each engine runs html5 steps against its own sidecar; what `html5_data`, `html5_play` and `html5_custom` do is not carried by peer state sync, so a step that fails on one engine leaves the two engines' graphics different until the macro runs again.
 
 An L-frame button, the squeezeback and the graphic around it switching together:
 

@@ -184,6 +184,28 @@ describe('MacroPanel', () => {
 		});
 	});
 
+	// The engine refuses an html5 step without a layer; a field that looked
+	// filled with 0 would hide why the save failed.
+	it('refuses an html5 step without a layer until one is typed', async () => {
+		const { saveMacro } = await import('$lib/api/switch-api');
+		vi.mocked(saveMacro).mockClear();
+		const { container } = render(MacroPanel, { props: { state: makeState({ cam1: {} }) } });
+		await fireEvent.click(container.querySelector('.add-btn') as HTMLButtonElement);
+		const actionSelect = container.querySelector('.action-select') as HTMLSelectElement;
+		await fireEvent.change(actionSelect, { target: { value: 'html5_play' } });
+		await fireEvent.input(container.querySelector('.macro-name-input') as HTMLInputElement, { target: { value: 'Play' } });
+
+		const layer = container.querySelector('.step-editor input[type="number"]') as HTMLInputElement;
+		expect(layer.value).toBe('');
+		await fireEvent.click(container.querySelector('.save-btn') as HTMLButtonElement);
+		expect(saveMacro).not.toHaveBeenCalled();
+		expect(container.querySelector('.editor-error')?.textContent).toContain('Step 1: layer is required');
+
+		await fireEvent.input(layer, { target: { value: '0' } });
+		await fireEvent.click(container.querySelector('.save-btn') as HTMLButtonElement);
+		expect(saveMacro).toHaveBeenCalledWith({ name: 'Play', steps: [{ action: 'html5_play', params: { layerId: 0 } }] });
+	});
+
 	it('shows validation error when name is empty on save', async () => {
 		const { container } = render(MacroPanel, { props: { state: makeState() } });
 		const addBtn = container.querySelector('.add-btn') as HTMLButtonElement;

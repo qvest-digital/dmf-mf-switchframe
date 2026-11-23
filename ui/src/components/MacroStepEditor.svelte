@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { MacroAction, MacroStep } from '$lib/api/types';
-	import { ACTION_META, CATEGORIES, SOURCE_ACTIONS, WIPE_DIRECTIONS, GRAPHICS_LAYER_ACTIONS, FLY_DIRECTIONS, LAYOUT_PRESETS, EASINGS } from './macro-actions';
+	import { ACTION_META, CATEGORIES, SOURCE_ACTIONS, WIPE_DIRECTIONS, GRAPHICS_LAYER_ACTIONS, HTML5_ACTIONS, FLY_DIRECTIONS, LAYOUT_PRESETS, EASINGS } from './macro-actions';
 	import { templateList } from '$lib/graphics/templates';
 
 	interface Props {
@@ -18,6 +18,9 @@
 	let transType = $derived((step.params.type as string) || 'mix');
 	let needsSource = $derived(SOURCE_ACTIONS.includes(step.action));
 	let needsLayerId = $derived(GRAPHICS_LAYER_ACTIONS.includes(step.action));
+	// The engine refuses an html5 step without a layer, so the field shows
+	// what is set rather than the 0 older graphics actions default to.
+	let layerRequired = $derived(HTML5_ACTIONS.includes(step.action));
 	let animMode = $derived((step.params.mode as string) || 'pulse');
 
 	// JSON params as typed while they do not parse, by param name.
@@ -99,8 +102,12 @@
 				type="number"
 				min="0"
 				step="1"
-				value={step.params.layerId as number ?? 0}
-				oninput={(e) => onupdate('layerId', parseInt((e.target as HTMLInputElement).value) || 0)}
+				placeholder={layerRequired ? 'required' : undefined}
+				value={step.params.layerId as number ?? (layerRequired ? '' : 0)}
+				oninput={(e) => {
+					const v = parseInt((e.target as HTMLInputElement).value);
+					onupdate('layerId', layerRequired && Number.isNaN(v) ? undefined : (v || 0));
+				}}
 			/>
 		</div>
 	{/if}

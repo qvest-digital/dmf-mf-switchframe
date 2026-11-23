@@ -348,6 +348,17 @@ describe('MacroStepEditor', () => {
 		expect(onupdate).toHaveBeenLastCalledWith('payload', undefined);
 	});
 
+	it('shows an html5 step without a layer as empty, not 0', async () => {
+		const onupdate = vi.fn();
+		const { container } = renderEditor({ action: 'html5_data', params: { data: {} } }, { onupdate });
+		const layer = container.querySelector('input[type="number"]') as HTMLInputElement;
+		expect(layer.value).toBe('');
+		await fireEvent.input(layer, { target: { value: '0' } });
+		expect(onupdate).toHaveBeenLastCalledWith('layerId', 0);
+		await fireEvent.input(layer, { target: { value: '' } });
+		expect(onupdate).toHaveBeenLastCalledWith('layerId', undefined);
+	});
+
 	it('takes only a layer for html5 play and stop', () => {
 		for (const action of ['html5_play', 'html5_stop'] as const) {
 			const { container, unmount } = renderEditor({ action, params: { layerId: 3 } });

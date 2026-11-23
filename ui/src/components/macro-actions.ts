@@ -125,6 +125,9 @@ export const SOURCE_ACTIONS: MacroAction[] = [
 	'source_corrector_set', 'source_corrector_reset',
 ];
 
+/** HTML5 actions: layerId is required, with no default of 0. */
+export const HTML5_ACTIONS: MacroAction[] = ['html5_load', 'html5_data', 'html5_play', 'html5_stop', 'html5_custom'];
+
 /** Graphics actions that take a layerId parameter. */
 export const GRAPHICS_LAYER_ACTIONS: MacroAction[] = [
 	'graphics_on', 'graphics_off', 'graphics_auto_on', 'graphics_auto_off',

@@ -35,7 +35,7 @@ func layerStep(action macro.Action, layerID int, extra map[string]any) macro.Ste
 // step reaches the sidecar as its /html5 route would send it.
 func TestMacroHTML5_Steps(t *testing.T) {
 	mgr := newMockHTMLGfxManager(4)
-	api, comp := setupHTML5GfxTestAPI(t, mgr)
+	api, _ := setupHTML5GfxTestAPI(t, mgr)
 	layerID := addLayerViaAPI(t, api)
 
 	require.NoError(t, runHTML5Steps(api,
@@ -60,8 +60,6 @@ func TestMacroHTML5_Steps(t *testing.T) {
 	require.Equal(t, "highlight", mgr.customs[browserID][0].action)
 	require.JSONEq(t, `{"color":"#ff0"}`, mgr.customs[browserID][0].payload)
 	require.Equal(t, customCall{"reset", ""}, mgr.customs[browserID][1], "no payload, as the route sends none")
-
-	_ = comp
 }
 
 func TestMacroHTML5_LoadSendsNoDataUnasked(t *testing.T) {
