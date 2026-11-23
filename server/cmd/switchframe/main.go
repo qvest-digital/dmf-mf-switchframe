@@ -178,6 +178,9 @@ type AppConfig struct {
 	// created over the API.
 	OutputsConfig string
 
+	// Graphics, squeezeback and macros applied at start (--startup-config).
+	StartupConfig string
+
 	// Inter-engine peer health monitoring.
 	PeerEngineURL string // --peer-engine-url (URL of the other engine for health polling)
 
@@ -328,6 +331,9 @@ func run() error {
 	if err := app.initAPI(); err != nil {
 		return err
 	}
+	if err := app.initStartupFile(); err != nil {
+		return err
+	}
 	app.startMXLNMOS()
 
 	// ASR engine is initialized but not active — the user enables auto
@@ -461,6 +467,7 @@ func parseConfig() (AppConfig, error) {
 
 	// Outputs started with the process.
 	outputsConfigFlag := flag.String("outputs-config", "", "Path to a JSON file of SRT/RTMP destinations and a recording to start with the process")
+	startupConfigFlag := flag.String("startup-config", "", "Path to a JSON file of HTML5 graphics, a squeezeback and macros to apply when the engine starts")
 
 	// Peer engine health monitoring.
 	peerEngineURLFlag := flag.String("peer-engine-url", "", "URL of the peer engine for inter-engine health monitoring (e.g., https://engine-b:8080)")
@@ -707,6 +714,7 @@ func parseConfig() (AppConfig, error) {
 		ST2110PTP:            *st2110PTPFlag,
 		ST2110NMOSPort:       *st2110NMOSPortFlag,
 		OutputsConfig:        *outputsConfigFlag,
+		StartupConfig:        *startupConfigFlag,
 		PeerEngineURL:        resolveEnvOrFlag(*peerEngineURLFlag, "SWITCHFRAME_PEER_ENGINE_URL"),
 		MXLNMOS: mxlNMOSConfig{
 			Port:        resolveIntEnvOrFlag(*mxlNMOSPortFlag, "SWITCHFRAME_MXL_NMOS_PORT"),

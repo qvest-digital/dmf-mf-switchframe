@@ -129,6 +129,12 @@ All flags are defined in [`parseConfig`](../../server/cmd/switchframe/main.go). 
 |---|---|---|---|
 | `--outputs-config` | string | `""` | JSON file of SRT/RTMP destinations and a recording to start with the process, in the shapes `POST /api/output/destinations` and `POST /api/recording/start` take; `passphraseFile` and `urlFile` read those fields from files. See [`StartupConfig`](../../server/output/startup.go) |
 
+### Graphics, squeezeback and macros at startup
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--startup-config` | string | `""` | JSON file of HTML5 graphics, a squeezeback and macros applied once when the engine starts, each through the API route that creates it. An invalid file, or a squeezeback, macro or graphic URL the API refuses, fails startup; graphics load in the background once the HTML5 sidecar runs. See [file-formats.md](file-formats.md#startup-config) |
+
 ### SRT output
 
 | Flag | Type | Default | Description |

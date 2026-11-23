@@ -132,6 +132,61 @@ Recall via `POST /api/presets/{id}/recall` writes back all fields to the runtime
 
 Validation: `Save` rejects empty names and empty step lists, runs [`ValidateSteps`](../../server/macro/validate.go) on the steps, and returns the first validation error if any.
 
+## Startup config
+
+**File:** the path `--startup-config` names; read once at start, never written.
+**Owner:** [`startupFile`](../../server/cmd/switchframe/app_startup_file.go)
+**Format:** one JSON object; every part is optional, and a field the format does not name fails startup.
+
+```json
+{
+  "graphics": [
+    {
+      "layer": 1,
+      "html5": {
+        "url": "file:///opt/switchframe-cef/demo-templates/ograf-host/index.html?manifest=https://dmf-ograf.s3.eu-central-1.amazonaws.com/wsj-markets/1.0.0/manifest.ograf.json",
+        "data": { "layout": "full" }
+      },
+      "on": true,
+      "play": true
+    }
+  ],
+  "squeezeback": {
+    "rect": { "x": 48, "y": 48, "w": 1344, "h": 756 },
+    "durationMs": 500,
+    "easing": "ease-in-out"
+  },
+  "macros": [
+    {
+      "name": "L-Frame on",
+      "steps": [
+        { "action": "squeezeback_on", "params": {} },
+        { "action": "graphics_html5_data", "params": { "layerId": 1, "data": { "layout": "lframe" } } }
+      ]
+    },
+    {
+      "name": "L-Frame off",
+      "steps": [
+        { "action": "squeezeback_off", "params": {} },
+        { "action": "graphics_html5_data", "params": { "layerId": 1, "data": { "layout": "full" } } }
+      ]
+    }
+  ]
+}
+```
+
+| Field | Go type | Description |
+|---|---|---|
+| `graphics` | `[]startupGraphic` | HTML5 graphics, one per layer |
+| `graphics[*].layer` | `int` | Graphics layer ID, required, 0 or more, once per file. The layer is created under this ID (`POST /api/graphics` with `id`) |
+| `graphics[*].html5` | `startupHTML5` | `url` and optional `data`, as [`POST /api/graphics/{id}/html5`](api/graphics-html5.md) takes them. An OGraf graphic loads through the `ograf-host` template with `?manifest=<https URL>` |
+| `graphics[*].on` | `bool` | Put the layer on air (`POST /api/graphics/{id}/on`) once the page has painted its first frame |
+| `graphics[*].play` | `bool` | Play the graphic (`POST /api/graphics/{id}/html5/play`) once the page reports its template format |
+| `squeezeback` | `dve.SqueezeConfig` | As [`PUT /api/squeezeback`](api/dve.md#put-apisqueezeback) takes it: configured, and off |
+| `macros` | `[]macro.Macro` | As [`PUT /api/macros/{name}`](api/macro.md#put-apimacrosname) takes them, names once per file. A macro of the same name in `macros.json` is replaced |
+
+The squeezeback and the macros are applied before the API serves, and what their routes refuse fails startup with the route's reason, as does a graphic URL the URL policy refuses. Graphics need the HTML5 sidecar, which starts after the engine: they load in the background once it runs. The sidecar, and each graphic to be put on or played, is waited for at most two minutes from start; a graphic that fails or times out is logged as an error and leaves the engine running.
+
 ## Operators
 
 **File:** `~/.switchframe/operators.json`
