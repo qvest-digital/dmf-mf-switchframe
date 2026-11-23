@@ -32,7 +32,7 @@ const startupExample = `{
         "url": "file:///opt/switchframe-cef/demo-templates/ograf-host/index.html?manifest=https://dmf-ograf.s3.eu-central-1.amazonaws.com/wsj-markets/1.0.0/manifest.ograf.json",
         "data": {"layout": "full"}
       },
-      "on": true,
+      "onAir": true,
       "play": true
     }
   ],
@@ -83,7 +83,7 @@ func TestLoadStartupFile_Example(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, f.Graphics, 1)
 	require.Equal(t, 1, *f.Graphics[0].Layer)
-	require.True(t, f.Graphics[0].On)
+	require.True(t, f.Graphics[0].OnAir)
 	require.True(t, f.Graphics[0].Play)
 	require.JSONEq(t, `{"layout":"full"}`, string(f.Graphics[0].HTML5.Data))
 	require.Equal(t, dve.Rect{X: 48, Y: 48, W: 1344, H: 756}, f.Squeezeback.Rect)
@@ -314,7 +314,7 @@ func TestApplyStartupGraphics_SidecarReadyLate(t *testing.T) {
 	g := startupGraphic{
 		Layer: intPtr(1),
 		HTML5: startupHTML5{URL: "https://example.com/g.html", Data: json.RawMessage(`{"layout":"full"}`)},
-		On:    true,
+		OnAir: true,
 		Play:  true,
 	}
 	done := make(chan struct{})

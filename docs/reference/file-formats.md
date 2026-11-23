@@ -147,7 +147,7 @@ Validation: `Save` rejects empty names and empty step lists, runs [`ValidateStep
         "url": "file:///opt/switchframe-cef/demo-templates/ograf-host/index.html?manifest=https://dmf-ograf.s3.eu-central-1.amazonaws.com/wsj-markets/1.0.0/manifest.ograf.json",
         "data": { "layout": "full" }
       },
-      "on": true,
+      "onAir": true,
       "play": true
     }
   ],
@@ -180,7 +180,7 @@ Validation: `Save` rejects empty names and empty step lists, runs [`ValidateStep
 | `graphics` | `[]startupGraphic` | HTML5 graphics, one per layer |
 | `graphics[*].layer` | `int` | Graphics layer ID, required, 0 or more, once per file. The layer is created under this ID (`POST /api/graphics` with `id`) |
 | `graphics[*].html5` | `startupHTML5` | `url` and optional `data`, as [`POST /api/graphics/{id}/html5`](api/graphics-html5.md) takes them. An OGraf graphic loads through the `ograf-host` template with `?manifest=<https URL>` |
-| `graphics[*].on` | `bool` | Put the layer on air (`POST /api/graphics/{id}/on`) once the page has painted its first frame |
+| `graphics[*].onAir` | `bool` | Put the layer on air (`POST /api/graphics/{id}/on`) once the page has painted its first frame |
 | `graphics[*].play` | `bool` | Play the graphic (`POST /api/graphics/{id}/html5/play`) once the page reports its template format |
 | `squeezeback` | `dve.SqueezeConfig` | As [`PUT /api/squeezeback`](api/dve.md#put-apisqueezeback) takes it: configured, and off |
 | `macros` | `[]macro.Macro` | As [`PUT /api/macros/{name}`](api/macro.md#put-apimacrosname) takes them, names once per file. A macro of the same name in `macros.json` is replaced |

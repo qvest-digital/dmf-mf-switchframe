@@ -25,7 +25,7 @@ import (
 //
 //	{
 //	  "graphics": [
-//	    {"layer": 1, "on": true, "play": true,
+//	    {"layer": 1, "onAir": true, "play": true,
 //	     "html5": {"url": "https://example.com/lower-third.html", "data": {"name": "Jane Doe"}}}
 //	  ],
 //	  "squeezeback": {"rect": {"x": 48, "y": 48, "w": 1344, "h": 756}},
@@ -45,11 +45,13 @@ type startupFile struct {
 	Macros      []macro.Macro      `json:"macros,omitempty"`
 }
 
-// startupGraphic is an HTML5 graphic on a graphics layer of its own.
+// startupGraphic is an HTML5 graphic on a graphics layer of its own. OnAir
+// is not "on": YAML 1.1, which Helm and kubectl read, takes a bare on key
+// for true.
 type startupGraphic struct {
 	Layer *int         `json:"layer"`
 	HTML5 startupHTML5 `json:"html5"`
-	On    bool         `json:"on,omitempty"`
+	OnAir bool         `json:"onAir,omitempty"`
 	Play  bool         `json:"play,omitempty"`
 }
 
@@ -184,7 +186,7 @@ func applyStartupGraphics(ctx context.Context, api http.Handler, sidecar startup
 			slog.Error("startup config: graphic not applied", "layer", *g.Layer, "url", g.HTML5.URL, "error", err)
 			continue
 		}
-		slog.Info("startup config: graphic loaded", "layer", *g.Layer, "url", g.HTML5.URL, "on", g.On, "play", g.Play)
+		slog.Info("startup config: graphic loaded", "layer", *g.Layer, "url", g.HTML5.URL, "onAir", g.OnAir, "play", g.Play)
 	}
 }
 
@@ -202,7 +204,7 @@ func applyStartupGraphic(ctx context.Context, api http.Handler, sidecar startupS
 	if err := callAPI(api, http.MethodPost, layer+"/html5", g.HTML5, http.StatusOK); err != nil {
 		return fmt.Errorf("load: %w", err)
 	}
-	if g.On {
+	if g.OnAir {
 		// A layer takes on once the page has painted its first frame into
 		// it; until then the route refuses with 400.
 		var err error
