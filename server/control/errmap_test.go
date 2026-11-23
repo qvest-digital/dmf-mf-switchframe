@@ -125,6 +125,13 @@ func TestErrorStatus_WrappedErrors(t *testing.T) {
 	require.Equal(t, http.StatusConflict, errorStatus(doubleWrapped))
 }
 
+// A macro the store refuses on validation is the client's to fix; the API
+// documents 400 for it.
+func TestErrorStatus_MacroValidation(t *testing.T) {
+	err := fmt.Errorf("save: %w", &macro.ValidationError{Step: 0, Message: `unknown action "jump"`})
+	require.Equal(t, http.StatusBadRequest, errorStatus(err))
+}
+
 func TestErrorStatus_UnknownError(t *testing.T) {
 	unknown := errors.New("some random error")
 	require.Equal(t, http.StatusInternalServerError, errorStatus(unknown))
