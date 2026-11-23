@@ -308,4 +308,64 @@ describe('MacroStepEditor', () => {
 		await fireEvent.input(duration, { target: { value: '' } });
 		expect(onupdate).toHaveBeenLastCalledWith('durationMs', undefined);
 	});
+
+	it('edits an html5 load step: layer, url and data', async () => {
+		const onupdate = vi.fn();
+		const { container } = renderEditor({ action: 'html5_load', params: { layerId: 1 } }, { onupdate });
+		expect((container.querySelector('input[type="number"]') as HTMLInputElement).value).toBe('1');
+		const url = container.querySelector('.html5-url-input') as HTMLInputElement;
+		await fireEvent.input(url, { target: { value: 'https://example.com/g.html' } });
+		expect(onupdate).toHaveBeenLastCalledWith('url', 'https://example.com/g.html');
+		const data = container.querySelector('.html5-json-input') as HTMLTextAreaElement;
+		expect(data.value).toBe('');
+		await fireEvent.input(data, { target: { value: '{"layout":"full"}' } });
+		expect(onupdate).toHaveBeenLastCalledWith('data', { layout: 'full' });
+	});
+
+	it('sends html5 data only once it is JSON', async () => {
+		const onupdate = vi.fn();
+		const { container, getByText } = renderEditor(
+			{ action: 'html5_data', params: { layerId: 1, data: { layout: 'full' } } },
+			{ onupdate },
+		);
+		const data = container.querySelector('.html5-json-input') as HTMLTextAreaElement;
+		expect(JSON.parse(data.value)).toEqual({ layout: 'full' });
+		await fireEvent.input(data, { target: { value: '{"layout":' } });
+		expect(onupdate).not.toHaveBeenCalled();
+		expect(getByText('data must be JSON')).toBeTruthy();
+		await fireEvent.input(data, { target: { value: '{"layout":"lframe"}' } });
+		expect(onupdate).toHaveBeenLastCalledWith('data', { layout: 'lframe' });
+	});
+
+	it('edits an html5 custom step: action and optional payload', async () => {
+		const onupdate = vi.fn();
+		const { container } = renderEditor({ action: 'html5_custom', params: { layerId: 2, action: 'highlight' } }, { onupdate });
+		expect((container.querySelector('.html5-action-input') as HTMLInputElement).value).toBe('highlight');
+		const payload = container.querySelector('.html5-json-input') as HTMLTextAreaElement;
+		await fireEvent.input(payload, { target: { value: '{"color":"#ff0"}' } });
+		expect(onupdate).toHaveBeenLastCalledWith('payload', { color: '#ff0' });
+		await fireEvent.input(payload, { target: { value: '' } });
+		expect(onupdate).toHaveBeenLastCalledWith('payload', undefined);
+	});
+
+	it('shows an html5 step without a layer as empty, not 0', async () => {
+		const onupdate = vi.fn();
+		const { container } = renderEditor({ action: 'html5_data', params: { data: {} } }, { onupdate });
+		const layer = container.querySelector('input[type="number"]') as HTMLInputElement;
+		expect(layer.value).toBe('');
+		await fireEvent.input(layer, { target: { value: '0' } });
+		expect(onupdate).toHaveBeenLastCalledWith('layerId', 0);
+		await fireEvent.input(layer, { target: { value: '' } });
+		expect(onupdate).toHaveBeenLastCalledWith('layerId', undefined);
+	});
+
+	it('takes only a layer for html5 play and stop', () => {
+		for (const action of ['html5_play', 'html5_stop'] as const) {
+			const { container, unmount } = renderEditor({ action, params: { layerId: 3 } });
+			expect((container.querySelector('input[type="number"]') as HTMLInputElement).value).toBe('3');
+			expect(container.querySelector('.html5-json-input')).toBeFalsy();
+			expect(container.querySelector('.html5-url-input')).toBeFalsy();
+			unmount();
+		}
+	});
 });

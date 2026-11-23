@@ -200,7 +200,7 @@ Macros automate sequences of switcher operations.
 
 ### Macro shape
 
-A macro is a `{name, steps}` pair. Each step is `{action, params}` where `action` is one of ~60 values in `macro.allActions` — cut, preview, transition, wait, audio controls, graphics on/off/animate/fly/slide/text/ticker/sequence, recording, preset recall, key set/delete, source label/delay/position, replay mark-in/out/play, SCTE-35 cue/return/cancel/hold/extend, layout/PIP, captions, clip player controls, ST map, color grade, corrector, AI segment. Each action's `params` is a free-form `map[string]any`; the runner extracts fields by key with type assertions.
+A macro is a `{name, steps}` pair. Each step is `{action, params}` where `action` is one of 87 values in `macro.allActions` — cut, preview, transition, wait, audio controls, graphics on/off/animate/fly/slide/text/ticker/sequence, HTML5 graphics load/data/play/stop/custom, squeezeback, recording, preset recall, key set/delete, source label/delay/position, replay mark-in/out/play, SCTE-35 cue/return/cancel/hold/extend, layout/PIP, captions, clip player controls, ST map, color grade, corrector, AI segment. Each action's `params` is a free-form `map[string]any`; the runner extracts fields by key with type assertions.
 
 ### Validation
 

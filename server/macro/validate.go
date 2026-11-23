@@ -127,6 +127,8 @@ func validateStep(i int, step Step, result *ValidationResult) {
 		validateSqueezebackSet(i, step, result)
 	case ActionSqueezebackOn, ActionSqueezebackOff:
 		validateMoveParams(i, step, result)
+	case ActionHTML5Load, ActionHTML5Data, ActionHTML5Play, ActionHTML5Stop, ActionHTML5Custom:
+		validateHTML5(i, step, result)
 	case ActionCaptionMode:
 		mode, _ := step.Params["mode"].(string)
 		if mode != "off" && mode != "passthrough" && mode != "author" {
@@ -308,6 +310,35 @@ func validateSqueezebackSet(i int, step Step, result *ValidationResult) {
 		}
 	}
 	validateMoveParams(i, step, result)
+}
+
+// validateHTML5 checks what the /api/graphics/{id}/html5 routes refuse
+// before they reach the sidecar: a layer, and a url to load, data to send or
+// a custom action to call. Whether a URL may be loaded depends on the
+// engine's templates directory, so the step is refused for it when saved
+// through the API and when it runs. Unlike the older graphics actions, the
+// layer has no default: a macro naming none would drive layer 0.
+func validateHTML5(i int, step Step, result *ValidationResult) {
+	fail := func(format string, args ...any) {
+		result.Errors = append(result.Errors, ValidationError{Step: i, Message: fmt.Sprintf(format, args...)})
+	}
+	if v, ok := step.Params["layerId"].(float64); !ok || v < 0 || v > math.MaxInt32 || v != math.Trunc(v) {
+		fail("%s requires 'layerId' as a layer id, got %v", step.Action, step.Params["layerId"])
+	}
+	switch step.Action {
+	case ActionHTML5Load:
+		if !hasStringParam(step.Params, "url") {
+			fail("html5_load requires 'url' param")
+		}
+	case ActionHTML5Data:
+		if v, ok := step.Params["data"]; !ok || v == nil {
+			fail("html5_data requires 'data' param")
+		}
+	case ActionHTML5Custom:
+		if !hasStringParam(step.Params, "action") {
+			fail("html5_custom requires 'action' param")
+		}
+	}
 }
 
 // validateWait checks that ms > 0.

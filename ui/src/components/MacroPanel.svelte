@@ -4,7 +4,7 @@
 	import { listMacros, saveMacro, deleteMacro, runMacro, cancelMacro, dismissMacro, listStingers, listPresets } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 	import MacroStepEditor from './MacroStepEditor.svelte';
-	import { ACTION_META, CATEGORIES } from './macro-actions';
+	import { ACTION_META, CATEGORIES, HTML5_ACTIONS } from './macro-actions';
 	import {
 		ICON_PLAY,
 		ICON_PENCIL,
@@ -155,6 +155,12 @@
 		}
 		if (editingSteps.length === 0) {
 			editorError = 'At least one step is required';
+			return;
+		}
+		const noLayer = editingSteps.findIndex(s => HTML5_ACTIONS.includes(s.action) && typeof s.params.layerId !== 'number');
+		if (noLayer >= 0) {
+			editorError = `Step ${noLayer + 1}: layer is required`;
+			expandedStep = noLayer;
 			return;
 		}
 		try {

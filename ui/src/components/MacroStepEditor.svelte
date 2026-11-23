@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { MacroAction, MacroStep } from '$lib/api/types';
-	import { ACTION_META, CATEGORIES, SOURCE_ACTIONS, WIPE_DIRECTIONS, GRAPHICS_LAYER_ACTIONS, FLY_DIRECTIONS, LAYOUT_PRESETS, EASINGS } from './macro-actions';
+	import { ACTION_META, CATEGORIES, SOURCE_ACTIONS, WIPE_DIRECTIONS, GRAPHICS_LAYER_ACTIONS, HTML5_ACTIONS, FLY_DIRECTIONS, LAYOUT_PRESETS, EASINGS } from './macro-actions';
 	import { templateList } from '$lib/graphics/templates';
 
 	interface Props {
@@ -18,7 +18,27 @@
 	let transType = $derived((step.params.type as string) || 'mix');
 	let needsSource = $derived(SOURCE_ACTIONS.includes(step.action));
 	let needsLayerId = $derived(GRAPHICS_LAYER_ACTIONS.includes(step.action));
+	// The engine refuses an html5 step without a layer, so the field shows
+	// what is set rather than the 0 older graphics actions default to.
+	let layerRequired = $derived(HTML5_ACTIONS.includes(step.action));
 	let animMode = $derived((step.params.mode as string) || 'pulse');
+
+	// JSON params as typed while they do not parse, by param name.
+	let jsonDrafts = $state<Record<string, string>>({});
+
+	function updateJSON(key: string, text: string) {
+		if (text.trim() === '') {
+			delete jsonDrafts[key];
+			onupdate(key, undefined);
+			return;
+		}
+		try {
+			onupdate(key, JSON.parse(text));
+			delete jsonDrafts[key];
+		} catch {
+			jsonDrafts[key] = text;
+		}
+	}
 
 	// Validation warnings
 	let warnings = $derived.by(() => {
@@ -30,6 +50,9 @@
 			if (transType === 'stinger' && !step.params.stingerName) {
 				w.push('Stinger name is required');
 			}
+		}
+		for (const key of Object.keys(jsonDrafts)) {
+			w.push(`${key} must be JSON`);
 		}
 		return w;
 	});
@@ -79,8 +102,12 @@
 				type="number"
 				min="0"
 				step="1"
-				value={step.params.layerId as number ?? 0}
-				oninput={(e) => onupdate('layerId', parseInt((e.target as HTMLInputElement).value) || 0)}
+				placeholder={layerRequired ? 'required' : undefined}
+				value={step.params.layerId as number ?? (layerRequired ? '' : 0)}
+				oninput={(e) => {
+					const v = parseInt((e.target as HTMLInputElement).value);
+					onupdate('layerId', layerRequired && Number.isNaN(v) ? undefined : (v || 0));
+				}}
 			/>
 		</div>
 	{/if}
@@ -224,6 +251,43 @@
 					<option value={t.id}>{t.name}</option>
 				{/each}
 			</select>
+		</div>
+	{/if}
+
+	<!-- HTML5 graphics -->
+	{#if step.action === 'html5_load'}
+		<div class="field-row">
+			<span class="field-label">URL</span>
+			<input
+				class="field-input html5-url-input"
+				type="text"
+				placeholder="https://..."
+				value={step.params.url as string ?? ''}
+				oninput={(e) => onupdate('url', (e.target as HTMLInputElement).value)}
+			/>
+		</div>
+	{/if}
+	{#if step.action === 'html5_custom'}
+		<div class="field-row">
+			<span class="field-label">Action</span>
+			<input
+				class="field-input html5-action-input"
+				type="text"
+				value={step.params.action as string ?? ''}
+				oninput={(e) => onupdate('action', (e.target as HTMLInputElement).value)}
+			/>
+		</div>
+	{/if}
+	{#if step.action === 'html5_load' || step.action === 'html5_data' || step.action === 'html5_custom'}
+		{@const key = step.action === 'html5_custom' ? 'payload' : 'data'}
+		<div class="field-row">
+			<span class="field-label">{key === 'data' ? 'Data' : 'Payload'}</span>
+			<textarea
+				class="field-input html5-json-input"
+				rows="3"
+				value={jsonDrafts[key] ?? (step.params[key] === undefined ? '' : JSON.stringify(step.params[key]))}
+				oninput={(e) => updateJSON(key, (e.target as HTMLTextAreaElement).value)}
+			></textarea>
 		</div>
 	{/if}
 

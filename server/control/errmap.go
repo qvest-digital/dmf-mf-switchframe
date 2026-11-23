@@ -188,9 +188,14 @@ var errorMappings = []errorMapping{
 }
 
 // errorStatus maps a sentinel error to an HTTP status code.
-// It uses errors.Is() so wrapped errors are matched correctly.
+// It uses errors.Is() so wrapped errors are matched correctly. A macro step
+// refused by validation is the client's to fix, as the macro API documents.
 // Unknown errors default to 500 Internal Server Error.
 func errorStatus(err error) int {
+	var invalid *macro.ValidationError
+	if errors.As(err, &invalid) {
+		return http.StatusBadRequest
+	}
 	for _, m := range errorMappings {
 		if errors.Is(err, m.err) {
 			return m.status

@@ -127,7 +127,7 @@ Recall via `POST /api/presets/{id}/recall` writes back all fields to the runtime
 |---|---|---|
 | `name` | `string` | Unique macro name (primary key) |
 | `steps` | `[]Step` | Ordered sequence of actions |
-| `steps[*].action` | `Action` (string) | Must match one of ~80 declared actions in [`macro/types.go`](../../server/macro/types.go) |
+| `steps[*].action` | `Action` (string) | Must match one of 87 declared actions in [`macro/types.go`](../../server/macro/types.go) |
 | `steps[*].params` | `map[string]any` | Action-specific parameters (JSON values) |
 
 Validation: `Save` rejects empty names and empty step lists, runs [`ValidateSteps`](../../server/macro/validate.go) on the steps, and returns the first validation error if any.
