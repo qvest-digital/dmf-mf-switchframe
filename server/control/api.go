@@ -632,6 +632,12 @@ type API struct {
 	peerPoller         *peer.HealthPoller                  // local identity + role for /api/peer/health
 	storeSyncer        *peer.StoreSyncer                   // the stores' ledger and items, read by the peer
 	controlPlaneSecret string                              // enables /api/peer/force-leader when non-empty
+	relayEnabled       bool                                // see WithPeerRelay
+	relayToken         string
+	beforeCut          func()        // tests: runs as a cut handler starts the cut
+	relaySeq           atomic.Uint64 // last seq given to a relayed command
+	relay              relayState
+	squeezePending     squeezePending
 	startTime          time.Time
 	reconcileLock      reconcileLockState
 	compareChange      compareChangeState
@@ -759,8 +765,8 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 // registerAPIRoutes registers all API route handlers on the given mux.
 func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	// Core routes (state, cut, preview) stay here
-	mux.HandleFunc("POST /api/switch/cut", timedHandler(a.cmdQueue, "cut", a.seqTracker, a.handleCutInner))
-	mux.HandleFunc("POST /api/switch/preview", timedHandler(a.cmdQueue, "preview", a.seqTracker, a.handlePreviewInner))
+	mux.HandleFunc("POST /api/switch/cut", a.relayedHandler("cut", a.handleCutInner))
+	mux.HandleFunc("POST /api/switch/preview", a.relayedHandler("preview", a.handlePreviewInner))
 	mux.HandleFunc("GET /api/switch/state", a.handleState)
 
 	// Delegate to per-file route registration methods
@@ -829,12 +835,20 @@ func (a *API) handleCutInner(w http.ResponseWriter, r *http.Request, body []byte
 		httperr.Write(w, http.StatusBadRequest, "source required")
 		return
 	}
-	if err := a.switcher.Cut(r.Context(), req.Source); err != nil {
+	if a.beforeCut != nil {
+		a.beforeCut()
+	}
+	changed, err := a.switcher.CutChanged(r.Context(), req.Source)
+	if err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.enrichedState())
+	if !changed {
+		// A cut to the source on program sets nothing, also while a
+		// transition takes it away, which runs on.
+		markUnchanged(w)
+	}
+	a.writeState(w)
 }
 
 // handlePreviewInner sets the preview source without affecting the program output.
@@ -854,8 +868,7 @@ func (a *API) handlePreviewInner(w http.ResponseWriter, r *http.Request, body []
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.enrichedState())
+	a.writeState(w)
 }
 
 // handleState returns the current ControlRoomState as JSON.

@@ -355,3 +355,95 @@ func TestSqueeze_DurationCapped(t *testing.T) {
 	// Past the cap, time.Duration overflows and the move never arrives.
 	require.Error(t, s.Off(SqueezeMove{DurationMs: ms(math.MaxInt)}))
 }
+
+// Taking the peer's squeeze-back lands where the peer's move arrives,
+// without animating, and turning it off there leaves the program full
+// frame at once.
+func TestSqueeze_RestoreJumps(t *testing.T) {
+	s, _ := newTestSqueeze(t, "")
+	cfg := SqueezeConfig{Rect: Rect{X: 0, Y: 0, W: 32, H: 32}, DurationMs: 1000}
+	require.NoError(t, s.Restore(cfg, true))
+	r, ok := s.Frame(64, 64)
+	require.True(t, ok)
+	require.Equal(t, image.Rect(0, 0, 32, 32), r)
+	st := s.Snapshot()
+	require.True(t, st.On)
+	require.False(t, st.Animating)
+	require.Equal(t, cfg, st.SqueezeConfig)
+
+	require.NoError(t, s.Restore(cfg, false))
+	_, ok = s.Frame(64, 64)
+	require.False(t, ok, "off: full frame, nothing to draw")
+	require.False(t, s.Active())
+}
+
+// A move already heading where the peer's state is goes on.
+func TestSqueeze_RestoreKeepsMoveToSameState(t *testing.T) {
+	s, advance := newTestSqueeze(t, "")
+	require.NoError(t, s.On(SqueezeMove{}))
+	advance(500 * time.Millisecond)
+	require.NoError(t, s.Restore(*s.cfg.Load(), true))
+	r, ok := s.Frame(64, 64)
+	require.True(t, ok)
+	require.Equal(t, image.Rect(16, 16, 64, 64), r, "still halfway")
+}
+
+func TestSqueeze_RestoreValidates(t *testing.T) {
+	s, _ := newTestSqueeze(t, "")
+	require.Error(t, s.Restore(SqueezeConfig{Rect: Rect{X: 0, Y: 0, W: 128, H: 32}}, true))
+	require.Error(t, s.Restore(SqueezeConfig{Rect: Rect{X: 0, Y: 0, W: 32, H: 32}, Easing: "nope"}, true))
+}
+
+func TestSqueeze_ResetUnconfigures(t *testing.T) {
+	s, _ := newTestSqueeze(t, "")
+	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
+	s.Reset()
+	st := s.Snapshot()
+	require.False(t, st.Configured)
+	require.False(t, st.On)
+	require.False(t, s.Active())
+	require.ErrorIs(t, s.On(SqueezeMove{}), ErrSqueezeNotConfigured)
+}
+
+// A Set naming no graphics offset keeps the configured one, so a caller
+// that does not know it does not reset it; 0 clears it.
+func TestSqueeze_SetKeepsGraphicsOffset(t *testing.T) {
+	s, _ := newTestSqueeze(t, "")
+	cfg := SqueezeConfig{Rect: Rect{X: 32, Y: 32, W: 32, H: 32}, GraphicsOffsetMs: ms(-400)}
+	require.NoError(t, s.Set(cfg))
+	require.Equal(t, -400*time.Millisecond, s.Snapshot().GraphicsOffset())
+
+	cfg.GraphicsOffsetMs = nil
+	cfg.DurationMs = 200
+	require.NoError(t, s.Set(cfg))
+	require.Equal(t, -400*time.Millisecond, s.Snapshot().GraphicsOffset())
+
+	cfg.GraphicsOffsetMs = ms(0)
+	require.NoError(t, s.Set(cfg))
+	require.Nil(t, s.Snapshot().GraphicsOffsetMs)
+
+	require.Error(t, s.Set(SqueezeConfig{Rect: cfg.Rect, GraphicsOffsetMs: ms(-MaxMorphDurationMs - 1)}))
+}
+
+// Restore takes the peer's offset, and an offset of 0 and none are alike.
+func TestSqueeze_RestoreTakesGraphicsOffset(t *testing.T) {
+	s, _ := newTestSqueeze(t, "")
+	cfg := *s.cfg.Load()
+	cfg.GraphicsOffsetMs = ms(250)
+	require.NoError(t, s.Restore(cfg, false))
+	require.Equal(t, 250*time.Millisecond, s.Snapshot().GraphicsOffset())
+
+	cfg.GraphicsOffsetMs = ms(0)
+	require.NoError(t, s.Restore(cfg, false))
+	require.Nil(t, s.Snapshot().GraphicsOffsetMs)
+}
+
+func TestSqueeze_CheckMove(t *testing.T) {
+	require.ErrorIs(t, NewSqueeze(64, 64).CheckMove(true, SqueezeMove{}), ErrSqueezeNotConfigured)
+	require.NoError(t, NewSqueeze(64, 64).CheckMove(false, SqueezeMove{}))
+	s, _ := newTestSqueeze(t, "")
+	require.NoError(t, s.CheckMove(true, SqueezeMove{}))
+	require.Error(t, s.CheckMove(true, SqueezeMove{DurationMs: ms(MaxMorphDurationMs + 1)}))
+	require.Error(t, s.CheckMove(false, SqueezeMove{Easing: "nope"}))
+	require.False(t, s.Snapshot().On, "a check does not move")
+}

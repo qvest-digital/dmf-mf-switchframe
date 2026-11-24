@@ -2,7 +2,13 @@ package control
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/dve"
@@ -14,9 +20,9 @@ func (a *API) registerSqueezeRoutes(mux *http.ServeMux) {
 		return
 	}
 	mux.HandleFunc("GET /api/squeezeback", a.handleGetSqueeze)
-	mux.HandleFunc("PUT /api/squeezeback", timedHandler(a.cmdQueue, "squeezeback_set", a.seqTracker, a.handleSetSqueezeInner))
-	mux.HandleFunc("POST /api/squeezeback/on", timedHandler(a.cmdQueue, "squeezeback_on", a.seqTracker, a.handleSqueezeOnInner))
-	mux.HandleFunc("POST /api/squeezeback/off", timedHandler(a.cmdQueue, "squeezeback_off", a.seqTracker, a.handleSqueezeOffInner))
+	mux.HandleFunc("PUT /api/squeezeback", a.relayedHandler("squeezeback_set", a.handleSetSqueezeInner))
+	mux.HandleFunc("POST /api/squeezeback/on", a.relayedHandler("squeezeback_on", a.handleSqueezeOnInner))
+	mux.HandleFunc("POST /api/squeezeback/off", a.relayedHandler("squeezeback_off", a.handleSqueezeOffInner))
 }
 
 func (a *API) handleGetSqueeze(w http.ResponseWriter, r *http.Request) {
@@ -39,34 +45,198 @@ func (a *API) handleSetSqueezeInner(w http.ResponseWriter, r *http.Request, body
 		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	a.broadcast()
+	a.broadcastAfter(w)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(a.squeeze.Snapshot())
 }
 
 func (a *API) handleSqueezeOnInner(w http.ResponseWriter, r *http.Request, body []byte) {
-	a.handleSqueezeMove(w, r, body, a.squeeze.On)
+	a.handleSqueezeMove(w, r, body, true)
 }
 
 func (a *API) handleSqueezeOffInner(w http.ResponseWriter, r *http.Request, body []byte) {
-	a.handleSqueezeMove(w, r, body, a.squeeze.Off)
+	a.handleSqueezeMove(w, r, body, false)
 }
 
 // handleSqueezeMove runs On or Off; an empty body takes the configured
 // duration and easing.
-func (a *API) handleSqueezeMove(w http.ResponseWriter, r *http.Request, body []byte, move func(dve.SqueezeMove) error) {
+func (a *API) handleSqueezeMove(w http.ResponseWriter, r *http.Request, body []byte, on bool) {
 	a.setLastOperator(r)
-	var m dve.SqueezeMove
-	if len(body) > 0 {
-		if err := json.Unmarshal(body, &m); err != nil {
-			httperr.Write(w, http.StatusBadRequest, "invalid json")
+	if err := a.MoveSqueeze(on, body); err != nil {
+		var he *html5Error
+		if errors.As(err, &he) {
+			httperr.Write(w, he.status, he.msg)
 			return
 		}
-	}
-	if err := move(m); err != nil {
 		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	a.broadcast()
+	a.broadcastAfter(w)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// squeezeMoveRequest is an On or Off and the HTML5 graphics data sent
+// with it, as the layout around an L-frame changes with the move.
+type squeezeMoveRequest struct {
+	dve.SqueezeMove
+	Graphics []squeezeGraphic `json:"graphics,omitempty"`
+	// GraphicsOffsetMs replaces the configured offset for this move.
+	GraphicsOffsetMs *int `json:"graphicsOffsetMs,omitempty"`
+}
+
+// squeezeGraphic is data for the HTML5 graphic on a layer, as
+// PUT /api/graphics/{id}/html5/data sends it.
+type squeezeGraphic struct {
+	LayerID *int            `json:"layerId"`
+	Data    json.RawMessage `json:"data"`
+}
+
+// squeezePending is what a move has still to do once its graphics offset
+// has passed: send its graphics, or, sent first, start the move.
+type squeezePending struct {
+	mu    sync.Mutex // guards timer and the gen bump
+	gen   atomic.Uint64
+	timer *time.Timer
+
+	// sendMu orders graphics sends; held only while sending, never by a
+	// caller of MoveSqueeze, which a frame loop may be.
+	sendMu sync.Mutex
+}
+
+// MoveQueuedSqueeze is MoveSqueeze for a command that ran on another engine
+// first, as one relayed or sent to both and run from the queue: graphics
+// this engine cannot send, on a layer without an HTML5 graphic or with no
+// sidecar, are left out and logged rather than refusing the move, so the
+// program moves alike on both.
+func (a *API) MoveQueuedSqueeze(on bool, body []byte) error {
+	return a.moveSqueeze(on, body, false)
+}
+
+// CancelSqueezeMoves drops what a move has still to send or start, as
+// taking the peer's squeezeback does.
+func (a *API) CancelSqueezeMoves() {
+	p := &a.squeezePending
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.gen.Add(1)
+	if p.timer != nil {
+		p.timer.Stop()
+		p.timer = nil
+	}
+}
+
+// MoveSqueeze runs a squeezeback On or Off from its request body, and sends
+// the HTML5 graphics data the body carries the graphics offset after the
+// move starts, before it when negative: the move then waits. A move drops
+// what an earlier one has still to do. Graphics are checked before
+// anything moves, and an error naming an HTML5 graphic is an *html5Error.
+// Graphics are sent on a goroutine of their own: a timed move runs on the
+// frame loop, which a slow graphics sidecar must not hold up.
+func (a *API) MoveSqueeze(on bool, body []byte) error {
+	return a.moveSqueeze(on, body, true)
+}
+
+func (a *API) moveSqueeze(on bool, body []byte, strict bool) error {
+	if a.squeeze == nil {
+		return nil
+	}
+	var req squeezeMoveRequest
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			return errors.New("invalid json")
+		}
+	}
+	graphics := req.Graphics[:0:0]
+	for _, g := range req.Graphics {
+		var err error
+		switch {
+		case g.LayerID == nil:
+			err = errors.New("graphics layerId is required")
+		case len(g.Data) == 0:
+			err = errors.New("graphics data is required")
+		default:
+			_, err = a.html5Browser(*g.LayerID)
+		}
+		if err == nil {
+			graphics = append(graphics, g)
+			continue
+		}
+		if strict {
+			return err
+		}
+		slog.Warn("squeezeback: graphics left out of a move taken from the peer", "error", err)
+	}
+	req.Graphics = graphics
+	cfg := a.squeeze.Snapshot().SqueezeConfig
+	offset := cfg.GraphicsOffset()
+	if req.GraphicsOffsetMs != nil {
+		offset = (dve.SqueezeConfig{GraphicsOffsetMs: req.GraphicsOffsetMs}).GraphicsOffset()
+		if offset < -dve.MaxMorphDurationMs*time.Millisecond || offset > dve.MaxMorphDurationMs*time.Millisecond {
+			return fmt.Errorf("graphicsOffsetMs must be between %d and %d, got %d",
+				-dve.MaxMorphDurationMs, dve.MaxMorphDurationMs, *req.GraphicsOffsetMs)
+		}
+	}
+	move := func() error {
+		if on {
+			return a.squeeze.On(req.SqueezeMove)
+		}
+		return a.squeeze.Off(req.SqueezeMove)
+	}
+	p := &a.squeezePending
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	gen := p.gen.Add(1)
+	if p.timer != nil {
+		p.timer.Stop()
+		p.timer = nil
+	}
+	if len(req.Graphics) == 0 {
+		return move()
+	}
+	send := func() {
+		p.sendMu.Lock()
+		defer p.sendMu.Unlock()
+		if p.gen.Load() != gen {
+			return
+		}
+		for _, g := range req.Graphics {
+			browserID, err := a.html5Browser(*g.LayerID)
+			if err == nil {
+				err = a.htmlGfxMgr.Update(browserID, string(g.Data))
+			}
+			if err != nil {
+				slog.Warn("squeezeback: graphics data not sent", "layer", *g.LayerID, "error", err)
+			}
+		}
+	}
+	if offset < 0 {
+		if err := a.squeeze.CheckMove(on, req.SqueezeMove); err != nil {
+			return err
+		}
+		go send()
+		p.timer = time.AfterFunc(-offset, func() {
+			p.mu.Lock()
+			if p.gen.Load() != gen {
+				p.mu.Unlock()
+				return
+			}
+			p.timer = nil
+			err := move()
+			p.mu.Unlock()
+			if err != nil {
+				slog.Warn("squeezeback: move after its graphics failed", "on", on, "error", err)
+			}
+			a.broadcast()
+		})
+		return nil
+	}
+	if err := move(); err != nil {
+		return err
+	}
+	if offset == 0 {
+		go send()
+	} else {
+		p.timer = time.AfterFunc(offset, send)
+	}
+	return nil
 }

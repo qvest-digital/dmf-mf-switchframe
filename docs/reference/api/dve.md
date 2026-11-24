@@ -136,6 +136,8 @@ A squeezeback is an L-frame: the whole composited program, upstream keys and DVE
 
 The background is any registered source (`clip:N`, `playout:N`, an MXL source, ...) and tallies as program while it shows.
 
+In a redundant pair the squeezeback, its configuration and whether it is on, is part of the state snapshot the engines take from each other at start and on [convergence](peer-sync.md#convergence). An engine taking it lands where the peer's move arrives, without animating; a background not open there yet shows black until it is.
+
 ### `GET /api/squeezeback`
 
 **Purpose:** return the squeezeback.
@@ -156,11 +158,11 @@ The background is any registered source (`clip:N`, `playout:N`, an MXL source, .
 { "rect": { "x": 480, "y": 0, "w": 1440, "h": 810 }, "background": "clip:1", "durationMs": 800, "easing": "ease-in-out" }
 ```
 
-`rect` is in pixels of the program frame, every value an even whole number, with a positive size, inside the frame. `background` is a source key; omitted or `""` is black. `durationMs` and `easing` are the defaults of on and off; `durationMs` is at most 5000 (`dve.MaxMorphDurationMs`) and `easing` takes the values of [preset recall](#put-apidvepresetsidrecall).
+`rect` is in pixels of the program frame, every value an even whole number, with a positive size, inside the frame. `background` is a source key; omitted or `""` is black. `durationMs` and `easing` are the defaults of on and off; `durationMs` is at most 5000 (`dve.MaxMorphDurationMs`) and `easing` takes the values of [preset recall](#put-apidvepresetsidrecall). `graphicsOffsetMs` is when the `graphics` an on or off carries are sent, from the start of the move: later when positive, earlier when negative, the move then starting that long after them; -5000..5000, 0 sends them as the move starts. Omitted, the configured offset stays, so a caller that does not know it leaves it alone.
 
 **Response 200:** `dve.SqueezeState`.
 
-**Errors:** 400 (invalid JSON, odd or out-of-frame rect, unknown background source, `durationMs` outside 0..5000, unknown easing).
+**Errors:** 400 (invalid JSON, odd or out-of-frame rect, unknown background source, `durationMs` outside 0..5000, `graphicsOffsetMs` outside -5000..5000, unknown easing).
 
 ---
 
@@ -169,9 +171,15 @@ The background is any registered source (`clip:N`, `playout:N`, an MXL source, .
 **Purpose:** squeeze the program into the rect, from wherever it is.
 **Handler:** `(*API).handleSqueezeOnInner` (`timedHandler`).
 
-**Request body** (`dve.SqueezeMove`), optional: `{ "durationMs": 800, "easing": "ease-out" }`. Each field left out takes the configured one; `durationMs` 0 cuts.
+**Request body** (`dve.SqueezeMove` and graphics), optional:
 
-**Response 204.** **Errors:** 400 (not configured, invalid JSON, `durationMs` outside 0..5000, unknown easing).
+```json
+{ "durationMs": 800, "easing": "ease-out", "graphics": [{ "layerId": 1, "data": { "layout": "lframe" } }], "graphicsOffsetMs": 400 }
+```
+
+Each of `durationMs` and `easing` left out takes the configured one; `durationMs` 0 cuts. `graphics` is data for the HTML5 graphic on each layer, as [`PUT /api/graphics/{id}/html5/data`](graphics-html5.md) sends it, so the layout around the L-frame changes with the move; it is sent the configured `graphicsOffsetMs` from the move's start, or the move's own `graphicsOffsetMs` when it names one. With a negative offset the graphics are sent at once and the move starts that long after. A move drops what an earlier one has still to send or start. Each graphic is checked before anything moves; one not sent when its time comes is logged. In a redundant pair the move and its graphics run on both engines (see [convergence](peer-sync.md#convergence)), each sending the data to its own HTML5 graphic; the engine taking the move from its peer moves without the graphics it cannot send.
+
+**Response 204.** **Errors:** 400 (not configured, invalid JSON, `durationMs` outside 0..5000, `graphicsOffsetMs` outside -5000..5000, unknown easing, a graphic without `layerId` or `data`), 404 (no HTML5 graphic on a layer), 503 (HTML5 graphics sidecar not running).
 
 ---
 
@@ -182,7 +190,7 @@ The background is any registered source (`clip:N`, `playout:N`, an MXL source, .
 
 **Request body:** as for on.
 
-**Response 204.** **Errors:** 400 (invalid JSON, `durationMs` outside 0..5000, unknown easing).
+**Response 204.** **Errors:** as for on, without "not configured".
 
 ## Related docs
 

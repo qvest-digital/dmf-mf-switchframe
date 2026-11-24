@@ -27,7 +27,9 @@ func fullSnapshot() FullStateSnapshot {
 		Tickers:              []TickerSnapshot{{LayerID: 1, Text: "news", FontSize: 30, Speed: 80}},
 		Sequences:            []SequenceSnapshot{{LayerID: 2, Hash: "abc", Size: 3, SourceFPS: 25, Speed: 1}},
 		GraphicsMotion:       true,
+		SqueezebackSynced:    true,
 		Layout:               LayoutSnapshot{ActivePreset: "pip"},
+		Squeezeback:          &SqueezebackSnapshot{Rect: SqueezebackRect{X: 480, W: 1440, H: 810}, On: true},
 		CaptionMode:          "author",
 		ClipPlayers:          []ClipPlayerSnapshot{{ID: 1, ClipID: "a1", State: "playing"}},
 		Sources:              map[string]SourceConfigSnapshot{"cam1": {Label: "Cam 1"}},
@@ -49,7 +51,7 @@ func fullSnapshot() FullStateSnapshot {
 }
 
 // Fields the two engines of a pair hold each their own of.
-var notCompared = []string{"version", "capturedAt", "graphicsContent", "graphicsMotion", "macroExecution", "operatorSessions", "commsParticipants", "stingerLoaded"}
+var notCompared = []string{"version", "capturedAt", "graphicsContent", "graphicsMotion", "squeezebackSynced", "macroExecution", "operatorSessions", "commsParticipants", "stingerLoaded"}
 
 // Every field of the snapshot is compared, but those that are each
 // engine's own: a field added to the snapshot is compared unless it is

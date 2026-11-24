@@ -1640,6 +1640,15 @@ func (t *apiMacroTarget) execSqueezebackMove(params map[string]any, on bool) err
 	if m.Easing, err = stringParam(params, "easing"); err != nil {
 		return err
 	}
+	if t.html5 != nil {
+		// As the REST call moves, so a move waiting on its graphics'
+		// head start is dropped.
+		body, err := json.Marshal(m)
+		if err != nil {
+			return err
+		}
+		return t.html5.MoveSqueeze(on, body)
+	}
 	if on {
 		return t.squeeze.On(m)
 	}

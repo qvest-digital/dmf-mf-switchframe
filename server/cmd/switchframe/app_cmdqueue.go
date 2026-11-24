@@ -11,6 +11,7 @@ import (
 
 	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/cmdqueue"
+	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -30,6 +31,12 @@ func (a *App) initCommandQueue() error {
 	// cross-region command propagation latency.
 	maxAge := cmdqueue.DefaultMaxAge // 2s
 	opts = append(opts, cmdqueue.WithMaxAge(maxAge))
+
+	// Commands the engines of a pair relay to each other may reach the
+	// two in different orders; each keeps the later one on each state.
+	if a.cfg.PeerEngineURL != "" {
+		opts = append(opts, cmdqueue.WithStateKeys(control.RelayedStateKeys()))
+	}
 
 	// Cap queue size to prevent unbounded growth from misbehaving clients.
 	opts = append(opts, cmdqueue.WithMaxSize(10_000))
@@ -121,7 +128,11 @@ func (a *App) registerCoreActions(d *cmdqueue.Dispatcher) {
 		if err := json.Unmarshal(payload, &req); err != nil {
 			return err
 		}
-		return a.sw.Cut(context.Background(), req.Source)
+		changed, err := a.sw.CutChanged(context.Background(), req.Source)
+		if err == nil && !changed {
+			return cmdqueue.ErrUnchanged
+		}
+		return err
 	})
 	d.Register("preview", func(payload json.RawMessage) error {
 		var req struct {
@@ -691,19 +702,12 @@ func (a *App) registerSqueezeActions(d *cmdqueue.Dispatcher) {
 		}
 		return a.squeeze.Set(cfg)
 	})
-	for action, move := range map[string]func(*dve.Squeeze, dve.SqueezeMove) error{
-		"squeezeback_on":  (*dve.Squeeze).On,
-		"squeezeback_off": (*dve.Squeeze).Off,
-	} {
+	for action, on := range map[string]bool{"squeezeback_on": true, "squeezeback_off": false} {
 		d.Register(action, func(payload json.RawMessage) error {
-			if a.squeeze == nil {
+			if a.api == nil {
 				return nil
 			}
-			var m dve.SqueezeMove
-			if err := json.Unmarshal(payload, &m); err != nil {
-				return err
-			}
-			return move(a.squeeze, m)
+			return a.api.MoveQueuedSqueeze(on, payload)
 		})
 	}
 }

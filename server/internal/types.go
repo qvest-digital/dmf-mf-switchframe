@@ -596,6 +596,10 @@ type SqueezebackState struct {
 	Easing     string          `json:"easing,omitempty"`
 	On         bool            `json:"on"`
 	Animating  bool            `json:"animating"`
+
+	// GraphicsOffsetMs is when graphics sent with an on or off change,
+	// from the start of the move; negative is before it.
+	GraphicsOffsetMs int `json:"graphicsOffsetMs,omitempty"`
 }
 
 // SqueezebackRect is where the program goes, in pixels of the program frame.

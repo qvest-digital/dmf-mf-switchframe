@@ -2,7 +2,7 @@ import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SR
 import { version } from '$app/environment';
 import { notify } from '$lib/state/notifications.svelte';
 import { trackChange } from '$lib/util/activity';
-import { resolveApiUrl, getEngineUrls, setFlushTimestampInjector, isNonIdempotent, isTimedPath, getAuthoritativeEngine, getEmergencyEngineBUrl, type EngineEndpoint } from './base-url';
+import { resolveApiUrl, getEngineUrls, setFlushTimestampInjector, isNonIdempotent, isTimedPath, isRelayedPath, relayTargetOrder, getAuthoritativeEngine, getEmergencyEngineBUrl, type EngineEndpoint } from './base-url';
 import { isTokenRefused, tokenAcceptedBy, tokenRefusedBy, tokenReplaced } from './auth-gate';
 
 export class SwitchApiError extends Error {
@@ -344,9 +344,11 @@ export function setNonIdempotentFailureCallback(cb: ((url: string, failedEngines
 
 // ── Dual-engine PTP timestamp injection ──
 
-let dualTimestampProvider: ((engineId?: string) => { execute_at: number; command_seq: number }) | null = null;
+type CommandTiming = { execute_at: number; command_seq: number };
 
-export function setDualTimestampProvider(provider: ((engineId?: string) => { execute_at: number; command_seq: number }) | null): void {
+let dualTimestampProvider: ((engineId?: string) => CommandTiming) | null = null;
+
+export function setDualTimestampProvider(provider: ((engineId?: string) => CommandTiming) | null): void {
 	dualTimestampProvider = provider;
 
 	// Wire flush injector so pending commands get PTP timestamps when flushed to new engines
@@ -405,6 +407,11 @@ async function fanOutMutation(
 	opts: RequestInit,
 	engines: EngineEndpoint[],
 ): Promise<FanOutResult> {
+	if (engines.length > 1 && isRelayedPath(url)) {
+		const ordered = relayTargetOrder(engines);
+		if (ordered) return sendToOne(url, opts, ordered);
+	}
+
 	// Filter out engines with open circuits for mutations
 	let availableEngines = engines.filter(e => !isCircuitOpen(e.url));
 	if (availableEngines.length === 0) {
@@ -485,6 +492,54 @@ async function fanOutMutation(
 	}
 
 	return accountFanOut(await all, availableEngines, url, opts, bodies, startedAt, settledAt);
+}
+
+/** Sends a switching command to one engine of the pair, which passes it on
+ * to the other: the first of ordered whose circuit is closed, then, when
+ * the request could not be sent to it, the next. An engine that answers,
+ * whatever the status, is not retried on the other: it took or refused the
+ * command; nor is one that timed out, which may have taken it and passed
+ * it on, so a second engine would run it again, perhaps over a later
+ * command. No command_seq is sent, as a command naming one is taken as
+ * sent to both and not passed on; an execute_at is, when timed execution
+ * gives one, and the engine passes it on for both to run the command then. */
+async function sendToOne(url: string, opts: RequestInit, ordered: EngineEndpoint[]): Promise<FanOutResult> {
+	const open = ordered.filter((e) => !isCircuitOpen(e.url));
+	const tries = open.length > 0 ? open : ordered;
+	const results: PromiseSettledResult<Response>[] = [];
+	for (const engine of tries) {
+		let body = opts.body;
+		if (dualTimestampProvider && typeof body === 'string') {
+			try {
+				const ts = dualTimestampProvider(engine.id);
+				const nowUs = Date.now() * 1000;
+				if (ts.execute_at > nowUs && ts.execute_at < nowUs + 5_000_000) {
+					body = JSON.stringify({ ...JSON.parse(body), execute_at: ts.execute_at });
+				}
+			} catch { /* send as is */ }
+		}
+		const startedAt = Date.now();
+		try {
+			const res = await fetchWithTimeout(`${engine.url}${url}`, { ...opts, body }, engineFetchTimeoutMs(url));
+			if (res.ok) {
+				recordSuccess(engine.url, startedAt);
+				recordCommandLatency(engine.url, Date.now() - startedAt);
+			} else if (res.status >= 500) {
+				recordFailure(engine.url);
+			}
+			const r: PromiseFulfilledResult<Response> = { status: 'fulfilled', value: res };
+			results.push(r);
+			return { results, successful: res.ok ? [r] : [], failed: res.ok ? [] : [r], availableEngines: [engine] };
+		} catch (reason) {
+			recordFailure(engine.url);
+			results.push({ status: 'rejected', reason });
+			// fetch rejects with a TypeError when the request could not be
+			// sent; an abort, as the timeout is, may come after the engine
+			// took it.
+			if (!(reason instanceof TypeError)) break;
+		}
+	}
+	return { results, successful: [], failed: results as PromiseRejectedResult[], availableEngines: tries };
 }
 
 /** Names each engine a fan-out failed on and why, such as

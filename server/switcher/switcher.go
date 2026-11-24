@@ -1785,11 +1785,16 @@ func (s *Switcher) drainCommandQueue() {
 	if s.cmdQueue == nil {
 		return
 	}
+	// A command run on arrival waits for this dispatch, and this one for
+	// it, so what the queue records as run is what ran, in that order.
+	defer s.cmdQueue.Hold()()
 	for _, cmd := range s.cmdQueue.Drain() {
 		var dispatchErr error
 		if s.cmdDispatcher != nil {
-			dispatchErr = s.cmdDispatcher.Dispatch(cmd)
-			if dispatchErr != nil {
+			dispatchErr = s.cmdQueue.Exec(cmd, func() error { return s.cmdDispatcher.Dispatch(cmd) })
+			if errors.Is(dispatchErr, cmdqueue.ErrSuperseded) {
+				dispatchErr = nil
+			} else if dispatchErr != nil {
 				s.log.Warn("queued command dispatch failed",
 					"action", cmd.Action,
 					"seq", cmd.Seq,
@@ -1828,6 +1833,9 @@ func (s *Switcher) TrackCommandSeq(seq uint64) {
 		}
 	}
 }
+
+// LastCommandSeq returns the highest command seq the switcher took.
+func (s *Switcher) LastCommandSeq() uint64 { return s.lastCommandSeq.Load() }
 
 // SetInitialCommandSeq seeds lastCommandSeq from the persisted on-disk
 // value before the HTTP listener and peer poller start. Only advances the
@@ -3230,6 +3238,14 @@ func (s *Switcher) UnregisterSource(key string) {
 // The ctx parameter is accepted for API compatibility and future use (e.g.
 // tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
+	_, err := s.CutChanged(ctx, sourceKey)
+	return err
+}
+
+// CutChanged is Cut, reporting whether the program changed: false for a
+// cut to the source already on program, decided under the lock the cut
+// takes, so a transition completing alongside cannot make it stale.
+func (s *Switcher) CutChanged(ctx context.Context, sourceKey string) (bool, error) {
 	var snapshot internal.ControlRoomState
 	var oldProgram string
 	var audioCut audioCutHandler
@@ -3241,7 +3257,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	s.configMu.Lock()
 	if _, ok := (*s.sourcesAtomic.Load())[sourceKey]; !ok {
 		s.configMu.Unlock()
-		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
+		return false, fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	if s.programSource != sourceKey {
 		// If a transition is active, abort it first so its OnComplete
@@ -3341,7 +3357,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		}
 		s.notifyStateChange(snapshot)
 	}
-	return nil
+	return changed, nil
 }
 
 // takeProgramCut hands a cut no tick has taken yet to the mixer at once,

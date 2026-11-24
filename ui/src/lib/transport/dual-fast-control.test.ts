@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { FastControl } from './fast-control';
 import { createDualFastControl } from './dual-fast-control';
+import { createFastControl } from './fast-control';
+import { RelayTargetPoller } from './relay-target';
 
 function createMockFastControl(): FastControl {
 	return {
@@ -34,6 +36,70 @@ describe('createDualFastControl', () => {
 		dual.sendDVESingleParam(2, 0x0004, 90);
 		expect(a.sendDVESingleParam).toHaveBeenCalledWith(2, 0x0004, 90);
 		expect(b.sendDVESingleParam).toHaveBeenCalledWith(2, 0x0004, 90);
+	});
+
+	// An engine passes a T-bar position it takes on to its peer, in order;
+	// sent to both, the two streams cross and one engine can see the T-bar
+	// step back and abort a throw.
+	it('sends a T-bar position to one engine, the relay target', () => {
+		const a = createMockFastControl();
+		const b = createMockFastControl();
+		let order = ['A', 'B'];
+		const dual = createDualFastControl([a, b], ['A', 'B'], () => order);
+
+		dual.sendTransitionPosition(0.5);
+		expect(a.sendTransitionPosition).toHaveBeenCalledWith(0.5);
+		expect(b.sendTransitionPosition).not.toHaveBeenCalled();
+
+		order = ['B', 'A'];
+		dual.sendTransitionPosition(0.6);
+		expect(b.sendTransitionPosition).toHaveBeenCalledWith(0.6);
+		expect(a.sendTransitionPosition).toHaveBeenCalledTimes(1);
+	});
+
+	// A datagram send never fails on a dead engine: the write rejects
+	// later. The T-bar goes to the other engine once the relay target
+	// poller finds the first unreachable.
+	it('sends a T-bar position to the other engine once the poller finds the target down', async () => {
+		const writes = { A: [] as Uint8Array[], B: [] as Uint8Array[] };
+		const transport = (id: 'A' | 'B', dead: boolean) => ({
+			datagrams: { writable: { getWriter: () => ({
+				write: (d: Uint8Array) => { writes[id].push(d); return dead ? Promise.reject(new Error('closed')) : Promise.resolve(); },
+				releaseLock() {}, close: () => Promise.resolve(),
+			}) } },
+		}) as unknown as WebTransport;
+		const a = createFastControl(transport('A', true));
+		const b = createFastControl(transport('B', false));
+		let aUp = true;
+		const health = (label: string) => ({ status: 'ok', engineLabel: label, programSource: 'mxl:1', relays: true });
+		const poller = new RelayTargetPoller(
+			() => [{ id: 'A', url: 'https://a' }, { id: 'B', url: 'https://b' }],
+			(async (url: string) => {
+				if (url.startsWith('https://a') && !aUp) throw new TypeError('Failed to fetch');
+				return new Response(JSON.stringify(health(url.startsWith('https://a') ? 'a' : 'b')), { status: 200 });
+			}) as unknown as typeof fetch,
+		);
+		const dual = createDualFastControl([a, b], ['A', 'B'], () => poller.singleSendOrder());
+
+		await poller.poll();
+		dual.sendTransitionPosition(0.2);
+		expect([writes.A.length, writes.B.length]).toEqual([1, 0]);
+
+		aUp = false;
+		dual.sendTransitionPosition(0.3);
+		expect([writes.A.length, writes.B.length]).toEqual([2, 0]); // not yet known
+		await poller.poll();
+		dual.sendTransitionPosition(0.4);
+		expect([writes.A.length, writes.B.length]).toEqual([2, 1]);
+	});
+
+	it('sends a T-bar position to both engines while the target does not relay', () => {
+		const a = createMockFastControl();
+		const b = createMockFastControl();
+		const dual = createDualFastControl([a, b], ['A', 'B'], () => null);
+		dual.sendTransitionPosition(0.5);
+		expect(a.sendTransitionPosition).toHaveBeenCalledWith(0.5);
+		expect(b.sendTransitionPosition).toHaveBeenCalledWith(0.5);
 	});
 
 	it('works with single control (1 mock)', () => {

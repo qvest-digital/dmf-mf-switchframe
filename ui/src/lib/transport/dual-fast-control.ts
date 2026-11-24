@@ -12,11 +12,28 @@ function safeCall(controls: FastControl[], fn: (c: FastControl) => void): void {
 
 /**
  * Creates a FastControl that fans out every call to all provided controls.
- * Used in dual-engine mode to send datagrams to both engines simultaneously.
+ * Used in dual-engine mode to send datagrams to both engines simultaneously,
+ * except a T-bar position while order() names the engines (by the ids of
+ * the controls, as ids gives them): an engine passes that on to its peer,
+ * in order, so it goes to the first named engine with a control. A send
+ * does not fail on a dead engine, so this falls over to the other engine
+ * only as order() does, when the relay target poller finds the first
+ * unreachable.
  */
-export function createDualFastControl(controls: FastControl[]): FastControl {
+export function createDualFastControl(
+	controls: FastControl[],
+	ids: string[] = [],
+	order: () => string[] | null = () => null,
+): FastControl {
 	return {
 		sendTransitionPosition(position: number) {
+			const target = order()
+				?.map((id) => controls[ids.indexOf(id)])
+				.find((c): c is FastControl => c !== undefined);
+			if (target) {
+				target.sendTransitionPosition(position);
+				return;
+			}
 			safeCall(controls, c => c.sendTransitionPosition(position));
 		},
 

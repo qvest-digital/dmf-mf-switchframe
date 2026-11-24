@@ -1758,6 +1758,9 @@ func (a *App) initAPI() error {
 		apiOpts = append(apiOpts, control.WithAllowedOutputPorts(ports))
 	}
 
+	if a.peerPoller != nil {
+		apiOpts = append(apiOpts, control.WithPeerRelay(relayToken(a.cfg)))
+	}
 	a.api = control.NewAPI(a.sw, apiOpts...)
 
 	// Late-bind snapshot provider — requires API to exist first (App delegates
@@ -2360,4 +2363,14 @@ func (a *App) prewarmSTMapCache(ctx context.Context) {
 		slog.Info("stmap cache warmed", "effect", info.Name, "dir", cacheDir)
 	}
 	slog.Info("stmap cache prewarm complete", "width", w, "height", h)
+}
+
+// relayToken is the token a command relayed to the peer carries when its
+// caller sent none: without authentication here (--demo), an anonymous
+// command would reach the peer as the API token's, so it goes on without.
+func relayToken(cfg AppConfig) string {
+	if cfg.Demo {
+		return ""
+	}
+	return cfg.APIToken
 }

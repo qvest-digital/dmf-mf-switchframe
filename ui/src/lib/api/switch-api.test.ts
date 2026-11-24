@@ -980,7 +980,7 @@ describe('dual-engine request interceptor', () => {
 		);
 		vi.stubGlobal('fetch', mockFetch);
 
-		await cut('cam2');
+		await setLevel('cam2', 0);
 
 		expect(mockFetch).toHaveBeenCalledTimes(2);
 		expect(mockFetch.mock.calls[0][0]).toContain('engine-a');
@@ -1000,7 +1000,7 @@ describe('dual-engine request interceptor', () => {
 		);
 		vi.stubGlobal('fetch', mockFetch);
 
-		await cut('cam2');
+		await setLevel('cam2', 0);
 
 		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
 		expect(bodyA.execute_at).toBe(realisticTs);
@@ -1161,7 +1161,7 @@ describe('dual-engine request interceptor', () => {
 			);
 		vi.stubGlobal('fetch', mockFetch);
 
-		const result = await cut('cam2');
+		const result = await setLevel('cam2', 0);
 		expect(result).toBeDefined();
 		expect(result.programSource).toBe('cam2');
 	});
@@ -1464,7 +1464,7 @@ describe('dual-engine interceptor edge cases', () => {
 		);
 		vi.stubGlobal('fetch', mockFetch);
 
-		const result = await cut('cam2');
+		const result = await setLevel('cam2', 0);
 		// Both engines should have been called
 		expect(mockFetch).toHaveBeenCalledTimes(2);
 		// Result should have the expected data
@@ -1700,7 +1700,7 @@ describe('dual-engine interceptor edge cases', () => {
 		);
 		vi.stubGlobal('fetch', mockFetch);
 
-		await cut('cam3');
+		await setLevel('cam3', 0);
 
 		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
 		const bodyB = JSON.parse(mockFetch.mock.calls[1][1].body);

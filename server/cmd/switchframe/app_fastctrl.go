@@ -29,6 +29,10 @@ func (a *App) handleFastTransitionUpdate(data []byte) error {
 	if err != nil {
 		return err
 	}
+	if a.api != nil {
+		// As the REST route does, so the peer of a pair follows the T-bar.
+		return a.api.SetTransitionPosition(context.Background(), pos)
+	}
 	return a.sw.SetTransitionPosition(context.Background(), pos)
 }
 

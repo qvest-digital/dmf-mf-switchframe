@@ -24,8 +24,8 @@ type transitionRequest struct {
 
 // registerTransitionRoutes registers transition-related API routes on the given mux.
 func (a *API) registerTransitionRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/switch/transition", timedHandler(a.cmdQueue, "transition", a.seqTracker, a.handleTransitionInner))
-	mux.HandleFunc("POST /api/switch/transition/position", timedHandler(a.cmdQueue, "transition_position", a.seqTracker, a.handleTransitionPositionInner))
+	mux.HandleFunc("POST /api/switch/transition", a.relayedHandler("transition", a.handleTransitionInner))
+	mux.HandleFunc("POST /api/switch/transition/position", a.relayedHandler("transition_position", a.handleTransitionPositionInner))
 	mux.HandleFunc("POST /api/switch/ftb", timedHandler(a.cmdQueue, "ftb", a.seqTracker, a.handleFTBInner))
 	mux.HandleFunc("PUT /api/switch/ftb-duration", timedHandler(a.cmdQueue, "ftb_duration_set", a.seqTracker, a.handleSetFTBDurationInner))
 	mux.HandleFunc("PUT /api/switch/transition-abort-threshold", timedHandler(a.cmdQueue, "transition_abort_threshold_set", a.seqTracker, a.handleSetTransitionAbortThresholdInner))
@@ -125,8 +125,7 @@ func (a *API) handleTransitionInner(w http.ResponseWriter, r *http.Request, body
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.enrichedState())
+	a.writeState(w)
 }
 
 // transitionPositionRequest is the JSON body for the transition position endpoint.
@@ -151,8 +150,7 @@ func (a *API) handleTransitionPositionInner(w http.ResponseWriter, r *http.Reque
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.enrichedState())
+	a.writeState(w)
 }
 
 // handleFTBInner starts or toggles a Fade to Black transition.

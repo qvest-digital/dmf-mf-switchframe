@@ -2,8 +2,10 @@ package control
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/zsiec/switchframe/server/cmdqueue"
 	"github.com/zsiec/switchframe/server/control/httperr"
@@ -19,6 +21,9 @@ const maxCommandBodySize = maxJSONBodySize
 type timedRequest struct {
 	ExecuteAt  int64  `json:"execute_at"`
 	CommandSeq uint64 `json:"command_seq"`
+	// OrderAt places a relayed command among those on its state; see
+	// cmdqueue.Command.OrderAt.
+	OrderAt int64 `json:"order_at"`
 }
 
 // immediateHandlerFunc is a handler that receives the pre-read request body.
@@ -46,12 +51,18 @@ func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), han
 		if timed.ExecuteAt > 0 && q != nil {
 			cmd := cmdqueue.Command{
 				ExecuteAt: timed.ExecuteAt,
+				OrderAt:   orderFor(timed),
 				Seq:       timed.CommandSeq,
 				Action:    action,
 				Payload:   json.RawMessage(body),
 			}
 			if err := q.Enqueue(cmd); err != nil {
-				httperr.Write(w, http.StatusBadRequest, err.Error())
+				writeEnqueueError(w, err)
+				// One overtaken by a later command on its state was
+				// taken all the same: both engines of a pair count it.
+				if errors.Is(err, cmdqueue.ErrSuperseded) && seqTracker != nil && timed.CommandSeq > 0 {
+					seqTracker(timed.CommandSeq)
+				}
 				return
 			}
 			if seqTracker != nil && timed.CommandSeq > 0 {
@@ -61,7 +72,16 @@ func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), han
 			return
 		}
 
-		handler(w, r, body)
+		if q != nil && timed.CommandSeq > 0 && q.Keyed(action) {
+			// A command both engines of a pair take, run on arrival: it
+			// falls among the commands on its state as it arrives.
+			cmd := cmdqueue.Command{Seq: timed.CommandSeq, Action: action, Payload: json.RawMessage(body)}
+			if res := runKeyed(q, cmd, w, r, body, handler); res != keyedRan && res != keyedUnchanged {
+				return
+			}
+		} else {
+			handler(w, r, body)
+		}
 
 		// Track command_seq for immediate execution too, so the sync health
 		// endpoint detects all state changes, not just queued ones.
@@ -104,12 +124,18 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint
 
 			cmd := cmdqueue.Command{
 				ExecuteAt: timed.ExecuteAt,
+				OrderAt:   orderFor(timed),
 				Seq:       timed.CommandSeq,
 				Action:    action,
 				Payload:   json.RawMessage(enriched),
 			}
 			if err := q.Enqueue(cmd); err != nil {
-				httperr.Write(w, http.StatusBadRequest, err.Error())
+				writeEnqueueError(w, err)
+				// One overtaken by a later command on its state was
+				// taken all the same: both engines of a pair count it.
+				if errors.Is(err, cmdqueue.ErrSuperseded) && seqTracker != nil && timed.CommandSeq > 0 {
+					seqTracker(timed.CommandSeq)
+				}
 				return
 			}
 			if seqTracker != nil && timed.CommandSeq > 0 {
@@ -119,7 +145,16 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint
 			return
 		}
 
-		handler(w, r, body)
+		if q != nil && timed.CommandSeq > 0 && q.Keyed(action) {
+			// A command both engines of a pair take, run on arrival: it
+			// falls among the commands on its state as it arrives.
+			cmd := cmdqueue.Command{Seq: timed.CommandSeq, Action: action, Payload: json.RawMessage(body)}
+			if res := runKeyed(q, cmd, w, r, body, handler); res != keyedRan && res != keyedUnchanged {
+				return
+			}
+		} else {
+			handler(w, r, body)
+		}
 
 		// Track command_seq for immediate execution too, so the sync health
 		// endpoint detects all state changes, not just queued ones.
@@ -127,4 +162,29 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint
 			seqTracker(timed.CommandSeq)
 		}
 	}
+}
+
+// writeEnqueueError answers a command the queue refused: 409 for one a
+// later command on its state has overtaken, else 400.
+func writeEnqueueError(w http.ResponseWriter, err error) {
+	if errors.Is(err, cmdqueue.ErrSuperseded) {
+		httperr.Write(w, http.StatusConflict, err.Error())
+		return
+	}
+	httperr.Write(w, http.StatusBadRequest, err.Error())
+}
+
+// orderFor returns the order_at a queued command names when it lies within
+// a second of its execute_at, as one the peer engine relays does (see
+// relayedHandler), else 0, which places the command at its execute_at: an
+// order_at far from when a command runs would place it among others
+// wrongly.
+func orderFor(t timedRequest) int64 {
+	if t.OrderAt <= 0 {
+		return 0
+	}
+	if d := time.Duration(t.OrderAt-t.ExecuteAt) * time.Microsecond; d > time.Second || d < -time.Second {
+		return 0
+	}
+	return t.OrderAt
 }
