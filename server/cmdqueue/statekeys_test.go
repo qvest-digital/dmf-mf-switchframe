@@ -314,13 +314,13 @@ func TestStateKeys_UnchangedSideKeyNotRecorded(t *testing.T) {
 	}
 }
 
-// The caller's changes func runs outside the queue's lock, so it may read
+// The caller's changes func runs outside the queue's lock, so it may call
 // the queue, as reading the caller's own state may.
 func TestStateKeys_ChangesRunsOutsideTheLock(t *testing.T) {
 	clock, _ := newClock(10_000)
 	q := cmdqueue.New(clock, cmdqueue.WithStateKeys(testStateKeys))
 	q.SetChanges(func(c cmdqueue.Command) bool {
-		_, _, _ = q.Latest(c.Action)
+		_ = q.NextOrder()
 		return true
 	})
 	done := make(chan struct{})

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { orderByHealth, RelayTargetPoller, type PeerHealth } from './relay-target';
+import { orderByHealth, RelayTargetPoller, wireRelayTarget, type PeerHealth } from './relay-target';
 
 const h = (label: string, extra: Partial<PeerHealth> = {}): PeerHealth =>
 	({ status: 'ok', engineLabel: label, programSource: 'mxl:cam1', epoch: 0, ...extra });
@@ -38,5 +38,39 @@ describe('RelayTargetPoller', () => {
 		await p.poll();
 		expect(p.order()).toEqual(['B', 'A']);
 		expect(vi.mocked(fetchFn).mock.calls.map((c) => c[0])).toEqual(['https://a/api/peer/health', 'https://b/api/peer/health']);
+	});
+
+	it('counts an engine answering an error as unreachable', async () => {
+		const fetchFn = vi.fn(async (url: string) =>
+			url.startsWith('https://a')
+				? new Response(JSON.stringify(h('a', { epoch: 5 })), { status: 503 })
+				: new Response(JSON.stringify(h('b')), { status: 200 })) as unknown as typeof fetch;
+		const p = new RelayTargetPoller(engines, fetchFn);
+		await p.poll();
+		expect(p.order()).toEqual(['B', 'A']);
+	});
+
+	it('names the engines to send to only while the first relays', async () => {
+		let relays = false;
+		const fetchFn = vi.fn(async (url: string) =>
+			new Response(JSON.stringify(h(url.startsWith('https://a') ? 'a' : 'b', { relays })), { status: 200 })) as unknown as typeof fetch;
+		const p = new RelayTargetPoller(engines, fetchFn);
+		expect(p.singleSendOrder()).toBeNull();
+		await p.poll();
+		expect(p.singleSendOrder()).toBeNull();
+		relays = true;
+		await p.poll();
+		expect(p.singleSendOrder()).toEqual(['A', 'B']);
+	});
+
+	it('wireRelayTarget starts polling and sets the provider, and stops both', async () => {
+		const fetchFn = vi.fn(async () => new Response(JSON.stringify(h('a', { relays: true })), { status: 200 })) as unknown as typeof fetch;
+		const p = new RelayTargetPoller(engines, fetchFn, 60_000);
+		const setProvider = vi.fn();
+		const stop = wireRelayTarget(p, setProvider);
+		expect(fetchFn).toHaveBeenCalled();
+		await vi.waitFor(() => expect(setProvider.mock.calls[0][0]()).toEqual(['A', 'B']));
+		stop();
+		expect(setProvider).toHaveBeenLastCalledWith(null);
 	});
 });

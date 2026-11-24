@@ -49,6 +49,11 @@ type HealthResponse struct {
 	// that lost its state.
 	Destinations []string `json:"destinations,omitempty"`
 	Armed        []string `json:"armed,omitempty"`
+
+	// Relays is set by an engine that passes a switching command sent to
+	// it alone on to its peer, so a caller sends such a command to it
+	// alone; absent, it is sent to both.
+	Relays bool `json:"relays,omitempty"`
 }
 
 // PeerStatus holds the current peer health state, safe to read from any

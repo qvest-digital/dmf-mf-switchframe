@@ -456,6 +456,7 @@ describe('switch-api dual-engine routing', () => {
 				{ id: 'A', url: 'https://engine-a.example.com' },
 				{ id: 'B', url: 'https://engine-b.example.com' },
 			]);
+			setRelayTargetProvider(() => ['A', 'B']);
 		});
 
 		it('sends a cut, preview, transition, T-bar move and squeezeback move to one engine', async () => {
@@ -507,6 +508,40 @@ describe('switch-api dual-engine routing', () => {
 			});
 			await expect(cut('cam1')).rejects.toThrow();
 			expect(fetchCalls).toHaveLength(1);
+		});
+
+		// A target on an image that predates relaying would leave the other
+		// engine without the command.
+		it('sends to both engines, with a seq, while the target does not relay', async () => {
+			setRelayTargetProvider(() => null);
+			setDualTimestampProvider(() => ({ execute_at: 0, command_seq: 7 }));
+			await cut('cam1');
+			expect(fetchCalls).toHaveLength(2);
+			for (const c of fetchCalls) expect(JSON.parse(c.opts.body as string).command_seq).toBe(7);
+		});
+
+		// A target that timed out may have run the command and passed it on;
+		// the other engine would run it again, maybe over a later cut.
+		it('does not fail over when the request to the target timed out', async () => {
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1', seq: 1 }));
+			});
+			await expect(cut('cam1')).rejects.toThrow();
+			expect(fetchCalls.map((c) => c.url)).toEqual(['https://engine-a.example.com/api/switch/cut']);
+		});
+
+		it('skips a target whose circuit is open', async () => {
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) return Promise.reject(new TypeError('Failed to fetch'));
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1', seq: 1 }));
+			});
+			for (let i = 0; i < 3; i++) await cut('cam1');
+			fetchCalls = [];
+			await cut('cam1');
+			expect(fetchCalls.map((c) => c.url)).toEqual(['https://engine-b.example.com/api/switch/cut']);
 		});
 
 		it('still sends other commands to both engines', async () => {

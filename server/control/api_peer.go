@@ -33,6 +33,7 @@ func (a *API) handlePeerHealth(w http.ResponseWriter, r *http.Request) {
 	if a.peerPoller != nil {
 		resp.EngineLabel = a.peerPoller.LocalLabel()
 		resp.Epoch = a.peerPoller.LocalEpoch()
+		resp.Relays = a.relayOn()
 	}
 	if a.outputMgr != nil {
 		resp.Sending = a.outputMgr.SendingDestinationIDs()

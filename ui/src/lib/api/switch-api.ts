@@ -407,7 +407,10 @@ async function fanOutMutation(
 	opts: RequestInit,
 	engines: EngineEndpoint[],
 ): Promise<FanOutResult> {
-	if (engines.length > 1 && isRelayedPath(url)) return sendToOne(url, opts, engines);
+	if (engines.length > 1 && isRelayedPath(url)) {
+		const ordered = relayTargetOrder(engines);
+		if (ordered) return sendToOne(url, opts, ordered);
+	}
 
 	// Filter out engines with open circuits for mutations
 	let availableEngines = engines.filter(e => !isCircuitOpen(e.url));
@@ -492,14 +495,15 @@ async function fanOutMutation(
 }
 
 /** Sends a switching command to one engine of the pair, which passes it on
- * to the other: the first by the relay target order whose circuit is
- * closed, then, when it cannot be reached, the next. An engine that answers,
+ * to the other: the first of ordered whose circuit is closed, then, when
+ * the request could not be sent to it, the next. An engine that answers,
  * whatever the status, is not retried on the other: it took or refused the
- * command. No command_seq is sent, as a command naming one is taken as sent
- * to both and not passed on; an execute_at is, when timed execution gives
- * one, and the engine passes it on for both to run the command then. */
-async function sendToOne(url: string, opts: RequestInit, engines: EngineEndpoint[]): Promise<FanOutResult> {
-	const ordered = relayTargetOrder(engines);
+ * command; nor is one that timed out, which may have taken it and passed
+ * it on, so a second engine would run it again, perhaps over a later
+ * command. No command_seq is sent, as a command naming one is taken as
+ * sent to both and not passed on; an execute_at is, when timed execution
+ * gives one, and the engine passes it on for both to run the command then. */
+async function sendToOne(url: string, opts: RequestInit, ordered: EngineEndpoint[]): Promise<FanOutResult> {
 	const open = ordered.filter((e) => !isCircuitOpen(e.url));
 	const tries = open.length > 0 ? open : ordered;
 	const results: PromiseSettledResult<Response>[] = [];
@@ -529,6 +533,10 @@ async function sendToOne(url: string, opts: RequestInit, engines: EngineEndpoint
 		} catch (reason) {
 			recordFailure(engine.url);
 			results.push({ status: 'rejected', reason });
+			// fetch rejects with a TypeError when the request could not be
+			// sent; an abort, as the timeout is, may come after the engine
+			// took it.
+			if (!(reason instanceof TypeError)) break;
 		}
 	}
 	return { results, successful: [], failed: results as PromiseRejectedResult[], availableEngines: tries };

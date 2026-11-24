@@ -12,6 +12,8 @@ export interface PeerHealth {
 	engineLabel?: string;
 	programSource?: string;
 	epoch?: number;
+	/** Set by an engine that passes a switching command on to its peer. */
+	relays?: boolean;
 }
 
 /** The engine ids in the order to try them: reachable before unreachable,
@@ -39,6 +41,7 @@ export function orderByHealth(entries: { id: string; health: PeerHealth | null }
  * send switching commands in. */
 export class RelayTargetPoller {
 	private current: string[] = [];
+	private healths = new Map<string, PeerHealth | null>();
 	private timer: ReturnType<typeof setInterval> | null = null;
 
 	constructor(
@@ -54,6 +57,15 @@ export class RelayTargetPoller {
 		const ids = this.engines().map((e) => e.id);
 		const known = this.current.filter((id) => ids.includes(id));
 		return [...known, ...ids.filter((id) => !known.includes(id))];
+	}
+
+	/** The engine ids in the order to send a switching command to, or null
+	 * while the first does not pass it on, as before its first read or on
+	 * an engine image that predates relaying: then each command goes to
+	 * both engines. */
+	singleSendOrder(): string[] | null {
+		const order = this.order();
+		return this.healths.get(order[0])?.relays === true ? order : null;
 	}
 
 	start(): void {
@@ -83,5 +95,20 @@ export class RelayTargetPoller {
 			}
 		}));
 		this.current = orderByHealth(entries);
+		this.healths = new Map(entries.map((e) => [e.id, e.health]));
 	}
+}
+
+/** Starts poller and has switching commands follow it (see
+ * setRelayTargetProvider); the returned func stops both. */
+export function wireRelayTarget(
+	poller: RelayTargetPoller,
+	setProvider: (provider: (() => string[] | null) | null) => void,
+): () => void {
+	setProvider(() => poller.singleSendOrder());
+	poller.start();
+	return () => {
+		poller.stop();
+		setProvider(null);
+	};
 }

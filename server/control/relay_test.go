@@ -730,3 +730,58 @@ func TestPeerRelay_FarOrderAtIgnored(t *testing.T) {
 	later := fmt.Sprintf(`{"position":0.6,"command_seq":%d,"execute_at":%d,"order_at":%d}`, next, next, next)
 	assert.Equal(t, http.StatusAccepted, a.send(t, http.MethodPost, "/api/switch/transition/position", later))
 }
+
+// A transition started on a crosses a cut to the program source made just
+// after it on b: the cut is the later command on the program, so both end
+// on the source it names, a aborting its transition when the cut arrives.
+func TestPeerRelay_TransitionCrossingCutToProgram(t *testing.T) {
+	for i := range 3 {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			a, b := newRelayPair(t)
+			for _, e := range []*relayEngine{a, b} {
+				require.NoError(t, e.sw.Cut(context.Background(), "cam1"))
+			}
+			a.holdRelays()
+			b.holdRelays()
+			require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/transition",
+				`{"source":"cam2","type":"mix","durationMs":5000}`))
+			time.Sleep(2 * time.Millisecond)
+			require.Equal(t, http.StatusOK, b.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
+			a.releaseRelays()
+			b.releaseRelays()
+			require.Eventually(t, func() bool { return !a.sw.State().InTransition }, 5*time.Second, 5*time.Millisecond,
+				"a's transition ran on")
+			time.Sleep(100 * time.Millisecond)
+			assert.Equal(t, "cam1", a.program())
+			assert.Equal(t, "cam1", b.program())
+			assert.False(t, b.sw.State().InTransition)
+		})
+	}
+}
+
+// A queued command whose order_at lies far behind its execute_at is placed
+// at its execute_at too, rather than refused as older than what ran.
+func TestPeerRelay_FarBehindOrderAtIgnored(t *testing.T) {
+	a, _ := newRelayPair(t)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
+	now := time.Now().UnixMicro()
+	behind := fmt.Sprintf(`{"source":"cam3","command_seq":%d,"execute_at":%d,"order_at":%d}`, now, now, now-3_600_000_000)
+	require.Equal(t, http.StatusAccepted, a.send(t, http.MethodPost, "/api/switch/cut", behind))
+	require.Eventually(t, func() bool { return a.program() == "cam3" }, 5*time.Second, 5*time.Millisecond)
+}
+
+// An engine that relays says so in its peer health, so the browser sends a
+// switching command to it alone; one that does not is sent both copies.
+func TestPeerHealthAdvertisesRelaying(t *testing.T) {
+	a, _ := newRelayPair(t)
+	var h peer.HealthResponse
+	require.NoError(t, json.Unmarshal(serve(t, a.api, "GET", "/api/peer/health", "").Body.Bytes(), &h))
+	assert.True(t, h.Relays)
+
+	sw := switcher.NewTestSwitcher(t, distribution.NewRelay())
+	q := cmdqueue.New(func() int64 { return time.Now().UnixMicro() })
+	plain := NewAPI(sw, WithCommandQueue(q), WithPeerPoller(peer.NewHealthPoller("http://127.0.0.1:1")), WithPeerRelay(""))
+	h = peer.HealthResponse{}
+	require.NoError(t, json.Unmarshal(serve(t, plain, "GET", "/api/peer/health", "").Body.Bytes(), &h))
+	assert.False(t, h.Relays, "an engine without a label relays nothing")
+}

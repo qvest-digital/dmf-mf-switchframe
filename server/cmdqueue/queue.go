@@ -540,19 +540,6 @@ func (q *Queue) exec(cmd Command, run func() error) error {
 	return nil
 }
 
-// Latest returns where the latest command run on action's first key falls,
-// false when none has run on it.
-func (q *Queue) Latest(action string) (orderAt int64, seq uint64, ok bool) {
-	keys := q.stateKeys[action]
-	if len(keys) == 0 {
-		return 0, 0, false
-	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	last, ok := q.ran[keys[0]]
-	return last.at.at, last.at.seq, ok
-}
-
 // superseded reports whether a command on cmd's first key that falls after
 // it has run. Must be called with q.mu held.
 func (q *Queue) superseded(cmd Command) bool {

@@ -1504,13 +1504,9 @@ describe('dual-engine interceptor edge cases', () => {
 
 		await startTransition('cam2', 'mix', 1000);
 
-		// A switching command goes to one engine, which passes it on: it
-		// keeps its execute_at, and names no command_seq, which would mark
-		// it as sent to both.
-		expect(mockFetch).toHaveBeenCalledTimes(1);
 		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
 		expect(bodyA.execute_at).toBe(realisticTs);
-		expect(bodyA.command_seq).toBeUndefined();
+		expect(bodyA.command_seq).toBe(7);
 		expect(bodyA.source).toBe('cam2');
 		expect(bodyA.type).toBe('mix');
 	});

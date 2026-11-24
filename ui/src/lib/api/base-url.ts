@@ -125,17 +125,19 @@ export function isRelayedPath(path: string): boolean {
 	return RELAYED_PATHS.has(path);
 }
 
-let relayTargetProvider: (() => string[]) | null = null;
+let relayTargetProvider: (() => string[] | null) | null = null;
 
 /** Sets what orders the engines a switching command is sent to, the first
- * tried first. */
-export function setRelayTargetProvider(provider: (() => string[]) | null): void {
+ * tried first; a provider answering null has it sent to both. */
+export function setRelayTargetProvider(provider: (() => string[] | null) | null): void {
 	relayTargetProvider = provider;
 }
 
-/** The engines in the order a switching command is sent to them. */
-export function relayTargetOrder<E extends { id: string }>(engines: E[]): E[] {
-	const order = relayTargetProvider?.() ?? [];
+/** The engines in the order a switching command is sent to one of them,
+ * or null when it goes to both. */
+export function relayTargetOrder<E extends { id: string }>(engines: E[]): E[] | null {
+	const order = relayTargetProvider?.() ?? null;
+	if (!order) return null;
 	const rank = (e: E) => {
 		const i = order.indexOf(e.id);
 		return i < 0 ? order.length : i;
