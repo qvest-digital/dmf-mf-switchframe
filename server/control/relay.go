@@ -2,6 +2,7 @@ package control
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -55,17 +56,28 @@ const relayHeader = "X-Switchframe-Relay"
 // same command relayed by the peer count as one caller sending it to both.
 const relayDedupWindow = 2 * time.Second
 
-// relayBacklog bounds the commands waiting to be passed on.
+// relayBacklog bounds the commands waiting to be passed on; past it the
+// oldest is dropped.
 const relayBacklog = 256
 
-// WithPeerRelay passes the program, preview and squeezeback commands a
-// caller sends to this engine alone on to the peer engine of
+// orderWindow is how far a command's order_at may lie from this engine's
+// clock and still place it: further, as from a browser whose clock is off,
+// the command is placed when it arrives.
+const orderWindow = 5 * time.Second
+
+// defaultRelayMaxAge is how old a command waiting to be passed on may grow
+// before it is dropped: twice the queue's stale age, past which the peer
+// refuses it anyway.
+const defaultRelayMaxAge = 2 * time.Duration(cmdqueue.DefaultMaxAge) * time.Microsecond
+
+// WithPeerRelay passes the program, preview, T-bar and squeezeback commands
+// a caller sends to this engine alone on to the peer engine of
 // WithPeerPoller, in the order they ran here. A command carries the
 // caller's Authorization header, so the peer takes it as the caller's; one
-// sent without credentials carries token, "" when this engine runs without
-// authentication and so takes anonymous commands the peer would not.
-// Relaying needs an engine label (--engine-label), which keeps the two
-// engines' command seqs apart.
+// sent without credentials, or over fast control, carries token, "" when
+// this engine runs without authentication and so takes anonymous commands
+// the peer would not. Relaying needs an engine label (--engine-label),
+// which keeps the two engines' command seqs apart.
 func WithPeerRelay(token string) APIOption {
 	return func(a *API) {
 		a.relayEnabled = true
@@ -77,16 +89,34 @@ func WithPeerRelay(token string) APIOption {
 type relayJob struct {
 	method, path, auth string
 	body               []byte
+	queued             time.Time
+	position           *float64 // a T-bar position, which later ones replace
 }
 
-// relayState is the relay's worker and what it has seen.
+// relayState is the relay's worker, its backlog and what it has seen.
 type relayState struct {
-	once sync.Once
-	jobs chan relayJob
+	once   sync.Once
+	wake   chan struct{}
+	maxAge time.Duration // see defaultRelayMaxAge; tests shorten it
 
 	mu      sync.Mutex
-	direct  map[string]time.Time // commands sent to this engine alone, by dedupKey
-	relayed map[string]time.Time // commands the peer passed on, by dedupKey
+	backlog []relayJob
+	direct  map[string]dedupRecord // commands sent to this engine alone, by dedupKey
+	relayed map[string]dedupRecord // commands the peer passed on, by dedupKey
+}
+
+// dedupRecord is a command taken, where it falls among the commands on its
+// state and when it was taken.
+type dedupRecord struct {
+	order int64
+	seq   uint64
+	at    time.Time
+}
+
+// relayOn reports whether commands sent to this engine alone are passed on.
+func (a *API) relayOn() bool {
+	return a.relayEnabled && a.cmdQueue != nil && a.peerPoller != nil && a.peerPoller.PeerURL() != "" &&
+		a.peerPoller.LocalLabel() != ""
 }
 
 // relayedHandler is timedHandler for a command whose state both engines of
@@ -100,13 +130,13 @@ type relayState struct {
 // cmdqueue.WithStateKeys). The caller's answer is this engine's: a peer
 // down or refusing the command takes this engine's state later, at its
 // start or by convergence. A caller that sends the same command to both
-// engines without a seq has it run once on each (see relayDedupWindow).
+// engines without a seq has it run once on each (see isCopy).
 func (a *API) relayedHandler(action string, handler immediateHandlerFunc) http.HandlerFunc {
 	timed := timedHandler(a.cmdQueue, action, a.seqTracker, handler)
 	if !a.relayEnabled || a.cmdQueue == nil || a.peerPoller == nil || a.peerPoller.PeerURL() == "" {
 		return timed
 	}
-	if a.peerPoller.LocalLabel() == "" {
+	if !a.relayOn() {
 		slog.Warn("peer relay: off, the engine has no --engine-label", "action", action)
 		return timed
 	}
@@ -119,38 +149,41 @@ func (a *API) relayedHandler(action string, handler immediateHandlerFunc) http.H
 		var req timedRequest
 		_ = json.Unmarshal(body, &req)
 		if req.CommandSeq != 0 {
-			if r.Header.Get(relayHeader) != "" && a.seenAlone(action, body) {
-				// The caller sent it here too, and it ran here then.
-				if a.seqTracker != nil {
-					a.seqTracker(req.CommandSeq)
+			if r.Header.Get(relayHeader) != "" {
+				if a.isCopy(&a.relay.direct, action, body) {
+					// The caller sent it here too, and it ran here then.
+					if a.seqTracker != nil {
+						a.seqTracker(req.CommandSeq)
+					}
+					w.WriteHeader(http.StatusNoContent)
+					return
 				}
-				w.WriteHeader(http.StatusNoContent)
+				rec := &statusRecorder{ResponseWriter: w}
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				timed(rec, r)
+				if rec.status < http.StatusMultipleChoices {
+					a.relay.record(&a.relay.relayed, dedupKey(action, body),
+						cmp.Or(req.OrderAt, req.ExecuteAt), req.CommandSeq)
+				}
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			timed(w, r)
 			return
 		}
-		if a.seenRelayed(action, body) {
+		if a.isCopy(&a.relay.relayed, action, body) {
 			// The caller sent it to the peer too, which ran it and passed
 			// it on here.
 			a.writeDuplicate(action, w)
 			return
 		}
 
-		a.noteAlone(action, body)
-		seq := a.nextRelaySeq()
-		at, order := req.ExecuteAt, req.ExecuteAt
-		runNow := at <= 0
-		if runNow {
-			at, order = a.cmdQueue.Now(), a.cmdQueue.NextOrder()
-		}
-		stamped, err := stampCommand(a.resolveRelayed(action, body), at, seq, order)
+		seq, at, order, stamped, err := a.stampAlone(action, body, req.ExecuteAt)
 		if err != nil {
 			httperr.Write(w, http.StatusBadRequest, "invalid json")
 			return
 		}
-		if runNow {
+		if req.ExecuteAt <= 0 {
 			cmd := cmdqueue.Command{OrderAt: order, Seq: seq, Action: action, Payload: stamped}
 			if runKeyed(a.cmdQueue, cmd, w, r, stamped, handler) != keyedRan {
 				return
@@ -163,15 +196,78 @@ func (a *API) relayedHandler(action string, handler immediateHandlerFunc) http.H
 			}
 			w.WriteHeader(http.StatusAccepted)
 		}
-		if a.seqTracker != nil {
-			a.seqTracker(seq)
-		}
 		auth := r.Header.Get("Authorization")
 		if auth == "" && a.relayToken != "" {
 			auth = "Bearer " + a.relayToken
 		}
-		a.relayToPeer(r.Method, r.URL.Path, auth, stamped)
+		a.passOn(action, r.Method, r.URL.Path, auth, body, stamped, order, seq)
 	}
+}
+
+// stampAlone gives a command sent to this engine alone its seq, the time it
+// runs, at executeAt or now, and its place in the order, and returns its
+// body stamped with them.
+func (a *API) stampAlone(action string, body []byte, executeAt int64) (seq uint64, at, order int64, stamped []byte, err error) {
+	seq = a.nextRelaySeq()
+	at, order = executeAt, executeAt
+	if executeAt <= 0 {
+		at, order = a.cmdQueue.Now(), a.cmdQueue.NextOrder()
+	}
+	stamped, err = stampCommand(a.resolveRelayed(action, body), at, seq, order)
+	return seq, at, order, stamped, err
+}
+
+// passOn records a command sent to this engine alone, once it ran or was
+// queued here, and passes it on to the peer.
+func (a *API) passOn(action, method, path, auth string, body, stamped []byte, order int64, seq uint64) {
+	if a.seqTracker != nil {
+		a.seqTracker(seq)
+	}
+	a.relay.record(&a.relay.direct, dedupKey(action, body), order, seq)
+	job := relayJob{method: method, path: path, auth: auth, body: stamped}
+	if action == "transition_position" {
+		var req transitionPositionRequest
+		if json.Unmarshal(body, &req) == nil {
+			job.position = &req.Position
+		}
+	}
+	a.relayToPeer(job)
+}
+
+// SetTransitionPosition moves the T-bar as POST /api/switch/transition/position
+// does, for fast control, and passes the position on to the peer as that
+// route does: a transition held or pulled back on one engine is held or
+// pulled back on both.
+func (a *API) SetTransitionPosition(ctx context.Context, position float64) error {
+	if !a.relayOn() {
+		return a.switcher.SetTransitionPosition(ctx, position)
+	}
+	const action = "transition_position"
+	body, _ := json.Marshal(transitionPositionRequest{Position: position})
+	if a.isCopy(&a.relay.relayed, action, body) {
+		return nil
+	}
+	seq, _, order, stamped, err := a.stampAlone(action, body, 0)
+	if err != nil {
+		return err
+	}
+	var runErr error
+	cmd := cmdqueue.Command{OrderAt: order, Seq: seq, Action: action, Payload: stamped}
+	if err := a.cmdQueue.RunLocal(cmd, func() bool {
+		runErr = a.switcher.SetTransitionPosition(ctx, position)
+		return runErr == nil
+	}); err != nil {
+		return err
+	}
+	if runErr != nil {
+		return runErr
+	}
+	auth := ""
+	if a.relayToken != "" {
+		auth = "Bearer " + a.relayToken
+	}
+	a.passOn(action, http.MethodPost, "/api/switch/transition/position", auth, body, stamped, order, seq)
+	return nil
 }
 
 // changesState tells the command queue whether a keyed command sets its
@@ -202,51 +298,52 @@ func dedupKey(action string, body []byte) string {
 	return action + "\x00" + string(out)
 }
 
-// noteAlone records a command sent to this engine alone.
-func (a *API) noteAlone(action string, body []byte) {
-	a.relay.note(&a.relay.direct, dedupKey(action, body))
-}
-
-// seenAlone reports, and forgets, the same command sent to this engine
-// alone within relayDedupWindow; else records it as relayed.
-func (a *API) seenAlone(action string, body []byte) bool {
-	key := dedupKey(action, body)
-	if a.relay.take(&a.relay.direct, key) {
-		return true
-	}
-	a.relay.note(&a.relay.relayed, key)
-	return false
-}
-
-// seenRelayed reports, and forgets, the same command relayed by the peer
-// within relayDedupWindow.
-func (a *API) seenRelayed(action string, body []byte) bool {
-	return a.relay.take(&a.relay.relayed, dedupKey(action, body))
-}
-
-func (r *relayState) note(m *map[string]time.Time, key string) {
+// record notes a command taken, by its dedupKey.
+func (r *relayState) record(m *map[string]dedupRecord, key string, order int64, seq uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
 	if *m == nil {
-		*m = map[string]time.Time{}
+		*m = map[string]dedupRecord{}
 	}
-	for k, t := range *m {
-		if now.Sub(t) > relayDedupWindow {
+	for k, rec := range *m {
+		if now.Sub(rec.at) > relayDedupWindow {
 			delete(*m, k)
 		}
 	}
-	(*m)[key] = now
+	(*m)[key] = dedupRecord{order, seq, now}
 }
 
-func (r *relayState) take(m *map[string]time.Time, key string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	t, ok := (*m)[key]
-	if ok {
-		delete(*m, key)
+// isCopy reports whether a command is the copy of one recorded in m: the
+// same command taken within relayDedupWindow, and still the latest command
+// on its state, or yet to run. A command on its state run since is another
+// operator's, after which this one is a command of its own. A copy found
+// is forgotten.
+func (a *API) isCopy(m *map[string]dedupRecord, action string, body []byte) bool {
+	key := dedupKey(action, body)
+	a.relay.mu.Lock()
+	rec, ok := (*m)[key]
+	a.relay.mu.Unlock()
+	if !ok || time.Since(rec.at) > relayDedupWindow {
+		return false
 	}
-	return ok && time.Since(t) <= relayDedupWindow
+	if order, seq, ran := a.cmdQueue.Latest(action); ran && (orderStamp{rec.order, rec.seq}).before(orderStamp{order, seq}) {
+		return false
+	}
+	a.relay.mu.Lock()
+	delete(*m, key)
+	a.relay.mu.Unlock()
+	return true
+}
+
+// orderStamp places a command among those on its state, as the queue does.
+type orderStamp struct {
+	at  int64
+	seq uint64
+}
+
+func (s orderStamp) before(o orderStamp) bool {
+	return s.at < o.at || (s.at == o.at && s.seq < o.seq)
 }
 
 // writeDuplicate answers a command the engine took already, as the peer
@@ -400,15 +497,11 @@ func stampCommand(body []byte, at int64, seq uint64, order int64) ([]byte, error
 }
 
 // nextRelaySeq returns a seq for a command this engine relays: above every
-// seq it has taken, wall-clock microseconds as the browser's are, even on
-// the engine whose label sorts first and odd on the other, so the two never
-// give out the same one.
+// seq it has taken, wall-clock microseconds as the browser's are, of the
+// parity seqParity gives this engine, so the two never give out the same
+// one.
 func (a *API) nextRelaySeq() uint64 {
-	parity := uint64(0)
-	local, peer := a.peerPoller.LocalLabel(), a.peerPoller.Status().PeerLabel
-	if (peer != "" && local > peer) || (peer == "" && local == "b") {
-		parity = 1
-	}
+	parity := seqParity(a.peerPoller.LocalLabel(), a.peerPoller.Status().PeerLabel)
 	for {
 		last := a.relaySeq.Load()
 		seq := max(last+1, a.switcher.LastCommandSeq()+1, uint64(time.Now().UnixMicro()))
@@ -421,31 +514,100 @@ func (a *API) nextRelaySeq() uint64 {
 	}
 }
 
+// seqParity returns the parity of the seqs an engine labelled local mints:
+// that of its label's last byte, so engines a and b differ whether or not
+// each knows the other's label yet. Two labels of one parity, once the
+// peer's is known, take the order of the labels instead.
+func seqParity(local, peer string) uint64 {
+	own := func(label string) uint64 { return uint64(label[len(label)-1]) % 2 }
+	p := own(local)
+	if peer != "" && peer != local && own(peer) == p {
+		if local > peer {
+			return 1
+		}
+		return 0
+	}
+	return p
+}
+
 // relayToPeer queues a command for the peer, sent in the order the
 // commands ran here: a squeezeback configured and then turned on reaches
-// the peer configured first. A peer counted down is not tried, and a full
-// backlog drops the command; the peer takes this engine's state later.
-func (a *API) relayToPeer(method, path, auth string, body []byte) {
+// the peer configured first. A T-bar position replaces the positions
+// queued right before it but the furthest forward of them, which the peer
+// needs to tell a pull-back. A peer counted down is not tried, and a full
+// backlog drops its oldest command; the peer takes this engine's state
+// later.
+func (a *API) relayToPeer(job relayJob) {
 	if a.peerPoller.PeerDown() {
 		slog.Warn("peer relay: peer down, command not passed on; it takes this engine's state once back",
-			"path", path)
+			"path", job.path)
 		return
 	}
 	a.relay.once.Do(func() {
-		a.relay.jobs = make(chan relayJob, relayBacklog)
+		a.relay.wake = make(chan struct{}, 1)
+		if a.relay.maxAge == 0 {
+			a.relay.maxAge = defaultRelayMaxAge
+		}
 		go a.relayWorker()
 	})
+	job.queued = time.Now()
+	r := &a.relay
+	r.mu.Lock()
+	if job.position != nil {
+		i := len(r.backlog)
+		for i > 0 && r.backlog[i-1].position != nil {
+			i--
+		}
+		furthest := -1
+		for k := i; k < len(r.backlog); k++ {
+			if *r.backlog[k].position > *job.position && (furthest < 0 || *r.backlog[k].position > *r.backlog[furthest].position) {
+				furthest = k
+			}
+		}
+		keep := r.backlog[:i]
+		if furthest >= 0 {
+			keep = append(keep, r.backlog[furthest])
+		}
+		r.backlog = keep
+	}
+	r.backlog = append(r.backlog, job)
+	if n := len(r.backlog) - relayBacklog; n > 0 {
+		slog.Warn("peer relay: backlog full, oldest commands not passed on", "dropped", n)
+		r.backlog = r.backlog[n:]
+	}
+	r.mu.Unlock()
 	select {
-	case a.relay.jobs <- relayJob{method, path, auth, body}:
+	case r.wake <- struct{}{}:
 	default:
-		slog.Warn("peer relay: backlog full, command not passed on", "path", path)
 	}
 }
 
-// relayWorker sends queued commands to the peer one after another.
+// relayWorker sends queued commands to the peer one after another. One
+// older than the relay's max age, or due while the peer is down, is
+// dropped: the peer would refuse it as stale, or takes this engine's state
+// once back.
 func (a *API) relayWorker() {
-	for job := range a.relay.jobs {
-		a.sendToPeer(job)
+	r := &a.relay
+	for range r.wake {
+		for {
+			r.mu.Lock()
+			if len(r.backlog) == 0 {
+				r.mu.Unlock()
+				break
+			}
+			job := r.backlog[0]
+			r.backlog = r.backlog[1:]
+			r.mu.Unlock()
+			switch {
+			case time.Since(job.queued) > r.maxAge:
+				slog.Warn("peer relay: command waited too long, not passed on", "path", job.path,
+					"waited", time.Since(job.queued))
+			case a.peerPoller.PeerDown():
+				slog.Warn("peer relay: peer down, command not passed on", "path", job.path)
+			default:
+				a.sendToPeer(job)
+			}
+		}
 	}
 }
 

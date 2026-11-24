@@ -12,7 +12,7 @@ Every datagram starts with a type byte. The dispatcher indexes a `[256]Handler` 
 
 | Type | Constant | Direction | Payload | Total | Sender | Handler |
 |:----:|----------|-----------|:-------:|:-----:|--------|---------|
-| `0x02` | `MsgTransitionPosition` | UI → server | 4 B | 5 B | `TransitionControls.svelte` (T-bar slider) | [`handleFastTransitionUpdate`](../../server/cmd/switchframe/app_fastctrl.go) → `switcher.SetTransitionPosition()` |
+| `0x02` | `MsgTransitionPosition` | UI → server | 4 B | 5 B | `TransitionControls.svelte` (T-bar slider) | [`handleFastTransitionUpdate`](../../server/cmd/switchframe/app_fastctrl.go) → `control.API.SetTransitionPosition()`, which in a redundant pair also passes the position on to the peer ([peer-sync.md](api/peer-sync.md#convergence)) |
 | `0x03` | `MsgGraphicsLayerPosition` | UI → server | 10 B | 11 B | `GraphicsOverlay.svelte` (layer drag/resize) | [`handleFastGraphicsUpdate`](../../server/cmd/switchframe/app_fastctrl.go) → `graphics.Compositor.UpdateLayerRect()` |
 | `0x04` | `MsgDVESlotTransform` | UI → server | 25 B | 26 B | `LayoutOverlay.svelte` (DVE slot drag/resize/rotate) | [`handleFastDVETransform`](../../server/cmd/switchframe/app_fastctrl.go) → `dve.Compositor.UpdateSlotTransform()` |
 | `0x05` | `MsgDVESingleParam` | UI → server | 7 B | 8 B | `DVEPanel.svelte` (knob/slider per parameter) | [`handleFastDVESingleParam`](../../server/cmd/switchframe/app_fastctrl.go) → `dve.Compositor.UpdateSlotTransform()` |

@@ -674,6 +674,13 @@ describe('DualConnectionManager', () => {
 			expect(Number.isInteger(mgr.commandTiming('B').execute_at)).toBe(true);
 		});
 
+		it('stamps order_at from the engines\' clock as the page estimates it', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			MockedClockSync.mock.results[0].value.ptpNow.mockReturnValue(1_700_000_000_000_000.25);
+
+			expect(mgr.commandTiming('A').order_at).toBe(1_700_000_000_000_000);
+		});
+
 		it('runs commands on arrival until clock sync has converged', () => {
 			const mgr = new DualConnectionManager(makeDualConfig({ timedExecution: true }));
 			MockedClockSync.mock.results[0].value.isConverged.mockReturnValue(false);

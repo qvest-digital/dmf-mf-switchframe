@@ -344,9 +344,11 @@ export function setNonIdempotentFailureCallback(cb: ((url: string, failedEngines
 
 // ── Dual-engine PTP timestamp injection ──
 
-let dualTimestampProvider: ((engineId?: string) => { execute_at: number; command_seq: number }) | null = null;
+type CommandTiming = { execute_at: number; command_seq: number; order_at?: number };
 
-export function setDualTimestampProvider(provider: ((engineId?: string) => { execute_at: number; command_seq: number }) | null): void {
+let dualTimestampProvider: ((engineId?: string) => CommandTiming) | null = null;
+
+export function setDualTimestampProvider(provider: ((engineId?: string) => CommandTiming) | null): void {
 	dualTimestampProvider = provider;
 
 	// Wire flush injector so pending commands get PTP timestamps when flushed to new engines
@@ -431,6 +433,7 @@ async function fanOutMutation(
 	// One command carries one seq on every engine: the reconciler reads a seq
 	// that differs between engines as one engine having missed a command.
 	let commandSeq: number | undefined;
+	let orderAt: number | undefined;
 	for (let i = 0; i < availableEngines.length; i++) {
 		const engine = availableEngines[i];
 		const engineBody = bodies[i];
@@ -438,12 +441,16 @@ async function fanOutMutation(
 			try {
 				const ts = dualTimestampProvider(engine.id);
 				commandSeq ??= ts.command_seq;
+				orderAt ??= ts.order_at;
 				const nowUs = Date.now() * 1000;
 				// execute_at 0 runs the command on arrival; the engine still
 				// records its seq, which the reconciler compares.
 				const plausible = ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000;
 				const parsed = JSON.parse(engineBody as string);
-				bodies[i] = JSON.stringify({ ...parsed, execute_at: plausible ? ts.execute_at : 0, command_seq: commandSeq });
+				bodies[i] = JSON.stringify({
+					...parsed, execute_at: plausible ? ts.execute_at : 0, command_seq: commandSeq,
+					...(orderAt !== undefined ? { order_at: orderAt } : {}),
+				});
 			} catch { /* send without timestamps */ }
 		}
 	}

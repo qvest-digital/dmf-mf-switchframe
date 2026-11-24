@@ -1759,13 +1759,7 @@ func (a *App) initAPI() error {
 	}
 
 	if a.peerPoller != nil {
-		// Without authentication here, an anonymous command would reach
-		// the peer as the API token's: it goes on without credentials.
-		relayToken := a.cfg.APIToken
-		if a.cfg.Demo {
-			relayToken = ""
-		}
-		apiOpts = append(apiOpts, control.WithPeerRelay(relayToken))
+		apiOpts = append(apiOpts, control.WithPeerRelay(relayToken(a.cfg)))
 	}
 	a.api = control.NewAPI(a.sw, apiOpts...)
 
@@ -2369,4 +2363,14 @@ func (a *App) prewarmSTMapCache(ctx context.Context) {
 		slog.Info("stmap cache warmed", "effect", info.Name, "dir", cacheDir)
 	}
 	slog.Info("stmap cache prewarm complete", "width", w, "height", h)
+}
+
+// relayToken is the token a command relayed to the peer carries when its
+// caller sent none: without authentication here (--demo), an anonymous
+// command would reach the peer as the API token's, so it goes on without.
+func relayToken(cfg AppConfig) string {
+	if cfg.Demo {
+		return ""
+	}
+	return cfg.APIToken
 }

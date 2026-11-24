@@ -486,6 +486,18 @@ describe('switch-api dual-engine routing', () => {
 			}
 		});
 
+		// The engines place a command among the others on its state by
+		// order_at; one stamp per engine would place it differently on each.
+		it('sends one order_at to both engines', async () => {
+			let n = 0;
+			setDualTimestampProvider(() => ({ execute_at: 0, command_seq: 9, order_at: 1_000 + n++ }));
+
+			await cut('cam1');
+
+			const stamps = fetchCalls.map((c) => JSON.parse(c.opts.body as string).order_at);
+			expect(stamps).toEqual([1_000, 1_000]);
+		});
+
 		it('runs a command with an implausible execute_at on arrival', async () => {
 			setDualTimestampProvider(() => ({ execute_at: Date.now() * 1000 + 60_000_000, command_seq: 8 }));
 

@@ -36,11 +36,12 @@ type relayEngine struct {
 
 	// hold, while set, keeps requests the test did not send, the peer's
 	// relays and health polls, from reaching the API until it is closed.
-	mu      sync.Mutex
-	hold    chan struct{}
-	drained []string // actions the queue dispatched
-	slow    string   // path delayed, see slowPath
-	slowFor time.Duration
+	mu        sync.Mutex
+	hold      chan struct{}
+	drained   []string // actions the queue dispatched
+	slow      string   // path delayed, see slowPath
+	positions int      // T-bar positions relayed here
+	slowFor   time.Duration
 }
 
 func (e *relayEngine) holdRelays() {
@@ -62,6 +63,11 @@ func newRelayPair(t *testing.T) (a, b *relayEngine) {
 	a, b = &relayEngine{}, &relayEngine{}
 	for _, e := range []*relayEngine{a, b} {
 		e.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Test-Caller") == "" && r.URL.Path == "/api/switch/transition/position" {
+				e.mu.Lock()
+				e.positions++
+				e.mu.Unlock()
+			}
 			if r.Header.Get("X-Test-Caller") == "" {
 				e.mu.Lock()
 				hold, slow, slowFor := e.hold, e.slow, e.slowFor
@@ -165,6 +171,26 @@ func (e *relayEngine) dispatch(ctx context.Context, c cmdqueue.Command) error {
 	return nil
 }
 
+// drainedActions returns the dispatched commands of action.
+func (e *relayEngine) drainedActions(action string) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []string
+	for _, a := range e.drained {
+		if a == action {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// positionsReceived counts the T-bar positions the peer passed on here.
+func (e *relayEngine) positionsReceived() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.positions
+}
+
 func (e *relayEngine) send(t *testing.T, method, path, body string) int {
 	t.Helper()
 	req, err := http.NewRequest(method, e.srv.URL+path, strings.NewReader(body))
@@ -194,7 +220,7 @@ func TestPeerRelay_SwitchingReachesThePeer(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return a.sw.LastCommandSeq() == b.sw.LastCommandSeq()
 	}, 5*time.Second, 5*time.Millisecond)
-	assert.Zero(t, a.sw.LastCommandSeq()%2, "engine a gives out even seqs")
+	assert.Equal(t, uint64(1), a.sw.LastCommandSeq()%2, "engine a gives out odd seqs")
 }
 
 // The squeezeback configured and moved on engine b alone reaches engine a.
@@ -208,7 +234,7 @@ func TestPeerRelay_SqueezebackReachesThePeer(t *testing.T) {
 		st := a.sq.Snapshot()
 		return st.Configured && st.On && st.Rect == dve.Rect{X: 80, W: 240, H: 180}
 	}, 5*time.Second, 5*time.Millisecond)
-	assert.Equal(t, uint64(1), b.sw.LastCommandSeq()%2, "engine b gives out odd seqs")
+	assert.Zero(t, b.sw.LastCommandSeq()%2, "engine b gives out even seqs")
 
 	require.Equal(t, http.StatusNoContent, a.send(t, http.MethodPost, "/api/squeezeback/off", ""))
 	require.Eventually(t, func() bool { return !b.sq.Snapshot().On }, 5*time.Second, 5*time.Millisecond)
@@ -516,4 +542,179 @@ func TestPeerRelay_CutToProgramKeepsAnEarlierPreview(t *testing.T) {
 	b.releaseRelays()
 	require.Eventually(t, func() bool { return b.sw.State().PreviewSource == "cam3" }, 5*time.Second, 5*time.Millisecond)
 	assert.Equal(t, "cam3", a.sw.State().PreviewSource)
+}
+
+// browserCut is a cut a browser sends to both engines: one seq and one
+// order_at for both.
+func browserCut(source string, seq uint64, orderAt int64) string {
+	return fmt.Sprintf(`{"source":%q,"command_seq":%d,"order_at":%d}`, source, seq, orderAt)
+}
+
+// Two browser cuts reaching the engines in opposite orders end on the
+// later one on both: they are placed by the order_at the browser stamped
+// both copies with, not by when each copy arrived.
+func TestPeerRelay_BrowserCutsCrossingEndAlike(t *testing.T) {
+	a, b := newRelayPair(t)
+	now := time.Now().UnixMicro()
+	first, second := browserCut("cam1", uint64(now), now), browserCut("cam2", uint64(now)+1000, now+1000)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", first))
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", second))
+	require.Equal(t, http.StatusOK, b.send(t, http.MethodPost, "/api/switch/cut", second))
+	assert.Equal(t, http.StatusConflict, b.send(t, http.MethodPost, "/api/switch/cut", first))
+	assert.Equal(t, "cam2", a.program())
+	assert.Equal(t, "cam2", b.program())
+	// The cut refused as overtaken still counts on its seq.
+	assert.Equal(t, uint64(now)+1000, b.sw.LastCommandSeq())
+}
+
+// An order_at far from the engine's clock, from a browser whose clock is
+// off and not yet synced, places the command when it arrives.
+func TestPeerRelay_FarOrderAtPlacesOnArrival(t *testing.T) {
+	a, _ := newRelayPair(t)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
+	behind := time.Now().Add(-time.Minute).UnixMicro()
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", browserCut("cam3", uint64(behind), behind)))
+	assert.Equal(t, "cam3", a.program())
+}
+
+// Another operator's command on the other engine, made after a third
+// command on its state ran, is no copy of the first: X turns the
+// squeezeback on and off on a, Y turns it on on b, and both end on.
+func TestPeerRelay_OtherOperatorsCommandIsNoCopy(t *testing.T) {
+	a, b := newRelayPair(t)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPut, "/api/squeezeback",
+		`{"rect":{"x":80,"y":0,"w":240,"h":180},"durationMs":0}`))
+	require.Equal(t, http.StatusNoContent, a.send(t, http.MethodPost, "/api/squeezeback/on", `{"durationMs":0}`))
+	require.Equal(t, http.StatusNoContent, a.send(t, http.MethodPost, "/api/squeezeback/off", `{"durationMs":0}`))
+	require.Eventually(t, func() bool {
+		return len(b.drainedActions("squeezeback_off")) == 1
+	}, 5*time.Second, 5*time.Millisecond)
+	require.Equal(t, http.StatusNoContent, b.send(t, http.MethodPost, "/api/squeezeback/on", `{"durationMs":0}`))
+	require.Eventually(t, func() bool { return a.sq.Snapshot().On && b.sq.Snapshot().On }, 5*time.Second, 5*time.Millisecond,
+		"a %v, b %v", a.sq.Snapshot().On, b.sq.Snapshot().On)
+}
+
+// A command this engine refused is no record against the peer's copy of
+// the same command: b refuses an on while unconfigured, a takes it and
+// passes it on, and b, configured meanwhile, takes a's.
+func TestPeerRelay_RefusedCommandSwallowsNoCopy(t *testing.T) {
+	a, b := newRelayPair(t)
+	require.NoError(t, a.sq.Set(dve.SqueezeConfig{Rect: dve.Rect{X: 80, W: 240, H: 180}}))
+	b.holdRelays()
+	require.Equal(t, http.StatusBadRequest, b.send(t, http.MethodPost, "/api/squeezeback/on", `{"durationMs":0}`))
+	require.NoError(t, b.sq.Set(dve.SqueezeConfig{Rect: dve.Rect{X: 80, W: 240, H: 180}}))
+	require.Equal(t, http.StatusNoContent, a.send(t, http.MethodPost, "/api/squeezeback/on", `{"durationMs":0}`))
+	b.releaseRelays()
+	require.Eventually(t, func() bool { return b.sq.Snapshot().On }, 5*time.Second, 5*time.Millisecond)
+}
+
+// T-bar positions sent over fast control reach the peer as the REST
+// route's do: a pull-back on one engine aborts the transition on both.
+func TestPeerRelay_FastControlPullBackReachesThePeer(t *testing.T) {
+	a, b := newRelayPair(t)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
+	require.Eventually(t, func() bool { return b.program() == "cam1" }, 5*time.Second, 5*time.Millisecond)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/transition",
+		`{"source":"cam2","type":"mix","durationMs":5000}`))
+	require.Eventually(t, func() bool { return b.sw.State().InTransition }, 5*time.Second, 5*time.Millisecond)
+	for _, p := range []float64{0.3, 0.7, 0.4, 0.05} {
+		require.NoError(t, a.api.SetTransitionPosition(context.Background(), p))
+	}
+	require.False(t, a.sw.State().InTransition, "pulled back here")
+	require.Eventually(t, func() bool { return !b.sw.State().InTransition }, 5*time.Second, 5*time.Millisecond,
+		"the peer kept the transition running")
+	assert.Equal(t, "cam1", b.program())
+}
+
+// Positions queued behind a slow peer are coalesced: the peer gets the
+// furthest forward and the last, not every one, and a cut queued after
+// them is not held up behind them.
+func TestPeerRelay_PositionsCoalesce(t *testing.T) {
+	a, b := newRelayPair(t)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
+	require.Eventually(t, func() bool { return b.program() == "cam1" }, 5*time.Second, 5*time.Millisecond)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/transition",
+		`{"source":"cam2","type":"mix","durationMs":5000}`))
+	require.Eventually(t, func() bool { return b.sw.State().InTransition }, 5*time.Second, 5*time.Millisecond)
+	b.holdRelays()
+	// the first is in flight, held; the rest queue behind it: forward to
+	// 0.8, then back below the abort threshold
+	var moves []float64
+	for i := 1; i <= 40; i++ {
+		moves = append(moves, float64(i)*0.02)
+	}
+	moves = append(moves, 0.7, 0.6, 0.5, 0.4, 0.25)
+	for _, p := range moves {
+		require.NoError(t, a.api.SetTransitionPosition(context.Background(), p))
+	}
+	require.False(t, a.sw.State().InTransition, "pulled back here")
+	b.releaseRelays()
+	require.Eventually(t, func() bool { return !b.sw.State().InTransition }, 5*time.Second, 5*time.Millisecond,
+		"the pull-back did not reach the peer")
+	assert.LessOrEqual(t, b.positionsReceived(), 4, "positions were not coalesced")
+}
+
+// A command that waited past the relay's max age, behind a peer that does
+// not answer, is dropped rather than sent: the peer would refuse it.
+func TestPeerRelay_StaleJobDropped(t *testing.T) {
+	a, b := newRelayPair(t)
+	a.api.relay.maxAge = 100 * time.Millisecond
+	b.holdRelays()
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam3"}`))
+	time.Sleep(300 * time.Millisecond)
+	b.releaseRelays()
+	time.Sleep(300 * time.Millisecond)
+	assert.Equal(t, "cam1", b.program(), "the command that waited too long was sent")
+}
+
+// T-bar positions taken out of order keep the later one: an older position
+// arriving after a newer one is refused, not applied, as a stale one could
+// abort the transition.
+func TestPeerRelay_PositionsKeepTheirOrder(t *testing.T) {
+	a, _ := newRelayPair(t)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/transition",
+		`{"source":"cam2","type":"mix","durationMs":5000}`))
+	now := time.Now().UnixMicro()
+	pos := func(p float64, seq uint64, at int64) string {
+		return fmt.Sprintf(`{"position":%v,"command_seq":%d,"order_at":%d}`, p, seq, at)
+	}
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/transition/position", pos(0.8, uint64(now)+2, now+2)))
+	assert.Equal(t, http.StatusConflict, a.send(t, http.MethodPost, "/api/switch/transition/position", pos(0.1, uint64(now)+1, now+1)))
+	assert.True(t, a.sw.State().InTransition, "the older position aborted the transition")
+}
+
+func TestSeqParity(t *testing.T) {
+	for _, c := range []struct {
+		local, peer string
+		want        uint64
+	}{
+		{"a", "", 1}, {"a", "b", 1}, {"b", "", 0}, {"b", "a", 0},
+		{"x", "", 0}, {"y", "", 1},
+		// same parity: the order of the labels
+		{"a", "c", 0}, {"c", "a", 1},
+	} {
+		assert.Equal(t, c.want, seqParity(c.local, c.peer), "%s with peer %q", c.local, c.peer)
+	}
+	for _, pair := range [][2]string{{"a", "b"}, {"a", "c"}, {"x", "y"}, {"engine-1", "engine-3"}} {
+		assert.NotEqual(t, seqParity(pair[0], pair[1]), seqParity(pair[1], pair[0]), "%v", pair)
+	}
+	// a and b differ before either knows the other's label, and keep their
+	// parity once it does
+	assert.NotEqual(t, seqParity("a", ""), seqParity("b", ""))
+	assert.Equal(t, seqParity("a", ""), seqParity("a", "b"))
+}
+
+// A browser command run on arrival and refused as overtaken still counts
+// on its seq, which can be the higher one: it fell before a command run
+// here that carries a lower seq.
+func TestPeerRelay_OvertakenOnArrivalCountsItsSeq(t *testing.T) {
+	a, _ := newRelayPair(t)
+	before := time.Now().UnixMicro()
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
+	high := uint64(time.Now().Add(time.Hour).UnixMicro())
+	assert.Equal(t, http.StatusConflict, a.send(t, http.MethodPost, "/api/switch/cut", browserCut("cam3", high, before-1000)))
+	assert.Equal(t, "cam1", a.program())
+	assert.Equal(t, high, a.sw.LastCommandSeq())
 }
