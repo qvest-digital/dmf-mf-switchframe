@@ -27,6 +27,9 @@ var (
 	ErrDuplicateCommand = errors.New("cmdqueue: duplicate command_seq")
 	ErrQueueFull        = errors.New("cmdqueue: queue is full")
 	ErrSuperseded       = errors.New("cmdqueue: a later command on the same state has run")
+	// ErrUnchanged is a command RunLocal ran that set nothing (see
+	// SetChanges), so it was not recorded.
+	ErrUnchanged = errors.New("cmdqueue: the command set nothing")
 )
 
 // Command is a single schedulable control action.
@@ -458,8 +461,9 @@ func (q *Queue) Keyed(action string) bool {
 }
 
 // SetChanges sets fn to tell, before a keyed command runs, whether it
-// will set its further keys too: a cut to the source already on program
-// leaves the preview alone. Nil, every command sets them.
+// will set its state: a cut to the source already on program sets neither
+// program nor preview, and is recorded on no key, so a command it would
+// otherwise supersede still runs. Nil, every command sets its state.
 func (q *Queue) SetChanges(fn func(Command) bool) {
 	q.mu.Lock()
 	q.changes = fn
@@ -487,21 +491,29 @@ func (q *Queue) Hold() func() {
 // RunLocal runs a keyed command outside the queue, as a handler executes
 // one on arrival: it returns ErrSuperseded without running when a later
 // command on cmd's state has run, and otherwise calls run, recording cmd
-// as run when run reports success. cmd.OrderAt is where it falls; 0 is
-// NextOrder. Drained commands are not dispatched meanwhile (see Hold).
+// as run when run reports success and it sets its state, else returning
+// ErrUnchanged. cmd.OrderAt is where it falls; 0 is NextOrder. Drained
+// commands are not dispatched meanwhile (see Hold).
 func (q *Queue) RunLocal(cmd Command, run func() bool) error {
 	q.execMu.Lock()
 	defer q.execMu.Unlock()
 	if cmd.OrderAt <= 0 {
 		cmd.OrderAt = q.NextOrder()
 	}
-	return q.exec(cmd, func() error {
+	err := q.exec(cmd, func() error {
 		if !run() {
 			return errRunFailed
 		}
 		return nil
 	})
+	if errors.Is(err, errUnchanged) {
+		return ErrUnchanged
+	}
+	return err
 }
+
+// errUnchanged is a command exec ran that set nothing.
+var errUnchanged = errors.New("cmdqueue: unchanged")
 
 // errRunFailed is a RunLocal run that reported failure.
 var errRunFailed = errors.New("cmdqueue: run failed")
@@ -511,6 +523,9 @@ var errRunFailed = errors.New("cmdqueue: run failed")
 // run, else run's error, recording cmd as run when run succeeds.
 func (q *Queue) Exec(cmd Command, run func() error) error {
 	err := q.exec(cmd, run)
+	if errors.Is(err, errUnchanged) {
+		return nil
+	}
 	if errors.Is(err, ErrSuperseded) {
 		slog.Info("cmdqueue: command dropped, a later one on its state has run",
 			"action", cmd.Action, "seq", cmd.Seq, "order_at", cmd.OrderAt)
@@ -524,7 +539,7 @@ func (q *Queue) exec(cmd Command, run func() error) error {
 	q.mu.Unlock()
 	// Outside mu: it reads the caller's state, whose locks are no business
 	// of the queue's.
-	side := changes == nil || changes(cmd)
+	sets := changes == nil || changes(cmd)
 	if gone {
 		return ErrSuperseded
 	}
@@ -534,8 +549,11 @@ func (q *Queue) exec(cmd Command, run func() error) error {
 		}
 		return err
 	}
+	if !sets {
+		return errUnchanged
+	}
 	q.mu.Lock()
-	q.recordRan(cmd, side)
+	q.recordRan(cmd)
 	q.mu.Unlock()
 	return nil
 }
@@ -551,20 +569,16 @@ func (q *Queue) superseded(cmd Command) bool {
 	return ok && (orderStamp{cmd.OrderAt, cmd.Seq}).before(last.at)
 }
 
-// recordRan notes cmd as run on its first key and, side set, its further
-// ones. A command on a further key that ran after cmd is queued to run
-// again at once, since cmd overwrote what it set. Must be called with
-// q.mu held.
-func (q *Queue) recordRan(cmd Command, side bool) {
+// recordRan notes cmd as run on its keys. A command on a further key that
+// ran after cmd is queued to run again at once, since cmd overwrote what
+// it set. Must be called with q.mu held.
+func (q *Queue) recordRan(cmd Command) {
 	at := orderStamp{cmd.OrderAt, cmd.Seq}
 	keys := q.stateKeys[cmd.Action]
 	if len(keys) > 0 {
 		q.lastOrder = max(q.lastOrder, cmd.OrderAt)
 	}
 	for i, key := range keys {
-		if i > 0 && !side {
-			break
-		}
 		last, ok := q.ran[key]
 		switch {
 		case !ok || last.at.before(at):

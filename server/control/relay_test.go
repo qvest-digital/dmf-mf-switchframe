@@ -732,8 +732,9 @@ func TestPeerRelay_FarOrderAtIgnored(t *testing.T) {
 }
 
 // A transition started on a crosses a cut to the program source made just
-// after it on b: the cut is the later command on the program, so both end
-// on the source it names, a aborting its transition when the cut arrives.
+// after it on b. The cut sets nothing, on b as on a, where the transition
+// runs on as CUT pressed during an AUTO leaves it, so b takes the
+// transition after it, and both end on the transition's target.
 func TestPeerRelay_TransitionCrossingCutToProgram(t *testing.T) {
 	for i := range 3 {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
@@ -749,12 +750,15 @@ func TestPeerRelay_TransitionCrossingCutToProgram(t *testing.T) {
 			require.Equal(t, http.StatusOK, b.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
 			a.releaseRelays()
 			b.releaseRelays()
-			require.Eventually(t, func() bool { return !a.sw.State().InTransition }, 5*time.Second, 5*time.Millisecond,
-				"a's transition ran on")
-			time.Sleep(100 * time.Millisecond)
-			assert.Equal(t, "cam1", a.program())
-			assert.Equal(t, "cam1", b.program())
-			assert.False(t, b.sw.State().InTransition)
+			require.Eventually(t, func() bool { return b.sw.State().InTransition }, 5*time.Second, 5*time.Millisecond,
+				"b dropped the transition")
+			require.True(t, a.sw.State().InTransition, "the cut stopped a's transition")
+			require.NoError(t, a.api.SetTransitionPosition(context.Background(), 1))
+			require.Eventually(t, func() bool {
+				return !a.sw.State().InTransition && !b.sw.State().InTransition
+			}, 5*time.Second, 5*time.Millisecond)
+			assert.Equal(t, "cam2", a.program())
+			assert.Equal(t, "cam2", b.program())
 		})
 	}
 }
@@ -784,4 +788,36 @@ func TestPeerHealthAdvertisesRelaying(t *testing.T) {
 	h = peer.HealthResponse{}
 	require.NoError(t, json.Unmarshal(serve(t, plain, "GET", "/api/peer/health", "").Body.Bytes(), &h))
 	assert.False(t, h.Relays, "an engine without a label relays nothing")
+}
+
+// A cut on b to the source on program sets nothing there and is not passed
+// on: a, which took a transition away from that source in the meantime,
+// would otherwise cut back to it when the cut arrives, and the engines
+// would end apart.
+func TestPeerRelay_CutThatSetNothingIsNotPassedOn(t *testing.T) {
+	a, b := newRelayPair(t)
+	for _, e := range []*relayEngine{a, b} {
+		require.NoError(t, e.sw.Cut(context.Background(), "cam1"))
+	}
+	a.holdRelays()
+	before := b.sw.LastCommandSeq()
+	require.Equal(t, http.StatusOK, b.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
+	assert.Greater(t, b.sw.LastCommandSeq(), before, "the seq given the cut was not counted")
+	require.NoError(t, a.sw.StartTransition(context.Background(), "cam2", "mix", 5000, ""))
+	require.NoError(t, a.sw.SetTransitionPosition(context.Background(), 1))
+	require.Eventually(t, func() bool { return !a.sw.State().InTransition }, 5*time.Second, 5*time.Millisecond)
+	a.releaseRelays()
+	time.Sleep(200 * time.Millisecond)
+	assert.Equal(t, "cam2", a.program(), "a cut back to the source b's cut named")
+	assert.Empty(t, a.drainedActions("cut"))
+}
+
+// A command naming a seq that sets nothing still counts its seq, as the
+// peer health compares the engines by it.
+func TestPeerRelay_UnchangedCommandCountsItsSeq(t *testing.T) {
+	a, _ := newRelayPair(t)
+	require.NoError(t, a.sw.Cut(context.Background(), "cam1"))
+	seq := uint64(time.Now().UnixMicro())
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", fmt.Sprintf(`{"source":"cam1","command_seq":%d}`, seq)))
+	assert.Equal(t, seq, a.sw.LastCommandSeq())
 }

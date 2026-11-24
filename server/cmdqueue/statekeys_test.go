@@ -18,7 +18,7 @@ func ranHere(t *testing.T, q *cmdqueue.Queue, action string, at int64, seq uint6
 		apply(state, action, payload)
 		return true
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, cmdqueue.ErrUnchanged) {
 		t.Fatalf("RunLocal %s: %v", action, err)
 	}
 }
@@ -297,8 +297,8 @@ func TestStateKeys_FailedDispatchNotRecorded(t *testing.T) {
 	}
 }
 
-// A command that leaves its further keys alone, as a cut to the source on
-// program leaves the preview, does not record them.
+// A command that sets nothing, as a cut to the source on program, records
+// no key: an earlier preview, or an earlier cut, still runs after it.
 func TestStateKeys_UnchangedSideKeyNotRecorded(t *testing.T) {
 	clock, _ := newClock(10_000)
 	q := cmdqueue.New(clock, cmdqueue.WithStateKeys(testStateKeys))
@@ -308,9 +308,12 @@ func TestStateKeys_UnchangedSideKeyNotRecorded(t *testing.T) {
 	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 8_000, Seq: 1, Action: "preview", Payload: []byte("cam3")}); err != nil {
 		t.Fatalf("an earlier preview after a cut that left the preview alone: %v", err)
 	}
+	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 8_500, Seq: 3, Action: "transition", Payload: []byte("cam2")}); err != nil {
+		t.Fatalf("an earlier transition after a cut that left the program alone: %v", err)
+	}
 	run(q, st)
-	if st["preview"] != "cam3" {
-		t.Fatalf("preview %q, want cam3", st["preview"])
+	if st["preview"] != "cam1" || st["program"] != "cam2" {
+		t.Fatalf("program %q, preview %q, want cam2 and cam1", st["program"], st["preview"])
 	}
 }
 

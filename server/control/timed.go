@@ -76,7 +76,7 @@ func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), han
 			// A command both engines of a pair take, run on arrival: it
 			// falls among the commands on its state as it arrives.
 			cmd := cmdqueue.Command{Seq: timed.CommandSeq, Action: action, Payload: json.RawMessage(body)}
-			if runKeyed(q, cmd, w, r, body, handler) != keyedRan {
+			if res := runKeyed(q, cmd, w, r, body, handler); res != keyedRan && res != keyedUnchanged {
 				return
 			}
 		} else {
@@ -149,7 +149,7 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint
 			// A command both engines of a pair take, run on arrival: it
 			// falls among the commands on its state as it arrives.
 			cmd := cmdqueue.Command{Seq: timed.CommandSeq, Action: action, Payload: json.RawMessage(body)}
-			if runKeyed(q, cmd, w, r, body, handler) != keyedRan {
+			if res := runKeyed(q, cmd, w, r, body, handler); res != keyedRan && res != keyedUnchanged {
 				return
 			}
 		} else {

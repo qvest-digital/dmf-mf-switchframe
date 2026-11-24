@@ -140,7 +140,17 @@ func (a *API) relayedHandler(action string, handler immediateHandlerFunc) http.H
 		}
 		if req.ExecuteAt <= 0 {
 			cmd := cmdqueue.Command{OrderAt: order, Seq: seq, Action: action, Payload: stamped}
-			if runKeyed(a.cmdQueue, cmd, w, r, stamped, handler) != keyedRan {
+			switch runKeyed(a.cmdQueue, cmd, w, r, stamped, handler) {
+			case keyedRan:
+			case keyedUnchanged:
+				// It set nothing here, so it is not passed on: the peer,
+				// taking it later, might find its state moved on and set
+				// it back.
+				if a.seqTracker != nil {
+					a.seqTracker(seq)
+				}
+				return
+			default:
 				return
 			}
 		} else {
@@ -222,8 +232,11 @@ func (a *API) SetTransitionPosition(ctx context.Context, position float64) error
 }
 
 // changesState tells the command queue whether a keyed command sets its
-// further keys: a cut or transition to the source already on program
-// leaves the preview where it is.
+// state: a cut to the source already on program sets neither program nor
+// preview, also while a transition takes that source away, which it does
+// not stop. Recorded, it would drop a transition made before it on the
+// other engine of a pair and reaching this one after it, while that
+// engine completes the transition: the two would end apart.
 func (a *API) changesState(cmd cmdqueue.Command) bool {
 	if cmd.Action != "cut" && cmd.Action != "transition" {
 		return true
@@ -263,6 +276,7 @@ type keyedResult int
 
 const (
 	keyedRan        keyedResult = iota
+	keyedUnchanged              // it ran and set nothing (see changesState)
 	keyedSuperseded             // a later command on its state ran here
 	keyedFailed                 // its handler refused it
 )
@@ -280,6 +294,10 @@ func runKeyed(q *cmdqueue.Queue, cmd cmdqueue.Command, w http.ResponseWriter, r 
 		handler(rec, r, body)
 		return rec.status < http.StatusMultipleChoices
 	})
+	if errors.Is(err, cmdqueue.ErrUnchanged) {
+		rec.writeTo(w)
+		return keyedUnchanged
+	}
 	if err != nil {
 		writeEnqueueError(w, err)
 		if errors.Is(err, cmdqueue.ErrSuperseded) {
