@@ -51,7 +51,7 @@ func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), han
 		if timed.ExecuteAt > 0 && q != nil {
 			cmd := cmdqueue.Command{
 				ExecuteAt: timed.ExecuteAt,
-				OrderAt:   placeAt(q, timed.OrderAt),
+				OrderAt:   orderFor(timed),
 				Seq:       timed.CommandSeq,
 				Action:    action,
 				Payload:   json.RawMessage(body),
@@ -74,17 +74,9 @@ func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), han
 
 		if q != nil && timed.CommandSeq > 0 && q.Keyed(action) {
 			// A command both engines of a pair take, run on arrival: it
-			// falls among the commands on its state at the order_at its
-			// caller stamped it with alike for both, else as it arrives.
-			cmd := cmdqueue.Command{Seq: timed.CommandSeq, OrderAt: placeAt(q, timed.OrderAt), Action: action, Payload: json.RawMessage(body)}
-			switch runKeyed(q, cmd, w, r, body, handler) {
-			case keyedFailed:
-				return
-			case keyedSuperseded:
-				// The peer took it too; the seq is taken alike on both.
-				if seqTracker != nil {
-					seqTracker(timed.CommandSeq)
-				}
+			// falls among the commands on its state as it arrives.
+			cmd := cmdqueue.Command{Seq: timed.CommandSeq, Action: action, Payload: json.RawMessage(body)}
+			if runKeyed(q, cmd, w, r, body, handler) != keyedRan {
 				return
 			}
 		} else {
@@ -132,7 +124,7 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint
 
 			cmd := cmdqueue.Command{
 				ExecuteAt: timed.ExecuteAt,
-				OrderAt:   placeAt(q, timed.OrderAt),
+				OrderAt:   orderFor(timed),
 				Seq:       timed.CommandSeq,
 				Action:    action,
 				Payload:   json.RawMessage(enriched),
@@ -155,17 +147,9 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint
 
 		if q != nil && timed.CommandSeq > 0 && q.Keyed(action) {
 			// A command both engines of a pair take, run on arrival: it
-			// falls among the commands on its state at the order_at its
-			// caller stamped it with alike for both, else as it arrives.
-			cmd := cmdqueue.Command{Seq: timed.CommandSeq, OrderAt: placeAt(q, timed.OrderAt), Action: action, Payload: json.RawMessage(body)}
-			switch runKeyed(q, cmd, w, r, body, handler) {
-			case keyedFailed:
-				return
-			case keyedSuperseded:
-				// The peer took it too; the seq is taken alike on both.
-				if seqTracker != nil {
-					seqTracker(timed.CommandSeq)
-				}
+			// falls among the commands on its state as it arrives.
+			cmd := cmdqueue.Command{Seq: timed.CommandSeq, Action: action, Payload: json.RawMessage(body)}
+			if runKeyed(q, cmd, w, r, body, handler) != keyedRan {
 				return
 			}
 		} else {
@@ -190,16 +174,17 @@ func writeEnqueueError(w http.ResponseWriter, err error) {
 	httperr.Write(w, http.StatusBadRequest, err.Error())
 }
 
-// placeAt returns orderAt when it lies within orderWindow of the queue's
-// clock, else 0, which places a command when it arrives or by its
-// execute_at: a caller whose clock is off does not have its commands
-// placed before ones it made earlier.
-func placeAt(q *cmdqueue.Queue, orderAt int64) int64 {
-	if orderAt <= 0 {
+// orderFor returns the order_at a queued command names when it lies within
+// a second of its execute_at, as one the peer engine relays does (see
+// relayedHandler), else 0, which places the command at its execute_at: an
+// order_at far from when a command runs would place it among others
+// wrongly.
+func orderFor(t timedRequest) int64 {
+	if t.OrderAt <= 0 {
 		return 0
 	}
-	if d := time.Duration(orderAt-q.Now()) * time.Microsecond; d > orderWindow || d < -orderWindow {
+	if d := time.Duration(t.OrderAt-t.ExecuteAt) * time.Microsecond; d > time.Second || d < -time.Second {
 		return 0
 	}
-	return orderAt
+	return t.OrderAt
 }

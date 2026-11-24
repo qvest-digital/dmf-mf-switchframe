@@ -49,21 +49,9 @@ func RelayedStateKeys() map[string][]string {
 // relayTimeout bounds one command sent to the peer.
 const relayTimeout = 2 * time.Second
 
-// relayHeader marks a command one engine of a pair passes on to the other.
-const relayHeader = "X-Switchframe-Relay"
-
-// relayDedupWindow is how long a command sent to this engine alone and the
-// same command relayed by the peer count as one caller sending it to both.
-const relayDedupWindow = 2 * time.Second
-
 // relayBacklog bounds the commands waiting to be passed on; past it the
 // oldest is dropped.
 const relayBacklog = 256
-
-// orderWindow is how far a command's order_at may lie from this engine's
-// clock and still place it: further, as from a browser whose clock is off,
-// the command is placed when it arrives.
-const orderWindow = 5 * time.Second
 
 // defaultRelayMaxAge is how old a command waiting to be passed on may grow
 // before it is dropped: twice the queue's stale age, past which the peer
@@ -98,19 +86,10 @@ type relayState struct {
 	once   sync.Once
 	wake   chan struct{}
 	maxAge time.Duration // see defaultRelayMaxAge; tests shorten it
+	limit  int           // see relayBacklog; tests shorten it
 
 	mu      sync.Mutex
 	backlog []relayJob
-	direct  map[string]dedupRecord // commands sent to this engine alone, by dedupKey
-	relayed map[string]dedupRecord // commands the peer passed on, by dedupKey
-}
-
-// dedupRecord is a command taken, where it falls among the commands on its
-// state and when it was taken.
-type dedupRecord struct {
-	order int64
-	seq   uint64
-	at    time.Time
 }
 
 // relayOn reports whether commands sent to this engine alone are passed on.
@@ -129,8 +108,8 @@ func (a *API) relayOn() bool {
 // two place it alike among their commands on that state (see
 // cmdqueue.WithStateKeys). The caller's answer is this engine's: a peer
 // down or refusing the command takes this engine's state later, at its
-// start or by convergence. A caller that sends the same command to both
-// engines without a seq has it run once on each (see isCopy).
+// start or by convergence. A caller sending the same command to both
+// engines without a seq has it run twice on each.
 func (a *API) relayedHandler(action string, handler immediateHandlerFunc) http.HandlerFunc {
 	timed := timedHandler(a.cmdQueue, action, a.seqTracker, handler)
 	if !a.relayEnabled || a.cmdQueue == nil || a.peerPoller == nil || a.peerPoller.PeerURL() == "" {
@@ -149,32 +128,8 @@ func (a *API) relayedHandler(action string, handler immediateHandlerFunc) http.H
 		var req timedRequest
 		_ = json.Unmarshal(body, &req)
 		if req.CommandSeq != 0 {
-			if r.Header.Get(relayHeader) != "" {
-				if a.isCopy(&a.relay.direct, action, body) {
-					// The caller sent it here too, and it ran here then.
-					if a.seqTracker != nil {
-						a.seqTracker(req.CommandSeq)
-					}
-					w.WriteHeader(http.StatusNoContent)
-					return
-				}
-				rec := &statusRecorder{ResponseWriter: w}
-				r.Body = io.NopCloser(bytes.NewReader(body))
-				timed(rec, r)
-				if rec.status < http.StatusMultipleChoices {
-					a.relay.record(&a.relay.relayed, dedupKey(action, body),
-						cmp.Or(req.OrderAt, req.ExecuteAt), req.CommandSeq)
-				}
-				return
-			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			timed(w, r)
-			return
-		}
-		if a.isCopy(&a.relay.relayed, action, body) {
-			// The caller sent it to the peer too, which ran it and passed
-			// it on here.
-			a.writeDuplicate(action, w)
 			return
 		}
 
@@ -200,7 +155,7 @@ func (a *API) relayedHandler(action string, handler immediateHandlerFunc) http.H
 		if auth == "" && a.relayToken != "" {
 			auth = "Bearer " + a.relayToken
 		}
-		a.passOn(action, r.Method, r.URL.Path, auth, body, stamped, order, seq)
+		a.passOn(action, r.Method, r.URL.Path, auth, body, stamped, seq)
 	}
 }
 
@@ -217,13 +172,12 @@ func (a *API) stampAlone(action string, body []byte, executeAt int64) (seq uint6
 	return seq, at, order, stamped, err
 }
 
-// passOn records a command sent to this engine alone, once it ran or was
-// queued here, and passes it on to the peer.
-func (a *API) passOn(action, method, path, auth string, body, stamped []byte, order int64, seq uint64) {
+// passOn counts the seq of a command sent to this engine alone, once it ran
+// or was queued here, and passes the command on to the peer.
+func (a *API) passOn(action, method, path, auth string, body, stamped []byte, seq uint64) {
 	if a.seqTracker != nil {
 		a.seqTracker(seq)
 	}
-	a.relay.record(&a.relay.direct, dedupKey(action, body), order, seq)
 	job := relayJob{method: method, path: path, auth: auth, body: stamped}
 	if action == "transition_position" {
 		var req transitionPositionRequest
@@ -244,9 +198,6 @@ func (a *API) SetTransitionPosition(ctx context.Context, position float64) error
 	}
 	const action = "transition_position"
 	body, _ := json.Marshal(transitionPositionRequest{Position: position})
-	if a.isCopy(&a.relay.relayed, action, body) {
-		return nil
-	}
 	seq, _, order, stamped, err := a.stampAlone(action, body, 0)
 	if err != nil {
 		return err
@@ -266,7 +217,7 @@ func (a *API) SetTransitionPosition(ctx context.Context, position float64) error
 	if a.relayToken != "" {
 		auth = "Bearer " + a.relayToken
 	}
-	a.passOn(action, http.MethodPost, "/api/switch/transition/position", auth, body, stamped, order, seq)
+	a.passOn(action, http.MethodPost, "/api/switch/transition/position", auth, body, stamped, seq)
 	return nil
 }
 
@@ -282,83 +233,6 @@ func (a *API) changesState(cmd cmdqueue.Command) bool {
 		return true
 	}
 	return req.Source != a.switcher.ProgramSource()
-}
-
-// dedupKey names a command by its action and body, without the fields an
-// engine stamps or fills in.
-func dedupKey(action string, body []byte) string {
-	fields := map[string]json.RawMessage{}
-	if len(bytes.TrimSpace(body)) > 0 && json.Unmarshal(body, &fields) != nil {
-		return action + "\x00" + string(body)
-	}
-	for _, k := range []string{"execute_at", "command_seq", "order_at", "graphicsOffsetMs"} {
-		delete(fields, k)
-	}
-	out, _ := json.Marshal(fields)
-	return action + "\x00" + string(out)
-}
-
-// record notes a command taken, by its dedupKey.
-func (r *relayState) record(m *map[string]dedupRecord, key string, order int64, seq uint64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	now := time.Now()
-	if *m == nil {
-		*m = map[string]dedupRecord{}
-	}
-	for k, rec := range *m {
-		if now.Sub(rec.at) > relayDedupWindow {
-			delete(*m, k)
-		}
-	}
-	(*m)[key] = dedupRecord{order, seq, now}
-}
-
-// isCopy reports whether a command is the copy of one recorded in m: the
-// same command taken within relayDedupWindow, and still the latest command
-// on its state, or yet to run. A command on its state run since is another
-// operator's, after which this one is a command of its own. A copy found
-// is forgotten.
-func (a *API) isCopy(m *map[string]dedupRecord, action string, body []byte) bool {
-	key := dedupKey(action, body)
-	a.relay.mu.Lock()
-	rec, ok := (*m)[key]
-	a.relay.mu.Unlock()
-	if !ok || time.Since(rec.at) > relayDedupWindow {
-		return false
-	}
-	if order, seq, ran := a.cmdQueue.Latest(action); ran && (orderStamp{rec.order, rec.seq}).before(orderStamp{order, seq}) {
-		return false
-	}
-	a.relay.mu.Lock()
-	delete(*m, key)
-	a.relay.mu.Unlock()
-	return true
-}
-
-// orderStamp places a command among those on its state, as the queue does.
-type orderStamp struct {
-	at  int64
-	seq uint64
-}
-
-func (s orderStamp) before(o orderStamp) bool {
-	return s.at < o.at || (s.at == o.at && s.seq < o.seq)
-}
-
-// writeDuplicate answers a command the engine took already, as the peer
-// relayed it, the way its handler answers success.
-func (a *API) writeDuplicate(action string, w http.ResponseWriter) {
-	switch action {
-	case "squeezeback_on", "squeezeback_off":
-		w.WriteHeader(http.StatusNoContent)
-	case "squeezeback_set":
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(a.squeeze.Snapshot())
-	default:
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(a.enrichedState())
-	}
 }
 
 // resolveRelayed returns body with what the engine fills in from its own
@@ -515,11 +389,11 @@ func (a *API) nextRelaySeq() uint64 {
 }
 
 // seqParity returns the parity of the seqs an engine labelled local mints:
-// that of its label's last byte, so engines a and b differ whether or not
-// each knows the other's label yet. Two labels of one parity, once the
-// peer's is known, take the order of the labels instead.
+// the other of its label's last byte's, even on engine a and odd on engine
+// b, whether or not each knows the other's label yet. Two labels of one
+// parity, once the peer's is known, take the order of the labels instead.
 func seqParity(local, peer string) uint64 {
-	own := func(label string) uint64 { return uint64(label[len(label)-1]) % 2 }
+	own := func(label string) uint64 { return 1 - uint64(label[len(label)-1])%2 }
 	p := own(local)
 	if peer != "" && peer != local && own(peer) == p {
 		if local > peer {
@@ -571,7 +445,7 @@ func (a *API) relayToPeer(job relayJob) {
 		r.backlog = keep
 	}
 	r.backlog = append(r.backlog, job)
-	if n := len(r.backlog) - relayBacklog; n > 0 {
+	if n := len(r.backlog) - cmp.Or(r.limit, relayBacklog); n > 0 {
 		slog.Warn("peer relay: backlog full, oldest commands not passed on", "dropped", n)
 		r.backlog = r.backlog[n:]
 	}
@@ -620,7 +494,6 @@ func (a *API) sendToPeer(job relayJob) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(relayHeader, a.peerPoller.LocalLabel())
 	if job.auth != "" {
 		req.Header.Set("Authorization", job.auth)
 	}
