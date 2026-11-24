@@ -24,8 +24,6 @@
 |---|---|---|---|
 | `source` | string | yes | registered source key to make program |
 
-A cut to the source on program changes nothing, unless a transition is taking it away: the cut then aborts the transition and the source stays on program.
-
 **Response 200:** full `ControlRoomState` (see [state-broadcast.md](../state-broadcast.md#schema)).
 
 **Errors:**
