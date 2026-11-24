@@ -231,16 +231,14 @@ export class DualConnectionManager {
 
 	/** The timing fields of a timed command for one engine. execute_at is 0,
 	 * run on arrival, unless timed execution is on and clock sync has
-	 * converged. order_at is the engines' clock as this page estimates it:
-	 * sent alike to both, it places the command among the others on its
-	 * state the same on each, whichever reaches an engine first. */
-	commandTiming(engineId?: EngineId): { execute_at: number; command_seq: number; order_at: number } {
+	 * converged. */
+	commandTiming(engineId?: EngineId): { execute_at: number; command_seq: number } {
 		const command_seq = this.nextCommandSeq();
-		// The engine reads both as integers.
-		const order_at = Math.round(this.clockSync.ptpNow());
-		if (!this.config.timedExecution || !this.clockSync.isConverged()) return { execute_at: 0, command_seq, order_at };
+		if (!this.config.timedExecution || !this.clockSync.isConverged()) return { execute_at: 0, command_seq };
 		const now = engineId ? this.clockSync.ptpNowForEngine(engineId) : this.clockSync.ptpNow();
-		return { execute_at: Math.round(now + this.clockSync.safetyMargin()), command_seq, order_at };
+		// The engine reads execute_at as an integer and runs a command whose
+		// execute_at it cannot read on arrival.
+		return { execute_at: Math.round(now + this.clockSync.safetyMargin()), command_seq };
 	}
 
 	/** A seq no other browser or earlier page load sends: an engine rejects

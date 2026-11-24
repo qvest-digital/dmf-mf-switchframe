@@ -36,7 +36,8 @@
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cutToPreview, autoTransitionToPreview } from '$lib/state/switch-actions';
 	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot, scte35Cue, scte35Return, podFire, playoutNext, playoutJump, playoutTakeManual, playoutReturnToAuto, startRecording, stopRecording, playoutPlaylist as fetchPlaylist, commandLatency as readCommandLatency } from '$lib/api/switch-api';
-	import { setEngineUrls, getEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider, setEmergencyEngineBUrl } from '$lib/api/base-url';
+	import { setEngineUrls, getEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider, setEmergencyEngineBUrl, setRelayTargetProvider } from '$lib/api/base-url';
+	import { RelayTargetPoller } from '$lib/transport/relay-target';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
 	import { notify } from '$lib/state/notifications.svelte';
@@ -126,13 +127,15 @@
 	let signInMessage = $state<string | null>(null);
 	let stopTokenRefresh: (() => void) | undefined;
 	let showOperatorRegistration = $state(false);
+	// The engine of a pair switching commands go to; see relay-target.ts.
+	const relayTarget = new RelayTargetPoller(() => getEngineUrls() ?? []);
 	let fastControlA = $state<FastControl | null>(null);
 	let fastControlB = $state<FastControl | null>(null);
 	let transportChangeCount = $state(0);
 	let fastControl = $derived.by(() => {
 		if (!fastControlA) return null;
-		if (fastControlB) return createDualFastControl([fastControlA, fastControlB]);
-		if (isDualEngine) return createDualFastControl([fastControlA]);
+		if (fastControlB) return createDualFastControl([fastControlA, fastControlB], ['A', 'B'], () => relayTarget.order());
+		if (isDualEngine) return createDualFastControl([fastControlA], ['A']);
 		return fastControlA;
 	});
 	// Debounced warning for FastControl write failures — at most once per second per message type.
@@ -780,6 +783,8 @@
 			notify('warning', msg);
 		});
 		setAuthoritativeEngineProvider(() => connectionManager.health.authoritative);
+		setRelayTargetProvider(() => relayTarget.order());
+		relayTarget.start();
 		setEmergencyEngineBUrl(engineBUrl);
 		setNonIdempotentFailureCallback((url, failedEngines) => {
 			divergenceLog.add({ type: 'mismatch', message: `Non-idempotent ${url} failed on ${failedEngines.join(', ')}` });
@@ -1681,6 +1686,8 @@
 		stopTokenRefresh?.();
 		setTokenRefusedHandler(null);
 		setTokenAcceptedHandler(null);
+		relayTarget.stop();
+		setRelayTargetProvider(null);
 		setEngineUrls(null);
 		setDualTimestampProvider(null);
 		setPartialFailureCallback(null);

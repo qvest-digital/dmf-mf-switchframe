@@ -23,10 +23,6 @@ describe('createDualFastControl', () => {
 		const b = createMockFastControl();
 		const dual = createDualFastControl([a, b]);
 
-		dual.sendTransitionPosition(0.5);
-		expect(a.sendTransitionPosition).toHaveBeenCalledWith(0.5);
-		expect(b.sendTransitionPosition).toHaveBeenCalledWith(0.5);
-
 		dual.sendDVESlotTransform(1, 0.1, 0.2, 0.5, 0.5, 45, 0.8);
 		expect(a.sendDVESlotTransform).toHaveBeenCalledWith(1, 0.1, 0.2, 0.5, 0.5, 45, 0.8);
 		expect(b.sendDVESlotTransform).toHaveBeenCalledWith(1, 0.1, 0.2, 0.5, 0.5, 45, 0.8);
@@ -34,6 +30,35 @@ describe('createDualFastControl', () => {
 		dual.sendDVESingleParam(2, 0x0004, 90);
 		expect(a.sendDVESingleParam).toHaveBeenCalledWith(2, 0x0004, 90);
 		expect(b.sendDVESingleParam).toHaveBeenCalledWith(2, 0x0004, 90);
+	});
+
+	// An engine passes a T-bar position it takes on to its peer, in order;
+	// sent to both, the two streams cross and one engine can see the T-bar
+	// step back and abort a throw.
+	it('sends a T-bar position to one engine, the relay target', () => {
+		const a = createMockFastControl();
+		const b = createMockFastControl();
+		let order = ['A', 'B'];
+		const dual = createDualFastControl([a, b], ['A', 'B'], () => order);
+
+		dual.sendTransitionPosition(0.5);
+		expect(a.sendTransitionPosition).toHaveBeenCalledWith(0.5);
+		expect(b.sendTransitionPosition).not.toHaveBeenCalled();
+
+		order = ['B', 'A'];
+		dual.sendTransitionPosition(0.6);
+		expect(b.sendTransitionPosition).toHaveBeenCalledWith(0.6);
+		expect(a.sendTransitionPosition).toHaveBeenCalledTimes(1);
+	});
+
+	it('sends a T-bar position to the next engine when the target cannot take it', () => {
+		const a = createMockFastControl();
+		const b = createMockFastControl();
+		vi.mocked(a.sendTransitionPosition).mockImplementation(() => { throw new Error('closed'); });
+		const dual = createDualFastControl([a, b], ['A', 'B']);
+
+		dual.sendTransitionPosition(0.5);
+		expect(b.sendTransitionPosition).toHaveBeenCalledWith(0.5);
 	});
 
 	it('works with single control (1 mock)', () => {

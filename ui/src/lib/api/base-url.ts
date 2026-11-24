@@ -112,6 +112,37 @@ export function isNonIdempotent(path: string): boolean {
 	return NON_IDEMPOTENT_PATTERNS.some(re => re.test(path));
 }
 
+// ── Switching commands one engine passes on to the other ──
+
+// An engine of a redundant pair passes these on to its peer when they name
+// no command_seq, so the page sends each to one engine (see relay-target.ts).
+const RELAYED_PATHS = new Set([
+	'/api/switch/cut', '/api/switch/preview', '/api/switch/transition', '/api/switch/transition/position',
+	'/api/squeezeback', '/api/squeezeback/on', '/api/squeezeback/off',
+]);
+
+export function isRelayedPath(path: string): boolean {
+	return RELAYED_PATHS.has(path);
+}
+
+let relayTargetProvider: (() => string[]) | null = null;
+
+/** Sets what orders the engines a switching command is sent to, the first
+ * tried first. */
+export function setRelayTargetProvider(provider: (() => string[]) | null): void {
+	relayTargetProvider = provider;
+}
+
+/** The engines in the order a switching command is sent to them. */
+export function relayTargetOrder<E extends { id: string }>(engines: E[]): E[] {
+	const order = relayTargetProvider?.() ?? [];
+	const rank = (e: E) => {
+		const i = order.indexOf(e.id);
+		return i < 0 ? order.length : i;
+	};
+	return [...engines].sort((a, b) => rank(a) - rank(b));
+}
+
 // ── Authoritative engine provider for GET routing ──
 
 let authoritativeEngineProvider: (() => string | null) | null = null;

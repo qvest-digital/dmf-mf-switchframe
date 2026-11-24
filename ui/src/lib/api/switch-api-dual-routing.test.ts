@@ -10,9 +10,9 @@
  * - Error handling preserves HTTP status codes
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { setEngineUrls, getEngineUrls, setApiBaseUrl, setExpectDualEngine, setOnNewEngineDiscovered, isNonIdempotent, isTimedPath } from './base-url';
+import { setEngineUrls, getEngineUrls, setApiBaseUrl, setExpectDualEngine, setOnNewEngineDiscovered, isNonIdempotent, isTimedPath, setRelayTargetProvider } from './base-url';
 import {
-	cut, setPreview, getState, fadeToBlack,
+	cut, setLevel, setPreview, getState, fadeToBlack, setTransitionPosition, squeezebackOn,
 	setMasterLevel, setMute, startTransition, runMacro, setSourceKey,
 	setFormat, setEncoderBackend,
 	setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, authHeaders,
@@ -86,6 +86,7 @@ describe('switch-api dual-engine routing', () => {
 
 	afterEach(() => {
 		vi.unstubAllGlobals();
+		setRelayTargetProvider(null);
 		setEngineUrls(null);
 		setDualTimestampProvider(null);
 		setPartialFailureCallback(null);
@@ -101,16 +102,16 @@ describe('switch-api dual-engine routing', () => {
 
 	describe('single-engine mode', () => {
 		it('routes to same-origin when no engines configured', async () => {
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			expect(fetchCalls).toHaveLength(1);
-			expect(fetchCalls[0].url).toBe('/api/switch/cut');
+			expect(fetchCalls[0].url).toBe('/api/audio/level');
 		});
 
 		it('does not add PTP timestamps in single-engine mode', async () => {
 			setDualTimestampProvider(() => ({ execute_at: 12345, command_seq: 1 }));
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			const body = JSON.parse(fetchCalls[0].opts.body as string);
 			expect(body.execute_at).toBeUndefined();
@@ -128,16 +129,16 @@ describe('switch-api dual-engine routing', () => {
 		});
 
 		it('fans out POST mutations to both engines', async () => {
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			expect(fetchCalls).toHaveLength(2);
 			const urls = fetchCalls.map(c => c.url);
-			expect(urls).toContain('https://engine-a.example.com/api/switch/cut');
-			expect(urls).toContain('https://engine-b.example.com/api/switch/cut');
+			expect(urls).toContain('https://engine-a.example.com/api/audio/level');
+			expect(urls).toContain('https://engine-b.example.com/api/audio/level');
 		});
 
 		it('both engines receive identical request bodies', async () => {
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			const bodyA = JSON.parse(fetchCalls[0].opts.body as string);
 			const bodyB = JSON.parse(fetchCalls[1].opts.body as string);
@@ -186,7 +187,7 @@ describe('switch-api dual-engine routing', () => {
 		});
 
 		it('returns first successful mutation response when both succeed', async () => {
-			const state = await cut('cam1');
+			const state = await setLevel('cam1', 0);
 			expect(state).toBeDefined();
 			expect(state.programSource).toBe('cam1');
 		});
@@ -201,7 +202,7 @@ describe('switch-api dual-engine routing', () => {
 			});
 
 			// Should succeed because engine A accepted
-			const state = await cut('cam1');
+			const state = await setLevel('cam1', 0);
 			expect(state.programSource).toBe('cam1');
 		});
 
@@ -211,7 +212,7 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(errorResponse(500, 'engine down'));
 			});
 
-			await expect(cut('cam1')).rejects.toThrow();
+			await expect(setLevel('cam1', 0)).rejects.toThrow();
 		});
 
 		it('throws when all engines are unreachable on mutation', async () => {
@@ -220,7 +221,7 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.reject(new Error('network error'));
 			});
 
-			await expect(cut('cam1')).rejects.toThrow('All engines unreachable');
+			await expect(setLevel('cam1', 0)).rejects.toThrow('All engines unreachable');
 		});
 
 		it('throws when all engines fail on GET (both network error)', async () => {
@@ -276,7 +277,7 @@ describe('switch-api dual-engine routing', () => {
 
 		it('still aborts an ordinary command after the command timeout', async () => {
 			behaviour = { [A]: { after: 15_000 }, [B]: { after: 15_000 } };
-			const done = cut('cam1');
+			const done = setLevel('cam1', 0);
 			const failed = expect(done).rejects.toThrow('All engines unreachable');
 			await vi.advanceTimersByTimeAsync(3_000);
 			await failed;
@@ -322,7 +323,7 @@ describe('switch-api dual-engine routing', () => {
 			// Engine B now fails three ordinary commands and its circuit opens.
 			behaviour[B] = { after: 0, res: () => errorResponse(500, 'down') };
 			for (let i = 0; i < 3; i++) {
-				const c = cut('cam1');
+				const c = setLevel('cam1', 0);
 				await vi.advanceTimersByTimeAsync(1);
 				await c;
 			}
@@ -331,10 +332,10 @@ describe('switch-api dual-engine routing', () => {
 
 			// The load's late success must not reopen B to commands.
 			fetchCalls = [];
-			const c = cut('cam1');
+			const c = setLevel('cam1', 0);
 			await vi.advanceTimersByTimeAsync(1);
 			await c;
-			expect(fetchCalls.map(f => f.url)).toEqual([`${A}/api/switch/cut`]);
+			expect(fetchCalls.map(f => f.url)).toEqual([`${A}/api/audio/level`]);
 		});
 	});
 
@@ -373,11 +374,11 @@ describe('switch-api dual-engine routing', () => {
 
 		it('averages each engine\'s round trip separately', async () => {
 			delay = { [A]: 10, [B]: 40 };
-			const first = cut('cam1');
+			const first = setLevel('cam1', 0);
 			await vi.advanceTimersByTimeAsync(40);
 			await first;
 			delay = { [A]: 30, [B]: 60 };
-			const second = cut('cam2');
+			const second = setLevel('cam2', 0);
 			await vi.advanceTimersByTimeAsync(60);
 			await second;
 
@@ -388,7 +389,7 @@ describe('switch-api dual-engine routing', () => {
 			delay = { [A]: 10, [B]: 10 };
 			failB = true;
 			setPartialFailureNotify(() => {});
-			const done = cut('cam1');
+			const done = setLevel('cam1', 0);
 			await vi.advanceTimersByTimeAsync(10);
 			await done;
 
@@ -400,11 +401,11 @@ describe('switch-api dual-engine routing', () => {
 			// round trip it had while healthy.
 			setPartialFailureNotify(() => {});
 			delay = { [A]: 10, [B]: 10 };
-			const first = cut('cam1');
+			const first = setLevel('cam1', 0);
 			await vi.advanceTimersByTimeAsync(10);
 			await first;
 			failB = true;
-			const second = cut('cam2');
+			const second = setLevel('cam2', 0);
 			await vi.advanceTimersByTimeAsync(10);
 			await second;
 
@@ -413,7 +414,7 @@ describe('switch-api dual-engine routing', () => {
 
 		it('starts afresh for an engine re-provisioned at a new URL', async () => {
 			delay = { [A]: 10, [B]: 10 };
-			const done = cut('cam1');
+			const done = setLevel('cam1', 0);
 			await vi.advanceTimersByTimeAsync(10);
 			await done;
 
@@ -424,12 +425,12 @@ describe('switch-api dual-engine routing', () => {
 
 		it('averages the last 20 commands', async () => {
 			delay = { [A]: 1000, [B]: 0 };
-			const slow = cut('cam1');
+			const slow = setLevel('cam1', 0);
 			await vi.advanceTimersByTimeAsync(1000);
 			await slow;
 			delay = { [A]: 10, [B]: 0 };
 			for (let i = 0; i < 20; i++) {
-				const done = cut('cam1');
+				const done = setLevel('cam1', 0);
 				await vi.advanceTimersByTimeAsync(10);
 				await done;
 			}
@@ -444,6 +445,73 @@ describe('switch-api dual-engine routing', () => {
 			await done;
 
 			expect(commandLatency()).toEqual({ A: null, B: null });
+		});
+	});
+
+	// An engine of a pair passes a switching command it takes on to its
+	// peer; sent to both, each would run it twice.
+	describe('switching commands go to one engine', () => {
+		beforeEach(() => {
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+		});
+
+		it('sends a cut, preview, transition, T-bar move and squeezeback move to one engine', async () => {
+			await cut('cam1');
+			await setPreview('cam2');
+			await startTransition('cam2', 'mix', 1000);
+			await setTransitionPosition(0.5);
+			await squeezebackOn();
+			expect(fetchCalls.map((c) => c.url)).toEqual([
+				'https://engine-a.example.com/api/switch/cut',
+				'https://engine-a.example.com/api/switch/preview',
+				'https://engine-a.example.com/api/switch/transition',
+				'https://engine-a.example.com/api/switch/transition/position',
+				'https://engine-a.example.com/api/squeezeback/on',
+			]);
+		});
+
+		it('names no command_seq, which marks a command as sent to both', async () => {
+			setDualTimestampProvider(() => ({ execute_at: 0, command_seq: 7 }));
+			await cut('cam1');
+			const body = JSON.parse(fetchCalls[0].opts.body as string);
+			expect(body).toEqual({ source: 'cam1' });
+		});
+
+		it('goes to the engine the relay target names first', async () => {
+			setRelayTargetProvider(() => ['B', 'A']);
+			await cut('cam1');
+			expect(fetchCalls.map((c) => c.url)).toEqual(['https://engine-b.example.com/api/switch/cut']);
+		});
+
+		it('fails over to the other engine when the target cannot be reached', async () => {
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) return Promise.reject(new TypeError('Failed to fetch'));
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1', seq: 1 }));
+			});
+			const st = await cut('cam1');
+			expect(st.programSource).toBe('cam1');
+			expect(fetchCalls.map((c) => c.url)).toEqual([
+				'https://engine-a.example.com/api/switch/cut',
+				'https://engine-b.example.com/api/switch/cut',
+			]);
+		});
+
+		it('does not retry on the other engine when the target refuses', async () => {
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(errorResponse(409, 'a later command on its state has run'));
+			});
+			await expect(cut('cam1')).rejects.toThrow();
+			expect(fetchCalls).toHaveLength(1);
+		});
+
+		it('still sends other commands to both engines', async () => {
+			await setLevel('cam1', -3);
+			expect(fetchCalls).toHaveLength(2);
 		});
 	});
 
@@ -462,7 +530,7 @@ describe('switch-api dual-engine routing', () => {
 				command_seq: 42,
 			}));
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			// Both engines should get the timestamp
 			for (const call of fetchCalls) {
@@ -478,7 +546,7 @@ describe('switch-api dual-engine routing', () => {
 			// redundancy pane and the reconciler had nothing to compare.
 			setDualTimestampProvider(() => ({ execute_at: 0, command_seq: 7 }));
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			for (const call of fetchCalls) {
 				const body = JSON.parse(call.opts.body as string);
@@ -486,22 +554,10 @@ describe('switch-api dual-engine routing', () => {
 			}
 		});
 
-		// The engines place a command among the others on its state by
-		// order_at; one stamp per engine would place it differently on each.
-		it('sends one order_at to both engines', async () => {
-			let n = 0;
-			setDualTimestampProvider(() => ({ execute_at: 0, command_seq: 9, order_at: 1_000 + n++ }));
-
-			await cut('cam1');
-
-			const stamps = fetchCalls.map((c) => JSON.parse(c.opts.body as string).order_at);
-			expect(stamps).toEqual([1_000, 1_000]);
-		});
-
 		it('runs a command with an implausible execute_at on arrival', async () => {
 			setDualTimestampProvider(() => ({ execute_at: Date.now() * 1000 + 60_000_000, command_seq: 8 }));
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			const body = JSON.parse(fetchCalls[0].opts.body as string);
 			expect(body).toMatchObject({ execute_at: 0, command_seq: 8 });
@@ -516,7 +572,7 @@ describe('switch-api dual-engine routing', () => {
 				command_seq: ++seq,
 			}));
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			const seqs = fetchCalls.map(c => JSON.parse(c.opts.body as string).command_seq);
 			expect(seqs).toEqual([1, 1]);
@@ -597,7 +653,7 @@ describe('switch-api dual-engine routing', () => {
 
 		it('does NOT inject when no timestamp provider set', async () => {
 			setDualTimestampProvider(null);
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			const body = JSON.parse(fetchCalls[0].opts.body as string);
 			expect(body.execute_at).toBeUndefined();
@@ -642,7 +698,7 @@ describe('switch-api dual-engine routing', () => {
 
 		it('string bodies are naturally shareable (no clone needed)', async () => {
 			// JSON string bodies are immutable — both engines can use the same reference
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			// Both engines should have received string bodies
 			expect(typeof fetchCalls[0].opts.body).toBe('string');
@@ -685,7 +741,7 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			const state = await cut('cam1');
+			const state = await setLevel('cam1', 0);
 			expect(state.programSource).toBe('cam1');
 		});
 
@@ -719,7 +775,7 @@ describe('switch-api dual-engine routing', () => {
 		it('includes auth token in dual-engine requests', async () => {
 			localStorage.setItem('switchframe_operator_token', 'test-token-123');
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			for (const call of fetchCalls) {
 				const headers = call.opts.headers as Record<string, string>;
@@ -730,7 +786,7 @@ describe('switch-api dual-engine routing', () => {
 		it('omits auth header when no token set', async () => {
 			localStorage.removeItem('switchframe_operator_token');
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			for (const call of fetchCalls) {
 				const headers = call.opts.headers as Record<string, string>;
@@ -767,9 +823,9 @@ describe('switch-api dual-engine routing', () => {
 			setExpectDualEngine(true);
 
 			// Send a mutation — goes to same-origin (engine A) immediately
-			await cut('cam1');
+			await setLevel('cam1', 0);
 			expect(fetchCalls).toHaveLength(1);
-			expect(fetchCalls[0].url).toBe('/api/switch/cut');
+			expect(fetchCalls[0].url).toBe('/api/audio/level');
 
 			// Now engine B is discovered
 			fetchCalls = [];
@@ -789,7 +845,7 @@ describe('switch-api dual-engine routing', () => {
 			setOnNewEngineDiscovered(cb);
 			setEngineUrls(null);
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			// Adding engines without expectDualEngine — callback still fires for new engines
 			// but no replay happens
@@ -834,7 +890,7 @@ describe('switch-api dual-engine routing', () => {
 			]);
 
 			fetchCalls = [];
-			await cut('cam2');
+			await setLevel('cam2', 0);
 
 			const engineACalls = fetchCalls.filter(c => c.url.includes('engine-a'));
 			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
@@ -860,13 +916,13 @@ describe('switch-api dual-engine routing', () => {
 			});
 
 			// T=0: issue cut while single-engine
-			const firstCut = cut('cam1');
+			const firstCut = setLevel('cam1', 0);
 			await preDiscoveryFetchStarted;
 
 			// Snapshot the fetch calls made before discovery
 			const preDiscoveryCalls = fetchCalls.length;
 			expect(preDiscoveryCalls).toBe(1);
-			expect(fetchCalls[0].url).toBe('/api/switch/cut');
+			expect(fetchCalls[0].url).toBe('/api/audio/level');
 
 			// T=mid-await: discover engine B
 			setEngineUrls([
@@ -891,9 +947,9 @@ describe('switch-api dual-engine routing', () => {
 			setEngineUrls(null);
 
 			// First cut in single mode
-			await cut('cam1');
+			await setLevel('cam1', 0);
 			expect(fetchCalls).toHaveLength(1);
-			expect(fetchCalls[0].url).toBe('/api/switch/cut');
+			expect(fetchCalls[0].url).toBe('/api/audio/level');
 
 			// Discover engine B
 			fetchCalls = [];
@@ -903,7 +959,7 @@ describe('switch-api dual-engine routing', () => {
 			]);
 
 			// Post-discovery cut fans out to both
-			await cut('cam2');
+			await setLevel('cam2', 0);
 			const engineACalls = fetchCalls.filter(c => c.url.includes('engine-a'));
 			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
 			expect(engineACalls).toHaveLength(1);
@@ -933,7 +989,7 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 			expect(onPartialFailure).toHaveBeenCalledTimes(1);
 		});
 
@@ -949,7 +1005,7 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 			expect(onPartialFailure).toHaveBeenCalledTimes(1);
 		});
 
@@ -957,7 +1013,7 @@ describe('switch-api dual-engine routing', () => {
 			const onPartialFailure = vi.fn();
 			setPartialFailureCallback(onPartialFailure);
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 			expect(onPartialFailure).not.toHaveBeenCalled();
 		});
 
@@ -970,7 +1026,7 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(errorResponse(500, 'engine down'));
 			});
 
-			await expect(cut('cam1')).rejects.toThrow();
+			await expect(setLevel('cam1', 0)).rejects.toThrow();
 			expect(onPartialFailure).not.toHaveBeenCalled();
 		});
 
@@ -995,7 +1051,7 @@ describe('switch-api dual-engine routing', () => {
 			});
 
 			// Should not throw even though there's a partial failure
-			const state = await cut('cam1');
+			const state = await setLevel('cam1', 0);
 			expect(state.programSource).toBe('cam1');
 		});
 
@@ -1011,7 +1067,7 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 			expect(warnSpy).toHaveBeenCalledWith(
 				expect.stringContaining('[dual-api] Partial failure')
 			);
@@ -1047,17 +1103,17 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			// Initial fan-out: 2 calls (A success, B fail)
-			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 			expect(initialCalls).toHaveLength(2);
 
 			// Advance timer to trigger retry
 			await vi.advanceTimersByTimeAsync(500);
 
 			// Retry: 1 additional call to engine-b only
-			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 			expect(allCutCalls).toHaveLength(3);
 			expect(allCutCalls[2].url).toContain('engine-b');
 		});
@@ -1073,31 +1129,31 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			// Initial fan-out: 2 calls attempted (A success, B rejected but still recorded by mock)
-			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 			expect(initialCalls).toHaveLength(2);
 
 			// Advance timer to trigger retry
 			await vi.advanceTimersByTimeAsync(500);
 
 			// Retry call to engine-b (third call)
-			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 			expect(allCutCalls).toHaveLength(3);
 			expect(allCutCalls[2].url).toContain('engine-b');
 		});
 
 		it('does not retry when both engines succeed', async () => {
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
-			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 			expect(initialCalls).toHaveLength(2);
 
 			await vi.advanceTimersByTimeAsync(500);
 
 			// No additional calls
-			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 			expect(allCutCalls).toHaveLength(2);
 		});
 
@@ -1107,15 +1163,15 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(errorResponse(500, 'engine down'));
 			});
 
-			await expect(cut('cam1')).rejects.toThrow();
+			await expect(setLevel('cam1', 0)).rejects.toThrow();
 
-			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 			expect(initialCalls).toHaveLength(2);
 
 			await vi.advanceTimersByTimeAsync(500);
 
 			// No retry when all engines failed
-			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 			expect(allCutCalls).toHaveLength(2);
 		});
 
@@ -1129,7 +1185,7 @@ describe('switch-api dual-engine routing', () => {
 			});
 
 			// Initial call succeeds (A ok, B fail)
-			const result = await cut('cam1');
+			const result = await setLevel('cam1', 0);
 			expect(result.programSource).toBe('cam1');
 
 			// Advance timer — retry also fails but should not throw
@@ -1150,7 +1206,7 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 			expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('retrying'));
 		});
 
@@ -1171,14 +1227,14 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			// Record timestamp call count after initial fan-out
 			const initialTimestampCalls = timestampCallCount;
 			expect(initialTimestampCalls).toBe(2); // one per engine
 
 			// Initial fan-out: 2 calls
-			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 			expect(initialCalls).toHaveLength(2);
 
 			// Capture the body sent to engine B initially
@@ -1191,7 +1247,7 @@ describe('switch-api dual-engine routing', () => {
 			expect(timestampCallCount).toBe(initialTimestampCalls);
 
 			// Retry body should match original
-			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 			expect(allCutCalls).toHaveLength(3);
 			const retryCall = allCutCalls[2];
 			expect(retryCall.opts.body).toBe(originalBody);
@@ -1202,22 +1258,22 @@ describe('switch-api dual-engine routing', () => {
 		it('only retries the failed engine, not the successful one', async () => {
 			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
 				fetchCalls.push({ url, opts: opts ?? {} });
-				if (url.includes('engine-a') && url.includes('/api/switch/cut')) {
+				if (url.includes('engine-a') && url.includes('/api/audio/level')) {
 					return Promise.resolve(errorResponse(500, 'engine A crashed'));
 				}
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 
 			// Initial: 2 calls
-			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 			expect(initialCalls).toHaveLength(2);
 
 			await vi.advanceTimersByTimeAsync(500);
 
 			// Retry only engine-a
-			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 			expect(allCutCalls).toHaveLength(3);
 			expect(allCutCalls[2].url).toContain('engine-a');
 		});
@@ -1363,12 +1419,12 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 			// Mutations always fan out to all available engines
 			expect(fetchCalls).toHaveLength(2);
 			const urls = fetchCalls.map(c => c.url);
-			expect(urls).toContain('https://engine-a.example.com/api/switch/cut');
-			expect(urls).toContain('https://engine-b.example.com/api/switch/cut');
+			expect(urls).toContain('https://engine-a.example.com/api/audio/level');
+			expect(urls).toContain('https://engine-b.example.com/api/audio/level');
 		});
 
 		it('sticky preference survives across multiple GET requests within TTL', async () => {
@@ -1473,7 +1529,7 @@ describe('switch-api dual-engine routing', () => {
 
 			// Send 5 mutations through dualRequest to trip the circuit breaker for engine A
 			for (let i = 0; i < 5; i++) {
-				await cut('cam1');
+				await setLevel('cam1', 0);
 			}
 
 			// Now engine A's circuit should be open. Clear tracking.
@@ -1533,7 +1589,7 @@ describe('switch-api dual-engine routing', () => {
 			});
 
 			for (let i = 0; i < 5; i++) {
-				try { await cut('cam1'); } catch { /* expected */ }
+				try { await setLevel('cam1', 0); } catch { /* expected */ }
 			}
 
 			// Both circuits should be open now. Clear tracking.
@@ -1631,7 +1687,7 @@ describe('switch-api dual-engine routing', () => {
 
 			// Send 6 mutations — engine A returns 401 each time
 			for (let i = 0; i < 6; i++) {
-				await cut('cam1');
+				await setLevel('cam1', 0);
 			}
 
 			// Engine A should still be called on every mutation (circuit NOT open)
@@ -1761,7 +1817,7 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 			expect(notifySpy).toHaveBeenCalledTimes(1);
 			expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('Engine'));
 		});
@@ -1778,7 +1834,7 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 			expect(notifySpy).toHaveBeenCalledTimes(1);
 			expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('Engine'));
 		});
@@ -1795,7 +1851,7 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 			expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('B'));
 		});
 
@@ -1829,8 +1885,8 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
-			expect(notifySpy).toHaveBeenCalledWith('POST /api/switch/cut failed on Engine B (HTTP 500) - retrying');
+			await setLevel('cam1', 0);
+			expect(notifySpy).toHaveBeenCalledWith('POST /api/audio/level failed on Engine B (HTTP 500) - retrying');
 		});
 
 		it('says why even when the rejection carries no message', async () => {
@@ -1845,15 +1901,15 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 			});
 
-			await cut('cam1');
-			expect(notifySpy).toHaveBeenCalledWith('POST /api/switch/cut failed on Engine B (network error) - retrying');
+			await setLevel('cam1', 0);
+			expect(notifySpy).toHaveBeenCalledWith('POST /api/audio/level failed on Engine B (network error) - retrying');
 		});
 
 		it('does NOT call notify when both engines succeed', async () => {
 			const notifySpy = vi.fn();
 			setPartialFailureNotify(notifySpy);
 
-			await cut('cam1');
+			await setLevel('cam1', 0);
 			expect(notifySpy).not.toHaveBeenCalled();
 		});
 
@@ -1866,7 +1922,7 @@ describe('switch-api dual-engine routing', () => {
 				return Promise.resolve(errorResponse(500, 'engine down'));
 			});
 
-			await expect(cut('cam1')).rejects.toThrow();
+			await expect(setLevel('cam1', 0)).rejects.toThrow();
 			expect(notifySpy).not.toHaveBeenCalled();
 		});
 
@@ -1882,7 +1938,7 @@ describe('switch-api dual-engine routing', () => {
 			});
 
 			// Should not throw
-			const state = await cut('cam1');
+			const state = await setLevel('cam1', 0);
 			expect(state.programSource).toBe('cam1');
 		});
 	});
@@ -1912,7 +1968,7 @@ describe('switch-api dual-engine routing', () => {
 		});
 
 		it('isNonIdempotent returns false for idempotent paths', () => {
-			expect(isNonIdempotent('/api/switch/cut')).toBe(false);
+			expect(isNonIdempotent('/api/audio/level')).toBe(false);
 			expect(isNonIdempotent('/api/switch/preview')).toBe(false);
 			expect(isNonIdempotent('/api/audio/master')).toBe(false);
 			expect(isNonIdempotent('/api/graphics/1/on')).toBe(false);
@@ -1940,15 +1996,15 @@ describe('switch-api dual-engine routing', () => {
 					return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 				});
 
-				await cut('cam1'); // /api/switch/cut is idempotent
+				await setLevel('cam1', 0); // /api/audio/level is idempotent
 
-				const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+				const initialCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 				expect(initialCalls).toHaveLength(2);
 
 				await vi.advanceTimersByTimeAsync(500);
 
 				// Should have retried engine B
-				const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+				const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/audio/level'));
 				expect(allCutCalls).toHaveLength(3);
 				expect(allCutCalls[2].url).toContain('engine-b');
 			});
@@ -2042,7 +2098,7 @@ describe('switch-api dual-engine routing', () => {
 					return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
 				});
 
-				await cut('cam1');
+				await setLevel('cam1', 0);
 				expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('retrying'));
 			});
 		});
@@ -2084,7 +2140,7 @@ describe('switch-api dual-engine routing', () => {
 		});
 
 		it('existing timed paths still work', () => {
-			expect(isTimedPath('/api/switch/cut')).toBe(true);
+			expect(isTimedPath('/api/audio/level')).toBe(true);
 			expect(isTimedPath('/api/graphics/1/on')).toBe(true);
 			expect(isTimedPath('/api/audio/master')).toBe(true);
 			expect(isTimedPath('/api/macros/my-macro/run')).toBe(true);

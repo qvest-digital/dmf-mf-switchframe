@@ -12,12 +12,27 @@ function safeCall(controls: FastControl[], fn: (c: FastControl) => void): void {
 
 /**
  * Creates a FastControl that fans out every call to all provided controls.
- * Used in dual-engine mode to send datagrams to both engines simultaneously.
+ * Used in dual-engine mode to send datagrams to both engines simultaneously,
+ * except a T-bar position: an engine passes that on to its peer, in order,
+ * so it goes to one engine, the first of order() (engine ids, as ids gives
+ * the controls'), or, when that one cannot take it, the next.
  */
-export function createDualFastControl(controls: FastControl[]): FastControl {
+export function createDualFastControl(
+	controls: FastControl[],
+	ids: string[] = [],
+	order: () => string[] = () => ids,
+): FastControl {
 	return {
 		sendTransitionPosition(position: number) {
-			safeCall(controls, c => c.sendTransitionPosition(position));
+			const ranked = order()
+				.map((id) => controls[ids.indexOf(id)])
+				.filter((c): c is FastControl => c !== undefined);
+			for (const c of [...ranked, ...controls.filter((c) => !ranked.includes(c))]) {
+				try {
+					c.sendTransitionPosition(position);
+					return;
+				} catch { /* engine down, try the next */ }
+			}
 		},
 
 		sendGraphicsLayerPosition(layerId: number, x: number, y: number, w: number, h: number) {

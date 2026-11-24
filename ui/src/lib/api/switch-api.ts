@@ -2,7 +2,7 @@ import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SR
 import { version } from '$app/environment';
 import { notify } from '$lib/state/notifications.svelte';
 import { trackChange } from '$lib/util/activity';
-import { resolveApiUrl, getEngineUrls, setFlushTimestampInjector, isNonIdempotent, isTimedPath, getAuthoritativeEngine, getEmergencyEngineBUrl, type EngineEndpoint } from './base-url';
+import { resolveApiUrl, getEngineUrls, setFlushTimestampInjector, isNonIdempotent, isTimedPath, isRelayedPath, relayTargetOrder, getAuthoritativeEngine, getEmergencyEngineBUrl, type EngineEndpoint } from './base-url';
 import { isTokenRefused, tokenAcceptedBy, tokenRefusedBy, tokenReplaced } from './auth-gate';
 
 export class SwitchApiError extends Error {
@@ -344,7 +344,7 @@ export function setNonIdempotentFailureCallback(cb: ((url: string, failedEngines
 
 // ── Dual-engine PTP timestamp injection ──
 
-type CommandTiming = { execute_at: number; command_seq: number; order_at?: number };
+type CommandTiming = { execute_at: number; command_seq: number };
 
 let dualTimestampProvider: ((engineId?: string) => CommandTiming) | null = null;
 
@@ -407,6 +407,8 @@ async function fanOutMutation(
 	opts: RequestInit,
 	engines: EngineEndpoint[],
 ): Promise<FanOutResult> {
+	if (engines.length > 1 && isRelayedPath(url)) return sendToOne(url, opts, engines);
+
 	// Filter out engines with open circuits for mutations
 	let availableEngines = engines.filter(e => !isCircuitOpen(e.url));
 	if (availableEngines.length === 0) {
@@ -433,7 +435,6 @@ async function fanOutMutation(
 	// One command carries one seq on every engine: the reconciler reads a seq
 	// that differs between engines as one engine having missed a command.
 	let commandSeq: number | undefined;
-	let orderAt: number | undefined;
 	for (let i = 0; i < availableEngines.length; i++) {
 		const engine = availableEngines[i];
 		const engineBody = bodies[i];
@@ -441,16 +442,12 @@ async function fanOutMutation(
 			try {
 				const ts = dualTimestampProvider(engine.id);
 				commandSeq ??= ts.command_seq;
-				orderAt ??= ts.order_at;
 				const nowUs = Date.now() * 1000;
 				// execute_at 0 runs the command on arrival; the engine still
 				// records its seq, which the reconciler compares.
 				const plausible = ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000;
 				const parsed = JSON.parse(engineBody as string);
-				bodies[i] = JSON.stringify({
-					...parsed, execute_at: plausible ? ts.execute_at : 0, command_seq: commandSeq,
-					...(orderAt !== undefined ? { order_at: orderAt } : {}),
-				});
+				bodies[i] = JSON.stringify({ ...parsed, execute_at: plausible ? ts.execute_at : 0, command_seq: commandSeq });
 			} catch { /* send without timestamps */ }
 		}
 	}
@@ -492,6 +489,49 @@ async function fanOutMutation(
 	}
 
 	return accountFanOut(await all, availableEngines, url, opts, bodies, startedAt, settledAt);
+}
+
+/** Sends a switching command to one engine of the pair, which passes it on
+ * to the other: the first by the relay target order whose circuit is
+ * closed, then, when it cannot be reached, the next. An engine that answers,
+ * whatever the status, is not retried on the other: it took or refused the
+ * command. No command_seq is sent, as a command naming one is taken as sent
+ * to both and not passed on; an execute_at is, when timed execution gives
+ * one, and the engine passes it on for both to run the command then. */
+async function sendToOne(url: string, opts: RequestInit, engines: EngineEndpoint[]): Promise<FanOutResult> {
+	const ordered = relayTargetOrder(engines);
+	const open = ordered.filter((e) => !isCircuitOpen(e.url));
+	const tries = open.length > 0 ? open : ordered;
+	const results: PromiseSettledResult<Response>[] = [];
+	for (const engine of tries) {
+		let body = opts.body;
+		if (dualTimestampProvider && typeof body === 'string') {
+			try {
+				const ts = dualTimestampProvider(engine.id);
+				const nowUs = Date.now() * 1000;
+				if (ts.execute_at > nowUs && ts.execute_at < nowUs + 5_000_000) {
+					body = JSON.stringify({ ...JSON.parse(body), execute_at: ts.execute_at });
+				}
+			} catch { /* send as is */ }
+		}
+		const startedAt = Date.now();
+		try {
+			const res = await fetchWithTimeout(`${engine.url}${url}`, { ...opts, body }, engineFetchTimeoutMs(url));
+			if (res.ok) {
+				recordSuccess(engine.url, startedAt);
+				recordCommandLatency(engine.url, Date.now() - startedAt);
+			} else if (res.status >= 500) {
+				recordFailure(engine.url);
+			}
+			const r: PromiseFulfilledResult<Response> = { status: 'fulfilled', value: res };
+			results.push(r);
+			return { results, successful: res.ok ? [r] : [], failed: res.ok ? [] : [r], availableEngines: [engine] };
+		} catch (reason) {
+			recordFailure(engine.url);
+			results.push({ status: 'rejected', reason });
+		}
+	}
+	return { results, successful: [], failed: results as PromiseRejectedResult[], availableEngines: tries };
 }
 
 /** Names each engine a fan-out failed on and why, such as
