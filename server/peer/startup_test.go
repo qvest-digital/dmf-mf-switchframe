@@ -147,6 +147,12 @@ func (e *fakeEngine) Cut(_ context.Context, source string) error {
 	return nil
 }
 
+func (e *fakeEngine) HasSource(source string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.known == nil || e.known[source]
+}
+
 func (e *fakeEngine) GoLive(_ context.Context) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -177,6 +183,10 @@ func startEngine(t *testing.T, e *fakeEngine, peerURL string) <-chan struct{} {
 }
 
 func startEngineWith(t *testing.T, e *fakeEngine, peerURL string, poll time.Duration, failures int, leaderWait time.Duration) <-chan struct{} {
+	return startEngineConfig(t, e, peerURL, poll, failures, StartupConfig{LeaderWait: leaderWait})
+}
+
+func startEngineConfig(t *testing.T, e *fakeEngine, peerURL string, poll time.Duration, failures int, cfg StartupConfig) <-chan struct{} {
 	p := NewHealthPoller(peerURL,
 		WithLocalIdentity(e.label),
 		WithPollInterval(poll),
@@ -189,7 +199,8 @@ func startEngineWith(t *testing.T, e *fakeEngine, peerURL string, poll time.Dura
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		RunStartup(ctx, p, e, StartupConfig{Token: e.token, Tick: 5 * time.Millisecond, LeaderWait: leaderWait})
+		cfg.Token, cfg.Tick = e.token, 5*time.Millisecond
+		RunStartup(ctx, p, e, cfg)
 	}()
 	return done
 }
@@ -416,6 +427,53 @@ func TestRunStartup_PeerSourceMissingHereGivesUp(t *testing.T) {
 	})
 	waitDone(t, startEngine(t, returning, leader.srv.URL))
 
+	returning.get(func(e *fakeEngine) {
+		assert.Len(t, e.applied, maxStartupFollows)
+		assert.Equal(t, "mxl:cam1", e.program)
+	})
+}
+
+// An engine restarted while the peer's program input is still opening here
+// waits for it and comes back on the peer's program, rather than running
+// out of follows and going live on a source of its own.
+func TestRunStartup_WaitsForPeerSourceToOpen(t *testing.T) {
+	leader := newFakeEngine(t, "a", "tok")
+	leader.set(func(e *fakeEngine) { e.program = "mxl:cam3" })
+
+	returning := newFakeEngine(t, "b", "tok")
+	returning.set(func(e *fakeEngine) {
+		e.initial = "mxl:cam1"
+		e.known = map[string]bool{"mxl:cam1": true}
+	})
+	done := startEngineConfig(t, returning, leader.srv.URL, 20*time.Millisecond, 2,
+		StartupConfig{LeaderWait: time.Minute, SourceWait: time.Minute})
+	time.Sleep(400 * time.Millisecond)
+	returning.set(func(e *fakeEngine) { e.known["mxl:cam3"] = true })
+	waitDone(t, done)
+
+	returning.get(func(e *fakeEngine) {
+		assert.Equal(t, "mxl:cam3", e.program)
+		assert.Zero(t, e.goLives, "a follower never goes live on its own source")
+		assert.Len(t, e.applied, 1, "the peer's state is applied once its program can be cut to")
+	})
+}
+
+// Past SourceWait, a peer program that never opens here is given up on as
+// one the engine lacks.
+func TestRunStartup_PeerSourceNeverOpensGivesUpAfterWait(t *testing.T) {
+	leader := newFakeEngine(t, "a", "tok")
+	leader.set(func(e *fakeEngine) { e.program = "srt:only-on-a" })
+
+	returning := newFakeEngine(t, "b", "tok")
+	returning.set(func(e *fakeEngine) {
+		e.initial = "mxl:cam1"
+		e.known = map[string]bool{"mxl:cam1": true}
+	})
+	start := time.Now()
+	waitDone(t, startEngineConfig(t, returning, leader.srv.URL, 20*time.Millisecond, 2,
+		StartupConfig{LeaderWait: time.Minute, SourceWait: 200 * time.Millisecond}))
+
+	assert.GreaterOrEqual(t, time.Since(start), 200*time.Millisecond)
 	returning.get(func(e *fakeEngine) {
 		assert.Len(t, e.applied, maxStartupFollows)
 		assert.Equal(t, "mxl:cam1", e.program)

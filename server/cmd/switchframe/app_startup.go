@@ -20,6 +20,10 @@ const initialSourceGrace = 10 * time.Second
 // polls to see it.
 const leaderWait = initialSourceGrace + 10*time.Second
 
+// peerSourceWait is how long an engine coming up beside a peer on air waits
+// for the peer's program input to open here before following without it.
+const peerSourceWait = 30 * time.Second
+
 // startupConfig is how the App runs peer.RunStartup. Once the startup has
 // settled, the engine serves its state to a browser reconciling the pair.
 func (a *App) startupConfig() peer.StartupConfig {
@@ -27,6 +31,7 @@ func (a *App) startupConfig() peer.StartupConfig {
 		Token:      a.cfg.APIToken,
 		Tick:       time.Second,
 		LeaderWait: leaderWait,
+		SourceWait: peerSourceWait,
 		OnSettled:  func() { a.startupDone.Store(true) },
 	}
 }
@@ -64,6 +69,10 @@ func (e *startupEngine) ProgramSource() string {
 
 func (e *startupEngine) Cut(ctx context.Context, source string) error {
 	return e.app.sw.Cut(ctx, source)
+}
+
+func (e *startupEngine) HasSource(source string) bool {
+	return e.app.sw.HasSource(source)
 }
 
 // ApplyPeerSnapshot applies the peer's state the way a snapshot pushed to

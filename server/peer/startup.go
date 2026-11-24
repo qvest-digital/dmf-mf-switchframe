@@ -34,6 +34,10 @@ type StartupEngine interface {
 	// Cut puts source on air.
 	Cut(ctx context.Context, source string) error
 
+	// HasSource reports whether source exists here, as one a cut can put
+	// on air.
+	HasSource(source string) bool
+
 	// GoLive puts the engine's own initial program source on air. It
 	// returns false while no source is available yet, and is called again.
 	GoLive(ctx context.Context) bool
@@ -65,6 +69,11 @@ type StartupConfig struct {
 	// LeaderWait bounds how long an engine that does not lead waits for a
 	// reachable leader to go on air before it goes live on its own.
 	LeaderWait time.Duration
+
+	// SourceWait bounds how long an engine waits for the peer's program
+	// source to exist here before following the peer without it: an
+	// input still opening after a restart is not one the engine lacks.
+	SourceWait time.Duration
 
 	// OnSettled, when set, is called once the engine has applied its
 	// peer's state, failed to read it, or found none to take: a peer down
@@ -150,7 +159,7 @@ func RunStartup(ctx context.Context, p *HealthPoller, eng StartupEngine, cfg Sta
 	defer ticker.Stop()
 
 	start := time.Now()
-	var synced, live time.Time
+	var synced, live, sourceWait time.Time
 	follows := 0
 	gaveUp := false
 	settled := false
@@ -188,9 +197,22 @@ func RunStartup(ctx context.Context, p *HealthPoller, eng StartupEngine, cfg Sta
 			slog.Info("startup: on air", "programSource", eng.ProgramSource())
 			return
 		case stepFollow:
+			peerProgram := p.Status().ProgramSource
+			if !eng.HasSource(peerProgram) {
+				// An apply would skip the cut, and the follows would run
+				// out before the input opens, leaving the engine on a
+				// source of its own.
+				if sourceWait.IsZero() {
+					sourceWait = time.Now()
+					slog.Info("startup: waiting for the peer's program source to open here",
+						"programSource", peerProgram, "wait", cfg.SourceWait)
+				}
+				if time.Since(sourceWait) < cfg.SourceWait {
+					break
+				}
+			}
 			follows++
 			synced, live = time.Now(), time.Time{}
-			peerProgram := p.Status().ProgramSource
 			snap, seq, err := p.FetchStateSnapshot(ctx, cfg.Token)
 			if err != nil {
 				// The program still follows, from the peer's health, when
