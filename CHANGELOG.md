@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.0-rc.57](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.56...mxl-v1.0.0-rc.57) (2026-11-24)
+
+
+### Features
+
+* **control:** relay program, preview and squeezeback to the peer ([73e6985](https://github.com/qvest-digital/dmf-mf-switchframe/commit/73e69859bb9e10e67c74019b005477c588eb2763))
+* **dve:** send HTML5 graphics with a squeezeback move at an offset ([73e6985](https://github.com/qvest-digital/dmf-mf-switchframe/commit/73e69859bb9e10e67c74019b005477c588eb2763))
+* **sync:** carry the squeezeback in the peer state snapshot ([73e6985](https://github.com/qvest-digital/dmf-mf-switchframe/commit/73e69859bb9e10e67c74019b005477c588eb2763))
+* **ui:** send each switching command to one engine of a pair ([73e6985](https://github.com/qvest-digital/dmf-mf-switchframe/commit/73e69859bb9e10e67c74019b005477c588eb2763))
+
+
+### Bug Fixes
+
+* **peer:** wait for the peer's program input before following it ([73e6985](https://github.com/qvest-digital/dmf-mf-switchframe/commit/73e69859bb9e10e67c74019b005477c588eb2763))
+
 ## [1.0.0-rc.56](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.55...mxl-v1.0.0-rc.56) (2026-11-23)
 
 
