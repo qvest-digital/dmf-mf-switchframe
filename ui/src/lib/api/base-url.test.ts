@@ -164,6 +164,15 @@ describe('isTimedPath — upload paths (H5)', () => {
 		expect(isTimedPath('/api/graphics/1/on')).toBe(true);
 	});
 
+	// An engine passes a squeezeback command naming no command_seq on to
+	// its peer; one the browser sends to both carries a seq, or each
+	// engine would run it twice.
+	it('recognizes the squeezeback paths as timed', () => {
+		expect(isTimedPath('/api/squeezeback')).toBe(true);
+		expect(isTimedPath('/api/squeezeback/on')).toBe(true);
+		expect(isTimedPath('/api/squeezeback/off')).toBe(true);
+	});
+
 	it('does not match non-timed paths', () => {
 		expect(isTimedPath('/api/sources')).toBe(false);
 		expect(isTimedPath('/api/switch/state')).toBe(false);

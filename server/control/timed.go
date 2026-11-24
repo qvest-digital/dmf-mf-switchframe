@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
@@ -51,7 +52,7 @@ func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), han
 				Payload:   json.RawMessage(body),
 			}
 			if err := q.Enqueue(cmd); err != nil {
-				httperr.Write(w, http.StatusBadRequest, err.Error())
+				writeEnqueueError(w, err)
 				return
 			}
 			if seqTracker != nil && timed.CommandSeq > 0 {
@@ -109,7 +110,7 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint
 				Payload:   json.RawMessage(enriched),
 			}
 			if err := q.Enqueue(cmd); err != nil {
-				httperr.Write(w, http.StatusBadRequest, err.Error())
+				writeEnqueueError(w, err)
 				return
 			}
 			if seqTracker != nil && timed.CommandSeq > 0 {
@@ -127,4 +128,14 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint
 			seqTracker(timed.CommandSeq)
 		}
 	}
+}
+
+// writeEnqueueError answers a command the queue refused: 409 for one a
+// later command on its state has overtaken, else 400.
+func writeEnqueueError(w http.ResponseWriter, err error) {
+	if errors.Is(err, cmdqueue.ErrSuperseded) {
+		httperr.Write(w, http.StatusConflict, err.Error())
+		return
+	}
+	httperr.Write(w, http.StatusBadRequest, err.Error())
 }

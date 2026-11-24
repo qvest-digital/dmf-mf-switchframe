@@ -1758,6 +1758,9 @@ func (a *App) initAPI() error {
 		apiOpts = append(apiOpts, control.WithAllowedOutputPorts(ports))
 	}
 
+	if a.peerPoller != nil {
+		apiOpts = append(apiOpts, control.WithPeerRelay(a.cfg.APIToken))
+	}
 	a.api = control.NewAPI(a.sw, apiOpts...)
 
 	// Late-bind snapshot provider — requires API to exist first (App delegates

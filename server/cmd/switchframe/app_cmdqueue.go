@@ -11,6 +11,7 @@ import (
 
 	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/cmdqueue"
+	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -30,6 +31,12 @@ func (a *App) initCommandQueue() error {
 	// cross-region command propagation latency.
 	maxAge := cmdqueue.DefaultMaxAge // 2s
 	opts = append(opts, cmdqueue.WithMaxAge(maxAge))
+
+	// Commands the engines of a pair relay to each other may reach the
+	// two in different orders; each keeps the later one on each state.
+	if a.cfg.PeerEngineURL != "" {
+		opts = append(opts, cmdqueue.WithStateKeys(control.RelayedStateKeys()))
+	}
 
 	// Cap queue size to prevent unbounded growth from misbehaving clients.
 	opts = append(opts, cmdqueue.WithMaxSize(10_000))

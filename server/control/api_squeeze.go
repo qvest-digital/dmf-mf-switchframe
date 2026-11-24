@@ -14,9 +14,9 @@ func (a *API) registerSqueezeRoutes(mux *http.ServeMux) {
 		return
 	}
 	mux.HandleFunc("GET /api/squeezeback", a.handleGetSqueeze)
-	mux.HandleFunc("PUT /api/squeezeback", timedHandler(a.cmdQueue, "squeezeback_set", a.seqTracker, a.handleSetSqueezeInner))
-	mux.HandleFunc("POST /api/squeezeback/on", timedHandler(a.cmdQueue, "squeezeback_on", a.seqTracker, a.handleSqueezeOnInner))
-	mux.HandleFunc("POST /api/squeezeback/off", timedHandler(a.cmdQueue, "squeezeback_off", a.seqTracker, a.handleSqueezeOffInner))
+	mux.HandleFunc("PUT /api/squeezeback", a.relayedHandler("squeezeback_set", a.handleSetSqueezeInner))
+	mux.HandleFunc("POST /api/squeezeback/on", a.relayedHandler("squeezeback_on", a.handleSqueezeOnInner))
+	mux.HandleFunc("POST /api/squeezeback/off", a.relayedHandler("squeezeback_off", a.handleSqueezeOffInner))
 }
 
 func (a *API) handleGetSqueeze(w http.ResponseWriter, r *http.Request) {

@@ -1829,6 +1829,9 @@ func (s *Switcher) TrackCommandSeq(seq uint64) {
 	}
 }
 
+// LastCommandSeq returns the highest command seq the switcher took.
+func (s *Switcher) LastCommandSeq() uint64 { return s.lastCommandSeq.Load() }
+
 // SetInitialCommandSeq seeds lastCommandSeq from the persisted on-disk
 // value before the HTTP listener and peer poller start. Only advances the
 // tracker — never regresses — so a later wire-up that reads a stale file

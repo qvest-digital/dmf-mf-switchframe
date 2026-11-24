@@ -65,6 +65,7 @@ const TIMED_PATH_EXACT = new Set([
 	'/api/encoder',
 	'/api/stingers',
 	'/api/color-grade/lut',
+	'/api/squeezeback', '/api/squeezeback/on', '/api/squeezeback/off',
 ]);
 
 const TIMED_PATH_PATTERNS = [

@@ -632,6 +632,9 @@ type API struct {
 	peerPoller         *peer.HealthPoller                  // local identity + role for /api/peer/health
 	storeSyncer        *peer.StoreSyncer                   // the stores' ledger and items, read by the peer
 	controlPlaneSecret string                              // enables /api/peer/force-leader when non-empty
+	relayEnabled       bool                                // see WithPeerRelay
+	relayToken         string
+	relaySeq           atomic.Uint64 // last seq given to a relayed command
 	startTime          time.Time
 	reconcileLock      reconcileLockState
 	compareChange      compareChangeState
@@ -759,8 +762,8 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 // registerAPIRoutes registers all API route handlers on the given mux.
 func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	// Core routes (state, cut, preview) stay here
-	mux.HandleFunc("POST /api/switch/cut", timedHandler(a.cmdQueue, "cut", a.seqTracker, a.handleCutInner))
-	mux.HandleFunc("POST /api/switch/preview", timedHandler(a.cmdQueue, "preview", a.seqTracker, a.handlePreviewInner))
+	mux.HandleFunc("POST /api/switch/cut", a.relayedHandler("cut", a.handleCutInner))
+	mux.HandleFunc("POST /api/switch/preview", a.relayedHandler("preview", a.handlePreviewInner))
 	mux.HandleFunc("GET /api/switch/state", a.handleState)
 
 	// Delegate to per-file route registration methods
