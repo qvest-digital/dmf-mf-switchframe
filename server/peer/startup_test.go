@@ -85,8 +85,9 @@ type fakeEngine struct {
 	snapAuth []string
 	srv      *httptest.Server
 	snapFail bool
-	// afterSnap runs, under mu, once a snapshot has been served.
-	afterSnap func(e *fakeEngine)
+	// afterSnap runs, under mu, once a snapshot has been served;
+	// beforeSnap before it is read.
+	afterSnap, beforeSnap func(e *fakeEngine)
 	// known, when set, are the only sources Cut and an apply can put on air.
 	known map[string]bool
 }
@@ -106,6 +107,9 @@ func newFakeEngine(t *testing.T, label, token string) *fakeEngine {
 		if e.snapFail || r.Header.Get("Authorization") != "Bearer "+e.token {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
+		}
+		if e.beforeSnap != nil {
+			e.beforeSnap(e)
 		}
 		snap, _ := json.Marshal(internal.FullStateSnapshot{ProgramSource: e.program, PreviewSource: e.preview})
 		_ = json.NewEncoder(w).Encode(map[string]any{"snapshot": json.RawMessage(snap), "seq": e.seq})
@@ -487,7 +491,8 @@ func TestRunStartup_EachPeerSourceGetsTheWholeWait(t *testing.T) {
 	returning := newFakeEngine(t, "b", "tok")
 	leader.set(func(e *fakeEngine) {
 		e.program = "mxl:cam3"
-		e.afterSnap = func(e *fakeEngine) { e.program, e.afterSnap = "mxl:cam4", nil }
+		// cut as the snapshot is read, so every poll after it shows cam4
+		e.beforeSnap = func(e *fakeEngine) { e.program, e.beforeSnap = "mxl:cam4", nil }
 	})
 	returning.set(func(e *fakeEngine) {
 		e.initial = "mxl:cam1"
