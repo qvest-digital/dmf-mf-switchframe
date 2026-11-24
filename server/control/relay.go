@@ -145,10 +145,8 @@ func (a *API) relayedHandler(action string, handler immediateHandlerFunc) http.H
 			case keyedUnchanged:
 				// It set nothing here, so it is not passed on: the peer,
 				// taking it later, might find its state moved on and set
-				// it back.
-				if a.seqTracker != nil {
-					a.seqTracker(seq)
-				}
+				// it back. Nor is its seq counted, which the peer never
+				// sees, so the two engines keep counting alike.
 				return
 			default:
 				return
@@ -212,16 +210,11 @@ func (a *API) SetTransitionPosition(ctx context.Context, position float64) error
 	if err != nil {
 		return err
 	}
-	var runErr error
 	cmd := cmdqueue.Command{OrderAt: order, Seq: seq, Action: action, Payload: stamped}
-	if err := a.cmdQueue.RunLocal(cmd, func() bool {
-		runErr = a.switcher.SetTransitionPosition(ctx, position)
-		return runErr == nil
+	if err := a.cmdQueue.RunLocal(cmd, func() error {
+		return a.switcher.SetTransitionPosition(ctx, position)
 	}); err != nil {
 		return err
-	}
-	if runErr != nil {
-		return runErr
 	}
 	auth := ""
 	if a.relayToken != "" {
@@ -229,23 +222,6 @@ func (a *API) SetTransitionPosition(ctx context.Context, position float64) error
 	}
 	a.passOn(action, http.MethodPost, "/api/switch/transition/position", auth, body, stamped, seq)
 	return nil
-}
-
-// changesState tells the command queue whether a keyed command sets its
-// state: a cut to the source already on program sets neither program nor
-// preview, also while a transition takes that source away, which it does
-// not stop. Recorded, it would drop a transition made before it on the
-// other engine of a pair and reaching this one after it, while that
-// engine completes the transition: the two would end apart.
-func (a *API) changesState(cmd cmdqueue.Command) bool {
-	if cmd.Action != "cut" && cmd.Action != "transition" {
-		return true
-	}
-	var req switchRequest
-	if json.Unmarshal(cmd.Payload, &req) != nil || req.Source == "" {
-		return true
-	}
-	return req.Source != a.switcher.ProgramSource()
 }
 
 // resolveRelayed returns body with what the engine fills in from its own
@@ -276,7 +252,7 @@ type keyedResult int
 
 const (
 	keyedRan        keyedResult = iota
-	keyedUnchanged              // it ran and set nothing (see changesState)
+	keyedUnchanged              // it ran and set nothing (see markUnchanged)
 	keyedSuperseded             // a later command on its state ran here
 	keyedFailed                 // its handler refused it
 )
@@ -290,36 +266,54 @@ const (
 // loop.
 func runKeyed(q *cmdqueue.Queue, cmd cmdqueue.Command, w http.ResponseWriter, r *http.Request, body []byte, handler immediateHandlerFunc) keyedResult {
 	rec := newBufferedResponse()
-	err := q.RunLocal(cmd, func() bool {
+	err := q.RunLocal(cmd, func() error {
 		handler(rec, r, body)
-		return rec.status < http.StatusMultipleChoices
+		switch {
+		case rec.status >= http.StatusMultipleChoices:
+			return errRefused
+		case rec.unchanged:
+			return cmdqueue.ErrUnchanged
+		}
+		return nil
 	})
-	if errors.Is(err, cmdqueue.ErrUnchanged) {
+	switch {
+	case err == nil:
+		rec.writeTo(w)
+		return keyedRan
+	case errors.Is(err, cmdqueue.ErrUnchanged):
 		rec.writeTo(w)
 		return keyedUnchanged
-	}
-	if err != nil {
+	case errors.Is(err, errRefused):
+		rec.writeTo(w)
+		return keyedFailed
+	case errors.Is(err, cmdqueue.ErrSuperseded):
 		writeEnqueueError(w, err)
-		if errors.Is(err, cmdqueue.ErrSuperseded) {
-			return keyedSuperseded
-		}
-		return keyedFailed
+		return keyedSuperseded
 	}
-	rec.writeTo(w)
-	if rec.status >= http.StatusMultipleChoices {
-		return keyedFailed
+	writeEnqueueError(w, err)
+	return keyedFailed
+}
+
+// errRefused is a keyed command its handler answered with an error.
+var errRefused = errors.New("refused by its handler")
+
+// markUnchanged notes on w, when it is a bufferedResponse, that the
+// command its handler ran set nothing (see cmdqueue.ErrUnchanged).
+func markUnchanged(w http.ResponseWriter) {
+	if b, ok := w.(*bufferedResponse); ok {
+		b.unchanged = true
 	}
-	return keyedRan
 }
 
 // bufferedResponse holds a handler's answer until it is written out, with
 // work the handler deferred until then.
 type bufferedResponse struct {
-	header http.Header
-	status int
-	wrote  bool
-	body   bytes.Buffer
-	after  []func(w http.ResponseWriter)
+	header    http.Header
+	status    int
+	wrote     bool
+	unchanged bool // see markUnchanged
+	body      bytes.Buffer
+	after     []func(w http.ResponseWriter)
 }
 
 // later runs fn with the response writer once the answer is written: at

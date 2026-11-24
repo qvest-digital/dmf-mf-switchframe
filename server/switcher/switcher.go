@@ -3238,6 +3238,14 @@ func (s *Switcher) UnregisterSource(key string) {
 // The ctx parameter is accepted for API compatibility and future use (e.g.
 // tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
+	_, err := s.CutChanged(ctx, sourceKey)
+	return err
+}
+
+// CutChanged is Cut, reporting whether the program changed: false for a
+// cut to the source already on program, decided under the lock the cut
+// takes, so a transition completing alongside cannot make it stale.
+func (s *Switcher) CutChanged(ctx context.Context, sourceKey string) (bool, error) {
 	var snapshot internal.ControlRoomState
 	var oldProgram string
 	var audioCut audioCutHandler
@@ -3249,7 +3257,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	s.configMu.Lock()
 	if _, ok := (*s.sourcesAtomic.Load())[sourceKey]; !ok {
 		s.configMu.Unlock()
-		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
+		return false, fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	if s.programSource != sourceKey {
 		// If a transition is active, abort it first so its OnComplete
@@ -3349,7 +3357,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		}
 		s.notifyStateChange(snapshot)
 	}
-	return nil
+	return changed, nil
 }
 
 // takeProgramCut hands a cut no tick has taken yet to the mixer at once,

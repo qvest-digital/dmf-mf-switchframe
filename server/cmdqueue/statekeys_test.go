@@ -11,12 +11,16 @@ import (
 
 var testStateKeys = map[string][]string{"cut": {"program", "preview"}, "transition": {"program"}, "preview": {"preview"}}
 
-// ranHere runs a command on arrival, recording it.
+// ranHere runs a command on arrival, recording it unless, as a cut to the
+// source on program, it sets nothing.
 func ranHere(t *testing.T, q *cmdqueue.Queue, action string, at int64, seq uint64, payload string, state map[string]string) {
 	t.Helper()
-	err := q.RunLocal(cmdqueue.Command{Action: action, OrderAt: at, Seq: seq, Payload: []byte(payload)}, func() bool {
+	err := q.RunLocal(cmdqueue.Command{Action: action, OrderAt: at, Seq: seq, Payload: []byte(payload)}, func() error {
+		if action == "cut" && state["program"] == payload {
+			return cmdqueue.ErrUnchanged
+		}
 		apply(state, action, payload)
-		return true
+		return nil
 	})
 	if err != nil && !errors.Is(err, cmdqueue.ErrUnchanged) {
 		t.Fatalf("RunLocal %s: %v", action, err)
@@ -204,7 +208,7 @@ func TestStateKeys_RunLocalWaitsForDispatch(t *testing.T) {
 	release := q.Hold()
 	ran := make(chan struct{})
 	go func() {
-		_ = q.RunLocal(cmdqueue.Command{Action: "cut", OrderAt: 900, Seq: 2}, func() bool { close(ran); return true })
+		_ = q.RunLocal(cmdqueue.Command{Action: "cut", OrderAt: 900, Seq: 2}, func() error { close(ran); return nil })
 	}()
 	select {
 	case <-ran:
@@ -224,8 +228,9 @@ func TestStateKeys_RunLocalWaitsForDispatch(t *testing.T) {
 func TestStateKeys_FailedLocalRunNotRecorded(t *testing.T) {
 	clock, _ := newClock(1_000)
 	q := cmdqueue.New(clock, cmdqueue.WithStateKeys(testStateKeys))
-	if err := q.RunLocal(cmdqueue.Command{Action: "cut", OrderAt: 900, Seq: 2}, func() bool { return false }); err != nil {
-		t.Fatal(err)
+	refused := errors.New("refused")
+	if err := q.RunLocal(cmdqueue.Command{Action: "cut", OrderAt: 900, Seq: 2}, func() error { return refused }); !errors.Is(err, refused) {
+		t.Fatalf("RunLocal answered %v, want the run's error", err)
 	}
 	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 800, Seq: 1, Action: "cut"}); err != nil {
 		t.Fatalf("an earlier cut after a failed later one: %v", err)
@@ -302,7 +307,6 @@ func TestStateKeys_FailedDispatchNotRecorded(t *testing.T) {
 func TestStateKeys_UnchangedSideKeyNotRecorded(t *testing.T) {
 	clock, _ := newClock(10_000)
 	q := cmdqueue.New(clock, cmdqueue.WithStateKeys(testStateKeys))
-	q.SetChanges(func(c cmdqueue.Command) bool { return string(c.Payload) != "cam1" })
 	st := map[string]string{"program": "cam1"}
 	ranHere(t, q, "cut", 9_000, 2, "cam1", st)
 	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 8_000, Seq: 1, Action: "preview", Payload: []byte("cam3")}); err != nil {
@@ -314,26 +318,5 @@ func TestStateKeys_UnchangedSideKeyNotRecorded(t *testing.T) {
 	run(q, st)
 	if st["preview"] != "cam1" || st["program"] != "cam2" {
 		t.Fatalf("program %q, preview %q, want cam2 and cam1", st["program"], st["preview"])
-	}
-}
-
-// The caller's changes func runs outside the queue's lock, so it may call
-// the queue, as reading the caller's own state may.
-func TestStateKeys_ChangesRunsOutsideTheLock(t *testing.T) {
-	clock, _ := newClock(10_000)
-	q := cmdqueue.New(clock, cmdqueue.WithStateKeys(testStateKeys))
-	q.SetChanges(func(c cmdqueue.Command) bool {
-		_ = q.NextOrder()
-		return true
-	})
-	done := make(chan struct{})
-	go func() {
-		ranHere(t, q, "cut", 9_000, 1, "cam1", map[string]string{})
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("a changes func reading the queue deadlocked")
 	}
 }

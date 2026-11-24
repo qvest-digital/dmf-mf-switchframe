@@ -634,6 +634,7 @@ type API struct {
 	controlPlaneSecret string                              // enables /api/peer/force-leader when non-empty
 	relayEnabled       bool                                // see WithPeerRelay
 	relayToken         string
+	beforeCut          func()        // tests: runs as a cut handler starts the cut
 	relaySeq           atomic.Uint64 // last seq given to a relayed command
 	relay              relayState
 	squeezePending     squeezePending
@@ -653,9 +654,6 @@ func NewAPI(sw *switcher.Switcher, opts ...APIOption) *API {
 	a := &API{switcher: sw, mux: http.NewServeMux(), startTime: time.Now(), reconcileLock: newReconcileLockState()}
 	for _, opt := range opts {
 		opt(a)
-	}
-	if a.cmdQueue != nil {
-		a.cmdQueue.SetChanges(a.changesState)
 	}
 	a.registerRoutes()
 	return a
@@ -837,9 +835,18 @@ func (a *API) handleCutInner(w http.ResponseWriter, r *http.Request, body []byte
 		httperr.Write(w, http.StatusBadRequest, "source required")
 		return
 	}
-	if err := a.switcher.Cut(r.Context(), req.Source); err != nil {
+	if a.beforeCut != nil {
+		a.beforeCut()
+	}
+	changed, err := a.switcher.CutChanged(r.Context(), req.Source)
+	if err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
+	}
+	if !changed {
+		// A cut to the source on program sets nothing, also while a
+		// transition takes it away, which runs on.
+		markUnchanged(w)
 	}
 	a.writeState(w)
 }

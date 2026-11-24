@@ -26,10 +26,10 @@ func TestDrainCommandQueueWaitsForLocalRun(t *testing.T) {
 
 	running, release := make(chan struct{}), make(chan struct{})
 	go func() {
-		_ = q.RunLocal(cmdqueue.Command{Action: "cut", Seq: 2, OrderAt: 400}, func() bool {
+		_ = q.RunLocal(cmdqueue.Command{Action: "cut", Seq: 2, OrderAt: 400}, func() error {
 			close(running)
 			<-release
-			return true
+			return nil
 		})
 	}()
 	<-running

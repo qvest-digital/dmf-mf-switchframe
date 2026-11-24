@@ -128,7 +128,11 @@ func (a *App) registerCoreActions(d *cmdqueue.Dispatcher) {
 		if err := json.Unmarshal(payload, &req); err != nil {
 			return err
 		}
-		return a.sw.Cut(context.Background(), req.Source)
+		changed, err := a.sw.CutChanged(context.Background(), req.Source)
+		if err == nil && !changed {
+			return cmdqueue.ErrUnchanged
+		}
+		return err
 	})
 	d.Register("preview", func(payload json.RawMessage) error {
 		var req struct {

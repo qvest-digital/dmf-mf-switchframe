@@ -27,8 +27,10 @@ var (
 	ErrDuplicateCommand = errors.New("cmdqueue: duplicate command_seq")
 	ErrQueueFull        = errors.New("cmdqueue: queue is full")
 	ErrSuperseded       = errors.New("cmdqueue: a later command on the same state has run")
-	// ErrUnchanged is a command RunLocal ran that set nothing (see
-	// SetChanges), so it was not recorded.
+	// ErrUnchanged is returned by a keyed command's run (see RunLocal and
+	// Exec) when it ran and set nothing, as a cut to the source already on
+	// program: it is recorded on no key, so a command it would otherwise
+	// supersede still runs.
 	ErrUnchanged = errors.New("cmdqueue: the command set nothing")
 )
 
@@ -159,7 +161,6 @@ type Queue struct {
 	stateKeys map[string][]string
 	ran       map[string]ranCommand
 	lastOrder int64
-	changes   func(Command) bool
 
 	// execMu orders running a keyed command on arrival (RunLocal) with
 	// the dispatch of drained ones (Hold), so the gate's view of what ran
@@ -460,16 +461,6 @@ func (q *Queue) Keyed(action string) bool {
 	return ok
 }
 
-// SetChanges sets fn to tell, before a keyed command runs, whether it
-// will set its state: a cut to the source already on program sets neither
-// program nor preview, and is recorded on no key, so a command it would
-// otherwise supersede still runs. Nil, every command sets its state.
-func (q *Queue) SetChanges(fn func(Command) bool) {
-	q.mu.Lock()
-	q.changes = fn
-	q.mu.Unlock()
-}
-
 // NextOrder returns the OrderAt for a keyed command run here now: the
 // clock, or just after the latest command run when the clock has stepped
 // back behind it, so a command made after it never falls before it.
@@ -490,40 +481,25 @@ func (q *Queue) Hold() func() {
 
 // RunLocal runs a keyed command outside the queue, as a handler executes
 // one on arrival: it returns ErrSuperseded without running when a later
-// command on cmd's state has run, and otherwise calls run, recording cmd
-// as run when run reports success and it sets its state, else returning
-// ErrUnchanged. cmd.OrderAt is where it falls; 0 is NextOrder. Drained
-// commands are not dispatched meanwhile (see Hold).
-func (q *Queue) RunLocal(cmd Command, run func() bool) error {
+// command on cmd's state has run, and otherwise run's error, recording cmd
+// as run when that is nil. cmd.OrderAt is where it falls; 0 is NextOrder.
+// Drained commands are not dispatched meanwhile (see Hold).
+func (q *Queue) RunLocal(cmd Command, run func() error) error {
 	q.execMu.Lock()
 	defer q.execMu.Unlock()
 	if cmd.OrderAt <= 0 {
 		cmd.OrderAt = q.NextOrder()
 	}
-	err := q.exec(cmd, func() error {
-		if !run() {
-			return errRunFailed
-		}
-		return nil
-	})
-	if errors.Is(err, errUnchanged) {
-		return ErrUnchanged
-	}
-	return err
+	return q.exec(cmd, run)
 }
-
-// errUnchanged is a command exec ran that set nothing.
-var errUnchanged = errors.New("cmdqueue: unchanged")
-
-// errRunFailed is a RunLocal run that reported failure.
-var errRunFailed = errors.New("cmdqueue: run failed")
 
 // Exec dispatches a drained command with run, under Hold: it returns
 // ErrSuperseded without running when a later command on cmd's state has
-// run, else run's error, recording cmd as run when run succeeds.
+// run, else run's error, recording cmd as run when that is nil; a run
+// returning ErrUnchanged is answered nil.
 func (q *Queue) Exec(cmd Command, run func() error) error {
 	err := q.exec(cmd, run)
-	if errors.Is(err, errUnchanged) {
+	if errors.Is(err, ErrUnchanged) {
 		return nil
 	}
 	if errors.Is(err, ErrSuperseded) {
@@ -535,22 +511,13 @@ func (q *Queue) Exec(cmd Command, run func() error) error {
 
 func (q *Queue) exec(cmd Command, run func() error) error {
 	q.mu.Lock()
-	gone, changes := q.superseded(cmd), q.changes
+	gone := q.superseded(cmd)
 	q.mu.Unlock()
-	// Outside mu: it reads the caller's state, whose locks are no business
-	// of the queue's.
-	sets := changes == nil || changes(cmd)
 	if gone {
 		return ErrSuperseded
 	}
 	if err := run(); err != nil {
-		if errors.Is(err, errRunFailed) {
-			return nil
-		}
 		return err
-	}
-	if !sets {
-		return errUnchanged
 	}
 	q.mu.Lock()
 	q.recordRan(cmd)
