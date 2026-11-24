@@ -112,7 +112,7 @@ export function isNonIdempotent(path: string): boolean {
 	return NON_IDEMPOTENT_PATTERNS.some(re => re.test(path));
 }
 
-// ── Switching commands one engine passes on to the other ──
+// -- Switching commands one engine passes on to the other --
 
 // An engine of a redundant pair passes these on to its peer when they name
 // no command_seq, so the page sends each to one engine (see relay-target.ts).
