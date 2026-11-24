@@ -15,6 +15,7 @@ import (
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/graphics/textrender"
+	"github.com/zsiec/switchframe/server/htmlgfx"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
@@ -181,4 +182,41 @@ func TestSnapshotFromOlderEngineKeepsSqueezeback(t *testing.T) {
 	older.Squeezeback, older.SqueezebackSynced = nil, false
 	b.applyPeerState(ctx, older, 3)
 	require.True(t, b.squeeze.Snapshot().On)
+}
+
+// oneLayerGfx is an HTML5 graphics sidecar with a graphic on layer 1.
+type oneLayerGfx struct{}
+
+func (oneLayerGfx) Started() bool                    { return true }
+func (oneLayerGfx) AllocateBrowser(int) (int, error) { return 0, nil }
+func (oneLayerGfx) FreeBrowser(int)                  {}
+func (oneLayerGfx) BrowserForLayer(layer int) int {
+	return map[bool]int{true: 0, false: -1}[layer == 1]
+}
+func (oneLayerGfx) CheckURL(string) error                     { return nil }
+func (oneLayerGfx) LoadURL(int, string) error                 { return nil }
+func (oneLayerGfx) Play(int) error                            { return nil }
+func (oneLayerGfx) Stop(int) error                            { return nil }
+func (oneLayerGfx) Next(int) error                            { return nil }
+func (oneLayerGfx) Update(int, string) error                  { return nil }
+func (oneLayerGfx) CustomAction(int, string, string) error    { return nil }
+func (oneLayerGfx) DiscoverTemplates() []htmlgfx.TemplateInfo { return nil }
+
+// Taking the peer's squeezeback drops a move still waiting on its
+// graphics' head start, so the engine ends where the peer is.
+func TestApplySqueezebackCancelsPendingMove(t *testing.T) {
+	ctx := context.Background()
+	a, b := roundTripApp(t), roundTripApp(t)
+	a.squeeze, b.squeeze = dve.NewSqueeze(1920, 1080), dve.NewSqueeze(1920, 1080)
+	b.api = control.NewAPI(b.sw, control.WithSqueeze(b.squeeze))
+	b.api.SetHTMLGfxManager(oneLayerGfx{})
+	offset := -150
+	cfg := dve.SqueezeConfig{Rect: dve.Rect{X: 480, W: 1440, H: 810}, GraphicsOffsetMs: &offset}
+	require.NoError(t, a.squeeze.Set(cfg))
+	require.NoError(t, b.squeeze.Set(cfg))
+	require.NoError(t, b.api.MoveSqueeze(true, []byte(`{"durationMs":0,"graphics":[{"layerId":1,"data":{}}]}`)))
+
+	b.applyPeerState(ctx, a.captureFullSnapshot(), 5)
+	time.Sleep(300 * time.Millisecond)
+	require.False(t, b.squeeze.Snapshot().On, "the move waiting before the apply ran after it")
 }

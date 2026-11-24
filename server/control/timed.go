@@ -20,6 +20,9 @@ const maxCommandBodySize = maxJSONBodySize
 type timedRequest struct {
 	ExecuteAt  int64  `json:"execute_at"`
 	CommandSeq uint64 `json:"command_seq"`
+	// OrderAt places a relayed command among those on its state; see
+	// cmdqueue.Command.OrderAt.
+	OrderAt int64 `json:"order_at"`
 }
 
 // immediateHandlerFunc is a handler that receives the pre-read request body.
@@ -47,12 +50,18 @@ func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), han
 		if timed.ExecuteAt > 0 && q != nil {
 			cmd := cmdqueue.Command{
 				ExecuteAt: timed.ExecuteAt,
+				OrderAt:   timed.OrderAt,
 				Seq:       timed.CommandSeq,
 				Action:    action,
 				Payload:   json.RawMessage(body),
 			}
 			if err := q.Enqueue(cmd); err != nil {
 				writeEnqueueError(w, err)
+				// One overtaken by a later command on its state was
+				// taken all the same: both engines of a pair count it.
+				if errors.Is(err, cmdqueue.ErrSuperseded) && seqTracker != nil && timed.CommandSeq > 0 {
+					seqTracker(timed.CommandSeq)
+				}
 				return
 			}
 			if seqTracker != nil && timed.CommandSeq > 0 {
@@ -64,9 +73,16 @@ func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), han
 
 		if q != nil && timed.CommandSeq > 0 && q.Keyed(action) {
 			// A command both engines of a pair take, run on arrival: it
-			// falls among the commands on its state by its seq.
-			cmd := cmdqueue.Command{Seq: timed.CommandSeq, OrderAt: seqOrderAt(q, timed.CommandSeq), Action: action, Payload: json.RawMessage(body)}
-			if !runKeyed(q, cmd, w, r, body, handler) {
+			// falls among the commands on its state as it arrives.
+			cmd := cmdqueue.Command{Seq: timed.CommandSeq, Action: action, Payload: json.RawMessage(body)}
+			switch runKeyed(q, cmd, w, r, body, handler) {
+			case keyedFailed:
+				return
+			case keyedSuperseded:
+				// The peer took it too; the seq is taken alike on both.
+				if seqTracker != nil {
+					seqTracker(timed.CommandSeq)
+				}
 				return
 			}
 		} else {
@@ -114,12 +130,18 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint
 
 			cmd := cmdqueue.Command{
 				ExecuteAt: timed.ExecuteAt,
+				OrderAt:   timed.OrderAt,
 				Seq:       timed.CommandSeq,
 				Action:    action,
 				Payload:   json.RawMessage(enriched),
 			}
 			if err := q.Enqueue(cmd); err != nil {
 				writeEnqueueError(w, err)
+				// One overtaken by a later command on its state was
+				// taken all the same: both engines of a pair count it.
+				if errors.Is(err, cmdqueue.ErrSuperseded) && seqTracker != nil && timed.CommandSeq > 0 {
+					seqTracker(timed.CommandSeq)
+				}
 				return
 			}
 			if seqTracker != nil && timed.CommandSeq > 0 {
@@ -131,9 +153,16 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint
 
 		if q != nil && timed.CommandSeq > 0 && q.Keyed(action) {
 			// A command both engines of a pair take, run on arrival: it
-			// falls among the commands on its state by its seq.
-			cmd := cmdqueue.Command{Seq: timed.CommandSeq, OrderAt: seqOrderAt(q, timed.CommandSeq), Action: action, Payload: json.RawMessage(body)}
-			if !runKeyed(q, cmd, w, r, body, handler) {
+			// falls among the commands on its state as it arrives.
+			cmd := cmdqueue.Command{Seq: timed.CommandSeq, Action: action, Payload: json.RawMessage(body)}
+			switch runKeyed(q, cmd, w, r, body, handler) {
+			case keyedFailed:
+				return
+			case keyedSuperseded:
+				// The peer took it too; the seq is taken alike on both.
+				if seqTracker != nil {
+					seqTracker(timed.CommandSeq)
+				}
 				return
 			}
 		} else {

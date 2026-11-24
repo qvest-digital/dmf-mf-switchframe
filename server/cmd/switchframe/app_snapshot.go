@@ -72,6 +72,10 @@ func (a *App) ApplySqueezeback(sq *internal.SqueezebackSnapshot) error {
 	if a.squeeze == nil {
 		return nil
 	}
+	if a.api != nil {
+		// A move still waiting on its graphics' head start would undo it.
+		a.api.CancelSqueezeMoves()
+	}
 	if sq == nil {
 		a.squeeze.Reset()
 		return nil

@@ -17,8 +17,10 @@ import (
 
 	"github.com/zsiec/switchframe/server/cmdqueue"
 	"github.com/zsiec/switchframe/server/dve"
+	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/peer"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // relayEngine is one engine of a pair: its switcher, squeezeback, command
@@ -34,8 +36,11 @@ type relayEngine struct {
 
 	// hold, while set, keeps requests the test did not send, the peer's
 	// relays and health polls, from reaching the API until it is closed.
-	mu   sync.Mutex
-	hold chan struct{}
+	mu      sync.Mutex
+	hold    chan struct{}
+	drained []string // actions the queue dispatched
+	slow    string   // path delayed, see slowPath
+	slowFor time.Duration
 }
 
 func (e *relayEngine) holdRelays() {
@@ -59,10 +64,13 @@ func newRelayPair(t *testing.T) (a, b *relayEngine) {
 		e.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("X-Test-Caller") == "" {
 				e.mu.Lock()
-				hold := e.hold
+				hold, slow, slowFor := e.hold, e.slow, e.slowFor
 				e.mu.Unlock()
 				if hold != nil {
 					<-hold
+				}
+				if r.URL.Path == slow {
+					time.Sleep(slowFor)
 				}
 			}
 			e.api.Mux().ServeHTTP(w, r)
@@ -78,6 +86,11 @@ func newRelayPair(t *testing.T) (a, b *relayEngine) {
 		for _, key := range []string{"cam1", "cam2", "cam3"} {
 			e.sw.RegisterSource(key, distribution.NewRelay())
 		}
+		e.sw.SetTransitionConfig(switcher.TransitionConfig{
+			DecoderFactory: func() (transition.VideoDecoder, error) {
+				return transition.NewMockDecoder(320, 240), nil
+			},
+		})
 		e.sq = dve.NewSqueeze(320, 240)
 		e.q = cmdqueue.New(func() int64 { return time.Now().UnixMicro() },
 			cmdqueue.WithStateKeys(RelayedStateKeys()))
@@ -112,32 +125,44 @@ func (e *relayEngine) drain(t *testing.T) {
 		}
 		release := e.q.Hold()
 		for _, c := range e.q.Drain() {
-			switch c.Action {
-			case "cut", "preview":
-				var req switchRequest
-				_ = json.Unmarshal(c.Payload, &req)
-				if c.Action == "cut" {
-					_ = e.sw.Cut(ctx, req.Source)
-				} else {
-					_ = e.sw.SetPreview(ctx, req.Source)
-				}
-			case "squeezeback_set":
-				var cfg dve.SqueezeConfig
-				_ = json.Unmarshal(c.Payload, &cfg)
-				_ = e.sq.Set(cfg)
-			case "squeezeback_on", "squeezeback_off":
-				var m dve.SqueezeMove
-				_ = json.Unmarshal(c.Payload, &m)
-				if c.Action == "squeezeback_on" {
-					_ = e.sq.On(m)
-				} else {
-					_ = e.sq.Off(m)
-				}
-			}
+			_ = e.q.Exec(c, func() error { return e.dispatch(ctx, c) })
 			e.sw.TrackCommandSeq(c.Seq)
 		}
 		release()
 	}
+}
+
+// dispatch runs a drained command as the engine's dispatcher does.
+func (e *relayEngine) dispatch(ctx context.Context, c cmdqueue.Command) error {
+	e.mu.Lock()
+	e.drained = append(e.drained, c.Action)
+	e.mu.Unlock()
+	switch c.Action {
+	case "cut", "preview":
+		var req switchRequest
+		_ = json.Unmarshal(c.Payload, &req)
+		if c.Action == "cut" {
+			return e.sw.Cut(ctx, req.Source)
+		}
+		return e.sw.SetPreview(ctx, req.Source)
+	case "transition":
+		var req transitionRequest
+		_ = json.Unmarshal(c.Payload, &req)
+		return e.sw.StartTransition(ctx, req.Source, req.Type, req.DurationMs, req.WipeDirection)
+	case "transition_position":
+		var req transitionPositionRequest
+		_ = json.Unmarshal(c.Payload, &req)
+		return e.sw.SetTransitionPosition(ctx, req.Position)
+	case "squeezeback_set":
+		var cfg dve.SqueezeConfig
+		if err := json.Unmarshal(c.Payload, &cfg); err != nil {
+			return err
+		}
+		return e.sq.Set(cfg)
+	case "squeezeback_on", "squeezeback_off":
+		return e.api.MoveQueuedSqueeze(c.Action == "squeezeback_on", c.Payload)
+	}
+	return nil
 }
 
 func (e *relayEngine) send(t *testing.T, method, path, body string) int {
@@ -310,25 +335,152 @@ func TestRelayedStateKeys_ProgramChangesKeyPreview(t *testing.T) {
 	}
 }
 
-// A browser command run on arrival falls at its seq, the browser's clock,
-// on both engines, so a relayed cut made between its arrivals at the two
-// lands alike on both.
-func TestPeerRelay_BrowserCommandFallsAtItsSeq(t *testing.T) {
-	a, b := newRelayPair(t)
-	b.holdRelays()
-	browserSeq := uint64(time.Now().UnixMicro())
-	browser := fmt.Sprintf(`{"source":"cam3","command_seq":%d}`, browserSeq)
-	require.Equal(t, http.StatusOK, b.send(t, http.MethodPost, "/api/switch/cut", browser))
-	time.Sleep(5 * time.Millisecond)
-	// a's own cut, made after the browser's, before the browser's reaches a.
+// A browser command run on arrival falls where it arrives, whatever its
+// seq says: a browser whose clock runs behind has its cut taken, not
+// refused as older than one relayed before it.
+func TestPeerRelay_SkewedBrowserSeqIsTaken(t *testing.T) {
+	a, _ := newRelayPair(t)
 	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
-	time.Sleep(5 * time.Millisecond)
-	assert.Equal(t, http.StatusConflict, a.send(t, http.MethodPost, "/api/switch/cut", browser),
-		"the browser's cut falls before a's own")
-	b.releaseRelays()
+	behind := uint64(time.Now().Add(-5 * time.Second).UnixMicro())
+	browser := fmt.Sprintf(`{"source":"cam3","command_seq":%d}`, behind)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", browser))
+	assert.Equal(t, "cam3", a.program())
+}
 
+// A transition a caller pulls back on one engine is pulled back on both:
+// the T-bar positions are relayed with the start.
+func TestPeerRelay_TbarPullBackReachesThePeer(t *testing.T) {
+	a, b := newRelayPair(t)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
 	require.Eventually(t, func() bool { return b.program() == "cam1" }, 5*time.Second, 5*time.Millisecond)
-	assert.Equal(t, "cam1", a.program())
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/transition",
+		`{"source":"cam2","type":"mix","durationMs":5000}`))
+	require.Eventually(t, func() bool { return b.sw.State().InTransition }, 5*time.Second, 5*time.Millisecond)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/transition/position", `{"position":0.7}`))
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/transition/position", `{"position":0.05}`))
+	require.False(t, a.sw.State().InTransition, "pulled back here")
+
+	require.Eventually(t, func() bool { return !b.sw.State().InTransition }, 5*time.Second, 5*time.Millisecond,
+		"the peer kept the transition running")
+	assert.Equal(t, "cam1", b.program())
+}
+
+// A squeezeback configured and turned on reaches the peer in that order,
+// even when the peer is slow to take the configuration.
+func TestPeerRelay_InOrder(t *testing.T) {
+	a, b := newRelayPair(t)
+	b.slowPath("/api/squeezeback", 150*time.Millisecond)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPut, "/api/squeezeback",
+		`{"rect":{"x":80,"y":0,"w":240,"h":180},"durationMs":0}`))
+	require.Equal(t, http.StatusNoContent, a.send(t, http.MethodPost, "/api/squeezeback/on", ""))
+	require.Eventually(t, func() bool { return b.sq.Snapshot().On }, 5*time.Second, 5*time.Millisecond)
+}
+
+// A caller sending the same command to both engines without a seq has it
+// run once on each: the copy each engine relays to the other is the one
+// the other took already.
+func TestPeerRelay_DualSendRunsOnceOnEach(t *testing.T) {
+	a, b := newRelayPair(t)
+	gfx := map[*relayEngine]*recordingGfx{}
+	for _, e := range []*relayEngine{a, b} {
+		g := &recordingGfx{mockHTMLGfxManager: newMockHTMLGfxManager(2)}
+		_, err := g.AllocateBrowser(3)
+		require.NoError(t, err)
+		e.api.SetHTMLGfxManager(g)
+		gfx[e] = g
+		require.NoError(t, e.sq.Set(dve.SqueezeConfig{Rect: dve.Rect{X: 80, W: 240, H: 180}}))
+	}
+	body := `{"durationMs":0,"graphics":[{"layerId":3,"data":{"layout":"lframe"}}]}`
+	var wg sync.WaitGroup
+	for _, e := range []*relayEngine{a, b} {
+		wg.Go(func() { assert.Equal(t, http.StatusNoContent, e.send(t, http.MethodPost, "/api/squeezeback/on", body)) })
+	}
+	wg.Wait()
+	time.Sleep(300 * time.Millisecond)
+	for e, g := range gfx {
+		assert.Len(t, g.sent(), 1, "graphics sent on engine %p", e)
+		assert.True(t, e.sq.Snapshot().On)
+	}
+}
+
+// A move taken from the peer moves this engine although it cannot send the
+// move's graphics, as it lacks the HTML5 graphic.
+func TestPeerRelay_MoveWithoutGraphicsHereStillMoves(t *testing.T) {
+	a, b := newRelayPair(t)
+	g := &recordingGfx{mockHTMLGfxManager: newMockHTMLGfxManager(2)}
+	_, err := g.AllocateBrowser(3)
+	require.NoError(t, err)
+	a.api.SetHTMLGfxManager(g)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPut, "/api/squeezeback",
+		`{"rect":{"x":80,"y":0,"w":240,"h":180},"durationMs":0}`))
+	require.Equal(t, http.StatusNoContent, a.send(t, http.MethodPost, "/api/squeezeback/on",
+		`{"graphics":[{"layerId":3,"data":{"layout":"lframe"}}]}`))
+	require.Eventually(t, func() bool { return b.sq.Snapshot().On }, 5*time.Second, 5*time.Millisecond)
+}
+
+// A relayed command the peer drops as overtaken still counts on its seq,
+// so the two engines report the same last command. It can carry the
+// higher seq: an engine mints its seqs above the browser's, whose clock
+// may run ahead.
+func TestPeerRelay_OvertakenCommandCountsItsSeq(t *testing.T) {
+	a, b := newRelayPair(t)
+	ahead := fmt.Sprintf(`{"source":"cam2","command_seq":%d}`, time.Now().Add(5*time.Second).UnixMicro())
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", ahead))
+	require.Equal(t, http.StatusOK, b.send(t, http.MethodPost, "/api/switch/cut", ahead))
+	b.holdRelays()
+	// two commands, so a's last seq lies above the one b mints next
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/preview", `{"source":"cam1"}`))
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
+	time.Sleep(2 * time.Millisecond)
+	require.Equal(t, http.StatusOK, b.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam3"}`))
+	require.Greater(t, a.sw.LastCommandSeq(), b.sw.LastCommandSeq())
+	b.releaseRelays()
+	require.Eventually(t, func() bool {
+		return a.program() == "cam3" && a.sw.LastCommandSeq() == b.sw.LastCommandSeq()
+	}, 5*time.Second, 5*time.Millisecond, "seqs %d and %d", a.sw.LastCommandSeq(), b.sw.LastCommandSeq())
+	assert.Equal(t, "cam3", b.program())
+}
+
+// An engine without a label does not relay: two unlabelled engines would
+// give out the same seqs.
+func TestPeerRelay_OffWithoutLabel(t *testing.T) {
+	sw := switcher.NewTestSwitcher(t, distribution.NewRelay())
+	sw.RegisterSource("cam1", distribution.NewRelay())
+	peerHit := make(chan struct{}, 1)
+	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/peer/health" {
+			peerHit <- struct{}{}
+		}
+	}))
+	t.Cleanup(peerSrv.Close)
+	q := cmdqueue.New(func() int64 { return time.Now().UnixMicro() }, cmdqueue.WithStateKeys(RelayedStateKeys()))
+	api := NewAPI(sw, WithCommandQueue(q), WithPeerPoller(peer.NewHealthPoller(peerSrv.URL)), WithPeerRelay(""))
+	require.Equal(t, http.StatusOK, serve(t, api, "POST", "/api/switch/cut", `{"source":"cam1"}`).Code)
+	select {
+	case <-peerHit:
+		t.Fatal("an unlabelled engine relayed")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// The state a keyed command answers with is encoded once the queue is
+// released, so the frame loop's dispatch does not wait for it.
+func TestPeerRelay_AnswerEncodedAfterTheQueueIsReleased(t *testing.T) {
+	a, _ := newRelayPair(t)
+	held := make(chan bool, 1)
+	a.api.SetEnrichFunc(func(s internal.ControlRoomState) internal.ControlRoomState {
+		got := make(chan struct{})
+		go func() { release := a.q.Hold(); release(); close(got) }()
+		select {
+		case <-got:
+			held <- false
+		case <-time.After(200 * time.Millisecond):
+			held <- true
+		}
+		return s
+	})
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam2"}`))
+	assert.False(t, <-held, "the queue was held while the answer was encoded")
 }
 
 func TestBufferedResponseKeepsFirstStatus(t *testing.T) {
@@ -340,4 +492,28 @@ func TestBufferedResponseKeepsFirstStatus(t *testing.T) {
 	_, _ = b.Write([]byte("x"))
 	b.WriteHeader(http.StatusInternalServerError)
 	assert.Equal(t, http.StatusOK, b.status)
+}
+
+// slowPath delays requests for path the test did not send.
+func (e *relayEngine) slowPath(path string, d time.Duration) {
+	e.mu.Lock()
+	e.slow, e.slowFor = path, d
+	e.mu.Unlock()
+}
+
+// A cut to the source already on program leaves the preview alone, so a
+// preview chosen before it on the other engine still lands.
+func TestPeerRelay_CutToProgramKeepsAnEarlierPreview(t *testing.T) {
+	a, b := newRelayPair(t)
+	// on program alike, without a relayed cut the one below would repeat
+	for _, e := range []*relayEngine{a, b} {
+		require.NoError(t, e.sw.Cut(context.Background(), "cam1"))
+	}
+	b.holdRelays()
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/preview", `{"source":"cam3"}`))
+	time.Sleep(2 * time.Millisecond)
+	require.Equal(t, http.StatusOK, b.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
+	b.releaseRelays()
+	require.Eventually(t, func() bool { return b.sw.State().PreviewSource == "cam3" }, 5*time.Second, 5*time.Millisecond)
+	assert.Equal(t, "cam3", a.sw.State().PreviewSource)
 }

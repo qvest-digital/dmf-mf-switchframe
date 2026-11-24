@@ -1759,7 +1759,13 @@ func (a *App) initAPI() error {
 	}
 
 	if a.peerPoller != nil {
-		apiOpts = append(apiOpts, control.WithPeerRelay(a.cfg.APIToken))
+		// Without authentication here, an anonymous command would reach
+		// the peer as the API token's: it goes on without credentials.
+		relayToken := a.cfg.APIToken
+		if a.cfg.Demo {
+			relayToken = ""
+		}
+		apiOpts = append(apiOpts, control.WithPeerRelay(relayToken))
 	}
 	a.api = control.NewAPI(a.sw, apiOpts...)
 

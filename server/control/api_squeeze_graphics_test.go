@@ -174,3 +174,13 @@ func TestSqueezeGraphics_MacroMoveDropsPendingOne(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	assert.False(t, sq.Snapshot().On, "the on that was waiting did not run")
 }
+
+// Taking the peer's squeezeback drops a move still waiting on its
+// graphics' head start, which would otherwise undo it.
+func TestSqueezeGraphics_CancelDropsPendingMove(t *testing.T) {
+	api, sq, _ := squeezeGfxAPI(t, -150)
+	require.Equal(t, http.StatusNoContent, serve(t, api, "POST", "/api/squeezeback/on", lFrameLayout).Code)
+	api.CancelSqueezeMoves()
+	time.Sleep(300 * time.Millisecond)
+	assert.False(t, sq.Snapshot().On)
+}

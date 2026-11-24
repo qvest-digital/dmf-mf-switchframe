@@ -703,7 +703,7 @@ func (a *App) registerSqueezeActions(d *cmdqueue.Dispatcher) {
 			if a.api == nil {
 				return nil
 			}
-			return a.api.MoveSqueeze(on, payload)
+			return a.api.MoveQueuedSqueeze(on, payload)
 		})
 	}
 }

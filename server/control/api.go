@@ -635,6 +635,7 @@ type API struct {
 	relayEnabled       bool                                // see WithPeerRelay
 	relayToken         string
 	relaySeq           atomic.Uint64 // last seq given to a relayed command
+	relay              relayState
 	squeezePending     squeezePending
 	startTime          time.Time
 	reconcileLock      reconcileLockState
@@ -652,6 +653,9 @@ func NewAPI(sw *switcher.Switcher, opts ...APIOption) *API {
 	a := &API{switcher: sw, mux: http.NewServeMux(), startTime: time.Now(), reconcileLock: newReconcileLockState()}
 	for _, opt := range opts {
 		opt(a)
+	}
+	if a.cmdQueue != nil {
+		a.cmdQueue.SetChanges(a.changesState)
 	}
 	a.registerRoutes()
 	return a
@@ -837,8 +841,7 @@ func (a *API) handleCutInner(w http.ResponseWriter, r *http.Request, body []byte
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.enrichedState())
+	a.writeState(w)
 }
 
 // handlePreviewInner sets the preview source without affecting the program output.
@@ -858,8 +861,7 @@ func (a *API) handlePreviewInner(w http.ResponseWriter, r *http.Request, body []
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.enrichedState())
+	a.writeState(w)
 }
 
 // handleState returns the current ControlRoomState as JSON.
