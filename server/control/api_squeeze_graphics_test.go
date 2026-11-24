@@ -59,11 +59,13 @@ const lFrameLayout = `{"graphics":[{"layerId":3,"data":{"layout":"lframe"}}]}`
 // sending the two calls back to back has them.
 func TestSqueezeGraphics_NoOffsetSendsWithTheMove(t *testing.T) {
 	api, sq, gfx := squeezeGfxAPI(t, 0)
+	start := time.Now()
 	require.Equal(t, http.StatusNoContent, serve(t, api, "POST", "/api/squeezeback/on", lFrameLayout).Code)
 	require.True(t, sq.Snapshot().On)
+	require.Eventually(t, func() bool { return len(gfx.sent()) == 1 }, 2*time.Second, time.Millisecond)
 	sent := gfx.sent()
-	require.Len(t, sent, 1)
 	assert.JSONEq(t, `{"layout":"lframe"}`, sent[0].data)
+	assert.Less(t, sent[0].at.Sub(start), 100*time.Millisecond)
 }
 
 // A positive offset sends the graphics that long after the move starts.
@@ -84,8 +86,9 @@ func TestSqueezeGraphics_NegativeOffsetSendsBeforeTheMove(t *testing.T) {
 	start := time.Now()
 	body := `{"graphicsOffsetMs":-200,"graphics":[{"layerId":3,"data":{"layout":"lframe"}}]}`
 	require.Equal(t, http.StatusNoContent, serve(t, api, "POST", "/api/squeezeback/on", body).Code)
-	require.Len(t, gfx.sent(), 1, "the graphics go first")
 	require.False(t, sq.Snapshot().On, "the move waits for the offset")
+	require.Eventually(t, func() bool { return len(gfx.sent()) == 1 }, 2*time.Second, time.Millisecond)
+	require.False(t, sq.Snapshot().On, "the graphics go first")
 	require.Eventually(t, func() bool { return sq.Snapshot().On }, 2*time.Second, 5*time.Millisecond)
 	assert.GreaterOrEqual(t, time.Since(start), 200*time.Millisecond)
 }
@@ -101,8 +104,40 @@ func TestSqueezeGraphics_LaterMoveDropsPendingOne(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	assert.False(t, sq.Snapshot().On, "the on that was waiting did not run")
 	sent := gfx.sent()
-	require.Len(t, sent, 2)
-	assert.JSONEq(t, `{"layout":"full"}`, sent[1].data)
+	require.NotEmpty(t, sent)
+	assert.JSONEq(t, `{"layout":"full"}`, sent[len(sent)-1].data, "the later move's layout is the one left")
+}
+
+// A sidecar that does not take the graphics holds up neither the move nor
+// its caller, which for a timed move is the frame loop.
+func TestSqueezeGraphics_SlowSidecarDoesNotHoldTheMove(t *testing.T) {
+	api, sq, _ := squeezeGfxAPI(t, 0)
+	stuck := &blockingGfx{recordingGfx: &recordingGfx{mockHTMLGfxManager: newMockHTMLGfxManager(2)}, release: make(chan struct{})}
+	_, err := stuck.AllocateBrowser(3)
+	require.NoError(t, err)
+	api.SetHTMLGfxManager(stuck)
+	defer close(stuck.release)
+	done := make(chan error, 1)
+	go func() { done <- api.MoveSqueeze(true, []byte(lFrameLayout)) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("MoveSqueeze waited for the graphics sidecar")
+	}
+	require.True(t, sq.Snapshot().On)
+	require.NoError(t, api.MoveSqueeze(false, []byte(`{"graphics":[{"layerId":3,"data":{}}]}`)), "a second move waits neither")
+}
+
+// blockingGfx is a sidecar whose data sends hang until release closes.
+type blockingGfx struct {
+	*recordingGfx
+	release chan struct{}
+}
+
+func (m *blockingGfx) Update(browserID int, data string) error {
+	<-m.release
+	return m.recordingGfx.Update(browserID, data)
 }
 
 // Graphics naming a layer without an HTML5 graphic, or no data, refuse the

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
@@ -93,9 +94,13 @@ type squeezeGraphic struct {
 // squeezePending is what a move has still to do once its graphics offset
 // has passed: send its graphics, or, sent first, start the move.
 type squeezePending struct {
-	mu    sync.Mutex
-	gen   uint64
+	mu    sync.Mutex // guards timer and the gen bump
+	gen   atomic.Uint64
 	timer *time.Timer
+
+	// sendMu orders graphics sends; held only while sending, never by a
+	// caller of MoveSqueeze, which a frame loop may be.
+	sendMu sync.Mutex
 }
 
 // MoveSqueeze runs a squeezeback On or Off from its request body, and sends
@@ -103,6 +108,8 @@ type squeezePending struct {
 // move starts, before it when negative: the move then waits. A move drops
 // what an earlier one has still to do. Graphics are checked before
 // anything moves, and an error naming an HTML5 graphic is an *html5Error.
+// Graphics are sent on a goroutine of their own: a timed move runs on the
+// frame loop, which a slow graphics sidecar must not hold up.
 func (a *API) MoveSqueeze(on bool, body []byte) error {
 	if a.squeeze == nil {
 		return nil
@@ -139,7 +146,23 @@ func (a *API) MoveSqueeze(on bool, body []byte) error {
 		}
 		return a.squeeze.Off(req.SqueezeMove)
 	}
+	p := &a.squeezePending
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	gen := p.gen.Add(1)
+	if p.timer != nil {
+		p.timer.Stop()
+		p.timer = nil
+	}
+	if len(req.Graphics) == 0 {
+		return move()
+	}
 	send := func() {
+		p.sendMu.Lock()
+		defer p.sendMu.Unlock()
+		if p.gen.Load() != gen {
+			return
+		}
 		for _, g := range req.Graphics {
 			browserID, err := a.html5Browser(*g.LayerID)
 			if err == nil {
@@ -150,46 +173,34 @@ func (a *API) MoveSqueeze(on bool, body []byte) error {
 			}
 		}
 	}
-
-	p := &a.squeezePending
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.gen++
-	if p.timer != nil {
-		p.timer.Stop()
-		p.timer = nil
-	}
-	if len(req.Graphics) == 0 {
-		return move()
-	}
-	later := send
 	if offset < 0 {
 		if err := a.squeeze.CheckMove(on, req.SqueezeMove); err != nil {
 			return err
 		}
-		send()
-		later = func() {
-			if err := move(); err != nil {
+		go send()
+		p.timer = time.AfterFunc(-offset, func() {
+			p.mu.Lock()
+			if p.gen.Load() != gen {
+				p.mu.Unlock()
+				return
+			}
+			p.timer = nil
+			err := move()
+			p.mu.Unlock()
+			if err != nil {
 				slog.Warn("squeezeback: move after its graphics failed", "on", on, "error", err)
 			}
 			a.broadcast()
-		}
-		offset = -offset
-	} else if err := move(); err != nil {
+		})
+		return nil
+	}
+	if err := move(); err != nil {
 		return err
 	}
 	if offset == 0 {
-		later()
-		return nil
+		go send()
+	} else {
+		p.timer = time.AfterFunc(offset, send)
 	}
-	gen := p.gen
-	p.timer = time.AfterFunc(offset, func() {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		if p.gen == gen {
-			p.timer = nil
-			later()
-		}
-	})
 	return nil
 }
