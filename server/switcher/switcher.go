@@ -3231,7 +3231,8 @@ func (s *Switcher) UnregisterSource(key string) {
 
 // Cut performs a hard cut to the named source, making it the program output.
 // The previous program source is automatically moved to preview. If the
-// source is already on program, Cut is a no-op (Seq is not incremented).
+// source is already on program, Cut is a no-op (Seq is not incremented),
+// unless a transition is taking it away, which Cut then aborts.
 // When an audioCutHandler (mixer) is attached, Cut triggers an audio crossfade
 // and AFV program change automatically.
 //
@@ -3250,6 +3251,16 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	if _, ok := (*s.sourcesAtomic.Load())[sourceKey]; !ok {
 		s.configMu.Unlock()
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
+	}
+	if s.programSource == sourceKey && s.state == StateTransitioning {
+		// A cut to the source on program while a transition takes it
+		// away keeps it on program: the transition is aborted, as a cut
+		// to another source aborts it. A no-op here would leave the
+		// transition to complete, while an engine of a pair taking the
+		// same two commands the other way round ends on this source.
+		s.configMu.Unlock()
+		s.AbortTransition()
+		return nil
 	}
 	if s.programSource != sourceKey {
 		// If a transition is active, abort it first so its OnComplete
