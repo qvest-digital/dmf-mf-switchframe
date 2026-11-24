@@ -110,6 +110,7 @@ func (e *relayEngine) drain(t *testing.T) {
 			return
 		case <-tick.C:
 		}
+		release := e.q.Hold()
 		for _, c := range e.q.Drain() {
 			switch c.Action {
 			case "cut", "preview":
@@ -135,6 +136,7 @@ func (e *relayEngine) drain(t *testing.T) {
 			}
 			e.sw.TrackCommandSeq(c.Seq)
 		}
+		release()
 	}
 }
 
@@ -261,4 +263,38 @@ func TestPeerRelay_TimedCommandRunsAtItsTimeOnBoth(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return a.program() == "cam3" && b.program() == "cam3"
 	}, 5*time.Second, 5*time.Millisecond)
+}
+
+// A browser's command run on arrival on both engines falls among the
+// commands relayed between them: a relayed cut made before it, reaching
+// an engine after it, is dropped there.
+func TestPeerRelay_BrowserCommandRunOnArrivalHolds(t *testing.T) {
+	a, b := newRelayPair(t)
+	b.holdRelays()
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
+	time.Sleep(2 * time.Millisecond)
+	browser := fmt.Sprintf(`{"source":"cam3","execute_at":0,"command_seq":%d}`, time.Now().UnixMicro()*10)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", browser))
+	require.Equal(t, http.StatusOK, b.send(t, http.MethodPost, "/api/switch/cut", browser))
+	b.releaseRelays()
+
+	time.Sleep(200 * time.Millisecond)
+	assert.Equal(t, "cam3", a.program())
+	assert.Equal(t, "cam3", b.program(), "the earlier relayed cut landed after the browser's")
+}
+
+// A squeezeback configuration naming no graphics offset reaches the peer
+// with the offset it kept here, not whatever the peer held.
+func TestPeerRelay_SqueezebackSetCarriesResolvedOffset(t *testing.T) {
+	a, b := newRelayPair(t)
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPut, "/api/squeezeback",
+		`{"rect":{"x":80,"y":0,"w":240,"h":180},"graphicsOffsetMs":400}`))
+	require.Eventually(t, func() bool { return b.sq.Snapshot().GraphicsOffset() == 400*time.Millisecond },
+		5*time.Second, 5*time.Millisecond)
+	zero := 0
+	require.NoError(t, b.sq.Set(dve.SqueezeConfig{Rect: dve.Rect{X: 80, W: 240, H: 180}, GraphicsOffsetMs: &zero}))
+
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPut, "/api/squeezeback", `{"rect":{"x":0,"y":0,"w":240,"h":180}}`))
+	require.Eventually(t, func() bool { return b.sq.Snapshot().Rect.X == 0 }, 5*time.Second, 5*time.Millisecond)
+	assert.Equal(t, 400*time.Millisecond, b.sq.Snapshot().GraphicsOffset())
 }

@@ -1785,6 +1785,9 @@ func (s *Switcher) drainCommandQueue() {
 	if s.cmdQueue == nil {
 		return
 	}
+	// A command run on arrival waits for this dispatch, and this one for
+	// it, so what the queue records as run is what ran, in that order.
+	defer s.cmdQueue.Hold()()
 	for _, cmd := range s.cmdQueue.Drain() {
 		var dispatchErr error
 		if s.cmdDispatcher != nil {

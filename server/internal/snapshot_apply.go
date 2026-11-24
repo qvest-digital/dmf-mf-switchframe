@@ -333,8 +333,9 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 		warnings = append(warnings, fmt.Sprintf("DVE layout: %v", err))
 	}
 
-	// 8.5. Squeeze-back, after the layout it shrinks
-	if applier, ok := target.(SnapshotSqueezebackApplier); ok {
+	// 8.5. Squeeze-back, after the layout it shrinks; a snapshot from an
+	// engine that predates it leaves it as it is.
+	if applier, ok := target.(SnapshotSqueezebackApplier); ok && snap.SqueezebackSynced {
 		if err := applier.ApplySqueezeback(snap.Squeezeback); err != nil {
 			slog.Warn("snapshot apply: squeezeback failed", "error", err)
 			warnings = append(warnings, fmt.Sprintf("squeezeback: %v", err))

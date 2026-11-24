@@ -2,17 +2,48 @@ package cmdqueue_test
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/zsiec/switchframe/server/cmdqueue"
 )
 
-var testStateKeys = map[string]string{"cut": "program", "transition": "program", "preview": "preview"}
+var testStateKeys = map[string][]string{"cut": {"program", "preview"}, "transition": {"program"}, "preview": {"preview"}}
+
+// ranHere runs a command on arrival, recording it.
+func ranHere(t *testing.T, q *cmdqueue.Queue, action string, at int64, seq uint64, payload string, state map[string]string) {
+	t.Helper()
+	err := q.RunLocal(cmdqueue.Command{Action: action, OrderAt: at, Seq: seq, Payload: []byte(payload)}, func() bool {
+		apply(state, action, payload)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("RunLocal %s: %v", action, err)
+	}
+}
+
+// apply runs action on a switcher reduced to its program and preview: a
+// cut puts the old program on preview.
+func apply(state map[string]string, action, payload string) {
+	switch action {
+	case "cut", "transition":
+		if old := state["program"]; old != "" {
+			state["preview"] = old
+		}
+		state["program"] = payload
+	case "preview":
+		state["preview"] = payload
+	default:
+		state[action] = payload
+	}
+}
 
 // run applies what a queue drains to state, as the switcher does.
 func run(q *cmdqueue.Queue, state map[string]string) {
+	defer q.Hold()()
 	for _, c := range q.Drain() {
-		state[c.Action] = string(c.Payload)
+		apply(state, c.Action, string(c.Payload))
 	}
 }
 
@@ -30,10 +61,8 @@ func TestStateKeys_RelayedConflictEndsAlike(t *testing.T) {
 	// a cuts to cam1 at t0+10ms, b to cam2 at t0+12ms, each on arrival.
 	a := cmdqueue.Command{ExecuteAt: t0 + 10_000, Seq: 10, Action: "cut", Payload: []byte("cam1")}
 	b := cmdqueue.Command{ExecuteAt: t0 + 12_000, Seq: 11, Action: "cut", Payload: []byte("cam2")}
-	sa["cut"] = "cam1"
-	qa.Ran(a.Action, a.ExecuteAt, a.Seq)
-	sb["cut"] = "cam2"
-	qb.Ran(b.Action, b.ExecuteAt, b.Seq)
+	ranHere(t, qa, a.Action, a.ExecuteAt, a.Seq, "cam1", sa)
+	ranHere(t, qb, b.Action, b.ExecuteAt, b.Seq, "cam2", sb)
 
 	// Each relay arrives 5ms later.
 	advA(17_000)
@@ -46,8 +75,8 @@ func TestStateKeys_RelayedConflictEndsAlike(t *testing.T) {
 	}
 	run(qa, sa)
 	run(qb, sb)
-	if sa["cut"] != "cam2" || sb["cut"] != "cam2" {
-		t.Fatalf("engines ended on %q and %q, want cam2 on both", sa["cut"], sb["cut"])
+	if sa["program"] != "cam2" || sb["program"] != "cam2" {
+		t.Fatalf("engines ended on %q and %q, want cam2 on both", sa["program"], sb["program"])
 	}
 }
 
@@ -55,7 +84,7 @@ func TestStateKeys_RelayedConflictEndsAlike(t *testing.T) {
 func TestStateKeys_SameTimeHigherSeqHolds(t *testing.T) {
 	clock, _ := newClock(1_000)
 	q := cmdqueue.New(clock, cmdqueue.WithStateKeys(testStateKeys))
-	q.Ran("cut", 500, 8)
+	ranHere(t, q, "cut", 500, 8, "cam1", map[string]string{})
 	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 500, Seq: 7, Action: "cut"}); !errors.Is(err, cmdqueue.ErrSuperseded) {
 		t.Fatalf("lower seq at the same time: got %v", err)
 	}
@@ -76,10 +105,10 @@ func TestStateKeys_DueCommandDroppedAfterLaterRan(t *testing.T) {
 		t.Fatal(err)
 	}
 	advance(1_500)
-	q.Ran("transition", 2_400, 5)
 	got := map[string]string{}
+	ranHere(t, q, "transition", 2_400, 5, "cam2", got)
 	run(q, got)
-	if _, ok := got["cut"]; ok {
+	if got["program"] != "cam2" {
 		t.Fatal("the cut ran after a later transition on program")
 	}
 	if got["preview"] != "cam3" {
@@ -91,7 +120,6 @@ func TestStateKeys_DueCommandDroppedAfterLaterRan(t *testing.T) {
 func TestStateKeys_UnkeyedActionsRunInOrder(t *testing.T) {
 	clock, _ := newClock(1_000)
 	q := cmdqueue.New(clock, cmdqueue.WithStateKeys(testStateKeys))
-	q.Ran("ftb", 900, 9)
 	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 800, Seq: 3, Action: "ftb"}); err != nil {
 		t.Fatalf("unkeyed action: %v", err)
 	}
@@ -117,5 +145,106 @@ func TestStateKeys_LateCommandKeepsItsTime(t *testing.T) {
 	}
 	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 8_600_000, Seq: 6, Action: "cut"}); err != nil {
 		t.Fatalf("a late cut falling after the one run: %v", err)
+	}
+}
+
+// A preview and a cut made at nearly the same moment on the two engines,
+// each relayed to the other: a cut puts the old program on preview, so
+// both end on the preview of whichever came later.
+func TestStateKeys_PreviewAndCutCrossing(t *testing.T) {
+	for name, previewFirst := range map[string]bool{"preview first": true, "cut first": false} {
+		t.Run(name, func(t *testing.T) {
+			const t0 = int64(1_000_000_000)
+			clockA, advA := newClock(t0)
+			clockB, advB := newClock(t0)
+			qa := cmdqueue.New(clockA, cmdqueue.WithStateKeys(testStateKeys))
+			qb := cmdqueue.New(clockB, cmdqueue.WithStateKeys(testStateKeys))
+			sa := map[string]string{"program": "cam1", "preview": "cam1"}
+			sb := map[string]string{"program": "cam1", "preview": "cam1"}
+
+			pv := cmdqueue.Command{ExecuteAt: t0 + 10_000, Seq: 10, Action: "preview", Payload: []byte("cam3")}
+			cut := cmdqueue.Command{ExecuteAt: t0 + 12_000, Seq: 11, Action: "cut", Payload: []byte("cam2")}
+			want := "cam1" // the cut came later: the old program
+			if !previewFirst {
+				pv.ExecuteAt, cut.ExecuteAt = cut.ExecuteAt, pv.ExecuteAt
+				want = "cam3"
+			}
+			ranHere(t, qa, pv.Action, pv.ExecuteAt, pv.Seq, "cam3", sa)
+			ranHere(t, qb, cut.Action, cut.ExecuteAt, cut.Seq, "cam2", sb)
+			advA(17_000)
+			advB(17_000)
+			_ = qa.Enqueue(cut)
+			_ = qb.Enqueue(pv)
+			run(qa, sa)
+			run(qb, sb)
+			if sa["program"] != "cam2" || sb["program"] != "cam2" {
+				t.Fatalf("program %q and %q, want cam2", sa["program"], sb["program"])
+			}
+			if sa["preview"] != want || sb["preview"] != want {
+				t.Fatalf("preview %q and %q, want %q on both", sa["preview"], sb["preview"], want)
+			}
+		})
+	}
+}
+
+// RunLocal does not run while a drain's dispatch holds the queue, so a
+// drained command never lands after one run on arrival that falls later.
+func TestStateKeys_RunLocalWaitsForDispatch(t *testing.T) {
+	clock, _ := newClock(1_000)
+	q := cmdqueue.New(clock, cmdqueue.WithStateKeys(testStateKeys))
+	release := q.Hold()
+	ran := make(chan struct{})
+	go func() {
+		_ = q.RunLocal(cmdqueue.Command{Action: "cut", OrderAt: 900, Seq: 2}, func() bool { close(ran); return true })
+	}()
+	select {
+	case <-ran:
+		t.Fatal("RunLocal ran while the queue was held")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	select {
+	case <-ran:
+	case <-time.After(time.Second):
+		t.Fatal("RunLocal did not run once released")
+	}
+}
+
+// A command run on arrival that fails is not recorded, and does not drop
+// an earlier one arriving later.
+func TestStateKeys_FailedLocalRunNotRecorded(t *testing.T) {
+	clock, _ := newClock(1_000)
+	q := cmdqueue.New(clock, cmdqueue.WithStateKeys(testStateKeys))
+	if err := q.RunLocal(cmdqueue.Command{Action: "cut", OrderAt: 900, Seq: 2}, func() bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 800, Seq: 1, Action: "cut"}); err != nil {
+		t.Fatalf("an earlier cut after a failed later one: %v", err)
+	}
+}
+
+// A late command keeps its place in the order across a WAL replay.
+func TestStateKeys_OrderAtSurvivesWALReplay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "q.wal")
+	clock, _ := newClock(10_000_000)
+	wal, err := cmdqueue.NewWAL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := cmdqueue.New(clock, cmdqueue.WithMaxAge(1_000_000), cmdqueue.WithWAL(wal), cmdqueue.WithStateKeys(testStateKeys))
+	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 8_500_000, Seq: 4, Action: "cut"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = wal.Close()
+
+	wal2, err := cmdqueue.NewWAL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q2 := cmdqueue.New(clock, cmdqueue.WithMaxAge(1_000_000), cmdqueue.WithWAL(wal2), cmdqueue.WithStateKeys(testStateKeys))
+	defer func() { _ = wal2.Close() }()
+	cmds := q2.Drain()
+	if len(cmds) != 1 || cmds[0].OrderAt != 8_500_000 {
+		t.Fatalf("replayed %+v, want the cut at order 8500000", cmds)
 	}
 }

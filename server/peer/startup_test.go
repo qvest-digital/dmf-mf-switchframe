@@ -480,6 +480,33 @@ func TestRunStartup_PeerSourceNeverOpensGivesUpAfterWait(t *testing.T) {
 	})
 }
 
+// A peer that cuts to another input still opening here, after the first
+// one opened, is waited for afresh: each source gets the whole wait.
+func TestRunStartup_EachPeerSourceGetsTheWholeWait(t *testing.T) {
+	leader := newFakeEngine(t, "a", "tok")
+	returning := newFakeEngine(t, "b", "tok")
+	leader.set(func(e *fakeEngine) {
+		e.program = "mxl:cam3"
+		e.afterSnap = func(e *fakeEngine) { e.program, e.afterSnap = "mxl:cam4", nil }
+	})
+	returning.set(func(e *fakeEngine) {
+		e.initial = "mxl:cam1"
+		e.known = map[string]bool{"mxl:cam1": true}
+	})
+	done := startEngineConfig(t, returning, leader.srv.URL, 20*time.Millisecond, 2,
+		StartupConfig{LeaderWait: time.Minute, SourceWait: 400 * time.Millisecond})
+	time.Sleep(300 * time.Millisecond)
+	returning.set(func(e *fakeEngine) { e.known["mxl:cam3"] = true })
+	time.Sleep(300 * time.Millisecond)
+	returning.set(func(e *fakeEngine) { e.known["mxl:cam4"] = true })
+	waitDone(t, done)
+
+	returning.get(func(e *fakeEngine) {
+		assert.Equal(t, "mxl:cam4", e.program)
+		assert.Zero(t, e.goLives)
+	})
+}
+
 // A single engine goes live at once, retrying until a source is available.
 func TestRunStartup_StandaloneGoesLive(t *testing.T) {
 	e := newFakeEngine(t, "", "")

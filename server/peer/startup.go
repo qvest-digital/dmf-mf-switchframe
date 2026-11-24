@@ -198,7 +198,9 @@ func RunStartup(ctx context.Context, p *HealthPoller, eng StartupEngine, cfg Sta
 			return
 		case stepFollow:
 			peerProgram := p.Status().ProgramSource
-			if !eng.HasSource(peerProgram) {
+			if eng.HasSource(peerProgram) {
+				sourceWait = time.Time{}
+			} else {
 				// An apply would skip the cut, and the follows would run
 				// out before the input opens, leaving the engine on a
 				// source of its own.

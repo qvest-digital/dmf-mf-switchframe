@@ -62,7 +62,16 @@ func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), han
 			return
 		}
 
-		handler(w, r, body)
+		if q != nil && timed.CommandSeq > 0 && q.Keyed(action) {
+			// A command both engines of a pair take, run on arrival: it
+			// falls among the commands on its state as they reach it.
+			cmd := cmdqueue.Command{Seq: timed.CommandSeq, Action: action, Payload: json.RawMessage(body)}
+			if !runKeyed(q, cmd, w, r, body, handler) {
+				return
+			}
+		} else {
+			handler(w, r, body)
+		}
 
 		// Track command_seq for immediate execution too, so the sync health
 		// endpoint detects all state changes, not just queued ones.
@@ -120,7 +129,16 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint
 			return
 		}
 
-		handler(w, r, body)
+		if q != nil && timed.CommandSeq > 0 && q.Keyed(action) {
+			// A command both engines of a pair take, run on arrival: it
+			// falls among the commands on its state as they reach it.
+			cmd := cmdqueue.Command{Seq: timed.CommandSeq, Action: action, Payload: json.RawMessage(body)}
+			if !runKeyed(q, cmd, w, r, body, handler) {
+				return
+			}
+		} else {
+			handler(w, r, body)
+		}
 
 		// Track command_seq for immediate execution too, so the sync health
 		// endpoint detects all state changes, not just queued ones.

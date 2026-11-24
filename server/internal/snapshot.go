@@ -68,8 +68,10 @@ type FullStateSnapshot struct {
 	Layout LayoutSnapshot `json:"layout"`
 
 	// Squeezeback is the squeeze-back's configuration and whether it is
-	// on, nil while it is unconfigured.
-	Squeezeback *SqueezebackSnapshot `json:"squeezeback,omitempty"`
+	// on, nil while it is unconfigured. SqueezebackSynced is set by an
+	// engine that captures it; only then does a nil Squeezeback mean none.
+	Squeezeback       *SqueezebackSnapshot `json:"squeezeback,omitempty"`
+	SqueezebackSynced bool                 `json:"squeezebackSynced,omitempty"`
 
 	// --- Captions ---
 

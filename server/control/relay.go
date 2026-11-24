@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/zsiec/switchframe/server/cmdqueue"
@@ -15,21 +17,28 @@ import (
 )
 
 // relayedStateKeys are the commands an engine of a pair passes on to its
-// peer, each with the state it sets: the program, the preview and the
+// peer, each with the states it sets: the program, the preview and the
 // squeezeback. Each sets its state whole, so of two the later holds. A
-// toggle, as FTB is, is left to the caller and to convergence.
-var relayedStateKeys = map[string]string{
-	"cut":             "program",
-	"transition":      "program",
-	"preview":         "preview",
-	"squeezeback_set": "squeezeback_config",
-	"squeezeback_on":  "squeezeback",
-	"squeezeback_off": "squeezeback",
+// cut also puts the old program on preview. A toggle, as FTB is, is left
+// to the caller and to convergence.
+var relayedStateKeys = map[string][]string{
+	"cut":             {"program", "preview"},
+	"transition":      {"program"},
+	"preview":         {"preview"},
+	"squeezeback_set": {"squeezeback_config"},
+	"squeezeback_on":  {"squeezeback"},
+	"squeezeback_off": {"squeezeback"},
 }
 
-// RelayedStateKeys returns the state each command an engine relays to its
-// peer sets, as cmdqueue.WithStateKeys takes it.
-func RelayedStateKeys() map[string]string { return maps.Clone(relayedStateKeys) }
+// RelayedStateKeys returns the states each command an engine relays to
+// its peer sets, as cmdqueue.WithStateKeys takes them.
+func RelayedStateKeys() map[string][]string {
+	keys := maps.Clone(relayedStateKeys)
+	for k, v := range keys {
+		keys[k] = slices.Clone(v)
+	}
+	return keys
+}
 
 // relayTimeout bounds one command sent to the peer.
 const relayTimeout = 2 * time.Second
@@ -76,22 +85,20 @@ func (a *API) relayedHandler(action string, handler immediateHandlerFunc) http.H
 
 		seq := a.nextRelaySeq()
 		at := req.ExecuteAt
-		runNow := at == 0
+		runNow := at <= 0
 		if runNow {
 			at = a.cmdQueue.Now()
 		}
-		stamped, err := stampCommand(body, at, seq)
+		stamped, err := stampCommand(a.resolveRelayed(action, body), at, seq)
 		if err != nil {
 			httperr.Write(w, http.StatusBadRequest, "invalid json")
 			return
 		}
 		if runNow {
-			rec := &statusRecorder{ResponseWriter: w}
-			handler(rec, r, stamped)
-			if rec.status >= http.StatusMultipleChoices {
+			cmd := cmdqueue.Command{OrderAt: at, Seq: seq, Action: action, Payload: stamped}
+			if !runKeyed(a.cmdQueue, cmd, w, r, stamped, handler) {
 				return
 			}
-			a.cmdQueue.Ran(action, at, seq)
 		} else {
 			cmd := cmdqueue.Command{ExecuteAt: at, Seq: seq, Action: action, Payload: stamped}
 			if err := a.cmdQueue.Enqueue(cmd); err != nil {
@@ -109,6 +116,72 @@ func (a *API) relayedHandler(action string, handler immediateHandlerFunc) http.H
 		}
 		a.relayToPeer(r.Method, r.URL.Path, auth, stamped)
 	}
+}
+
+// resolveRelayed returns body with what the engine fills in from its own
+// state made explicit, so the peer, which may hold another, does as this
+// engine did: a squeezeback configuration naming no graphics offset keeps
+// this engine's.
+func (a *API) resolveRelayed(action string, body []byte) []byte {
+	if action != "squeezeback_set" || a.squeeze == nil {
+		return body
+	}
+	fields := map[string]json.RawMessage{}
+	if json.Unmarshal(body, &fields) != nil || fields == nil {
+		return body
+	}
+	if _, ok := fields["graphicsOffsetMs"]; ok {
+		return body
+	}
+	fields["graphicsOffsetMs"], _ = json.Marshal(a.squeeze.Snapshot().GraphicsOffset().Milliseconds())
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// runKeyed runs a command on a state the queue keys on arrival, as one of
+// a pair relays or a caller sends to both: refused with 409 when a later
+// command on its state has run here, and recorded as run when the handler
+// succeeds. The handler's answer is buffered and written once the queue
+// is released, so a slow caller never holds up the frame loop. It reports
+// whether the command ran.
+func runKeyed(q *cmdqueue.Queue, cmd cmdqueue.Command, w http.ResponseWriter, r *http.Request, body []byte, handler immediateHandlerFunc) bool {
+	rec := newBufferedResponse()
+	err := q.RunLocal(cmd, func() bool {
+		handler(rec, r, body)
+		return rec.status < http.StatusMultipleChoices
+	})
+	if err != nil {
+		writeEnqueueError(w, err)
+		return false
+	}
+	rec.writeTo(w)
+	return rec.status < http.StatusMultipleChoices
+}
+
+// bufferedResponse holds a handler's answer until it is written out.
+type bufferedResponse struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func newBufferedResponse() *bufferedResponse {
+	return &bufferedResponse{header: http.Header{}, status: http.StatusOK}
+}
+
+func (b *bufferedResponse) Header() http.Header { return b.header }
+
+func (b *bufferedResponse) Write(p []byte) (int, error) { return b.body.Write(p) }
+
+func (b *bufferedResponse) WriteHeader(code int) { b.status = code }
+
+func (b *bufferedResponse) writeTo(w http.ResponseWriter) {
+	maps.Copy(w.Header(), b.header)
+	w.WriteHeader(b.status)
+	_, _ = w.Write(b.body.Bytes())
 }
 
 // stampCommand returns body, a JSON object or empty, with execute_at and
@@ -177,7 +250,7 @@ func (a *API) relayToPeer(method, path, auth string, body []byte) {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		switch {
 		case resp.StatusCode < http.StatusMultipleChoices:
-		case resp.StatusCode == http.StatusConflict:
+		case resp.StatusCode == http.StatusConflict && strings.Contains(string(msg), cmdqueue.ErrSuperseded.Error()):
 			// The peer ran a later command on the same state.
 			slog.Info("peer relay: peer holds a later command", "path", path, "response", string(msg))
 		default:

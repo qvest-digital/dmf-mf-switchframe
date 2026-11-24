@@ -167,3 +167,18 @@ func TestSnapshotRoundTripCarriesSqueezeback(t *testing.T) {
 	require.False(t, b.squeeze.Snapshot().Configured)
 	require.Empty(t, internal.SnapshotDiff(a.captureFullSnapshot(), b.captureFullSnapshot()))
 }
+
+// A snapshot from an engine that predates the squeeze-back in its state
+// leaves this engine's alone rather than removing it.
+func TestSnapshotFromOlderEngineKeepsSqueezeback(t *testing.T) {
+	ctx := context.Background()
+	b := roundTripApp(t)
+	b.squeeze = dve.NewSqueeze(1920, 1080)
+	require.NoError(t, b.squeeze.Set(dve.SqueezeConfig{Rect: dve.Rect{X: 480, W: 1440, H: 810}}))
+	require.NoError(t, b.squeeze.On(dve.SqueezeMove{DurationMs: new(int)}))
+
+	older := b.captureFullSnapshot()
+	older.Squeezeback, older.SqueezebackSynced = nil, false
+	b.applyPeerState(ctx, older, 3)
+	require.True(t, b.squeeze.Snapshot().On)
+}

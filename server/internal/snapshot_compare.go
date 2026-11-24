@@ -17,8 +17,8 @@ const replayMarkToleranceMs = 2000
 // ComparableSnapshot returns snap with what legitimately differs between
 // the two engines of a pair left out, as SnapshotDiff compares it:
 //
-//   - Version, CapturedAt, GraphicsContent and GraphicsMotion describe the
-//     capture, not the engine.
+//   - Version, CapturedAt, GraphicsContent, GraphicsMotion and
+//     SqueezebackSynced describe the capture, not the engine.
 //   - A graphics layer's Image is replaced by its hash, so the comparable
 //     form stays small; Frame is left out, as a template or HTML layer
 //     renders it on each engine at its own moments.
@@ -37,7 +37,7 @@ const replayMarkToleranceMs = 2000
 func ComparableSnapshot(snap FullStateSnapshot) FullStateSnapshot {
 	c := snap
 	c.Version, c.CapturedAt = "", 0
-	c.GraphicsContent, c.GraphicsMotion = false, false
+	c.GraphicsContent, c.GraphicsMotion, c.SqueezebackSynced = false, false, false
 	c.MacroExecution, c.OperatorSessions, c.CommsParticipants = nil, nil, nil
 	c.StingerLoaded = nil
 

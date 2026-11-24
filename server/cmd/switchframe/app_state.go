@@ -1007,6 +1007,7 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 
 	// --- Squeeze-back ---
 	if a.squeeze != nil {
+		snap.SqueezebackSynced = true
 		if st := a.squeeze.Snapshot(); st.Configured {
 			snap.Squeezeback = &internal.SqueezebackSnapshot{
 				Rect:       internal.SqueezebackRect{X: st.Rect.X, Y: st.Rect.Y, W: st.Rect.W, H: st.Rect.H},
