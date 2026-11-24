@@ -142,7 +142,9 @@ func TestSnapshotRoundTripCarriesSqueezeback(t *testing.T) {
 	a.squeeze, b.squeeze = dve.NewSqueeze(1920, 1080), dve.NewSqueeze(1920, 1080)
 	require.NoError(t, a.sw.Cut(ctx, "cam1"))
 	require.NoError(t, b.sw.Cut(ctx, "cam1"))
-	cfg := dve.SqueezeConfig{Rect: dve.Rect{X: 480, Y: 0, W: 1440, H: 810}, Background: "cam2", DurationMs: 800, Easing: "linear"}
+	offset := -300
+	cfg := dve.SqueezeConfig{Rect: dve.Rect{X: 480, Y: 0, W: 1440, H: 810}, Background: "cam2", DurationMs: 800, Easing: "linear",
+		GraphicsOffsetMs: &offset}
 	require.NoError(t, a.squeeze.Set(cfg))
 	require.NoError(t, a.squeeze.On(dve.SqueezeMove{}))
 

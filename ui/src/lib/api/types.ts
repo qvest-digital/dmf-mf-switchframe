@@ -263,6 +263,7 @@ export interface SqueezebackState {
 	easing?: string;
 	on: boolean; // the state an on or off moves to
 	animating: boolean;
+	graphicsOffsetMs?: number; // graphics sent with a move change this long after it starts; negative is before
 }
 
 export interface SqueezebackRect {

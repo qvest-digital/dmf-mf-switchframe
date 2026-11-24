@@ -352,6 +352,8 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 				Easing:     st.Easing,
 				On:         st.On,
 				Animating:  st.Animating,
+
+				GraphicsOffsetMs: int(st.GraphicsOffset().Milliseconds()),
 			}
 		}
 	}
@@ -1012,6 +1014,8 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 				DurationMs: st.DurationMs,
 				Easing:     st.Easing,
 				On:         st.On,
+
+				GraphicsOffsetMs: int(st.GraphicsOffset().Milliseconds()),
 			}
 		}
 	}

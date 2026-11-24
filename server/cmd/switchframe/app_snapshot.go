@@ -81,6 +81,8 @@ func (a *App) ApplySqueezeback(sq *internal.SqueezebackSnapshot) error {
 		Background: sq.Background,
 		DurationMs: sq.DurationMs,
 		Easing:     sq.Easing,
+
+		GraphicsOffsetMs: &sq.GraphicsOffsetMs,
 	}, sq.On)
 }
 

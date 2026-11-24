@@ -635,6 +635,7 @@ type API struct {
 	relayEnabled       bool                                // see WithPeerRelay
 	relayToken         string
 	relaySeq           atomic.Uint64 // last seq given to a relayed command
+	squeezePending     squeezePending
 	startTime          time.Time
 	reconcileLock      reconcileLockState
 	compareChange      compareChangeState

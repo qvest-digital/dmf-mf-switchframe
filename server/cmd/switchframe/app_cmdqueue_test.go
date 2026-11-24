@@ -10,6 +10,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/cmdqueue"
+	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/switcher"
 )
@@ -230,7 +231,7 @@ func TestInitCommandQueue_Squeezeback(t *testing.T) {
 	sw.RegisterSource("cam2", distribution.NewRelay())
 
 	sq := dve.NewSqueeze(1920, 1080)
-	app := &App{sw: sw, squeeze: sq}
+	app := &App{sw: sw, squeeze: sq, api: control.NewAPI(sw, control.WithSqueeze(sq))}
 	require.NoError(t, app.initCommandQueue())
 
 	dispatch := func(action string, body map[string]any) error {

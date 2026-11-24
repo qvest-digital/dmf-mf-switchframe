@@ -404,3 +404,46 @@ func TestSqueeze_ResetUnconfigures(t *testing.T) {
 	require.False(t, s.Active())
 	require.ErrorIs(t, s.On(SqueezeMove{}), ErrSqueezeNotConfigured)
 }
+
+// A Set naming no graphics offset keeps the configured one, so a caller
+// that does not know it does not reset it; 0 clears it.
+func TestSqueeze_SetKeepsGraphicsOffset(t *testing.T) {
+	s, _ := newTestSqueeze(t, "")
+	cfg := SqueezeConfig{Rect: Rect{X: 32, Y: 32, W: 32, H: 32}, GraphicsOffsetMs: ms(-400)}
+	require.NoError(t, s.Set(cfg))
+	require.Equal(t, -400*time.Millisecond, s.Snapshot().GraphicsOffset())
+
+	cfg.GraphicsOffsetMs = nil
+	cfg.DurationMs = 200
+	require.NoError(t, s.Set(cfg))
+	require.Equal(t, -400*time.Millisecond, s.Snapshot().GraphicsOffset())
+
+	cfg.GraphicsOffsetMs = ms(0)
+	require.NoError(t, s.Set(cfg))
+	require.Nil(t, s.Snapshot().GraphicsOffsetMs)
+
+	require.Error(t, s.Set(SqueezeConfig{Rect: cfg.Rect, GraphicsOffsetMs: ms(-MaxMorphDurationMs - 1)}))
+}
+
+// Restore takes the peer's offset, and an offset of 0 and none are alike.
+func TestSqueeze_RestoreTakesGraphicsOffset(t *testing.T) {
+	s, _ := newTestSqueeze(t, "")
+	cfg := *s.cfg.Load()
+	cfg.GraphicsOffsetMs = ms(250)
+	require.NoError(t, s.Restore(cfg, false))
+	require.Equal(t, 250*time.Millisecond, s.Snapshot().GraphicsOffset())
+
+	cfg.GraphicsOffsetMs = ms(0)
+	require.NoError(t, s.Restore(cfg, false))
+	require.Nil(t, s.Snapshot().GraphicsOffsetMs)
+}
+
+func TestSqueeze_CheckMove(t *testing.T) {
+	require.ErrorIs(t, NewSqueeze(64, 64).CheckMove(true, SqueezeMove{}), ErrSqueezeNotConfigured)
+	require.NoError(t, NewSqueeze(64, 64).CheckMove(false, SqueezeMove{}))
+	s, _ := newTestSqueeze(t, "")
+	require.NoError(t, s.CheckMove(true, SqueezeMove{}))
+	require.Error(t, s.CheckMove(true, SqueezeMove{DurationMs: ms(MaxMorphDurationMs + 1)}))
+	require.Error(t, s.CheckMove(false, SqueezeMove{Easing: "nope"}))
+	require.False(t, s.Snapshot().On, "a check does not move")
+}

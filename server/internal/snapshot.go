@@ -228,6 +228,8 @@ type SqueezebackSnapshot struct {
 	DurationMs int             `json:"durationMs,omitempty"`
 	Easing     string          `json:"easing,omitempty"`
 	On         bool            `json:"on"`
+
+	GraphicsOffsetMs int `json:"graphicsOffsetMs,omitempty"`
 }
 
 // DVESlotSnapshot captures the full DVE transform for a single layout slot.

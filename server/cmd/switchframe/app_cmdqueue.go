@@ -698,19 +698,12 @@ func (a *App) registerSqueezeActions(d *cmdqueue.Dispatcher) {
 		}
 		return a.squeeze.Set(cfg)
 	})
-	for action, move := range map[string]func(*dve.Squeeze, dve.SqueezeMove) error{
-		"squeezeback_on":  (*dve.Squeeze).On,
-		"squeezeback_off": (*dve.Squeeze).Off,
-	} {
+	for action, on := range map[string]bool{"squeezeback_on": true, "squeezeback_off": false} {
 		d.Register(action, func(payload json.RawMessage) error {
-			if a.squeeze == nil {
+			if a.api == nil {
 				return nil
 			}
-			var m dve.SqueezeMove
-			if err := json.Unmarshal(payload, &m); err != nil {
-				return err
-			}
-			return move(a.squeeze, m)
+			return a.api.MoveSqueeze(on, payload)
 		})
 	}
 }

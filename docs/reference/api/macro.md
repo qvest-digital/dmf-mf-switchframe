@@ -55,7 +55,7 @@ The `html5_*` actions drive an HTML5 or OGraf graphic as the [HTML5 graphics](gr
 
 `data` and `payload` are any JSON value. An `html5_load` URL is refused on save, and again when the step runs, unless it is `https` or a `file` URL below the templates directory. A step against a layer with no HTML5 graphic, or with the sidecar not running, fails the run. In a redundant pair each engine runs html5 steps against its own sidecar; what `html5_data`, `html5_play` and `html5_custom` do is not carried by peer state sync, so a step that fails on one engine leaves the two engines' graphics different until the macro runs again.
 
-An L-frame button, the squeezeback and the graphic around it switching together:
+An L-frame button, the squeezeback and the graphic around it switching together (a `wait` step between the two delays the graphic; the [squeezeback](dve.md#post-apisqueezebackon) endpoints instead carry the graphic and time it by the configured `graphicsOffsetMs`):
 
 ```json
 {

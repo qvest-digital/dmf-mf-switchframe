@@ -22,6 +22,49 @@ type SqueezeConfig struct {
 	Background string `json:"background,omitempty"` // source key; "" is black
 	DurationMs int    `json:"durationMs,omitempty"`
 	Easing     string `json:"easing,omitempty"`
+
+	// GraphicsOffsetMs is when graphics sent with an On or Off change,
+	// from the start of the move: later when positive, earlier when
+	// negative, the move then waiting. Nil in a Set keeps the configured
+	// one, so a caller that does not know it leaves it alone; a stored
+	// configuration holds nil for 0.
+	GraphicsOffsetMs *int `json:"graphicsOffsetMs,omitempty"`
+}
+
+// GraphicsOffset returns GraphicsOffsetMs as a duration, 0 when nil.
+func (c SqueezeConfig) GraphicsOffset() time.Duration {
+	if c.GraphicsOffsetMs == nil {
+		return 0
+	}
+	return time.Duration(*c.GraphicsOffsetMs) * time.Millisecond
+}
+
+// equal compares two configurations, a nil and a 0 offset alike.
+func (c SqueezeConfig) equal(o SqueezeConfig) bool {
+	if c.GraphicsOffset() != o.GraphicsOffset() {
+		return false
+	}
+	c.GraphicsOffsetMs, o.GraphicsOffsetMs = nil, nil
+	return c == o
+}
+
+// stored returns c as it is kept: a 0 offset as nil, and a non-zero one
+// in a value of its own.
+func (c SqueezeConfig) stored() SqueezeConfig {
+	if ms := int(c.GraphicsOffset() / time.Millisecond); ms != 0 {
+		c.GraphicsOffsetMs = &ms
+	} else {
+		c.GraphicsOffsetMs = nil
+	}
+	return c
+}
+
+// validateGraphicsOffset bounds an offset as a move's duration is bounded.
+func validateGraphicsOffset(ms *int) error {
+	if ms != nil && (*ms < -MaxMorphDurationMs || *ms > MaxMorphDurationMs) {
+		return fmt.Errorf("graphicsOffsetMs must be between %d and %d, got %d", -MaxMorphDurationMs, MaxMorphDurationMs, *ms)
+	}
+	return nil
 }
 
 // SqueezeMove is how one On or Off animates. Nil DurationMs and empty
@@ -125,13 +168,17 @@ func scaleRect(r image.Rectangle, fromW, fromH, toW, toH int) image.Rectangle {
 	return image.Rect(x(r.Min.X), y(r.Min.Y), x(r.Max.X), y(r.Max.Y))
 }
 
-// Set replaces the configuration. While on, the program moves to the new
-// rect over the new configuration's duration.
+// Set replaces the configuration, keeping the graphics offset when cfg
+// names none. While on, the program moves to the new rect over the new
+// configuration's duration.
 func (s *Squeeze) Set(cfg SqueezeConfig) error {
 	if _, err := transition.ParseEasing(cfg.Easing); err != nil {
 		return err
 	}
 	if err := validateSqueezeDuration(cfg.DurationMs); err != nil {
+		return err
+	}
+	if err := validateGraphicsOffset(cfg.GraphicsOffsetMs); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -140,9 +187,14 @@ func (s *Squeeze) Set(cfg SqueezeConfig) error {
 		return err
 	}
 	from, _ := s.rectLocked()
-	if old := s.cfg.Load(); old == nil || old.Background != cfg.Background {
+	old := s.cfg.Load()
+	if old == nil || old.Background != cfg.Background {
 		s.bg.valid = false
 	}
+	if cfg.GraphicsOffsetMs == nil && old != nil {
+		cfg.GraphicsOffsetMs = old.GraphicsOffsetMs
+	}
+	cfg = cfg.stored()
 	s.cfg.Store(&cfg)
 	if s.on {
 		ease, _ := transition.ParseEasing(cfg.Easing)
@@ -161,13 +213,17 @@ func (s *Squeeze) Restore(cfg SqueezeConfig, on bool) error {
 	if err := validateSqueezeDuration(cfg.DurationMs); err != nil {
 		return err
 	}
+	if err := validateGraphicsOffset(cfg.GraphicsOffsetMs); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := validateSqueezeRect(cfg.Rect, s.frameW, s.frameH); err != nil {
 		return err
 	}
+	cfg = cfg.stored()
 	old := s.cfg.Load()
-	if old != nil && *old == cfg && s.on == on {
+	if old != nil && old.equal(cfg) && s.on == on {
 		return nil
 	}
 	if old == nil || old.Background != cfg.Background || !on {
@@ -223,6 +279,26 @@ func validateSqueezeRect(r Rect, frameW, frameH int) error {
 
 func squeezeTarget(r Rect) image.Rectangle {
 	return image.Rect(int(r.X), int(r.Y), int(r.X+r.W), int(r.Y+r.H))
+}
+
+// CheckMove returns the error On (on) or Off would return for m without
+// moving, for a move started later.
+func (s *Squeeze) CheckMove(on bool, m SqueezeMove) error {
+	c := s.cfg.Load()
+	if on && c == nil {
+		return ErrSqueezeNotConfigured
+	}
+	var cfg SqueezeConfig
+	if c != nil {
+		cfg = *c
+	}
+	if m.DurationMs != nil {
+		if err := validateSqueezeDuration(*m.DurationMs); err != nil {
+			return err
+		}
+	}
+	_, err := transition.ParseEasing(cmp.Or(m.Easing, cfg.Easing))
+	return err
 }
 
 // On squeezes the program into the configured rect, from wherever it is.
