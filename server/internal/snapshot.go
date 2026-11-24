@@ -67,6 +67,10 @@ type FullStateSnapshot struct {
 
 	Layout LayoutSnapshot `json:"layout"`
 
+	// Squeezeback is the squeeze-back's configuration and whether it is
+	// on, nil while it is unconfigured.
+	Squeezeback *SqueezebackSnapshot `json:"squeezeback,omitempty"`
+
 	// --- Captions ---
 
 	// CaptionMode is "off", "passthrough", or "author".
@@ -214,6 +218,16 @@ type SequenceSnapshot struct {
 type LayoutSnapshot struct {
 	ActivePreset string            `json:"activePreset"`
 	Slots        []DVESlotSnapshot `json:"slots,omitempty"`
+}
+
+// SqueezebackSnapshot captures the squeeze-back. Omits whether it is moving:
+// an engine taking it lands where the move arrives.
+type SqueezebackSnapshot struct {
+	Rect       SqueezebackRect `json:"rect"`
+	Background string          `json:"background,omitempty"`
+	DurationMs int             `json:"durationMs,omitempty"`
+	Easing     string          `json:"easing,omitempty"`
+	On         bool            `json:"on"`
 }
 
 // DVESlotSnapshot captures the full DVE transform for a single layout slot.

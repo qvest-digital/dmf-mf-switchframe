@@ -63,6 +63,26 @@ var _ internal.SnapshotMacroApplier = (*App)(nil)
 var _ internal.SnapshotEncoderApplier = (*App)(nil)
 var _ internal.SnapshotGraphicsLayerSyncer = (*App)(nil)
 var _ internal.SnapshotSTMapRemover = (*App)(nil)
+var _ internal.SnapshotSqueezebackApplier = (*App)(nil)
+
+// ApplySqueezeback takes the peer's squeeze-back, landing where its move
+// arrives; nil leaves the squeeze-back unconfigured. A background not
+// open here yet shows black until it is.
+func (a *App) ApplySqueezeback(sq *internal.SqueezebackSnapshot) error {
+	if a.squeeze == nil {
+		return nil
+	}
+	if sq == nil {
+		a.squeeze.Reset()
+		return nil
+	}
+	return a.squeeze.Restore(dve.SqueezeConfig{
+		Rect:       dve.Rect{X: sq.Rect.X, Y: sq.Rect.Y, W: sq.Rect.W, H: sq.Rect.H},
+		Background: sq.Background,
+		DurationMs: sq.DurationMs,
+		Easing:     sq.Easing,
+	}, sq.On)
+}
 
 // --- SnapshotApplyTarget implementation ---
 

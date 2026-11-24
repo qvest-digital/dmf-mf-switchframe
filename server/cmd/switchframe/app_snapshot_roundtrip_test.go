@@ -12,6 +12,7 @@ import (
 
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/graphics/textrender"
 	"github.com/zsiec/switchframe/server/internal"
@@ -130,4 +131,37 @@ func TestApplyPeerStateReadsSequencesBeforeTheApply(t *testing.T) {
 	require.Greater(t, b.api.CompareState().ChangedAtMs, before.ChangedAtMs,
 		"a write while the sequence was read was not dated")
 	require.Eventually(t, func() bool { return b.sequenceEngine.HasSequence(2) }, 5*time.Second, 10*time.Millisecond)
+}
+
+// An engine taking its peer's state takes the squeeze-back with it: a
+// restarted engine comes back with the L-frame the peer shows, not full
+// frame, and one whose peer has none drops its own.
+func TestSnapshotRoundTripCarriesSqueezeback(t *testing.T) {
+	ctx := context.Background()
+	a, b := roundTripApp(t), roundTripApp(t)
+	a.squeeze, b.squeeze = dve.NewSqueeze(1920, 1080), dve.NewSqueeze(1920, 1080)
+	require.NoError(t, a.sw.Cut(ctx, "cam1"))
+	require.NoError(t, b.sw.Cut(ctx, "cam1"))
+	cfg := dve.SqueezeConfig{Rect: dve.Rect{X: 480, Y: 0, W: 1440, H: 810}, Background: "cam2", DurationMs: 800, Easing: "linear"}
+	require.NoError(t, a.squeeze.Set(cfg))
+	require.NoError(t, a.squeeze.On(dve.SqueezeMove{}))
+
+	require.Equal(t, []string{"squeezeback"}, internal.SnapshotDiff(a.captureFullSnapshot(), b.captureFullSnapshot()))
+	if w := b.applyPeerState(ctx, a.captureFullSnapshot(), 7); len(w) > 0 {
+		t.Fatalf("apply warnings: %v", w)
+	}
+	st := b.squeeze.Snapshot()
+	require.Equal(t, cfg, st.SqueezeConfig)
+	require.True(t, st.On)
+	require.False(t, st.Animating, "the engine taking the state lands where the move arrives")
+	require.Empty(t, internal.SnapshotDiff(a.captureFullSnapshot(), b.captureFullSnapshot()))
+
+	require.NoError(t, a.squeeze.Off(dve.SqueezeMove{}))
+	b.applyPeerState(ctx, a.captureFullSnapshot(), 8)
+	require.False(t, b.squeeze.Snapshot().On)
+
+	a.squeeze.Reset()
+	b.applyPeerState(ctx, a.captureFullSnapshot(), 9)
+	require.False(t, b.squeeze.Snapshot().Configured)
+	require.Empty(t, internal.SnapshotDiff(a.captureFullSnapshot(), b.captureFullSnapshot()))
 }

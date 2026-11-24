@@ -355,3 +355,52 @@ func TestSqueeze_DurationCapped(t *testing.T) {
 	// Past the cap, time.Duration overflows and the move never arrives.
 	require.Error(t, s.Off(SqueezeMove{DurationMs: ms(math.MaxInt)}))
 }
+
+// Taking the peer's squeeze-back lands where the peer's move arrives,
+// without animating, and turning it off there leaves the program full
+// frame at once.
+func TestSqueeze_RestoreJumps(t *testing.T) {
+	s, _ := newTestSqueeze(t, "")
+	cfg := SqueezeConfig{Rect: Rect{X: 0, Y: 0, W: 32, H: 32}, DurationMs: 1000}
+	require.NoError(t, s.Restore(cfg, true))
+	r, ok := s.Frame(64, 64)
+	require.True(t, ok)
+	require.Equal(t, image.Rect(0, 0, 32, 32), r)
+	st := s.Snapshot()
+	require.True(t, st.On)
+	require.False(t, st.Animating)
+	require.Equal(t, cfg, st.SqueezeConfig)
+
+	require.NoError(t, s.Restore(cfg, false))
+	_, ok = s.Frame(64, 64)
+	require.False(t, ok, "off: full frame, nothing to draw")
+	require.False(t, s.Active())
+}
+
+// A move already heading where the peer's state is goes on.
+func TestSqueeze_RestoreKeepsMoveToSameState(t *testing.T) {
+	s, advance := newTestSqueeze(t, "")
+	require.NoError(t, s.On(SqueezeMove{}))
+	advance(500 * time.Millisecond)
+	require.NoError(t, s.Restore(*s.cfg.Load(), true))
+	r, ok := s.Frame(64, 64)
+	require.True(t, ok)
+	require.Equal(t, image.Rect(16, 16, 64, 64), r, "still halfway")
+}
+
+func TestSqueeze_RestoreValidates(t *testing.T) {
+	s, _ := newTestSqueeze(t, "")
+	require.Error(t, s.Restore(SqueezeConfig{Rect: Rect{X: 0, Y: 0, W: 128, H: 32}}, true))
+	require.Error(t, s.Restore(SqueezeConfig{Rect: Rect{X: 0, Y: 0, W: 32, H: 32}, Easing: "nope"}, true))
+}
+
+func TestSqueeze_ResetUnconfigures(t *testing.T) {
+	s, _ := newTestSqueeze(t, "")
+	require.NoError(t, s.On(SqueezeMove{DurationMs: ms(0)}))
+	s.Reset()
+	st := s.Snapshot()
+	require.False(t, st.Configured)
+	require.False(t, st.On)
+	require.False(t, s.Active())
+	require.ErrorIs(t, s.On(SqueezeMove{}), ErrSqueezeNotConfigured)
+}

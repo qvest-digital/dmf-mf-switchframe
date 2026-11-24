@@ -1003,6 +1003,19 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 		}
 	}
 
+	// --- Squeeze-back ---
+	if a.squeeze != nil {
+		if st := a.squeeze.Snapshot(); st.Configured {
+			snap.Squeezeback = &internal.SqueezebackSnapshot{
+				Rect:       internal.SqueezebackRect{X: st.Rect.X, Y: st.Rect.Y, W: st.Rect.W, H: st.Rect.H},
+				Background: st.Background,
+				DurationMs: st.DurationMs,
+				Easing:     st.Easing,
+				On:         st.On,
+			}
+		}
+	}
+
 	// --- Color grading ---
 	if a.colorGradeCtrl != nil {
 		cgState := a.colorGradeCtrl.GetState()

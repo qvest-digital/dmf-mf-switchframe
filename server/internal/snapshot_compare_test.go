@@ -28,6 +28,7 @@ func fullSnapshot() FullStateSnapshot {
 		Sequences:            []SequenceSnapshot{{LayerID: 2, Hash: "abc", Size: 3, SourceFPS: 25, Speed: 1}},
 		GraphicsMotion:       true,
 		Layout:               LayoutSnapshot{ActivePreset: "pip"},
+		Squeezeback:          &SqueezebackSnapshot{Rect: SqueezebackRect{X: 480, W: 1440, H: 810}, On: true},
 		CaptionMode:          "author",
 		ClipPlayers:          []ClipPlayerSnapshot{{ID: 1, ClipID: "a1", State: "playing"}},
 		Sources:              map[string]SourceConfigSnapshot{"cam1": {Label: "Cam 1"}},

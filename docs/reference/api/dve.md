@@ -136,6 +136,8 @@ A squeezeback is an L-frame: the whole composited program, upstream keys and DVE
 
 The background is any registered source (`clip:N`, `playout:N`, an MXL source, ...) and tallies as program while it shows.
 
+In a redundant pair the squeezeback, its configuration and whether it is on, is part of the state snapshot the engines take from each other at start and on [convergence](peer-sync.md#convergence). An engine taking it lands where the peer's move arrives, without animating; a background not open there yet shows black until it is.
+
 ### `GET /api/squeezeback`
 
 **Purpose:** return the squeezeback.

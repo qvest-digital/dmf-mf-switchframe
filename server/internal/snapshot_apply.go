@@ -177,6 +177,12 @@ type SnapshotGraphicsHTML5Applier interface {
 }
 
 // SnapshotEncoderApplier is optionally implemented for encoder switching.
+// SnapshotSqueezebackApplier is optionally implemented to take the
+// squeeze-back; nil leaves it unconfigured.
+type SnapshotSqueezebackApplier interface {
+	ApplySqueezeback(sq *SqueezebackSnapshot) error
+}
+
 type SnapshotEncoderApplier interface {
 	SetEncoderIfAvailable(name string) error
 }
@@ -325,6 +331,14 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 	if err := target.SetDVELayout(snap.Layout); err != nil {
 		slog.Warn("snapshot apply: DVE layout failed", "error", err)
 		warnings = append(warnings, fmt.Sprintf("DVE layout: %v", err))
+	}
+
+	// 8.5. Squeeze-back, after the layout it shrinks
+	if applier, ok := target.(SnapshotSqueezebackApplier); ok {
+		if err := applier.ApplySqueezeback(snap.Squeezeback); err != nil {
+			slog.Warn("snapshot apply: squeezeback failed", "error", err)
+			warnings = append(warnings, fmt.Sprintf("squeezeback: %v", err))
+		}
 	}
 
 	// 9. Source config — labels and positions (sorted for determinism)

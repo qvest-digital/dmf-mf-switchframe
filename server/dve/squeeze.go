@@ -151,6 +151,45 @@ func (s *Squeeze) Set(cfg SqueezeConfig) error {
 	return nil
 }
 
+// Restore takes cfg and on as the peer engine holds them, landing at once
+// where a move would arrive: an engine taking its peer's state jumps to
+// it. Holding them already, a move in flight towards them goes on.
+func (s *Squeeze) Restore(cfg SqueezeConfig, on bool) error {
+	if _, err := transition.ParseEasing(cfg.Easing); err != nil {
+		return err
+	}
+	if err := validateSqueezeDuration(cfg.DurationMs); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := validateSqueezeRect(cfg.Rect, s.frameW, s.frameH); err != nil {
+		return err
+	}
+	old := s.cfg.Load()
+	if old != nil && *old == cfg && s.on == on {
+		return nil
+	}
+	if old == nil || old.Background != cfg.Background || !on {
+		s.bg.valid = false
+	}
+	s.cfg.Store(&cfg)
+	s.on = on
+	s.startLocked(image.Rectangle{}, image.Rectangle{}, 0, nil)
+	return nil
+}
+
+// Reset leaves the squeeze-back unconfigured and off at once, as an
+// engine that never had one.
+func (s *Squeeze) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.Store(nil)
+	s.on = false
+	s.bg.valid = false
+	s.startLocked(image.Rectangle{}, image.Rectangle{}, 0, nil)
+}
+
 // validateSqueezeDuration caps a move as a layout morph is capped: an
 // unbounded value overflows time.Duration and the move never arrives.
 func validateSqueezeDuration(ms int) error {
