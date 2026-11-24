@@ -794,9 +794,9 @@ func TestPeerHealthAdvertisesRelaying(t *testing.T) {
 }
 
 // A cut on b to the source on program sets nothing there, and is neither
-// passed on nor its seq counted: a, which took a transition away from that source in the meantime,
-// would otherwise cut back to it when the cut arrives, and the engines
-// would end apart.
+// passed on nor its seq counted: a, which took a transition away from that
+// source in the meantime, would otherwise cut back to it when the cut
+// arrives, and the engines would end apart.
 func TestPeerRelay_CutThatSetNothingIsNotPassedOn(t *testing.T) {
 	a, b := newRelayPair(t)
 	for _, e := range []*relayEngine{a, b} {
@@ -846,13 +846,21 @@ func TestPeerRelay_CutChangedByACompletingTransition(t *testing.T) {
 	require.NoError(t, a.sw.Cut(context.Background(), "cam1"))
 	require.NoError(t, b.sw.Cut(context.Background(), "cam2"))
 	require.NoError(t, a.sw.StartTransition(context.Background(), "cam2", "mix", 5000, ""))
+	// The hook runs in the server's goroutine, so it records what it saw
+	// rather than failing the test there.
+	var hookErr error
+	var completedOn string
 	a.api.beforeCut = func() {
-		require.NoError(t, a.sw.SetTransitionPosition(context.Background(), 1))
-		require.Eventually(t, func() bool { return !a.sw.State().InTransition }, 5*time.Second, time.Millisecond)
-		require.Equal(t, "cam2", a.program())
+		hookErr = a.sw.SetTransitionPosition(context.Background(), 1)
+		for deadline := time.Now().Add(5 * time.Second); a.sw.State().InTransition && time.Now().Before(deadline); {
+			time.Sleep(time.Millisecond)
+		}
+		completedOn = a.program()
 	}
 	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
 	a.api.beforeCut = nil
+	require.NoError(t, hookErr)
+	require.Equal(t, "cam2", completedOn, "the transition did not complete before the cut")
 	assert.Equal(t, "cam1", a.program())
 	require.Eventually(t, func() bool { return b.program() == "cam1" }, 5*time.Second, 5*time.Millisecond,
 		"the cut was taken as setting nothing and not passed on")
