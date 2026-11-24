@@ -211,7 +211,7 @@ func (a *API) noteAlone(action string, body []byte) {
 // alone within relayDedupWindow; else records it as relayed.
 func (a *API) seenAlone(action string, body []byte) bool {
 	key := dedupKey(action, body)
-	if a.relay.take(a.relay.direct, key) {
+	if a.relay.take(&a.relay.direct, key) {
 		return true
 	}
 	a.relay.note(&a.relay.relayed, key)
@@ -221,7 +221,7 @@ func (a *API) seenAlone(action string, body []byte) bool {
 // seenRelayed reports, and forgets, the same command relayed by the peer
 // within relayDedupWindow.
 func (a *API) seenRelayed(action string, body []byte) bool {
-	return a.relay.take(a.relay.relayed, dedupKey(action, body))
+	return a.relay.take(&a.relay.relayed, dedupKey(action, body))
 }
 
 func (r *relayState) note(m *map[string]time.Time, key string) {
@@ -239,12 +239,12 @@ func (r *relayState) note(m *map[string]time.Time, key string) {
 	(*m)[key] = now
 }
 
-func (r *relayState) take(m map[string]time.Time, key string) bool {
+func (r *relayState) take(m *map[string]time.Time, key string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	t, ok := m[key]
+	t, ok := (*m)[key]
 	if ok {
-		delete(m, key)
+		delete(*m, key)
 	}
 	return ok && time.Since(t) <= relayDedupWindow
 }

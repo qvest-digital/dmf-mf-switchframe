@@ -14,6 +14,7 @@ import (
 // runs on arrival, so what the queue records as run is what ran, in order.
 func TestDrainCommandQueueWaitsForLocalRun(t *testing.T) {
 	s := newTestSwitcherDirect(distribution.NewRelay())
+	t.Cleanup(s.Close)
 	q := cmdqueue.New(func() int64 { return 1_000 }, cmdqueue.WithStateKeys(map[string][]string{"cut": {"program"}}))
 	dispatched := make(chan struct{}, 1)
 	d := cmdqueue.NewDispatcher()
