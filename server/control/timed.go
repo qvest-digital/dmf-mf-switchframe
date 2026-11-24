@@ -64,8 +64,8 @@ func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), han
 
 		if q != nil && timed.CommandSeq > 0 && q.Keyed(action) {
 			// A command both engines of a pair take, run on arrival: it
-			// falls among the commands on its state as they reach it.
-			cmd := cmdqueue.Command{Seq: timed.CommandSeq, Action: action, Payload: json.RawMessage(body)}
+			// falls among the commands on its state by its seq.
+			cmd := cmdqueue.Command{Seq: timed.CommandSeq, OrderAt: seqOrderAt(q, timed.CommandSeq), Action: action, Payload: json.RawMessage(body)}
 			if !runKeyed(q, cmd, w, r, body, handler) {
 				return
 			}
@@ -131,8 +131,8 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint
 
 		if q != nil && timed.CommandSeq > 0 && q.Keyed(action) {
 			// A command both engines of a pair take, run on arrival: it
-			// falls among the commands on its state as they reach it.
-			cmd := cmdqueue.Command{Seq: timed.CommandSeq, Action: action, Payload: json.RawMessage(body)}
+			// falls among the commands on its state by its seq.
+			cmd := cmdqueue.Command{Seq: timed.CommandSeq, OrderAt: seqOrderAt(q, timed.CommandSeq), Action: action, Payload: json.RawMessage(body)}
 			if !runKeyed(q, cmd, w, r, body, handler) {
 				return
 			}

@@ -298,3 +298,46 @@ func TestPeerRelay_SqueezebackSetCarriesResolvedOffset(t *testing.T) {
 	require.Eventually(t, func() bool { return b.sq.Snapshot().Rect.X == 0 }, 5*time.Second, 5*time.Millisecond)
 	assert.Equal(t, 400*time.Millisecond, b.sq.Snapshot().GraphicsOffset())
 }
+
+// Every relayed command that changes the program also puts the old one on
+// preview, so each is keyed on the preview too: a preview crossing one
+// would otherwise end different on the two engines.
+func TestRelayedStateKeys_ProgramChangesKeyPreview(t *testing.T) {
+	for action, keys := range RelayedStateKeys() {
+		if keys[0] == "program" {
+			assert.Contains(t, keys, "preview", action)
+		}
+	}
+}
+
+// A browser command run on arrival falls at its seq, the browser's clock,
+// on both engines, so a relayed cut made between its arrivals at the two
+// lands alike on both.
+func TestPeerRelay_BrowserCommandFallsAtItsSeq(t *testing.T) {
+	a, b := newRelayPair(t)
+	b.holdRelays()
+	browserSeq := uint64(time.Now().UnixMicro())
+	browser := fmt.Sprintf(`{"source":"cam3","command_seq":%d}`, browserSeq)
+	require.Equal(t, http.StatusOK, b.send(t, http.MethodPost, "/api/switch/cut", browser))
+	time.Sleep(5 * time.Millisecond)
+	// a's own cut, made after the browser's, before the browser's reaches a.
+	require.Equal(t, http.StatusOK, a.send(t, http.MethodPost, "/api/switch/cut", `{"source":"cam1"}`))
+	time.Sleep(5 * time.Millisecond)
+	assert.Equal(t, http.StatusConflict, a.send(t, http.MethodPost, "/api/switch/cut", browser),
+		"the browser's cut falls before a's own")
+	b.releaseRelays()
+
+	require.Eventually(t, func() bool { return b.program() == "cam1" }, 5*time.Second, 5*time.Millisecond)
+	assert.Equal(t, "cam1", a.program())
+}
+
+func TestBufferedResponseKeepsFirstStatus(t *testing.T) {
+	b := newBufferedResponse()
+	b.WriteHeader(http.StatusAccepted)
+	b.WriteHeader(http.StatusInternalServerError)
+	assert.Equal(t, http.StatusAccepted, b.status)
+	b = newBufferedResponse()
+	_, _ = b.Write([]byte("x"))
+	b.WriteHeader(http.StatusInternalServerError)
+	assert.Equal(t, http.StatusOK, b.status)
+}

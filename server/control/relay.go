@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -19,11 +20,11 @@ import (
 // relayedStateKeys are the commands an engine of a pair passes on to its
 // peer, each with the states it sets: the program, the preview and the
 // squeezeback. Each sets its state whole, so of two the later holds. A
-// cut also puts the old program on preview. A toggle, as FTB is, is left
-// to the caller and to convergence.
+// cut, and a transition as it starts, also put the old program on
+// preview. A toggle, as FTB is, is left to the caller and to convergence.
 var relayedStateKeys = map[string][]string{
 	"cut":             {"program", "preview"},
-	"transition":      {"program"},
+	"transition":      {"program", "preview"},
 	"preview":         {"preview"},
 	"squeezeback_set": {"squeezeback_config"},
 	"squeezeback_on":  {"squeezeback"},
@@ -165,6 +166,7 @@ func runKeyed(q *cmdqueue.Queue, cmd cmdqueue.Command, w http.ResponseWriter, r 
 type bufferedResponse struct {
 	header http.Header
 	status int
+	wrote  bool
 	body   bytes.Buffer
 }
 
@@ -174,14 +176,37 @@ func newBufferedResponse() *bufferedResponse {
 
 func (b *bufferedResponse) Header() http.Header { return b.header }
 
-func (b *bufferedResponse) Write(p []byte) (int, error) { return b.body.Write(p) }
+func (b *bufferedResponse) Write(p []byte) (int, error) {
+	b.wrote = true
+	return b.body.Write(p)
+}
 
-func (b *bufferedResponse) WriteHeader(code int) { b.status = code }
+// WriteHeader keeps the first status, as net/http does.
+func (b *bufferedResponse) WriteHeader(code int) {
+	if !b.wrote {
+		b.status, b.wrote = code, true
+	}
+}
 
 func (b *bufferedResponse) writeTo(w http.ResponseWriter) {
 	maps.Copy(w.Header(), b.header)
 	w.WriteHeader(b.status)
 	_, _ = w.Write(b.body.Bytes())
+}
+
+// seqOrderAt returns where a command naming seq and no execute_at falls in
+// the order: at seq, when it reads as wall-clock microseconds near now as
+// the browser's and the engines' own seqs do, so every engine places it
+// alike whenever it arrives; else 0, when it arrives.
+func seqOrderAt(q *cmdqueue.Queue, seq uint64) int64 {
+	const near = int64(10 * time.Second / time.Microsecond)
+	if seq > math.MaxInt64 {
+		return 0
+	}
+	if d := int64(seq) - q.Now(); d > -near && d < near {
+		return int64(seq)
+	}
+	return 0
 }
 
 // stampCommand returns body, a JSON object or empty, with execute_at and
