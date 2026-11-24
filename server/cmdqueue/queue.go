@@ -520,9 +520,11 @@ func (q *Queue) Exec(cmd Command, run func() error) error {
 
 func (q *Queue) exec(cmd Command, run func() error) error {
 	q.mu.Lock()
-	gone := q.superseded(cmd)
-	side := q.changes == nil || q.changes(cmd)
+	gone, changes := q.superseded(cmd), q.changes
 	q.mu.Unlock()
+	// Outside mu: it reads the caller's state, whose locks are no business
+	// of the queue's.
+	side := changes == nil || changes(cmd)
 	if gone {
 		return ErrSuperseded
 	}
@@ -536,6 +538,19 @@ func (q *Queue) exec(cmd Command, run func() error) error {
 	q.recordRan(cmd, side)
 	q.mu.Unlock()
 	return nil
+}
+
+// Latest returns where the latest command run on action's first key falls,
+// false when none has run on it.
+func (q *Queue) Latest(action string) (orderAt int64, seq uint64, ok bool) {
+	keys := q.stateKeys[action]
+	if len(keys) == 0 {
+		return 0, 0, false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	last, ok := q.ran[keys[0]]
+	return last.at.at, last.at.seq, ok
 }
 
 // superseded reports whether a command on cmd's first key that falls after

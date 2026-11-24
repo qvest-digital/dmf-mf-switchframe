@@ -313,3 +313,24 @@ func TestStateKeys_UnchangedSideKeyNotRecorded(t *testing.T) {
 		t.Fatalf("preview %q, want cam3", st["preview"])
 	}
 }
+
+// The caller's changes func runs outside the queue's lock, so it may read
+// the queue, as reading the caller's own state may.
+func TestStateKeys_ChangesRunsOutsideTheLock(t *testing.T) {
+	clock, _ := newClock(10_000)
+	q := cmdqueue.New(clock, cmdqueue.WithStateKeys(testStateKeys))
+	q.SetChanges(func(c cmdqueue.Command) bool {
+		_, _, _ = q.Latest(c.Action)
+		return true
+	})
+	done := make(chan struct{})
+	go func() {
+		ranHere(t, q, "cut", 9_000, 1, "cam1", map[string]string{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("a changes func reading the queue deadlocked")
+	}
+}
