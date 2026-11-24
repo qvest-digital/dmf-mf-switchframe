@@ -1791,8 +1791,10 @@ func (s *Switcher) drainCommandQueue() {
 	for _, cmd := range s.cmdQueue.Drain() {
 		var dispatchErr error
 		if s.cmdDispatcher != nil {
-			dispatchErr = s.cmdDispatcher.Dispatch(cmd)
-			if dispatchErr != nil {
+			dispatchErr = s.cmdQueue.Exec(cmd, func() error { return s.cmdDispatcher.Dispatch(cmd) })
+			if errors.Is(dispatchErr, cmdqueue.ErrSuperseded) {
+				dispatchErr = nil
+			} else if dispatchErr != nil {
 				s.log.Warn("queued command dispatch failed",
 					"action", cmd.Action,
 					"seq", cmd.Seq,

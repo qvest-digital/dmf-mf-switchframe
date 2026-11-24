@@ -43,7 +43,10 @@ func apply(state map[string]string, action, payload string) {
 func run(q *cmdqueue.Queue, state map[string]string) {
 	defer q.Hold()()
 	for _, c := range q.Drain() {
-		apply(state, c.Action, string(c.Payload))
+		_ = q.Exec(c, func() error {
+			apply(state, c.Action, string(c.Payload))
+			return nil
+		})
 	}
 }
 
@@ -136,8 +139,10 @@ func TestStateKeys_LateCommandKeepsItsTime(t *testing.T) {
 	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 8_500_000, Seq: 4, Action: "cut"}); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(q.Drain()); n != 1 {
-		t.Fatalf("drained %d, want 1", n)
+	got := map[string]string{}
+	run(q, got)
+	if _, ok := got["program"]; !ok {
+		t.Fatal("the late cut did not run")
 	}
 	advance(1)
 	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 8_400_000, Seq: 5, Action: "cut"}); !errors.Is(err, cmdqueue.ErrSuperseded) {
@@ -175,8 +180,12 @@ func TestStateKeys_PreviewAndCutCrossing(t *testing.T) {
 			advB(17_000)
 			_ = qa.Enqueue(cut)
 			_ = qb.Enqueue(pv)
-			run(qa, sa)
-			run(qb, sb)
+			// two ticks: a preview chosen again after an earlier cut runs
+			// on the tick after it
+			for range 2 {
+				run(qa, sa)
+				run(qb, sb)
+			}
 			if sa["program"] != "cam2" || sb["program"] != "cam2" {
 				t.Fatalf("program %q and %q, want cam2", sa["program"], sb["program"])
 			}
@@ -246,5 +255,61 @@ func TestStateKeys_OrderAtSurvivesWALReplay(t *testing.T) {
 	cmds := q2.Drain()
 	if len(cmds) != 1 || cmds[0].OrderAt != 8_500_000 {
 		t.Fatalf("replayed %+v, want the cut at order 8500000", cmds)
+	}
+}
+
+// After the clock steps back, a command run here still falls after the
+// last one run, rather than every one being refused until the clock has
+// caught up.
+func TestStateKeys_ClockStepBackStillRunsLocally(t *testing.T) {
+	clock, advance := newClock(10_000_000)
+	q := cmdqueue.New(clock, cmdqueue.WithStateKeys(testStateKeys))
+	st := map[string]string{}
+	ranHere(t, q, "cut", 0, 1, "cam1", st)
+	advance(-5_000_000)
+	at := q.NextOrder()
+	if at <= 10_000_000 {
+		t.Fatalf("NextOrder %d after a step back, want past 10000000", at)
+	}
+	ranHere(t, q, "cut", 0, 2, "cam2", st)
+	if st["program"] != "cam2" {
+		t.Fatalf("program %q after the step back, want cam2", st["program"])
+	}
+}
+
+// A drained command that fails is not recorded: a later command it would
+// have dropped still runs.
+func TestStateKeys_FailedDispatchNotRecorded(t *testing.T) {
+	clock, _ := newClock(10_000)
+	q := cmdqueue.New(clock, cmdqueue.WithStateKeys(testStateKeys))
+	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 9_000, Seq: 5, Action: "cut"}); err != nil {
+		t.Fatal(err)
+	}
+	release := q.Hold()
+	for _, c := range q.Drain() {
+		if err := q.Exec(c, func() error { return errors.New("not configured") }); err == nil {
+			t.Fatal("the dispatch error was not returned")
+		}
+	}
+	release()
+	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 8_000, Seq: 4, Action: "cut"}); err != nil {
+		t.Fatalf("an earlier cut after a failed later one: %v", err)
+	}
+}
+
+// A command that leaves its further keys alone, as a cut to the source on
+// program leaves the preview, does not record them.
+func TestStateKeys_UnchangedSideKeyNotRecorded(t *testing.T) {
+	clock, _ := newClock(10_000)
+	q := cmdqueue.New(clock, cmdqueue.WithStateKeys(testStateKeys))
+	q.SetChanges(func(c cmdqueue.Command) bool { return string(c.Payload) != "cam1" })
+	st := map[string]string{"program": "cam1"}
+	ranHere(t, q, "cut", 9_000, 2, "cam1", st)
+	if err := q.Enqueue(cmdqueue.Command{ExecuteAt: 8_000, Seq: 1, Action: "preview", Payload: []byte("cam3")}); err != nil {
+		t.Fatalf("an earlier preview after a cut that left the preview alone: %v", err)
+	}
+	run(q, st)
+	if st["preview"] != "cam3" {
+		t.Fatalf("preview %q, want cam3", st["preview"])
 	}
 }

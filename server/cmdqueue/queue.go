@@ -151,9 +151,12 @@ type Queue struct {
 	clockJumps       atomic.Int64
 
 	// stateKeys maps an action to the states it sets; ran holds, per key,
-	// the latest command run on it. Both under mu.
+	// the latest command run on it, and lastOrder the latest OrderAt run.
+	// All under mu.
 	stateKeys map[string][]string
 	ran       map[string]ranCommand
+	lastOrder int64
+	changes   func(Command) bool
 
 	// execMu orders running a keyed command on arrival (RunLocal) with
 	// the dispatch of drained ones (Hold), so the gate's view of what ran
@@ -387,30 +390,16 @@ func (q *Queue) Drain() []Command {
 
 	q.mu.Lock()
 
-	var out, dropped []Command
+	var out []Command
 	for q.h.Len() > 0 && len(out) < MaxDrainPerCall {
 		top := q.h[0]
 		if top.ExecuteAt != 0 && top.ExecuteAt > now {
 			break
 		}
 		heap.Pop(&q.h)
-		if q.superseded(top) {
-			dropped = append(dropped, top)
-			continue
-		}
-		q.recordRan(top)
 		out = append(out, top)
 	}
 	q.mu.Unlock()
-	for _, cmd := range dropped {
-		slog.Info("cmdqueue: command dropped, a later one on its state has run",
-			"action", cmd.Action, "seq", cmd.Seq, "order_at", cmd.OrderAt)
-	}
-	if q.wal != nil && len(dropped) > 0 {
-		if err := q.wal.MarkExecutedCommands(dropped); err != nil {
-			slog.Warn("cmdqueue: WAL MarkExecutedCommands failed for dropped commands", "count", len(dropped), "err", err)
-		}
-	}
 
 	// Mark drained commands as executed in WAL.  The executed entries are
 	// the sole source of dedup state at restart (Queue.New seeds the
@@ -468,9 +457,28 @@ func (q *Queue) Keyed(action string) bool {
 	return ok
 }
 
+// SetChanges sets fn to tell, before a keyed command runs, whether it
+// will set its further keys too: a cut to the source already on program
+// leaves the preview alone. Nil, every command sets them.
+func (q *Queue) SetChanges(fn func(Command) bool) {
+	q.mu.Lock()
+	q.changes = fn
+	q.mu.Unlock()
+}
+
+// NextOrder returns the OrderAt for a keyed command run here now: the
+// clock, or just after the latest command run when the clock has stepped
+// back behind it, so a command made after it never falls before it.
+func (q *Queue) NextOrder() int64 {
+	now := q.clock()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return max(now, q.lastOrder+1)
+}
+
 // Hold keeps RunLocal from running a command until the returned func is
 // called. The caller dispatching drained commands holds it across Drain
-// and the dispatch.
+// and Exec.
 func (q *Queue) Hold() func() {
 	q.execMu.Lock()
 	return q.execMu.Unlock
@@ -480,24 +488,52 @@ func (q *Queue) Hold() func() {
 // one on arrival: it returns ErrSuperseded without running when a later
 // command on cmd's state has run, and otherwise calls run, recording cmd
 // as run when run reports success. cmd.OrderAt is where it falls; 0 is
-// now. Drained commands are not dispatched meanwhile (see Hold).
+// NextOrder. Drained commands are not dispatched meanwhile (see Hold).
 func (q *Queue) RunLocal(cmd Command, run func() bool) error {
 	q.execMu.Lock()
 	defer q.execMu.Unlock()
 	if cmd.OrderAt <= 0 {
-		cmd.OrderAt = q.clock()
+		cmd.OrderAt = q.NextOrder()
 	}
+	return q.exec(cmd, func() error {
+		if !run() {
+			return errRunFailed
+		}
+		return nil
+	})
+}
+
+// errRunFailed is a RunLocal run that reported failure.
+var errRunFailed = errors.New("cmdqueue: run failed")
+
+// Exec dispatches a drained command with run, under Hold: it returns
+// ErrSuperseded without running when a later command on cmd's state has
+// run, else run's error, recording cmd as run when run succeeds.
+func (q *Queue) Exec(cmd Command, run func() error) error {
+	err := q.exec(cmd, run)
+	if errors.Is(err, ErrSuperseded) {
+		slog.Info("cmdqueue: command dropped, a later one on its state has run",
+			"action", cmd.Action, "seq", cmd.Seq, "order_at", cmd.OrderAt)
+	}
+	return err
+}
+
+func (q *Queue) exec(cmd Command, run func() error) error {
 	q.mu.Lock()
 	gone := q.superseded(cmd)
+	side := q.changes == nil || q.changes(cmd)
 	q.mu.Unlock()
 	if gone {
 		return ErrSuperseded
 	}
-	if !run() {
-		return nil
+	if err := run(); err != nil {
+		if errors.Is(err, errRunFailed) {
+			return nil
+		}
+		return err
 	}
 	q.mu.Lock()
-	q.recordRan(cmd)
+	q.recordRan(cmd, side)
 	q.mu.Unlock()
 	return nil
 }
@@ -513,12 +549,20 @@ func (q *Queue) superseded(cmd Command) bool {
 	return ok && (orderStamp{cmd.OrderAt, cmd.Seq}).before(last.at)
 }
 
-// recordRan notes cmd as run on its keys. A command on a further key that
-// ran after cmd is queued to run again at once, since cmd overwrote what
-// it set. Must be called with q.mu held.
-func (q *Queue) recordRan(cmd Command) {
+// recordRan notes cmd as run on its first key and, side set, its further
+// ones. A command on a further key that ran after cmd is queued to run
+// again at once, since cmd overwrote what it set. Must be called with
+// q.mu held.
+func (q *Queue) recordRan(cmd Command, side bool) {
 	at := orderStamp{cmd.OrderAt, cmd.Seq}
-	for i, key := range q.stateKeys[cmd.Action] {
+	keys := q.stateKeys[cmd.Action]
+	if len(keys) > 0 {
+		q.lastOrder = max(q.lastOrder, cmd.OrderAt)
+	}
+	for i, key := range keys {
+		if i > 0 && !side {
+			break
+		}
 		last, ok := q.ran[key]
 		switch {
 		case !ok || last.at.before(at):
