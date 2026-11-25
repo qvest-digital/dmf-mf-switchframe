@@ -1763,7 +1763,8 @@ func (s *Switcher) SetOnCaptionBroadcast(fn func(*ccx.CaptionFrame)) {
 
 // SetCommandQueue wires a PTP-timed command queue and its dispatcher into the
 // switcher. Once set, the video processing loop drains ready commands on every
-// frame tick, giving frame-level execution accuracy (~33ms at 30fps).
+// frame tick, giving frame-level execution accuracy (~33ms at 30fps). It must
+// be called before Start: the frame loop reads both without a lock.
 func (s *Switcher) SetCommandQueue(q *cmdqueue.Queue, d *cmdqueue.Dispatcher) {
 	s.cmdQueue = q
 	s.cmdDispatcher = d

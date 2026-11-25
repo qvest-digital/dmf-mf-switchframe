@@ -1,11 +1,13 @@
 package switcher
 
 import (
-	"github.com/zsiec/switchframe/server/clock"
 	"log/slog"
 	"testing"
 
 	"github.com/zsiec/prism/distribution"
+
+	"github.com/zsiec/switchframe/server/clock"
+	"github.com/zsiec/switchframe/server/cmdqueue"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -24,7 +26,18 @@ import (
 // processing at full resolution.
 func NewTestSwitcher(t *testing.T, programRelay *distribution.Relay) *Switcher {
 	t.Helper()
+	return NewTestSwitcherWithQueue(t, programRelay, nil, nil)
+}
+
+// NewTestSwitcherWithQueue is NewTestSwitcher with q and d wired in (see
+// SetCommandQueue) before the switcher starts, as its frame loop reads
+// them without a lock.
+func NewTestSwitcherWithQueue(t *testing.T, programRelay *distribution.Relay, q *cmdqueue.Queue, d *cmdqueue.Dispatcher) *Switcher {
+	t.Helper()
 	s := newTestSwitcherDirect(programRelay)
+	if q != nil {
+		s.SetCommandQueue(q, d)
+	}
 	s.Start()
 	t.Cleanup(s.Close)
 	return s

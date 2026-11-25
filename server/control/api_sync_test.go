@@ -95,15 +95,13 @@ func TestSyncHealth_OmitsLastPongSentUs_WhenNotConfigured(t *testing.T) {
 }
 
 func TestSyncHealth_IncludesLateCommands(t *testing.T) {
-	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(t, programRelay)
-	r1 := distribution.NewRelay()
-	sw.RegisterSource("camera1", r1)
-
 	// Wire a command queue with a fixed clock so we can trigger a late command.
 	now := int64(100_000_000) // PTP microseconds
 	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithMaxAge(2_000_000))
-	sw.SetCommandQueue(q, nil)
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcherWithQueue(t, programRelay, q, nil)
+	r1 := distribution.NewRelay()
+	sw.RegisterSource("camera1", r1)
 
 	// Enqueue a command whose ExecuteAt is past the maxAge threshold but within
 	// 2*maxAge — this triggers late promotion (ExecuteAt zeroed, counter bumped).
