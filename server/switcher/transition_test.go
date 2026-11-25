@@ -924,9 +924,24 @@ func TestTransitionGroupIDMonotonicity(t *testing.T) {
 	sw, viewer := setupSwitcherWithTransition(t)
 	defer sw.Close()
 
+	// Program frames leave on the switcher's own frame clock, so each step
+	// waits for the next one out rather than for a fixed time, which a slow
+	// machine can let pass without a tick.
+	count := func() int {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.videos)
+	}
+	waitFrame := func(step string) {
+		t.Helper()
+		n := count()
+		require.Eventually(t, func() bool { return count() > n }, 5*time.Second, time.Millisecond,
+			"no program frame after %s", step)
+	}
+
 	// 1. Send raw YUV frame from cam1 (program source)
 	sendRawFrame(sw, "cam1", 300, true)
-	time.Sleep(10 * time.Millisecond)
+	waitFrame("the cam1 frame")
 
 	// 2. Start transition to cam2
 	err := sw.StartTransition(context.Background(), "cam2", "mix", 500, "")
@@ -935,16 +950,16 @@ func TestTransitionGroupIDMonotonicity(t *testing.T) {
 	// 3. Feed raw YUV frames from both sources during transition
 	sendRawFrame(sw, "cam1", 400, true)
 	sendRawFrame(sw, "cam2", 400, true)
+	waitFrame("the transition frames")
 
 	// 4. Complete transition via SetTransitionPosition(1.0)
-	time.Sleep(10 * time.Millisecond)
 	err = sw.SetTransitionPosition(context.Background(), 1.0)
 	require.NoError(t, err)
-	time.Sleep(30 * time.Millisecond)
+	require.Eventually(t, func() bool { return !sw.State().InTransition }, 5*time.Second, time.Millisecond)
 
 	// 5. Send frame from cam2 (new program source)
 	sendRawFrame(sw, "cam2", 500, true)
-	time.Sleep(10 * time.Millisecond)
+	waitFrame("the cam2 frame")
 
 	// 6. Verify GroupIDs are monotonically non-decreasing
 	viewer.mu.Lock()
