@@ -147,6 +147,27 @@ func (r *bitReader) packet() (ANCPacket, error) {
 	return p, nil
 }
 
+// st2010PayloadDescV1 is the ST 2010 payload descriptor of a message
+// carried whole in one packet: VERSION 01 in b4..b3, neither continued_pkt
+// nor following_pkt.
+const st2010PayloadDescV1 = 0x08
+
+// MessagePacket returns the SCTE-104 message msg as the single ST 291
+// packet ST 2010 carries it in, on VANC line line, in the luma channel.
+// Returns ErrST291PayloadTooLarge for a message that needs more packets.
+func MessagePacket(msg []byte, line uint16) (ANCPacket, error) {
+	if len(msg) > st291MaxPayload {
+		return ANCPacket{}, fmt.Errorf("%w: length %d exceeds maximum %d",
+			ErrST291PayloadTooLarge, len(msg), st291MaxPayload)
+	}
+	return ANCPacket{
+		Line: line,
+		DID:  ST291DID,
+		SDID: ST291SDID,
+		UDW:  append([]byte{st2010PayloadDescV1}, msg...),
+	}, nil
+}
+
 // WrapRFC8331 builds an RFC 8331 payload, from Length on, carrying packets.
 func WrapRFC8331(packets []ANCPacket) ([]byte, error) {
 	if len(packets) > 255 {

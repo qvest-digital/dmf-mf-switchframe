@@ -79,9 +79,11 @@ func (cfg *AppConfig) expandEngineSettings() error {
 		{"--mxl-output", &cfg.MXLOutput},
 		{"--mxl-output-video-def", &cfg.MXLOutputVideoDef},
 		{"--mxl-output-audio-def", &cfg.MXLOutputAudioDef},
+		{"--mxl-output-data-def", &cfg.MXLOutputDataDef},
 		{"--mxl-nmos-host", &cfg.MXLNMOS.Host},
 		{"--mxl-nmos-peer-output-video-def", &cfg.MXLNMOS.PeerOutputVideoDef},
 		{"--mxl-nmos-peer-output-audio-def", &cfg.MXLNMOS.PeerOutputAudioDef},
+		{"--mxl-nmos-peer-output-data-def", &cfg.MXLNMOS.PeerOutputDataDef},
 		{"--outputs-config", &cfg.OutputsConfig},
 		{"SWITCHFRAME_STATE_DIR", &cfg.StateDir},
 	} {

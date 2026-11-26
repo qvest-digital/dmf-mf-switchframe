@@ -1397,6 +1397,18 @@ func (a *App) initMXL() error {
 		if err != nil {
 			slog.Warn("mxl: could not open output audio flow", "error", err)
 		}
+		// The data flow is only written when defined: without a definition
+		// there is no flow id for a reader to find it by.
+		var dataWriter mxl.DiscreteWriter
+		if a.cfg.MXLOutputDataDef != "" {
+			data, err := os.ReadFile(a.cfg.MXLOutputDataDef)
+			if err != nil {
+				return fmt.Errorf("mxl: read output data flow def: %w", err)
+			}
+			if dataWriter, err = inst.OpenWriter(string(data)); err != nil {
+				slog.Warn("mxl: could not open output data flow", "error", err)
+			}
+		}
 
 		// Adapt between switcher's RawVideoSink (*ProcessingFrame) and
 		// the MXL writer's WriteVideo/WriteVideo10bit.
@@ -1412,7 +1424,7 @@ func (a *App) initMXL() error {
 		a.updateGPURawVideoSink()
 		a.mixer.SetRawAudioSink(audio.RawAudioSink(out.Writer().WriteAudio))
 
-		out.StartLifecycle(context.Background(), videoWriter, audioWriter)
+		out.StartLifecycle(context.Background(), videoWriter, audioWriter, dataWriter)
 		a.mxlOutput = out
 
 		slog.Info("MXL output started", "flow", a.cfg.MXLOutput)
@@ -1490,9 +1502,14 @@ func (a *App) injectSCTE104(key string, payload []byte) {
 	}
 }
 
+// vancLine is the VANC line the program's ancillary packets go out on in
+// the MXL data flow.
+const vancLine = 9
+
 // initSCTE104 wires SCTE-104 output on the injector if enabled.
 // Input path is wired in initMXL (OnDataGrain callback on MXL sources).
-// Output: injector scte104Sink → FromCueMessage → Encode → WrapST291 → MXL WriteDataGrain
+// Output: injector scte104Sink -> FromCueMessage -> Encode -> MessagePacket ->
+// MXL QueueANC, written in the data grain of the next program picture.
 func (a *App) initSCTE104() error {
 	if !a.cfg.SCTE104 {
 		return nil
@@ -1515,14 +1532,12 @@ func (a *App) initSCTE104() error {
 				slog.Warn("scte104: failed to encode SCTE-104 message", "error", err)
 				return
 			}
-			packet, wrapErr := scte104.WrapST291(data)
-			if wrapErr != nil {
-				slog.Warn("scte104: failed to wrap ST 291 packet", "error", wrapErr)
+			packet, err := scte104.MessagePacket(data, vancLine)
+			if err != nil {
+				slog.Warn("scte104: failed to wrap ST 291 packet", "error", err)
 				return
 			}
-			if err := a.mxlOutput.Writer().WriteDataGrain(packet); err != nil {
-				slog.Warn("scte104: failed to write data grain", "error", err)
-			}
+			a.mxlOutput.Writer().QueueANC(packet)
 		})
 	}
 

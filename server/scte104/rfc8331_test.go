@@ -168,6 +168,29 @@ func TestWrapRFC8331_Limits(t *testing.T) {
 	require.Error(t, err)
 }
 
+// A message goes out as the packet an independent writer frames, payload
+// descriptor 0x08 included, and reads back as the same message.
+func TestMessagePacket_MatchesVector(t *testing.T) {
+	mom := mustHex(t, vectorMOM)
+	p, err := MessagePacket(mom, 9)
+	require.NoError(t, err)
+
+	g, err := WrapRFC8331([]ANCPacket{p})
+	require.NoError(t, err)
+	require.Equal(t, vectorOneSCTE, hex.EncodeToString(g))
+
+	msgs, err := ParseDataGrain(asGrain(g))
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{mom}, msgs)
+}
+
+func TestMessagePacket_TooLarge(t *testing.T) {
+	_, err := MessagePacket(make([]byte, st291MaxPayload), 9)
+	require.NoError(t, err)
+	_, err = MessagePacket(make([]byte, st291MaxPayload+1), 9)
+	require.ErrorIs(t, err, ErrST291PayloadTooLarge)
+}
+
 func TestParseDataGrain_RFC8331(t *testing.T) {
 	mom := mustHex(t, vectorMOM)
 

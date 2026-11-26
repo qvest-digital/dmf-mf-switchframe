@@ -326,7 +326,8 @@ func TestReady_MXLWriterStalled(t *testing.T) {
 }
 
 // An MXL output whose flows did not open, which initMXL only logs, is not
-// a program this engine writes: video always, audio when one is configured.
+// a program this engine writes: video always, audio and data when one is
+// configured.
 func TestReady_MXLFlowNotOpened(t *testing.T) {
 	a, _ := onAirApp(t, "1080p29.97")
 	a.mxlOutput = mxl.NewOutput(mxl.OutputConfig{Width: 12, Height: 2, VideoRate: mxl.Rational{Numerator: 30000, Denominator: 1001}})
@@ -340,6 +341,13 @@ func TestReady_MXLFlowNotOpened(t *testing.T) {
 	b.mxlOutput.StartLifecycle(context.Background(), &gatedGrainWriter{}, nil)
 	t.Cleanup(b.mxlOutput.Stop)
 	requireNotReady(t, startReady(t, b)(), "mxl output: program audio: no flow")
+
+	c, _ := onAirApp(t, "1080p29.97")
+	c.cfg.MXLOutputDataDef = "/config/program-data.json"
+	c.mxlOutput = mxl.NewOutput(mxl.OutputConfig{Width: 12, Height: 2, VideoRate: mxl.Rational{Numerator: 30000, Denominator: 1001}})
+	c.mxlOutput.StartLifecycle(context.Background(), &gatedGrainWriter{}, nil, nil)
+	t.Cleanup(c.mxlOutput.Stop)
+	requireNotReady(t, startReady(t, c)(), "mxl output: program data: no flow")
 }
 
 func TestReady_DestinationNotStarted(t *testing.T) {

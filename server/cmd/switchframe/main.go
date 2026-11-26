@@ -122,6 +122,7 @@ type AppConfig struct {
 	MXLOutput         string   // Flow name for program output (empty = disabled)
 	MXLOutputVideoDef string   // Path to output video flow definition JSON
 	MXLOutputAudioDef string   // Path to output audio flow definition JSON
+	MXLOutputDataDef  string   // Path to output data flow definition JSON
 
 	// MXLNMOS configures the NMOS node for named MXL inputs (--mxl-nmos-*).
 	MXLNMOS     mxlNMOSConfig
@@ -422,8 +423,10 @@ func parseConfig() (AppConfig, error) {
 	mxlNMOSQueryFlag := flag.String("mxl-nmos-query-url", "", "origin of the IS-04 Query API connected senders are looked up in; empty = the registry's (env: SWITCHFRAME_MXL_NMOS_QUERY_URL)")
 	mxlNMOSPeerVideoDefFlag := flag.String("mxl-nmos-peer-output-video-def", "", "path to the peer engine's MXL output video flow definition JSON, offered as a sender of the peer's program (env: SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_VIDEO_DEF)")
 	mxlNMOSPeerAudioDefFlag := flag.String("mxl-nmos-peer-output-audio-def", "", "path to the peer engine's MXL output audio flow definition JSON, offered as a sender of the peer's program (env: SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_AUDIO_DEF)")
+	mxlNMOSPeerDataDefFlag := flag.String("mxl-nmos-peer-output-data-def", "", "path to the peer engine's MXL output data flow definition JSON, offered as a sender of the peer's program (env: SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_DATA_DEF)")
 	mxlOutputVideoDef := flag.String("mxl-output-video-def", "", "Path to MXL output video flow definition JSON")
 	mxlOutputAudioDef := flag.String("mxl-output-audio-def", "", "Path to MXL output audio flow definition JSON")
+	mxlOutputDataDef := flag.String("mxl-output-data-def", "", "Path to MXL output data flow definition JSON (video/smpte291: SCTE-104 and captions as RFC 8331, one grain per program picture)")
 	mxlDomain := flag.String("mxl-domain", "/dev/shm/mxl", "MXL shared memory domain path")
 	mxlDiscover := flag.Bool("mxl-discover", false, "List available MXL flows and exit")
 	mxlSourcePresetFlag := flag.String("mxl-source-preset", "", "speed/quality preset of each MXL source's relay and replay encode: low-latency, balanced, quality or fastest; empty = balanced")
@@ -682,6 +685,7 @@ func parseConfig() (AppConfig, error) {
 		MXLOutput:            *mxlOutput,
 		MXLOutputVideoDef:    *mxlOutputVideoDef,
 		MXLOutputAudioDef:    *mxlOutputAudioDef,
+		MXLOutputDataDef:     *mxlOutputDataDef,
 		MXLDomain:            *mxlDomain,
 		MXLGCInterval:        *mxlGCIntervalFlag,
 		MXLSourcePreset:      codec.OutputPreset(*mxlSourcePresetFlag),
@@ -718,6 +722,7 @@ func parseConfig() (AppConfig, error) {
 
 			PeerOutputVideoDef: resolveEnvOrFlag(*mxlNMOSPeerVideoDefFlag, "SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_VIDEO_DEF"),
 			PeerOutputAudioDef: resolveEnvOrFlag(*mxlNMOSPeerAudioDefFlag, "SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_AUDIO_DEF"),
+			PeerOutputDataDef:  resolveEnvOrFlag(*mxlNMOSPeerDataDefFlag, "SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_DATA_DEF"),
 		},
 		PeerCertHash:         resolveEnvOrFlag(*peerCertHashFlag, "SWITCHFRAME_PEER_CERT_HASH"),
 		PeerPublicURL:        resolveEnvOrFlag(*peerPublicURLFlag, "SWITCHFRAME_PEER_PUBLIC_URL"),

@@ -393,9 +393,11 @@ func TestMXLNMOS_ReconcileAdoptsLaterPeerConnections(t *testing.T) {
 func TestMXLNMOS_ProgramSenders(t *testing.T) {
 	const pgmVideo = "5f000000-0000-4000-8000-0000000000a1"
 	const pgmAudio = "5f000000-0000-4000-8000-0000000000a2"
+	const pgmData = "5f000000-0000-4000-8000-0000000000a3"
 	dir := t.TempDir()
 	videoDef := filepath.Join(dir, "program-video.json")
 	audioDef := filepath.Join(dir, "program-audio.json")
+	dataDef := filepath.Join(dir, "program-data.json")
 	_ = os.WriteFile(videoDef, []byte(`{"id":"`+pgmVideo+`","label":"switcher program video",
 		"format":"urn:x-nmos:format:video","media_type":"video/v210",
 		"tags":{"urn:x-nmos:tag:grouphint/v1.0":["switcher program:Video"]},
@@ -403,16 +405,20 @@ func TestMXLNMOS_ProgramSenders(t *testing.T) {
 	_ = os.WriteFile(audioDef, []byte(`{"id":"`+pgmAudio+`","label":"switcher program audio",
 		"format":"urn:x-nmos:format:audio","media_type":"audio/float32",
 		"sample_rate":{"numerator":48000},"channel_count":2,"bit_depth":32}`), 0o644)
+	_ = os.WriteFile(dataDef, []byte(`{"id":"`+pgmData+`","label":"switcher program data",
+		"format":"urn:x-nmos:format:data","media_type":"video/smpte291",
+		"grain_rate":{"numerator":50,"denominator":1}}`), 0o644)
 	tt := newNMOSTestApp(t, nil, func(a *App) {
 		a.cfg.MXLOutput = "program"
 		a.cfg.MXLOutputVideoDef = videoDef
 		a.cfg.MXLOutputAudioDef = audioDef
+		a.cfg.MXLOutputDataDef = dataDef
 	})
 
 	var senders []map[string]any
 	tt.getJSON(t, "/x-nmos/node/v1.3/senders", &senders)
-	if len(senders) != 2 {
-		t.Fatalf("%d senders, want program video and audio", len(senders))
+	if len(senders) != 3 {
+		t.Fatalf("%d senders, want program video, audio and data", len(senders))
 	}
 	var flows []nmos.Flow
 	tt.getJSON(t, "/x-nmos/node/v1.3/flows", &flows)
@@ -431,17 +437,23 @@ func TestMXLNMOS_ProgramSenders(t *testing.T) {
 		if !ok {
 			t.Fatalf("sender's flow %v is not on the node", snd["flow_id"])
 		}
-		if f.ID == pgmVideo || f.ID == pgmAudio {
+		if f.ID == pgmVideo || f.ID == pgmAudio || f.ID == pgmData {
 			t.Error("IS-04 flow id is the MXL flow id, which differs between engines")
 		}
 		var active map[string]any
 		tt.getJSON(t, "/x-nmos/connection/v1.1/single/senders/"+snd["id"].(string)+"/active", &active)
 		leg := active["transport_params"].([]any)[0].(map[string]any)
 		want := pgmAudio
-		if f.Format == nmos.FormatVideo {
+		switch f.Format {
+		case nmos.FormatVideo:
 			want = pgmVideo
 			if f.FrameWidth != 1920 || f.GrainRate == nil || f.GrainRate.Numerator != 50 {
 				t.Errorf("video flow %+v lost the definition's format", f)
+			}
+		case nmos.FormatData:
+			want = pgmData
+			if f.MediaType != nmos.MediaTypeSMPTE291 || f.GrainRate == nil || f.GrainRate.Numerator != 50 {
+				t.Errorf("data flow %+v lost the definition's format", f)
 			}
 		}
 		if leg["mxl_flow_id"] != want {
