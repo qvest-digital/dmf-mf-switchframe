@@ -1,6 +1,7 @@
 package mxl
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -112,23 +113,26 @@ func TestWriter_CloseWaitsForInFlightWriteAudio(t *testing.T) {
 	}
 }
 
-// TestWriter_CloseWaitsForInFlightWriteDataGrain is the WriteDataGrain
-// variant of finding #73: the atomic dataRef load is a TOCTOU — Close can
-// release ref.writer while WriteGrain is executing on it.
-func TestWriter_CloseWaitsForInFlightWriteDataGrain(t *testing.T) {
+// TestWriter_CloseWaitsForInFlightDataGrain: the video goroutine writes the
+// data grain, and Close must not release the data flow writer while that
+// write is in flight.
+func TestWriter_CloseWaitsForInFlightDataGrain(t *testing.T) {
 	mock := &blockingDiscreteWriter{
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	w := NewWriter(WriterConfig{})
+	w := NewWriter(WriterConfig{Width: 12, Height: 2})
+	w.SetVideoWriter(&mockDiscreteWriter{}, Rational{30, 1})
 	w.SetDataWriter(mock, Rational{30, 1})
+	w.Start(context.Background())
 
-	writeDone := make(chan struct{})
-	go func() {
-		_ = w.WriteDataGrain([]byte{0x01, 0x02, 0x03})
-		close(writeDone)
-	}()
-	<-mock.entered // WriteGrain is now in flight on the flow writer.
+	w.WriteVideo(frameYUV(16), 12, 2, 0)
+	select {
+	case <-mock.entered: // WriteGrain is now in flight on the data flow writer.
+	case <-time.After(2 * time.Second):
+		close(mock.release)
+		t.Fatal("no data grain written with the program video")
+	}
 
 	closeDone := make(chan struct{})
 	go func() {
@@ -143,7 +147,6 @@ func TestWriter_CloseWaitsForInFlightWriteDataGrain(t *testing.T) {
 	}
 
 	close(mock.release)
-	<-writeDone
 
 	select {
 	case <-closeDone:
@@ -153,13 +156,5 @@ func TestWriter_CloseWaitsForInFlightWriteDataGrain(t *testing.T) {
 
 	if mock.usedAfterClose.Load() {
 		t.Fatal("data flow writer was released (Close) while WriteGrain was still executing — use-after-free in cgo builds")
-	}
-
-	// Post-close writes must be rejected without touching the released writer.
-	if err := w.WriteDataGrain([]byte{0x04}); err == nil {
-		t.Fatal("WriteDataGrain after Close should return an error")
-	}
-	if mock.usedAfterClose.Load() {
-		t.Fatal("WriteDataGrain after Close reached the released flow writer")
 	}
 }

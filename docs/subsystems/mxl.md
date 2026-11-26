@@ -68,7 +68,7 @@ The mechanism is a latest-wins buffer: `WriteVideo(yuv, w, h, pts)` converts YUV
 
 Audio is written at the sample indices of each batch's own PTS, the program tick's output time: `OpenSamples(index, n)` writes `[index-n, index)`, so a batch starting at sample `s` goes to index `s+n`. A batch overlapping what was written is dropped and counted (`AudioOverlaps`) instead of moved later, which keeps the program audio flow aligned with the program video flow.
 
-`WriteDataGrain(data)` publishes SCTE-104 or other ancillary payloads. It's event-driven (called from the [`scte35` injector's sink](../../server/scte35/)), not ticker-driven: the current wall-clock index is computed fresh per call and the grain is written once. [`SetDataWriter`](../../server/mxl/writer.go) binds the data flow to the video frame rate so index domains align with video frame timing (matches how SCTE-104 in SDI is embedded in the VANC region of video frames).
+`QueueANC(packet)` queues an ancillary packet (SCTE-104 from the [`scte35` injector's sink](../../server/scte35/), captions) for the next picture. With a data flow set by [`SetDataWriter`](../../server/mxl/writer.go), the video goroutine writes one RFC 8331 grain right after each video grain, repeats included, at the same index: the packets queued since the last one, or a frame of no packets. A reader of the data flow gets a grain for every picture and finds each packet in the grain of the picture it went out with, as in the VANC of SDI.
 
 ### Source: fan-out
 
@@ -130,7 +130,7 @@ flowchart TB
     subgraph outp ["Output (program)"]
         WV["videoTickLoop<br/>(latest-wins, steady rate)"]
         WA["WriteAudio<br/>(at the batch PTS)"]
-        WD["WriteDataGrain<br/>(event-driven)"]
+        WD["data grain per video grain<br/>(QueueANC)"]
     end
 
     F1 --> R1
@@ -158,7 +158,7 @@ flowchart TB
 - Discovery: [`server/mxl/discovery.go`](../../server/mxl/discovery.go) → `Discover()`; [`discovery_parse.go`](../../server/mxl/discovery_parse.go) → `parseFlowDef()`
 - Cgo core: [`server/mxl/flow.go`](../../server/mxl/flow.go) → `Instance`, `statusError()`, reader/writer impls
 - Reader: [`server/mxl/reader.go`](../../server/mxl/reader.go) → `Reader.videoLoop()`, `audioLoop()`, `dataLoop()`
-- Writer: [`server/mxl/writer.go`](../../server/mxl/writer.go) → `Writer.WriteVideo()`, `WriteAudio()`, `videoTickLoop()`, `WriteDataGrain()`
+- Writer: [`server/mxl/writer.go`](../../server/mxl/writer.go) -> `Writer.WriteVideo()`, `WriteAudio()`, `videoTickLoop()`, `QueueANC()`
 - Source: [`server/mxl/source.go`](../../server/mxl/source.go) → `Source.Start()`, `processVideoGrain()`, `encodeAndBroadcastVideo()`
 - Output: [`server/mxl/output.go`](../../server/mxl/output.go) → `Output.Start()`, `Output.StartLifecycle()`
 - V210: [`server/mxl/v210.go`](../../server/mxl/v210.go) → `V210ToYUV420pInto()`, `YUV420pToV210Into()`, `V210LineStride()`

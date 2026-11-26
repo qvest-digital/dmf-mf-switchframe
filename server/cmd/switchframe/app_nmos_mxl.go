@@ -38,6 +38,7 @@ type mxlNMOSConfig struct {
 	// flows it writes.
 	PeerOutputVideoDef string
 	PeerOutputAudioDef string
+	PeerOutputDataDef  string
 }
 
 // peerForwardHeader marks an IS-05 request one engine of an active-active
@@ -200,7 +201,7 @@ func (a *App) newMXLNMOS() (*mxlNMOS, error) {
 	if cfg.Label == "" {
 		cfg.Label = "switchframe"
 	}
-	if (cfg.PeerOutputVideoDef != "" || cfg.PeerOutputAudioDef != "") && a.cfg.EngineLabel == "" {
+	if (cfg.PeerOutputVideoDef != "" || cfg.PeerOutputAudioDef != "" || cfg.PeerOutputDataDef != "") && a.cfg.EngineLabel == "" {
 		return nil, errors.New("--mxl-nmos-peer-output-*-def needs --engine-label: only an engine of a pair has a peer")
 	}
 	domainID, err := readMXLDomainID(a.cfg.MXLDomain)
@@ -428,14 +429,14 @@ func (a *App) buildMXLNMOSResources(n *mxlNMOS) error {
 // receiver reads whichever engine registers.
 func (a *App) addMXLNMOSProgramSenders(n *mxlNMOS, deviceID string) ([]string, error) {
 	type program struct {
-		engine, video, audio string
+		engine, video, audio, data string
 	}
 	var programs []program
 	if a.cfg.MXLOutput != "" {
-		programs = append(programs, program{a.cfg.EngineLabel, a.cfg.MXLOutputVideoDef, a.cfg.MXLOutputAudioDef})
+		programs = append(programs, program{a.cfg.EngineLabel, a.cfg.MXLOutputVideoDef, a.cfg.MXLOutputAudioDef, a.cfg.MXLOutputDataDef})
 	}
 	if a.cfg.EngineLabel != "" {
-		programs = append(programs, program{peerEngineLabel(a.cfg.EngineLabel), n.cfg.PeerOutputVideoDef, n.cfg.PeerOutputAudioDef})
+		programs = append(programs, program{peerEngineLabel(a.cfg.EngineLabel), n.cfg.PeerOutputVideoDef, n.cfg.PeerOutputAudioDef, n.cfg.PeerOutputDataDef})
 	}
 	senders := []string{}
 	// Two senders of one flow would be two programs a controller cannot
@@ -449,6 +450,7 @@ func (a *App) addMXLNMOSProgramSenders(n *mxlNMOS, deviceID string) ([]string, e
 		}{
 			{essenceVideo, p.video, nmos.FormatVideo},
 			{essenceAudio, p.audio, nmos.FormatAudio},
+			{essenceData, p.data, nmos.FormatData},
 		} {
 			if d.path == "" {
 				continue

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zsiec/switchframe/server/clock"
+	"github.com/zsiec/switchframe/server/scte104"
 )
 
 // WriterConfig configures an MXL flow writer.
@@ -65,6 +66,12 @@ type dataWriterRef struct {
 // Audio is written at the sample indices of its PTS; a batch overlapping
 // the last write is dropped and counted (AudioOverlaps). The program video
 // and audio flows therefore carry the same index for the same tick.
+//
+// Data, when a data flow is set, is written by the video goroutine: one
+// RFC 8331 grain right after each video grain, at the same index, holding
+// the packets queued with QueueANC since the last one, or none. A reader
+// of the data flow gets a grain for every picture and finds a packet in
+// the grain of the picture it went out with.
 type Writer struct {
 	config WriterConfig
 	log    *slog.Logger
@@ -72,17 +79,21 @@ type Writer struct {
 	// videoRef is lock-free: accessed atomically from the video goroutine hot path.
 	videoRef atomic.Pointer[videoWriterRef]
 
-	// dataRef is stored atomically (SetDataWriter can race Close), but
-	// WriteDataGrain holds w.mu for the duration of the cgo WriteGrain call
-	// so Close cannot release the flow writer while it is in use.
+	// dataRef is stored atomically (SetDataWriter can race Close). Only the
+	// video goroutine writes to it, and Close waits for that goroutine
+	// before it releases the flow writer.
 	dataRef atomic.Pointer[dataWriterRef]
 
+	// ancMu guards ancPending, the packets for the next data grain.
+	ancMu      sync.Mutex
+	ancPending []scte104.ANCPacket
+
 	// mu protects audioWriter/audioRate and Close() resource cleanup, and is
-	// held across the cgo WriteSamples/WriteGrain calls in WriteAudio and
-	// WriteDataGrain: Close releases the underlying C flow writers under the
-	// same mutex, so an in-flight write can never hit a released handle
-	// (use-after-free in C). Contention is only writer-vs-Close — the video
-	// hot path (WriteVideo + videoTickLoop) does not take this mutex.
+	// held across the cgo WriteSamples call in WriteAudio: Close releases
+	// the underlying C flow writers under the same mutex, so an in-flight
+	// write can never hit a released handle (use-after-free in C).
+	// Contention is only writer-vs-Close -- the video hot path (WriteVideo +
+	// videoTickLoop) does not take this mutex.
 	mu          sync.Mutex
 	audioWriter ContinuousWriter
 	audioRate   Rational
@@ -110,10 +121,6 @@ type Writer struct {
 	// Last written audio index (exclusive end) for monotonic enforcement.
 	// Only accessed from the single mixer output goroutine.
 	lastAudioIndex uint64
-
-	// lastDataIndex is the index of the last data grain committed, 0 before
-	// the first. Guarded by mu, like the write itself.
-	lastDataIndex uint64
 
 	// videoHead and audioHead are the index after the last video grain and
 	// after the last audio sample written, 0 before the first; AtClock
@@ -208,45 +215,37 @@ func (w *Writer) SetDataWriter(dw DiscreteWriter, grainRate Rational) {
 	w.dataRef.Store(&dataWriterRef{writer: dw, rate: grainRate})
 }
 
-// WriteDataGrain writes a data grain to MXL shared memory with the current
-// timestamp. Event-driven — called from the injector sink, NOT on a ticker.
-// Returns an error if no data writer is set or if the writer is closed.
-func (w *Writer) WriteDataGrain(data []byte) error {
-	if w.closed.Load() {
-		return errors.New("mxl writer: closed")
-	}
+// QueueANC adds p to the data grain written with the next video grain.
+func (w *Writer) QueueANC(p scte104.ANCPacket) {
+	w.ancMu.Lock()
+	w.ancPending = append(w.ancPending, p)
+	w.ancMu.Unlock()
+}
 
-	// Hold w.mu for the duration of the cgo write: Close() releases the data
-	// flow writer under the same mutex, so WriteGrain can never execute on an
-	// already-released C handle. (The closed.Load above is just a fast path —
-	// it is a TOCTOU without the mutex.)
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
+// writeDataGrain writes the data grain of the video grain at index: the
+// packets queued since the last one, or a frame of none. Called from the
+// video goroutine only. Packets that cannot be written are dropped, so a
+// packet that never fits does not hold up the ones after it.
+func (w *Writer) writeDataGrain(index uint64) {
 	ref := w.dataRef.Load()
 	if ref == nil || ref.writer == nil {
-		return errors.New("mxl writer: no data writer set")
+		return
 	}
+	w.ancMu.Lock()
+	packets := w.ancPending
+	w.ancPending = nil
+	w.ancMu.Unlock()
 
-	var index uint64
-	if CurrentIndex != nil {
-		index = CurrentIndex(ref.rate)
+	grain, err := scte104.WrapRFC8331(packets)
+	if err != nil {
+		w.log.Error("mxl writer: dropped ancillary data", "error", err,
+			"index", index, "packets", len(packets))
+		grain, _ = scte104.WrapRFC8331(nil)
 	}
-	// Two packets in one grain period would share an index, and libmxl
-	// refuses a commit that is not past the last one, so the second is
-	// written to the next grain instead of being lost.
-	if w.lastDataIndex > 0 && index <= w.lastDataIndex {
-		index = w.lastDataIndex + 1
-	}
-
-	if err := ref.writer.WriteGrain(index, data); err != nil {
+	if err := ref.writer.WriteGrain(index, grain); err != nil {
 		w.log.Error("mxl writer: failed to write data grain",
-			"error", err, "index", index, "len", len(data))
-		return err
+			"error", err, "index", index, "packets", len(packets))
 	}
-	w.lastDataIndex = index
-
-	return nil
 }
 
 // WriteVideo converts a YUV420p frame to V210 and hands it to the video
@@ -469,6 +468,7 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 					w.log.Error("mxl writer: failed to write video grain",
 						"error", err, "index", index)
 				} else {
+					w.writeDataGrain(index)
 					w.videoHead.Store(index + 1)
 					if haveLast && frame.seq == writtenSeq {
 						repeats++
@@ -598,11 +598,12 @@ func (w *Writer) WriteAudio(pcm []float32, pts int64, sampleRate, channels int) 
 	w.audioHead.Store(index)
 }
 
-// Flows reports whether the writer has a video flow and an audio flow to
-// write to.
-func (w *Writer) Flows() (video, audio bool) {
+// Flows reports whether the writer has a video flow, an audio flow and a
+// data flow to write to.
+func (w *Writer) Flows() (video, audio, data bool) {
 	ref := w.videoRef.Load()
-	return ref != nil && ref.writer != nil, w.audioFlowRate.Load() != nil
+	dref := w.dataRef.Load()
+	return ref != nil && ref.writer != nil, w.audioFlowRate.Load() != nil, dref != nil && dref.writer != nil
 }
 
 // AtClock returns nil when each program flow the writer writes has been

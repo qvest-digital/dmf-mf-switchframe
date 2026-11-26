@@ -144,6 +144,7 @@ All flags are defined in [`parseConfig`](../../server/cmd/switchframe/main.go). 
 | `--mxl-output` | string | `""` | MXL flow name for program output |
 | `--mxl-output-video-def` | string | `""` | Path to MXL output video flow definition JSON |
 | `--mxl-output-audio-def` | string | `""` | Path to MXL output audio flow definition JSON |
+| `--mxl-output-data-def` | string | `""` | Path to MXL output data flow definition JSON, a `video/smpte291` flow at the video grain rate. One RFC 8331 grain is written per program picture, at its index, carrying the SCTE-104 messages (`--scte104`) and captions queued for it, or no packet. Empty: no data flow |
 | `--mxl-domain` | string | `/dev/shm/mxl` | MXL shared memory domain path |
 | `--mxl-discover` | bool | `false` | List available MXL flows and exit |
 | `--mxl-source-preset` | string | `""` | Speed/quality preset of each MXL source's full-quality encode, which the browser relay and replay take: `low-latency`, `balanced`, `quality` or `fastest` (x264 `ultrafast`, NVENC `p1`). Empty: `balanced` |
@@ -165,6 +166,7 @@ With `--mxl-output`, the program flows are offered as MXL senders described by t
 | `--mxl-nmos-query-url` | string | registry's (env `SWITCHFRAME_MXL_NMOS_QUERY_URL`) | Origin of the IS-04 Query API the connected sender's label is read from |
 | `--mxl-nmos-peer-output-video-def` | string | `""` (env `SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_VIDEO_DEF`) | The peer engine's program video flow definition, offered as a sender of the peer's flow. Needs `--engine-label` |
 | `--mxl-nmos-peer-output-audio-def` | string | `""` (env `SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_AUDIO_DEF`) | The same for the peer's program audio |
+| `--mxl-nmos-peer-output-data-def` | string | `""` (env `SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_DATA_DEF`) | The same for the peer's program data |
 
 `mxl_domain_id` takes the id in `<--mxl-domain>/domain_def.json`; `auto` resolves to it, and another domain is refused. Only immediate activations are supported.
 
@@ -238,7 +240,7 @@ switchframe --mxl-domain /run/mxl/domain \
 | `--control-plane-secret` | string | `""` (env `SWITCHFRAME_CONTROL_PLANE_SECRET`) | Shared secret authorizing `POST /api/peer/force-leader`. Empty disables endpoint |
 | `--initial-program-source` | string | `""` (env `SWITCHFRAME_INITIAL_PROGRAM_SOURCE`) | Source key put on air at start when no peer engine is on air to follow, e.g. `mxl:cam1` or `source:colorbars`. Empty, or no frames from it within 10s: the first input delivering frames, in source order. An engine whose peer is on air takes the peer's state instead, read with this engine's API token, so both engines need the same `--api-token` |
 
-With an engine label, `{engine}` and `{peer}` in a per-engine setting become this engine's label and its peer's at start, so both engines of a pair can run from one set of flags: `--peer-engine-url`, `--peer-public-url`, `--webtransport-host`, `--tls-cert`, `--tls-key`, `--mxl-output`, `--mxl-output-video-def`, `--mxl-output-audio-def`, `--mxl-nmos-host`, `--mxl-nmos-peer-output-video-def`, `--mxl-nmos-peer-output-audio-def`, `--outputs-config`, `--oidc-redirect-url` and `SWITCHFRAME_STATE_DIR`. A placeholder without an engine label fails startup. A literal `{engine}` or `{peer}` cannot be written in these settings.
+With an engine label, `{engine}` and `{peer}` in a per-engine setting become this engine's label and its peer's at start, so both engines of a pair can run from one set of flags: `--peer-engine-url`, `--peer-public-url`, `--webtransport-host`, `--tls-cert`, `--tls-key`, `--mxl-output`, `--mxl-output-video-def`, `--mxl-output-audio-def`, `--mxl-output-data-def`, `--mxl-nmos-host`, `--mxl-nmos-peer-output-video-def`, `--mxl-nmos-peer-output-audio-def`, `--mxl-nmos-peer-output-data-def`, `--outputs-config`, `--oidc-redirect-url` and `SWITCHFRAME_STATE_DIR`. A placeholder without an engine label fails startup. A literal `{engine}` or `{peer}` cannot be written in these settings.
 
 ### Single sign-on (OpenID Connect)
 

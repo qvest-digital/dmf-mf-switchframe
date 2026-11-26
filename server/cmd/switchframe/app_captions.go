@@ -7,6 +7,7 @@ import (
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/scte104"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -75,14 +76,16 @@ func (a *App) initCaptions() error {
 			if cdp == nil {
 				return
 			}
-			packet, err := caption.WrapCaptionST291(cdp)
-			if err != nil {
-				slog.Error("caption VANC wrap failed", "err", err)
+			if len(cdp) > 255 { // Data_Count holds 255
+				slog.Error("caption VANC wrap failed", "err", caption.ErrVANCTooLarge, "len", len(cdp))
 				return
 			}
-			if err := a.mxlOutput.Writer().WriteDataGrain(packet); err != nil {
-				slog.Error("caption VANC write failed", "err", err)
-			}
+			a.mxlOutput.Writer().QueueANC(scte104.ANCPacket{
+				Line: vancLine,
+				DID:  caption.CaptionDID,
+				SDID: caption.CaptionSDID,
+				UDW:  cdp,
+			})
 		})
 	}
 

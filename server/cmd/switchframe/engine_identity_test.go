@@ -16,7 +16,8 @@ func parseConfigWith(t *testing.T, env map[string]string, args ...string) (AppCo
 		"SWITCHFRAME_ENGINE_LABEL", podIndexEnv, "SWITCHFRAME_STATE_DIR",
 		"SWITCHFRAME_PEER_ENGINE_URL", "SWITCHFRAME_PEER_PUBLIC_URL",
 		"SWITCHFRAME_MXL_NMOS_HOST", "SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_VIDEO_DEF",
-		"SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_AUDIO_DEF", "SWITCHFRAME_OIDC_ISSUER",
+		"SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_AUDIO_DEF", "SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_DATA_DEF",
+		"SWITCHFRAME_OIDC_ISSUER",
 		"SWITCHFRAME_OIDC_CLIENT_ID", "SWITCHFRAME_OIDC_REDIRECT_URL",
 	} {
 		t.Setenv(k, env[k])
@@ -76,6 +77,7 @@ func TestParseConfig_EngineFromPodIndex(t *testing.T) {
 		"--mxl-output=program-{engine}",
 		"--mxl-output-video-def=/config/program-video-{engine}.json",
 		"--mxl-output-audio-def=/config/program-audio-{engine}.json",
+		"--mxl-output-data-def=/config/program-data-{engine}.json",
 		"--outputs-config=/config/outputs-{engine}.json",
 		"--srt-listen=:9000",
 	}
@@ -84,6 +86,7 @@ func TestParseConfig_EngineFromPodIndex(t *testing.T) {
 		"SWITCHFRAME_MXL_NMOS_HOST":                  "sf-{engine}.ns.svc",
 		"SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_VIDEO_DEF": "/config/program-video-{peer}.json",
 		"SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_AUDIO_DEF": "/config/program-audio-{peer}.json",
+		"SWITCHFRAME_MXL_NMOS_PEER_OUTPUT_DATA_DEF":  "/config/program-data-{peer}.json",
 		"SWITCHFRAME_OIDC_ISSUER":                    "https://idp.example.com",
 		"SWITCHFRAME_OIDC_CLIENT_ID":                 "switchframe",
 		"SWITCHFRAME_OIDC_REDIRECT_URL":              "https://sf-{engine}.example.com/auth/callback",
@@ -108,11 +111,13 @@ func TestParseConfig_EngineFromPodIndex(t *testing.T) {
 			require.Equal(t, "program-"+e, cfg.MXLOutput)
 			require.Equal(t, "/config/program-video-"+e+".json", cfg.MXLOutputVideoDef)
 			require.Equal(t, "/config/program-audio-"+e+".json", cfg.MXLOutputAudioDef)
+			require.Equal(t, "/config/program-data-"+e+".json", cfg.MXLOutputDataDef)
 			require.Equal(t, "/config/outputs-"+e+".json", cfg.OutputsConfig)
 			require.Equal(t, "/state/"+e, cfg.StateDir)
 			require.Equal(t, "sf-"+e+".ns.svc", cfg.MXLNMOS.Host)
 			require.Equal(t, "/config/program-video-"+p+".json", cfg.MXLNMOS.PeerOutputVideoDef)
 			require.Equal(t, "/config/program-audio-"+p+".json", cfg.MXLNMOS.PeerOutputAudioDef)
+			require.Equal(t, "/config/program-data-"+p+".json", cfg.MXLNMOS.PeerOutputDataDef)
 			require.NotNil(t, cfg.OIDC)
 			require.Equal(t, "https://sf-"+e+".example.com/auth/callback", cfg.OIDC.RedirectURL)
 			require.Equal(t, ":9000", cfg.SRTListen)
