@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.59](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.58...mxl-v1.0.0-rc.59) (2026-11-26)
+
+
+### Features
+
+* **mxl:** write SCTE-104 into an MXL data flow beside the program ([#320](https://github.com/qvest-digital/dmf-mf-switchframe/issues/320)) ([f0be6f0](https://github.com/qvest-digital/dmf-mf-switchframe/commit/f0be6f0e1cfb2c0b05fb9fba68427bd90db4177c))
+
 ## [1.0.0-rc.58](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.57...mxl-v1.0.0-rc.58) (2026-11-26)
 
 
