@@ -1245,35 +1245,22 @@ func (a *App) initMXL() error {
 		// The injector is created later in initSCTE35, so we capture the pointer
 		// and check at runtime. This avoids an init ordering dependency.
 		if a.cfg.SCTE104 && dataFlow != nil {
+			// A sender in another format fails on every grain, one per
+			// picture, so its warning is rate-limited.
+			var lastParseWarn atomic.Int64
 			srcCfg.OnDataGrain = func(key string, data []byte, pts int64) {
 				if a.scte35Injector == nil {
 					return
 				}
-				payload, err := scte104.ParseST291(data)
+				payloads, err := scte104.ParseDataGrain(data)
 				if err != nil {
-					slog.Debug("scte104: invalid ST 291 packet", "source", key, "error", err)
-					return
-				}
-				msg, err := scte104.Decode(payload)
-				if err != nil {
-					slog.Warn("scte104: failed to decode SCTE-104", "source", key, "error", err)
-					return
-				}
-				cue, err := scte104.ToCueMessage(msg)
-				if err != nil {
-					slog.Warn("scte104: failed to translate to CueMessage", "source", key, "error", err)
-					return
-				}
-				cue.Source = "scte104"
-				preRollMs := scte104.PreRollMs(msg)
-				if preRollMs > 0 {
-					if _, err := a.scte35Injector.ScheduleCue(cue, preRollMs); err != nil {
-						slog.Warn("scte104: failed to schedule cue", "source", key, "preRollMs", preRollMs, "error", err)
+					now := time.Now().UnixNano()
+					if last := lastParseWarn.Load(); now-last > int64(scte104ParseWarnInterval) && lastParseWarn.CompareAndSwap(last, now) {
+						slog.Warn("scte104: invalid data grain", "source", key, "error", err)
 					}
-				} else {
-					if _, err := a.scte35Injector.InjectCue(cue); err != nil {
-						slog.Warn("scte104: failed to inject cue", "source", key, "error", err)
-					}
+				}
+				for _, payload := range payloads {
+					a.injectSCTE104(key, payload)
 				}
 			}
 		}
@@ -1471,6 +1458,36 @@ func (a *App) initSCTE35() error {
 		"heartbeatMs", a.cfg.SCTE35HeartbeatMs,
 		"verify", a.cfg.SCTE35Verify)
 	return nil
+}
+
+// scte104ParseWarnInterval is the least time between two warnings about
+// data grains of one source that do not parse.
+const scte104ParseWarnInterval = 10 * time.Second
+
+// injectSCTE104 decodes one SCTE-104 message from an MXL data grain and
+// hands it to the SCTE-35 injector.
+func (a *App) injectSCTE104(key string, payload []byte) {
+	msg, err := scte104.Decode(payload)
+	if err != nil {
+		slog.Warn("scte104: failed to decode SCTE-104", "source", key, "error", err)
+		return
+	}
+	cue, err := scte104.ToCueMessage(msg)
+	if err != nil {
+		slog.Warn("scte104: failed to translate to CueMessage", "source", key, "error", err)
+		return
+	}
+	cue.Source = "scte104"
+	preRollMs := scte104.PreRollMs(msg)
+	if preRollMs > 0 {
+		if _, err := a.scte35Injector.ScheduleCue(cue, preRollMs); err != nil {
+			slog.Warn("scte104: failed to schedule cue", "source", key, "preRollMs", preRollMs, "error", err)
+		}
+	} else {
+		if _, err := a.scte35Injector.InjectCue(cue); err != nil {
+			slog.Warn("scte104: failed to inject cue", "source", key, "error", err)
+		}
+	}
 }
 
 // initSCTE104 wires SCTE-104 output on the injector if enabled.
