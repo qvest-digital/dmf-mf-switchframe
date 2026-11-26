@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.58](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.57...mxl-v1.0.0-rc.58) (2026-11-26)
+
+
+### Features
+
+* **scte104:** read SCTE-104 from RFC 8331 data grains ([#318](https://github.com/qvest-digital/dmf-mf-switchframe/issues/318)) ([89ce6cc](https://github.com/qvest-digital/dmf-mf-switchframe/commit/89ce6cc54e021ea173b0b2b1e27bd3f6c099327c))
+
 ## [1.0.0-rc.57](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.56...mxl-v1.0.0-rc.57) (2026-11-24)
 
 
