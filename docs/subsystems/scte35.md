@@ -78,13 +78,20 @@ SCTE-104 is a byte-oriented automation protocol. A [`Message`](../../server/scte
 
 The wire format comes in two flavors. Over serial or TCP, messages carry a full 12-byte header (messageSize, protocolVersion, ASIndex, message_number, DPI_PID_index, SCTE35_protocol_version) before the operation data. Over SMPTE ST 291 VANC, messages are typically abbreviated — just the OpID and operation data, no header. [`Decode`](../../server/scte104/decode.go) handles both: if the first two bytes match a known single-op OpID, it calls `decodeSOM` which heuristically detects whether a 12-byte header is present (by checking that the messageSize field matches one of two length conventions and the protocol version byte is plausibly small); otherwise it treats the payload as abbreviated VANC. MOM (`0xFFFF`) always has a full header and a variable-length timestamp determined by `time_type` (0=none, 1=UTC+GPS, 2=VITC, 3=GPI).
 
-[`Encode`](../../server/scte104/encode.go) always produces a MOM — even for a single operation — because downstream splicer equipment tends to expect the uniform format. The timestamp is written as a single zero byte (`time_type=0`, no timestamp payload). Segmentation descriptor encoding follows the SCTE 104 2021 Table 8-29 layout: `seg_event_id(4) + flags_byte(1) + [component data] + duration(5 bytes, 40-bit 90kHz ticks) + upid_type(1) + upid_length(1) + upid(N) + type_id(1) + seg_num(1) + segs_expected(1) + [sub_segment fields if applicable]`. Component-level encoding is deliberately unsupported — `ProgramSegmentationFlag` must be true.
+[`Encode`](../../server/scte104/encode.go) always produces a MOM -- even for a single operation -- because downstream splicer equipment tends to expect the uniform format. The timestamp is written as a single zero byte (`time_type=0`, no timestamp payload). A segmentation_descriptor_request is byte-aligned, with every field present even for a cancel: `segmentation_event_id(4) + cancel_indicator(1) + duration(2, seconds) + upid_type(1) + upid_length(1) + upid(N) + segmentation_type_id(1) + segment_num(1) + segments_expected(1) + duration_extension_frames(1) + delivery_not_restricted_flag(1) + web_delivery_allowed_flag(1) + no_regional_blackout_flag(1) + archive_allowed_flag(1) + device_restrictions(1)`. It is not the SCTE-35 segmentation_descriptor bit layout: there is no flags byte, no component loop and no 40-bit 90 kHz duration. Decoding accepts a descriptor that ends after `segments_expected`, as older senders write it, and reads it as delivery not restricted.
 
-[`hasSubSegmentFields`](../../server/scte104/message.go) gates the optional sub-segment fields to the SCTE-35 Table 22 Start types that carry them: `0x34` / `0x36` (Provider/Distributor Placement Opportunity Start), `0x38` / `0x3A` (Overlay variants), and `0x44` / `0x46` (Ad Block Start). Legacy senders may omit these bytes even on those types, and decoding handles that gracefully.
+### MXL data grains
 
-### ST 291 VANC framing
+SCTE-104-over-VANC is standardized with `DID=0x41` and `SDID=0x07` per SMPTE ST 2010. The first user data word is the ST 2010 payload descriptor; its bits 1 and 2 mark a message spread over several packets, which is not supported (`ErrST291Fragmented`). One packet carries at most 254 bytes of message (255 user data words less the descriptor).
 
-SCTE-104-over-VANC is standardized with `DID=0x41` and `SDID=0x07` per SMPTE ST 2010. [`ParseST291`](../../server/scte104/st291.go) and [`WrapST291`](../../server/scte104/st291.go) handle this framing. The packet layout is `[DID] [SDID] [DC] [payload_descriptor] [scte104Data...] [CS]` where DC is the data count (UDW length, up to 255), the payload descriptor byte signals fragmentation (bits 1 and 2 — we reject fragmented packets with `ErrST291Fragmented`), and CS is an 8-bit byte-sum checksum. The max single-packet payload is 254 bytes (255 minus the 1-byte payload descriptor). The 8-bit checksum is a deliberate simplification — the full SMPTE ST 291 9-bit checksum over 10-bit words with parity applies to raw SDI, not to byte-oriented transports like MXL data grains.
+[`ParseDataGrain`](../../server/scte104/st291.go) returns the SCTE-104 messages of one MXL data grain, which comes in one of two layouts:
+
+- **RFC 8331**, the layout of a `video/smpte291` flow: the RTP payload from the Length field on. A 6-byte header, `Length(16) ANC_Count(8) F(2) reserved(22)`, is followed by `ANC_Count` packets. Each packet is `C(1) Line_Number(11) Horizontal_Offset(12) S(1) StreamNum(7)`, then DID, SDID, Data_Count, the user data words and the Checksum_Word as 10-bit words, zero-padded to a 32-bit boundary of the RTP payload (an offset of 2 modulo 4 in the grain). Each data word carries even parity over its eight data bits in b8 and the inverse in b9; the Checksum_Word is the 9-bit sum of DID through the last user data word, with b9 the inverse of b8. [`ParseRFC8331`](../../server/scte104/rfc8331.go) verifies every word's parity and every packet's checksum and returns all packets; `ParseDataGrain` keeps those with DID 0x41 and SDID 0x07 and skips the rest. A grain with `ANC_Count` 0, written for every picture without ancillary data, carries no message and is not an error.
+- **Byte-oriented**, as [`WrapST291`](../../server/scte104/st291.go) writes it: `[DID] [SDID] [DC] [payload_descriptor] [scte104Data...] [CS]` at offset 0, where CS is an 8-bit byte sum. [`ParseST291`](../../server/scte104/st291.go) reads it.
+
+A byte-oriented grain starts with `0x41 0x07`. Read as RFC 8331, those bytes are a Length of 16647, which a grain shorter than 16653 bytes cannot hold, so such a grain is read as byte-oriented and any other as RFC 8331.
+
+A grain that does not parse, such as RFC 8331 with a Length past the grain, a parity error or a checksum mismatch (`ErrRFC8331Malformed`), is logged at Warn, at most once per 10 seconds per source.
 
 ### Bidirectional translation
 
@@ -99,7 +106,9 @@ SCTE-104-over-VANC is standardized with `DID=0x41` and `SDID=0x07` per SMPTE ST 
 - [`TimeSignalRequestData`](../../server/scte104/message.go) — 2-byte pre-roll payload.
 - [`SegmentationDescriptorRequest`](../../server/scte104/message.go) — variable-length descriptor payload with UPID and sub-segment fields.
 - [`Decode`, `Encode`](../../server/scte104/decode.go) — binary codec for SOM and MOM.
-- [`ParseST291`, `WrapST291`](../../server/scte104/st291.go) — VANC data grain wrapping with `DID=0x41`, `SDID=0x07`, 8-bit checksum.
+- [`ParseDataGrain`](../../server/scte104/st291.go) - the SCTE-104 messages of an MXL data grain, RFC 8331 or byte-oriented.
+- [`ParseRFC8331`, `WrapRFC8331`, `ANCPacket`](../../server/scte104/rfc8331.go) - RFC 8331 ancillary data payloads.
+- [`ParseST291`, `WrapST291`](../../server/scte104/st291.go) - byte-oriented packets with `DID=0x41`, `SDID=0x07`, 8-bit checksum.
 - [`ToCueMessage`, `FromCueMessage`, `PreRollMs`](../../server/scte104/translate.go) — bidirectional bridge to `scte35.CueMessage`.
 
 ### Gotchas
@@ -107,7 +116,6 @@ SCTE-104-over-VANC is standardized with `DID=0x41` and `SDID=0x07` per SMPTE ST 
 - **SOM vs. abbreviated heuristic.** The decoder distinguishes full SOM (12-byte header) from abbreviated VANC payloads by checking messageSize and protocol version. If an abbreviated payload happens to start with bytes that coincidentally pass the messageSize check but have an out-of-range protocol version (>15), the heuristic rejects the false positive and falls through to abbreviated parsing. This is a best-effort guess — deploy traffic-generated messages through real equipment when in doubt.
 - **Duration rounding.** SCTE-104 `BreakDuration` is in 100 ms units; SCTE-35 is in nanoseconds via `time.Duration`. Round-tripping loses precision. `FromCueMessage` rounds; `ToCueMessage` truncates (100 ms × units is exact on the SCTE-35 side).
 - **VANC fragmentation.** Not supported in either direction. Payloads >254 bytes return `ErrST291PayloadTooLarge`; incoming fragmented packets return `ErrST291Fragmented`. In practice, SCTE-104 ad cues fit comfortably.
-- **Component-level segmentation.** Encoder rejects it; only program-level segmentation flag is supported.
 
 ## Bridging SCTE-104 ↔ SCTE-35
 
@@ -118,7 +126,7 @@ sequenceDiagram
     participant Auto as Automation System
     participant MXL as MXL Data Flow
     participant Src as mxl.Source<br/>(OnDataGrain)
-    participant ST291 as scte104.ParseST291
+    participant ST291 as scte104.ParseDataGrain
     participant Dec as scte104.Decode
     participant Trans as scte104.ToCueMessage
     participant Inj as scte35.Injector
@@ -128,8 +136,8 @@ sequenceDiagram
 
     Auto->>MXL: SCTE-104 in VANC<br/>(DID=0x41, SDID=0x07)
     MXL->>Src: data grain bytes
-    Src->>ST291: ParseST291(grain)
-    ST291->>Dec: scte104 payload
+    Src->>ST291: ParseDataGrain(grain)
+    ST291->>Dec: each scte104 payload
     Dec->>Trans: *scte104.Message
     Trans->>Inj: *CueMessage<br/>(Source="scte104")
     Inj->>Rules: Evaluate(cue, "")
@@ -141,9 +149,9 @@ sequenceDiagram
     Note over Inj,Dest: Output path skips scte104Sink<br/>because Source="scte104"<br/>(prevents echo)
 ```
 
-**SCTE-104 → SCTE-35 (input).** The MXL source fans data grains into `OnDataGrain(key, data, pts)`. In `app.go`'s MXL source config, this callback runs `ParseST291 → Decode → ToCueMessage`, sets `cue.Source = "scte104"`, extracts `PreRollMs`, and calls either `Injector.ScheduleCue` (with pre-roll) or `Injector.InjectCue` (immediate). The injector then behaves identically to any other source — rules, active-event tracking, auto-return, webhook, muxer sink. The `Source="scte104"` tag is what tells the injector to **skip** the `scte104Sink` on output, preventing an echo loop where the inbound cue gets immediately written back to the MXL data flow.
+**SCTE-104 -> SCTE-35 (input).** The MXL source fans data grains into `OnDataGrain(key, data, pts)`. In `app.go`'s MXL source config, this callback runs `ParseDataGrain`, then `Decode -> ToCueMessage` for each SCTE-104 message the grain carries, sets `cue.Source = "scte104"`, extracts `PreRollMs`, and calls either `Injector.ScheduleCue` (with pre-roll) or `Injector.InjectCue` (immediate). The injector then behaves identically to any other source -- rules, active-event tracking, auto-return, webhook, muxer sink. The `Source="scte104"` tag is what tells the injector to **skip** the `scte104Sink` on output, preventing an echo loop where the inbound cue gets immediately written back to the MXL data flow.
 
-**SCTE-35 → SCTE-104 (output).** `initSCTE104` registers a `scte104Sink` on the injector via `SetSCTE104Sink`. Every cue that the injector emits — whether it came from an API call, a macro, or a pass-through source — runs `FromCueMessage → Encode → WrapST291 → mxlOutput.Writer().WriteDataGrain`. Downstream automation can subscribe to the MXL output data flow and receive a clean SCTE-104 stream describing everything the engine is doing. This is what makes Switchframe a good citizen in a broadcast plant: automation doesn't have to trust the engine; it can observe the output VANC and reconcile.
+**SCTE-35 -> SCTE-104 (output).** `initSCTE104` registers a `scte104Sink` on the injector via `SetSCTE104Sink`. Every cue that the injector emits -- whether it came from an API call, a macro, or a pass-through source -- runs `FromCueMessage -> Encode -> WrapST291 -> mxlOutput.Writer().WriteDataGrain`, one byte-oriented packet per grain, the layout captions are written in too; RFC 8331 output would need one grain per picture carrying every packet of that picture. `StartLifecycle` is called without a data writer, so `WriteDataGrain` fails and no SCTE-104 reaches an MXL output.
 
 **Output TS PID.** `initSCTE35` calls `outputMgr.SetSCTE35Injector(inj, pid)` and the injector's `muxerSink` calls `outputMgr.InjectSCTE35(data)`. When a TS muxer exists (first output is running), the manager forwards to `TSMuxer.WriteSCTE35`. The muxer's `SetSCTE35PID` controls whether the PMT advertises the SCTE-35 elementary stream: when non-zero (default `0x102`, set from `InjectorConfig.SCTE35PID`), it adds a `stream_type=0x86` entry and places a CUEI registration descriptor (`format_identifier=0x43554549`, "CUEI") in the PMT's `program_info` loop per SCTE-35 §8.1. Sections are muxed as PSI with a `pointer_field` rather than as PES. The IDR-alignment logic (`pendingIDRSCTE35`, `idrAlignFrameCount`) keeps cues co-located with the keyframes they reference so splicers downstream can make a clean cut. See [output.md](./output.md) for the full muxer flow.
 
