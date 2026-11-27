@@ -7,7 +7,7 @@ import "fmt"
 //
 // discreteFlowWriter.WriteGrain memcpys the payload into the MXL shared-memory
 // ring before CommitGrain, so an oversized payload would silently overwrite
-// adjacent grains/headers consumed by other processes — SDK-side commit
+// adjacent grains/headers consumed by other processes -- SDK-side commit
 // validation cannot prevent it. This check must run before the copy.
 //
 // Kept in a file without the cgo/mxl build tags so it is unit-testable in
@@ -25,13 +25,12 @@ func checkGrainPayloadFits(dataLen int, grainCapacity uint64) error {
 // The SDK sets a slot header's grainSize to the slot capacity exactly once,
 // at flow creation (FlowManager.cpp). mxlFlowWriterOpenGrain returns the
 // stored header verbatim (only the index is updated) and CommitGrain writes
-// back whatever header the writer passes in. WriteGrain deliberately commits
-// grainSize = len(data) — readers depend on it as the actual payload length
-// of variable-length data grains — so once the ring wraps, the grainSize
-// returned by openGrain is the previous occupant's payload length, NOT the
-// slot capacity. Treating it as capacity would ratchet each slot's usable
-// size monotonically downward, breaking variable-length data flows (e.g.
-// SCTE-104) after one ring revolution.
+// back whatever header the writer passes in. WriteGrain commits a video
+// grain at grainSize = len(data), and a flow written by an older build may
+// hold data grains committed at their frame length, so once the ring wraps
+// the grainSize returned by openGrain can be the previous occupant's payload
+// length, NOT the slot capacity. Treating it as capacity would ratchet each
+// slot's usable size monotonically downward.
 //
 // The true capacity is instead derived from two values the SDK never mutates
 // after flow creation:
@@ -42,10 +41,10 @@ func checkGrainPayloadFits(dataLen int, grainCapacity uint64) error {
 //   - totalSlices: from the grain header, set once at flow creation and
 //     passed through unmodified by every commit.
 //
-// capacity = sliceBytes × totalSlices, matching the SDK's own payload-size
+// capacity = sliceBytes x totalSlices, matching the SDK's own payload-size
 // computation (FlowParser::getPayloadSize): for video/v210 it is
-// line-bytes × lines, for v210a (fill+key line bytes) × lines, and for data
-// flows 1 byte × MXL_DATA_FORMAT_GRAIN_SIZE (4096).
+// line-bytes x lines, for v210a (fill+key line bytes) x lines, and for data
+// flows 1 byte x MXL_DATA_FORMAT_GRAIN_SIZE (4096).
 //
 // headerGrainSize (the grainSize reported by openGrain) is used only as a
 // fallback when sliceBytes is unavailable, preserving the previous
@@ -55,4 +54,17 @@ func discreteGrainCapacity(sliceBytes uint64, totalSlices uint16, headerGrainSiz
 		return uint64(headerGrainSize)
 	}
 	return sliceBytes * uint64(totalSlices)
+}
+
+// fillDataGrain copies frame into slot, the whole payload of a data grain,
+// zeroes the rest of the slot and returns the grain size to commit: the
+// whole slot. A reader on another node through a flow mirror receives a
+// data grain whole only when it is committed at the slot size; committed
+// at the frame length, the mirror copy carries the header's size with only
+// part of the payload. The RFC 8331 Length field says where the frame ends,
+// and the zeroed tail leaves nothing of a previous, longer frame behind.
+func fillDataGrain(slot, frame []byte) uint32 {
+	n := copy(slot, frame)
+	clear(slot[n:])
+	return uint32(len(slot))
 }
