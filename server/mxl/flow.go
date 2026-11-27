@@ -201,9 +201,9 @@ func (inst *Instance) OpenWriter(flowDef string) (DiscreteWriter, error) {
 
 	// Capture the per-slice byte size from the immutable flow config so
 	// WriteGrain can compute the true grain slot capacity. The slot header's
-	// grainSize cannot be used as a capacity: WriteGrain commits the actual
-	// payload length there, so after the ring wraps the reopened header
-	// reports the previous payload's size (see discreteGrainCapacity).
+	// grainSize cannot be used as a capacity: after the ring wraps the
+	// reopened header reports whatever size was last committed there (see
+	// discreteGrainCapacity).
 	cfg := convertFlowConfig(&configInfo)
 	var sliceBytes uint64
 	for _, s := range cfg.SliceSizes {
@@ -214,6 +214,7 @@ func (inst *Instance) OpenWriter(flowDef string) (DiscreteWriter, error) {
 		instance:   inst.handle,
 		writer:     writer,
 		sliceBytes: sliceBytes,
+		data:       cfg.Format == DataFormatData,
 	}, nil
 }
 
@@ -299,14 +300,14 @@ func convertFlowConfig(c *C.mxlFlowConfigInfo) FlowConfig {
 	// C union is laid out at the same memory offset.
 	switch fc.Format {
 	case DataFormatVideo, DataFormatData:
-		// Discrete flow — access as discrete union member.
+		// Discrete flow -- access as discrete union member.
 		discrete := (*C.mxlDiscreteFlowConfigInfo)(unsafe.Pointer(&c.anon0[0]))
 		for i := 0; i < 4; i++ {
 			fc.SliceSizes[i] = uint32(discrete.sliceSizes[i])
 		}
 		fc.GrainCount = uint32(discrete.grainCount)
 	case DataFormatAudio:
-		// Continuous flow — access as continuous union member.
+		// Continuous flow -- access as continuous union member.
 		continuous := (*C.mxlContinuousFlowConfigInfo)(unsafe.Pointer(&c.anon0[0]))
 		fc.ChannelCount = uint32(continuous.channelCount)
 		fc.BufferLength = uint32(continuous.bufferLength)
@@ -449,6 +450,10 @@ type discreteFlowWriter struct {
 	// Multiplied by a grain's totalSlices it yields the true slot capacity,
 	// independent of the mutable grainSize field in the slot header.
 	sliceBytes uint64
+
+	// data is set for a data flow, whose grains are committed at the full
+	// slot size (see fillDataGrain).
+	data bool
 }
 
 func (w *discreteFlowWriter) WriteGrain(index uint64, data []byte) error {
@@ -469,10 +474,10 @@ func (w *discreteFlowWriter) WriteGrain(index uint64, data []byte) error {
 	// resolution disagrees with the producer's WriterConfig) would otherwise
 	// overwrite adjacent grains/headers in the cross-process shared-memory
 	// ring. The capacity is computed from the immutable flow config and the
-	// grain's totalSlices — NOT from grain.grainSize, which after the ring
-	// wraps holds the previous occupant's payload length (the commit below
-	// stores len(data) there for readers; mxlFlowWriterOpenGrain returns the
-	// stored header verbatim). See discreteGrainCapacity.
+	// grain's totalSlices -- NOT from grain.grainSize, which after the ring
+	// wraps holds whatever size was last committed to the slot
+	// (mxlFlowWriterOpenGrain returns the stored header verbatim). See
+	// discreteGrainCapacity.
 	capacity := discreteGrainCapacity(w.sliceBytes, uint16(grain.totalSlices), uint32(grain.grainSize))
 	if err := checkGrainPayloadFits(len(data), capacity); err != nil {
 		// Release the opened grain without publishing it.
@@ -480,15 +485,19 @@ func (w *discreteFlowWriter) WriteGrain(index uint64, data []byte) error {
 		return fmt.Errorf("write grain at index %d: %w", index, err)
 	}
 
-	// Copy Go data into shared memory.
-	C.memcpy(unsafe.Pointer(payload), unsafe.Pointer(&data[0]), C.size_t(len(data)))
+	// Copy Go data into shared memory. A data grain takes the whole slot,
+	// its tail zeroed; a video grain is committed at its frame length.
+	size := uint32(len(data))
+	if w.data {
+		size = fillDataGrain(unsafe.Slice((*byte)(unsafe.Pointer(payload)), capacity), data)
+	} else {
+		C.memcpy(unsafe.Pointer(payload), unsafe.Pointer(&data[0]), C.size_t(len(data)))
+	}
 
-	// Commit — mark all slices valid, clear invalid flag, and record the
-	// actual payload length so readers of variable-length data grains do not
-	// receive stale trailing bytes from previous occupants of the slot.
+	// Commit: mark all slices valid and clear the invalid flag.
 	grain.flags = 0
 	grain.validSlices = grain.totalSlices
-	grain.grainSize = C.uint32_t(len(data))
+	grain.grainSize = C.uint32_t(size)
 	status = C.mxlFlowWriterCommitGrain(w.writer, &grain)
 	return statusError(status, "commit grain")
 }

@@ -1,6 +1,7 @@
 package mxl
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -53,23 +54,23 @@ func TestCheckGrainPayloadFits(t *testing.T) {
 //     grainSize.
 //   - openGrain returns the stored header verbatim (only index is updated).
 //   - commit overwrites the stored header verbatim with whatever the writer
-//     passes back. WriteGrain passes grainSize = len(data) so readers see the
-//     actual payload length of variable-length data grains.
+//     passes back. WriteGrain passes grainSize = len(data) for a video grain,
+//     and builds before data grains took the whole slot did the same for
+//     data grains.
 type simSlot struct {
 	grainSize   uint32
 	totalSlices uint16
 }
 
-// writeGrain mirrors discreteFlowWriter.WriteGrain's capacity check and
-// commit semantics against the simulated slot header.
+// writeGrain mirrors discreteFlowWriter.WriteGrain's capacity check and its
+// commit of a grain at its frame length against the simulated slot header.
 func (s *simSlot) writeGrain(sliceBytes uint64, data []byte) error {
 	// openGrain: header returned verbatim.
 	capacity := discreteGrainCapacity(sliceBytes, s.totalSlices, s.grainSize)
 	if err := checkGrainPayloadFits(len(data), capacity); err != nil {
 		return err // CancelGrain: header unchanged.
 	}
-	// CommitGrain: WriteGrain records the actual payload length so readers
-	// of variable-length data grains get the right size.
+	// CommitGrain at the frame length.
 	s.grainSize = uint32(len(data))
 	return nil
 }
@@ -77,13 +78,13 @@ func (s *simSlot) writeGrain(sliceBytes uint64, data []byte) error {
 // TestWriteGrainCapacityNotRatchetedByPreviousPayload is the regression test
 // for the capacity-ratchet bug: WriteGrain used the grainSize returned by
 // mxlFlowWriterOpenGrain as the slot capacity, but it also commits
-// grainSize = len(data) into the same header — and openGrain returns the
+// grainSize = len(data) into the same header -- and openGrain returns the
 // stored header verbatim. After the ring wrapped, the check compared against
 // the previous payload's size instead of the slot capacity, so each slot's
-// usable size ratcheted monotonically downward. Variable-length data flows
-// (WriteDataGrain, SCTE-104) broke after one ring revolution; the fix derives
-// capacity from the immutable flow config (sliceBytes) and the immutable
-// totalSlices instead.
+// usable size ratcheted monotonically downward. A slot last committed at a
+// frame length, as data grains were before they took the whole slot, must
+// still take a longer frame; capacity derives from the immutable flow config
+// (sliceBytes) and the immutable totalSlices.
 func TestWriteGrainCapacityNotRatchetedByPreviousPayload(t *testing.T) {
 	// A "video/smpte291" data flow: slice size 1 byte, totalSlices =
 	// MXL_DATA_FORMAT_GRAIN_SIZE = 4096, so true capacity = 4096 bytes.
@@ -96,7 +97,7 @@ func TestWriteGrainCapacityNotRatchetedByPreviousPayload(t *testing.T) {
 		t.Fatalf("small grain write: %v", err)
 	}
 	if slot.grainSize != 16 {
-		t.Fatalf("committed grainSize = %d, want 16 (readers depend on the actual payload length)", slot.grainSize)
+		t.Fatalf("committed grainSize = %d, want 16", slot.grainSize)
 	}
 
 	// 2. The ring wraps: the same slot index is reopened, and openGrain
@@ -160,5 +161,41 @@ func TestDiscreteGrainCapacity(t *testing.T) {
 					tt.sliceBytes, tt.totalSlices, tt.headerGrainSize, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestFillDataGrain pins the data grain layout: committed at the full slot
+// size, the frame at the start and the rest zero. Committed at the frame
+// length, a reader on another node through a flow mirror receives the
+// header's size with only part of the payload, and a strict RFC 8331 parser
+// fails on the missing packet bytes. The slot here held a longer frame
+// before, so a tail left uncleared would show its bytes.
+func TestFillDataGrain(t *testing.T) {
+	const capacity = 4096 // video/smpte291: 1-byte slices x 4096
+	slot := bytes.Repeat([]byte{0xAA}, capacity)
+
+	// An RFC 8331 frame with one packet's worth of bytes after the header.
+	frame := []byte{0x00, 0x20, 0x01, 0x00, 0x00, 0x00}
+	frame = append(frame, bytes.Repeat([]byte{0x55}, 32)...)
+
+	if got := fillDataGrain(slot, frame); got != capacity {
+		t.Fatalf("committed grain size = %d, want the slot capacity %d", got, capacity)
+	}
+	if !bytes.Equal(slot[:len(frame)], frame) {
+		t.Fatalf("slot starts % x, want the frame % x", slot[:len(frame)], frame)
+	}
+	for i, b := range slot[len(frame):] {
+		if b != 0 {
+			t.Fatalf("byte %d past the frame = %#x, want 0", len(frame)+i, b)
+		}
+	}
+
+	// The empty frame written for most pictures takes the whole slot too.
+	empty := []byte{0, 0, 0, 0, 0, 0}
+	if got := fillDataGrain(slot, empty); got != capacity {
+		t.Fatalf("empty frame committed at %d bytes, want %d", got, capacity)
+	}
+	if !bytes.Equal(slot, make([]byte, capacity)) {
+		t.Fatal("slot holds bytes of the previous frame after an empty frame")
 	}
 }
