@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-rc.60](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.59...mxl-v1.0.0-rc.60) (2026-11-27)
+
+
+### Bug Fixes
+
+* **mxl:** commit data grains at the full slot size ([#322](https://github.com/qvest-digital/dmf-mf-switchframe/issues/322)) ([cd24f47](https://github.com/qvest-digital/dmf-mf-switchframe/commit/cd24f479b219027e503e9a9526203a0f03b06d2f))
+
 ## [1.0.0-rc.59](https://github.com/qvest-digital/dmf-mf-switchframe/compare/mxl-v1.0.0-rc.58...mxl-v1.0.0-rc.59) (2026-11-26)
 
 
